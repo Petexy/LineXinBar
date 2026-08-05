@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="linboard_shell_v1">
+  <copyright>
+    Copyright © 2026 The Linboard authors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+  </copyright>
+
+  <interface name="linboard_shell_v1" version="5">
+    <description summary="private channel between Linboard and its session shell">
+      Layer-shell lets a shell draw itself, but says nothing about the two
+      things a console-style session needs: a hardware button that reaches the
+      shell even while a fullscreen application owns the keyboard, and a way
+      for the shell to end that application or the session.
+
+      This interface supplies exactly those. It is a session-private protocol
+      on the same trust footing as wlr-layer-shell: any client of this
+      compositor may bind it, and the compositor only ever runs clients the
+      user's own session started.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop receiving session events">
+        Releases the object. Any other bound instance keeps receiving events.
+      </description>
+    </request>
+
+    <request name="close_foreground">
+      <description summary="ask the foreground application to close">
+        Requests that the compositor close the topmost application window, the
+        one named by the most recent foreground event.
+
+        The request is polite: the application is asked to close and may
+        refuse or prompt the user, exactly as if its own close button had been
+        used. It is silently ignored when no application window exists.
+
+        Superseded by close_output_foreground for shells that draw on more
+        than one display.
+      </description>
+    </request>
+
+    <request name="close_output_foreground" since="3">
+      <description summary="ask the application on one display to close">
+        As close_foreground, but scoped to a display: the topmost application
+        window on that display is asked to close.
+
+        A shell whose overlay belongs to one display has to be able to say so.
+        Otherwise the entry it drew as "Close Celeste" closes whatever happens
+        to be topmost across the session instead.
+
+        Silently ignored when that display has no application window, or when
+        the output is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to act on"/>
+    </request>
+
+    <request name="quit">
+      <description summary="end the session">
+        Shuts the compositor down. On a native session this logs the user out.
+      </description>
+    </request>
+
+    <request name="set_launch_output" since="2">
+      <description summary="choose the display new applications open on">
+        Names the display the user is currently driving, so that an application
+        started by the shell opens there.
+
+        Without this the compositor can only infer the answer from keyboard
+        focus, which is wrong in exactly the case that matters: a shell drawn
+        over a running application gives focus back to that application before
+        the newly started one maps, so the new window would join the old one's
+        display instead of the one it was picked on. A shell showing one
+        surface per display already knows which display that is.
+
+        The choice persists until it is changed. It is a preference, not a
+        constraint: the compositor still places windows itself, and falls back
+        to its own policy when the named output is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output"
+           summary="display to open applications on"/>
+    </request>
+
+    <request name="set_output_overview" since="4">
+      <description summary="enter or leave the window overview on one display">
+        While the overview is on, the compositor stops drawing that display's
+        windows at their real geometry and instead animates each one into a
+        card slot, laid out by the algorithm both sides share (the shell and
+        the compositor are built from the same crate, so the slots the shell
+        decorates are exactly the slots the compositor fills).
+
+        The shell draws everything else of the overview — the menu beside the
+        cards, the selection frame and the titles — on its own layer surface,
+        transparent where the cards show through. Leaving the overview
+        animates every window back to where it was.
+
+        Enabling it on a second display implicitly leaves it on the first:
+        the overview belongs to the display the user is driving.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to change"/>
+      <arg name="enabled" type="uint" summary="1 to enter the overview, 0 to leave it"/>
+    </request>
+
+    <request name="set_overview_selection" since="4">
+      <description summary="which overview card the shell has selected">
+        Tells the compositor which card the user is on, counted over the
+        shell's full card list — every window plus the trailing start-screen
+        card. The row scrolls to keep that card visible, and the scroll
+        position is derived from this index by the shared layout, so saying
+        the selection is what keeps the two processes scrolling as one.
+
+        Meaningful only while the overview is on; harmless otherwise.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="index" type="uint" summary="selected card, 0-based"/>
+    </request>
+
+    <request name="activate_window" since="4">
+      <description summary="bring one window to the front and focus it">
+        Raises and focuses the window named by an output_window event. The
+        shell sends this when a card is chosen in the overview; it is how the
+        overview doubles as a window switcher.
+
+        Silently ignored when the window is gone — it may have closed between
+        the event and the choice.
+      </description>
+      <arg name="id" type="uint" summary="the window, from output_window"/>
+    </request>
+
+    <request name="kill_window" since="5">
+      <description summary="end one window's client outright">
+        Kills the process behind the window named by an output_window event.
+
+        Unlike close_foreground this is not a request the client can refuse,
+        prompt about or ignore: the shell's overlay is the console's way out
+        of an application that is not answering, and an application that puts
+        up a "save your work?" dialog behind an overlay the user has just
+        dismissed is indistinguishable from one that has hung.
+
+        The compositor identifies the process from the window's own client
+        credentials, so this ends the application the card showed and nothing
+        else. Silently ignored when the window is gone, or when its process
+        cannot be identified — an application forwarded from elsewhere is not
+        this session's to kill.
+      </description>
+      <arg name="id" type="uint" summary="the window, from output_window"/>
+    </request>
+
+    <event name="guide">
+      <description summary="the guide binding was activated">
+        Sent when the user pressed the compositor's guide binding. The shell is
+        expected to show or hide its overlay.
+
+        The compositor routes this itself because the shell has no keyboard
+        focus while an application is running, which is precisely when the user
+        needs a way back out of it.
+      </description>
+    </event>
+
+    <event name="foreground">
+      <description summary="the foreground application changed">
+        Names the topmost application window so the shell can label its
+        overlay. The title is empty when no application window exists, which is
+        how the shell learns that an application it started has exited.
+
+        Sent once when the object is bound, and again on every change.
+
+        Describes the session as a whole, which is only the right answer for a
+        shell that has one place to show it. Superseded by output_foreground,
+        and not sent at all to clients bound at version 3 or above.
+      </description>
+      <arg name="title" type="string" summary="window title, or empty when nothing is running"/>
+    </event>
+
+    <event name="output_foreground" since="3">
+      <description summary="the foreground application on one display changed">
+        Names the topmost application window on one display, or the empty
+        string when that display has none.
+
+        A shell drawing a bar on every display needs this rather than the
+        unqualified foreground event: its overlay belongs to the display the
+        user is on, so labelling it with the session's topmost window offers to
+        resume, or close, an application on a screen the user is not looking
+        at.
+
+        Sent once per display when the object is bound, and again on every
+        change.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="title" type="string" summary="window title, or empty when nothing is running there"/>
+    </event>
+
+    <event name="output_window" since="4">
+      <description summary="one window on a display">
+        Describes one application window, for the shell's overview. A batch of
+        these followed by output_windows_done replaces everything previously
+        known about that display; windows are listed topmost first, so the
+        first one is the application the user was just looking at.
+
+        The size is the window's logical geometry, which is what the shell
+        needs to aspect-fit its selection frame to the card the compositor
+        will draw there.
+
+        Sent once per display when a version 4 object is bound, and again
+        whenever the display's windows or their titles change.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="id" type="uint" summary="stable handle for activate_window"/>
+      <arg name="title" type="string" summary="window title"/>
+      <arg name="width" type="uint" summary="logical width"/>
+      <arg name="height" type="uint" summary="logical height"/>
+    </event>
+
+    <event name="output_windows_done" since="4">
+      <description summary="the window list for a display is complete">
+        Ends a batch of output_window events. The batch is the whole truth for
+        that display: a done event immediately after the last batch's windows
+        with none in between means the display has no windows at all.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+    </event>
+  </interface>
+</protocol>

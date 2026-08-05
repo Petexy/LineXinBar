@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/linboard-compositor",
+    "crates/linboard-protocol",
+    "crates/linboard-xmb",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/petexy/project-linboard"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Debug builds of a compositor are painfully slow without optimised deps.
+[profile.dev.package."*"]
+opt-level = 2

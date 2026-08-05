@@ -1,0 +1,75 @@
+# Example Linboard configuration.
+#
+# Copy to ~/.config/linboard/config.toml and edit. Every field is optional;
+# deleting this whole file leaves you with a working single-display setup.
+#
+# See docs/configuration.md for the full reference.
+
+[general]
+# Started once the Wayland socket exists.
+autostart = []
+
+# The session shell, used only with `linboard --shell`. It is started with the
+# autostart list, and the session ends when it exits.
+shell = "linboard-xmb"
+
+# How outputs without an explicit `position` are arranged:
+# "horizontal", "vertical", or "mirror".
+output_layout = "horizontal"
+
+# Logical pixels between auto-placed outputs.
+output_gap = 0
+
+# Colour behind everything, as [r, g, b, a] in 0.0..=1.0.
+background = [0.02, 0.02, 0.04, 1.0]
+
+# Turn off when nesting inside a compositor that draws its own cursor.
+draw_cursor = true
+
+# Pointer appearance. Unset, these honour XCURSOR_THEME / XCURSOR_SIZE and
+# fall back to the bundled Bibata Modern Classic at 24px.
+# cursor_theme = "Bibata-Modern-Classic"
+# cursor_size = 24
+
+# Exported to every process Linboard starts.
+[general.env]
+XDG_CURRENT_DESKTOP = "Linboard"
+
+[input]
+keyboard_layout = "us"
+# keyboard_variant = "colemak"
+# keyboard_options = "ctrl:nocaps"
+repeat_rate = 25
+repeat_delay = 600
+tap_to_click = true
+natural_scroll = false
+disable_while_typing = true
+pointer_accel = 0.0
+
+# One [[output]] block per display, matched by connector name. Connector names
+# are logged at startup. "*" matches anything without a more specific entry.
+#
+# [[output]]
+# name = "DP-1"
+# mode = "2560x1440@144"    # or "1920x1080", or "preferred"
+# position = [0, 0]         # omit to let output_layout place it
+# scale = 1.0
+# transform = "normal"      # normal, 90, 180, 270, flipped, flipped-90, ...
+# enabled = true
+#
+# [[output]]
+# name = "HDMI-A-1"
+# position = [2560, 0]
+
+[keybindings]
+# Modifier+Modifier+Keysym = action
+"Ctrl+Alt+BackSpace" = "quit"
+"Super+Q" = "close"
+# Shows the shell's guide overlay, which is the way back out of a fullscreen
+# application. Bound to Super+Home and XF86HomePage as well by default.
+"Super+G" = "guide"
+"Super+Tab" = "cycle-window"
+"Super+Left" = "focus-prev-output"
+"Super+Right" = "focus-next-output"
+"Super+Shift+Right" = "move-to-next-output"
+# "Super+Return" = "spawn:foot"

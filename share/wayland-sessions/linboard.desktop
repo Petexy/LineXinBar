@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Linboard
+Comment=XMB-style console shell on the Linboard compositor
+Exec=linboard --shell
+TryExec=linboard
+Type=Application
+DesktopNames=Linboard
+Keywords=console;gamepad;launcher;

@@ -1,0 +1,30 @@
+# Rust build output and compiler backups.
+/target/
+**/*.rs.bk
+
+# Local logs and profiling output.
+*.log
+*.profraw
+*.profdata
+
+# Local environment overrides may contain tokens or machine-specific settings.
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor and IDE state.
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS-generated metadata.
+.DS_Store
+Thumbs.db
+.directory
+
+# Local agent/tool state.
+/.agents/
+/.codex/

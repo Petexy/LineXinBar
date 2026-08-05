@@ -1,0 +1,870 @@
+//! Wayland protocol handler implementations for [`LinboardState`].
+
+use std::os::unix::io::OwnedFd;
+
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
+use smithay::desktop::{
+    find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
+    LayerSurface as DesktopLayerSurface, PopupKind, Window,
+};
+use smithay::input::pointer::{CursorImageStatus, PointerHandle};
+use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{Client, Resource};
+use smithay::utils::{Logical, Point, Serial};
+use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::compositor::{
+    get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler,
+    CompositorState,
+};
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::fractional_scale::FractionalScaleHandler;
+use smithay::wayland::output::OutputHandler;
+use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
+use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::selection::data_device::{
+    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
+    ServerDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
+};
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::shell::wlr_layer::{
+    KeyboardInteractivity, Layer, LayerSurface, LayerSurfaceData, WlrLayerShellHandler,
+    WlrLayerShellState,
+};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgPopupSurfaceData, XdgShellHandler,
+    XdgShellState, XdgToplevelSurfaceData,
+};
+use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
+use smithay::{
+    delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
+    delegate_fractional_scale, delegate_layer_shell, delegate_output, delegate_pointer_constraints,
+    delegate_pointer_gestures, delegate_presentation, delegate_primary_selection,
+    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_single_pixel_buffer,
+    delegate_viewporter, delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
+};
+
+use crate::focus::KeyboardFocusTarget;
+use crate::input::{window_accepts_keyboard_focus, window_is_x11_chrome};
+use crate::outputs::{remap_window_preserving_stack, set_maximized_states};
+use crate::state::{client_compositor_state, LinboardState};
+use crate::xwayland::remember_x11_client_geometry;
+
+// ---------------------------------------------------------------------------
+// wl_compositor
+// ---------------------------------------------------------------------------
+
+impl CompositorHandler for LinboardState {
+    fn compositor_state(&mut self) -> &mut CompositorState {
+        &mut self.linboard.compositor_state
+    }
+
+    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        client_compositor_state(client)
+    }
+
+    fn commit(&mut self, surface: &WlSurface) {
+        on_commit_buffer_handler::<Self>(surface);
+
+        // A sync subsurface's state is applied together with its parent, so
+        // there is nothing to do until the root commits.
+        if !is_sync_subsurface(surface) {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            if let Some(window) = self.linboard.window_for_surface(&root) {
+                window.on_commit();
+            }
+        }
+
+        self.linboard.popups.commit(surface);
+
+        self.refresh_layer_surfaces(surface);
+        // Layer geometry must be arranged from the state applied by this
+        // commit before the first configure is sent. `new_layer_surface` runs
+        // before the client has committed its anchors and requested size, so
+        // configuring first would send Smithay's default half-output geometry.
+        self.handle_initial_configure(surface);
+
+        // Something changed on screen. Backends that render on demand need
+        // telling; the timer-driven ones ignore it.
+        self.queue_redraw();
+    }
+}
+
+impl LinboardState {
+    /// Send the mandatory first `configure` once a surface has a role and has
+    /// committed without a buffer, as required by xdg-shell and layer-shell.
+    fn handle_initial_configure(&mut self, surface: &WlSurface) {
+        // Popups. A menu stays invisible until it is configured, because a
+        // client may not attach a buffer before its first xdg_surface.configure.
+        if let Some(PopupKind::Xdg(popup)) = self.linboard.popups.find_popup(surface) {
+            let initial_configure_sent = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgPopupSurfaceData>()
+                    .map(|d| d.lock().unwrap().initial_configure_sent)
+                    .unwrap_or(true)
+            });
+            if !initial_configure_sent {
+                // Only fails on a protocol violation by the client, which has
+                // already been reported to it.
+                if let Err(err) = popup.send_configure() {
+                    tracing::warn!(?err, "failed to configure popup");
+                }
+            }
+            // A popup is never a toplevel or a layer surface, and looking it up
+            // as one would find its parent window instead.
+            return;
+        }
+
+        // xdg toplevels.
+        if let Some(window) = self.linboard.window_for_surface(surface) {
+            if let Some(toplevel) = window.toplevel() {
+                let initial_configure_sent = with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .map(|d| d.lock().unwrap().initial_configure_sent)
+                        .unwrap_or(true)
+                });
+                if !initial_configure_sent {
+                    toplevel.send_configure();
+                }
+            }
+        }
+
+        // Layer surfaces.
+        if let Some(output) = self.output_for_layer_surface(surface) {
+            let initial_configure_sent = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<LayerSurfaceData>()
+                    .map(|d| d.lock().unwrap().initial_configure_sent)
+                    .unwrap_or(true)
+            });
+
+            if !initial_configure_sent {
+                // `refresh_layer_surfaces` arranges the map right after this,
+                // so only the lookup is needed here.
+                let layer = layer_map_for_output(&output)
+                    .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::ALL)
+                    .cloned();
+                if let Some(layer) = layer {
+                    layer.layer_surface().send_configure();
+                }
+            }
+        }
+    }
+
+    /// Re-run layer arrangement when a mapped layer surface commits, since its
+    /// exclusive zone or keyboard interactivity may have changed.
+    fn refresh_layer_surfaces(&mut self, surface: &WlSurface) {
+        let Some(output) = self.output_for_layer_surface(surface) else {
+            return;
+        };
+
+        let rearranged = {
+            let mut map = layer_map_for_output(&output);
+            map.arrange()
+        };
+        if rearranged {
+            self.linboard
+                .outputs
+                .relayout_windows(&mut self.linboard.space);
+        }
+
+        let previous = self.linboard.exclusive_keyboard_focus.clone();
+        self.refresh_exclusive_focus();
+        // The layer is mapped before its first pending state is committed.
+        // In the normal shell path that means `OnDemand` was not visible to
+        // `new_layer_surface`, leaving the seat without focus. Re-evaluate when
+        // there is no valid target as well as when an exclusive grab changes.
+        // Do not do it for every animated commit: a valid OnDemand focus is
+        // deliberately preserved.
+        if previous != self.linboard.exclusive_keyboard_focus || self.keyboard_focus_needs_refresh()
+        {
+            self.focus_topmost_window();
+        }
+    }
+
+    /// Record which layer surface, if any, currently demands exclusive
+    /// keyboard focus.
+    pub fn refresh_exclusive_focus(&mut self) {
+        let mut exclusive = None;
+
+        'outputs: for output in self.linboard.space.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive {
+                    exclusive = Some(layer.layer_surface().wl_surface().clone());
+                    break 'outputs;
+                }
+            }
+        }
+
+        self.linboard.exclusive_keyboard_focus = exclusive;
+    }
+
+    fn output_for_layer_surface(&self, surface: &WlSurface) -> Option<Output> {
+        self.linboard
+            .space
+            .outputs()
+            .find(|o| {
+                layer_map_for_output(o)
+                    .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::ALL)
+                    .is_some()
+            })
+            .cloned()
+    }
+}
+
+impl BufferHandler for LinboardState {
+    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+}
+
+impl ShmHandler for LinboardState {
+    fn shm_state(&self) -> &ShmState {
+        &self.linboard.shm_state
+    }
+}
+
+// ---------------------------------------------------------------------------
+// xdg-shell
+// ---------------------------------------------------------------------------
+
+impl XdgShellHandler for LinboardState {
+    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+        &mut self.linboard.xdg_shell_state
+    }
+
+    fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let window = Window::new_wayland_window(surface);
+        self.map_new_window(window);
+    }
+
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        self.unconstrain_popup(&surface);
+        if let Err(err) = self.linboard.popups.track_popup(PopupKind::from(surface)) {
+            tracing::warn!(?err, "failed to track popup");
+        }
+    }
+
+    fn reposition_request(
+        &mut self,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
+    ) {
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        self.unconstrain_popup(&surface);
+        surface.send_repositioned(token);
+    }
+
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let popup = PopupKind::Xdg(surface);
+        if let Ok(root) = find_popup_root_surface(&popup) {
+            if let Ok(mut grab) = self
+                .linboard
+                .popups
+                .grab_popup(root.into(), popup, &seat, serial)
+            {
+                if let Some(keyboard) = seat.get_keyboard() {
+                    if keyboard.is_grabbed()
+                        && !(keyboard.has_grab(serial)
+                            || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+                    {
+                        grab.ungrab(smithay::desktop::PopupUngrabStrategy::All);
+                        return;
+                    }
+                    keyboard.set_focus(self, grab.current_grab(), serial);
+                    // The grab is not optional. Besides routing keys along the
+                    // popup chain, it is what hands focus back to the window
+                    // when the menu closes; without it the application is left
+                    // deaf to the keyboard from the first menu it ever opens.
+                    keyboard.set_grab(
+                        self,
+                        smithay::desktop::PopupKeyboardGrab::new(&grab),
+                        serial,
+                    );
+                }
+                if let Some(pointer) = seat.get_pointer() {
+                    if pointer.is_grabbed()
+                        && !(pointer.has_grab(serial)
+                            || pointer.has_grab(grab.previous_serial().unwrap_or(grab.serial())))
+                    {
+                        grab.ungrab(smithay::desktop::PopupUngrabStrategy::All);
+                        return;
+                    }
+                    pointer.set_grab(
+                        self,
+                        smithay::desktop::PopupPointerGrab::new(&grab),
+                        serial,
+                        smithay::input::pointer::Focus::Keep,
+                    );
+                }
+            }
+        }
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        let wl_surface = surface.wl_surface();
+        let target = output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .or_else(|| {
+                self.linboard
+                    .window_for_surface(wl_surface)
+                    .and_then(|w| self.linboard.space.outputs_for_element(&w).first().cloned())
+            })
+            .or_else(|| self.linboard.space.outputs().next().cloned());
+
+        if let Some(output) = target {
+            let geometry = self
+                .linboard
+                .space
+                .output_geometry(&output)
+                .unwrap_or_default();
+            surface.with_pending_state(|state| {
+                state.states.set(xdg_toplevel::State::Fullscreen);
+                state.size = Some(geometry.size);
+            });
+            if let Some(window) = self.linboard.window_for_surface(wl_surface) {
+                remap_window_preserving_stack(&mut self.linboard.space, &window, geometry.loc);
+                self.raise_window(&window, true);
+            }
+        }
+        surface.send_configure();
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+        });
+        // Deliberately no configure of our own here: leaving fullscreen means
+        // going back to maximized, and that is what the re-tile below sends.
+        // Answering first with `size = None` would invite the client to pick a
+        // size for itself in the meantime.
+        self.enforce_maximized(&surface);
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        // Already true of every window here, but the client still deserves the
+        // configure that says so.
+        self.enforce_maximized(&surface);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        // Refused, in the only way the protocol offers: configure it straight
+        // back to maximized. A floating window would have nowhere to float —
+        // there is no desktop under these windows, and an un-maximized one is
+        // exactly the half-off-the-output state this shell exists to avoid.
+        self.enforce_maximized(&surface);
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.linboard.window_for_surface(surface.wl_surface()) {
+            self.linboard.space.unmap_elem(&window);
+        }
+        self.linboard
+            .outputs
+            .relayout_windows(&mut self.linboard.space);
+        self.focus_topmost_window();
+    }
+
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        self.focus_topmost_window();
+    }
+}
+
+impl LinboardState {
+    /// Configure a toplevel back to the one layout it is allowed to have:
+    /// maximized, filling its output's usable area.
+    ///
+    /// Re-tiling sends a configure only when something actually differs, so a
+    /// client that asks to un-maximize a window that is already where we want
+    /// it simply gets no answer, and keeps the state it has. That is the
+    /// refusal.
+    fn enforce_maximized(&mut self, surface: &ToplevelSurface) {
+        if let Some(window) = self.linboard.window_for_surface(surface.wl_surface()) {
+            self.linboard
+                .outputs
+                .tile_window(&mut self.linboard.space, &window);
+        } else {
+            // Not mapped yet, so there is no output to size against — set the
+            // state at least, rather than leaving the request unanswered.
+            surface.with_pending_state(|state| set_maximized_states(&mut state.states));
+            surface.send_configure();
+        }
+    }
+
+    /// Place a freshly created window on the focused output and give it focus.
+    pub(crate) fn map_new_window(&mut self, window: Window) {
+        // Where the user actually is, in order of how well each answer knows:
+        // what the session shell said outright, then the display holding
+        // keyboard focus, then the one under the pointer, then whatever
+        // exists.
+        //
+        // The shell comes first because it is the only source that is still
+        // right while an application is starting. Focus has usually moved back
+        // to the *previous* application by the time the new window maps, and a
+        // controller-driven session never moves the pointer at all.
+        let output = self
+            .shell_launch_output()
+            .or_else(|| self.keyboard_focus_output())
+            .or_else(|| {
+                self.linboard
+                    .outputs
+                    .output_at(&self.linboard.space, self.linboard.pointer_location)
+            })
+            .or_else(|| self.linboard.space.outputs().next().cloned());
+
+        let mut location = output
+            .as_ref()
+            .and_then(|o| self.linboard.space.output_geometry(o))
+            .map(|g| g.loc)
+            .unwrap_or_default();
+
+        let accepts_focus = window_accepts_keyboard_focus(&window);
+        if let Some(surface) = window.x11_surface() {
+            remember_x11_client_geometry(&window, surface.geometry());
+        }
+        if window_is_x11_chrome(&window) {
+            // Managed X11 notifications, menus and splash windows retain the
+            // geometry chosen by their client, just like override-redirect
+            // chrome. Keep them visually above the full-output application.
+            if let Some(surface) = window.x11_surface() {
+                location = surface.geometry().loc;
+                window.override_z_index(smithay::desktop::space::RenderZindex::Overlay as u8);
+            }
+        }
+        self.linboard
+            .space
+            .map_element(window.clone(), location, accepts_focus);
+        if let Some(output) = &output {
+            self.linboard
+                .outputs
+                .tile_window_on_output(&mut self.linboard.space, &window, output);
+        } else {
+            self.linboard
+                .outputs
+                .tile_window(&mut self.linboard.space, &window);
+        }
+
+        tracing::info!(
+            output = output.as_ref().map(|o| o.name()).unwrap_or_default(),
+            geometry = ?self.linboard.space.element_geometry(&window),
+            "mapped toplevel"
+        );
+
+        if accepts_focus {
+            self.set_window_keyboard_focus(&window);
+        } else {
+            self.focus_topmost_window();
+        }
+    }
+
+    /// Keep popups inside the output they belong to.
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            return;
+        };
+        let Some(window) = self.linboard.window_for_surface(&root) else {
+            return;
+        };
+        let Some(output) = self
+            .linboard
+            .space
+            .outputs_for_element(&window)
+            .first()
+            .cloned()
+        else {
+            return;
+        };
+        let Some(output_geo) = self.linboard.space.output_geometry(&output) else {
+            return;
+        };
+        let Some(window_loc) = self.linboard.space.element_location(&window) else {
+            return;
+        };
+
+        // The positioner works in the window's coordinate space.
+        let mut target = output_geo;
+        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        target.loc -= window_loc;
+
+        popup.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// xdg-decoration: we are a server-side-decoration-free compositor
+// ---------------------------------------------------------------------------
+
+impl XdgDecorationHandler for LinboardState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(
+        &mut self,
+        toplevel: ToplevelSurface,
+        _mode: zxdg_toplevel_decoration_v1::Mode,
+    ) {
+        // Windows are tiled full-output, so client decorations would only waste
+        // pixels. Always answer with server-side (i.e. none).
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wlr-layer-shell — this is what the XMB shell binds to
+// ---------------------------------------------------------------------------
+
+impl WlrLayerShellHandler for LinboardState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.linboard.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        wl_output: Option<WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        let output = wl_output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .or_else(|| {
+                self.linboard
+                    .outputs
+                    .output_at(&self.linboard.space, self.linboard.pointer_location)
+            })
+            .or_else(|| self.linboard.space.outputs().next().cloned());
+
+        let Some(output) = output else {
+            tracing::warn!(
+                namespace,
+                "layer surface requested with no output available"
+            );
+            surface.send_configure();
+            return;
+        };
+
+        tracing::info!(namespace, output = output.name(), "new layer surface");
+
+        // `LayerMap` works with the desktop wrapper, not the raw protocol object.
+        let desktop_layer = DesktopLayerSurface::new(surface.clone(), namespace);
+
+        {
+            let mut map = layer_map_for_output(&output);
+            if let Err(err) = map.map_layer(&desktop_layer) {
+                tracing::warn!(?err, "failed to map layer surface");
+                return;
+            }
+            map.arrange();
+        }
+
+        self.linboard
+            .outputs
+            .relayout_windows(&mut self.linboard.space);
+
+        self.refresh_exclusive_focus();
+        self.focus_topmost_window();
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        let mut changed = false;
+
+        for output in self.linboard.space.outputs().cloned().collect::<Vec<_>>() {
+            let mut map = layer_map_for_output(&output);
+            let Some(layer) = map
+                .layers()
+                .find(|l| l.layer_surface() == &surface)
+                .cloned()
+            else {
+                continue;
+            };
+            map.unmap_layer(&layer);
+            map.arrange();
+            changed = true;
+        }
+
+        if changed {
+            self.linboard
+                .outputs
+                .relayout_windows(&mut self.linboard.space);
+        }
+        self.refresh_exclusive_focus();
+        self.focus_topmost_window();
+    }
+
+    fn new_popup(&mut self, _parent: LayerSurface, popup: PopupSurface) {
+        if let Err(err) = self.linboard.popups.track_popup(PopupKind::from(popup)) {
+            tracing::warn!(?err, "failed to track layer popup");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// seat / selection
+// ---------------------------------------------------------------------------
+
+impl SeatHandler for LinboardState {
+    type KeyboardFocus = KeyboardFocusTarget;
+    type PointerFocus = KeyboardFocusTarget;
+    type TouchFocus = KeyboardFocusTarget;
+
+    fn seat_state(&mut self) -> &mut SeatState<Self> {
+        &mut self.linboard.seat_state
+    }
+
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
+        let dh = &self.linboard.display_handle;
+        let client = focused
+            .and_then(WaylandFocus::wl_surface)
+            .and_then(|surface| dh.get_client(surface.id()).ok());
+        set_data_device_focus(dh, seat, client.clone());
+        set_primary_focus(dh, seat, client);
+    }
+
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.linboard.cursor_status = image;
+    }
+}
+
+impl SelectionHandler for LinboardState {
+    type SelectionUserData = ();
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if let Some(xwm) = self.linboard.xwm.as_mut() {
+            if let Err(err) = xwm.new_selection(ty, source.map(|source| source.mime_types())) {
+                tracing::warn!(?err, ?ty, "failed to publish Wayland selection to X11");
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
+        if let Some(xwm) = self.linboard.xwm.as_mut() {
+            if let Err(err) =
+                xwm.send_selection(ty, mime_type, fd, self.linboard.loop_handle.clone())
+            {
+                tracing::warn!(?err, ?ty, "failed to send X11 selection to Wayland");
+            }
+        }
+    }
+}
+
+impl DataDeviceHandler for LinboardState {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.linboard.data_device_state
+    }
+}
+
+impl ClientDndGrabHandler for LinboardState {}
+impl ServerDndGrabHandler for LinboardState {}
+
+impl PrimarySelectionHandler for LinboardState {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.linboard.primary_selection_state
+    }
+}
+
+impl PointerConstraintsHandler for LinboardState {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        // Activate immediately only when the pointer already sits inside the
+        // constraint's effective surface region.
+        let has_focus = pointer
+            .current_focus()
+            .and_then(|focus| {
+                focus
+                    .wl_surface()
+                    .map(|current| current.as_ref() == surface)
+            })
+            .unwrap_or(false);
+        let local_location = self
+            .surface_under(self.linboard.pointer_location)
+            .filter(|(current, _)| current == surface)
+            .map(|(_, origin)| self.linboard.pointer_location - origin);
+        if has_focus {
+            with_pointer_constraint(surface, pointer, |constraint| {
+                if let Some(constraint) = constraint {
+                    let inside = local_location.is_some_and(|location| {
+                        constraint
+                            .region()
+                            .map(|region| region.contains(location.to_i32_round()))
+                            .unwrap_or(true)
+                    });
+                    if inside {
+                        constraint.activate();
+                    }
+                }
+            });
+        }
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        let mut active_lock = false;
+        with_pointer_constraint(surface, pointer, |constraint| {
+            active_lock = constraint.is_some_and(|constraint| {
+                constraint.is_active()
+                    && matches!(
+                        &*constraint,
+                        smithay::wayland::pointer_constraints::PointerConstraint::Locked(_)
+                    )
+            });
+        });
+        if active_lock {
+            self.linboard.pointer_position_hint = Some((surface.clone(), location));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// misc
+// ---------------------------------------------------------------------------
+
+impl OutputHandler for LinboardState {}
+
+impl smithay::wayland::tablet_manager::TabletSeatHandler for LinboardState {
+    fn tablet_tool_image(
+        &mut self,
+        _tool: &smithay::backend::input::TabletToolDescriptor,
+        image: CursorImageStatus,
+    ) {
+        self.linboard.cursor_status = image;
+    }
+}
+
+impl FractionalScaleHandler for LinboardState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        // Advertise the scale of whichever output the surface's window is on.
+        let scale = self
+            .linboard
+            .window_for_surface(&surface)
+            .and_then(|w| self.linboard.space.outputs_for_element(&w).first().cloned())
+            .or_else(|| self.linboard.space.outputs().next().cloned())
+            .map(|o| o.current_scale().fractional_scale())
+            .unwrap_or(1.0);
+
+        with_states(&surface, |states| {
+            smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(scale);
+            });
+        });
+    }
+}
+
+impl XdgActivationHandler for LinboardState {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.linboard.activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: XdgActivationToken,
+        _token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        if let Some(window) = self.linboard.window_for_surface(&surface) {
+            if window_accepts_keyboard_focus(&window) {
+                self.raise_window(&window, true);
+                self.set_window_keyboard_focus(&window);
+            }
+        }
+    }
+}
+
+impl DmabufHandler for LinboardState {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.linboard.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        match self.backend.import_dmabuf(&dmabuf) {
+            Ok(()) => {
+                let _ = notifier.successful::<LinboardState>();
+            }
+            Err(err) => {
+                tracing::warn!(?err, "dmabuf import failed");
+                notifier.failed();
+            }
+        }
+    }
+}
+
+delegate_compositor!(LinboardState);
+delegate_shm!(LinboardState);
+delegate_xdg_shell!(LinboardState);
+delegate_xdg_decoration!(LinboardState);
+delegate_layer_shell!(LinboardState);
+delegate_seat!(LinboardState);
+delegate_data_device!(LinboardState);
+delegate_primary_selection!(LinboardState);
+delegate_output!(LinboardState);
+delegate_viewporter!(LinboardState);
+delegate_presentation!(LinboardState);
+delegate_fractional_scale!(LinboardState);
+delegate_relative_pointer!(LinboardState);
+delegate_pointer_constraints!(LinboardState);
+delegate_pointer_gestures!(LinboardState);
+delegate_single_pixel_buffer!(LinboardState);
+delegate_cursor_shape!(LinboardState);
+delegate_xdg_activation!(LinboardState);
+delegate_dmabuf!(LinboardState);
