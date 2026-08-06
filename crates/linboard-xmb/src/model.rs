@@ -73,6 +73,10 @@ pub enum Action {
     /// is honoured even while an application owns input, because it is the way
     /// back out of that application.
     Guide,
+    /// Summon or dismiss the on-screen keyboard. Honoured from outside for the
+    /// same reason as [`Action::Guide`]: the application the letters are meant
+    /// for is the one holding the keys.
+    Keyboard,
     /// Hand control to the previous / next display.
     PrevScreen,
     NextScreen,
@@ -162,8 +166,13 @@ impl Xmb {
         }
     }
 
+    /// Whether there is nothing here to launch.
+    ///
+    /// Not the same as having no columns: the shell's own Settings column is
+    /// always present, so an empty catalogue is one with no *applications* in
+    /// it rather than one with no columns in it.
     pub fn is_empty(&self) -> bool {
-        self.categories.is_empty()
+        self.categories.iter().all(|c| c.apps.is_empty())
     }
 
     /// Start whatever `cursor` is pointing at. Returns the process id of what
@@ -299,6 +308,22 @@ impl Cursor {
             category_speed: 0.0,
             item_speed: 0.0,
         }
+    }
+
+    /// A cursor for a display just coming up, resting on the first column that
+    /// has anything in it.
+    ///
+    /// The shell's own Settings column leads the bar and has nothing under it
+    /// yet, and opening every session onto an empty column would be a poor
+    /// greeting. It is placed rather than travelled to, so the bar is already
+    /// where it belongs on the first frame.
+    pub fn for_model(xmb: &Xmb) -> Self {
+        let mut cursor = Self::new(xmb.categories.len());
+        if let Some(populated) = xmb.categories.iter().position(|c| !c.apps.is_empty()) {
+            cursor.selected_category = populated;
+            cursor.category_position = populated as f32;
+        }
+        cursor
     }
 
     pub fn selected_item(&self) -> usize {
@@ -853,6 +878,55 @@ mod tests {
         assert!(xmb.is_empty());
         assert!(!cursor.navigate(Action::Right, &xmb));
         assert!(cursor.current_app(&xmb).is_none());
+    }
+
+    /// A catalogue of columns with nothing in any of them is still an empty
+    /// one — the shell's own Settings column is always there and, for now,
+    /// always empty, so counting columns would call it stocked.
+    #[test]
+    fn a_model_of_empty_columns_is_empty() {
+        let column = |id: &'static str| Category {
+            id,
+            title: id,
+            icon: id,
+            apps: Vec::new(),
+        };
+        let xmb =
+            Xmb::with_wayland_display(vec![column("settings")], OsString::from("linboard-test"));
+        assert!(xmb.is_empty());
+
+        let mut stocked = xmb;
+        stocked.categories.push(Category {
+            apps: vec![app("a1")],
+            ..column("games")
+        });
+        assert!(!stocked.is_empty());
+    }
+
+    #[test]
+    fn a_display_opens_on_a_column_with_something_in_it() {
+        let mut xmb = model();
+        xmb.categories.insert(
+            0,
+            Category {
+                id: "settings",
+                title: "Settings",
+                icon: "preferences-system",
+                apps: Vec::new(),
+            },
+        );
+
+        let cursor = Cursor::for_model(&xmb);
+        assert_eq!(cursor.selected_category, 1);
+        assert_eq!(
+            cursor.category_position, 1.0,
+            "it should start there rather than slide there"
+        );
+
+        // With nothing anywhere there is no better column to prefer, and the
+        // cursor must still be valid.
+        let bare = Xmb::with_wayland_display(Vec::new(), OsString::from("linboard-test"));
+        assert_eq!(Cursor::for_model(&bare).selected_category, 0);
     }
 
     fn argv_strings(argv: Vec<OsString>) -> Vec<String> {

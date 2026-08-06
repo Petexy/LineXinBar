@@ -393,11 +393,11 @@ struct Globals {
     /// how many of them are in use. The fourth is padding.
     params: [f32; 4],
     /// The wallpaper's palette: the gradient as two pairs the mood drifts
-    /// between, then the ribbon's two tints, the sparkles and the glow. Here
-    /// rather than in the shader so the theme is one Rust value.
+    /// between, then the active accent at its normal, soft and deep rungs, and
+    /// the glow behind the cross point. Here rather than in the shader so the
+    /// theme is one Rust value.
     sky: [[f32; 4]; 4],
-    ribbon: [[f32; 4]; 2],
-    sparkle: [f32; 4],
+    accent: [[f32; 4]; 3],
     glow: [f32; 4],
     covers: [[f32; 4]; MAX_COVERS],
 }
@@ -978,8 +978,11 @@ impl Gpu {
                     theme.sky[2].a(1.0),
                     theme.sky[3].a(1.0),
                 ],
-                ribbon: [theme.ribbon[0].a(1.0), theme.ribbon[1].a(1.0)],
-                sparkle: theme.sparkle.a(1.0),
+                accent: [
+                    theme.accent.a(1.0),
+                    theme.accent_soft.a(1.0),
+                    theme.accent_deep.a(1.0),
+                ],
                 glow: theme.glow.a(1.0),
                 covers: params.covers,
             }),
@@ -1358,8 +1361,7 @@ impl Target {
                 // Placeholders: every frame rewrites the whole block from the
                 // theme before anything is drawn from it.
                 sky: [[0.0; 4]; 4],
-                ribbon: [[0.0; 4]; 2],
-                sparkle: [0.0; 4],
+                accent: [[0.0; 4]; 3],
                 glow: [0.0; 4],
                 covers: [[0.0; 4]; MAX_COVERS],
             }),

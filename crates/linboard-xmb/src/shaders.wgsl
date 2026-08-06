@@ -19,9 +19,9 @@ struct Globals {
     // The wallpaper's palette, from the theme: gradient top and bottom, then
     // the pair the mood drifts towards.
     sky: array<vec4<f32>, 4>,
-    // The flowing ribbon's two tints, drifted between on the same clock.
-    ribbon: array<vec4<f32>, 2>,
-    sparkle: vec4<f32>,
+    // The active accent at its normal, soft and deep rungs. The wallpaper is
+    // made from these rather than owning a second, unrelated highlight colour.
+    accent: array<vec4<f32>, 3>,
     glow: vec4<f32>,
     // Rects whose square corners are painted over with the background that
     // sits behind them — the compositor's live window cards.
@@ -31,14 +31,14 @@ struct Globals {
 @group(0) @binding(0) var<uniform> globals: Globals;
 
 // The surface is an sRGB target, so fragment outputs are interpreted as linear
-// light. Colours below are authored the way a designer would pick them (sRGB),
-// and converted here, otherwise everything renders washed out.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let cutoff = step(c, vec3<f32>(0.04045));
-    let low = c / 12.92;
-    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return mix(high, low, cutoff);
-}
+// light. Theme colours have already been converted to linear light by Rust
+// before they reach this module; all wallpaper arithmetic stays linear too.
+
+// The one lamp the whole shell is lit by: up, to the left, and towards the
+// viewer. Every rim highlight in the interface is this light seen in a
+// different surface, which is what makes the panes and the wallpaper's silk
+// current look like materials in the same room.
+const KEY_LIGHT: vec3<f32> = vec3<f32>(-0.42, -0.66, 0.62);
 
 // How far out a corner reaches, under the norm that shapes it.
 //
@@ -112,11 +112,12 @@ fn vs_background(@builtin(vertex_index) index: u32) -> BackgroundOut {
     return out;
 }
 
-// Cheap 2D hash for the drifting sparkles.
-fn hash21(p: vec2<f32>) -> f32 {
-    var q = fract(p * vec2<f32>(123.34, 456.21));
-    q = q + dot(q, q + 45.32);
-    return fract(q.x * q.y);
+// A huge, feathered pool of light. Its radii are deliberately comparable to a
+// display rather than to an object on it: as the centres move, the *field*
+// changes, without anything looking like a particle travelling across it.
+fn ambient_field(p: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
+    let q = (p - center) / radius;
+    return exp(-dot(q, q) * 1.65);
 }
 
 // The wallpaper, as a function of where you look rather than as a picture.
@@ -125,7 +126,7 @@ fn hash21(p: vec2<f32>) -> f32 {
 // window card's rounded corner, and the glass panes, which redraw it bent at
 // their own edges. `soften` stands in for blur — the same scene drawn wide
 // and dim rather than pixels filtered, which lands the same impression for
-// free. Returns sRGB, the space the colours are authored in.
+// free. Returns linear light, the space the palette arrives in.
 fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec3<f32> {
     // The mood drifts slowly between the theme's two gradients — indigo to
     // violet and back over a couple of minutes, like the original bar's
@@ -133,63 +134,158 @@ fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec3<f32> {
     let mood = 0.5 + 0.5 * sin(t * 0.03);
     let top = mix(globals.sky[0].rgb, globals.sky[2].rgb, mood);
     let bottom = mix(globals.sky[1].rgb, globals.sky[3].rgb, mood);
-    var color = mix(top, bottom, smoothstep(0.0, 1.0, uv.y));
+    // Even the base gradient moves: two very broad currents bend its horizon
+    // in opposite directions. There is no seam to cross and no object whose
+    // direction could read as gravity.
+    let gradient_y = uv.y
+        + sin(uv.x * 2.7 + t * 0.075) * 0.045
+        + sin(uv.x * 5.3 - t * 0.052) * 0.018;
+    // Leave enough night between the moving lights for the selected item to
+    // remain the brightest use of the accent on screen.
+    var color = mix(top, bottom, smoothstep(0.0, 1.0, gradient_y)) * 0.42;
 
     // A soft glow behind the cross point keeps the bar area readable.
     let glow_center = vec2<f32>(0.24, 0.34);
     let glow = 1.0 - smoothstep(0.0, 0.8, distance(uv * vec2<f32>(aspect, 1.0),
                                                    glow_center * vec2<f32>(aspect, 1.0)));
-    color += globals.glow.rgb * glow * 0.55;
+    color += globals.glow.rgb * glow * 0.25;
 
-    // The flowing ribbon: three translucent silk layers sharing a lane below
-    // the middle of the screen, each displaced by two travelling waves and
-    // lit along its crest. This has to read as *moving* at a glance.
+    // A mesh of three display-sized light fields. Their opposing, irrational
+    // clocks keep the composition changing without settling into a loop that
+    // the eye can follow. A low-frequency warp makes their edges flow instead
+    // of exposing the ellipses used to calculate them.
+    let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
+    let warp = vec2<f32>(
+        sin(p.y * 3.8 + t * 0.11) + sin((p.x + p.y) * 2.1 - t * 0.071),
+        sin(p.x * 2.6 - t * 0.093) + sin((p.x - p.y) * 2.4 + t * 0.063),
+    ) * 0.035;
+    let flowed = p + warp;
+    let spread = mix(1.0, 1.45, soften);
+
+    let deep = ambient_field(
+        flowed,
+        vec2<f32>(
+            -aspect * 0.34 + sin(t * 0.083) * aspect * 0.28,
+            -0.23 + cos(t * 0.067) * 0.18,
+        ),
+        vec2<f32>(aspect * 0.36, 0.34) * spread,
+    );
+    let main = ambient_field(
+        flowed,
+        vec2<f32>(
+            aspect * 0.31 + cos(t * 0.061) * aspect * 0.30,
+            0.20 + sin(t * 0.089) * 0.20,
+        ),
+        vec2<f32>(aspect * 0.34, 0.38) * spread,
+    );
+    let soft = ambient_field(
+        flowed,
+        vec2<f32>(
+            sin(t * 0.047 + 2.0) * aspect * 0.42,
+            sin(t * 0.073 + 1.1) * 0.30,
+        ),
+        vec2<f32>(aspect * 0.40, 0.29) * spread,
+    );
+
+    let field_strength = mix(1.0, 0.48, soften);
+    color += globals.accent[2].rgb * deep * 0.16 * field_strength;
+    color += globals.accent[0].rgb * main * 0.085 * field_strength;
+    color += globals.accent[1].rgb * soft * 0.035 * field_strength;
+
+    // One broad diagonal current puts visible motion between those pools. It
+    // is deliberately a continuous rise and fall, never a row of highlights.
+    let current = sin(flowed.x * 2.15 + flowed.y * 1.25 + t * 0.13)
+        + sin(flowed.x * 0.78 - flowed.y * 2.35 - t * 0.087);
+    let current_light = smoothstep(0.32, 1.62, current);
+    color += globals.accent[0].rgb * current_light * 0.035
+        * mix(1.0, 0.40, soften);
+
+    // The XMB current: three fine glass-silk ribbons moving together through
+    // a broad lane below the cross point. Each ribbon has a stable translucent
+    // body, a deep lower fold and an accent-soft bevel catching the shell's
+    // upper-left lamp. Only that highlight carries the quicker travelling
+    // sheen, so the material glistens without the whole line pulsing like neon.
     for (var i = 0; i < 3; i = i + 1) {
         let fi = f32(i);
         let speed = 0.42 + fi * 0.14;
-        let lane = 0.62 + (fi - 1.0) * 0.05;
-        let x = uv.x * (2.0 + fi * 0.6);
+        let lane = 0.62 + (fi - 1.0) * 0.050;
+        let x_scale = 2.0 + fi * 0.6;
+        let x = uv.x * x_scale;
 
-        let center = lane
-            + sin(x * 2.6 + t * speed + fi * 2.1) * 0.055
-            + sin(x * 1.3 - t * speed * 0.7 + fi * 0.8) * 0.085;
-        let d = uv.y - center;
+        let phase_a = x * 2.6 + t * speed + fi * 2.1;
+        let phase_b = x * 1.3 - t * speed * 0.7 + fi * 0.8;
+        let center = lane + sin(phase_a) * 0.055 + sin(phase_b) * 0.085;
 
-        // Band profile: a bright thin core inside a wide soft skirt. Softened,
-        // the core melts into the skirt and the skirt spreads out.
-        let skirt = exp(-d * d * mix(260.0, 90.0, soften));
-        let core = exp(-d * d * mix(2400.0, 500.0, soften)) * (1.0 - soften * 0.6);
+        // Measure across the curve rather than vertically. Without this
+        // correction a steep section grows visibly thicker than a flat one.
+        // Convert x to the same physical-screen units as y first, so wide
+        // outputs do not over-correct either the width or the light angle.
+        let uv_slope = (cos(phase_a) * 0.055 * 2.6
+            + cos(phase_b) * 0.085 * 1.3) * x_scale;
+        let slope = uv_slope / aspect;
+        let d = (uv.y - center) / sqrt(1.0 + slope * slope);
 
-        // A highlight that runs along the ribbon, so even a still crest
-        // carries visible motion.
-        let sheen = 0.55 + 0.45 * sin(x * 3.1 - t * (0.9 + fi * 0.25) + fi);
+        let skirt = exp(-d * d * mix(320.0, 110.0, soften));
+        let body = exp(-d * d * mix(5200.0, 680.0, soften));
+        let bevel_d = d + mix(0.0045, 0.012, soften);
+        let bevel = exp(-bevel_d * bevel_d * mix(20000.0, 1000.0, soften));
+        let crest_d = d + mix(0.0065, 0.014, soften);
+        let crest = exp(-crest_d * crest_d * mix(70000.0, 1400.0, soften));
+        let fold_d = d - mix(0.008, 0.016, soften);
+        let lower_fold = exp(-fold_d * fold_d * mix(9500.0, 900.0, soften));
 
-        let tint = mix(globals.ribbon[0].rgb, globals.ribbon[1].rgb, mood);
-        color += tint * (skirt * 0.055 + core * 0.10) * sheen * (1.0 - fi * 0.22);
+        // A bend facing the shared lamp catches more of its highlight. The
+        // separate travelling term is restrained to the glossy layers.
+        let upper_normal = normalize(vec2<f32>(slope, -1.0));
+        let lamp_facing = max(dot(upper_normal, normalize(KEY_LIGHT.xy)), 0.0);
+        let key_glint = 0.52 + 0.48 * pow(lamp_facing, 4.0);
+        let travelling = 0.64 + 0.36
+            * sin(x * 3.1 - t * (0.9 + fi * 0.25) + fi);
+
+        let depth = 1.0 - fi * 0.18;
+        let haze_strength = mix(1.0, 0.40, soften) * depth;
+        let gloss_strength = mix(1.0, 0.10, soften) * depth;
+        let haze_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb, 0.46);
+        let body_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb,
+                            0.28 + fi * 0.04);
+
+        color += haze_tint * skirt * 0.020 * haze_strength;
+        color += body_tint * body * 0.040 * haze_strength;
+        color += globals.accent[2].rgb * lower_fold * 0.010 * haze_strength;
+        color += globals.accent[1].rgb
+            * (bevel * 0.022 * (0.82 + 0.18 * travelling)
+                + crest * 0.010 * travelling * key_glint)
+            * gloss_strength;
     }
 
-    // Drifting sparkles, two parallax layers. Each grid cell owns at most one
-    // faint point that twinkles on its own phase while the whole field slides
-    // slowly up and across.
-    var sparkle = 0.0;
-    for (var layer = 0; layer < 2; layer = layer + 1) {
-        let fl = f32(layer);
-        let cells = 11.0 + fl * 9.0;
-        let drift = vec2<f32>(t * (0.014 + fl * 0.010), -t * (0.008 + fl * 0.012));
-        let p = (uv * vec2<f32>(aspect, 1.0) + drift) * cells;
-        let cell = floor(p);
-        let f = fract(p);
+    // Two aurora veils sweep through different thirds of the display. Their
+    // wide skirts carry most of the light; the crests are only a little
+    // brighter, so these read as moving atmosphere rather than drawn lines.
+    // Each wave travels against one of its own harmonics, which keeps it
+    // billowing in place instead of sliding bodily in any one direction.
+    let upper_center = 0.28
+        + sin(uv.x * 2.6 + t * 0.16) * 0.10
+        + sin(uv.x * 5.4 - t * 0.11) * 0.040;
+    let upper_d = uv.y - upper_center;
+    let upper_veil = exp(-upper_d * upper_d * mix(32.0, 13.0, soften));
+    let upper_crest = exp(-upper_d * upper_d * mix(230.0, 55.0, soften));
+    let upper_sheen = 0.72 + 0.28 * sin(uv.x * 4.2 - t * 0.22);
 
-        let rnd = hash21(cell);
-        let pos = vec2<f32>(fract(rnd * 13.7), fract(rnd * 7.31)) * 0.7 + 0.15;
-        let d = length(f - pos);
-        let twinkle = 0.35 + 0.65 * (0.5 + 0.5 * sin(t * (0.7 + rnd * 1.8) + rnd * 40.0));
-        // Softened, points swell into faint bokeh discs.
-        let radius = (0.10 + 0.06 * rnd) * (1.0 + soften * 1.6);
-        sparkle += smoothstep(radius, 0.0, d) * twinkle * (0.6 - 0.25 * fl)
-            * (1.0 - soften * 0.55);
-    }
-    color += globals.sparkle.rgb * sparkle * 0.30;
+    let lower_center = 0.72
+        + sin(uv.x * 2.1 - t * 0.13 + 2.4) * 0.12
+        + sin(uv.x * 4.7 + t * 0.083) * 0.035;
+    let lower_d = uv.y - lower_center;
+    let lower_veil = exp(-lower_d * lower_d * mix(26.0, 11.0, soften));
+    let lower_crest = exp(-lower_d * lower_d * mix(180.0, 45.0, soften));
+    let lower_sheen = 0.74 + 0.26 * sin(uv.x * 3.7 + t * 0.18 + 1.7);
+
+    let veil_strength = mix(1.0, 0.38, soften);
+    color += globals.accent[0].rgb
+        * (upper_veil * 0.052 + upper_crest * 0.025)
+        * upper_sheen * veil_strength;
+    color += (globals.accent[2].rgb * lower_veil * 0.16
+        + globals.accent[0].rgb * lower_crest * 0.028)
+        * lower_sheen * veil_strength;
 
     // Vignette, so the edges do not compete with the content.
     let edge = distance(uv, vec2<f32>(0.5, 0.5));
@@ -265,7 +361,7 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
     // Premultiplied, so the surface blends correctly where the background
     // does not reach.
     let alpha = coverage * fade;
-    return vec4<f32>(srgb_to_linear(color) * alpha, alpha);
+    return vec4<f32>(color * alpha, alpha);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,12 +480,6 @@ const GLASS_FLOAT: f32 = 1.0;
 // agree, or frost samples a rung nothing ever rendered.
 const BACKDROP_LEVELS: f32 = 4.0;
 
-// The one lamp the whole shell is lit by: up, to the left, and towards the
-// viewer. Every rim highlight in the interface is this light seen in a
-// different surface, which is what makes the panes look like the same
-// material in the same room.
-const KEY_LIGHT: vec3<f32> = vec3<f32>(-0.42, -0.66, 0.62);
-
 // What a fully frosted surface glows with on its own.
 //
 // Frost is scattering, and a scattering layer does not only blur what is
@@ -469,7 +559,7 @@ fn behind_at(px: vec2<f32>, lod: f32, soften: f32) -> vec3<f32> {
     let uv = clamp(px / globals.resolution, vec2<f32>(0.0), vec2<f32>(1.0));
     let drawn = textureSampleLevel(backdrop_texture, backdrop_sampler, uv, lod);
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
-    let below = srgb_to_linear(wallpaper(uv, aspect, globals.time, soften));
+    let below = wallpaper(uv, aspect, globals.time, soften);
     return drawn.rgb + below * (1.0 - drawn.a);
 }
 

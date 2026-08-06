@@ -11,6 +11,7 @@ mod overview;
 mod render;
 mod shell_control;
 mod state;
+mod text_input;
 mod xwayland;
 
 use clap::{Parser, ValueEnum};

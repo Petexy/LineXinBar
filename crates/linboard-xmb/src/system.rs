@@ -360,7 +360,9 @@ impl Worker {
             self.screen = self.on.as_deref().and_then(|name| self.screens.on(name));
             self.asked[1] = false;
             match &self.screen {
-                Some(screen) => tracing::info!(display = ?self.on, how = screen.name(), "brightness"),
+                Some(screen) => {
+                    tracing::info!(display = ?self.on, how = screen.name(), "brightness")
+                }
                 None => tracing::debug!(display = ?self.on, "nothing can dim this screen"),
             }
             // The epoch moved under `forget`, so the snapshot taken above is
@@ -442,10 +444,13 @@ impl Worker {
         if state.done || state.dirty {
             return;
         }
+        // Bound rather than dropped: the guard has to outlive the wait, or the
+        // lock is released and immediately retaken and nothing has been
+        // waited for.
         if state.on_screen {
-            let _ = self.shared.signal.wait_timeout(state, REFRESH);
+            let _held = self.shared.signal.wait_timeout(state, REFRESH);
         } else {
-            let _ = self.shared.signal.wait(state);
+            let _held = self.shared.signal.wait(state);
         }
     }
 }
@@ -503,7 +508,13 @@ impl Audio {
             Audio::WirePlumber => {
                 let out = run("wpctl", &["get-volume", SINK])?;
                 // `Volume: 0.30 [MUTED]`
-                let value: f32 = out.split_once("Volume:")?.1.split_whitespace().next()?.parse().ok()?;
+                let value: f32 = out
+                    .split_once("Volume:")?
+                    .1
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()?;
                 Some(Level {
                     value: value.clamp(0.0, 1.0),
                     muted: out.contains("[MUTED]"),
@@ -531,7 +542,10 @@ impl Audio {
         let percent = percent(value);
         match self {
             Audio::WirePlumber => drop(run("wpctl", &["set-volume", SINK, &percent])),
-            Audio::Pulse => drop(run("pactl", &["set-sink-volume", "@DEFAULT_SINK@", &percent])),
+            Audio::Pulse => drop(run(
+                "pactl",
+                &["set-sink-volume", "@DEFAULT_SINK@", &percent],
+            )),
             Audio::Alsa(control) => drop(run("amixer", &["-M", "-q", "set", control, &percent])),
         }
     }
@@ -653,7 +667,10 @@ impl Screen {
                 Some((raw as f32 / panel.max as f32).clamp(0.0, 1.0))
             }
             Screen::Monitor { bus, max } => {
-                let out = run("ddcutil", &["--bus", &bus.to_string(), "--terse", "getvcp", "10"])?;
+                let out = run(
+                    "ddcutil",
+                    &["--bus", &bus.to_string(), "--terse", "getvcp", "10"],
+                )?;
                 let (value, scale) = parse_vcp(&out)?;
                 *max = scale.max(1);
                 Some((value as f32 / *max as f32).clamp(0.0, 1.0))
@@ -773,7 +790,10 @@ fn detect_ddc() -> Vec<(String, u32)> {
         if line.starts_with("Display ") {
             bus = None;
         } else if let Some(rest) = line.strip_prefix("I2C bus:") {
-            bus = rest.trim().rsplit_once("i2c-").and_then(|(_, n)| n.parse().ok());
+            bus = rest
+                .trim()
+                .rsplit_once("i2c-")
+                .and_then(|(_, n)| n.parse().ok());
         } else if let Some(connector) = drm_connector(line) {
             if let Some(bus) = bus.take() {
                 found.push((connector, bus));
@@ -870,7 +890,9 @@ mod tests {
     fn a_percentage_is_found_wherever_a_mixer_hides_it() {
         // pactl
         assert_eq!(
-            first_percent("Volume: front-left: 19661 /  30% / -31.37 dB,   front-right: 19661 /  30%"),
+            first_percent(
+                "Volume: front-left: 19661 /  30% / -31.37 dB,   front-right: 19661 /  30%"
+            ),
             Some(0.30)
         );
         // amixer, whose first number is a raw one and must not be mistaken

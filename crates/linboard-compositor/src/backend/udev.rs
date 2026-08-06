@@ -865,7 +865,7 @@ fn render_surface(state: &mut LinboardState, node: DrmNode, crtc: crtc::Handle) 
     }
 
     let time = state.linboard.start_time.elapsed();
-    post_repaint(&state.linboard.space, &output, time, None);
+    post_repaint(&state.linboard, &output, time, None);
 }
 
 /// Collect the presentation feedback for everything visible on `output`.

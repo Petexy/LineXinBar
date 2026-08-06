@@ -67,10 +67,6 @@ pub struct Theme {
     /// The wallpaper's gradient, as two pairs the mood drifts between:
     /// `[top, bottom, other top, other bottom]`.
     pub sky: [Color; 4],
-    /// The two tints of the flowing ribbon, likewise drifted between.
-    pub ribbon: [Color; 2],
-    /// Drifting points of light.
-    pub sparkle: Color,
     /// The soft lift behind the bar's cross point, so the icons have
     /// something to sit on.
     pub glow: Color,
@@ -93,8 +89,6 @@ pub const DEFAULT: Theme = Theme {
         Color(0x2A1252),
         Color(0x0A0620),
     ],
-    ribbon: [Color(0x8B5CF6), Color(0xC084FC)],
-    sparkle: Color(0xE9D5FF),
     glow: Color(0x5B21B6),
 };
 

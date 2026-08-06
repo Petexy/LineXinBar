@@ -356,7 +356,7 @@ fn render_output(state: &mut LinboardState, window_id: u32) -> anyhow::Result<()
     virtual_output.full_redraw = false;
 
     let time = state.linboard.start_time.elapsed();
-    post_repaint(&state.linboard.space, &output, time, Some(Duration::ZERO));
+    post_repaint(&state.linboard, &output, time, Some(Duration::ZERO));
 
     Ok(())
 }

@@ -10,10 +10,160 @@ use std::path::{Path, PathBuf};
 const ICON_EXTENSIONS: [&str; 3] = ["svg", "png", "xpm"];
 const MAX_THEME_DEPTH: usize = 8;
 
+/// Names for the glyphs the shell carries itself.
+///
+/// A colon, which no icon theme uses, so a built-in can never be shadowed by
+/// an application that happens to install an icon of the same name.
+pub const VOLUME: &str = "linboard:volume";
+pub const VOLUME_MUTED: &str = "linboard:volume-muted";
+pub const BRIGHTNESS: &str = "linboard:brightness";
+/// The two tiles above the quick-settings bars: driving the pointer from the
+/// right stick, and the per-application volume mixer.
+///
+/// Every glyph in the guide is lit by the same lamp above it, but these two
+/// carry the most of that modelling: a gloss boundary that curves with the
+/// object, shadow cast from one part onto the next, and controls sunk into
+/// wells. They can afford it because they are the largest of the set — a tile
+/// gives its glyph 42 px where a quick-settings bar gives 33 and the keyboard
+/// hint 27, and a seam or a well drawn at 27 px is three grey pixels of
+/// smudge. How much of the modelling each glyph keeps is a question of the
+/// size it is drawn at and not of style; see brightness.svg for the reduction.
+pub const POINTER_STICK: &str = "linboard:pointer-stick";
+pub const VOLUME_MIXER: &str = "linboard:volume-mixer";
+/// The two controller buttons the keyboard hint names. Drawn by position
+/// rather than by letter, because A/B/X/Y are swapped between Xbox and
+/// Nintendo pads and mean nothing at all on a PlayStation one, and Select is
+/// branded Back, View, Share, Create or `−` depending on whose pad it is.
+pub const PAD_SELECT: &str = "linboard:pad-select";
+pub const PAD_WEST: &str = "linboard:pad-west";
+/// The four arrow keys of the on-screen keyboard.
+///
+/// Drawn rather than lettered because Roboto — which the shell bundles so it
+/// does not depend on what fonts a console has — carries no arrow glyphs, and
+/// a keycap reading "Left" is not an arrow key.
+pub const ARROW_LEFT: &str = "linboard:arrow-left";
+pub const ARROW_DOWN: &str = "linboard:arrow-down";
+pub const ARROW_UP: &str = "linboard:arrow-up";
+pub const ARROW_RIGHT: &str = "linboard:arrow-right";
+/// The on-screen keyboard's way out, drawn rather than lettered for the same
+/// reason: it is the one key that has to be found without reading the board.
+pub const KEYBOARD_HIDE: &str = "linboard:keyboard-hide";
+
+/// One per column of the start screen's category row, in that row's order.
+///
+/// These are built in rather than looked up, which is a change from taking
+/// `applications-graphics` and friends out of the icon theme. Three reasons,
+/// and the first is the same one the quick-settings bars have: a machine with
+/// no desktop on it has no theme to take them from, and an unlabelled row of
+/// missing-icon squares is the one part of this shell that cannot degrade —
+/// the row is the map of where everything lives.
+///
+/// The second is that a theme's application icons are *coloured*, and the
+/// atlas multiplies the quad's colour into the texel. A coloured icon can only
+/// come out muddier than the white it is tinted with, so the row ended up as a
+/// line of dim blue and orange discs beside a shell drawn entirely in glass.
+///
+/// The third is that they were eleven icons from however many hands drew them.
+/// These are eleven objects under one lamp, which is what a row is supposed to
+/// look like.
+pub const CATEGORY_SETTINGS: &str = "linboard:category-settings";
+pub const CATEGORY_SYSTEM: &str = "linboard:category-system";
+pub const CATEGORY_MULTIMEDIA: &str = "linboard:category-multimedia";
+pub const CATEGORY_GRAPHICS: &str = "linboard:category-graphics";
+pub const CATEGORY_INTERNET: &str = "linboard:category-internet";
+pub const CATEGORY_OFFICE: &str = "linboard:category-office";
+pub const CATEGORY_GAMES: &str = "linboard:category-games";
+pub const CATEGORY_DEVELOPMENT: &str = "linboard:category-development";
+pub const CATEGORY_EDUCATION: &str = "linboard:category-education";
+pub const CATEGORY_UTILITIES: &str = "linboard:category-utilities";
+pub const CATEGORY_OTHER: &str = "linboard:category-other";
+
+/// The power button at the foot of the guide's sidebar.
+///
+/// The shell used to assemble this out of two solid quads — a ring with a
+/// notch cut in it and a rod above — which was the last flat mark left in that
+/// column. `ui::power_glyph` still exists and still draws it, as the fallback
+/// for a glyph that somehow failed to rasterise: of everything in the sidebar
+/// this is the one button that must never come up empty, because it has no
+/// label to fall back on.
+pub const SHUTDOWN: &str = "linboard:shutdown";
+
+/// Every built-in, as `(name, drawing)`, for the atlas to load at startup.
+///
+/// Compiled into the binary from files in the tree, the way the font and the
+/// shaders are. Two things follow from that, and both are the point: the shell
+/// has these whatever is installed on the machine — which is what the
+/// quick-settings bars are *for* — and they are still drawings, editable in
+/// anything that opens an SVG rather than in a string literal.
+pub const BUILTIN: [(&str, &str); 24] = [
+    (VOLUME, include_str!("glyphs/volume.svg")),
+    (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
+    (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
+    (POINTER_STICK, include_str!("glyphs/pointer-stick.svg")),
+    (VOLUME_MIXER, include_str!("glyphs/volume-mixer.svg")),
+    (PAD_SELECT, include_str!("glyphs/pad-select.svg")),
+    (PAD_WEST, include_str!("glyphs/pad-west.svg")),
+    (ARROW_LEFT, include_str!("glyphs/arrow-left.svg")),
+    (ARROW_DOWN, include_str!("glyphs/arrow-down.svg")),
+    (ARROW_UP, include_str!("glyphs/arrow-up.svg")),
+    (ARROW_RIGHT, include_str!("glyphs/arrow-right.svg")),
+    (KEYBOARD_HIDE, include_str!("glyphs/keyboard-hide.svg")),
+    (SHUTDOWN, include_str!("glyphs/shutdown.svg")),
+    // The category row, in the order it is laid out in.
+    (
+        CATEGORY_SETTINGS,
+        include_str!("glyphs/category-settings.svg"),
+    ),
+    (CATEGORY_SYSTEM, include_str!("glyphs/category-system.svg")),
+    (
+        CATEGORY_MULTIMEDIA,
+        include_str!("glyphs/category-multimedia.svg"),
+    ),
+    (
+        CATEGORY_GRAPHICS,
+        include_str!("glyphs/category-graphics.svg"),
+    ),
+    (
+        CATEGORY_INTERNET,
+        include_str!("glyphs/category-internet.svg"),
+    ),
+    (CATEGORY_OFFICE, include_str!("glyphs/category-office.svg")),
+    (CATEGORY_GAMES, include_str!("glyphs/category-games.svg")),
+    (
+        CATEGORY_DEVELOPMENT,
+        include_str!("glyphs/category-development.svg"),
+    ),
+    (
+        CATEGORY_EDUCATION,
+        include_str!("glyphs/category-education.svg"),
+    ),
+    (
+        CATEGORY_UTILITIES,
+        include_str!("glyphs/category-utilities.svg"),
+    ),
+    (CATEGORY_OTHER, include_str!("glyphs/category-other.svg")),
+];
+
 /// A decoded icon, always square RGBA8.
 pub struct Icon {
     pub size: u32,
     pub rgba: Vec<u8>,
+}
+
+impl Icon {
+    /// Rasterise a drawing the shell carries itself.
+    ///
+    /// The glyphs on the quick-settings bars come through here rather than out
+    /// of the icon theme. A theme is something a desktop installs, and the
+    /// point of those bars is a session with no desktop in it — a speaker that
+    /// is missing on a machine with only hicolor installed would leave the
+    /// volume row unlabelled on exactly the systems this is for.
+    pub fn builtin(svg: &str, size: u32) -> Option<Self> {
+        Some(Icon {
+            size,
+            rgba: rasterise_svg(svg.as_bytes(), None, size)?,
+        })
+    }
 }
 
 pub struct IconLoader {
@@ -620,5 +770,111 @@ mod tests {
         assert_eq!(&rgba[..4], &[128, 64, 26, 100]);
         assert_eq!(&rgba[4..8], &[9, 8, 7, 0]);
         assert_eq!(&rgba[8..], &[4, 5, 6, 255]);
+    }
+
+    /// The shell's own glyphs have to be in the binary and have to draw
+    /// something, because nothing at runtime will notice if they do not: a
+    /// glyph that fails to rasterise leaves an empty space in the sidebar,
+    /// which looks like a layout that meant to leave one.
+    ///
+    /// The whole reason they are built in rather than looked up is that the
+    /// quick-settings bars are for a machine with no desktop on it, and so
+    /// possibly no icon theme beyond hicolor either.
+    #[test]
+    fn every_built_in_glyph_ships_and_draws_something() {
+        assert_eq!(
+            BUILTIN.len(),
+            24,
+            "a speaker, a struck-out one, a sun, a stick pointer, a mixer, two \
+             controller buttons, four arrows, a keyboard folding away, a power \
+             symbol, and one per column of the category row"
+        );
+
+        for (name, drawing) in BUILTIN {
+            assert!(name.starts_with("linboard:"), "{name} could be shadowed");
+            assert!(drawing.contains("<svg"), "{name} is not a drawing");
+
+            let icon = Icon::builtin(drawing, 128).unwrap_or_else(|| {
+                panic!("{name} did not rasterise");
+            });
+            assert_eq!(icon.size, 128);
+            assert_eq!(icon.rgba.len(), 128 * 128 * 4);
+
+            // Ink, not an empty square. A drawing that misses its viewBox
+            // rasterises perfectly happily to nothing at all.
+            let ink = icon.rgba.chunks_exact(4).filter(|px| px[3] > 128).count();
+            let share = ink as f32 / (128.0 * 128.0);
+            assert!(
+                (0.05..0.60).contains(&share),
+                "{name} covers {share:.3} of its cell"
+            );
+            // Neutral, so that the colour the layout asks for is the colour it
+            // gets: the atlas multiplies the quad's colour into the texel, and
+            // a glyph with a hue of its own could only ever come out muddier
+            // than the label beside it.
+            //
+            // Not the same as *white*. Everything the guide draws is shaded —
+            // one lamp above the drawing, a shadow under it — and a grey under
+            // a white tint is still that grey. What must not vary is the
+            // balance between the channels.
+            for pixel in icon.rgba.chunks_exact(4).filter(|px| px[3] == 255) {
+                let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+                assert!(
+                    r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1 && r.abs_diff(b) <= 1,
+                    "{name} has a colour of its own: {:?}",
+                    &pixel[..3]
+                );
+                // And never so dark that it reads as a hole in the glyph.
+                assert!(r >= 128, "{name} has a pixel at {r}, which is not ink");
+            }
+        }
+
+        // Distinct drawings, every one of them: muting has to be visible as
+        // more than a change of alpha, a hint that named the same button twice
+        // would be worse than no hint, and four arrow caps that rasterised
+        // alike would point the wrong way three times out of four.
+        let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            vec![
+                VOLUME,
+                VOLUME_MUTED,
+                BRIGHTNESS,
+                POINTER_STICK,
+                VOLUME_MIXER,
+                PAD_SELECT,
+                PAD_WEST,
+                ARROW_LEFT,
+                ARROW_DOWN,
+                ARROW_UP,
+                ARROW_RIGHT,
+                KEYBOARD_HIDE,
+                SHUTDOWN,
+                CATEGORY_SETTINGS,
+                CATEGORY_SYSTEM,
+                CATEGORY_MULTIMEDIA,
+                CATEGORY_GRAPHICS,
+                CATEGORY_INTERNET,
+                CATEGORY_OFFICE,
+                CATEGORY_GAMES,
+                CATEGORY_DEVELOPMENT,
+                CATEGORY_EDUCATION,
+                CATEGORY_UTILITIES,
+                CATEGORY_OTHER
+            ]
+        );
+        let drawn: Vec<Vec<u8>> = BUILTIN
+            .iter()
+            .map(|(_, drawing)| Icon::builtin(drawing, 64).unwrap().rgba)
+            .collect();
+        for (first, left) in drawn.iter().enumerate() {
+            for (second, right) in drawn.iter().enumerate().skip(first + 1) {
+                assert_ne!(
+                    left, right,
+                    "{} and {} rasterise the same",
+                    names[first], names[second]
+                );
+            }
+        }
     }
 }

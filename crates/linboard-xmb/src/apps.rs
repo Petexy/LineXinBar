@@ -31,58 +31,72 @@ pub struct Category {
     pub apps: Vec<App>,
 }
 
-/// The category set Plasma's launcher presents, in XMB order.
+/// The shell's own column, for settings that belong to Linboard itself rather
+/// than to anything installed on the system.
 ///
-/// Each entry lists the XDG main categories that map onto it. Order matters:
-/// the first matching category wins, so `Settings` beats `System` for an app
-/// tagged with both, exactly as Plasma resolves it.
+/// Always present and always first, the way the real XMB opens on Settings.
+/// It is deliberately not part of [`CATEGORY_TABLE`]: nothing on disk is
+/// classified into it, so it is not a destination for `.desktop` files.
+const SHELL_SETTINGS: (&str, &str, &str) =
+    ("settings", "Settings", crate::icons::CATEGORY_SETTINGS);
+
+/// Where installed applications go, in XMB order.
+///
+/// Each entry lists the XDG main categories that map onto it, and the first
+/// match wins. `Settings` and `System` share a column, as they do in Plasma —
+/// its menu has no Settings menu of its own, and the shell's own Settings
+/// column is not somewhere an installed application belongs.
 const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
-    ("settings", "Settings", "preferences-system", &["Settings"]),
     (
         "system",
         "System",
-        "preferences-system-windows",
-        &["System"],
+        crate::icons::CATEGORY_SYSTEM,
+        &["Settings", "System"],
     ),
     (
         "multimedia",
         "Multimedia",
-        "applications-multimedia",
+        crate::icons::CATEGORY_MULTIMEDIA,
         &["AudioVideo", "Audio", "Video"],
     ),
     (
         "graphics",
         "Graphics",
-        "applications-graphics",
+        crate::icons::CATEGORY_GRAPHICS,
         &["Graphics"],
     ),
     (
         "internet",
         "Internet",
-        "applications-internet",
+        crate::icons::CATEGORY_INTERNET,
         &["Network"],
     ),
-    ("office", "Office", "applications-office", &["Office"]),
-    ("games", "Games", "applications-games", &["Game"]),
+    (
+        "office",
+        "Office",
+        crate::icons::CATEGORY_OFFICE,
+        &["Office"],
+    ),
+    ("games", "Games", crate::icons::CATEGORY_GAMES, &["Game"]),
     (
         "development",
         "Development",
-        "applications-development",
+        crate::icons::CATEGORY_DEVELOPMENT,
         &["Development"],
     ),
     (
         "education",
         "Education & Science",
-        "applications-science",
+        crate::icons::CATEGORY_EDUCATION,
         &["Education", "Science"],
     ),
     (
         "utilities",
         "Utilities",
-        "applications-utilities",
+        crate::icons::CATEGORY_UTILITIES,
         &["Utility"],
     ),
-    ("other", "Other", "applications-other", &[]),
+    ("other", "Other", crate::icons::CATEGORY_OTHER, &[]),
 ];
 
 impl App {
@@ -130,9 +144,7 @@ impl App {
             return None;
         }
 
-        // `OnlyShowIn` limits an entry to specific desktops; we are not any of
-        // them, so honour it and stay out of the way.
-        if fields.contains_key("OnlyShowIn") {
+        if !shown_in(&fields, &current_desktops()) {
             return None;
         }
 
@@ -172,10 +184,70 @@ impl App {
     }
 }
 
+impl Category {
+    /// What to say when this column has nothing in it.
+    ///
+    /// Only ever seen in the shell's own column, since a scanned one with no
+    /// applications in it is dropped rather than drawn.
+    pub fn empty_note(&self) -> &'static str {
+        if self.id == SHELL_SETTINGS.0 {
+            "Linboard's own settings will live here"
+        } else {
+            "No applications in this category"
+        }
+    }
+}
+
 fn is_true(value: Option<&String>) -> bool {
     value
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Whether `desktops` — the environments this session claims to be — allow an
+/// entry to appear in a menu.
+///
+/// `OnlyShowIn` restricts an entry to the desktops it names and `NotShowIn`
+/// bars it from them; both are `;`-separated lists, matched against the
+/// `:`-separated names in `XDG_CURRENT_DESKTOP`. An entry naming neither is
+/// shown everywhere.
+///
+/// Comparison ignores case. The spec's registered names are upper case by
+/// convention rather than by rule, and entries in the wild are written both
+/// ways for the same desktop.
+fn shown_in(fields: &BTreeMap<String, String>, desktops: &[String]) -> bool {
+    let names_this_session = |value: &String| {
+        value
+            .split(';')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .any(|name| desktops.iter().any(|ours| ours.eq_ignore_ascii_case(name)))
+    };
+
+    if fields
+        .get("OnlyShowIn")
+        .is_some_and(|v| !names_this_session(v))
+    {
+        return false;
+    }
+    !fields.get("NotShowIn").is_some_and(names_this_session)
+}
+
+/// The desktop names this session answers to.
+///
+/// Linboard's session sets `XDG_CURRENT_DESKTOP=Linboard`, and so does the
+/// compositor for everything it launches, so the shell sees the same identity
+/// nested as it does on its own. Nothing further is claimed on its behalf: an
+/// entry written for one specific other desktop is written for that desktop's
+/// session, not for this one.
+fn current_desktops() -> Vec<String> {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Prefer a plain `Name`; localisation is left to the user's locale only when
@@ -247,6 +319,22 @@ pub fn scan() -> Vec<Category> {
         collect_from_dir(&dir, &dir, &mut seen, &mut apps);
     }
 
+    assemble(apps)
+}
+
+/// Sort discovered applications into the bar's columns.
+///
+/// Split from [`scan`] so the arrangement can be exercised without a
+/// filesystem to arrange.
+fn assemble(apps: Vec<App>) -> Vec<Category> {
+    let (id, title, icon) = SHELL_SETTINGS;
+    let shell_settings = Category {
+        id,
+        title,
+        icon,
+        apps: Vec::new(),
+    };
+
     let mut categories: Vec<Category> = CATEGORY_TABLE
         .iter()
         .map(|(id, title, icon, _)| Category {
@@ -268,8 +356,11 @@ pub fn scan() -> Vec<Category> {
         category.apps.sort_by_key(|a| a.name.to_lowercase());
     }
 
-    // Empty columns would just be dead space to scroll past.
+    // Empty columns would just be dead space to scroll past. The shell's own
+    // is exempt: it is a fixed part of the bar rather than a consequence of
+    // what happens to be installed, so it stays even with nothing under it.
     categories.retain(|c| !c.apps.is_empty());
+    categories.insert(0, shell_settings);
     categories
 }
 
@@ -345,6 +436,90 @@ mod tests {
         assert!(parse("[Desktop Entry]\nType=Application\nName=X\n").is_none());
     }
 
+    fn fields(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn desktop_scoping_is_matched_rather_than_assumed() {
+        let ours = ["Linboard".to_string()];
+
+        // An entry naming this desktop is ours to show, whichever way round it
+        // is written, and whatever else it lists alongside.
+        assert!(shown_in(&fields(&[("OnlyShowIn", "Linboard;")]), &ours));
+        assert!(shown_in(&fields(&[("OnlyShowIn", "KDE;linboard;")]), &ours));
+        assert!(shown_in(&fields(&[("NotShowIn", "KDE;GNOME;")]), &ours));
+
+        // And one written for somebody else's session is not.
+        assert!(!shown_in(&fields(&[("OnlyShowIn", "KDE;")]), &ours));
+        assert!(!shown_in(&fields(&[("NotShowIn", "Linboard;")]), &ours));
+
+        // Both keys at once: each has to be satisfied.
+        let both = fields(&[("OnlyShowIn", "Linboard;"), ("NotShowIn", "Linboard;")]);
+        assert!(!shown_in(&both, &ours));
+
+        // An empty list names no desktop, so it can only exclude.
+        assert!(!shown_in(&fields(&[("OnlyShowIn", "")]), &ours));
+        assert!(shown_in(&fields(&[("NotShowIn", "")]), &ours));
+
+        // Saying nothing means everywhere, including a session that has no
+        // identity at all to match against.
+        assert!(shown_in(&fields(&[]), &ours));
+        assert!(shown_in(&fields(&[]), &[]));
+        assert!(!shown_in(&fields(&[("OnlyShowIn", "KDE;")]), &[]));
+    }
+
+    #[test]
+    fn several_session_desktops_all_count() {
+        // `XDG_CURRENT_DESKTOP` is a list, and an entry naming any one of its
+        // names belongs to this session.
+        let ours = ["Linboard".to_string(), "KDE".to_string()];
+        assert!(shown_in(&fields(&[("OnlyShowIn", "KDE;")]), &ours));
+        assert!(!shown_in(&fields(&[("NotShowIn", "KDE;")]), &ours));
+    }
+
+    #[test]
+    fn the_shell_settings_column_is_always_first_and_always_there() {
+        let empty = assemble(Vec::new());
+        assert_eq!(empty.len(), 1, "nothing installed leaves only the shell's");
+        assert_eq!(empty[0].id, "settings");
+        assert_eq!(empty[0].title, "Settings");
+        assert!(empty[0].apps.is_empty());
+
+        // It is the shell's own column: nothing found on disk lands in it, and
+        // it keeps its place ahead of everything that was.
+        let app =
+            parse("[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=Settings;\n")
+                .unwrap();
+        let categories = assemble(vec![app]);
+        assert_eq!(
+            categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", "system"]
+        );
+        assert!(categories[0].apps.is_empty());
+        assert_eq!(categories[1].apps.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_column_says_which_kind_of_empty_it_is() {
+        let categories = assemble(Vec::new());
+        assert_eq!(
+            categories[0].empty_note(),
+            "Linboard's own settings will live here"
+        );
+
+        let scanned = Category {
+            id: "games",
+            title: "Games",
+            icon: "applications-games",
+            apps: Vec::new(),
+        };
+        assert_eq!(scanned.empty_note(), "No applications in this category");
+    }
+
     #[test]
     fn ignores_keys_outside_the_main_group() {
         let app = parse(
@@ -370,14 +545,20 @@ mod tests {
     }
 
     #[test]
-    fn category_precedence_matches_plasma() {
-        // An app tagged both Settings and System belongs under Settings.
-        let app = parse(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=System;Settings;\n",
-        )
-        .unwrap();
-        assert_eq!(app.category_id(), "settings");
+    fn settings_and_system_share_a_column() {
+        // As in Plasma, whose menu has no Settings menu of its own. The bar's
+        // Settings column belongs to the shell, not to installed software.
+        for raw in ["System;Settings", "Settings", "System"] {
+            let app = parse(&format!(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories={raw};\n"
+            ))
+            .unwrap();
+            assert_eq!(app.category_id(), "system", "for {raw}");
+        }
+    }
 
+    #[test]
+    fn unclassifiable_entries_fall_through_to_other() {
         // Unknown categories fall through to Other.
         let app = parse("[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=Weird;\n")
             .unwrap();

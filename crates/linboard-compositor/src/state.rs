@@ -185,6 +185,10 @@ impl LinboardState {
         smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(dh);
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<Self>(dh);
         smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(dh);
+        // Text input, input methods and virtual keyboards, which together are
+        // what lets the shell put a keyboard on screen and type into whatever
+        // asked for one.
+        crate::text_input::advertise(dh);
 
         let seat_name = backend.seat_name();
         let mut seat = seat_state.new_wl_seat(dh, seat_name.clone());

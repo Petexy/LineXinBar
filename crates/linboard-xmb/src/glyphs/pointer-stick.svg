@@ -1,0 +1,220 @@
+<!--
+  The stick-pointer tile's glyph: a mouse, with the controller that is driving
+  it in front. Both objects are needed — a mouse alone is what the toggle
+  produces, a pad alone is what produces it, and the tile is about the one
+  becoming the other.
+
+  Authored in white and greys, because the shell tints what it draws: an atlas
+  quad's colour is multiplied into the texel, so anything lighter than white is
+  unreachable and anything coloured could only come out muddier than the glyph
+  beside it. The greys are therefore not a colour — they are the shading, and
+  what makes the faces read as lit from above rather than as flat cut-outs.
+
+  Moulded white plastic under one lamp above it, which is how the console this
+  borrows its look from drew everything. It is built in two halves and needs
+  both, because they answer different questions.
+
+  Gloss answers "what is this made of". A polished top mirrors the lamp; the
+  face below it only mirrors the room; and the boundary between the two is a
+  *curve* that follows the object's own swell, not a rule ruled across it. A
+  straight one is the tell — it turns a dome into a cylinder someone sawed in
+  half. Under the boundary the face falls away and then lifts again where light
+  comes back up off whatever the object is standing on.
+
+  Shadow answers "where is this". Nothing above is depth: a shape can be
+  beautifully glossed and still lie flat on the page. So each object drops a
+  shadow behind itself, the pad darkens the mouse along the crevice where it
+  stands in front of it, the wheel is sunk in a slot, and the stick sits down
+  in a well with its own shadow pooled under it.
+
+  The two halves meet at the mouse's waist, where the gloss boundary and the
+  part line between the buttons and the body fall in the same place. Drawing
+  them as one line is what keeps that boundary from reading as a shell moulded
+  in two tones: a step with a lit lip above it and its own shadow below is a
+  seam, and a seam is a thing a mouse has.
+
+  Every shadow here is grey rather than black, and none of them takes the face
+  below the darkest ink a built-in glyph is allowed (see the glyph test in
+  icons.rs). That bound is the right one to draw to rather than merely to stay
+  inside: shadow on a white shell is a dimmer white, and a shadow dark enough
+  to read as a hole through the drawing has stopped being shading.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, before it is polished: what the shell would look like
+         under the room alone. The gloss goes on top of this, so this gradient
+         only has to carry the fall away from the light and the lift back at
+         the bottom edge — the crisp part of the shading is the gloss's own
+         boundary and not a stop in here. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+
+    <!-- The polish. Laid on as its own shape rather than as a stop in the
+         face gradient, so its lower edge can curve; solid white at the top
+         and holding almost all of that down to the boundary, which is what
+         makes the boundary an edge instead of a fade. -->
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+
+    <!-- The lamp's own reflection, as opposed to the light it throws: high,
+         off to the side the light comes from, and faint. It sits inside the
+         gloss and lifts one corner of it — a specular strong enough to read
+         as a shape of its own would only fog the boundary below it. -->
+    <radialGradient id="spec" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- The rim where the shell turns over: lit at the top by the lamp, lit
+         again along the bottom by the bounce, and dark down the sides, which
+         face the eye rather than either. Painted as a stroke on the outline
+         and clipped back to the shape so only its inner half survives — the
+         silhouette has to stay exactly where it was drawn. -->
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+
+    <!-- The sides turning away from the eye, which is the whole difference
+         between a cylinder and a rectangle. Over the gloss as well as the
+         face: a shell turns away whether or not it is polished. -->
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+
+    <!-- The inside of something cut into the face: the near wall in shadow
+         under its own lip, the far one turned up into the light. The wheel's
+         slot and the stick's well are the same event at two sizes. -->
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8e8e"/>
+      <stop offset="0.45" stop-color="#a8a8a8"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+
+    <!-- A cap of moulded plastic small enough that the whole of it is lit. -->
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#f4f4f4"/>
+      <stop offset="1" stop-color="#c4c4c4"/>
+    </linearGradient>
+
+    <!-- The shadow an object drops behind itself: down and a little right,
+         which is where one lamp above and slightly to the left puts it.
+         Thrown further than it is blurred, on purpose — a blur that spills as
+         far above the object as below it is a halo and not a shadow, and it
+         is the one mistake that makes the silhouette itself look soft. -->
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+
+    <!-- The crevice: not a cast shadow but the light that never reaches the
+         seam where one object stands in front of another. Shadow only, with
+         the caster left out, and no offset at all — it is the *contact* that
+         darkens, so it darkens evenly on every side. This is what separates
+         two white objects that overlap; without it the pad's near edge and
+         the mouse's far face are the same grey and the two dissolve. -->
+    <filter id="crevice" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.75" result="soft"/>
+      <feFlood flood-color="#4a4a4a" flood-opacity="0.62" result="ink"/>
+      <feComposite in="ink" in2="soft" operator="in"/>
+    </filter>
+
+    <!-- A hair of blur for the gloss. Only its curved lower edge survives the
+         clip to be blurred, which is the only edge that wants it: polished
+         plastic has a boundary you can point at but not one you could cut
+         yourself on. -->
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- A mouse, not a bar of soap: the top is a full half-round, the bottom
+         is where it sits flat on the desk. -->
+    <path id="mouse" d="M2.8 8.4a6.6 6.6 0 0 1 13.2 0v9.9a3.1 3.1 0 0 1-3.1 3.1h-7a3.1 3.1 0 0 1-3.1-3.1z"/>
+    <path id="pad" d="M16.1 18h5.6a5.4 5.4 0 0 1 5.2 4l0.9 3.6a2.3 2.3 0 0 1-4.1 1.9l-1.6-2.4h-6.4l-1.6 2.4a2.3 2.3 0 0 1-4.1-1.9l0.9-3.6a5.4 5.4 0 0 1 5.2-4z"/>
+
+    <!-- The two polished tops. Only the bottom edge of each is drawn to fit:
+         both are clipped to their object, so the other three sides can run
+         wide and stay simple. -->
+    <path id="mouse-gloss" d="M1.4 0h16v11.2c-2.6 2.5-13.4 2.5-16 0z"/>
+    <path id="mouse-seam" d="M1.4 11.2c2.6 2.5 13.4 2.5 16 0"/>
+    <path id="pad-gloss" d="M8.6 16h20.7v6.4c-4.3 2.4-16.4 2.4-20.7 0z"/>
+
+    <clipPath id="mouse-clip"><use href="#mouse"/></clipPath>
+    <clipPath id="pad-clip"><use href="#pad"/></clipPath>
+  </defs>
+
+  <!-- The mouse, and behind it the shadow it drops. The wheel is sunk into
+       the face rather than punched through it: this overlay is transparent,
+       so a hole would show the application behind as a dark bar, and a slot
+       with a lit lower lip says "sunk in" better than a hole ever did. -->
+  <g filter="url(#drop)">
+    <use href="#mouse" fill="url(#face)"/>
+    <g clip-path="url(#mouse-clip)">
+      <use href="#mouse-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <ellipse cx="7.6" cy="4.4" rx="4.6" ry="3.4" fill="url(#spec)"/>
+      <!-- The part line: the buttons stand a little proud of the body, so
+           their edge catches the lamp and the step under it does not. -->
+      <use href="#mouse-seam" fill="none" stroke="#ffffff" stroke-opacity="0.9"
+           stroke-width="0.36" transform="translate(0 -0.26)"/>
+      <use href="#mouse-seam" fill="none" stroke="#9c9c9c" stroke-opacity="0.55"
+           stroke-width="0.36" transform="translate(0 0.2)"/>
+      <!-- And the split between the two buttons, running down from under the
+           wheel to meet it. -->
+      <path d="M9.3 9.5v2.9" stroke="#a8a8a8" stroke-opacity="0.6"
+            stroke-width="0.36" stroke-linecap="round"/>
+      <path d="M9.66 9.5v2.9" stroke="#ffffff" stroke-opacity="0.65"
+            stroke-width="0.3" stroke-linecap="round"/>
+    </g>
+    <use href="#mouse" fill="url(#turn)"/>
+    <g clip-path="url(#mouse-clip)">
+      <use href="#mouse" fill="none" stroke="url(#edge)" stroke-width="1.1"/>
+    </g>
+    <rect x="8.35" y="4.2" width="2.1" height="4.4" rx="1.05" fill="url(#recess)"/>
+    <rect x="8.5" y="7.95" width="1.8" height="0.72" rx="0.36"
+          fill="#ffffff" fill-opacity="0.85"/>
+    <!-- The pad's near edge, laid across the mouse's face. -->
+    <g clip-path="url(#mouse-clip)">
+      <use href="#pad" filter="url(#crevice)"/>
+    </g>
+  </g>
+
+  <!-- The pad, in front, with the one control this tile is about on it: the
+       right stick, down in its well. Nothing else — no d-pad, no face
+       buttons. A drawing of a whole controller says "a controller"; a
+       controller with exactly one thing on it says which thing, which is the
+       only question the tile has to answer. -->
+  <g filter="url(#drop)">
+    <use href="#pad" fill="url(#face)"/>
+    <g clip-path="url(#pad-clip)">
+      <use href="#pad-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <ellipse cx="17.6" cy="19.2" rx="6.4" ry="2.6" fill="url(#spec)"/>
+    </g>
+    <use href="#pad" fill="url(#turn)"/>
+    <g clip-path="url(#pad-clip)">
+      <use href="#pad" fill="none" stroke="url(#edge)" stroke-width="1.1"/>
+    </g>
+
+    <!-- The well, the shadow the stick drops into the floor of it, and the
+         stick's own cap standing a little proud. -->
+    <circle cx="23.3" cy="22" r="2.95" fill="url(#recess)"/>
+    <ellipse cx="23.3" cy="23.4" rx="1.8" ry="0.9"
+             fill="#5a5a5a" fill-opacity="0.45"/>
+    <circle cx="23.3" cy="21.75" r="1.62" fill="url(#cap)"/>
+  </g>
+</svg>

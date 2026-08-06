@@ -10,7 +10,7 @@ use smithay::backend::renderer::element::AsRenderElements;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::{layer_map_for_output, Space, Window};
 use smithay::output::Output;
-use smithay::utils::{Rectangle, Scale};
+use smithay::utils::{Logical, Rectangle, Scale};
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::input::window_accepts_keyboard_focus;
@@ -221,22 +221,143 @@ fn push_overview_windows<R>(
     }
 }
 
-/// Release frame callbacks for everything shown on `output`.
+/// Release frame callbacks for everything actually on screen on `output`.
 ///
 /// Clients block on these before drawing their next frame, so a backend that
-/// forgets to call this will appear to hang every client on that output.
+/// forgets to call this will appear to hang every client on that output. That
+/// is also what makes this the place to decide who *should* be drawing.
+/// Linboard tiles each application across its whole display, so a window with
+/// another one in front of it is not partly visible — it is not on screen at
+/// all, and a client still being asked for frames there goes on decoding video
+/// nobody can watch. Withholding the callback takes it to no frames at all
+/// until it comes back to the front, which is the whole saving: the front
+/// application being translucent changes what the user can see through it, not
+/// whether the window behind is worth drawing.
+///
+/// Two things are exempt. The home menu, because its overview shows every
+/// window on the display at once and those cards are the live windows rather
+/// than screenshots, so while it is up they all draw again. And every layer
+/// surface, for the reason given where they are sent below.
 pub fn post_repaint(
-    space: &Space<Window>,
+    linboard: &Linboard,
     output: &Output,
     time: std::time::Duration,
     throttle: Option<std::time::Duration>,
 ) {
-    for window in space.elements_for_output(output) {
+    let space = &linboard.space;
+    // Read off the flight rather than a flag, so windows are already running
+    // by the time they arrive in their cards and keep running until the last
+    // one has flown home.
+    let overview_up = linboard
+        .overview
+        .progress(output, std::time::Instant::now())
+        > 0.0;
+    let front = (!overview_up)
+        .then(|| front_application(space, output))
+        .flatten();
+    let cover = front
+        .as_ref()
+        .and_then(|window| space.element_geometry(window));
+
+    let mut behind_front = false;
+    for window in space.elements_for_output(output).rev() {
+        // Topmost first. Everything down to the application in front is on
+        // screen, chrome stacked above it included; below it, only what that
+        // application leaves uncovered.
+        if behind_front && covered(cover, space.element_geometry(window)) {
+            continue;
+        }
+        behind_front |= Some(window) == front.as_ref();
         window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
     }
 
+    // Layer surfaces always draw, covered or not, and the background ones
+    // behind a fullscreen application are exactly the tempting case to get
+    // this wrong on. The session shell is a layer-shell client; it presents
+    // FIFO, which paces on these callbacks, and it runs one thread. Withhold
+    // them and it blocks inside its own present rather than idling — so it
+    // never hears the guide button, and a session whose shell cannot be
+    // summoned back over the application in front of it is over. It already
+    // stops drawing by itself when something covers it, which is the saving
+    // this would have been for.
     let map = layer_map_for_output(output);
     for layer in map.layers() {
         layer.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+    }
+}
+
+/// The application in front on `output`: the topmost window that takes
+/// keyboard focus, which under Linboard's one-application-per-display layout
+/// is the one filling it.
+///
+/// The topmost one rather than the *focused* one, for the reason
+/// [`crate::shell_control`] names the foreground the same way: while the
+/// shell's overlay is up it holds the keyboard itself, and the application it
+/// is drawn over has not gone anywhere.
+fn front_application(space: &Space<Window>, output: &Output) -> Option<Window> {
+    space
+        .elements_for_output(output)
+        .rev()
+        .find(|window| window_accepts_keyboard_focus(window))
+        .cloned()
+}
+
+/// Whether something at `geometry` is completely hidden by the application in
+/// front of it.
+///
+/// `cover` is that application's geometry, and is `None` when there is nothing
+/// in front — an empty display, or one showing the overview, where everything
+/// draws. Anything the application only partly overlaps keeps drawing too. A
+/// bar reserving space at the edge of the display tiles the application into
+/// what is left, and a window standing out past that is a window with pixels
+/// of its own on screen.
+fn covered(
+    cover: Option<Rectangle<i32, Logical>>,
+    geometry: Option<Rectangle<i32, Logical>>,
+) -> bool {
+    match (cover, geometry) {
+        (Some(cover), Some(geometry)) => cover.contains_rect(geometry),
+        // Nothing in front, or nothing placed to hide: left drawing rather
+        // than starved on a guess.
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::covered;
+    use smithay::utils::{Logical, Rectangle};
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn a_tiled_application_hides_what_is_behind_it() {
+        // Both windows tiled across the same display, which is the ordinary
+        // case: one game, one terminal opened over it.
+        let display = rect(0, 0, 1920, 1080);
+        assert!(covered(Some(display), Some(display)));
+    }
+
+    #[test]
+    fn nothing_in_front_hides_nothing() {
+        assert!(!covered(None, Some(rect(0, 0, 1920, 1080))));
+    }
+
+    #[test]
+    fn a_partly_overlapped_window_keeps_drawing() {
+        // A bar reserving the top of the display tiles the application below
+        // it, so a window standing up into that strip is still on screen.
+        let application = rect(0, 40, 1920, 1040);
+        let taller = rect(0, 0, 1920, 1080);
+        assert!(!covered(Some(application), Some(taller)));
+    }
+
+    #[test]
+    fn a_window_on_another_display_is_not_hidden() {
+        let application = rect(0, 0, 1920, 1080);
+        let elsewhere = rect(1920, 0, 1920, 1080);
+        assert!(!covered(Some(application), Some(elsewhere)));
     }
 }

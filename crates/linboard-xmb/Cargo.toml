@@ -26,6 +26,13 @@ smithay-client-toolkit = "0.21"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# The on-screen keyboard's three halves: hearing that a text field took the
+# cursor, borrowing the physical keyboard while the board is up, and typing.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# Reading the session's own keymap, which the compositor hands over with the
+# keyboard grab: the board has to know which key the user actually pressed.
+# Pinned to the version smithay-client-toolkit uses, so `Keysym` is one type.
+xkbcommon = "0.8"
 linboard-protocol = { path = "../linboard-protocol", features = ["client"] }
 
 # GPU rendering.

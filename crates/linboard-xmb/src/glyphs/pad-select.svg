@@ -1,0 +1,78 @@
+<!--
+  The Select button — Xbox's Back, then View; PlayStation's Select, then Share,
+  then Create; Nintendo's minus; the Steam Deck's two-rectangle mark. No two
+  generations of the same console agree on what it is called or what is printed
+  on it, and none of those marks are ours to draw.
+
+  So it is drawn by *position*, the one thing every pad does agree on: a gamepad
+  seen from above with the left-hand one of the two buttons in the middle filled
+  in and its neighbour left open. That is a thing the user can find by looking
+  down at their hands, which a logo they have to already recognise is not.
+
+  Nothing else is drawn inside the shell of the pad — no d-pad, no face buttons.
+  The hint sets this at the height of a line of text, and at that size every
+  extra mark is one more thing for the eye to sort through before it finds the
+  one that is filled in. The two in the middle are the whole message, so they
+  are the only two there.
+
+  White and greys, because the shell tints what it draws: an atlas quad's
+  colour is multiplied into the texel, so the greys are not a colour but the
+  shading.
+
+  The pad stays an *outline* here, which is the one place this glyph parts
+  company with the solid, moulded pad on the stick-pointer tile. It has to: the
+  whole message is which of the two buttons is filled and which is open, and
+  filling the shell white leaves the filled button nothing to be filled against.
+  What it takes from that tile instead is the light. The outline is stroked with
+  a gradient in user space rather than a flat white, so the top of the shell is
+  white and the bottom of it is grey — a wire bent under a lamp rather than a
+  line traced round a shape — and the drawing drops one soft shadow behind it.
+  At 27 px that is the whole of what modelling can be; a seam or a bevel here
+  would be one grey pixel pretending to be an edge.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <!-- One lamp, over the whole drawing rather than over each mark. -->
+    <linearGradient id="lit" gradientUnits="userSpaceOnUse" x1="0" y1="1.5" x2="0" y2="22.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.44" stop-color="#f4f4f4"/>
+      <stop offset="0.82" stop-color="#cfcfcf"/>
+      <stop offset="1" stop-color="#e4e4e4"/>
+    </linearGradient>
+
+    <!-- The button that is being asked for: a cap standing up out of the
+         shell, so it is a ball and not a dot. -->
+    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f6f6f6"/>
+      <stop offset="0.8" stop-color="#d6d6d6"/>
+      <stop offset="1" stop-color="#c6c6c6"/>
+    </radialGradient>
+
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="9.5" x2="0" y2="13.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.26" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.82" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
+    </linearGradient>
+
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.28" dy="0.62" stdDeviation="0.34"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+
+    <clipPath id="cap-clip"><circle cx="9.7" cy="11.6" r="2.1"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <path fill="none" stroke="url(#lit)" stroke-width="1.5" stroke-linejoin="round"
+          d="M7.7 7.4h8.6a4 4 0 0 1 3.9 3.1l0.95 4.3a2.35 2.35 0 0 1-4.25 1.85l-1.75-2.4H8.85l-1.75 2.4a2.35 2.35 0 0 1-4.25-1.85l0.95-4.3a4 4 0 0 1 3.9-3.1z"/>
+
+    <circle cx="9.7" cy="11.6" r="2.1" fill="url(#ball)"/>
+    <g clip-path="url(#cap-clip)">
+      <circle cx="9.7" cy="11.6" r="2.1" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+    </g>
+
+    <circle cx="14.35" cy="11.6" r="1.35" fill="none" stroke="url(#lit)" stroke-width="1.1"/>
+  </g>
+</svg>

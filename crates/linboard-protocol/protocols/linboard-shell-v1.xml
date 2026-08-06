@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="linboard_shell_v1" version="5">
+  <interface name="linboard_shell_v1" version="8">
     <description summary="private channel between Linboard and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -153,6 +153,126 @@
       <arg name="id" type="uint" summary="the window, from output_window"/>
     </request>
 
+    <request name="move_pointer" since="7">
+      <description summary="move the pointer, as a mouse would">
+        Moves the seat's pointer by a relative amount, in logical pixels, and
+        delivers the motion to whatever is under it — including the relative
+        stream a game with a locked pointer reads its camera from.
+
+        A console has a controller and no mouse, and an application that wants
+        a pointer cannot be given one by the shell: wl_pointer belongs to the
+        seat, and only the compositor may speak for the seat. Neither can the
+        shell simply move a cursor of its own, because the point is to reach
+        the *application* — a stick that moved a drawing on the shell's own
+        surface would click on nothing.
+
+        The shell reads the controller straight from /dev/input, which is what
+        lets it drive this while a fullscreen application holds the keyboard,
+        and turns it on per application: a game already using the right stick
+        for its camera must not have it taken away by a shell that thinks the
+        stick is a mouse.
+
+        Deltas accumulate; sending one every controller poll is the intended
+        shape. It is ignored while no application window exists, so a shell
+        that leaves the stick on cannot walk the pointer across an empty
+        desktop.
+      </description>
+      <arg name="dx" type="fixed" summary="horizontal movement, logical pixels"/>
+      <arg name="dy" type="fixed" summary="vertical movement, logical pixels"/>
+    </request>
+
+    <request name="pointer_button" since="7">
+      <description summary="press or release a pointer button">
+        Presses or releases one of the seat's pointer buttons where the pointer
+        currently is, exactly as a mouse button does — including raising and
+        focusing what it lands on.
+
+        A pointer that cannot click is a cursor drawing, so this comes with
+        move_pointer rather than after it. The button is a Linux input code
+        (BTN_LEFT is 0x110), which is what wl_pointer itself carries.
+
+        Ignored while no application window exists, for the same reason
+        move_pointer is.
+      </description>
+      <arg name="button" type="uint" summary="Linux button code, as wl_pointer reports it"/>
+      <arg name="state" type="uint" enum="button_state" summary="pressed or released"/>
+    </request>
+
+    <request name="scroll_pointer" since="7">
+      <description summary="scroll where the pointer is">
+        Scrolls whatever is under the pointer, as a wheel or a touchpad does,
+        by an amount in logical pixels. Positive is the direction a wheel
+        turned away from the user scrolls in: down, and right.
+
+        A pointer that can only be moved and clicked leaves half of what a
+        mouse does out, and the half that a page of settings, a browser or a
+        file list needs most. The shell sends this from the stick and the
+        D-pad the pointer is *not* being aimed with, which are the controls it
+        has already stopped using for its own navigation while an application
+        is in front.
+
+        It is continuous rather than a count of wheel notches, because a stick
+        is: it is pushed further to scroll faster, exactly as a touchpad is
+        dragged further. The compositor describes it to clients as the
+        continuous axis source it is.
+
+        Ignored while no application window exists, for the same reason
+        move_pointer is.
+      </description>
+      <arg name="dx" type="fixed" summary="horizontal scroll, logical pixels"/>
+      <arg name="dy" type="fixed" summary="vertical scroll, logical pixels"/>
+    </request>
+
+    <enum name="button_state" since="7">
+      <description summary="whether a pointer button is down">
+        The same two values wl_pointer uses, so a shell forwarding a button it
+        received does not have to translate one enumeration into another.
+      </description>
+      <entry name="released" value="0" summary="the button is not pressed"/>
+      <entry name="pressed" value="1" summary="the button is pressed"/>
+    </enum>
+
+    <request name="keyboard_key" since="8">
+      <description summary="press or release a key on the seat's keyboard">
+        Presses or releases a key on the seat's keyboard, delivered to whatever
+        holds keyboard focus exactly as a key on a real keyboard would be —
+        through the compositor's own keymap, so the client sees the keysym its
+        layout gives that key.
+
+        This is not a way to type. A shell with an on-screen keyboard already
+        has zwp_virtual_keyboard_v1 or zwp_input_method_v2 for that, and either
+        is the right thing for text. It is here for the keys that are *not*
+        text: the arrows, which are how a list, a menu or a document is moved
+        through, and which a console shell has a D-pad for and nothing else to
+        do with while the pointer is being aimed with the other stick.
+
+        The key is a Linux input code (KEY_LEFT is 105), for the same reason
+        pointer_button carries one: it is what the seat's keyboard is fed from,
+        and translating a keysym back into a keycode means guessing at the
+        layout the compositor is holding.
+
+        Held keys repeat in the client, from the repeat rate the seat already
+        advertises, so a direction is a press when it goes down and a release
+        when it comes up rather than a press for every repeat. A shell that
+        stops sending must release what it has pressed; the compositor releases
+        anything left held if the shell disconnects, but nothing else can know
+        the difference between a held key and a shell that stopped talking.
+
+        Ignored while no application window exists, for the same reason
+        move_pointer is.
+      </description>
+      <arg name="key" type="uint" summary="Linux key code, as wl_keyboard reports it"/>
+      <arg name="state" type="uint" enum="key_state" summary="pressed or released"/>
+    </request>
+
+    <enum name="key_state" since="8">
+      <description summary="whether a key is down">
+        The same two values wl_keyboard uses.
+      </description>
+      <entry name="released" value="0" summary="the key is not pressed"/>
+      <entry name="pressed" value="1" summary="the key is pressed"/>
+    </enum>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -161,6 +281,24 @@
         The compositor routes this itself because the shell has no keyboard
         focus while an application is running, which is precisely when the user
         needs a way back out of it.
+      </description>
+    </event>
+
+    <event name="keyboard" since="6">
+      <description summary="the on-screen keyboard binding was activated">
+        Sent when the user pressed the compositor's on-screen keyboard
+        binding. The shell is expected to show or hide its keyboard.
+
+        Routed by the compositor for the same reason the guide event is: the
+        shell has no keyboard focus while an application is running, and a
+        keyboard that could only be summoned by a client already holding the
+        keys would be of no use to anyone.
+
+        Nothing else about typing goes over this interface. An application
+        announces its text fields with zwp_text_input_v3, the shell hears
+        about them as zwp_input_method_v2, and it types with
+        zwp_virtual_keyboard_v1 — all three of which are standard, and none
+        of which can express a binding the compositor has to intercept.
       </description>
     </event>
 
@@ -225,6 +363,26 @@
         with none in between means the display has no windows at all.
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
+    </event>
+
+    <event name="output_app_id" since="7">
+      <description summary="what the foreground application on one display is">
+        Names the topmost application window on one display the way the
+        application itself is named — its xdg_toplevel app_id, or an X11
+        window's class — or the empty string when that display has none.
+
+        output_foreground carries the window *title*, which is what a menu
+        should print and exactly what a setting must not be filed under: a
+        title is a document name, a working directory, a track that is playing.
+        A shell remembering a choice per application needs the name that does
+        not change while the application runs, and is the same the next time it
+        is started.
+
+        Sent alongside output_foreground: once per display when the object is
+        bound, and again on every change.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="app_id" type="string" summary="application identity, or empty when nothing is running there"/>
     </event>
   </interface>
 </protocol>

@@ -12,8 +12,11 @@
 //! keeps item labels and category icons from ever printing over one another.
 
 use crate::gpu::{Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
-use crate::guide::{Guide, Item, Pane};
+use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
+use crate::icons;
+use crate::keyboard;
 use crate::model::{Cursor, Xmb};
+use crate::system::Level;
 use crate::theme::theme;
 use linboard_protocol::overview;
 
@@ -28,11 +31,25 @@ const ITEM_SPACING: f32 = 124.0;
 const CATEGORY_ICON: f32 = 84.0;
 const CATEGORY_ICON_FOCUSED: f32 = 148.0;
 const ITEM_ICON: f32 = 64.0;
-const ITEM_ICON_FOCUSED: f32 = 116.0;
+/// Not chosen on its own, but against the disc under it: the disc is what the
+/// column's gaps are measured in, so the icon is the one of the two free to
+/// move once the fit below is satisfied.
+const ITEM_ICON_FOCUSED: f32 = 105.0;
 /// The glass disc an icon stands on, as a multiple of the icon. The item's is
 /// named because the launch splash grows out of exactly that disc; the
 /// category's because the label under it has to clear it.
-const ITEM_DISC: f32 = 1.34;
+///
+/// The item's is a true circle, so what it has to clear is the icon's
+/// *corners*, not its sides: a square reaches √2 half-widths from its centre,
+/// and anything narrower than that crops the corners of every icon whose art
+/// runs to its own edge — a white tile with a picture on it, of which there
+/// are plenty. Those corners hanging over the rim read as the icon having
+/// slipped off the selection rather than as a round tile. The margin above √2
+/// is the sliver of glass that says it is standing on the disc.
+///
+/// The category's is a squircle, which at a fourth-power corner already holds
+/// a square this size with room to spare.
+const ITEM_DISC: f32 = std::f32::consts::SQRT_2 * 1.04;
 const CATEGORY_DISC: f32 = 1.30;
 /// The selected category's name, and the air on either side of it.
 ///
@@ -87,11 +104,34 @@ const UNFOCUSED_DIM: f32 = 0.45;
 
 /// Guide overlay metrics, likewise against 1080p.
 const GUIDE_ROW_HEIGHT: f32 = 76.0;
+/// A quick-settings bar's row. Shorter than a button's: it holds a glyph and a
+/// track, with no label needing air around it.
+const GUIDE_BAR_HEIGHT: f32 = 62.0;
+/// The line the two tiles share, and how big a tile is on it. Taller than a
+/// button's row because a tile is square and a square the width of a row would
+/// be half the sidebar.
+const GUIDE_TILE_ROW: f32 = 86.0;
+const GUIDE_TILE: f32 = 68.0;
+/// The air between one tile and the next.
+const GUIDE_TILE_GAP: f32 = 14.0;
+/// The glyph inside a tile, as a fraction of it.
+const GUIDE_TILE_GLYPH: f32 = 0.62;
+/// How round a tile's corners are, as a fraction of its height. A capsule —
+/// which is what every other chip in the column is — would make a square one a
+/// disc, and a disc reads as a button that does something once rather than as
+/// a switch that is in a state.
+const GUIDE_TILE_RADIUS: f32 = 0.30;
 const GUIDE_PADDING: f32 = 44.0;
 /// How long the sidebar takes to slide in, seconds.
 const GUIDE_SLIDE: f32 = 0.28;
 /// Where the entry column starts, below the header.
-const GUIDE_ENTRIES_TOP: f32 = 220.0;
+///
+/// Clearance for the tallest the header gets — the clock, the application, and
+/// the name of the display when there is more than one — and no more. What is
+/// under the header is now the two quick-settings bars rather than the first
+/// button, and a bar reads as belonging to the header above it; left at the
+/// old distance it looked like a third list on its own.
+const GUIDE_ENTRIES_TOP: f32 = 178.0;
 /// The space the rule between the application entries and the rest opens up.
 const GUIDE_SEPARATOR_GAP: f32 = 30.0;
 /// How far the column is inset from the sidebar's own edges. The power button
@@ -108,6 +148,12 @@ const POWER_BUTTON: f32 = 66.0;
 /// whole symbol stands `2.32 × POWER_GLYPH` tall — a little over half the
 /// button, which is what keeps it inside its chip instead of overhanging it.
 const POWER_GLYPH: f32 = 0.26;
+
+/// How much of shutdown.svg's cell the symbol itself covers, top to bottom.
+/// The rest is the margin its shadow needs. Dividing the height the button
+/// wants by this gives the atlas cell that produces it, so the drawn glyph
+/// lands at the same size the two quads above it used to.
+const SHUTDOWN_INK: f32 = 0.775;
 
 /// Corner radii, against the same 1080p reference. Controls are capsules —
 /// their radius is half their own height — so what is left to name is the
@@ -158,25 +204,49 @@ const DIALOG_DIM: f32 = 0.28;
 /// enlarged rather than something opening out of the button.
 const DIALOG_CONTENT_IN: f32 = 0.45;
 
-/// The entries arrive one after another: how long each waits behind the one
-/// above it, and how long its own slide takes, in seconds.
+/// The entries arrive one after another: how long the first of them waits for
+/// the slab to arrive under it, how long each waits behind the one above it,
+/// and how long its own slide takes, in seconds.
+///
+/// The lead is what makes the top of the column an entrance at all. Without
+/// it the first entries fade up *while the sidebar is still sliding in*, and
+/// by the time the slab has settled they have settled too — so the two tiles
+/// at the head of the column, which are the first two entries, simply arrived
+/// with the panel already drawn, while everything below them was still
+/// visibly coming in. They were not missing an animation; they were playing
+/// it behind the one thing that was moving.
+const ENTRY_LEAD: f32 = 0.12;
 const ENTRY_STAGGER: f32 = 0.045;
 const ENTRY_SLIDE: f32 = 0.26;
 
-/// How much of the lit capsule has arrived over the row at `rect`: 1 when it
-/// is sitting on it, 0 while it is still a row away.
+/// How much of the lit capsule has arrived over the entry at `rect`: 1 when it
+/// is sitting on it, 0 while it is still an entry away.
 ///
-/// Measured in row heights rather than seconds, so it answers the only
-/// question that matters — is there light on this row yet — however long the
-/// glide takes and however many rows it crosses.
+/// Measured in the entry's own widths and heights rather than in seconds, so it
+/// answers the only question that matters — is there light on this entry yet —
+/// however long the glide takes and however many entries it crosses.
+///
+/// All four numbers, not just the vertical position. A column of full-width
+/// rows only ever differs in `y`, so for those this is what it always was; the
+/// two tiles share a line, and one that asked about `y` alone would call the
+/// light *arrived* the instant the selection moved anywhere along that line —
+/// which is a tile handing its own chip over while the light is still crossing
+/// the gap to it, and a hole in the sidebar for the length of the glide. The
+/// size counts for the same reason: a capsule the width of the sidebar sitting
+/// exactly on a tile's corner is not light on that tile, it is a row-shaped
+/// chip that has not become a tile yet.
 fn highlight_arrival(highlight: [f32; 4], rect: [f32; 4]) -> f32 {
-    let span = rect[3].max(1.0);
-    1.0 - ((highlight[1] - rect[1]).abs() / span).clamp(0.0, 1.0)
+    let (w, h) = (rect[2].max(1.0), rect[3].max(1.0));
+    let apart = (highlight[0] - rect[0]).abs() / w
+        + (highlight[1] - rect[1]).abs() / h
+        + (highlight[2] - rect[2]).abs() / w
+        + (highlight[3] - rect[3]).abs() / h;
+    1.0 - apart.clamp(0.0, 1.0)
 }
 
 /// How far entry `index` has arrived, `age` seconds after the menu opened.
 fn entry_appear(age: f32, index: usize) -> f32 {
-    ease((age - index as f32 * ENTRY_STAGGER) / ENTRY_SLIDE)
+    ease((age - ENTRY_LEAD - index as f32 * ENTRY_STAGGER) / ENTRY_SLIDE)
 }
 
 /// The chip rectangle for menu entry `index`, in sidebar-local coordinates:
@@ -199,21 +269,63 @@ pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> 
         return power_button_rect(width, height);
     }
 
-    let row_height = GUIDE_ROW_HEIGHT * scale;
-    let below_rule = separator_row(items).is_some_and(|rule| index >= rule);
-    [
-        panel_x + margin,
-        GUIDE_ENTRIES_TOP * scale
-            + index as f32 * row_height
-            + if below_rule {
-                GUIDE_SEPARATOR_GAP * scale
-            } else {
-                0.0
+    // Stacked rather than multiplied out, because the rows are no longer all
+    // the same height: a bar is shorter than a button, and the tiles share one
+    // line between them.
+    let rules = separator_rows(items);
+    let lines = guide::lines(items);
+    let mut y = GUIDE_ENTRIES_TOP * scale;
+    for (first, count) in &lines {
+        if rules.contains(first) {
+            y += GUIDE_SEPARATOR_GAP * scale;
+        }
+        if index < first + count {
+            // The line the entry is on. A tile is placed along it; everything
+            // else fills it.
+            let row = row_height(items[*first]) * scale;
+            if items[*first].is_tile() {
+                let size = GUIDE_TILE * scale;
+                let column = (index - first) as f32;
+                return [
+                    panel_x + margin + column * (size + GUIDE_TILE_GAP * scale),
+                    y + (row - size) * 0.5,
+                    size,
+                    size,
+                ];
             }
-            + 5.0 * scale,
-        panel_w - margin * 2.0,
-        row_height - 10.0 * scale,
-    ]
+            return [
+                panel_x + margin,
+                y + 5.0 * scale,
+                panel_w - margin * 2.0,
+                row - 10.0 * scale,
+            ];
+        }
+        y += row_height(items[*first]) * scale;
+    }
+
+    // Past the end of the column, which only an index nothing selected can be.
+    [panel_x + margin, y, panel_w - margin * 2.0, 0.0]
+}
+
+/// How much of the column a line takes up, before its chip's own padding.
+fn row_height(item: Item) -> f32 {
+    if item.is_tile() {
+        GUIDE_TILE_ROW
+    } else if item.bar().is_some() {
+        GUIDE_BAR_HEIGHT
+    } else {
+        GUIDE_ROW_HEIGHT
+    }
+}
+
+/// How round an entry's chip is. Everything in the column is a capsule but the
+/// tiles, which are rounded squares — see [`GUIDE_TILE_RADIUS`].
+fn chip_radius(item: Option<Item>, height: f32) -> f32 {
+    if item.is_some_and(Item::is_tile) {
+        height * GUIDE_TILE_RADIUS
+    } else {
+        height * 0.5
+    }
 }
 
 /// The power button's chip: a square in the sidebar's bottom-left corner,
@@ -248,24 +360,22 @@ pub fn sidebar_panel_rect(width: f32, height: f32) -> [f32; 4] {
     [inset, inset, sidebar_w - inset * 2.0, height - inset * 2.0]
 }
 
-/// The row the rule is drawn above: what the menu does to the application
-/// ends there, and what it does to the session begins.
-fn separator_row(items: &[Item]) -> Option<usize> {
-    items.iter().position(|item| *item == Item::Dashboard)
-}
-
-/// The rule itself, in the same coordinates — `None` when the column has
-/// nothing on both sides of it to separate.
-fn menu_separator_rect(items: &[Item], width: f32, height: f32) -> Option<[f32; 4]> {
-    let row = separator_row(items)?;
+/// The rules, in the same coordinates: one above each row where the column
+/// changes from one kind of thing to another.
+fn menu_separator_rects(items: &[Item], width: f32, height: f32) -> Vec<[f32; 4]> {
     let scale = guide_scale(height);
-    let [x, y, w, _] = menu_item_rect(items, row, width, height);
-    Some([
-        x + w * 0.06,
-        y - GUIDE_SEPARATOR_GAP * scale * 0.5,
-        w * 0.88,
-        (1.0 * scale).max(1.0),
-    ])
+    separator_rows(items)
+        .into_iter()
+        .map(|row| {
+            let [x, y, w, _] = menu_item_rect(items, row, width, height);
+            [
+                x + w * 0.06,
+                y - GUIDE_SEPARATOR_GAP * scale * 0.5,
+                w * 0.88,
+                (1.0 * scale).max(1.0),
+            ]
+        })
+        .collect()
 }
 
 /// The guide's layout scale for a display `height` tall.
@@ -412,6 +522,16 @@ impl Scene {
 /// Look up an atlas slot for an icon name.
 pub trait SlotLookup {
     fn slot_for(&self, icon: Option<&str>) -> Option<u32>;
+
+    /// One of the shell's own glyphs, with no fallback.
+    ///
+    /// Separate from [`Self::slot_for`], which stands in an application icon
+    /// for anything it cannot find: a speaker that came out as the generic
+    /// executable icon would be worse than an empty space, because it would
+    /// read as an application sitting in the volume row.
+    fn glyph(&self, name: &str) -> Option<u32> {
+        self.slot_for(Some(name))
+    }
 }
 
 /// Lay out one display's bar.
@@ -420,8 +540,7 @@ pub trait SlotLookup {
 /// driving. Every display draws its own [`Cursor`], so the others show what
 /// they are pointing at, dimmed, rather than a copy of this one.
 ///
-/// `hint` is the footer's control summary, which the caller composes because it
-/// depends on how many displays there are. `time` runs the selection pulse.
+/// `time` runs the selection pulse.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     xmb: &Xmb,
@@ -429,7 +548,6 @@ pub fn build(
     width: f32,
     height: f32,
     focused: bool,
-    hint: &str,
     clock: Option<&str>,
     time: f32,
     slots: &impl SlotLookup,
@@ -489,9 +607,13 @@ pub fn build(
         .min(1.0);
     let column_alpha = (1.0 - category_travel) * attention;
 
-    // Fixed text column: anchored to the focused icon's extent so labels do
+    // Fixed text column: anchored to the focused entry's extent so labels do
     // not shuffle sideways as focus (and therefore icon size) moves around.
-    let text_x = cross_x + ITEM_ICON_FOCUSED * scale / 2.0 + 30.0 * scale;
+    //
+    // Its disc's extent, not its icon's — the same distinction the category's
+    // label is measured with. The glass is half again the icon standing on it,
+    // and a column measured from the icon puts the names over the rim.
+    let text_x = cross_x + ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0 + 12.0 * scale;
     let text_max = (width - text_x - 48.0 * scale).max(0.0);
 
     // --- applications of the selected category ---------------------------
@@ -499,7 +621,7 @@ pub fn build(
     if let Some(category) = cursor.current_category(xmb) {
         if category.apps.is_empty() && column_alpha > 0.01 {
             texts.push(Text {
-                content: "No applications in this category".to_string(),
+                content: category.empty_note().to_string(),
                 x: text_x,
                 y: cross_y + gap_below - 14.0 * scale,
                 size: 22.0 * scale,
@@ -532,11 +654,13 @@ pub fn build(
             if offset > -1.0 && offset < 0.0 {
                 alpha *= 1.0 - 0.7 * (1.0 - (2.0 * offset + 1.0).abs());
             }
-            // And the column dissolves before the screen edges, so its last
-            // visible row can never print over the clock or the control hints.
+            // And the column dissolves before the screen edges. The top keeps
+            // clear of the clock; at the bottom only the row's own half-icon
+            // and a small margin remain now that there is no control footer.
             let fade_range = 70.0 * scale;
             alpha *= ((y - 90.0 * scale) / fade_range).clamp(0.0, 1.0);
-            alpha *= ((height - 96.0 * scale - y) / fade_range).clamp(0.0, 1.0);
+            let bottom_clearance = (ITEM_ICON / 2.0 + 16.0) * scale;
+            alpha *= ((height - bottom_clearance - y) / fade_range).clamp(0.0, 1.0);
             if alpha <= 0.01 {
                 continue;
             }
@@ -751,24 +875,6 @@ pub fn build(
         ));
     }
 
-    // --- footer ----------------------------------------------------------
-    // Only the display taking input explains the controls; repeating them on
-    // every screen is noise, and their absence is another cue about which one
-    // is live.
-    if focused {
-        let hint_size = 17.0 * scale;
-        texts.push(Text {
-            content: hint.to_string(),
-            x: cross_x - CATEGORY_ICON_FOCUSED * scale / 2.0,
-            y: height - 56.0 * scale,
-            size: hint_size,
-            color: theme.text_soft.a(0.66),
-            bold: false,
-            max_width: width - cross_x,
-            align: TextAlign::Left,
-        });
-    }
-
     Scene { quads, texts }
 }
 
@@ -804,9 +910,31 @@ pub struct Card {
     pub rect: [f32; 4],
 }
 
+/// The sidebar's header: the time, large, and the day beside it.
+///
+/// Two runs rather than one string, because they are not the same thing to
+/// look at. The time is what the header is *for* — a glance at the menu should
+/// answer it — and the date is context, at the size of everything else in the
+/// column.
+pub struct Clock<'a> {
+    pub time: &'a str,
+    pub date: &'a str,
+}
+
 /// Everything `build_guide` draws from.
 pub struct GuideView<'a> {
     pub guide: &'a Guide,
+    /// The wall clock, or `None` when local time cannot be worked out — the
+    /// header then names the shell, which is better than a wrong clock.
+    pub clock: Option<Clock<'a>>,
+    /// Where the two quick-settings bars stand. `None` for a control this
+    /// machine has not got, which is also how [`Guide::items`] knew to leave
+    /// the row out — the two are set from the same place.
+    pub volume: Option<Level>,
+    pub brightness: Option<Level>,
+    /// Whether the right stick is moving the pointer in the application in
+    /// front of this display.
+    pub stick_pointer: bool,
     /// The foreground application's title, for the sidebar's header.
     pub app: Option<&'a str>,
     /// Title of the window the Close entry would kill — the one whose card is
@@ -836,28 +964,54 @@ pub struct GuideView<'a> {
     pub power: f32,
     /// The global clock, for the selection pulse.
     pub time: f32,
+    /// For the shell's own glyphs — the two on the quick-settings bars.
+    pub slots: &'a dyn SlotLookup,
 }
 
-/// How far the guide's cards have arrived, `age` seconds after it opened.
+impl GuideView<'_> {
+    /// Whether a tile's switch is on.
+    fn tile_on(&self, item: Item) -> bool {
+        match item {
+            Item::Pointer => self.stick_pointer && self.tile_live(item),
+            // Nothing to be on yet: the mixer is a place kept in the column
+            // for a control that has still to be written.
+            _ => false,
+        }
+    }
+
+    /// Whether a tile can do anything from where the user is standing.
+    ///
+    /// The same answer the highlight uses to decide whether to stop on it, and
+    /// deliberately the same answer: a control drawn as available that the
+    /// selection then skips over is worse than either failure on its own.
+    fn tile_live(&self, item: Item) -> bool {
+        self.guide.is_enabled(item)
+    }
+}
+
+/// How long the cards take to fade up once their windows have stopped moving.
 ///
-/// Their decoration holds back until the windows flying to them have nearly
-/// landed, so frames settle around windows rather than waiting empty for
-/// them. A start screen with nowhere to fly from fades up on this same
-/// schedule, which is what keeps it from popping in ahead of the rest.
+/// Short, and it starts the moment they land: the decoration is the cards
+/// settling into place, not an animation of its own to be watched.
+const CARD_FADE: f32 = 0.14;
+
+/// How far the guide's cards have arrived, `age` seconds after the compositor
+/// was told to start flying their windows.
+///
+/// Nothing at all until they have landed, and this is the whole reason the
+/// answer is a function of the flight's clock rather than the menu's. Every
+/// mark this pass makes on a card — the frame, the title, the selection, and
+/// the start screen's own miniature — is drawn at the rectangle the layout
+/// says the card *will* occupy, on a surface stacked above the windows the
+/// compositor is still carrying there. Drawn a frame early, a frame is a
+/// hairline ruled across the middle of a window that is still crossing the
+/// display, and the start screen is a whole display of opaque content laid
+/// over the very application the user is leaving.
+///
+/// So the shell waits out the flight it does not perform, and only then does
+/// anything appear. Late is free; early is the bug.
 pub fn card_fade(age: f32) -> f32 {
-    ease((age - 0.12) / 0.22)
-}
-
-/// The same for the start screen's own card, which waits longer.
-///
-/// A frame is a hairline drawn around a window that is nearly home; the start
-/// screen's card is a whole display of opaque content, and the shell paints it
-/// *above* everything the compositor is still moving. Arriving on the frames'
-/// schedule, it lies over an application that is still halfway to its slot —
-/// which is exactly what it looks like: the start screen on top of the app the
-/// user is leaving. So it holds back until the flight is over.
-pub fn start_card_fade(age: f32) -> f32 {
-    ease((age - 0.26) / 0.18)
+    ease((age - crate::CARD_ARRIVAL) / CARD_FADE)
 }
 
 /// Lay out the guide overlay: a menu column sliding in from the left, and
@@ -883,7 +1037,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
 
     // The entrance: the sidebar slides in decelerating while it fades up, and
-    // the card decorations hold back until the windows have nearly landed.
+    // the card decorations hold back until the windows have landed.
     let age = view.guide.age();
     let slide = ease(age / GUIDE_SLIDE);
     let card_fade = card_fade(view.card_age);
@@ -917,8 +1071,12 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     });
 
     let title_size = 34.0 * scale;
+    let subtitle_size = 18.0 * scale;
     texts.push(Text {
-        content: "Linboard".to_string(),
+        content: match &view.clock {
+            Some(clock) => clock.time.to_string(),
+            None => "Linboard".to_string(),
+        },
         x: sidebar_x + text_x,
         y: 52.0 * scale,
         size: title_size,
@@ -927,7 +1085,23 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         max_width: text_w,
         align: TextAlign::Left,
     });
-    let subtitle_size = 18.0 * scale;
+    // The day, on the clock's own line and pushed to the far side of the
+    // column. Sharing the line keeps the header two rows tall — the sidebar is
+    // narrow, and a fourth stacked line of the same left-aligned text would
+    // read as a list rather than as a heading. Dropped by the difference in
+    // the two sizes so both sit on one baseline instead of one hanging.
+    if let Some(clock) = &view.clock {
+        texts.push(Text {
+            content: clock.date.to_string(),
+            x: sidebar_x + text_x,
+            y: 52.0 * scale + (title_size - subtitle_size) * 0.72,
+            size: subtitle_size,
+            color: theme.text_soft.a(0.7 * slide),
+            bold: false,
+            max_width: text_w,
+            align: TextAlign::Right,
+        });
+    }
     texts.push(Text {
         content: match view.app {
             Some(app) => app.to_string(),
@@ -964,7 +1138,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // caller. Falling back to the row itself keeps the first frame honest.
     let [hx, hy, hw, hh] = view
         .menu_highlight
-        .unwrap_or_else(|| menu_item_rect(items, selected, width, height));
+        .unwrap_or_else(|| menu_item_rect(&items, selected, width, height));
     let glow_h = hh * 2.6;
     quads.push(Quad {
         x: sidebar_x + hx + hw * 0.5 - sidebar_w * 0.55,
@@ -978,14 +1152,27 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // The selected capsule is lit glass rather than a filled shape: same
     // material as the buttons under it, tilted towards the accent and
     // catching more light.
+    //
+    // It goes down with the entry under it when that entry is pressed. It has
+    // to: it is drawn *over* the chip, so a press that sank only what was
+    // underneath would happen entirely behind the one thing the user is
+    // looking at. The rectangle it is measured from is left alone — where the
+    // light has got to is a different question from how far the switch is
+    // down, and the rows below decide whether to keep their own chips from
+    // the first.
+    let selected_press = items
+        .get(selected)
+        .and_then(|item| view.guide.press_progress(*item));
+    let [lx, ly, lw, lh] =
+        scaled_about_centre([hx, hy, hw, hh], selected_press.map_or(1.0, press_scale));
     quads.push(Quad {
-        x: sidebar_x + hx,
-        y: hy,
-        w: hw,
-        h: hh,
+        x: sidebar_x + lx,
+        y: ly,
+        w: lw,
+        h: lh,
         slot: SOLID_SLOT,
         color: theme.accent.a(0.46 + 0.05 * pulse),
-        radius: hh * 0.5,
+        radius: chip_radius(items.get(selected).copied(), lh),
         thickness: DEPTH_CONTROL * scale,
         behind: view.behind,
         frost: FROST_CONTROL,
@@ -994,10 +1181,11 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         ..Quad::default()
     });
 
-    // The rule between what the menu does to the application above it and
-    // what it does to the session below. Barely there on purpose: it is a
-    // grouping, not a border.
-    if let Some([sx, sy, sw, sh]) = menu_separator_rect(items, width, height) {
+    // The rules between the bands of the column: what the session sounds and
+    // looks like, what the menu does to the application in front of it, what
+    // it does to the session. Barely there on purpose — they are groupings,
+    // not borders.
+    for [sx, sy, sw, sh] in menu_separator_rects(&items, width, height) {
         quads.push(Quad {
             x: sidebar_x + sx,
             y: sy,
@@ -1010,7 +1198,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     }
 
     for (index, item) in items.iter().enumerate() {
-        let [rx, ry, rw, rh] = menu_item_rect(items, index, width, height);
+        let [rx, ry, rw, rh] = menu_item_rect(&items, index, width, height);
         let focused = index == selected;
         // Entries arrive in turn, each sliding the last of its own distance.
         let appear = entry_appear(age, index);
@@ -1028,38 +1216,132 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         } else {
             0.0
         };
-        quads.push(Quad {
-            x: sidebar_x + rx + drift,
-            y: ry,
-            w: rw,
-            h: rh,
-            slot: SOLID_SLOT,
-            color: theme.glass_raised.a(0.10),
-            radius: rh * 0.5,
-            thickness: DEPTH_CONTROL * scale,
-            behind: view.behind,
-            frost: FROST_CONTROL,
-            gloss: GLOSS_QUIET,
-            fade: appear * slide * (1.0 - handed_over),
-            ..Quad::default()
-        });
+        // A tile being pressed goes down, chip and all. Everything else in the
+        // column either closes the menu or opens a dialog when it is chosen,
+        // so there is nothing left on screen for a press to be seen on.
+        let press = view.guide.press_progress(*item);
+        let chip = scaled_about_centre(
+            [sidebar_x + rx + drift, ry, rw, rh],
+            press.map_or(1.0, press_scale),
+        );
+        // A tile that cannot be reached is not given a chip at all: it is
+        // outlined where its chip would be.
+        //
+        // Dimming one was not enough, and could not have been. Every chip in
+        // the column is a slab of glass over a dark panel, so a dimmer one is
+        // a chip in slightly less light — which is what a chip *behind the
+        // selection* also looks like, and there are five of those on screen at
+        // the time. A hairline is a different kind of thing rather than a
+        // quieter one: nothing has been put here to press, and the shape says
+        // where the control will be when there is.
+        if item.is_tile() && !view.tile_live(*item) {
+            quads.push(Quad {
+                x: chip[0],
+                y: chip[1],
+                w: chip[2],
+                h: chip[3],
+                slot: SOLID_SLOT,
+                color: theme.text_soft.a(0.22),
+                radius: chip_radius(Some(*item), chip[3]),
+                border: (1.5 * scale).max(1.0),
+                fade: appear * slide,
+                ..Quad::default()
+            });
+        } else {
+            quads.push(Quad {
+                x: chip[0],
+                y: chip[1],
+                w: chip[2],
+                h: chip[3],
+                slot: SOLID_SLOT,
+                color: theme.glass_raised.a(0.10),
+                radius: chip_radius(Some(*item), chip[3]),
+                thickness: DEPTH_CONTROL * scale,
+                behind: view.behind,
+                frost: FROST_CONTROL,
+                gloss: GLOSS_QUIET,
+                fade: appear * slide * (1.0 - handed_over),
+                ..Quad::default()
+            });
+        }
+
+        if item.is_tile() {
+            quads.extend(tile(
+                [sidebar_x + rx + drift, ry, rw, rh],
+                *item,
+                TileState {
+                    on: view.tile_on(*item),
+                    live: view.tile_live(*item),
+                    focused,
+                    press,
+                },
+                scale,
+                view.behind,
+                appear * slide,
+                view.slots,
+            ));
+            continue;
+        }
 
         if *item == Item::Power {
             // No label: the glyph is the whole button, as it is on the panel
-            // of every desktop this borrows from.
+            // of every desktop this borrows from. Which is also why this is
+            // the one control that falls back to drawing itself out of quads
+            // rather than leaving the chip empty — an empty disc here says
+            // nothing at all, where an empty quick-settings tile at least
+            // still has the bar beside it.
             let glyph = rh * POWER_GLYPH;
-            quads.extend(power_glyph(
-                sidebar_x + rx + rw * 0.5 + drift,
-                // The stroke rises above the ring, so the symbol's own middle
-                // sits above the ring's centre; dropping the ring by half that
-                // overhang is what centres the *symbol* in its button.
-                ry + rh * 0.5 + glyph * 0.16,
-                glyph,
-                scale,
-                theme
-                    .text
-                    .a((if focused { 1.0 } else { 0.75 }) * appear * slide),
-            ));
+            let lit = (if focused { 1.0 } else { 0.75 }) * appear * slide;
+            match view.slots.glyph(icons::SHUTDOWN) {
+                Some(slot) => {
+                    // The drawing fills `SHUTDOWN_INK` of its cell and is
+                    // centred in it, so the cell that gives the symbol the
+                    // height this button wants is that height divided back
+                    // out again.
+                    let cell = glyph * 2.32 / SHUTDOWN_INK;
+                    quads.push(Quad {
+                        x: sidebar_x + rx + (rw - cell) * 0.5 + drift,
+                        y: ry + (rh - cell) * 0.5,
+                        w: cell,
+                        h: cell,
+                        slot,
+                        color: [1.0, 1.0, 1.0, lit],
+                        ..Quad::default()
+                    });
+                }
+                None => quads.extend(power_glyph(
+                    sidebar_x + rx + rw * 0.5 + drift,
+                    // The stroke rises above the ring, so the symbol's own
+                    // middle sits above the ring's centre; dropping the ring
+                    // by half that overhang is what centres the *symbol* in
+                    // its button.
+                    ry + rh * 0.5 + glyph * 0.16,
+                    glyph,
+                    scale,
+                    theme.text.a(lit),
+                )),
+            }
+            continue;
+        }
+
+        if let Some(bar) = item.bar() {
+            let level = match bar {
+                Bar::Volume => view.volume,
+                Bar::Brightness => view.brightness,
+            };
+            // The row exists because the control does — the same answer put
+            // both here — so a missing level is a control that went away
+            // between the column being built and this frame being drawn.
+            if let Some(level) = level {
+                quads.extend(quick_bar(
+                    [sidebar_x + rx + drift, ry, rw, rh],
+                    bar,
+                    level,
+                    scale,
+                    (if focused { 1.0 } else { 0.82 }) * appear * slide,
+                    view.slots,
+                ));
+            }
             continue;
         }
 
@@ -1383,6 +1665,680 @@ fn push_power_dialog(
     scene.texts.extend(inside.texts);
 }
 
+// --- the on-screen keyboard ------------------------------------------------
+
+/// One grid column of the board, and one row, at the reference height. A
+/// column is a little wider than a row is tall — which is what a keycap is.
+const KEY_UNIT: f32 = 62.0;
+const KEY_HEIGHT: f32 = 56.0;
+/// Air between neighbouring keys, taken out of each key rather than added
+/// between them, so the grid arithmetic stays in whole columns.
+const KEY_GAP: f32 = 8.0;
+const KEY_RADIUS: f32 = 13.0;
+/// What is printed on a function key, which is set smaller than the rest: the
+/// row is half height, and `F11` at the size of `Enter` would fill its cap.
+const KEY_CAP_FUNCTION: f32 = 14.0;
+const BOARD_PADDING: f32 = 20.0;
+/// How far the board floats clear of the display's bottom edge.
+const BOARD_MARGIN: f32 = 34.0;
+/// How long it takes to rise into place from below that edge.
+const BOARD_SLIDE: f32 = 0.24;
+
+/// The scale the board is drawn at.
+///
+/// The guide's, unless the grid would not fit across the display — a narrow or
+/// rotated screen shrinks the whole board rather than letting it run off both
+/// sides, because a keyboard missing its outer columns is missing letters.
+fn board_scale(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let natural = (KEY_UNIT * keyboard::COLUMNS + (BOARD_PADDING + BOARD_MARGIN) * 2.0) * scale;
+    if width > 0.0 && natural > width {
+        scale * (width / natural)
+    } else {
+        scale
+    }
+}
+
+/// How far down the keys a row starts, and how tall it is, at the reference
+/// height.
+///
+/// Not `row * (KEY_HEIGHT + KEY_GAP)`: the function row is a half-height strip
+/// (see [`keyboard::row_scale`]), so everything below it sits higher than a
+/// uniform grid would put it.
+fn row_band(row: usize) -> (f32, f32) {
+    let top = (0..row)
+        .map(|above| keyboard::row_scale(above) * KEY_HEIGHT + KEY_GAP)
+        .sum();
+    (top, keyboard::row_scale(row) * KEY_HEIGHT)
+}
+
+/// How tall all the keys together are.
+fn keys_height() -> f32 {
+    let (top, height) = row_band(keyboard::ROW_COUNT - 1);
+    top + height
+}
+
+/// Where the board's panel sits: centred, along the foot of the display.
+pub fn keyboard_panel_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = board_scale(width, height);
+    let w = (KEY_UNIT * keyboard::COLUMNS + BOARD_PADDING * 2.0) * scale;
+    let h = (keys_height() + BOARD_PADDING * 2.0) * scale;
+    [(width - w) * 0.5, height - BOARD_MARGIN * scale - h, w, h]
+}
+
+/// Where one key sits, in display coordinates.
+pub fn keyboard_key_rect(row: usize, column: usize, width: f32, height: f32) -> [f32; 4] {
+    let scale = board_scale(width, height);
+    let [panel_x, panel_y, _, _] = keyboard_panel_rect(width, height);
+    let unit = KEY_UNIT * scale;
+    let gap = KEY_GAP * scale;
+    let padding = BOARD_PADDING * scale;
+    let (start, span) = keyboard::row_layout(row)
+        .get(column)
+        .copied()
+        .unwrap_or((0.0, 1.0));
+    let (top, tall) = row_band(row);
+    [
+        panel_x + padding + start * unit + gap * 0.5,
+        panel_y + padding + top * scale,
+        span * unit - gap,
+        tall * scale,
+    ]
+}
+
+/// Which key is under a point, in display coordinates.
+///
+/// The inverse of [`keyboard_key_rect`], done by walking the same rectangles
+/// rather than by arithmetic: the rows are not the same height and their keys
+/// are not the same width, so a formula here would be a second layout, and a
+/// second layout is a way for the key the user pressed to differ from the key
+/// they were looking at.
+///
+/// Points in the panel that are not on any key — the padding at the rim, the
+/// gaps between keys — are nothing rather than the nearest key. Half of
+/// clicking accurately is being able to miss.
+pub fn keyboard_key_at(x: f32, y: f32, width: f32, height: f32) -> Option<(usize, usize)> {
+    for row in 0..keyboard::ROW_COUNT {
+        for column in 0..keyboard::row_keys(row).len() {
+            let [kx, ky, kw, kh] = keyboard_key_rect(row, column, width, height);
+            if x >= kx && x < kx + kw && y >= ky && y < ky + kh {
+                return Some((row, column));
+            }
+        }
+    }
+    None
+}
+
+/// Everything [`build_keyboard`] draws from.
+pub struct KeyboardView<'a> {
+    pub board: &'a keyboard::Board,
+    /// For the arrow caps, which are drawings rather than characters — see
+    /// [`keyboard::Arrow`].
+    pub slots: &'a dyn SlotLookup,
+    /// Seconds since it appeared, for the rise from below the screen's edge.
+    pub age: f32,
+    /// How softly the wallpaper behind the board is drawn. Nearly always 0:
+    /// the keyboard is over an application, and what is behind it is that
+    /// application, drawn by the compositor at full sharpness.
+    pub behind: f32,
+    /// The global clock, for the selection pulse.
+    pub time: f32,
+}
+
+/// Lay out the on-screen keyboard.
+///
+/// A slab of the same glass the guide's sidebar is cut from, with a keycap for
+/// every key resting on it. The selected key is one lit capsule, drawn before
+/// the caps so the letter on it stays legible.
+pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
+    let mut quads = Vec::new();
+    let mut texts = Vec::new();
+    let theme = theme();
+    let scale = board_scale(width, height);
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+
+    // It rises from under the display's edge rather than fading in. A keyboard
+    // that appeared on the spot over a running application reads as the
+    // application having done something; one that slides up reads as the shell
+    // putting it there.
+    let arrived = ease(view.age / BOARD_SLIDE);
+    let [panel_x, panel_y, panel_w, panel_h] = keyboard_panel_rect(width, height);
+    let lift = (1.0 - arrived) * (panel_h + BOARD_MARGIN * scale);
+
+    quads.push(Quad {
+        x: panel_x,
+        y: panel_y + lift,
+        w: panel_w,
+        h: panel_h,
+        slot: SOLID_SLOT,
+        color: theme.glass.a(0.52),
+        radius: PANEL_RADIUS * scale,
+        thickness: DEPTH_PANEL * scale,
+        behind: view.behind,
+        frost: FROST_PANEL,
+        gloss: GLOSS_FULL,
+        ..Quad::default()
+    });
+
+    let (selected_row, selected_column) = view.board.selected();
+    let shifted = view.board.shifted();
+
+    // The selection first, so that the caps — text, and every text run in a
+    // scene is drawn after every quad anyway — are never fighting it.
+    let [hx, hy, hw, hh] = keyboard_key_rect(selected_row, selected_column, width, height);
+    let glow = hh * 2.2;
+    quads.push(Quad {
+        x: hx + hw * 0.5 - glow * 0.5,
+        y: hy + lift + hh * 0.5 - glow * 0.5,
+        w: glow,
+        h: glow,
+        slot: GLOW_SLOT,
+        color: theme.accent.a(0.30 + 0.08 * pulse),
+        ..Quad::default()
+    });
+    quads.push(Quad {
+        x: hx,
+        y: hy + lift,
+        w: hw,
+        h: hh,
+        slot: SOLID_SLOT,
+        color: theme.accent.a(0.52 + 0.05 * pulse),
+        radius: KEY_RADIUS * scale,
+        corner: SQUIRCLE_CORNER,
+        thickness: DEPTH_CONTROL * scale,
+        behind: view.behind,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_FULL,
+        ..Quad::default()
+    });
+
+    for row in 0..keyboard::ROW_COUNT {
+        for (column, key) in keyboard::row_keys(row).into_iter().enumerate() {
+            let [x, y, w, h] = keyboard_key_rect(row, column, width, height);
+            let y = y + lift;
+            let focused = (row, column) == (selected_row, selected_column);
+            // Shift, Caps, Ctrl and Alt stay lit after they are left: they
+            // have changed what the next press will do, and the board has to
+            // say so.
+            let held = view.board.latched(key).is_on();
+            let locked = view.board.locked(key);
+
+            if !focused {
+                quads.push(Quad {
+                    x,
+                    y,
+                    w,
+                    h,
+                    slot: SOLID_SLOT,
+                    color: if held {
+                        // Held down brighter than armed for one letter: the
+                        // two states change the whole board's caps, and mean
+                        // different things about the next press.
+                        theme.accent.a(if locked { 0.50 } else { 0.32 })
+                    } else if matches!(key, keyboard::Key::Char(..)) {
+                        theme.glass_raised.a(0.10)
+                    } else {
+                        // Everything that is not a letter — the modifiers, the
+                        // function row, the arrows — sits a shade darker, so
+                        // the block a word is typed from reads as one thing.
+                        theme.glass_raised.a(0.17)
+                    },
+                    radius: KEY_RADIUS * scale,
+                    corner: SQUIRCLE_CORNER,
+                    thickness: DEPTH_CONTROL * scale,
+                    behind: view.behind,
+                    frost: FROST_CONTROL,
+                    gloss: GLOSS_QUIET,
+                    ..Quad::default()
+                });
+            }
+
+            // Close is outlined so it can be found without reading the row.
+            // It is the way out of a keyboard that appeared on its own, which
+            // is the one thing a user who did not summon it will be looking
+            // for.
+            if key.is_close() {
+                quads.push(Quad {
+                    x,
+                    y,
+                    w,
+                    h,
+                    slot: SOLID_SLOT,
+                    color: theme.accent_soft.a(if focused { 0.55 } else { 0.34 }),
+                    radius: KEY_RADIUS * scale,
+                    corner: SQUIRCLE_CORNER,
+                    border: 1.5 * scale,
+                    ..Quad::default()
+                });
+            }
+
+            // Some keys are drawn rather than lettered: the arrows, because
+            // the bundled font has no arrow glyphs and a cap reading "Left" is
+            // not an arrow key, and the way out, because a keyboard folding
+            // away is read at a distance that a word is not.
+            if let Some(name) = key.glyph() {
+                if let Some(slot) = view.slots.glyph(name) {
+                    let mark = h * 0.46;
+                    quads.push(Quad {
+                        x: x + w * 0.5 - mark * 0.5,
+                        y: y + h * 0.5 - mark * 0.5,
+                        w: mark,
+                        h: mark,
+                        slot,
+                        color: theme.text.a(if focused { 1.0 } else { 0.82 }),
+                        ..Quad::default()
+                    });
+                }
+                continue;
+            }
+
+            // A letter is set larger than a word: the caps are read at a
+            // glance while the cursor moves, and "Backspace" at the size of
+            // "g" would be a smear. The function row is smaller again, being
+            // half the height of the rest and none of the reason the board is
+            // on screen.
+            let label = key.cap(shifted);
+            let size = if row == 0 {
+                KEY_CAP_FUNCTION * scale
+            } else if matches!(key, keyboard::Key::Char(..)) {
+                26.0 * scale
+            } else {
+                17.0 * scale
+            };
+            texts.push(Text {
+                content: label,
+                x,
+                y: y + h * 0.5 - size * 0.66,
+                size,
+                color: theme.text.a(if focused || held { 1.0 } else { 0.82 }),
+                bold: focused,
+                max_width: w,
+                align: TextAlign::Center,
+            });
+        }
+    }
+
+    // No fade to go with the rise: a board that faded up would arrive as a
+    // ghost over the application. It comes up solid, simply from further down,
+    // and until it has cleared the edge there is nothing of it on screen to
+    // see.
+    Scene { quads, texts }
+}
+
+/// The keyboard hint's glyphs and label, and the air around them.
+const HINT_GLYPH: f32 = 27.0;
+const HINT_LABEL: f32 = 19.0;
+const HINT_PADDING: f32 = 15.0;
+const HINT_GAP: f32 = 8.0;
+const HINT_MARGIN: f32 = 26.0;
+/// Roughly how wide one character of the label is, as a share of its size.
+/// The shell cannot measure a text run before the GPU shapes it, and the chip
+/// behind the run has to be sized now; the estimate is generous, so the label
+/// sits in the chip rather than against its end.
+const HINT_ADVANCE: f32 = 0.58;
+/// What the hint says. Two glyphs and one word: it is a reminder for someone
+/// holding the controller, not documentation.
+const HINT_LABEL_TEXT: &str = "Keyboard";
+
+/// Where the hint chip sits: the bottom-right corner, out of the way of
+/// anything an application is likely to have put in the middle.
+pub fn keyboard_hint_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let glyph = HINT_GLYPH * scale;
+    let label = HINT_LABEL * scale;
+    let w = HINT_PADDING * 2.0 * scale
+        + glyph * 2.0
+        + HINT_GAP * 3.0 * scale
+        // The "+" between the two buttons, at the label's size.
+        + label * 0.6
+        + HINT_LABEL_TEXT.chars().count() as f32 * label * HINT_ADVANCE;
+    let h = glyph + HINT_PADDING * 1.5 * scale;
+    let margin = HINT_MARGIN * scale;
+    [width - margin - w, height - margin - h, w, h]
+}
+
+/// Everything [`build_keyboard_hint`] draws from.
+pub struct HintView<'a> {
+    /// For the two controller glyphs.
+    pub slots: &'a dyn SlotLookup,
+    /// How far it has faded up, 0 to 1.
+    pub fade: f32,
+    pub behind: f32,
+}
+
+/// The corner chip that says how to summon the keyboard.
+///
+/// It names the two buttons by drawing them rather than by lettering them.
+/// "Press X" is wrong on a PlayStation pad, which has no X, and worse than
+/// wrong on a Nintendo one, where X is the button *above* the one meant — the
+/// letters are swapped between the two most common layouts. "Press Select" is
+/// no better: the same button is Back, View, Share, Create or a minus sign
+/// depending on whose pad it is. A picture of the cluster with one button
+/// filled in is true on all of them.
+pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
+    let mut quads = Vec::new();
+    let mut texts = Vec::new();
+    let theme = theme();
+    let scale = guide_scale(height);
+    let [x, y, w, h] = keyboard_hint_rect(width, height);
+    let fade = view.fade.clamp(0.0, 1.0);
+
+    quads.push(Quad {
+        x,
+        y,
+        w,
+        h,
+        slot: SOLID_SLOT,
+        color: theme.glass.a(0.62),
+        radius: h * 0.5,
+        thickness: DEPTH_CONTROL * scale * 1.4,
+        behind: view.behind,
+        frost: FROST_PANEL,
+        gloss: GLOSS_FULL,
+        fade,
+        ..Quad::default()
+    });
+
+    let glyph = HINT_GLYPH * scale;
+    let label = HINT_LABEL * scale;
+    let gap = HINT_GAP * scale;
+    let mut at = x + HINT_PADDING * scale;
+    let middle = y + h * 0.5;
+
+    for (index, name) in [icons::PAD_SELECT, icons::PAD_WEST].into_iter().enumerate() {
+        if index > 0 {
+            texts.push(Text {
+                content: "+".to_string(),
+                x: at,
+                y: middle - label * 0.66,
+                size: label,
+                color: theme.text_soft.a(0.75 * fade),
+                bold: false,
+                max_width: label * 0.6,
+                align: TextAlign::Center,
+            });
+            at += label * 0.6 + gap;
+        }
+        // A glyph the shell could not rasterise leaves a gap rather than the
+        // fallback application icon, which in a row like this would read as
+        // "press the app".
+        if let Some(slot) = view.slots.glyph(name) {
+            quads.push(Quad {
+                x: at,
+                y: middle - glyph * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                color: theme.text.a(0.95 * fade),
+                ..Quad::default()
+            });
+        }
+        at += glyph + gap;
+    }
+
+    texts.push(Text {
+        content: HINT_LABEL_TEXT.to_string(),
+        x: at,
+        y: middle - label * 0.66,
+        size: label,
+        color: theme.text.a(0.95 * fade),
+        bold: false,
+        max_width: x + w - at,
+        align: TextAlign::Left,
+    });
+
+    Scene { quads, texts }
+}
+
+/// What a tile has to say about itself.
+struct TileState {
+    /// Whether its switch is on.
+    on: bool,
+    /// Whether it can do anything at all from here. A tile that cannot is not
+    /// merely unlit — the highlight will not stop on it either.
+    live: bool,
+    /// Whether the highlight is sitting on it.
+    focused: bool,
+    /// How far through a press it is, if it is being pressed.
+    press: Option<f32>,
+}
+
+/// How far a tile sinks under a press, as a share of itself, and how far it
+/// springs back past its own size on the way out.
+const PRESS_DIP: f32 = 0.14;
+const PRESS_BOUNCE: f32 = 0.05;
+/// The share of the press spent going down. The rest is the spring back, which
+/// is slower: a switch is thrown quickly and settles at its leisure.
+const PRESS_DOWN: f32 = 0.3;
+
+/// How big a tile is drawn `t` of the way through a press, as a multiple of
+/// its own size.
+///
+/// A switch is a physical thing: it goes down under the thumb, comes back
+/// past where it started, and settles. Tinting it instead says only that
+/// something has been *selected*, which the highlight already said — and
+/// leaves the one control in the column whose whole purpose is to change
+/// state with nothing to show for having changed it.
+fn press_scale(t: f32) -> f32 {
+    if !(0.0..1.0).contains(&t) {
+        return 1.0;
+    }
+    if t < PRESS_DOWN {
+        return 1.0 - PRESS_DIP * ease(t / PRESS_DOWN);
+    }
+    let back = ease((t - PRESS_DOWN) / (1.0 - PRESS_DOWN));
+    // Out of the dip, and past the top on the way. The bounce is held back
+    // until the dip has nearly closed — cubed, so its arch is late and
+    // narrow — because a bounce that peaked with the recovery would only
+    // cancel it, and the tile would crawl back up to its own size having
+    // never gone past it. It ends at exactly zero, so the tile settles on its
+    // own size rather than near it.
+    1.0 - PRESS_DIP * (1.0 - back) + PRESS_BOUNCE * (back.powi(3) * std::f32::consts::PI).sin()
+}
+
+/// A rectangle scaled about its own centre.
+fn scaled_about_centre([x, y, w, h]: [f32; 4], scale: f32) -> [f32; 4] {
+    [
+        x + w * (1.0 - scale) * 0.5,
+        y + h * (1.0 - scale) * 0.5,
+        w * scale,
+        h * scale,
+    ]
+}
+
+/// One of the two switch tiles, laid into the chip at `chip`.
+///
+/// A switch has to say which of its two states it is in from across a room,
+/// and it has to say it while the lit selection capsule is sitting on top of
+/// it — so being *lit* cannot be the signal, since the selection already is.
+/// What says it instead is a second pane inside the chip: on, the tile is
+/// filled with the accent and the glyph is white; off, the fill is not there
+/// at all and the glyph is dimmed. Filled or not reads at a glance and reads
+/// the same whether or not the row is selected.
+fn tile(
+    chip: [f32; 4],
+    item: Item,
+    state: TileState,
+    scale: f32,
+    behind: f32,
+    alpha: f32,
+    slots: &dyn SlotLookup,
+) -> Vec<Quad> {
+    let theme = theme();
+    let mut quads = Vec::with_capacity(2);
+
+    // Everything the tile is made of moves together under the press — the
+    // fill, the glyph, and (back in the caller) the chip they rest on. A
+    // glyph that stayed put while its chip sank would read as a hole opening
+    // behind it rather than as a button going down.
+    let press = state.press.map_or(1.0, press_scale);
+    let [x, y, w, h] = scaled_about_centre(chip, press);
+
+    if state.on {
+        quads.push(Quad {
+            x,
+            y,
+            w,
+            h,
+            slot: SOLID_SLOT,
+            color: theme.accent.a(0.55),
+            radius: chip_radius(Some(item), h),
+            thickness: DEPTH_CONTROL * scale,
+            behind,
+            frost: FROST_CONTROL,
+            gloss: GLOSS_FULL,
+            // The fill arrives with the spring back rather than with the
+            // press: the switch is thrown on the way *up*, which is where a
+            // real one latches.
+            fade: alpha * state.press.map_or(1.0, fill_arrival),
+            ..Quad::default()
+        });
+    }
+
+    let Some(slot) = item.glyph().and_then(|name| slots.glyph(name)) else {
+        // A glyph the shell could not rasterise leaves the chip empty rather
+        // than a wrong drawing in its place.
+        return quads;
+    };
+    let glyph = h * GUIDE_TILE_GLYPH;
+    // Four depths, and the order is the point: a switch that is on is the
+    // brightest thing in the column, a switch that is merely selected is
+    // next, and one that cannot be reached at all is a long way behind both.
+    let lit = match (state.live, state.on, state.focused) {
+        // A ghost of a glyph, inside the hairline the caller drew instead of a
+        // chip. Three things say the same thing about a tile nothing can be
+        // done with — no chip, no light in the glyph, and a highlight that
+        // refuses to stop on it — because on a panel of five lit controls no
+        // one of them is enough on its own.
+        (false, _, _) => 0.3,
+        (_, true, _) => 1.0,
+        (_, false, true) => 0.95,
+        _ => 0.82,
+    };
+    quads.push(Quad {
+        x: x + (w - glyph) * 0.5,
+        y: y + (h - glyph) * 0.5,
+        w: glyph,
+        h: glyph,
+        slot,
+        color: [1.0, 1.0, 1.0, lit * alpha],
+        ..Quad::default()
+    });
+
+    quads
+}
+
+/// How much of the accent fill has arrived, `t` of the way through a press.
+///
+/// Held back until the tile is at the bottom of its travel, so the colour
+/// changing and the switch going down are one movement rather than two.
+fn fill_arrival(t: f32) -> f32 {
+    ease((t - PRESS_DOWN * 0.6) / (1.0 - PRESS_DOWN * 0.6))
+}
+
+/// The track of a quick-settings bar, as a share of the chip it sits in: how
+/// far the glyph is in from the left, how big it is, and how much air there is
+/// between it and the track, and between the track and the right-hand end.
+const BAR_INSET: f32 = 20.0;
+const BAR_GLYPH: f32 = 0.54;
+const BAR_GAP: f32 = 16.0;
+/// How thick the track is drawn, and how much bigger than that the handle on
+/// the end of the filled part is.
+const BAR_TRACK: f32 = 7.0;
+const BAR_HANDLE: f32 = 2.1;
+
+/// One quick-settings bar, laid into the chip at `chip`.
+///
+/// Everything is white rather than accent-coloured, and deliberately: this
+/// same row is drawn both on a plain glass chip and under the lit accent
+/// capsule that glides onto it when it is selected. A fill tinted with the
+/// accent would disappear the moment the row was chosen, which is exactly when
+/// it most needs reading.
+fn quick_bar(
+    chip: [f32; 4],
+    bar: Bar,
+    level: Level,
+    scale: f32,
+    alpha: f32,
+    slots: &dyn SlotLookup,
+) -> Vec<Quad> {
+    let theme = theme();
+    let [x, y, w, h] = chip;
+    let mut quads = Vec::with_capacity(4);
+
+    let glyph = h * BAR_GLYPH;
+    let glyph_x = x + BAR_INSET * scale;
+    let name = match (bar, level.muted) {
+        (Bar::Volume, false) => icons::VOLUME,
+        (Bar::Volume, true) => icons::VOLUME_MUTED,
+        (Bar::Brightness, _) => icons::BRIGHTNESS,
+    };
+    if let Some(slot) = slots.glyph(name) {
+        quads.push(Quad {
+            x: glyph_x,
+            y: y + (h - glyph) * 0.5,
+            w: glyph,
+            h: glyph,
+            slot,
+            color: [1.0, 1.0, 1.0, alpha],
+            ..Quad::default()
+        });
+    }
+
+    let track_x = glyph_x + glyph + BAR_GAP * scale;
+    let track_w = (x + w - BAR_INSET * scale) - track_x;
+    if track_w <= 0.0 {
+        return quads;
+    }
+    let track_h = BAR_TRACK * scale;
+    let track_y = y + (h - track_h) * 0.5;
+
+    quads.push(Quad {
+        x: track_x,
+        y: track_y,
+        w: track_w,
+        h: track_h,
+        slot: SOLID_SLOT,
+        color: theme.rim.a(0.20 * alpha),
+        radius: track_h * 0.5,
+        ..Quad::default()
+    });
+
+    // A muted session is still at whatever volume it was left at, so the fill
+    // stays where it is and goes quiet instead of emptying — turning the sound
+    // back on must not look like it also turned it up.
+    let filled = track_w * level.value.clamp(0.0, 1.0);
+    let lit = if level.muted { 0.30 } else { 0.95 };
+    if filled > 0.0 {
+        quads.push(Quad {
+            x: track_x,
+            y: track_y,
+            w: filled,
+            h: track_h,
+            slot: SOLID_SLOT,
+            color: theme.rim.a(lit * alpha),
+            radius: track_h * 0.5,
+            ..Quad::default()
+        });
+    }
+
+    // The handle. Small, and only there to say that the end of the fill is a
+    // place the value *is* rather than where a drawing happens to stop.
+    let handle = track_h * BAR_HANDLE;
+    quads.push(Quad {
+        x: track_x + filled - handle * 0.5,
+        y: track_y + (track_h - handle) * 0.5,
+        w: handle,
+        h: handle,
+        slot: SOLID_SLOT,
+        color: theme.rim.a(lit * alpha),
+        radius: handle * 0.5,
+        ..Quad::default()
+    });
+
+    quads
+}
+
 /// The standby symbol every desktop draws on its power button: a ring broken
 /// at the top with a stroke rising through the break, centred on `cx, cy`
 /// with the given `radius`.
@@ -1673,6 +2629,37 @@ mod tests {
         }
     }
 
+    /// A distinct slot per name, so a test can tell *which* drawing the layout
+    /// asked for rather than only that it asked for one.
+    struct Named;
+    impl Named {
+        fn slot_of(name: &str) -> u32 {
+            match name {
+                icons::VOLUME => 10,
+                icons::VOLUME_MUTED => 11,
+                icons::BRIGHTNESS => 12,
+                icons::POINTER_STICK => 21,
+                icons::VOLUME_MIXER => 22,
+                icons::PAD_SELECT => 14,
+                icons::PAD_WEST => 15,
+                icons::ARROW_LEFT => 16,
+                icons::ARROW_DOWN => 17,
+                icons::ARROW_UP => 18,
+                icons::ARROW_RIGHT => 19,
+                icons::KEYBOARD_HIDE => 20,
+                _ => 13,
+            }
+        }
+    }
+    impl SlotLookup for Named {
+        fn slot_for(&self, icon: Option<&str>) -> Option<u32> {
+            Some(Self::slot_of(icon.unwrap_or_default()))
+        }
+        fn glyph(&self, name: &str) -> Option<u32> {
+            Some(Self::slot_of(name))
+        }
+    }
+
     fn app(name: &str) -> App {
         App {
             name: name.into(),
@@ -1699,9 +2686,7 @@ mod tests {
         focused: bool,
         slots: &impl SlotLookup,
     ) -> Scene {
-        build(
-            xmb, cursor, width, height, focused, "hint", None, 0.0, slots,
-        )
+        build(xmb, cursor, width, height, focused, None, 0.0, slots)
     }
 
     fn settle(cursor: &mut Cursor) {
@@ -1759,6 +2744,44 @@ mod tests {
                 "{width}x{height}: the label ends at {} over a button starting at {}",
                 label.y + label.size,
                 column[1]
+            );
+        }
+    }
+
+    /// An icon on a round tile has to fit it corner-first. Icon art is often
+    /// drawn to the edge of its square — a white sheet with a picture on it —
+    /// and on a disc under √2 icons across, those four corners hang out over
+    /// the rim: the icon reads as having come loose from the selection rather
+    /// than as sitting on it. Nothing about the icon says which kind it is, so
+    /// the fit has to hold for the square, not for the artwork inside it.
+    #[test]
+    fn a_focused_items_icon_stays_inside_the_disc_it_stands_on() {
+        let xmb = Xmb::new(vec![Category {
+            id: "a",
+            title: "A",
+            icon: "a",
+            apps: vec![app("first"), app("second")],
+        }]);
+
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scene = focused(&xmb, width, height, &AllSlots);
+            let disc = launch_origin(width, height);
+            let centre = [disc[0] + disc[2] * 0.5, disc[1] + disc[3] * 0.5];
+            let icon = scene
+                .quads
+                .iter()
+                .filter(|quad| is_icon(quad))
+                .find(|quad| {
+                    (quad.x + quad.w * 0.5 - centre[0]).abs() < 0.5
+                        && (quad.y + quad.h * 0.5 - centre[1]).abs() < 0.5
+                })
+                .expect("the focused item stands an icon on its disc");
+
+            let reach = icon.w * std::f32::consts::SQRT_2 / 2.0;
+            assert!(
+                reach <= disc[2] * 0.5,
+                "{width}x{height}: the icon's corners reach {reach} out of a disc {} across",
+                disc[2] * 0.5
             );
         }
     }
@@ -1903,9 +2926,34 @@ mod tests {
             brightest(&idle) > 0.2,
             "but not so dim the user cannot see what is on it"
         );
-        // Only the display taking input explains the controls.
-        assert!(live.texts.iter().any(|t| t.content == "hint"));
-        assert!(!idle.texts.iter().any(|t| t.content == "hint"));
+    }
+
+    /// With the instruction footer gone, the fourth application on a compact
+    /// display remains useful instead of fading almost completely into space
+    /// reserved for text that is no longer there.
+    #[test]
+    fn the_item_column_uses_the_space_below_the_old_footer() {
+        let xmb = Xmb::new(vec![Category {
+            id: "a",
+            title: "A",
+            icon: "a",
+            apps: vec![app("first"), app("second"), app("third"), app("fourth")],
+        }]);
+
+        let scene = focused(&xmb, 960.0, 600.0, &AllSlots);
+        let fourth = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "fourth")
+            .expect("the fourth row should still be drawn");
+        assert!(
+            fourth.color[3] > 0.20,
+            "the reclaimed bottom row is still too faint: {}",
+            fourth.color[3]
+        );
+        assert!(scene.texts.iter().all(|text| {
+            !text.content.contains("D-pad") && !text.content.contains("Keyboard:")
+        }));
     }
 
     #[test]
@@ -2034,9 +3082,7 @@ mod tests {
         let cursor = Cursor::new(1);
 
         let glow_alpha = |time: f32| {
-            let scene = build(
-                &xmb, &cursor, 1920.0, 1080.0, true, "hint", None, time, &AllSlots,
-            );
+            let scene = build(&xmb, &cursor, 1920.0, 1080.0, true, None, time, &AllSlots);
             scene
                 .quads
                 .iter()
@@ -2061,6 +3107,13 @@ mod tests {
         }
     }
 
+    /// A machine with both quick-settings controls, which is the column at its
+    /// longest. The default is neither: nothing has looked yet.
+    const BOTH_BARS: crate::guide::Bars = crate::guide::Bars {
+        volume: true,
+        brightness: true,
+    };
+
     /// Fill each card's rectangle from the shared layout, the way the
     /// shell's draw loop does once easing has settled.
     fn lay_out(cards: &mut [Card], selected: usize, width: f32, height: f32) {
@@ -2083,12 +3136,42 @@ mod tests {
         cards: &[Card],
         highlight: Option<[f32; 4]>,
     ) -> Scene {
+        guide_scene_with(guide, app, screen, cards, highlight, &AllSlots)
+    }
+
+    /// The same scene with the atlas swapped out, for the one test that has to
+    /// see what the column does when a glyph did not rasterise.
+    fn guide_scene_with(
+        guide: &Guide,
+        app: Option<&str>,
+        screen: Option<&str>,
+        cards: &[Card],
+        highlight: Option<[f32; 4]>,
+        slots: &dyn SlotLookup,
+    ) -> Scene {
         // A window is selected beside the column whenever there is one to
         // select, which is what the shell passes.
         let close_target = cards.first().filter(|card| !card.start).map(|c| &*c.title);
+        // A bar has a level exactly when the column has its row: the shell
+        // sets both from the same answer, and a test that could disagree
+        // about it would be testing a state that cannot happen.
+        let items = guide.items(close_target.is_some());
+        let level = |item: Item, value: f32| {
+            items.contains(&item).then_some(Level {
+                value,
+                muted: false,
+            })
+        };
         build_guide(
             GuideView {
                 guide,
+                clock: Some(Clock {
+                    time: "15:18",
+                    date: "Tue 5 Aug",
+                }),
+                volume: level(Item::Volume, 0.35),
+                brightness: level(Item::Brightness, 0.85),
+                stick_pointer: false,
                 app,
                 close_target,
                 screen,
@@ -2101,6 +3184,7 @@ mod tests {
                 // Fully out of its button, as it is once it has opened.
                 power: if guide.power_open() { 1.0 } else { 0.0 },
                 time: 0.0,
+                slots,
             },
             1920.0,
             1080.0,
@@ -2192,10 +3276,10 @@ mod tests {
 
         let items = guide.items(false);
         let power = items.len() - 1;
-        let [px, py, pw, ph] = menu_item_rect(items, power, 1920.0, 1080.0);
+        let [px, py, pw, ph] = menu_item_rect(&items, power, 1920.0, 1080.0);
         assert!((pw - ph).abs() < 1.0, "the power button should be square");
         assert!(py > 1080.0 * 0.8, "and sit at the foot of the sidebar");
-        let last_row = menu_item_rect(items, power - 1, 1920.0, 1080.0);
+        let last_row = menu_item_rect(&items, power - 1, 1920.0, 1080.0);
         assert!(py > last_row[1] + last_row[3] * 2.0, "well below the rows");
 
         // A square in a corner is only in the corner if both its gaps match.
@@ -2207,14 +3291,586 @@ mod tests {
             "the button is {from_left} from the side and {from_foot} from the foot"
         );
         // And it keeps the column's own inset, so it lines up with the chips.
-        assert!((px - menu_item_rect(items, 0, 1920.0, 1080.0)[0]).abs() < 0.5);
+        assert!((px - menu_item_rect(&items, 0, 1920.0, 1080.0)[0]).abs() < 0.5);
 
-        let notched = scene.quads.iter().find(|q| q.notch > 0.0).expect(
-            "the power glyph's ring should be cut, not painted over — nothing is opaque here",
-        );
-        assert!(notched.border > 0.0, "and drawn as a ring");
+        // The symbol comes out of the atlas now rather than being assembled
+        // from quads, so what there is to check is that it lands square and
+        // centred on the chip it has instead of a label.
         let centre = px + pw * 0.5;
+        let symbol = scene
+            .quads
+            .iter()
+            .filter(|q| is_icon(q))
+            .find(|q| {
+                (q.x + q.w * 0.5 - centre).abs() < 1.0
+                    && (q.y + q.h * 0.5 - (py + ph * 0.5)).abs() < 1.0
+            })
+            .expect("the power button should carry the shutdown glyph");
+        assert!((symbol.w - symbol.h).abs() < 0.01, "drawn square");
+        assert!(
+            symbol.w < ph,
+            "and inside its chip rather than over its edge"
+        );
+
+        // A glyph that failed to rasterise leaves every other control in the
+        // column an empty chip beside a bar that still says what it is. This
+        // one has no label at all, so it falls back to assembling the symbol.
+        // The ring has to be *cut* rather than painted over: nothing here is
+        // opaque, and a painted notch would show as a bar of the wrong colour
+        // laid across whatever is behind the sidebar.
+        let bare = guide_scene_with(&guide, Some("Celeste"), None, &[], None, &NoSlots);
+        let notched = bare
+            .quads
+            .iter()
+            .find(|q| q.notch > 0.0)
+            .expect("with no glyph the power button should still draw its ring");
+        assert!(notched.border > 0.0, "and draw it as a ring");
         assert!((notched.x + notched.w * 0.5 - centre).abs() < 1.0);
+    }
+
+    /// The header answers the question a glance at the menu is asking. What
+    /// used to be there — the name of the shell you are already looking at —
+    /// answered nothing.
+    #[test]
+    fn the_sidebar_is_headed_by_the_time_and_the_day() {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        let scene = guide_scene(&guide, Some("Celeste"), None, &[], None);
+        let text = |content: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == content)
+                .unwrap_or_else(|| panic!("{content:?} should be in the header"))
+        };
+
+        let time = text("15:18");
+        let date = text("Tue 5 Aug");
+        assert!(time.bold, "the time is the heading");
+        assert!(
+            date.size < time.size,
+            "and the day is beside it, not over it"
+        );
+        // One line, not two: the sidebar is narrow, and the app it is over
+        // still has to fit under both of them.
+        assert!((date.y - time.y).abs() < time.size);
+        assert_eq!(date.align, TextAlign::Right, "pushed to the far side");
+        assert!(
+            !scene.texts.iter().any(|text| text.content == "Linboard"),
+            "the shell no longer introduces itself"
+        );
+
+        // Without a clock the header falls back to naming the shell, which is
+        // better than an empty space or a wrong time.
+        let mut blind = GuideView {
+            guide: &guide,
+            clock: None,
+            volume: None,
+            brightness: None,
+            stick_pointer: false,
+            app: None,
+            close_target: None,
+            screen: None,
+            cards: &[],
+            highlight: None,
+            menu_highlight: None,
+            behind: 0.0,
+            card_age: guide.age(),
+            power: 0.0,
+            time: 0.0,
+            slots: &AllSlots,
+        };
+        blind.clock = None;
+        let scene = build_guide(blind, 1920.0, 1080.0);
+        assert!(scene.texts.iter().any(|text| text.content == "Linboard"));
+    }
+
+    /// The two bars sit at the top of the column, above everything the menu
+    /// does, and are ruled off from it.
+    #[test]
+    fn the_quick_settings_bars_head_the_column() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        let items = guide.items(true);
+        assert_eq!(
+            items,
+            vec![
+                Item::Mixer,
+                Item::Volume,
+                Item::Brightness,
+                Item::Resume,
+                Item::Close,
+                Item::Dashboard,
+                Item::Power
+            ]
+        );
+
+        // Two rules: one under the tiles and bars, one above Dashboard.
+        let rules = menu_separator_rects(&items, 1920.0, 1080.0);
+        assert_eq!(rules.len(), 2);
+        let index_of = |wanted: Item| items.iter().position(|item| *item == wanted).unwrap();
+        let resume = menu_item_rect(&items, index_of(Item::Resume), 1920.0, 1080.0);
+        assert!(rules[0][1] < resume[1], "the first rule is above Resume");
+        let brightness = menu_item_rect(&items, index_of(Item::Brightness), 1920.0, 1080.0);
+        assert!(
+            rules[0][1] > brightness[1] + brightness[3],
+            "and below the bars"
+        );
+
+        // Rows in order, none overlapping, whatever heights they are. The
+        // second tile is skipped: it is beside the first rather than under it,
+        // which is exactly what the next assertion checks.
+        let tiles: Vec<[f32; 4]> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.is_tile())
+            .map(|(index, _)| menu_item_rect(&items, index, 1920.0, 1080.0))
+            .collect();
+        for pair in tiles.windows(2) {
+            assert_eq!(pair[0][1], pair[1][1], "tiles share a line");
+            assert!(pair[1][0] > pair[0][0] + pair[0][2], "and sit side by side");
+        }
+        let column: Vec<[f32; 4]> = (0..items.len() - 1)
+            .filter(|index| !items[*index].is_tile() || *index == 0)
+            .map(|index| menu_item_rect(&items, index, 1920.0, 1080.0))
+            .collect();
+        for pair in column.windows(2) {
+            assert!(
+                pair[1][1] >= pair[0][1] + pair[0][3],
+                "{:?} runs into {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        // And the power button is still in the corner, out of the stack.
+        let power = menu_item_rect(&items, items.len() - 1, 1920.0, 1080.0);
+        assert_eq!(power, power_button_rect(1920.0, 1080.0));
+
+        // A machine with neither bar has neither row, and Resume is back
+        // directly under the tile line.
+        let plain = Guide::default();
+        assert_eq!(
+            plain.items(true),
+            vec![
+                Item::Mixer,
+                Item::Resume,
+                Item::Close,
+                Item::Dashboard,
+                Item::Power
+            ]
+        );
+        let plain_items = plain.items(true);
+        assert_eq!(
+            menu_item_rect(&plain_items, 0, 1920.0, 1080.0),
+            menu_item_rect(&items, 0, 1920.0, 1080.0),
+            "the tile line heads the column whichever rows follow it"
+        );
+        // Resume is a row lower there than the bar is here, by exactly the
+        // rule that separates the quick settings from what the menu does —
+        // with no bars, the tiles are that whole band on their own.
+        let button = menu_item_rect(&plain_items, 1, 1920.0, 1080.0);
+        let bar = menu_item_rect(&items, index_of(Item::Volume), 1920.0, 1080.0);
+        assert_eq!(button[0], bar[0], "and every row is inset the same");
+        assert!(bar[3] < button[3], "a bar's row is shorter than a button's");
+    }
+
+    /// The two tiles at the head of the column are square, side by side on one
+    /// line, and inset like every other control on the panel.
+    #[test]
+    fn the_tiles_sit_side_by_side_at_the_head_of_the_column() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.set_bars(BOTH_BARS);
+        let items = guide.items(true);
+
+        let pointer = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let mixer = menu_item_rect(&items, 1, 1920.0, 1080.0);
+        assert_eq!(items[0], Item::Pointer);
+        assert_eq!(items[1], Item::Mixer);
+
+        // Square, both of them, and the same square.
+        assert!((pointer[2] - pointer[3]).abs() < 0.01, "{pointer:?}");
+        assert_eq!([pointer[2], pointer[3]], [mixer[2], mixer[3]]);
+        // Beside one another on one line, with air between.
+        assert_eq!(pointer[1], mixer[1]);
+        assert!(mixer[0] > pointer[0] + pointer[2], "{pointer:?} {mixer:?}");
+        // And well short of the sidebar, unlike the rows below them.
+        let volume = menu_item_rect(&items, 2, 1920.0, 1080.0);
+        assert_eq!(pointer[0], volume[0], "inset like everything else");
+        assert!(mixer[0] + mixer[2] < volume[0] + volume[2]);
+        // The row under the tiles clears them rather than overlapping.
+        assert!(volume[1] >= pointer[1] + pointer[3], "{volume:?}");
+    }
+
+    /// A switch has to say which of its two states it is in while the lit
+    /// selection capsule is sitting on top of it, so being lit cannot be the
+    /// signal. Being *filled* is.
+    #[test]
+    fn a_tile_says_whether_its_switch_is_on() {
+        let mut base = Guide::default();
+        base.set_pointer_control(true);
+        base.open();
+        base.backdate_open(2.0);
+
+        // Whether there is an application to be about is the guide's own
+        // answer, not the view's: it decides what the highlight will stop on
+        // as well as how the tile is drawn, and the two must not disagree.
+        let scene = |on: bool, target: bool| {
+            let mut guide = Guide::default();
+            guide.set_pointer_control(true);
+            guide.set_pointer_target(target);
+            guide.open();
+            guide.backdate_open(2.0);
+            build_guide(
+                GuideView {
+                    guide: &guide,
+                    clock: None,
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: on,
+                    app: Some("Celeste"),
+                    close_target: None,
+                    screen: None,
+                    cards: &[],
+                    highlight: None,
+                    menu_highlight: None,
+                    behind: 0.0,
+                    card_age: guide.age(),
+                    power: 0.0,
+                    time: 0.0,
+                    slots: &Named,
+                },
+                1920.0,
+                1080.0,
+            )
+        };
+
+        let items = base.items(false);
+        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let in_tile = move |q: &&Quad| {
+            q.x >= tile[0] - 0.5
+                && q.y >= tile[1] - 0.5
+                && q.x + q.w <= tile[0] + tile[2] + 0.5
+                && q.y + q.h <= tile[1] + tile[3] + 0.5
+        };
+        let glyph = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .filter(|q| q.slot == Named::slot_of(icons::POINTER_STICK))
+                .find(in_tile)
+                .copied()
+                .expect("the tile's own glyph")
+        };
+        let panes = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .filter(|q| q.slot == SOLID_SLOT && q.thickness > 0.0)
+                .filter(in_tile)
+                .count()
+        };
+
+        // On: a second pane fills the chip, and the glyph is at full strength.
+        assert_eq!(panes(&scene(true, true)), 2, "the fill, over the chip");
+        assert_eq!(panes(&scene(false, true)), 1, "off, the chip alone");
+        assert!(glyph(&scene(true, true)).color[3] > glyph(&scene(false, true)).color[3]);
+
+        // And with nothing in front to be about, the tile is not a chip at
+        // all: no glass, a hairline where the chip would be, and a ghost of
+        // the glyph. A merely dimmer chip is what an *unselected* chip looks
+        // like, and there are five of those beside it.
+        let dead = scene(true, false);
+        assert_eq!(panes(&dead), 0, "nothing to be on for");
+        let outline = dead
+            .quads
+            .iter()
+            .filter(|q| q.slot == SOLID_SLOT && q.border > 0.0)
+            .find(in_tile)
+            .expect("the outline standing in for the chip");
+        assert_eq!(outline.thickness, 0.0, "an outline is not a slab");
+        assert!(glyph(&scene(false, false)).color[3] < glyph(&scene(false, true)).color[3]);
+    }
+
+    /// The bug this exists for, in its second form: a tile handed its own chip
+    /// over the instant the selection reached its *line*, because arrival was
+    /// measured down the column only. The two tiles share a line, so the light
+    /// was still crossing the gap between them with neither drawn under it.
+    #[test]
+    fn a_tile_keeps_its_chip_until_the_light_has_actually_reached_it() {
+        let tile = [30.0, 200.0, 68.0, 68.0];
+        let beside = [112.0, 200.0, 68.0, 68.0];
+        // Same line, one tile away: no light here yet.
+        assert_eq!(highlight_arrival(beside, tile), 0.0);
+        // Half way between them, and still mostly not.
+        let between = [71.0, 200.0, 68.0, 68.0];
+        assert!(highlight_arrival(between, tile) < 0.5);
+        // Sitting on it.
+        assert!(highlight_arrival(tile, tile) > 0.99);
+
+        // And a full-width row's capsule parked on a tile's corner is not
+        // light on that tile either: it has not become a tile yet.
+        let row = [30.0, 200.0, 390.0, 66.0];
+        assert!(highlight_arrival(row, tile) < 0.1);
+
+        // The column of rows behaves exactly as it did: only y differs there.
+        let below = [30.0, 276.0, 390.0, 66.0];
+        assert_eq!(highlight_arrival(below, row), 0.0);
+        let nudged = [30.0, 201.0, 390.0, 66.0];
+        assert!(highlight_arrival(nudged, row) > 0.95);
+    }
+
+    /// The entrance the two tiles appeared not to have. They are the first
+    /// two entries in the column, and the column used to start arriving the
+    /// instant the menu opened — so they finished while the sidebar was still
+    /// sliding in under them, and what the user saw was a slab arriving with
+    /// two tiles already printed on it. Every entry now waits for the slab.
+    #[test]
+    fn the_column_arrives_on_to_a_sidebar_that_is_already_there() {
+        // Barely anything has happened while the sidebar is still on its way.
+        assert!(entry_appear(GUIDE_SLIDE * 0.5, 0) < 0.05, "half way in");
+        // The first entry is still visibly arriving once it has settled.
+        assert!(entry_appear(GUIDE_SLIDE, 0) < 0.95, "the top of the column");
+        assert!(
+            entry_appear(GUIDE_SLIDE, 1) < 0.95,
+            "and the tile beside it"
+        );
+        // Which is what the rows further down the column always did.
+        assert!(entry_appear(GUIDE_SLIDE, 4) < entry_appear(GUIDE_SLIDE, 0));
+        // And they still arrive in order, and all of them do arrive.
+        assert!(entry_appear(0.4, 0) > entry_appear(0.4, 1));
+        assert_eq!(entry_appear(1.0, 7), 1.0);
+    }
+
+    /// A switch is a physical thing: it goes down under the thumb, comes back
+    /// past where it started, and settles at exactly its own size.
+    #[test]
+    fn a_pressed_tile_goes_down_and_springs_back() {
+        assert_eq!(press_scale(0.0), 1.0);
+        let bottom = press_scale(PRESS_DOWN);
+        assert!(
+            (bottom - (1.0 - PRESS_DIP)).abs() < 1e-3,
+            "fully down at the turn: {bottom}"
+        );
+        assert!(press_scale(0.15) < 1.0 && press_scale(0.15) > bottom);
+
+        // Past its own size on the way back out, and settled on it at the end.
+        let overshoot = (5..10)
+            .map(|n| press_scale(n as f32 / 10.0))
+            .fold(0.0, f32::max);
+        assert!(overshoot > 1.0, "it springs past the top: {overshoot}");
+        assert!((press_scale(0.999) - 1.0).abs() < 0.01);
+        // Outside the press it is simply itself.
+        assert_eq!(press_scale(1.0), 1.0);
+        assert_eq!(press_scale(4.0), 1.0);
+
+        // The whole tile moves together — chip, fill and glyph — so that a
+        // press reads as a button going down rather than as a hole opening
+        // behind a glyph that stayed put.
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.set_pointer_target(true);
+        guide.open();
+        guide.backdate_open(2.0);
+        let items = guide.items(false);
+        let at_rest = guide_scene(&guide, Some("Celeste"), None, &[], None);
+        guide.press(Item::Pointer);
+        // At the bottom of the travel, where the difference is largest.
+        guide.backdate_press(crate::guide::PRESS_TIME * PRESS_DOWN);
+        let pressed = guide_scene(&guide, Some("Celeste"), None, &[], None);
+
+        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let inside = |scene: &Scene| -> Vec<Quad> {
+            scene
+                .quads
+                .iter()
+                .filter(|q| {
+                    q.x >= tile[0] - 1.0
+                        && q.y >= tile[1] - 1.0
+                        && q.x + q.w <= tile[0] + tile[2] + 1.0
+                        && q.y + q.h <= tile[1] + tile[3] + 1.0
+                })
+                .copied()
+                .collect()
+        };
+        let resting = inside(&at_rest);
+        let sinking = inside(&pressed);
+        assert!(!resting.is_empty(), "the tile draws something at rest");
+        assert_eq!(resting.len(), sinking.len(), "the same parts, smaller");
+        for (rest, sink) in resting.iter().zip(&sinking) {
+            assert!(sink.w < rest.w, "{:?} did not go down", sink.slot);
+            // Down about its own middle, not towards a corner.
+            let centre = |q: &Quad| (q.x + q.w * 0.5, q.y + q.h * 0.5);
+            let (rx, ry) = centre(rest);
+            let (sx, sy) = centre(sink);
+            assert!((rx - sx).abs() < 0.01 && (ry - sy).abs() < 0.01);
+        }
+    }
+
+    /// The mixer is a place kept in the column for a control that has still to
+    /// be written, so it is drawn and it is never on.
+    #[test]
+    fn the_mixer_tile_is_drawn_and_inert() {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        let scene = guide_scene(&guide, Some("Celeste"), None, &[], None);
+
+        let items = guide.items(false);
+        let mixer = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        assert_eq!(items[0], Item::Mixer);
+        assert!(
+            scene.quads.iter().any(|q| {
+                q.slot != SOLID_SLOT
+                    && (q.x - mixer[0]).abs() < mixer[2]
+                    && (q.y - mixer[1]).abs() < mixer[3]
+            }),
+            "the mixer tile carries a glyph"
+        );
+        assert!(
+            scene.texts.iter().all(|text| !text.content.is_empty()),
+            "and no empty label was written for it"
+        );
+    }
+
+    /// A bar is drawn as a track with the value filled in, and the fill is the
+    /// only part of the row that moves.
+    #[test]
+    fn a_bar_fills_its_track_in_proportion_to_where_it_stands() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.open();
+        guide.backdate_open(2.0);
+        let scene = guide_scene(&guide, Some("Celeste"), None, &[], None);
+
+        let items = guide.items(false);
+        let row = |index: usize| menu_item_rect(&items, index, 1920.0, 1080.0);
+        // Everything laid inside a row, ignoring the chip it rests on.
+        let inside = |[rx, ry, rw, rh]: [f32; 4]| -> Vec<&Quad> {
+            scene
+                .quads
+                .iter()
+                .filter(|q| {
+                    q.x >= rx
+                        && q.y >= ry
+                        && q.x + q.w <= rx + rw + 0.5
+                        && q.y + q.h <= ry + rh + 0.5
+                        && q.w < rw * 0.99
+                })
+                .collect()
+        };
+
+        // The track is the widest thing in the row; the fill is the widest
+        // thing that starts where it does and stops short of its end.
+        let track_of = |parts: &[&Quad]| -> (f32, f32) {
+            let track = parts
+                .iter()
+                .max_by(|a, b| a.w.total_cmp(&b.w))
+                .expect("a track");
+            let fill = parts
+                .iter()
+                .filter(|q| (q.x - track.x).abs() < 0.5 && q.w < track.w)
+                .max_by(|a, b| a.w.total_cmp(&b.w))
+                .expect("a fill");
+            (track.w, fill.w)
+        };
+
+        // Looked up by entry rather than by row number: the tiles above them
+        // mean the bars are no longer the first two things in the column.
+        let index_of = |wanted: Item| items.iter().position(|item| *item == wanted).unwrap();
+        let (volume_track, volume_fill) = track_of(&inside(row(index_of(Item::Volume))));
+        let (bright_track, bright_fill) = track_of(&inside(row(index_of(Item::Brightness))));
+        assert!(
+            (volume_fill / volume_track - 0.35).abs() < 0.02,
+            "volume at {}",
+            volume_fill / volume_track
+        );
+        assert!(
+            (bright_fill / bright_track - 0.85).abs() < 0.02,
+            "brightness at {}",
+            bright_fill / bright_track
+        );
+        // The two tracks are the same run of pixels, so the bars can be
+        // compared to each other at a glance.
+        assert!((volume_track - bright_track).abs() < 0.5);
+    }
+
+    /// Silencing a session does not turn it down, so the bar must not empty:
+    /// unmuting would then look like it had also put the volume back up.
+    #[test]
+    fn muting_dims_the_bar_and_crosses_out_the_speaker_without_emptying_it() {
+        let mut guide = Guide::default();
+        guide.set_bars(crate::guide::Bars {
+            volume: true,
+            brightness: false,
+        });
+        guide.open();
+        guide.backdate_open(2.0);
+
+        let at = |muted: bool| {
+            build_guide(
+                GuideView {
+                    guide: &guide,
+                    clock: None,
+                    volume: Some(Level { value: 0.4, muted }),
+                    brightness: None,
+                    stick_pointer: false,
+                    app: None,
+                    close_target: None,
+                    screen: None,
+                    cards: &[],
+                    highlight: None,
+                    menu_highlight: None,
+                    behind: 0.0,
+                    card_age: guide.age(),
+                    power: 0.0,
+                    time: 0.0,
+                    slots: &Named,
+                },
+                1920.0,
+                1080.0,
+            )
+        };
+        let items = guide.items(false);
+        let volume = items.iter().position(|item| *item == Item::Volume).unwrap();
+        let row = menu_item_rect(&items, volume, 1920.0, 1080.0);
+        let in_row = move |q: &&Quad| q.y > row[1] && q.y + q.h <= row[1] + row[3] + 0.5;
+
+        // `Named` hands out one slot per glyph, so the icon in the row says
+        // which drawing the layout asked for.
+        let glyph = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .filter(|q| q.slot != SOLID_SLOT)
+                .find(in_row)
+                .map(|q| q.slot)
+                .expect("the speaker")
+        };
+        assert_eq!(glyph(&at(false)), Named::slot_of(icons::VOLUME));
+        assert_eq!(glyph(&at(true)), Named::slot_of(icons::VOLUME_MUTED));
+
+        // How far the fill runs, and how brightly.
+        let fill = |scene: &Scene| {
+            let parts: Vec<&Quad> = scene
+                .quads
+                .iter()
+                .filter(|q| q.slot == SOLID_SLOT && q.radius > 0.0)
+                .filter(in_row)
+                .collect();
+            let track = parts.iter().max_by(|a, b| a.w.total_cmp(&b.w)).unwrap();
+            let fill = parts
+                .iter()
+                .filter(|q| (q.x - track.x).abs() < 0.5 && q.w < track.w)
+                .max_by(|a, b| a.w.total_cmp(&b.w))
+                .expect("a fill");
+            (fill.w, fill.color[3])
+        };
+        let (loud_w, loud_a) = fill(&at(false));
+        let (quiet_w, quiet_a) = fill(&at(true));
+        assert!((loud_w - quiet_w).abs() < 0.5, "the fill stays where it is");
+        assert!(quiet_a < loud_a * 0.5, "and goes quiet instead of emptying");
     }
 
     /// The rule groups what the menu does to the application apart from what
@@ -2223,13 +3879,17 @@ mod tests {
     fn a_faint_rule_separates_the_application_entries() {
         let guide = Guide::default();
         let items = guide.items(true);
-        let rule = menu_separator_rect(items, 1920.0, 1080.0).expect("the column has a rule");
+        let rules = menu_separator_rects(&items, 1920.0, 1080.0);
+        // Two, with no bars: under the tiles, and under the entries about the
+        // application. The second is the one this is about.
+        assert_eq!(rules.len(), 2);
+        let rule = *rules.last().expect("the column has a rule");
         let dashboard = items
             .iter()
             .position(|item| *item == Item::Dashboard)
             .unwrap();
-        let above = menu_item_rect(items, dashboard - 1, 1920.0, 1080.0);
-        let below = menu_item_rect(items, dashboard, 1920.0, 1080.0);
+        let above = menu_item_rect(&items, dashboard - 1, 1920.0, 1080.0);
+        let below = menu_item_rect(&items, dashboard, 1920.0, 1080.0);
         assert!(rule[1] > above[1] + above[3], "the rule is below Close");
         assert!(rule[1] < below[1], "and above Dashboard");
         assert!(rule[3] <= 2.0, "a hairline, not a border");
@@ -2260,7 +3920,7 @@ mod tests {
             scene
                 .texts
                 .iter()
-                .find(|t| t.content == "Linboard")
+                .find(|t| t.content == "15:18")
                 .map(|t| t.color[3])
                 .expect("the sidebar header")
         };
@@ -2350,6 +4010,13 @@ mod tests {
             build_guide(
                 GuideView {
                     guide: &guide,
+                    clock: Some(Clock {
+                        time: "15:18",
+                        date: "Tue 5 Aug",
+                    }),
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: false,
                     app: Some("Celeste"),
                     close_target: None,
                     screen: None,
@@ -2360,6 +4027,7 @@ mod tests {
                     card_age: guide.age(),
                     power,
                     time: 0.0,
+                    slots: &AllSlots,
                 },
                 1920.0,
                 1080.0,
@@ -2379,7 +4047,7 @@ mod tests {
         assert!(alpha(&at(1.0), "Cancel") > 0.5);
 
         // The sidebar dims as the panel comes out over it, not before.
-        assert!(alpha(&at(0.15), "Linboard") > alpha(&at(1.0), "Linboard"));
+        assert!(alpha(&at(0.15), "15:18") > alpha(&at(1.0), "15:18"));
     }
 
     /// The bug this exists to prevent: the start card is a miniature of the
@@ -2502,9 +4170,13 @@ mod tests {
         guide.open();
         guide.backdate_open(2.0);
 
-        let closable = false;
+        // A window beside the column, so that there are three full-width rows
+        // for the glide to run between: the tiles at the head of the column
+        // are neither capsules nor the width this is measuring.
+        let closable = true;
+        let cards = [card("Celeste")];
         let sidebar_w = overview::sidebar_width(1920.0) as f32;
-        let settled = guide_scene(&guide, Some("Celeste"), None, &[], None);
+        let settled = guide_scene(&guide, Some("Celeste"), None, &cards, None);
         // Capsules: radius exactly half their height, which is what tells a
         // button apart from the panel it rests on.
         let capsules = |scene: &Scene| -> Vec<[f32; 2]> {
@@ -2517,23 +4189,38 @@ mod tests {
                 .map(|q| [q.y, q.h])
                 .collect()
         };
+        // The full-width rows: everything but the tiles, which share a line
+        // and are square, and the power button, which has left the column for
+        // the sidebar's corner.
+        let items = guide.items(closable);
+        let rows = items
+            .iter()
+            .filter(|item| !item.is_tile() && **item != Item::Power)
+            .count();
         assert_eq!(
             capsules(&settled).len(),
-            guide.items(closable).len() - 1,
-            "settled, every entry but the square power button shows one chip"
+            rows,
+            "settled, every row shows one chip and the selected one is lit"
         );
 
         // Mid-glide the chip sits between rows, and the accent is drawn there
         // rather than snapped to the row it is heading for.
-        let items = guide.items(closable);
-        let first = menu_item_rect(items, 0, 1920.0, 1080.0);
-        let second = menu_item_rect(items, 1, 1920.0, 1080.0);
+        let index_of = |wanted: Item| items.iter().position(|item| *item == wanted).unwrap();
+        let first = menu_item_rect(&items, index_of(Item::Close), 1920.0, 1080.0);
+        let second = menu_item_rect(&items, index_of(Item::Dashboard), 1920.0, 1080.0);
         let between = [first[0], (first[1] + second[1]) / 2.0, first[2], first[3]];
         let gliding = build_guide(
             GuideView {
                 guide: &guide,
+                clock: Some(Clock {
+                    time: "15:18",
+                    date: "Tue 5 Aug",
+                }),
+                volume: None,
+                brightness: None,
+                stick_pointer: false,
                 app: Some("Celeste"),
-                close_target: None,
+                close_target: Some("Celeste"),
                 screen: None,
                 cards: &[],
                 highlight: None,
@@ -2542,6 +4229,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                slots: &AllSlots,
             },
             1920.0,
             1080.0,
@@ -2560,7 +4248,7 @@ mod tests {
         let mid = capsules(&gliding);
         assert_eq!(
             mid.len(),
-            guide.items(closable).len(),
+            rows + 1,
             "mid-glide the row being left for keeps its own chip: {mid:?}"
         );
         assert!(
@@ -2614,6 +4302,13 @@ mod tests {
         let scene = build_guide(
             GuideView {
                 guide: &guide,
+                clock: Some(Clock {
+                    time: "15:18",
+                    date: "Tue 5 Aug",
+                }),
+                volume: None,
+                brightness: None,
+                stick_pointer: false,
                 app: Some("Celeste"),
                 close_target: None,
                 screen: None,
@@ -2624,6 +4319,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                slots: &AllSlots,
             },
             1920.0,
             1080.0,
@@ -2678,6 +4374,7 @@ mod tests {
         scene.place_into([900.0, 200.0, 900.0, 520.0], width, height);
 
         let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
         guide.open();
         guide.backdate_open(2.0);
         guide.open_power();
@@ -2749,11 +4446,17 @@ mod tests {
         }
     }
 
-    /// One material, one shape language: everything the user can act on in the
-    /// column is a capsule — radius exactly half its height.
+    /// One material, one shape language: everything the user can act on in
+    /// the column is cut from the same glass, and its corners say which kind
+    /// of control it is — a capsule for a row, a rounded square for a tile.
     #[test]
-    fn every_control_in_the_column_is_a_capsule() {
+    fn every_control_in_the_column_has_the_corners_of_its_kind() {
         let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        // With an application in front, so every entry in the column is a
+        // control the user can act on. One that cannot be is deliberately not
+        // cut from this glass at all — see the tile tests.
+        guide.set_pointer_target(true);
         guide.open();
         guide.backdate_open(2.0);
         let cards = [card("Celeste")];
@@ -2761,17 +4464,22 @@ mod tests {
 
         let items = guide.items(true);
         for (index, item) in items.iter().enumerate() {
-            let [rx, ry, _, rh] = menu_item_rect(items, index, 1920.0, 1080.0);
+            let [rx, ry, _, rh] = menu_item_rect(&items, index, 1920.0, 1080.0);
             let control = scene
                 .quads
                 .iter()
                 .find(|q| (q.x - rx).abs() < 1.0 && (q.y - ry).abs() < 1.0 && q.border == 0.0)
                 .unwrap_or_else(|| panic!("{item:?} has no pane"));
             assert!(
-                (control.radius - rh * 0.5).abs() < 0.01,
-                "{item:?} is not a capsule: radius {} of height {rh}",
+                (control.radius - chip_radius(Some(*item), rh)).abs() < 0.01,
+                "{item:?} is the wrong shape: radius {} of height {rh}",
                 control.radius
             );
+            // And a tile is a rounded square rather than a disc, which is what
+            // a capsule's radius would make of something this shape.
+            if item.is_tile() {
+                assert!(control.radius < rh * 0.5, "{item:?} is a disc");
+            }
             assert!(control.gloss > 0.0, "{item:?} should be lit like glass");
         }
     }
@@ -2854,6 +4562,13 @@ mod tests {
             build_guide(
                 GuideView {
                     guide: &guide,
+                    clock: Some(Clock {
+                        time: "15:18",
+                        date: "Tue 5 Aug",
+                    }),
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: false,
                     app: Some("Celeste"),
                     close_target: Some("Celeste"),
                     screen: None,
@@ -2864,6 +4579,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time,
+                    slots: &AllSlots,
                 },
                 1920.0,
                 1080.0,
@@ -2903,6 +4619,77 @@ mod tests {
         assert!(
             peak > trough * 1.3,
             "the halo should pulse: {trough}..{peak}"
+        );
+    }
+
+    /// The bug: the outline of the application being scaled out, drawn at the
+    /// card it had not reached yet. The compositor carries the window there
+    /// over [`crate::CARD_ARRIVAL`] seconds while this pass paints above it, so
+    /// for every frame of that flight the card's rectangle is somewhere the
+    /// window is not — and a frame, a title or a halo put there lands across
+    /// the middle of the window instead of around it.
+    #[test]
+    fn nothing_is_drawn_on_a_card_until_its_window_has_arrived() {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        guide.move_focus(crate::guide::Move::Right, 1);
+        let mut cards = [card("Celeste")];
+        lay_out(&mut cards, 0, 1920.0, 1080.0);
+        let [x, y, w, h] = cards[0].rect;
+
+        let at = |card_age: f32| {
+            build_guide(
+                GuideView {
+                    guide: &guide,
+                    clock: None,
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: false,
+                    app: Some("Celeste"),
+                    close_target: Some("Celeste"),
+                    screen: None,
+                    cards: &cards,
+                    highlight: Some(cards[0].rect),
+                    menu_highlight: None,
+                    behind: 0.0,
+                    card_age,
+                    power: 0.0,
+                    time: 0.0,
+                    slots: &AllSlots,
+                },
+                1920.0,
+                1080.0,
+            )
+        };
+
+        // Anything reaching the card's neighbourhood: its frame, the halo
+        // rings outside it, and the title in the gap below.
+        let near_card = |scene: &Scene| {
+            let quads = scene
+                .quads
+                .iter()
+                .filter(|q| q.x + q.w > x - 40.0 && q.x < x + w + 40.0 && q.y < y + h + 80.0)
+                .map(|q| q.color[3]);
+            let texts = scene
+                .texts
+                .iter()
+                .filter(|t| t.x + t.max_width > x - 40.0 && t.y > y - 40.0)
+                .map(|t| t.color[3]);
+            quads.chain(texts).fold(0.0f32, f32::max)
+        };
+
+        for step in 0..=10 {
+            let age = crate::CARD_ARRIVAL * step as f32 / 10.0;
+            assert_eq!(
+                near_card(&at(age)),
+                0.0,
+                "the card must stay bare while its window is still flying, at {age}s"
+            );
+        }
+        assert!(
+            near_card(&at(crate::CARD_ARRIVAL + 0.2)) > 0.5,
+            "and be framed once it has landed"
         );
     }
 
@@ -2952,9 +4739,7 @@ mod tests {
             .collect();
         assert!(on_screen.len() > 1, "the bar should have icons to shrink");
 
-        let mut mini = build(
-            &xmb, &cursor, 1920.0, 1080.0, true, "hint", None, 0.0, &AllSlots,
-        );
+        let mut mini = build(&xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots);
         // A card a quarter of the display's width, at its aspect ratio.
         let card = [1200.0, 300.0, 480.0, 270.0];
         mini.place_into(card, 1920.0, 1080.0);
@@ -3042,6 +4827,358 @@ mod tests {
         assert!(
             accent_alpha(&menu_pane) > 0.05,
             "but it must stay visible as the way back"
+        );
+    }
+
+    // --- the on-screen keyboard --------------------------------------------
+
+    fn board(width: f32, height: f32, board: &keyboard::Board) -> Scene {
+        build_keyboard(
+            KeyboardView {
+                board,
+                slots: &Named,
+                // Settled, so the rise is not being raced.
+                age: 10.0,
+                behind: 0.0,
+                time: 0.0,
+            },
+            width,
+            height,
+        )
+    }
+
+    /// Every key, in reading order, with where it sits.
+    fn keys(width: f32, height: f32) -> Vec<(keyboard::Key, [f32; 4])> {
+        (0..keyboard::ROW_COUNT)
+            .flat_map(|row| {
+                keyboard::row_keys(row)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(column, key)| (key, keyboard_key_rect(row, column, width, height)))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The hit test and the layout are one answer read two ways: the key
+    /// under a point has to be the key drawn at that point, or the letter
+    /// typed is not the letter clicked.
+    #[test]
+    fn the_key_under_the_cursor_is_the_key_drawn_there() {
+        for (width, height) in [(1920.0, 1080.0), (1280.0, 800.0), (1080.0, 1920.0)] {
+            for row in 0..keyboard::ROW_COUNT {
+                for column in 0..keyboard::row_keys(row).len() {
+                    let [x, y, w, h] = keyboard_key_rect(row, column, width, height);
+                    // The middle of it, and each of its corners just inside.
+                    for (at_x, at_y) in [
+                        (x + w * 0.5, y + h * 0.5),
+                        (x + 0.5, y + 0.5),
+                        (x + w - 0.5, y + h - 0.5),
+                    ] {
+                        assert_eq!(
+                            keyboard_key_at(at_x, at_y, width, height),
+                            Some((row, column)),
+                            "{width}x{height}: ({at_x}, {at_y}) is not {row},{column}"
+                        );
+                    }
+                }
+            }
+
+            // And off the board is nothing rather than the nearest key: half
+            // of being able to click accurately is being able to miss.
+            let [px, py, pw, ph] = keyboard_panel_rect(width, height);
+            assert_eq!(
+                keyboard_key_at(px - 4.0, py + ph * 0.5, width, height),
+                None
+            );
+            assert_eq!(
+                keyboard_key_at(px + pw * 0.5, py - 4.0, width, height),
+                None
+            );
+            assert_eq!(keyboard_key_at(0.0, 0.0, width, height), None);
+            // Including the panel's own padding, which is a keyboard's frame.
+            assert_eq!(keyboard_key_at(px + 1.0, py + 1.0, width, height), None);
+        }
+    }
+
+    #[test]
+    fn the_board_stays_on_the_display_and_its_keys_never_overlap() {
+        // Including the shapes a handheld and a rotated monitor actually
+        // present: the board shrinks to fit rather than losing its outer
+        // columns, and a keyboard missing letters is not a keyboard.
+        for (width, height) in [
+            (1920.0, 1080.0),
+            (3840.0, 2160.0),
+            (1280.0, 800.0),
+            (1280.0, 400.0),
+            (1080.0, 1920.0),
+        ] {
+            let [px, py, pw, ph] = keyboard_panel_rect(width, height);
+            assert!(px >= 0.0 && py >= 0.0, "{width}x{height}: panel off screen");
+            assert!(
+                px + pw <= width + 0.01 && py + ph <= height + 0.01,
+                "{width}x{height}: panel runs off at {px}+{pw} / {py}+{ph}"
+            );
+            assert!(
+                (px - (width - pw - px)).abs() < 0.01,
+                "{width}x{height}: panel is not centred"
+            );
+
+            let laid_out = keys(width, height);
+            for (key, rect) in &laid_out {
+                let [x, y, w, h] = *rect;
+                assert!(w > 0.0 && h > 0.0, "{width}x{height}: {key:?} has no size");
+                assert!(
+                    x >= px && y >= py && x + w <= px + pw + 0.01 && y + h <= py + ph + 0.01,
+                    "{width}x{height}: {key:?} at {rect:?} is outside the panel"
+                );
+            }
+            for (first, (left, a)) in laid_out.iter().enumerate() {
+                for (right, b) in laid_out.iter().skip(first + 1) {
+                    let apart = a[0] + a[2] <= b[0] + 0.01
+                        || b[0] + b[2] <= a[0] + 0.01
+                        || a[1] + a[3] <= b[1] + 0.01
+                        || b[1] + b[3] <= a[1] + 0.01;
+                    assert!(apart, "{width}x{height}: {left:?} and {right:?} overlap");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_key_is_drawn_and_labelled() {
+        let mut model = keyboard::Board::default();
+        let scene = board(1920.0, 1080.0, &model);
+        let expected = keys(1920.0, 1080.0);
+        // The keys that carry a drawing instead of a word: the four arrows and
+        // the way out.
+        let pictured = expected
+            .iter()
+            .filter(|(key, _)| key.glyph().is_some())
+            .count();
+        assert_eq!(pictured, 5, "four arrows and a way out");
+
+        // One chip each, plus the panel behind them and the lit capsule and
+        // glow over the selected one; Close gets an outline as well.
+        assert!(
+            scene.quads.len() >= expected.len() + 3,
+            "{} quads for {} keys",
+            scene.quads.len(),
+            expected.len()
+        );
+        assert_eq!(
+            scene.texts.len(),
+            expected.len() - pictured,
+            "every key that is not drawn carries exactly one cap"
+        );
+
+        // And each drawn key carries its own drawing: a cluster that pointed
+        // the same way four times would be worse than none, and a way out that
+        // looked like an arrow key would be pressed by accident.
+        let drawn: Vec<u32> = scene
+            .quads
+            .iter()
+            .filter(|quad| is_icon(quad))
+            .map(|quad| quad.slot)
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                Named::slot_of(icons::ARROW_LEFT),
+                Named::slot_of(icons::ARROW_DOWN),
+                Named::slot_of(icons::ARROW_UP),
+                Named::slot_of(icons::ARROW_RIGHT),
+                Named::slot_of(icons::KEYBOARD_HIDE),
+            ]
+        );
+
+        // The caps say what the keys type, and Shift changes all of them at
+        // once — which is the whole reason there is no second page of symbols.
+        let caps: Vec<String> = scene.texts.iter().map(|t| t.content.clone()).collect();
+        for wanted in [
+            "q", "a", "z", "1", "`", "\\", "Esc", "F1", "F12", "Tab", "Caps", "Shift", "Ctrl",
+            "Alt", "Space", "Back", "Enter",
+        ] {
+            assert!(caps.contains(&wanted.to_string()), "no {wanted} key");
+        }
+        assert!(
+            !caps.contains(&"Close".to_string()),
+            "the way out is drawn now, not lettered"
+        );
+        assert!(
+            !caps.iter().any(|cap| cap.is_empty()),
+            "a key was drawn with nothing on it"
+        );
+
+        model.arm_shift();
+        let shifted: Vec<String> = board(1920.0, 1080.0, &model)
+            .texts
+            .iter()
+            .map(|t| t.content.clone())
+            .collect();
+        for wanted in ["Q", "A", "Z", "!", "@", "?"] {
+            assert!(
+                shifted.contains(&wanted.to_string()),
+                "no {wanted} on shift"
+            );
+        }
+        assert!(
+            !shifted.contains(&"q".to_string()),
+            "a cap was left unshifted"
+        );
+    }
+
+    #[test]
+    fn the_selected_key_is_lit_where_it_stands() {
+        let mut model = keyboard::Board::default();
+        let scene = board(1920.0, 1080.0, &model);
+        let (row, column) = model.selected();
+        let [kx, ky, kw, kh] = keyboard_key_rect(row, column, 1920.0, 1080.0);
+
+        // Exactly one filled pane sits on the selected key: the lit capsule.
+        // Its own chip is left out precisely so there is not a second.
+        let on_the_key = |scene: &Scene, [x, y, _, _]: [f32; 4]| -> Vec<[f32; 4]> {
+            scene
+                .quads
+                .iter()
+                .filter(|quad| quad.gloss == GLOSS_FULL && quad.border == 0.0)
+                .filter(|quad| (quad.x - x).abs() < 0.01 && (quad.y - y).abs() < 0.01)
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+                .collect()
+        };
+        assert_eq!(
+            on_the_key(&scene, [kx, ky, kw, kh]),
+            vec![[kx, ky, kw, kh]],
+            "the selected key should carry one lit capsule and no chip"
+        );
+
+        // And it travels with the cursor rather than staying put.
+        model.move_selection(crate::guide::Move::Right);
+        let (row, column) = model.selected();
+        let next = keyboard_key_rect(row, column, 1920.0, 1080.0);
+        let moved = board(1920.0, 1080.0, &model);
+        assert!(next[0] > kx, "the cursor did not move");
+        assert_eq!(on_the_key(&moved, next), vec![next]);
+        assert!(
+            on_the_key(&moved, [kx, ky, kw, kh]).is_empty(),
+            "the capsule stayed behind on the key it left"
+        );
+    }
+
+    #[test]
+    fn the_board_rises_into_place_from_under_the_screens_edge() {
+        let model = keyboard::Board::default();
+        let [_, settled, panel_w, _] = keyboard_panel_rect(1920.0, 1080.0);
+        // The slab itself, which is the only quad as wide as the panel.
+        let slab_top = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| (quad.w - panel_w).abs() < 0.01)
+                .expect("no panel")
+                .y
+        };
+
+        let arriving = build_keyboard(
+            KeyboardView {
+                board: &model,
+                slots: &Named,
+                age: 0.0,
+                behind: 0.0,
+                time: 0.0,
+            },
+            1920.0,
+            1080.0,
+        );
+        let top = slab_top(&arriving);
+        assert!(
+            top > settled,
+            "the board should start below where it settles: {top} vs {settled}"
+        );
+        assert!(top >= 1080.0, "and off the bottom of the display entirely");
+
+        assert!(
+            (slab_top(&board(1920.0, 1080.0, &model)) - settled).abs() < 0.01,
+            "it must land on its mark"
+        );
+    }
+
+    #[test]
+    fn the_hint_names_two_buttons_by_drawing_them() {
+        let scene = build_keyboard_hint(
+            HintView {
+                slots: &Named,
+                fade: 1.0,
+                behind: 0.0,
+            },
+            1920.0,
+            1080.0,
+        );
+
+        // The two glyphs, and no letter standing in for either: A/B/X/Y are
+        // swapped between Xbox and Nintendo pads and absent from PlayStation
+        // ones, so a lettered hint would be wrong on two layouts out of three.
+        let drawn: Vec<u32> = scene
+            .quads
+            .iter()
+            .filter(|quad| is_icon(quad))
+            .map(|quad| quad.slot)
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                Named::slot_of(icons::PAD_SELECT),
+                Named::slot_of(icons::PAD_WEST)
+            ],
+            "the hint must draw the select button and the west face button"
+        );
+        let said: Vec<&str> = scene.texts.iter().map(|t| t.content.as_str()).collect();
+        assert_eq!(said, vec!["+", "Keyboard"]);
+
+        // In the bottom-right corner, clear of both edges, and everything it
+        // draws inside its own chip.
+        let [x, y, w, h] = keyboard_hint_rect(1920.0, 1080.0);
+        assert!(x + w < 1920.0 && y + h < 1080.0, "the chip touches an edge");
+        assert!(x > 1920.0 * 0.5 && y > 1080.0 * 0.5, "not in the corner");
+        for quad in scene.quads.iter().filter(|quad| is_icon(quad)) {
+            assert!(
+                quad.x >= x && quad.x + quad.w <= x + w,
+                "a glyph hangs out of the chip"
+            );
+        }
+        let label = scene.texts.last().unwrap();
+        assert!(
+            label.x + label.max_width <= x + w + 0.01,
+            "the label overruns"
+        );
+    }
+
+    #[test]
+    fn a_glyph_the_shell_could_not_load_leaves_a_gap_rather_than_an_app_icon() {
+        // `slot_for` stands an application icon in for anything it cannot
+        // find. In a row that means "press this button", that would read as
+        // "press the app".
+        struct NoGlyphs;
+        impl SlotLookup for NoGlyphs {
+            fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
+                Some(99)
+            }
+            fn glyph(&self, _name: &str) -> Option<u32> {
+                None
+            }
+        }
+        let scene = build_keyboard_hint(
+            HintView {
+                slots: &NoGlyphs,
+                fade: 1.0,
+                behind: 0.0,
+            },
+            1920.0,
+            1080.0,
+        );
+        assert!(
+            !scene.quads.iter().any(|quad| quad.slot == 99),
+            "the fallback application icon reached the hint"
         );
     }
 }

@@ -1,0 +1,15 @@
+<!--
+  The left arrow key's cap. Roboto has no arrow glyphs, and the shell bundles
+  Roboto precisely so it does not depend on what fonts a console has installed,
+  so the four arrows are drawings rather than characters.
+
+  One shape rotated four ways: a head seven and a half units long meeting a
+  shaft two point six thick, both centred on the middle of the viewBox, so the
+  four caps read as one set however they are scaled.
+
+  White, for the reason given in the other glyphs: the atlas multiplies the
+  quad's colour into the texel.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="#fff" d="M4 12L11.5 5.5V9.7H20V14.3H11.5V18.5Z"/>
+</svg>

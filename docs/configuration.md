@@ -9,6 +9,11 @@ Pass `--config PATH` to use a different file.
 Unknown keys are rejected rather than ignored, so a typo is reported at
 startup instead of silently doing nothing.
 
+The shell keeps its own file beside this one — see
+[Per-application settings](#per-application-settings) at the foot of this page.
+It is written by the shell rather than read from it, and is not part of
+`config.toml`.
+
 ## `[general]`
 
 | Key             | Type              | Default            | Meaning |
@@ -187,3 +192,26 @@ enabled = false
 "Super+E" = "spawn:linboard-xmb"
 "Super+Shift+Q" = "quit"
 ```
+
+## Per-application settings
+
+`$XDG_CONFIG_HOME/linboard/apps.toml`, written by `linboard-xmb` rather than by
+the compositor: it holds the choices the guide overlay makes about one
+application, which have to outlive that application running.
+
+Applications are keyed by the name they give themselves — an `xdg_toplevel`'s
+`app_id`, or an X11 window's class — never by the window title, which is a
+document name and would change under the setting.
+
+```toml
+[apps."org.mozilla.firefox"]
+# The controller is a mouse inside this application: the right stick aims, `A`
+# and `B` (or R3 and L3) click, and the left stick and D-pad scroll. Off unless
+# the guide's tile has been switched on.
+stick-pointer = true
+```
+
+Editing it by hand is fine. The shell reads it once at startup and rewrites it
+whenever a setting changes, keeping only the applications something has been
+chosen for; an unreadable file is reported and treated as empty rather than
+being allowed to stop the session coming up.

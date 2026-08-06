@@ -1,0 +1,88 @@
+<!--
+The Utilities column's glyph: a toolbox.
+
+  Calculators, archivers, terminals, text editors — small tools rather than the
+  machine's own controls, which are the cog two columns back. A toolbox says
+  "a box of small tools" where a single wrench says "one tool", and the column
+  is a box.
+
+  It is also the mark the console this borrows its look from used for its own
+  Settings column, which is worth saying out loud so the resemblance is read as
+  deliberate rather than as a mistake about which column it belongs to.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <filter id="crevice" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.55" result="soft"/>
+      <feFlood flood-color="#4a4a4a" flood-opacity="0.55" result="ink"/>
+      <feComposite in="ink" in2="soft" operator="in"/>
+    </filter>
+
+    <path id="box-gloss" d="M2 10H30V19.6C25.24 21.47 6.76 21.47 2 19.6z"/>
+    <clipPath id="box-clip"><rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- The handle, behind the box so the box's shadow falls across its feet. -->
+    <path d="M9.4 13.6v-1.7a8 8 0 0 1 13.2 0v1.7" fill="none" stroke="url(#face)"
+          stroke-width="2.5"/>
+    <path d="M9.4 12.6v-0.7a8 8 0 0 1 13.2 0v0.7" fill="none" stroke="#ffffff"
+          stroke-opacity="0.6" stroke-width="0.85"/>
+
+    <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6" fill="url(#face)"/>
+    <g clip-path="url(#box-clip)">
+      <use href="#box-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <!-- The lid's part line, and the shadow under its overhang. -->
+      <path d="M3.6 17.4h24.8" stroke="#9c9c9c" stroke-opacity="0.6" stroke-width="0.5"
+            transform="translate(0 0.22)"/>
+      <path d="M3.6 17.4h24.8" stroke="#ffffff" stroke-opacity="0.85" stroke-width="0.42"
+            transform="translate(0 -0.26)"/>
+    </g>
+    <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6" fill="url(#turn)"/>
+    <g clip-path="url(#box-clip)">
+      <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6"
+            fill="none" stroke="url(#edge)" stroke-width="1.2"/>
+    </g>
+
+    <!-- The catch. -->
+    <rect x="14.3" y="15.6" width="3.4" height="4.2" rx="1" fill="url(#face)"/>
+    <rect x="14.3" y="15.6" width="3.4" height="4.2" rx="1"
+          fill="none" stroke="url(#edge)" stroke-width="0.6"/>
+  </g>
+</svg>

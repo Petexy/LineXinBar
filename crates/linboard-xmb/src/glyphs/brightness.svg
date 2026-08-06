@@ -1,0 +1,78 @@
+<!--
+  The brightness bar's glyph: a disc with eight rays, the sun every screen
+  control has been drawn as since screens had knobs.
+
+  Lit by the same lamp as the two tiles above it in the column — see
+  pointer-stick for what that lamp is made of — but with much less of the
+  machinery, because this is drawn at half their size. A quick-settings bar is
+  62 px tall and gives its glyph 0.54 of that, so 33 px on an ordinary display:
+  a seam, a crevice or a sunk well at that size is three grey pixels and reads
+  as a smudge on the drawing rather than as a fold in it. What survives the
+  reduction is the light itself, and that is what is used here.
+
+  Two things do the work. The first is that the lamp is *one* lamp: the
+  gradient lighting the rays is in user space, spanning the whole drawing, so
+  the ray at the top of the sun is white and the one at the bottom is grey.
+  Give each ray its own gradient instead — the obvious way to write it — and
+  all eight come out identical, which is exactly the flat wheel this replaces.
+  The second is that the disc is a ball rather than a hole punched in the
+  light: shaded radially from where the lamp is, with a rim underneath where
+  light comes back up off whatever it is standing over.
+
+  Then the whole thing drops one shadow, tighter and shorter than the tiles'
+  because it is a smaller object closer to the glass behind it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <!-- The lamp, in user space. This is the whole trick at this size: it is
+         the *drawing* that is lit, not each mark in it separately. -->
+    <linearGradient id="lit" gradientUnits="userSpaceOnUse" x1="0" y1="1.5" x2="0" y2="22.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.44" stop-color="#f4f4f4"/>
+      <stop offset="0.82" stop-color="#cfcfcf"/>
+      <stop offset="1" stop-color="#e4e4e4"/>
+    </linearGradient>
+
+    <!-- The ball. A sphere and not a shell, so it is shaded radially from
+         where the lamp is rather than split across a waist: the curved gloss
+         boundary that makes a moulded case look moulded puts a hard line
+         across a ball and turns it into two half-discs of different greys. -->
+    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f6f6f6"/>
+      <stop offset="0.8" stop-color="#d6d6d6"/>
+      <stop offset="1" stop-color="#c6c6c6"/>
+    </radialGradient>
+
+    <!-- The rim where the ball turns over: lit at the top, lit again off the
+         bounce underneath, nothing down the sides. -->
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="7.7" x2="0" y2="16.3">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.24" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.84" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
+    </linearGradient>
+
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.28" dy="0.62" stdDeviation="0.34"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="disc-clip"><circle cx="12" cy="12" r="4.3"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- The rays stop a little short of the cell now. They used to run to the
+         edge of it, which left nowhere for the shadow to fall: a drop shadow
+         the viewBox cuts off is a shadow with a straight side, and the eye
+         reads that as the drawing being clipped rather than as light. -->
+    <g fill="none" stroke="url(#lit)" stroke-width="1.9" stroke-linecap="round">
+      <path d="M12 2.95v2.5M12 18.55v2.5M2.95 12h2.5M18.55 12h2.5"/>
+      <path d="M5.6 5.6l1.77 1.77M16.63 16.63l1.77 1.77M18.4 5.6l-1.77 1.77M7.37 16.63l-1.77 1.77"/>
+    </g>
+
+    <circle cx="12" cy="12" r="4.3" fill="url(#ball)"/>
+    <g clip-path="url(#disc-clip)">
+      <circle cx="12" cy="12" r="4.3" fill="none" stroke="url(#edge)" stroke-width="0.9"/>
+    </g>
+  </g>
+</svg>

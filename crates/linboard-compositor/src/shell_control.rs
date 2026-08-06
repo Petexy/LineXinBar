@@ -51,6 +51,10 @@ pub struct ShellControlState {
     /// Last title broadcast per display, likewise. Rebuilt from the live
     /// outputs on every refresh, so a display going away drops out of it.
     output_foreground: Vec<(Output, String)>,
+    /// Last application identity broadcast per display. Separate from the
+    /// title because it answers a different question: the title is what a menu
+    /// prints, this is what a setting is filed under.
+    output_app_id: Vec<(Output, String)>,
     /// Last window list broadcast per display, likewise.
     output_windows: Vec<(Output, Vec<OverviewEntry>)>,
     /// Display the shell says the user is on, from `set_launch_output`.
@@ -65,10 +69,20 @@ const PER_OUTPUT_SINCE: u32 = 3;
 /// requests to enter it and to activate a window from it.
 const OVERVIEW_SINCE: u32 = 4;
 
-/// The version advertised, and so the highest a shell can bind: adds
-/// `kill_window`. Every request below it is still served, so an older shell
-/// keeps working.
-const CURRENT_VERSION: u32 = 5;
+/// First version that forwards the on-screen keyboard binding. Below it a
+/// shell has no way to hear that key, and its keyboard can only be summoned
+/// from a controller.
+const KEYBOARD_SINCE: u32 = 6;
+
+/// First version with the stick pointer: the two requests that move and click
+/// the seat's pointer, and the per-display application identity a shell files
+/// the choice to turn it on under.
+const POINTER_SINCE: u32 = 7;
+
+/// The version advertised, and so the highest a shell can bind: adds the key
+/// the shell can press on the seat's keyboard. Every request below it is still
+/// served, so an older shell keeps working.
+const CURRENT_VERSION: u32 = 8;
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -81,6 +95,7 @@ impl ShellControlState {
             awaiting_outputs: Vec::new(),
             foreground: String::new(),
             output_foreground: Vec::new(),
+            output_app_id: Vec::new(),
             output_windows: Vec::new(),
             launch_output: None,
         }
@@ -98,6 +113,22 @@ impl ShellControlState {
     fn send_guide(&self) {
         for instance in &self.instances {
             instance.guide();
+        }
+    }
+
+    /// Whether any shell listening is new enough to be told about the
+    /// keyboard binding. Used only to explain a key that did nothing.
+    fn wants_keyboard(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|instance| instance.version() >= KEYBOARD_SINCE)
+    }
+
+    fn send_keyboard(&self) {
+        for instance in &self.instances {
+            if instance.version() >= KEYBOARD_SINCE {
+                instance.keyboard();
+            }
         }
     }
 
@@ -135,6 +166,27 @@ impl ShellControlState {
         self.output_foreground = current;
     }
 
+    /// The same for the per-display application identities.
+    ///
+    /// Diffed separately from the titles rather than sent with them: a title
+    /// changes every time a document is saved or a track starts, and the
+    /// identity behind it does not.
+    fn broadcast_output_app_id(&mut self, current: Vec<(Output, String)>) {
+        for (output, app_id) in &current {
+            let known = self
+                .output_app_id
+                .iter()
+                .any(|(seen, seen_id)| seen == output && seen_id == app_id);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_app_id(instance, output, app_id);
+            }
+        }
+        self.output_app_id = current;
+    }
+
     /// Publish the per-display window lists, resending only displays whose
     /// list actually changed. Order is topmost first — the same order the
     /// card layout assigns slots in.
@@ -167,6 +219,9 @@ impl ShellControlState {
         let mut sent = false;
         for (output, title) in &self.output_foreground {
             sent |= send_output_foreground(shell, output, title);
+        }
+        for (output, app_id) in &self.output_app_id {
+            sent |= send_output_app_id(shell, output, app_id);
         }
         for (output, windows) in &self.output_windows {
             sent |= send_output_windows(shell, output, windows);
@@ -204,6 +259,23 @@ fn send_output_foreground(shell: &LinboardShellV1, output: &Output, title: &str)
     let mut sent = false;
     for wl_output in output.client_outputs(&client) {
         shell.output_foreground(&wl_output, title.to_string());
+        sent = true;
+    }
+    sent
+}
+
+/// Send one display's foreground application identity, resolved through the
+/// receiving client's own `wl_output` for the same reason the title is.
+fn send_output_app_id(shell: &LinboardShellV1, output: &Output, app_id: &str) -> bool {
+    if shell.version() < POINTER_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_app_id(&wl_output, app_id.to_string());
         sent = true;
     }
     sent
@@ -249,6 +321,20 @@ impl LinboardState {
         self.linboard.shell_control.send_guide();
     }
 
+    /// Tell the shell the user asked for its keyboard.
+    ///
+    /// Routed here rather than left to the shell for the same reason as the
+    /// guide: the key is pressed while an application holds the keyboard, and
+    /// a keyboard that could only be summoned by a client already receiving
+    /// keys would never be needed.
+    pub fn open_keyboard(&mut self) {
+        if !self.linboard.shell_control.wants_keyboard() {
+            tracing::debug!("keyboard binding pressed but no shell is listening for it");
+            return;
+        }
+        self.linboard.shell_control.send_keyboard();
+    }
+
     /// Publish the foreground application's title, if it changed — both for
     /// the session as a whole and for each display.
     ///
@@ -280,6 +366,22 @@ impl LinboardState {
         self.linboard
             .shell_control
             .broadcast_output_foreground(per_output);
+
+        // What that same window *is*, rather than what it currently says it
+        // is. The shell files per-application settings under this.
+        let per_output_app_id = outputs
+            .iter()
+            .map(|output| {
+                let app_id = self
+                    .topmost_application(Some(output))
+                    .map(|window| window_app_id(&window))
+                    .unwrap_or_default();
+                (output.clone(), app_id)
+            })
+            .collect();
+        self.linboard
+            .shell_control
+            .broadcast_output_app_id(per_output_app_id);
 
         // The overview's window lists ride the same refresh: they are diffed
         // per display, so an unchanged desktop sends nothing.
@@ -464,6 +566,37 @@ fn window_title(window: &Window) -> String {
     "Application".to_string()
 }
 
+/// What a window *is*, as opposed to what it is currently showing.
+///
+/// The `app_id` a toplevel sets, or an X11 window's class, both of which are
+/// meant to be the same string every time that application runs — which is the
+/// whole reason the shell asks for it rather than keying settings on a title
+/// that changes with the open document.
+///
+/// Empty when the client set neither. A setting cannot be filed under nothing,
+/// and the shell treats it as an application it is not allowed to remember
+/// anything about, which is better than everything nameless sharing one entry.
+fn window_app_id(window: &Window) -> String {
+    if let Some(toplevel) = window.toplevel() {
+        let app_id = with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().unwrap().app_id.clone())
+        });
+        return app_id
+            .filter(|app_id| !app_id.trim().is_empty())
+            .unwrap_or_default();
+    }
+    if let Some(surface) = window.x11_surface() {
+        let class = surface.class();
+        if !class.trim().is_empty() {
+            return class;
+        }
+    }
+    String::new()
+}
+
 impl GlobalDispatch<LinboardShellV1, ()> for LinboardState {
     fn bind(
         state: &mut Self,
@@ -562,6 +695,31 @@ impl Dispatch<LinboardShellV1, ()> for LinboardState {
                     Some(window) => state.kill_window(&window),
                     None => tracing::debug!(id, "kill of a window that is gone"),
                 }
+            }
+            linboard_shell_v1::Request::MovePointer { dx, dy } => {
+                state.shell_move_pointer((dx, dy).into());
+            }
+            linboard_shell_v1::Request::ScrollPointer { dx, dy } => {
+                state.shell_scroll_pointer(dx, dy);
+            }
+            linboard_shell_v1::Request::PointerButton {
+                button,
+                state: down,
+            } => {
+                // The enum is wl_pointer's own, so anything that is not
+                // "pressed" is a release — including a value from a shell that
+                // has learned a third one this compositor has not.
+                let pressed = down
+                    .into_result()
+                    .is_ok_and(|down| down == linboard_shell_v1::ButtonState::Pressed);
+                state.shell_pointer_button(button, pressed);
+            }
+            linboard_shell_v1::Request::KeyboardKey { key, state: down } => {
+                // As above: anything that is not "pressed" is a release.
+                let pressed = down
+                    .into_result()
+                    .is_ok_and(|down| down == linboard_shell_v1::KeyState::Pressed);
+                state.shell_keyboard_key(key, pressed);
             }
             linboard_shell_v1::Request::Quit => {
                 tracing::info!("session shell requested shutdown");

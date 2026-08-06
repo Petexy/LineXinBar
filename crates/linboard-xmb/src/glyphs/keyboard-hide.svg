@@ -1,0 +1,31 @@
+<!--
+  The way out of the on-screen keyboard: a keyboard folding down out of sight.
+
+  A word would have done — this key said "Close" until it did not — but the
+  word is the only thing on the board that has to be read rather than
+  recognised, and at the distance a console is used from, from across a room,
+  reading is the expensive part. Every phone has taught this picture.
+
+  Drawn as an outline with the keys punched through it rather than as a filled
+  slab, because the atlas multiplies the quad's colour into the texel: nothing
+  here can be darker than the label beside it, so a "dark" keycap can only be
+  an absence of ink.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect x="2.4" y="3.4" width="19.2" height="10.8" rx="1.8"
+        fill="none" stroke="#fff" stroke-width="1.5"/>
+  <g fill="#fff">
+    <rect x="5.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="8.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="11.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="14.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="17.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
+    <!-- A short second rank and a space bar, which is as much of a keyboard
+         as survives being drawn at the height of a keycap. -->
+    <rect x="5.1" y="9.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="17.1" y="9.0" width="1.8" height="1.7" rx="0.5"/>
+    <rect x="8.1" y="9.0" width="7.8" height="1.7" rx="0.6"/>
+  </g>
+  <!-- Down, and out. -->
+  <path fill="#fff" d="M12 22.1 7.7 16.6h8.6z"/>
+</svg>

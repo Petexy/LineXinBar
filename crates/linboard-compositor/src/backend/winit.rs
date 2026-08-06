@@ -273,7 +273,7 @@ fn render(state: &mut LinboardState) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("submit failed: {e}"))?;
 
     let time = state.linboard.start_time.elapsed();
-    post_repaint(&state.linboard.space, &output, time, Some(Duration::ZERO));
+    post_repaint(&state.linboard, &output, time, Some(Duration::ZERO));
 
     Ok(())
 }

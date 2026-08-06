@@ -48,6 +48,11 @@ pub enum Move {
 /// Matches the bar's easing so the two feel related.
 const HIGHLIGHT_EASE_RATE: f32 = 21.0;
 
+/// How long a switch takes to go over, in seconds: down, and back up with a
+/// little bounce. Long enough to be seen from a couch, short enough that a
+/// second press lands before the first has finished being watched.
+pub const PRESS_TIME: f32 = 0.34;
+
 /// How long the power dialog takes to grow out of its button, and to fall back
 /// into it. Short: it is a question, and the answer is already on screen — the
 /// motion is there to say *where the dialog came from*, not to be watched.
@@ -91,6 +96,15 @@ fn ease_rect(
 /// One entry in the guide menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
+    /// Whether the right stick moves the pointer inside the application in
+    /// front. A square tile, not a row: see [`Item::is_tile`].
+    Pointer,
+    /// The per-application volume mixer, which does not exist yet.
+    Mixer,
+    /// How loud the session is. A bar, not a button.
+    Volume,
+    /// How bright the display the menu is on is.
+    Brightness,
     /// Dismiss the overlay and go back to whatever was underneath.
     Resume,
     /// Kill the application whose card is selected beside the column.
@@ -99,6 +113,36 @@ pub enum Item {
     Dashboard,
     /// The power button at the foot of the column: opens [`PowerItem`].
     Power,
+}
+
+/// The bands the column is divided into. A rule is drawn wherever two
+/// neighbouring entries disagree about which one they are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Band {
+    /// What the session sounds and looks like.
+    Quick,
+    /// What the menu does to the application in front of it.
+    Window,
+    /// What it does to the session.
+    Session,
+}
+
+/// Which of the two bars an entry is, for the code that has to move one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bar {
+    Volume,
+    Brightness,
+}
+
+/// Which bars this machine turned out to have.
+///
+/// Neither is a given: a session with no mixer of any kind has no volume to
+/// set, and a screen is only dimmable if the kernel or the monitor itself says
+/// so. A row that cannot do anything is left out rather than drawn dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Bars {
+    pub volume: bool,
+    pub brightness: bool,
 }
 
 /// Longest an application title may run inside a menu label. Sized for the
@@ -116,14 +160,28 @@ fn ellipsize(title: &str) -> String {
     }
 }
 
-/// Entries offered when a window is selected beside the column.
-const WITH_WINDOW: &[Item] = &[Item::Resume, Item::Close, Item::Dashboard, Item::Power];
-/// The card under the cursor is the start screen itself. There is nothing to
-/// close, and nothing for Dashboard to do that the card does not already do —
-/// with the bar selected, going to it *is* resuming it.
-const WITHOUT_WINDOW: &[Item] = &[Item::Resume, Item::Power];
-
 impl Item {
+    /// Whether this entry is one of the square tiles at the top of the column
+    /// rather than a row spanning it.
+    ///
+    /// The two of them share one line, which is the only place the column is
+    /// not one entry per row. They are tiles because they are switches: a
+    /// switch is a thing with two states, and a full-width chip that changed
+    /// only in tint would read as a row that had been selected rather than as
+    /// a control that is on.
+    pub fn is_tile(self) -> bool {
+        matches!(self, Item::Pointer | Item::Mixer)
+    }
+
+    /// The glyph drawn on a tile.
+    pub fn glyph(self) -> Option<&'static str> {
+        match self {
+            Item::Pointer => Some(crate::icons::POINTER_STICK),
+            Item::Mixer => Some(crate::icons::VOLUME_MIXER),
+            _ => None,
+        }
+    }
+
     /// Menu label. `target` names the window the Close entry would kill —
     /// the one whose card is selected, not necessarily the one in front.
     ///
@@ -141,10 +199,89 @@ impl Item {
                 None => "Close".to_string(),
             },
             Item::Dashboard => "Dashboard".to_string(),
-            // Drawn as a glyph, so there is nothing to write.
-            Item::Power => String::new(),
+            // Drawn as a glyph or as a track, so there is nothing to write.
+            Item::Power | Item::Volume | Item::Brightness | Item::Pointer | Item::Mixer => {
+                String::new()
+            }
         }
     }
+
+    /// Which bar this entry is, if it is one.
+    ///
+    /// A bar is slid rather than pressed: Left and Right move it, which is
+    /// also why they are the two directions that do not cross to the window
+    /// cards from a row like this.
+    pub fn bar(self) -> Option<Bar> {
+        match self {
+            Item::Volume => Some(Bar::Volume),
+            Item::Brightness => Some(Bar::Brightness),
+            _ => None,
+        }
+    }
+
+    fn band(self) -> Band {
+        match self {
+            Item::Pointer | Item::Mixer | Item::Volume | Item::Brightness => Band::Quick,
+            Item::Resume | Item::Close => Band::Window,
+            Item::Dashboard | Item::Power => Band::Session,
+        }
+    }
+}
+
+/// The column's lines, as spans over `items`: `(first, count)`.
+///
+/// Every entry is a line of its own except the tiles, which share theirs. The
+/// menu moves by line rather than by entry — Up from Volume reaches the tile
+/// row, not the second tile in it — so this is what both the navigation and
+/// the layout are written against, and they cannot disagree about the shape of
+/// the column because there is only one answer to ask.
+pub fn lines(items: &[Item]) -> Vec<(usize, usize)> {
+    let mut lines: Vec<(usize, usize)> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        match lines.last_mut() {
+            // Tiles run on until something that is not one.
+            Some((first, count)) if item.is_tile() && items[*first].is_tile() => *count += 1,
+            _ => lines.push((index, 1)),
+        }
+    }
+    lines
+}
+
+/// The rows a rule is drawn above: every place the column changes band.
+///
+/// The power button is skipped, in both directions. It is not in the column at
+/// all — it sits in the sidebar's corner — so it neither gets a rule of its own
+/// nor counts as the entry above the one after it.
+pub fn separator_rows(items: &[Item]) -> Vec<usize> {
+    let mut rows = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        if *item == Item::Power {
+            continue;
+        }
+        let above = items[..index]
+            .iter()
+            .rev()
+            .find(|item| **item != Item::Power);
+        if above.is_some_and(|above| above.band() != item.band()) {
+            rows.push(index);
+        }
+    }
+    rows
+}
+
+/// Which line of `lines` entry `index` sits on.
+fn line_index(lines: &[(usize, usize)], index: usize) -> usize {
+    lines
+        .iter()
+        .position(|(first, count)| index >= *first && index < first + count)
+        .unwrap_or(0)
+}
+
+/// That line's span, or `None` for a column with nothing in it at all — which
+/// [`Guide::items`] never produces, and which is answered rather than panicked
+/// over because the callers are asking about a keypress.
+fn line_at(lines: &[(usize, usize)], index: usize) -> Option<(usize, usize)> {
+    lines.get(line_index(lines, index)).copied()
 }
 
 /// A choice in the power dialog.
@@ -206,6 +343,26 @@ pub struct Guide {
     /// column rather than jumping from row to row, and how fast it is going.
     menu_highlight: Option<[f32; 4]>,
     menu_highlight_speed: [f32; 4],
+    /// Which quick-settings bars the machine has. Held here rather than passed
+    /// in, because it is the one thing that changes the shape of the column
+    /// without the user having done anything.
+    bars: Bars,
+    /// Whether the compositor can be asked to move the pointer, which is what
+    /// the stick-pointer tile would be for. Off on any compositor but
+    /// Linboard, and on one too old to have the request.
+    pointer_control: bool,
+    /// Whether there is an application in front for the pointer tile to be
+    /// about. Without one the switch has nothing to be turned on for, and it
+    /// is drawn as a control that cannot be reached rather than one that can
+    /// be pressed to no effect.
+    pointer_target: bool,
+    /// Which tile in the line the highlight is on was last chosen, so stepping
+    /// down off the row and back up returns to the same one.
+    selected_column: usize,
+    /// The entry being pressed, and when the press started. A press outlives
+    /// the keystroke: the switch has to be *seen* to go over, which takes
+    /// longer than the frame the button went down on.
+    pressed: Option<(Item, Instant)>,
 }
 
 impl Guide {
@@ -314,28 +471,168 @@ impl Guide {
         matches!(self.mode(), Mode::Menu | Mode::BarOverApp)
     }
 
-    /// The entries to offer. `closable` is whether the selected card is a real
-    /// window — which is the only thing the column varies on, because both
-    /// entries it adds are about that window.
-    pub fn items(&self, closable: bool) -> &'static [Item] {
-        if closable {
-            WITH_WINDOW
-        } else {
-            WITHOUT_WINDOW
+    /// Say which quick-settings bars the machine turned out to have.
+    ///
+    /// Nothing has to be redrawn on the strength of it. The answer settles a
+    /// second or so after startup, while the bar and not the menu is on
+    /// screen, and by the time the column is next drawn it is simply the right
+    /// shape; the one case where it can change with the menu already open —
+    /// moving to a display with no brightness control — is a screen that is
+    /// already being redrawn every frame for the selection pulse.
+    pub fn set_bars(&mut self, bars: Bars) {
+        self.bars = bars;
+    }
+
+    /// Say whether the pointer can be driven at all here.
+    ///
+    /// The same principle as the bars: a control the session cannot carry out
+    /// is left out of the column rather than drawn dead. Without Linboard's
+    /// own protocol there is no way to move a pointer that is not the shell's
+    /// own drawing, and a switch that turned on a pointer nothing could see
+    /// would be worse than no switch.
+    pub fn set_pointer_control(&mut self, available: bool) {
+        self.pointer_control = available;
+    }
+
+    /// Say whether there is an application for the tiles to be about.
+    ///
+    /// Unlike the bars, this is not allowed to change the *shape* of the
+    /// column — see [`Self::items`] — so it changes what can be reached in it
+    /// instead.
+    pub fn set_pointer_target(&mut self, running: bool) {
+        self.pointer_target = running;
+    }
+
+    /// Whether an entry can be chosen at all.
+    ///
+    /// The pointer tile is a switch about the application in front, so with
+    /// none there is nothing for it to be. A switch that could still be pressed
+    /// would be a control that does nothing when used exactly as intended,
+    /// which is worse than one the highlight visibly refuses to stop on.
+    ///
+    /// The mixer is *not* in that position, even though it has nothing behind
+    /// it yet. Unreachable is a state the column uses to mean "not from here" —
+    /// it comes and goes with what is running — and a control that was
+    /// permanently in it would teach the user that the sidebar has a dead spot
+    /// rather than that a mixer is on its way. It is a control being built, so
+    /// it stays reachable and presses like one.
+    ///
+    /// Everything else in the column always does something.
+    pub fn is_enabled(&self, item: Item) -> bool {
+        match item {
+            Item::Pointer => self.pointer_target,
+            _ => true,
         }
+    }
+
+    /// Whether any entry on a line can be chosen. A line where none can is
+    /// stepped straight over.
+    fn line_is_reachable(&self, items: &[Item], (first, count): (usize, usize)) -> bool {
+        items[first..first + count]
+            .iter()
+            .any(|item| self.is_enabled(*item))
+    }
+
+    // -- pressing one ------------------------------------------------------
+
+    /// Start the press animation on `item`.
+    pub fn press(&mut self, item: Item) {
+        self.pressed = Some((item, Instant::now()));
+    }
+
+    /// How far through its press `item` is, 0 at the button going down and 1
+    /// once the switch has finished going over. `None` when it is not being
+    /// pressed at all, which is every entry on almost every frame.
+    pub fn press_progress(&self, item: Item) -> Option<f32> {
+        let (pressed, at) = self.pressed?;
+        if pressed != item {
+            return None;
+        }
+        let progress = at.elapsed().as_secs_f32() / PRESS_TIME;
+        (progress < 1.0).then_some(progress)
+    }
+
+    /// Pretend the press started `seconds` ago, so tests can assert on the
+    /// middle of the movement instead of racing it.
+    #[cfg(test)]
+    pub fn backdate_press(&mut self, seconds: f32) {
+        if let Some((_, at)) = self.pressed.as_mut() {
+            *at = at
+                .checked_sub(std::time::Duration::from_secs_f32(seconds))
+                .unwrap_or(*at);
+        }
+    }
+
+    /// Whether a press is still playing, so the caller knows to keep drawing.
+    pub fn pressing(&self) -> bool {
+        self.pressed
+            .is_some_and(|(item, _)| self.press_progress(item).is_some())
+    }
+
+    /// The entries to offer.
+    ///
+    /// Three things vary the column. The tiles and the bars at the top are
+    /// whatever this session can actually change. `closable` is whether the
+    /// selected card is a real window, which governs the two entries that are
+    /// about that window — with the start screen selected there is nothing to
+    /// close, and nothing for Dashboard to do that the card does not already
+    /// do, because going to the bar *is* resuming it.
+    pub fn items(&self, closable: bool) -> Vec<Item> {
+        let mut items = Vec::with_capacity(8);
+        // The tiles come first, and they do not come and go with the
+        // application the way Close does. A switch that vanished when the
+        // application it applies to exited would take the tile beside it
+        // half a row across the sidebar every time something was closed, and
+        // it is a switch for *next time* as much as for now: the point of
+        // remembering it per application is that it outlives the process.
+        if self.pointer_control {
+            items.push(Item::Pointer);
+        }
+        items.push(Item::Mixer);
+        if self.bars.volume {
+            items.push(Item::Volume);
+        }
+        if self.bars.brightness {
+            items.push(Item::Brightness);
+        }
+        items.push(Item::Resume);
+        if closable {
+            items.push(Item::Close);
+            items.push(Item::Dashboard);
+        }
+        items.push(Item::Power);
+        items
     }
 
     /// Row of the highlighted entry.
     ///
-    /// The Close entry comes and goes as the cards are scrolled, so the answer
-    /// is looked up by entry rather than remembered as a number. An entry that
-    /// has just disappeared falls back to Resume, which is the one row that is
-    /// never destructive and never absent.
+    /// The Close entry comes and goes as the cards are scrolled, and a bar
+    /// comes and goes with the display the menu is on, so the answer is looked
+    /// up by entry rather than remembered as a number. An entry that has just
+    /// disappeared falls back to Resume, which is the one row that is never
+    /// destructive and never absent — asked for by name, not as row zero,
+    /// because the quick-settings bars sit above it when there are any.
     pub fn selected_index(&self, closable: bool) -> usize {
         let items = self.items(closable);
+        let row = |wanted: Item| items.iter().position(|item| *item == wanted);
         self.selected
-            .and_then(|item| items.iter().position(|candidate| *candidate == item))
+            // An entry that has stopped being reachable is treated exactly
+            // like one that has gone: the application the pointer tile was
+            // about can exit with the menu already open and the highlight
+            // sitting on it.
+            .filter(|item| self.is_enabled(*item))
+            .and_then(row)
+            .or_else(|| row(Item::Resume))
             .unwrap_or(0)
+    }
+
+    /// Whether the highlight is on a line with somewhere else to go in the
+    /// given direction. What tells Left and Right apart from crossing to the
+    /// cards, without moving anything to find out.
+    pub fn can_move_in_line(&self, delta: i32, closable: bool) -> bool {
+        let items = self.items(closable);
+        self.along_line(&items, self.selected_index(closable), delta)
+            .is_some()
     }
 
     pub fn selected_item(&self, closable: bool) -> Option<Item> {
@@ -344,18 +641,81 @@ impl Guide {
             .copied()
     }
 
-    /// Move the highlight. Returns `true` when it actually moved.
+    /// Move the highlight up or down. Returns `true` when it actually moved.
+    ///
+    /// By *line*, not by entry: the two tiles share one, and Up from the
+    /// volume bar should reach that line rather than walk through it. Which
+    /// tile it lands on is the one it was left on, so stepping off the row and
+    /// back does not quietly move the selection sideways.
     pub fn move_selection(&mut self, delta: i32, closable: bool) -> bool {
         let items = self.items(closable);
         if items.is_empty() {
             return false;
         }
+        let lines = lines(&items);
         let current = self.selected_index(closable);
+        let line = line_index(&lines, current);
+
         // Wrapping: the column is short enough that running off the end is
-        // more annoying than surprising.
-        let next = (current as i32 + delta).rem_euclid(items.len() as i32) as usize;
+        // more annoying than surprising. Lines with nothing reachable on them
+        // are stepped straight over rather than landed on and bounced off —
+        // with nothing running that is the whole tile line, and a highlight
+        // that visited it would stop on a switch it cannot throw.
+        let mut next_line = line;
+        for _ in 0..lines.len() {
+            next_line = (next_line as i32 + delta).rem_euclid(lines.len() as i32) as usize;
+            if self.line_is_reachable(&items, lines[next_line]) {
+                break;
+            }
+        }
+
+        let (first, count) = lines[next_line];
+        // The remembered column where it can be had, and the nearest reachable
+        // entry to it otherwise.
+        let wanted = first + self.selected_column.min(count - 1);
+        let next = (first..first + count)
+            .filter(|index| self.is_enabled(items[*index]))
+            .min_by_key(|index| index.abs_diff(wanted))
+            .unwrap_or(wanted);
         self.selected = Some(items[next]);
         next != current
+    }
+
+    /// Move the highlight along the line it is on — which only the tiles have
+    /// more than one entry in.
+    ///
+    /// Deliberately does not wrap, and says so by returning `false`: Right off
+    /// the last tile is how the caller knows to cross to the window cards
+    /// instead, the same as Right from any other row.
+    pub fn move_in_line(&mut self, delta: i32, closable: bool) -> bool {
+        let items = self.items(closable);
+        let current = self.selected_index(closable);
+        let Some(next) = self.along_line(&items, current, delta) else {
+            return false;
+        };
+        let (first, _) = line_at(&lines(&items), current).unwrap_or((next, 1));
+        self.selected_column = next - first;
+        self.selected = Some(items[next]);
+        true
+    }
+
+    /// The next reachable entry along the line from `current`, if there is one.
+    ///
+    /// Disabled entries are stepped over rather than stopped on, so a line
+    /// whose other tile is the mixer behaves as though it held one tile —
+    /// which, until there is a mixer behind it, it does.
+    fn along_line(&self, items: &[Item], current: usize, delta: i32) -> Option<usize> {
+        let (first, count) = line_at(&lines(items), current)?;
+        let mut at = current as i32;
+        loop {
+            at += delta.signum();
+            if at < first as i32 || at >= (first + count) as i32 {
+                return None;
+            }
+            if self.is_enabled(items[at as usize]) {
+                return Some(at as usize);
+            }
+        }
     }
 
     // -- the power dialog ---------------------------------------------------
@@ -420,6 +780,8 @@ impl Guide {
     pub fn open(&mut self) {
         self.mode = Some(Mode::Menu);
         self.selected = Some(Item::Resume);
+        self.selected_column = 0;
+        self.pressed = None;
         self.pane = Some(Pane::Menu);
         self.selected_window = 0;
         self.power = None;
@@ -446,7 +808,8 @@ impl Guide {
     /// per display, so the overlay cannot end up in front of every screen at
     /// once.
     ///
-    /// `focused` is whether this is the display being driven; `base` is the
+    /// `focused` is whether this is the display being driven; `keyboard` is
+    /// whether the on-screen keyboard or its hint is on it; `base` is the
     /// layer the bar sits on when it is not covering anything.
     pub fn surface_state(
         &self,
@@ -454,6 +817,7 @@ impl Guide {
         app_running: bool,
         keep_grabbed: bool,
         launching: bool,
+        keyboard: bool,
         base: Layer,
     ) -> (Layer, KeyboardInteractivity) {
         // A launch splash is over the application it is waiting for — that is
@@ -476,6 +840,18 @@ impl Guide {
         // whatever the application would prefer.
         if self.is_over_app() {
             return (Layer::Overlay, KeyboardInteractivity::Exclusive);
+        }
+
+        // The on-screen keyboard is also drawn over the application — and
+        // must not take the keyboard from it, which is not a nicety but the
+        // condition of the thing working at all. Keyboard focus is what
+        // carries text-input focus: the moment the shell takes the keys, the
+        // application's text field deactivates, and the keyboard that came up
+        // because a field was focused would put itself away again. So it is
+        // driven from the controller, and the keys it types are sent through
+        // the seat as any other keyboard's would be.
+        if keyboard {
+            return (Layer::Overlay, KeyboardInteractivity::None);
         }
 
         // Behind it, where a running application owns input. With nothing in
@@ -534,6 +910,18 @@ mod tests {
     const WINDOW: bool = true;
     const START_CARD: bool = false;
 
+    /// A guide with nothing this machine can do: no bars, no pointer control.
+    /// The mixer tile is there whatever the session is, because it is the
+    /// shell's own doing rather than something it has to ask for.
+    #[test]
+    fn the_column_carries_the_mixer_tile_on_any_session() {
+        let guide = Guide::default();
+        assert_eq!(
+            guide.items(START_CARD),
+            vec![Item::Mixer, Item::Resume, Item::Power]
+        );
+    }
+
     #[test]
     fn the_window_entries_are_offered_only_when_a_window_is_selected() {
         let guide = Guide::default();
@@ -556,23 +944,26 @@ mod tests {
         let mut guide = Guide::default();
         guide.open();
 
-        // Down the four-entry column, then wrap back to the top.
-        for expected in [Item::Close, Item::Dashboard, Item::Power, Item::Resume] {
+        // Down the column to its foot.
+        for expected in [Item::Close, Item::Dashboard, Item::Power] {
             assert!(guide.move_selection(1, WINDOW));
             assert_eq!(guide.selected_item(WINDOW), Some(expected));
         }
 
         // Sitting on the power button when the application exits must not
         // index past the shorter column, nor land on something else.
-        guide.move_selection(-1, WINDOW);
-        assert_eq!(guide.selected_item(WINDOW), Some(Item::Power));
         assert_eq!(guide.selected_item(START_CARD), Some(Item::Power));
-        assert_eq!(guide.selected_index(START_CARD), 1);
+        assert_eq!(guide.selected_index(START_CARD), 2);
+
+        // And on round to the top of the column rather than stopping there,
+        // which is the tile line: the mixer is on it and is always a stop.
+        assert!(guide.move_selection(1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
     }
 
     /// The reason the selection is held as an entry and not a row number:
     /// scrolling the cards onto the start screen drops two rows, and a
-    /// remembered row 2 would mean "Dashboard" before and "Power" after.
+    /// remembered row 3 would mean "Dashboard" before and "Power" after.
     #[test]
     fn the_highlight_stays_on_its_entry_when_the_column_shortens() {
         let mut guide = Guide::default();
@@ -584,8 +975,8 @@ mod tests {
 
         // Power survives the column halving; the row it sits on does not.
         assert_eq!(guide.selected_item(START_CARD), Some(Item::Power));
-        assert_eq!(guide.selected_index(WINDOW), 3);
-        assert_eq!(guide.selected_index(START_CARD), 1);
+        assert_eq!(guide.selected_index(WINDOW), 4);
+        assert_eq!(guide.selected_index(START_CARD), 2);
     }
 
     /// Losing the selected entry must not silently select a destructive one.
@@ -759,6 +1150,345 @@ mod tests {
         assert!(next[2] < 400.0 && next[2] > 200.0);
     }
 
+    const BOTH_BARS: Bars = Bars {
+        volume: true,
+        brightness: true,
+    };
+
+    /// The bars are only offered where they can do something. Neither is a
+    /// given: a session with no mixer at all has no volume, and most desktop
+    /// monitors cannot be dimmed by anything but their own buttons.
+    #[test]
+    fn a_bar_is_offered_only_where_the_machine_has_the_control() {
+        let mut guide = Guide::default();
+        assert!(!guide.items(WINDOW).iter().any(|item| item.bar().is_some()));
+
+        guide.set_bars(Bars {
+            volume: true,
+            brightness: false,
+        });
+        assert_eq!(guide.items(WINDOW).get(1), Some(&Item::Volume));
+        assert!(!guide.items(WINDOW).contains(&Item::Brightness));
+
+        guide.set_bars(BOTH_BARS);
+        guide.set_pointer_control(true);
+        assert_eq!(
+            guide.items(WINDOW),
+            vec![
+                Item::Pointer,
+                Item::Mixer,
+                Item::Volume,
+                Item::Brightness,
+                Item::Resume,
+                Item::Close,
+                Item::Dashboard,
+                Item::Power
+            ]
+        );
+        // Losing the window still only takes the window's own entries.
+        assert_eq!(
+            guide.items(START_CARD),
+            vec![
+                Item::Pointer,
+                Item::Mixer,
+                Item::Volume,
+                Item::Brightness,
+                Item::Resume,
+                Item::Power
+            ]
+        );
+    }
+
+    /// The stick pointer needs a compositor that can move one. Without that
+    /// the switch is left out rather than drawn dead, as the bars are.
+    #[test]
+    fn the_pointer_tile_needs_a_compositor_that_can_move_a_pointer() {
+        let mut guide = Guide::default();
+        assert!(!guide.items(WINDOW).contains(&Item::Pointer));
+
+        guide.set_pointer_control(true);
+        assert_eq!(guide.items(WINDOW).first(), Some(&Item::Pointer));
+
+        // And it goes again if the session it was bound to did.
+        guide.set_pointer_control(false);
+        assert!(!guide.items(WINDOW).contains(&Item::Pointer));
+    }
+
+    /// The rules mark where the column changes from one kind of thing to
+    /// another. The power button is in neither reckoning: it is not in the
+    /// column, it is in the sidebar's corner.
+    #[test]
+    fn a_rule_is_drawn_wherever_the_column_changes_its_mind() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.set_pointer_control(true);
+        // Tiles, bars | Resume, Close | Dashboard
+        assert_eq!(separator_rows(&guide.items(WINDOW)), vec![4, 6]);
+        // The same, with the window's own two entries gone.
+        assert_eq!(separator_rows(&guide.items(START_CARD)), vec![4]);
+
+        // No rule between the tiles and the bars: they are the same band —
+        // what the session sounds and looks and behaves like. With neither bar
+        // the mixer tile is that whole band on its own, and the rule under it
+        // is the one that was there before the tiles were.
+        let plain = Guide::default();
+        assert_eq!(separator_rows(&plain.items(WINDOW)), vec![1, 3]);
+        assert_eq!(separator_rows(&plain.items(START_CARD)), vec![1]);
+    }
+
+    /// A bar is slid rather than pressed, and the two are told apart by the
+    /// entry itself so that no caller has to keep a list. The tiles are told
+    /// apart the same way, and are neither bars nor rows.
+    #[test]
+    fn every_entry_knows_which_kind_of_control_it_is() {
+        assert_eq!(Item::Volume.bar(), Some(Bar::Volume));
+        assert_eq!(Item::Brightness.bar(), Some(Bar::Brightness));
+        for button in [Item::Resume, Item::Close, Item::Dashboard, Item::Power] {
+            assert_eq!(button.bar(), None, "{button:?}");
+            assert!(!button.is_tile(), "{button:?}");
+            assert!(!button.label(Some("Celeste")).is_empty() || button == Item::Power);
+        }
+        // Neither bar carries a label: the track is the whole control.
+        assert!(Item::Volume.label(None).is_empty());
+        assert!(Item::Brightness.label(None).is_empty());
+
+        // The tiles are switches: a glyph, no track, no label, and neither of
+        // them is a bar that Left and Right would slide.
+        for tile in [Item::Pointer, Item::Mixer] {
+            assert!(tile.is_tile(), "{tile:?}");
+            assert_eq!(tile.bar(), None, "{tile:?}");
+            assert!(tile.label(Some("Celeste")).is_empty(), "{tile:?}");
+            assert!(tile.glyph().is_some(), "{tile:?}");
+        }
+        assert!(Item::Volume.glyph().is_none());
+    }
+
+    /// The two tiles share one line, and everything else has one to itself.
+    /// Both the navigation and the layout are written against this, which is
+    /// why there is one answer rather than two.
+    #[test]
+    fn the_tiles_share_a_line_and_nothing_else_does() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.set_pointer_control(true);
+        let items = guide.items(WINDOW);
+        assert_eq!(
+            lines(&items),
+            vec![(0, 2), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1)]
+        );
+
+        // One tile on its own is still just a line with one entry on it.
+        guide.set_pointer_control(false);
+        let items = guide.items(START_CARD);
+        assert_eq!(lines(&items), vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
+    }
+
+    /// Up and Down move by *line*, so the tile row is one stop rather than
+    /// two, and the tile they land on is the one that was left.
+    #[test]
+    fn the_tiles_are_one_stop_on_the_way_down_the_column() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.set_pointer_control(true);
+        guide.set_pointer_target(true);
+        guide.open();
+
+        // Up from Resume: the bars, then the tile line — once, not twice, and
+        // landing on the one tile that can be reached rather than walking
+        // through the pair.
+        for expected in [Item::Brightness, Item::Volume, Item::Pointer, Item::Power] {
+            assert!(guide.move_selection(-1, WINDOW));
+            assert_eq!(guide.selected_item(WINDOW), Some(expected));
+        }
+
+        // And back down through it the same way.
+        for expected in [Item::Pointer, Item::Volume] {
+            assert!(guide.move_selection(1, WINDOW));
+            assert_eq!(guide.selected_item(WINDOW), Some(expected));
+        }
+    }
+
+    /// With nothing running the tile line is still a stop — the mixer is on
+    /// it and the mixer is always reachable — but the highlight lands on the
+    /// mixer rather than on the switch that has nothing to be about.
+    #[test]
+    fn the_tile_line_lands_on_whichever_tile_can_be_reached() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.open();
+
+        // Up from Resume reaches the line, past the dead switch on its left.
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+
+        // An application arriving is all it takes for the other one to become
+        // a place the highlight will stop.
+        guide.set_pointer_target(true);
+        assert!(guide.move_in_line(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Pointer));
+    }
+
+    /// And a line with nothing reachable on it is stepped over rather than
+    /// landed on. No column the guide builds is in that state — the mixer
+    /// keeps the tile line alive and every other line is a control that always
+    /// works — so the rule is asserted where it lives.
+    #[test]
+    fn a_line_with_nothing_reachable_on_it_is_stepped_over() {
+        let guide = Guide::default();
+        let tiles = [Item::Pointer, Item::Mixer];
+        assert!(guide.line_is_reachable(&tiles, (0, 2)), "the mixer is");
+        assert!(
+            !guide.line_is_reachable(&tiles, (0, 1)),
+            "the switch is not"
+        );
+    }
+
+    /// And an application *leaving* with the highlight already on the tile
+    /// must not strand it on a switch that can no longer be thrown.
+    #[test]
+    fn losing_the_application_takes_the_highlight_off_the_tile() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.set_pointer_target(true);
+        guide.open();
+        guide.move_selection(-1, WINDOW);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Pointer));
+
+        guide.set_pointer_target(false);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+    }
+
+    /// Right off the end of a line is not a wrap — it is how the caller knows
+    /// to cross to the window cards, exactly as from any other row. An entry
+    /// that cannot be reached is not an end to stop at: it is stepped over,
+    /// and where there is nothing past it Right crosses as usual.
+    #[test]
+    fn moving_along_a_line_steps_over_what_cannot_be_reached() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.set_pointer_target(true);
+        guide.open();
+        guide.move_selection(-1, WINDOW);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Pointer));
+
+        // With an application in front both tiles can be thrown, so the line
+        // is two stops and Right is the other one.
+        assert!(guide.can_move_in_line(1, WINDOW));
+        assert!(guide.move_in_line(1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+
+        // Without one the switch is not a stop, so from the mixer Left leaves
+        // the column rather than landing on a control that does nothing.
+        guide.set_pointer_target(false);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+        assert!(!guide.can_move_in_line(-1, WINDOW));
+        assert!(!guide.move_in_line(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+        assert!(!guide.can_move_in_line(1, WINDOW));
+
+        // And a line with one entry on it never moves sideways at all.
+        guide.move_selection(1, WINDOW);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+        assert!(!guide.can_move_in_line(1, WINDOW));
+        assert!(!guide.can_move_in_line(-1, WINDOW));
+    }
+
+    /// Whether an entry can be chosen, in one place, because two answers —
+    /// what the highlight will stop on and how the tile is drawn — are read
+    /// from it.
+    #[test]
+    fn only_the_pointer_tile_is_ever_out_of_reach() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+
+        // The switch is about an application, so with none it cannot be
+        // thrown. The mixer is a control still being built, which is a
+        // different thing from one that does not apply here: it stays
+        // reachable so the sidebar never has a permanent dead spot in it.
+        assert!(!guide.is_enabled(Item::Pointer));
+        assert!(guide.is_enabled(Item::Mixer));
+        guide.set_pointer_target(true);
+        assert!(guide.is_enabled(Item::Pointer));
+        assert!(guide.is_enabled(Item::Mixer));
+
+        // Everything else in the column always does something.
+        for item in [
+            Item::Volume,
+            Item::Brightness,
+            Item::Resume,
+            Item::Close,
+            Item::Dashboard,
+            Item::Power,
+        ] {
+            assert!(guide.is_enabled(item), "{item:?}");
+        }
+    }
+
+    /// A switch has to be seen to go over, which takes longer than the frame
+    /// the button went down on.
+    #[test]
+    fn a_press_plays_out_after_the_button_has_been_let_go_of() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert!(!guide.pressing());
+        assert_eq!(guide.press_progress(Item::Pointer), None);
+
+        guide.press(Item::Pointer);
+        assert!(guide.pressing());
+        let progress = guide.press_progress(Item::Pointer).expect("under way");
+        assert!(progress < 0.2, "it starts at the beginning: {progress}");
+        // One entry at a time: nothing else in the column is going down.
+        assert_eq!(guide.press_progress(Item::Mixer), None);
+        assert_eq!(guide.press_progress(Item::Resume), None);
+
+        // And reopening the menu does not replay one that was never seen.
+        guide.open();
+        assert!(!guide.pressing());
+    }
+
+    /// The bars are near the top of the column, so opening the menu could
+    /// easily land on one — and then A, the button that means "do the thing",
+    /// would mute the session instead of resuming.
+    #[test]
+    fn opening_lands_on_resume_even_with_bars_above_it() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.open();
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+
+        // Up from Resume reaches them, and the wrap still comes out at the
+        // right end of a column that is now several entries longer.
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Brightness));
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Volume));
+        // Up on to the tile line, and on round to the foot of the column.
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Power));
+    }
+
+    /// A control that goes away must not leave the highlight on a row that no
+    /// longer exists — the same reason the selection is held as an entry
+    /// rather than as a row number.
+    #[test]
+    fn losing_a_bar_underneath_the_highlight_falls_back_to_resume() {
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        guide.open();
+        guide.move_selection(-1, WINDOW);
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Brightness));
+
+        // Moving to a monitor nothing can dim.
+        guide.set_bars(Bars {
+            volume: true,
+            brightness: false,
+        });
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+        assert_eq!(guide.selected_index(WINDOW), 2);
+    }
+
     #[test]
     fn opening_always_starts_on_resume() {
         let mut guide = Guide::default();
@@ -805,14 +1535,14 @@ mod tests {
         let guide = Guide::default();
         for driven in [true, false] {
             assert_eq!(
-                guide.surface_state(driven, true, false, true, Layer::Background),
+                guide.surface_state(driven, true, false, true, false, Layer::Background),
                 (Layer::Overlay, KeyboardInteractivity::None),
                 "the splash is on the display it was started from, driven or not"
             );
         }
         // And the display goes straight back to where it was afterwards.
         assert_eq!(
-            guide.surface_state(true, true, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
     }
@@ -823,7 +1553,7 @@ mod tests {
         guide.open();
 
         assert_eq!(
-            guide.surface_state(true, true, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, Layer::Background),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
         );
         for mode in [Mode::Menu, Mode::BarOverApp] {
@@ -831,7 +1561,7 @@ mod tests {
                 guide.show_bar_over_app();
             }
             assert_eq!(
-                guide.surface_state(false, true, false, false, Layer::Background),
+                guide.surface_state(false, true, false, false, false, Layer::Background),
                 (Layer::Background, KeyboardInteractivity::None),
                 "{mode:?} must leave the displays nobody is driving alone"
             );
@@ -857,6 +1587,7 @@ mod tests {
                         app_running,
                         keep_grabbed,
                         false,
+                        false,
                         Layer::Background,
                     );
                     assert_eq!(
@@ -869,20 +1600,53 @@ mod tests {
         }
     }
 
+    /// The condition the whole on-screen keyboard rests on. Keyboard focus is
+    /// what carries text-input focus, so a board that took the keys would take
+    /// them from the field it exists to type into: the application's text
+    /// input would deactivate, and the board would put itself away in the same
+    /// breath it appeared.
+    #[test]
+    fn the_on_screen_keyboard_rises_above_the_application_without_taking_its_keys() {
+        let guide = Guide::default();
+        assert_eq!(
+            guide.surface_state(true, true, false, false, true, Layer::Background),
+            (Layer::Overlay, KeyboardInteractivity::None)
+        );
+        // Even when the shell was told to hold the keyboard regardless: the
+        // debugging flag cannot be allowed to make the keyboard useless.
+        assert_eq!(
+            guide.surface_state(true, true, true, false, true, Layer::Background),
+            (Layer::Overlay, KeyboardInteractivity::None)
+        );
+        // Not on displays nobody is driving.
+        assert_eq!(
+            guide.surface_state(false, true, false, false, true, Layer::Background),
+            (Layer::Background, KeyboardInteractivity::None)
+        );
+        // And the menu wins if both somehow claim the display, because the
+        // menu is the one that needs the keys.
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(
+            guide.surface_state(true, true, false, false, true, Layer::Background),
+            (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+    }
+
     #[test]
     fn the_bar_yields_the_keyboard_to_a_running_application() {
         let guide = Guide::default();
         assert_eq!(
-            guide.surface_state(true, false, false, false, Layer::Background),
+            guide.surface_state(true, false, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
         assert_eq!(
-            guide.surface_state(true, true, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
         // Unless it was told not to.
         assert_eq!(
-            guide.surface_state(true, true, true, false, Layer::Background),
+            guide.surface_state(true, true, true, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
     }

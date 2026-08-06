@@ -53,6 +53,11 @@ pub enum Action {
     /// because a fullscreen application holds the keyboard, so the shell would
     /// never see the key itself.
     Guide,
+    /// Ask the session shell to show its on-screen keyboard.
+    ///
+    /// A compositor binding for the same reason, and rather more pointedly:
+    /// the application the keys are meant for is the one holding them.
+    Keyboard,
 }
 
 impl Action {
@@ -73,6 +78,7 @@ impl Action {
             "move-to-next-output" => Action::MoveWindowToNextOutput,
             "cycle-window" => Action::CycleWindow,
             "guide" | "overlay" => Action::Guide,
+            "keyboard" | "osk" => Action::Keyboard,
             _ => return None,
         })
     }
@@ -187,6 +193,11 @@ impl KeyBindings {
             ("Super+G", Action::Guide),
             ("Super+Home", Action::Guide),
             ("XF86HomePage", Action::Guide),
+            // The on-screen keyboard, likewise twice over: a chord for
+            // keyboards, and the media key a handheld or a remote sends for
+            // exactly this.
+            ("Super+K", Action::Keyboard),
+            ("XF86Keyboard", Action::Keyboard),
             ("Super+Tab", Action::CycleWindow),
             ("Super+Right", Action::FocusNextOutput),
             ("Super+Left", Action::FocusPrevOutput),
@@ -356,6 +367,7 @@ impl LinboardState {
             Action::MoveWindowToNextOutput => self.move_window_to_next_output(),
             Action::CycleWindow => self.cycle_window(),
             Action::Guide => self.open_guide(),
+            Action::Keyboard => self.open_keyboard(),
         }
     }
 
@@ -376,8 +388,31 @@ impl LinboardState {
     // -- pointer ---------------------------------------------------------
 
     fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {
+        self.pointer_motion_by(
+            event.delta(),
+            event.delta_unaccel(),
+            event.time(),
+            event.time_msec(),
+        );
+    }
+
+    /// One relative pointer movement, from wherever it came from.
+    ///
+    /// Split out of [`Self::on_pointer_motion`] because the shell's stick
+    /// pointer arrives without an input event to carry it: a controller is not
+    /// a seat device, so `linboard_shell_v1.move_pointer` hands over a bare
+    /// delta. Everything after that has to be identical — the constraints a
+    /// game holds, the relative stream it reads its camera from, the surface
+    /// the motion is delivered to — because a pointer moved two different ways
+    /// is two pointers as far as the application can tell.
+    fn pointer_motion_by(
+        &mut self,
+        delta: Point<f64, Logical>,
+        delta_unaccel: Point<f64, Logical>,
+        utime: u64,
+        time_msec: u32,
+    ) {
         let serial = SERIAL_COUNTER.next_serial();
-        let delta = event.delta();
         let Some(pointer) = self.linboard.seat.get_pointer() else {
             return;
         };
@@ -400,8 +435,8 @@ impl LinboardState {
             old_under.clone(),
             &RelativeMotionEvent {
                 delta,
-                delta_unaccel: event.delta_unaccel(),
-                utime: event.time(),
+                delta_unaccel,
+                utime,
             },
         );
 
@@ -436,7 +471,7 @@ impl LinboardState {
             &MotionEvent {
                 location,
                 serial,
-                time: event.time_msec(),
+                time: time_msec,
             },
         );
         self.activate_constraint_at(&pointer, hit.as_ref(), location);
@@ -617,9 +652,13 @@ impl LinboardState {
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
+        self.pointer_button_at(event.button_code(), event.state(), event.time_msec());
+    }
+
+    /// One pointer button, from wherever it came from — see
+    /// [`Self::pointer_motion_by`] for why that is a distinction worth making.
+    fn pointer_button_at(&mut self, button: u32, state: ButtonState, time_msec: u32) {
         let serial = SERIAL_COUNTER.next_serial();
-        let button = event.button_code();
-        let state = event.state();
 
         if state == ButtonState::Pressed {
             self.focus_under_pointer(serial);
@@ -632,11 +671,177 @@ impl LinboardState {
                     button,
                     state,
                     serial,
-                    time: event.time_msec(),
+                    time: time_msec,
                 },
             );
             pointer.frame(self);
         }
+    }
+
+    // -- the shell's stick pointer ---------------------------------------
+    //
+    // A controller is not a seat device: the shell reads it from /dev/input,
+    // which is the only reason it works while a game holds the keyboard, and
+    // hands the result over as `linboard_shell_v1.move_pointer`. From here on
+    // it is an ordinary pointer movement, because anything else would be a
+    // second pointer the application has to be taught about.
+
+    /// Move the pointer by a relative amount on the shell's behalf.
+    ///
+    /// Refused while nothing is running: the stick is a mouse *inside an
+    /// application*, and a shell that left it on would otherwise walk the
+    /// cursor across a desktop that has only the launcher on it.
+    pub fn shell_move_pointer(&mut self, delta: Point<f64, Logical>) {
+        if delta.x == 0.0 && delta.y == 0.0 {
+            return;
+        }
+        if !self.has_application_window() {
+            return;
+        }
+        let time = self.monotonic_msec();
+        // The unaccelerated delta is the same number: a stick has no
+        // acceleration curve of the compositor's to undo, and a game reading
+        // the raw stream should see what the shell actually sent.
+        self.pointer_motion_by(delta, delta, u64::from(time) * 1000, time);
+    }
+
+    /// Scroll under the pointer on the shell's behalf.
+    ///
+    /// Described to clients as a continuous source rather than as wheel
+    /// notches, because that is what a stick is: pushed further to scroll
+    /// faster, like a touchpad dragged further, with no detent anywhere in it
+    /// to round the movement to.
+    pub fn shell_scroll_pointer(&mut self, dx: f64, dy: f64) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        if !self.has_application_window() {
+            return;
+        }
+        let Some(pointer) = self.linboard.seat.get_pointer() else {
+            return;
+        };
+        self.ensure_pointer_focus(&pointer);
+
+        let mut frame = AxisFrame::new(self.monotonic_msec()).source(AxisSource::Continuous);
+        if dx != 0.0 {
+            frame = frame.value(Axis::Horizontal, dx);
+        }
+        if dy != 0.0 {
+            frame = frame.value(Axis::Vertical, dy);
+        }
+        pointer.axis(self, frame);
+        pointer.frame(self);
+    }
+
+    /// Press or release a pointer button on the shell's behalf.
+    pub fn shell_pointer_button(&mut self, button: u32, pressed: bool) {
+        if !self.has_application_window() {
+            return;
+        }
+        if let Some(pointer) = self.linboard.seat.get_pointer() {
+            self.ensure_pointer_focus(&pointer);
+        }
+        let state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
+        self.pointer_button_at(button, state, self.monotonic_msec());
+    }
+
+    /// Press or release a key on the seat's keyboard on the shell's behalf.
+    ///
+    /// The shell has a D-pad and, while the pointer is being aimed with the
+    /// other stick, nothing of its own left to do with it — so it becomes the
+    /// arrows, which is what a D-pad is. That cannot be done by typing: a
+    /// virtual keyboard sends *symbols*, and the arrows are the keys whose
+    /// meaning a client works out from the keycode.
+    ///
+    /// Forwarded rather than filtered. A key the shell sent must never come
+    /// back as one of the compositor's own bindings — the shell would then be
+    /// pressing its own guide button, which it already has a controller for.
+    ///
+    /// `key` is the Linux code; xkb counts from eight higher.
+    pub fn shell_keyboard_key(&mut self, key: u32, pressed: bool) {
+        if !self.has_application_window() {
+            return;
+        }
+        let Some(keyboard) = self.linboard.seat.get_keyboard() else {
+            return;
+        };
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        keyboard.input::<(), _>(
+            self,
+            (key + 8).into(),
+            state,
+            SERIAL_COUNTER.next_serial(),
+            self.monotonic_msec(),
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+
+    /// Make sure the pointer has entered whatever it is sitting on before
+    /// something other than motion is sent through it.
+    ///
+    /// A button and a scroll are both delivered to wherever the pointer
+    /// *currently is*, which for a mouse is never in doubt: it entered that
+    /// surface by being moved onto it. The shell's pointer can be asked to
+    /// scroll or click before it has been asked to move at all — the switch is
+    /// turned on in the menu and the first thing the thumb does is roll the
+    /// other stick — and until it has moved there is no focus for either to
+    /// reach. This is the enter that a mouse would have delivered on its way
+    /// across the screen.
+    ///
+    /// Cheap in the ordinary case: once the focus is right it does nothing.
+    fn ensure_pointer_focus(&mut self, pointer: &smithay::input::pointer::PointerHandle<Self>) {
+        let location = self.linboard.pointer_location;
+        let hit = self.surface_under(location);
+        let wanted = hit.as_ref().map(|(surface, _)| surface.clone());
+        let current = pointer
+            .current_focus()
+            .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
+        if current == wanted {
+            return;
+        }
+
+        let under = hit
+            .as_ref()
+            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+        let time = self.monotonic_msec();
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        self.activate_constraint_at(pointer, hit.as_ref(), location);
+        pointer.frame(self);
+    }
+
+    /// Whether any application window is mapped at all.
+    fn has_application_window(&self) -> bool {
+        self.linboard
+            .space
+            .elements()
+            .any(window_accepts_keyboard_focus)
+    }
+
+    /// Milliseconds since the compositor started, which is the clock every
+    /// event it synthesizes is stamped with.
+    fn monotonic_msec(&self) -> u32 {
+        self.linboard
+            .start_time
+            .elapsed()
+            .as_millis()
+            .min(u32::MAX as u128) as u32
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
@@ -695,9 +900,10 @@ impl LinboardState {
         let location =
             geometry.loc.to_f64() + absolute_position::<B, _>(&event, geometry.size, source_size);
         let serial = SERIAL_COUNTER.next_serial();
-        let under = self
-            .surface_under(location)
-            .map(|(surface, origin)| (self.input_target_for_surface(&surface), origin));
+        let hit = self.surface_under(location);
+        let under = hit
+            .as_ref()
+            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
 
         touch.down(
             self,
@@ -713,14 +919,18 @@ impl LinboardState {
         // Touching an on-demand layer or an application window is an explicit
         // focus request, just like clicking it with a pointer. X11 chrome
         // (menus, notifications, tooltips) still receives the touch event but
-        // must not steal keyboard/controller focus from the application.
+        // must not steal keyboard/controller focus from the application, and
+        // neither does a layer surface that asked for no keyboard at all —
+        // see [`click_takes_keyboard_focus`].
         if let Some((target, _)) = under {
             if let Some(window) = self.window_for_input_target(&target) {
                 if window_accepts_keyboard_focus(&window) {
                     self.raise_window(&window, true);
                     self.set_window_keyboard_focus(&window);
                 }
-            } else {
+            } else if hit.as_ref().is_some_and(|(surface, _)| {
+                click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(surface))
+            }) {
                 self.set_keyboard_target(Some(target));
             }
         }
@@ -1019,14 +1229,25 @@ impl LinboardState {
             return true;
         };
 
-        for output in self.linboard.space.outputs() {
-            let map = layer_map_for_output(output);
-            if let Some(layer) = map.layer_for_surface(&focus_surface, WindowSurfaceType::ALL) {
-                return !layer.can_receive_keyboard_focus();
-            }
+        if let Some(accepts) = self.layer_accepts_keyboard_focus(&focus_surface) {
+            return !accepts;
         }
 
         true
+    }
+
+    /// Whether the layer surface `surface` belongs to will take the keyboard,
+    /// or `None` when it belongs to none — an ordinary window, or a surface
+    /// of nothing that is currently mapped.
+    ///
+    /// Answered for subsurfaces and popups as well as for the layer surface
+    /// itself, since a subsurface is what a hit test can return.
+    fn layer_accepts_keyboard_focus(&self, surface: &WlSurface) -> Option<bool> {
+        self.linboard.space.outputs().find_map(|output| {
+            let map = layer_map_for_output(output);
+            let layer = map.layer_for_surface(surface, WindowSurfaceType::ALL)?;
+            Some(layer.can_receive_keyboard_focus())
+        })
     }
 
     fn focus_under_pointer(&mut self, _serial: smithay::utils::Serial) {
@@ -1040,7 +1261,7 @@ impl LinboardState {
                 if accepts_focus {
                     self.set_window_keyboard_focus(&window);
                 }
-            } else {
+            } else if click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(&surface)) {
                 self.set_keyboard_target(Some(target));
             }
         }
@@ -1353,6 +1574,25 @@ pub(crate) fn window_accepts_keyboard_focus(window: &Window) -> bool {
     !window_is_x11_chrome(window) && x11_window_accepts_input(window)
 }
 
+/// Whether a click or a touch on a surface may hand it the keyboard.
+///
+/// `layer` is what the layer surface it belongs to asked for — `Some(false)`
+/// where that is `keyboard_interactivity: none` — and `None` where it belongs
+/// to no layer surface at all, which is every ordinary window and is focused
+/// exactly as it was before.
+///
+/// The case that matters is a layer surface that asked for none of the
+/// keyboard: it means it, and being clicked is not a change of mind. That is
+/// the shell's on-screen keyboard. The board is a picture of a keyboard drawn
+/// over the application it types into, and keyboard focus is what carries
+/// text-input focus with it — so a key that took focus on the way down would
+/// deactivate the very field it was about to type into. The board would put
+/// itself away at the first letter, and the letter would arrive at the shell
+/// instead of at the application.
+fn click_takes_keyboard_focus(layer: Option<bool>) -> bool {
+    layer.unwrap_or(true)
+}
+
 fn absolute_position<B, E>(
     event: &E,
     target_size: Size<i32, Logical>,
@@ -1460,6 +1700,22 @@ mod tests {
             .collect();
         assert_eq!(matched.len(), 1, "binding should not be duplicated");
         assert_eq!(matched[0].1, Action::Spawn("foot".into()));
+    }
+
+    /// Clicking a key on the on-screen keyboard must leave the keys where they
+    /// are. The board is drawn over the application it types into and asks for
+    /// no keyboard of its own; taking focus from the click would deactivate the
+    /// text field that summoned it, and the board would close on the first
+    /// letter instead of typing it.
+    #[test]
+    fn a_layer_surface_that_declined_the_keyboard_is_not_given_it_by_a_click() {
+        assert!(!click_takes_keyboard_focus(Some(false)));
+        // An exclusive or on-demand layer surface is still click-to-focus,
+        // which is how the launcher's own bar is reached.
+        assert!(click_takes_keyboard_focus(Some(true)));
+        // And a surface belonging to no layer surface — every window — is
+        // focused exactly as it was.
+        assert!(click_takes_keyboard_focus(None));
     }
 
     #[test]

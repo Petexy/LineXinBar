@@ -9,8 +9,12 @@ mod controller;
 mod gpu;
 mod guide;
 mod icons;
+mod keyboard;
 mod launch;
 mod model;
+mod pointer;
+mod steam_hid;
+mod system;
 mod theme;
 mod ui;
 
@@ -21,11 +25,16 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use linboard_protocol::client::linboard_shell_v1::{self, LinboardShellV1};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
+use smithay_client_toolkit::compositor::{
+    CompositorHandler, CompositorState, FrameCallbackData, Region,
+};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
+use smithay_client_toolkit::seat::pointer::{
+    cursor_shape::CursorShapeManager, PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT,
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -35,7 +44,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::controller::ControllerInput;
@@ -43,6 +52,8 @@ use crate::gpu::Gpu;
 use crate::guide::{Guide, Item, Mode};
 use crate::icons::IconLoader;
 use crate::model::{Action, Cursor, Xmb};
+use crate::pointer::{Prefs, Stick};
+use crate::system::{Knob, Quick};
 use crate::ui::SlotLookup;
 
 /// Size icons are decoded at; matches the atlas cell.
@@ -61,6 +72,22 @@ const OVERVIEW_SHELL_VERSION: u32 = 4;
 /// First version that can end one named window outright, rather than asking
 /// whatever is in front to close itself.
 const KILL_SHELL_VERSION: u32 = 5;
+
+/// First version that will move the seat's pointer for the shell, and that
+/// names the application in front of each display well enough to remember a
+/// setting against. Below it the stick-pointer tile is left out of the menu
+/// entirely: there is nothing it could do.
+///
+/// The highest this shell asks for. Version 6 has no constant of its own
+/// because nothing is gated on it: it added the on-screen keyboard binding,
+/// and an event arriving is all the proof a shell needs that it was sent.
+const POINTER_SHELL_VERSION: u32 = 7;
+
+/// First version with the key the shell can press on the seat's keyboard,
+/// which is what the D-pad becomes while the pointer is being aimed. Gated
+/// separately from the pointer: on a compositor with version 7 the stick still
+/// points and clicks, and only the arrows are missing.
+const KEYBOARD_KEY_VERSION: u32 = 8;
 
 /// Guaranteed atlas fallback for desktop entries that omit `Icon=` or name an
 /// icon unavailable in the current theme. This is preferable to presenting a
@@ -95,6 +122,16 @@ const LAUNCH_PUSH: f32 = 0.06;
 /// scanned out after it, so the windows arrive a frame or two behind the
 /// arithmetic.
 const CARD_SETTLE: f32 = 2.0 / 60.0;
+
+/// How long after the overview starts the cards are really in their slots, and
+/// so the first moment anything may be drawn on them.
+///
+/// One answer for every mark the shell makes on a card — the frames, the
+/// titles, the selection, the start screen's own miniature and the corners
+/// repaired around it — because they all share the one hazard: the windows
+/// underneath belong to the compositor, and until the flight is over they are
+/// not where the layout says they are.
+pub const CARD_ARRIVAL: f32 = HOME_FLIGHT + CARD_SETTLE;
 
 const MILLIS_PER_SECOND: f32 = 1000.0;
 
@@ -148,7 +185,8 @@ struct Cli {
 
     /// Perform actions at fixed times after start-up, as a comma-separated
     /// list of `seconds:action` (`--debug-actions 2:guide,3:right,4:launch`).
-    /// Actions are `guide`, `back`, `launch`, `up`, `down`, `left`, `right`.
+    /// Actions are `guide`, `keyboard`, `back`, `launch`, `up`, `down`,
+    /// `left`, `right`, `prev-screen`, `next-screen`.
     ///
     /// Development aid: most of this shell's design is in its transitions,
     /// and they cannot be inspected — or screenshotted at a chosen moment —
@@ -216,8 +254,11 @@ fn main() -> anyhow::Result<()> {
     // Linboard's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LinboardShellV1, _, _>(&qh, 1..=KILL_SHELL_VERSION, ())
-    {
+    let shell_control = match globals.bind::<LinboardShellV1, _, _>(
+        &qh,
+        1..=KEYBOARD_KEY_VERSION,
+        (),
+    ) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -243,14 +284,23 @@ fn main() -> anyhow::Result<()> {
         applied_overview: None,
         applied_overview_selection: None,
         guide: Guide::default(),
+        quick: Quick::start(),
+        osk: keyboard::Osk::default(),
         menu_frame_drawn: false,
         overview_started_at: None,
         launching: None,
         guide_card_rects: std::collections::HashMap::new(),
         keyboard: None,
+        pointer: None,
+        cursor_shape: CursorShapeManager::bind(&globals, &qh).ok(),
         focused_surface: None,
         keep_keyboard_grabbed: cli.grab_keyboard,
         controller: ControllerInput::new(!cli.no_gamepad),
+        stick: Stick::pointer(),
+        scroll: Stick::scroll(),
+        prefs: Prefs::load(),
+        stick_buttons: Vec::new(),
+        stick_keys: Vec::new(),
         gpu: None,
         pending_icons: Some(icons),
         xmb: Xmb::with_session_displays(categories, child_wayland_display, child_xwayland_display),
@@ -273,6 +323,16 @@ fn main() -> anyhow::Result<()> {
     // every display at once rather than one configure behind.
     event_queue.roundtrip(&mut shell)?;
 
+    // The keyboard hangs off a seat, which only exists after that roundtrip.
+    // The first seat: a console has one, and an input method is per seat, so
+    // taking them all would mean several keyboards fighting over one screen.
+    match shell.seat_state.seats().next() {
+        Some(seat) => {
+            shell.osk.attach(&globals, &qh, &seat);
+        }
+        None => tracing::info!("no seat; the on-screen keyboard is off"),
+    }
+
     for output in shell.output_state.outputs().collect::<Vec<_>>() {
         shell.add_panel(&qh, output);
     }
@@ -286,6 +346,7 @@ fn main() -> anyhow::Result<()> {
 
         let now = Instant::now();
         shell.poll_controller(now);
+        shell.tick_keyboard(now);
         // Scheduled actions, for capturing the menu's transitions.
         while action_schedule
             .last()
@@ -386,6 +447,16 @@ fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
+    // The shell's own glyphs first, so a session with no icon theme installed
+    // at all still has a speaker and a sun on its quick-settings bars.
+    for (name, drawing) in icons::BUILTIN {
+        match icons::Icon::builtin(drawing, ICON_SIZE) {
+            Some(icon) => out.push((name.to_string(), icon)),
+            None => tracing::warn!(glyph = name, "could not rasterise a built-in glyph"),
+        }
+        seen.insert(name.to_string());
+    }
+
     let names = std::iter::once(FALLBACK_APP_ICON.to_string())
         .chain(categories.iter().map(|c| c.icon.to_string()))
         .chain(
@@ -431,6 +502,10 @@ struct Panel {
     /// compositor. Likewise its own: the guide opens on one display and must
     /// offer to resume or close what is on that one.
     foreground: Option<String>,
+    /// What that application *is*, rather than what its window says: the
+    /// `app_id` or X11 class the compositor reports. Per-application settings
+    /// are filed under this, never under the title, which is a document name.
+    app_id: Option<String>,
     /// The windows on this display, topmost first, as the compositor lists
     /// them for the overview. Empty on compositors without the protocol.
     windows: Vec<WindowCard>,
@@ -442,7 +517,7 @@ struct Panel {
     backdrop_frame_pending: bool,
     /// Last layer and interactivity actually sent, so an unchanged mode does
     /// not commit the surface every frame.
-    applied_surface_state: Option<(Layer, KeyboardInteractivity)>,
+    applied_surface_state: Option<((Layer, KeyboardInteractivity), Clickable)>,
     /// How far this display's start screen has flown into its overview card:
     /// 0 fills the display, 1 sits in the card. Linear, so a flight
     /// interrupted halfway reverses from where it is; [`smoothstep`] shapes
@@ -508,6 +583,13 @@ struct Shell {
     /// Card selection last reported for it, likewise.
     applied_overview_selection: Option<u32>,
     guide: Guide,
+    /// The volume and brightness bars in the guide's sidebar, and the worker
+    /// that keeps them true.
+    quick: Quick,
+    /// The on-screen keyboard, and the two Wayland objects behind it: the
+    /// input method that says when a text field wants one, and the virtual
+    /// keyboard that types.
+    osk: keyboard::Osk,
     /// Whether a frame of the open menu has been committed yet. The overview
     /// waits for it, so the cards never fly under a stale bar.
     menu_frame_drawn: bool,
@@ -521,11 +603,40 @@ struct Shell {
     /// shell draws travel with the windows the compositor is easing.
     guide_card_rects: std::collections::HashMap<u64, Glide>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// The seat's pointer, taken for one thing only: the on-screen keyboard.
+    ///
+    /// The rest of the shell is deliberately not clickable — it is a console
+    /// bar driven from a controller, and every one of its surfaces covers a
+    /// whole display, so a shell that accepted clicks anywhere would swallow
+    /// them from the application it is sitting in front of. The board is the
+    /// exception because it is a picture of a keyboard: keys are for pressing,
+    /// and anyone with a mouse plugged in will try.
+    pointer: Option<wl_pointer::WlPointer>,
+    /// Says what the cursor should look like over our surfaces, when the
+    /// compositor supports being told. Without it the pointer keeps whatever
+    /// shape the application under the board last asked for, which over a
+    /// keyboard is usually a text beam.
+    cursor_shape: Option<CursorShapeManager>,
     /// Which of our surfaces holds keyboard focus, if any. Only one can, so
     /// this doubles as "is the shell being driven right now".
     focused_surface: Option<wl_surface::WlSurface>,
     keep_keyboard_grabbed: bool,
     controller: ControllerInput,
+    /// The right stick's pointer and the left one's scrolling: the curves that
+    /// turn deflection into movement, the per-application answers to whether
+    /// they are turned on at all, and the mouse buttons currently held down.
+    stick: Stick,
+    scroll: Stick,
+    prefs: Prefs,
+    /// Buttons the compositor has been told are down. Held so that they can be
+    /// let go of when the pointer stops being driven — a button reported
+    /// pressed and never released leaves the application holding a drag that
+    /// nothing on the controller can end.
+    stick_buttons: Vec<u32>,
+    /// Arrow keys the compositor has been told are down, for the same reason
+    /// and with a sharper edge to it: a held key repeats in the application,
+    /// so one never released repeats forever.
+    stick_keys: Vec<u32>,
 
     gpu: Option<gpu::Gpu>,
     /// Icons waiting for the device to exist; taken on the first configure.
@@ -592,8 +703,9 @@ impl Shell {
             backdrop,
             target: None,
             backdrop_target: None,
-            cursor: Cursor::new(self.xmb.categories.len()),
+            cursor: Cursor::for_model(&self.xmb),
             foreground: None,
+            app_id: None,
             windows: Vec::new(),
             pending_windows: Vec::new(),
             width: 0,
@@ -672,7 +784,13 @@ impl Shell {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        self.advance_launch(now);
+        // The outer loop syncs surface state before it asks us to draw. A
+        // launch can finish only here, after the handover fade reaches zero;
+        // resync immediately so the normal bar's final frame is below the
+        // application rather than still on the splash's overlay layer.
+        if self.advance_launch(now) {
+            self.sync_surface_state();
+        }
 
         // Every display eases towards its own selection, including the ones
         // nobody is driving: they were left mid-glide when control moved away.
@@ -684,14 +802,46 @@ impl Shell {
         // Resolved before the GPU and panels are borrowed, since they read
         // `self` while it is mutably held below.
         let show_menu = self.guide.is_menu();
+        // A switch going over outlives the keystroke that threw it, so the
+        // frames have to keep coming until it has settled.
+        let pressing = self.guide.pressing();
+        let keyboard_visible = self.keyboard_visible();
+        let keyboard_overlay = self.keyboard_overlay();
         let focused_panel = self.focused_panel;
-        let hint = self.control_hint();
         let app_label = self.app_label().map(str::to_string);
         let screen_label = self.screen_label();
         let time = self.start.elapsed().as_secs_f32();
         let clock = wall_clock();
+        let clock_face = wall_clock_face();
         // The cards keep the compositor's time, not the menu's.
         let card_age = self.card_age();
+
+        // Brightness belongs to a screen, so the worker is told which one is
+        // in front of the user whether or not the menu is open — a bar that
+        // only started asking when the sidebar appeared would arrive a few
+        // hundred milliseconds of i2c later than the sidebar did. Only what is
+        // on screen is kept refreshed.
+        self.quick.watch(
+            self.panels
+                .get(focused_panel)
+                .map(|panel| panel.name.as_str()),
+            show_menu,
+        );
+        let volume = self.quick.level(Knob::Volume);
+        let brightness = self.quick.level(Knob::Brightness);
+        // Which rows the column has. Set from the same answer the bars are
+        // drawn from, so a control that goes away cannot leave a row behind.
+        self.guide.set_bars(guide::Bars {
+            volume: volume.is_some(),
+            brightness: brightness.is_some(),
+        });
+        // And whether the pointer tile has anything behind it, on the same
+        // terms: only Linboard can move a pointer for a client.
+        self.guide.set_pointer_control(self.pointer_control());
+        // And whether there is an application for the tiles to be about, which
+        // is what decides whether the highlight will stop on one.
+        self.guide.set_pointer_target(self.pointer_app().is_some());
+        let stick_pointer = self.stick_pointer_on();
         // A display whose bar is behind a fullscreen application draws
         // nothing at all this frame: see `panel_is_visible`.
         let visible: Vec<bool> = (0..self.panels.len())
@@ -812,7 +962,7 @@ impl Shell {
                 let panel = self.panels.get(focused_panel)?;
                 let items = self.guide.items(closable);
                 let row = ui::menu_item_rect(
-                    items,
+                    &items,
                     self.guide.selected_index(closable),
                     panel.width as f32,
                     panel.height as f32,
@@ -866,7 +1016,8 @@ impl Shell {
             // then go quiet.
             let settling = panel.home_linear != home_target
                 || panel.blur_linear != home_target
-                || cursor_moving[index];
+                || cursor_moving[index]
+                || (pressing && index == focused_panel);
             let draw_now = should_draw(visible, settling, panel.was_visible);
             if visible != panel.was_visible {
                 // Worth a line: whether a display believes it is covered is
@@ -939,33 +1090,52 @@ impl Shell {
             }
             drew = true;
 
+            // Whether the only reason this display is drawing at all is the
+            // keyboard, or the hint standing in for it.
+            //
+            // The bar is not drawn then, and this is the whole of why: the
+            // surface it shares with the board has been raised above the
+            // application to carry the board, and the bar belongs *behind*
+            // that application. Drawing it anyway put the start screen — every
+            // icon of it — over the running application alongside the
+            // keyboard, which is not an overlay anybody asked for. The bar
+            // gives the screen up for as long as the board is on it.
+            let board_only = draws_only_the_keyboard(focused, keyboard_overlay, menu_here);
+
             if let Some(backdrop_target) = panel.backdrop_target.as_mut() {
-                let params = gpu::Backdrop {
-                    blur: backdrop_blur,
-                    ..Default::default()
-                };
-                if let Err(err) = gpu.render(backdrop_target, &[], &[], time, Some(params)) {
-                    tracing::warn!(?err, "backdrop render failed");
+                // Nothing of the backdrop shows past an application either, so
+                // a board on top of one costs no wallpaper.
+                if !board_only {
+                    let params = gpu::Backdrop {
+                        blur: backdrop_blur,
+                        ..Default::default()
+                    };
+                    if let Err(err) = gpu.render(backdrop_target, &[], &[], time, Some(params)) {
+                        tracing::warn!(?err, "backdrop render failed");
+                    }
                 }
             }
 
             // The bar, wherever the start screen currently is: the whole
             // display, its card, or somewhere between the two mid-flight.
-            let mut scene = ui::build(
-                &self.xmb,
-                &panel.cursor,
-                width as f32,
-                height as f32,
-                focused,
-                &hint,
-                clock.as_deref(),
-                time,
-                &Slots(gpu),
-            );
+            let mut scene = if board_only {
+                ui::Scene::default()
+            } else {
+                ui::build(
+                    &self.xmb,
+                    &panel.cursor,
+                    width as f32,
+                    height as f32,
+                    focused,
+                    clock.as_deref(),
+                    time,
+                    &Slots(gpu),
+                )
+            };
             if home > 0.0 {
                 scene.place_into(bar_rect, width as f32, height as f32);
                 if menu_here && panel.home_fades_in {
-                    scene.fade(ui::start_card_fade(card_age));
+                    scene.fade(ui::card_fade(card_age));
                 }
             }
             if menu_here {
@@ -988,6 +1158,12 @@ impl Shell {
                 let guide = ui::build_guide(
                     ui::GuideView {
                         guide: &self.guide,
+                        clock: clock_face
+                            .as_ref()
+                            .map(|(time, date)| ui::Clock { time, date }),
+                        volume,
+                        brightness,
+                        stick_pointer,
                         app: app_label.as_deref(),
                         close_target: close_target.as_deref(),
                         screen: screen_label.as_deref(),
@@ -1000,12 +1176,54 @@ impl Shell {
                         card_age,
                         power: power_open,
                         time,
+                        slots: &Slots(gpu),
                     },
                     width as f32,
                     height as f32,
                 );
                 scene.quads.extend(guide.quads);
                 scene.texts.extend(guide.texts);
+            }
+
+            // The on-screen keyboard, and the corner hint that stands in for
+            // it. Only on the display being driven, and on the same answer
+            // `sync_surface_state` raised this surface on, so the board can
+            // never be drawn on a display still sitting behind its
+            // application.
+            if focused && keyboard_visible {
+                if self.osk.is_open() {
+                    let board = ui::build_keyboard(
+                        ui::KeyboardView {
+                            board: &self.osk.board,
+                            slots: &Slots(gpu),
+                            age: self.osk.age(),
+                            behind: backdrop_blur,
+                            time,
+                        },
+                        width as f32,
+                        height as f32,
+                    );
+                    // A scene is all its quads and then all its text, so the
+                    // board's panel cannot cover a label the bar already put
+                    // down. Those labels have to go.
+                    scene.hide_text_behind(ui::keyboard_panel_rect(width as f32, height as f32));
+                    scene.quads.extend(board.quads);
+                    scene.texts.extend(board.texts);
+                } else {
+                    let hint_rect = ui::keyboard_hint_rect(width as f32, height as f32);
+                    let hint = ui::build_keyboard_hint(
+                        ui::HintView {
+                            slots: &Slots(gpu),
+                            fade: 1.0,
+                            behind: backdrop_blur,
+                        },
+                        width as f32,
+                        height as f32,
+                    );
+                    scene.hide_text_behind(hint_rect);
+                    scene.quads.extend(hint.quads);
+                    scene.texts.extend(hint.texts);
+                }
             }
 
             // The launch splash, over everything this display was showing.
@@ -1088,7 +1306,7 @@ impl Shell {
                     // A card that is arriving rather than flying in fades up
                     // with the rest of them, wallpaper and all.
                     fade: if menu_here && panel.home_fades_in {
-                        ui::start_card_fade(card_age)
+                        ui::card_fade(card_age)
                     } else {
                         1.0
                     },
@@ -1211,11 +1429,248 @@ impl Shell {
     }
 
     fn poll_controller(&mut self, now: Instant) {
-        let active = self.keep_keyboard_grabbed || self.focused_surface.is_some();
-        let actions = self.controller.poll(now.duration_since(self.start), active);
-        for action in actions {
+        // Being driven is not the same as holding the keyboard, and the
+        // on-screen keyboard is the case that separates them: it is up, the
+        // user is picking out letters on it with the stick, and it has
+        // deliberately left the Wayland keyboard with the application it is
+        // typing into. Reading focus alone here threw away every direction and
+        // every press the moment the board appeared.
+        let active = controller_is_driving(
+            self.keep_keyboard_grabbed,
+            self.focused_surface.is_some(),
+            self.osk.is_open(),
+        );
+        let poll = self.controller.poll(now.duration_since(self.start), active);
+        // The pointer first. An action can close the menu or start an
+        // application, either of which changes whether the stick should be
+        // driving anything, and it should be answered on the state the poll
+        // was actually taken in.
+        self.drive_pointer(&poll, now);
+        for action in poll.actions {
             self.on_action(action);
         }
+    }
+
+    /// Move the pointer with the right stick, where that is turned on.
+    ///
+    /// Only ever *inside* an application: the shell's own screens are driven
+    /// with the stick that navigates them and have no pointer to speak of, and
+    /// the menu is drawn over the very application the pointer would be
+    /// travelling across. So the stick goes back to being the stick the moment
+    /// anything of the shell's is on screen, and the pointer is left exactly
+    /// where the user parked it.
+    fn drive_pointer(&mut self, poll: &controller::Poll, now: Instant) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < POINTER_SHELL_VERSION {
+            return;
+        }
+
+        if !self.stick_pointer_aiming() {
+            // Whatever the sticks are doing now, they are not moving a
+            // pointer: forget the interval so coming back does not integrate
+            // the gap, and let go of anything still held down.
+            self.stick.rest();
+            self.scroll.rest();
+            self.release_stick_buttons(&control);
+            self.release_stick_keys(&control);
+            return;
+        }
+
+        let at = now.duration_since(self.start).as_secs_f32();
+        let mut sent = false;
+        let (x, y) = poll.right_stick;
+        if let Some((dx, dy)) = self.stick.motion(x, y, at) {
+            control.move_pointer(dx, dy);
+            sent = true;
+        }
+
+        // The buttons and the wheel are the on-screen keyboard's the moment it
+        // is up: it is driven with the D-pad, the left stick and `A`, and two
+        // things bound to one control is worse than one of them being absent.
+        // Aiming carries on regardless — the board has no use for the right
+        // stick — so the pointer is still where it was left when the board
+        // goes away.
+        if !self.stick_pointer_clicking() {
+            self.scroll.rest();
+            self.release_stick_buttons(&control);
+            self.release_stick_keys(&control);
+            if sent {
+                let _ = self.conn.flush();
+            }
+            return;
+        }
+
+        // The left stick is the wheel. It is free to be: the shell has already
+        // stopped navigating with it by the time an application is in front.
+        let (sx, sy) = poll.scroll_stick;
+        if let Some((dx, dy)) = self.scroll.motion(sx, sy, at) {
+            control.scroll_pointer(dx, dy);
+            sent = true;
+        }
+
+        // And the D-pad beside it is the arrows, which is what a D-pad is.
+        // Scrolling and arrowing are not the same job: a wheel moves a view
+        // and leaves the caret where it was, while the arrows move the caret,
+        // step through a list and open a menu — and a console has one control
+        // shaped like the arrow keys.
+        if self.send_stick_keys(&control, &poll.arrows) {
+            sent = true;
+        }
+
+        for (button, down) in &poll.clicks {
+            if *down {
+                if !self.stick_buttons.contains(button) {
+                    self.stick_buttons.push(*button);
+                }
+            } else if let Some(index) = self.stick_buttons.iter().position(|held| held == button) {
+                self.stick_buttons.remove(index);
+            } else {
+                // A release for a press made while the pointer was not being
+                // driven — turning the switch on mid-click. The application
+                // never saw the press, so it must not see the release.
+                continue;
+            }
+            control.pointer_button(
+                *button,
+                if *down {
+                    linboard_shell_v1::ButtonState::Pressed
+                } else {
+                    linboard_shell_v1::ButtonState::Released
+                },
+            );
+            sent = true;
+        }
+
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not send the stick pointer's movement");
+            }
+        }
+    }
+
+    /// Let go of every button the stick is holding down.
+    fn release_stick_buttons(&mut self, control: &LinboardShellV1) {
+        if self.stick_buttons.is_empty() {
+            return;
+        }
+        for button in std::mem::take(&mut self.stick_buttons) {
+            control.pointer_button(button, linboard_shell_v1::ButtonState::Released);
+        }
+        let _ = self.conn.flush();
+    }
+
+    /// Forward the D-pad's edges as arrow keys, and remember what is down.
+    ///
+    /// Returns whether anything was sent. A release for a direction the
+    /// application never saw pressed is dropped, exactly as a click's is: the
+    /// switch can be turned on with a thumb already on the D-pad.
+    fn send_stick_keys(&mut self, control: &LinboardShellV1, arrows: &[(u32, bool)]) -> bool {
+        // A compositor one version behind still points and clicks; it simply
+        // has no way to be handed a key, so nothing is pressed and there is
+        // then nothing for the release to let go of either.
+        if control.version() < KEYBOARD_KEY_VERSION {
+            return false;
+        }
+        let mut sent = false;
+        for (key, down) in arrows {
+            if *down {
+                if self.stick_keys.contains(key) {
+                    continue;
+                }
+                self.stick_keys.push(*key);
+            } else if let Some(index) = self.stick_keys.iter().position(|held| held == key) {
+                self.stick_keys.remove(index);
+            } else {
+                continue;
+            }
+            control.keyboard_key(
+                *key,
+                if *down {
+                    linboard_shell_v1::KeyState::Pressed
+                } else {
+                    linboard_shell_v1::KeyState::Released
+                },
+            );
+            sent = true;
+        }
+        sent
+    }
+
+    /// Let go of every arrow the D-pad is holding down.
+    ///
+    /// Needed for a stronger reason than the buttons are: a key the client is
+    /// repeating and never hears the release of goes on repeating, so a menu
+    /// closed with a direction held would leave the application scrolling by
+    /// itself for as long as it was open.
+    fn release_stick_keys(&mut self, control: &LinboardShellV1) {
+        if self.stick_keys.is_empty() {
+            return;
+        }
+        for key in std::mem::take(&mut self.stick_keys) {
+            control.keyboard_key(key, linboard_shell_v1::KeyState::Released);
+        }
+        let _ = self.conn.flush();
+    }
+
+    /// The application the pointer switch is about: the one in front on the
+    /// display being driven, named the way it names itself.
+    ///
+    /// `None` when nothing is running there, or when the application told
+    /// nobody what it is — a setting cannot be filed under nothing.
+    fn pointer_app(&self) -> Option<&str> {
+        self.panels
+            .get(self.focused_panel)?
+            .app_id
+            .as_deref()
+            .filter(|app_id| !app_id.is_empty())
+    }
+
+    /// Whether this session can move a pointer at all.
+    fn pointer_control(&self) -> bool {
+        self.shell_control
+            .as_ref()
+            .is_some_and(|control| control.version() >= POINTER_SHELL_VERSION)
+    }
+
+    /// Whether the switch is on for the application in front — as a setting,
+    /// which is what the menu draws. Whether it is *being acted on* is
+    /// [`Self::stick_pointer_aiming`], and differs while the menu is open,
+    /// which is the only time the two are ever both asked.
+    fn stick_pointer_on(&self) -> bool {
+        self.pointer_app()
+            .is_some_and(|app| self.prefs.stick_pointer(app))
+    }
+
+    /// Whether the right stick should be aiming the pointer right now.
+    ///
+    /// Both halves of the question: the user turned it on for this
+    /// application, and the application is the thing being pointed *at* —
+    /// not the menu over it, and not a launch still in flight, both of which
+    /// are the shell's own screens with nothing on them to click.
+    ///
+    /// The on-screen keyboard is not in that list. It is drawn over the
+    /// application, but it is driven with the D-pad, the left stick and `A`,
+    /// and it has no use at all for the right stick — so aiming carries on
+    /// underneath it, and the pointer is still where it was left when the
+    /// board goes away. What the board does take is [everything
+    /// else](Self::stick_pointer_clicking).
+    fn stick_pointer_aiming(&self) -> bool {
+        pointer_aims(
+            self.guide.is_over_app(),
+            self.launching.is_some(),
+            self.stick_pointer_on(),
+        )
+    }
+
+    /// Whether the buttons and the wheel are the pointer's as well.
+    ///
+    /// Everything aiming needs, and the board out of the way: `A` presses the
+    /// key under its cursor and the D-pad moves that cursor, so a pointer that
+    /// also claimed them would make one press do two things.
+    fn stick_pointer_clicking(&self) -> bool {
+        pointer_clicks(self.stick_pointer_aiming(), self.osk.is_open())
     }
 
     fn on_key(&mut self, keysym: Keysym) {
@@ -1255,18 +1710,6 @@ impl Shell {
             .or_else(|| self.xmb.running_app())
     }
 
-    /// The footer's control summary, which only mentions moving between
-    /// displays when there is somewhere to move to.
-    fn control_hint(&self) -> String {
-        let mut hint = String::from(
-            "D-pad / stick move    A launch    Guide / B menu    Keyboard: arrows / Enter / Esc",
-        );
-        if self.panels.len() > 1 {
-            hint.push_str("    L1 / R1 or Tab: screen");
-        }
-        hint
-    }
-
     /// Name of the display being driven, when naming it tells the user
     /// anything — on a single display it only adds noise.
     fn screen_label(&self) -> Option<String> {
@@ -1290,17 +1733,26 @@ impl Shell {
                 // starts — the splash was only ever the shell's answer to the
                 // press, and the user has stopped waiting for it.
                 self.launching = None;
+                // The menu takes the keyboard outright, so a board left up
+                // under it could not type: it would be sending its letters to
+                // the shell's own overlay.
+                self.osk.close();
                 if self.guide.toggle() {
                     self.begin_home_flight(bar_on_top);
                 }
                 self.needs_redraw = true;
             }
+            Action::Keyboard => self.toggle_keyboard(),
             Action::Back => self.on_back(),
             // Ahead of the menu, not behind it: the guide is where the user is
             // told the shoulder buttons move between displays, so that is the
             // last place they may stop working. The menu travels with them.
             Action::PrevScreen => self.focus_screen(-1),
             Action::NextScreen => self.focus_screen(1),
+            // The board is the innermost thing on screen while it is up, and
+            // it takes every direction: nothing behind it should move under a
+            // cursor that is picking out letters.
+            _ if self.osk.is_open() => self.on_keyboard_action(action),
             _ if self.guide.is_menu() => self.on_menu_action(action),
             Action::Launch => {
                 // Say where this is being launched from before starting it, so
@@ -1359,6 +1811,15 @@ impl Shell {
     /// Going back never quits outright — leaving is a deliberate choice in the
     /// menu, which is also what makes the menu discoverable.
     fn on_back(&mut self) {
+        // The keyboard is in front of everything else the shell draws, so it
+        // is the first thing Back takes away — and the field it was typing
+        // into is still there afterwards, which is what the corner hint is
+        // then for.
+        if self.osk.close() {
+            self.sync_surface_state();
+            self.needs_redraw = true;
+            return;
+        }
         // One layer at a time: from the power dialog, back means back to the
         // menu it was opened from, not out of both.
         if self.guide.power_open() {
@@ -1375,6 +1836,162 @@ impl Shell {
         }
     }
 
+    /// Show or hide the on-screen keyboard.
+    ///
+    /// One condition, and it is about whether the letters can leave the shell
+    /// at all: there has to be a virtual keyboard to send them through.
+    /// Nothing else is asked. The board is deliberately summonable over an
+    /// application that never announced a text field — an X11 client, a
+    /// browser built without Wayland IME — and that is a case the shell has no
+    /// way to tell apart from an application with nothing to type into, so it
+    /// does not try. Over the bar with nothing running there is nowhere for
+    /// the letters to go; the board still opens, because a shortcut that
+    /// silently does nothing on some screens is worse than one that visibly
+    /// does nothing.
+    fn toggle_keyboard(&mut self) {
+        if self.osk.close() {
+            self.sync_surface_state();
+            self.needs_redraw = true;
+            return;
+        }
+        if !self.osk.can_type() {
+            tracing::debug!("no virtual keyboard on this compositor; nothing to type with");
+            return;
+        }
+        // Step out of the way first, for the same reason the guide closes the
+        // board: whichever of the two is in front has the keys.
+        self.guide.close();
+        self.osk.open();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Drive the board: the directions move the cursor, and accept presses a
+    /// key.
+    fn on_keyboard_action(&mut self, action: Action) {
+        let direction = match action {
+            Action::Left => Some(guide::Move::Left),
+            Action::Right => Some(guide::Move::Right),
+            Action::Up => Some(guide::Move::Up),
+            Action::Down => Some(guide::Move::Down),
+            _ => None,
+        };
+        if let Some(direction) = direction {
+            if self.osk.board.move_selection(direction) {
+                self.needs_redraw = true;
+            }
+            return;
+        }
+        if action == Action::Launch {
+            self.press_key();
+        }
+    }
+
+    /// Act on a key the user pressed on their own keyboard while the board was
+    /// up.
+    ///
+    /// Timestamped from the shell's own clock rather than the seat's, even
+    /// though the seat's is the one the key really arrived on. Everything the
+    /// virtual keyboard sends has to keep increasing, and the two clocks have
+    /// different origins: interleaving them would hand the application a
+    /// keystroke from the past every time the user reached for the board.
+    fn on_typed(&mut self, typed: keyboard::Typed) {
+        let at = self.start.elapsed().as_millis() as u32;
+        match typed {
+            keyboard::Typed::Move(direction) => {
+                if self.osk.board.move_selection(direction) {
+                    self.needs_redraw = true;
+                }
+            }
+            keyboard::Typed::Press => self.press_key(),
+            keyboard::Typed::Close => {
+                if self.osk.close() {
+                    self.sync_surface_state();
+                    self.needs_redraw = true;
+                }
+            }
+            keyboard::Typed::Send(stroke) => {
+                if !self.osk.send(stroke, at) {
+                    tracing::debug!(?stroke, "nothing typed: no virtual keyboard");
+                }
+                self.flush_keystroke();
+            }
+            keyboard::Typed::Ignored => {}
+        }
+    }
+
+    /// Fire the key the user is holding down, if it is due again. At most one
+    /// repeat per tick, and the loop ticks well inside the fastest repeat rate
+    /// anyone sets.
+    fn tick_keyboard(&mut self, now: Instant) {
+        let typed = self.osk.repeat(now);
+        if typed != keyboard::Typed::Ignored {
+            self.on_typed(typed);
+        }
+    }
+
+    /// Put the board's cursor on the key the pointer is over.
+    ///
+    /// Hovering *is* selecting, rather than a second highlight of the
+    /// pointer's own. The board already has one cursor, one button that
+    /// presses whatever it is on, and one drawing that says where it is; a
+    /// pointer that lit a different key would leave the user two places to
+    /// look and `A` doing the wrong one of them.
+    ///
+    /// Nothing under the cursor leaves the selection alone. Crossing a gap
+    /// between two keys is not a reason to forget which key the thumb was on.
+    fn hover_key(&mut self, key: Option<(usize, usize)>) {
+        let Some((row, column)) = key else {
+            return;
+        };
+        if self.osk.is_open() && self.osk.board.select(row, column) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Ask for the cursor a keyboard deserves, if the compositor will be told.
+    ///
+    /// Over a text field the application has usually asked for a beam, and a
+    /// beam left hanging over a picture of a keyboard says the letters can be
+    /// selected rather than pressed. A pointing hand is what a row of buttons
+    /// takes.
+    fn set_cursor_shape(
+        &self,
+        qh: &QueueHandle<Self>,
+        pointer: &wl_pointer::WlPointer,
+        serial: u32,
+    ) {
+        use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1 as shape;
+        let Some(manager) = self.cursor_shape.as_ref() else {
+            return;
+        };
+        let device = manager.get_shape_device(pointer, qh);
+        device.set_shape(serial, shape::Shape::Pointer);
+        device.destroy();
+    }
+
+    /// Send whatever the selected key types.
+    fn press_key(&mut self) {
+        // The protocol wants a millisecond timestamp that keeps going up, and
+        // the shell already has one clock everything else is measured against.
+        let at = self.start.elapsed().as_millis() as u32;
+        if self.osk.press(at) == keyboard::Press::Close {
+            self.sync_surface_state();
+        }
+        self.flush_keystroke();
+        self.needs_redraw = true;
+    }
+
+    /// A key is a request on the connection and arrives when the connection is
+    /// flushed. The loop does that on its way into the poll, but a shell that
+    /// is otherwise idle — which, with the board up and an application in
+    /// front, it is — should not make a letter wait for the next frame.
+    fn flush_keystroke(&self) {
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the keystroke");
+        }
+    }
+
     /// Open the menu, settling where each display's start screen flies from.
     fn open_guide(&mut self) {
         // Read before opening: `is_over_app` is true of the menu too, and
@@ -1386,24 +2003,17 @@ impl Shell {
         self.needs_redraw = true;
     }
 
-    /// Whether anything this display draws can still be seen.
-    ///
-    /// Behind a fullscreen application none of it can, and an animated
-    /// background nobody is looking at costs exactly what the application in
-    /// front — a game, usually — is asking the GPU for. Every frame the shell
-    /// skips is also a frame the compositor does not have to composite. The
-    /// guide is the exception: it is drawn *over* the application, which is
-    /// the whole point of it.
     /// Bring the launch splash up to date, and let it go once it has handed
-    /// the display over.
+    /// the display over. Returns whether that changed the layer state by
+    /// removing the splash.
     ///
     /// Its own step rather than part of the drawing, because what it watches
     /// for — a window that was not there before — is the very thing that
     /// stops this display drawing at all: without it the splash would freeze
     /// at the moment the application covered the bar.
-    fn advance_launch(&mut self, now: Instant) {
+    fn advance_launch(&mut self, now: Instant) -> bool {
         if self.launching.is_none() {
-            return;
+            return false;
         }
         let (known, foreground) = match self
             .launching
@@ -1422,7 +2032,7 @@ impl Shell {
             // up on it now.
             None => {
                 self.launching = None;
-                return;
+                return true;
             }
         };
         let alive = self
@@ -1447,6 +2057,7 @@ impl Shell {
             self.launching = None;
         }
         self.needs_redraw = true;
+        finished
     }
 
     /// Whether a launch splash is on `index` — which is also what keeps that
@@ -1457,6 +2068,14 @@ impl Shell {
             .is_some_and(|splash| splash.panel == index)
     }
 
+    /// Whether anything this display draws can still be seen.
+    ///
+    /// Behind a fullscreen application none of it can, and an animated
+    /// background nobody is looking at costs exactly what the application in
+    /// front — a game, usually — is asking the GPU for. Every frame the shell
+    /// skips is also a frame the compositor does not have to composite. The
+    /// guide is the exception: it is drawn *over* the application, which is
+    /// the whole point of it.
     fn panel_is_visible(&self, index: usize) -> bool {
         let Some(panel) = self.panels.get(index) else {
             return false;
@@ -1467,7 +2086,40 @@ impl Shell {
         if index == self.focused_panel && self.guide.is_over_app() {
             return true;
         }
+        // So is the keyboard, and its hint: both are drawn over the
+        // application on purpose, so a display that has stopped drawing
+        // because something covered its bar has to start again for them.
+        if index == self.focused_panel && self.keyboard_visible() {
+            return true;
+        }
         !bar_is_covered(panel.width, panel.height, &panel.windows)
+    }
+
+    /// Whether the focused display is drawing the keyboard, or the hint that
+    /// says how to summon it.
+    ///
+    /// A different thing from the guide, and configured differently: it is
+    /// drawn above the application without taking either the keys or the
+    /// pointer from it.
+    fn keyboard_visible(&self) -> bool {
+        keyboard_is_visible(
+            self.guide.is_over_app(),
+            self.osk.is_open(),
+            self.osk.wants_hint(),
+            self.app_running(),
+        )
+    }
+
+    /// Whether that drawing is happening *over* a running application.
+    ///
+    /// The narrower question, and the one the bar has to answer to: the
+    /// surface it shares with the board is raised above the application to
+    /// carry it, and the bar belongs behind that application. With nothing
+    /// running there is nothing to be in front of, and the bar stays where it
+    /// is rather than blanking itself for a board floating over an empty
+    /// screen.
+    fn keyboard_overlay(&self) -> bool {
+        self.keyboard_visible() && self.app_running()
     }
 
     /// Settle where each display's start screen flies from, for a menu that
@@ -1522,6 +2174,36 @@ impl Shell {
         let app_running = self.app_running();
 
         match action {
+            // A bar is slid, not pressed. Left and Right move it, which is
+            // also the one place they do not cross to the window cards: a
+            // console's settings sliders work the same way, and the way off a
+            // bar is the way you arrived at it, vertically.
+            Action::Left | Action::Right
+                if self.guide.pane() == guide::Pane::Menu && self.selected_bar().is_some() =>
+            {
+                let Some(bar) = self.selected_bar() else {
+                    return;
+                };
+                let delta = if action == Action::Left { -1 } else { 1 };
+                if self.quick.nudge(knob(bar), delta) {
+                    self.needs_redraw = true;
+                }
+            }
+            // The tiles share a line, so Left and Right walk along it first.
+            // Off its end they carry on meaning what they mean everywhere else
+            // in the column — Right crosses to the window cards.
+            Action::Left | Action::Right
+                if self.guide.pane() == guide::Pane::Menu
+                    && self.guide.can_move_in_line(
+                        if action == Action::Left { -1 } else { 1 },
+                        closable,
+                    ) =>
+            {
+                let delta = if action == Action::Left { -1 } else { 1 };
+                if self.guide.move_in_line(delta, closable) {
+                    self.needs_redraw = true;
+                }
+            }
             // Up/Down in the entry column scroll it; everything directional in
             // the cards pane, and the crossings between the two, live in the
             // guide's own focus model.
@@ -1698,6 +2380,11 @@ impl Shell {
         self.close_target().is_some()
     }
 
+    /// Which bar the highlight is sitting on, if it is on one.
+    fn selected_bar(&self) -> Option<guide::Bar> {
+        self.guide.selected_item(self.closable())?.bar()
+    }
+
     fn activate(&mut self, item: Item) {
         tracing::debug!(?item, "guide menu selection");
         match item {
@@ -1710,6 +2397,44 @@ impl Shell {
                 // makes closing several applications one press each.
             }
             Item::Power => self.guide.open_power(),
+            // Remembered against the application, not the session: a stick
+            // that is a mouse in a browser is a camera in a game, and the
+            // whole point of the switch is that the answer differs.
+            Item::Pointer => match self.pointer_app().map(str::to_string) {
+                Some(app) => {
+                    self.guide.press(item);
+                    let on = self.prefs.toggle_stick_pointer(&app);
+                    // A stick left deflected while the switch was off must not
+                    // deliver the interval it spent there the moment it comes
+                    // on.
+                    self.stick.rest();
+                    if !on {
+                        if let Some(control) = self.shell_control.clone() {
+                            self.release_stick_buttons(&control);
+                        }
+                    }
+                }
+                // Nothing in front to attach it to, so the tile is drawn but
+                // inert — the same answer as pressing A on the brightness bar.
+                None => tracing::debug!("no application to turn the stick pointer on for"),
+            },
+            // Kept in the column for the control that will fill it. It presses
+            // like the switch beside it, because it is a switch being built
+            // rather than a dead spot in the sidebar, but it turns nothing on:
+            // the mixer behind it does not exist yet, and inventing an effect
+            // for the press would be worse than the press doing nothing.
+            Item::Mixer => {
+                self.guide.press(item);
+                tracing::debug!("the per-application volume mixer is not built yet");
+            }
+            // A on the volume bar silences the session, the way the key marked
+            // with a crossed-out speaker does. There is no equivalent for a
+            // screen, so A on the brightness bar does nothing rather than
+            // something invented.
+            Item::Volume => {
+                self.quick.toggle_mute();
+            }
+            Item::Brightness => {}
         }
         self.needs_redraw = true;
     }
@@ -1806,21 +2531,53 @@ impl Shell {
         }
     }
 
+    /// What of display `index` accepts the pointer, given the surface state it
+    /// has just been given.
+    ///
+    /// The board's rectangle is asked for on exactly the condition the drawing
+    /// uses — this display is the one being driven, the board is up, and it is
+    /// the board rather than the corner hint — so the hole in the input region
+    /// is never anywhere but under a keyboard that is actually painted there.
+    fn clickable(
+        &self,
+        index: usize,
+        state: (Layer, KeyboardInteractivity),
+        keyboard_visible: bool,
+    ) -> Clickable {
+        let board =
+            (index == self.focused_panel && keyboard_visible && self.osk.is_open()).then(|| {
+                let panel = &self.panels[index];
+                let [x, y, w, h] =
+                    ui::keyboard_panel_rect(panel.width.max(16) as f32, panel.height.max(9) as f32);
+                [x as i32, y as i32, w.ceil() as i32, h.ceil() as i32]
+            });
+        clickable_region(state, board)
+    }
+
     fn sync_surface_state(&mut self) {
         let app_running = self.app_running();
-        let states: Vec<(Layer, KeyboardInteractivity)> = (0..self.panels.len())
+        // Whether the board is up at all, not only whether it is up over an
+        // application: the shell must let go of the keys either way, or the
+        // letters it types come straight back to it and are read as
+        // navigation.
+        let keyboard = self.keyboard_visible();
+        let states: Vec<((Layer, KeyboardInteractivity), Clickable)> = (0..self.panels.len())
             .map(|index| {
-                self.guide.surface_state(
+                let state = self.guide.surface_state(
                     index == self.focused_panel,
                     app_running,
                     self.keep_keyboard_grabbed,
                     self.launching_on(index),
+                    keyboard,
                     self.base_layer,
-                )
+                );
+                (state, self.clickable(index, state, keyboard))
             })
             .collect();
-        // Whether each display will be drawing frames that could carry the
-        // change; see below.
+        // Whether each display is currently visible enough for a new frame to
+        // carry the change. A just-covered display may still draw one cleanup
+        // frame because it was visible previously; commit its layer state now
+        // so that frame cannot put the ordinary bar above the application.
         let drawing: Vec<bool> = (0..self.panels.len())
             .map(|index| self.panel_is_visible(index))
             .collect();
@@ -1830,7 +2587,7 @@ impl Shell {
             if panel.applied_surface_state == Some(desired) {
                 continue;
             }
-            let (layer, interactivity) = desired;
+            let ((layer, interactivity), clickable) = desired;
 
             // `set_layer` arrived in version 2 of the protocol. Requesting it
             // on an older compositor is a fatal protocol error, so the overlay
@@ -1850,6 +2607,36 @@ impl Shell {
             }
 
             panel.layer.set_keyboard_interactivity(interactivity);
+
+            // A surface drawn over an application while declining its keyboard
+            // has to decline its pointer too. That is the keyboard overlay and
+            // the launch splash: both are things the shell has put in front of
+            // something the user is still using, and a fullscreen surface that
+            // swallowed every click while passing the keys through would make
+            // the application behind it unusable with a mouse for as long as
+            // it was up.
+            //
+            // Except for the board itself, which is a picture of a keyboard
+            // and has to be pressable. So the hole in the region is the board's
+            // panel and nothing else: keys are clicked, and the rest of the
+            // display still belongs to the application underneath.
+            match clickable {
+                Clickable::Everything => panel.layer.wl_surface().set_input_region(None),
+                Clickable::Nothing | Clickable::Board(_) => match Region::new(&self.compositor) {
+                    Ok(region) => {
+                        if let Clickable::Board([x, y, w, h]) = clickable {
+                            region.add(x, y, w, h);
+                        }
+                        panel
+                            .layer
+                            .wl_surface()
+                            .set_input_region(Some(region.wl_region()));
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "could not make the overlay click-through")
+                    }
+                },
+            }
             // Layer and interactivity are double-buffered, so they take effect
             // on the next commit of this surface — and who commits it depends
             // on whether the display is drawing.
@@ -1879,6 +2666,120 @@ impl Shell {
             }
             self.needs_redraw = true;
         }
+    }
+}
+
+/// Whether the on-screen keyboard, or the corner hint that stands in for it,
+/// is on screen.
+///
+/// The board asks nothing of what is running: it can be summoned over an
+/// application, or over the bar with nothing running at all. That is the point
+/// of a manual shortcut — the applications that most need one are exactly the
+/// ones the shell cannot tell have a text field, so it does not try to guess.
+///
+/// The hint is the other way round. It says how to reach a keyboard *for a
+/// text field*, and a text field belongs to an application, so with nothing
+/// running there is nothing for it to point at and nothing for it to be on top
+/// of.
+///
+/// The menu overrides both. It is a different screen, and a keyboard on top of
+/// it would be typing into the shell.
+fn keyboard_is_visible(
+    menu_over_app: bool,
+    board_open: bool,
+    hint_wanted: bool,
+    app_running: bool,
+) -> bool {
+    !menu_over_app && (board_open || (hint_wanted && app_running))
+}
+
+/// Whether a display is on screen for the on-screen keyboard and nothing else.
+///
+/// The bar and the board share one surface, and they want opposite things of
+/// it: the bar belongs behind the running application, the board on top of it.
+/// While the board has raised that surface, the bar therefore cannot be drawn
+/// on it — doing so laid the whole start screen, icons and all, over the
+/// application beside the keyboard.
+///
+/// The menu is the exception, because the menu raises the surface for its own
+/// reasons and is meant to be seen.
+fn draws_only_the_keyboard(focused: bool, keyboard_overlay: bool, menu_here: bool) -> bool {
+    focused && keyboard_overlay && !menu_here
+}
+
+/// Whether the right stick is aiming the pointer, as a rule on its own.
+///
+/// `turned_on` is the switch: an application is in front, it said what it is,
+/// and the user turned the pointer on for it. The other two are the shell's
+/// own screens being in the way — the menu drawn over the application, and a
+/// launch splash still waiting for one. Neither has anything to point at.
+fn pointer_aims(menu_over_app: bool, launching: bool, turned_on: bool) -> bool {
+    turned_on && !menu_over_app && !launching
+}
+
+/// Whether the buttons and the wheel are the pointer's too.
+///
+/// Everything aiming needs, and the on-screen keyboard out of the way. The
+/// board is driven with the D-pad, the left stick and `A` — exactly what the
+/// clicks and the scrolling would take — while the right stick means nothing
+/// to it at all. So the two halves part company for as long as it is up:
+/// aiming carries on underneath, and the pointer is still where it was left
+/// when the board goes away.
+fn pointer_clicks(aiming: bool, board_open: bool) -> bool {
+    aiming && !board_open
+}
+
+/// Whether the shell should act on more from a controller than the two
+/// controls that always reach it.
+///
+/// Holding the keyboard is the usual answer, and the on-screen keyboard is the
+/// case where it is the wrong one: the board is up and being driven precisely
+/// *because* it has left the Wayland keyboard with the application it types
+/// into. Asking about focus alone dropped every direction and every press for
+/// as long as the board was on screen.
+fn controller_is_driving(grabbed: bool, has_keyboard_focus: bool, board_open: bool) -> bool {
+    grabbed || has_keyboard_focus || board_open
+}
+
+/// Whether a surface in this state lets the pointer through to whatever is
+/// underneath it.
+///
+/// Exactly the states that put the shell over a running application without
+/// taking its keyboard — the on-screen keyboard, its corner hint, and the
+/// launch splash. Derived from the pair rather than tracked beside it so the
+/// two can never disagree: a surface that has declined the keys has, by that
+/// fact, declined to be what the user is interacting with.
+fn passes_pointer_through(state: (Layer, KeyboardInteractivity)) -> bool {
+    state == (Layer::Overlay, KeyboardInteractivity::None)
+}
+
+/// What of one of the shell's surfaces accepts the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clickable {
+    /// The whole of it, which is what a menu or the bar wants: the shell is
+    /// what the user is interacting with, and nothing is behind it that a
+    /// click was meant for.
+    Everything,
+    /// None of it. The shell is drawn over an application it has deliberately
+    /// left the keyboard with, so the clicks are the application's too.
+    Nothing,
+    /// One rectangle of it, in surface coordinates: the on-screen keyboard.
+    Board([i32; 4]),
+}
+
+/// Which of those a surface in `state` is, given the board's rectangle when
+/// this display is the one drawing it.
+///
+/// Split out from the surface state for the same reason that is split out from
+/// the drawing: what the shell tells the compositor and what the shell paints
+/// have to be two readings of one answer, not two answers.
+fn clickable_region(state: (Layer, KeyboardInteractivity), board: Option<[i32; 4]>) -> Clickable {
+    if !passes_pointer_through(state) {
+        return Clickable::Everything;
+    }
+    match board {
+        Some(rect) => Clickable::Board(rect),
+        None => Clickable::Nothing,
     }
 }
 
@@ -1955,7 +2856,7 @@ fn card_age(started: Option<f32>, guide_age: f32, overview_available: bool) -> f
 /// one frame early paints backdrop over a window that is still crossing the
 /// display.
 fn cards_have_landed(card_age: f32) -> bool {
-    card_age >= HOME_FLIGHT + CARD_SETTLE
+    card_age >= CARD_ARRIVAL
 }
 
 /// Run a system command and forget about it.
@@ -2041,11 +2942,9 @@ fn spring_rect(glide: &mut Glide, target: [f32; 4], dt: f32) -> [f32; 4] {
     glide.at
 }
 
-/// The local wall clock, in the bar's corner format (`6/12 0:40`).
-///
-/// `None` when local time cannot be determined; the bar simply shows no clock
-/// rather than a wrong one.
-fn wall_clock() -> Option<String> {
+/// The local time now, broken down, or `None` when it cannot be worked out —
+/// in which case the shell shows no clock rather than a wrong one.
+fn local_time() -> Option<libc::tm> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;
@@ -2055,6 +2954,12 @@ fn wall_clock() -> Option<String> {
     if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
         return None;
     }
+    Some(tm)
+}
+
+/// The local wall clock, in the bar's corner format (`6/12 0:40`).
+fn wall_clock() -> Option<String> {
+    let tm = local_time()?;
     Some(format!(
         "{}/{} {}:{:02}",
         tm.tm_mon + 1,
@@ -2062,6 +2967,63 @@ fn wall_clock() -> Option<String> {
         tm.tm_hour,
         tm.tm_min
     ))
+}
+
+/// The guide sidebar's header: the time, and the day beside it.
+fn wall_clock_face() -> Option<(String, String)> {
+    local_time().as_ref().map(clock_face)
+}
+
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Written out here rather than handed to `strftime`, which would answer in
+/// whatever locale the session happened to inherit while every other word in
+/// this shell is in English. A header reading "wtorek, 5 sierpnia" over
+/// "Nothing is running" looks like a bug, not like localisation — the day to
+/// translate this is the day the rest of it is translated too.
+///
+/// Both names are cut to three letters, which is what lets the day share the
+/// clock's line instead of taking one of its own. The sidebar's width is
+/// clamped while its type scales with the display, so the room beside the time
+/// is at its narrowest on a big screen — and "Wednesday, 28 September" printed
+/// straight through the time there. Three letters is the one form that fits at
+/// every size, and a header is a glance rather than a sentence.
+fn clock_face(tm: &libc::tm) -> (String, String) {
+    let short = |name: &str| name.chars().take(3).collect::<String>();
+    let weekday = WEEKDAYS
+        .get(tm.tm_wday.clamp(0, 6) as usize)
+        .copied()
+        .unwrap_or_default();
+    let month = MONTHS
+        .get(tm.tm_mon.clamp(0, 11) as usize)
+        .copied()
+        .unwrap_or_default();
+    (
+        format!("{}:{:02}", tm.tm_hour, tm.tm_min),
+        format!("{} {} {}", short(weekday), tm.tm_mday, short(month)),
+    )
 }
 
 /// Parse one `seconds:action` pair of `--debug-actions`.
@@ -2074,6 +3036,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         .map_err(|_| format!("{at:?} is not a number of seconds"))?;
     let action = match name {
         "guide" => Action::Guide,
+        "keyboard" => Action::Keyboard,
         "back" => Action::Back,
         "launch" => Action::Launch,
         "up" => Action::Up,
@@ -2112,7 +3075,21 @@ fn action_for_keysym(keysym: Keysym) -> Option<Action> {
         // also forwards its own binding, which is what works while an
         // application holds the keyboard and this shell sees nothing.
         Keysym::Home | Keysym::XF86_HomePage | Keysym::Menu => Some(Action::Guide),
+        // And of the controller chord that summons the keyboard. Of little use
+        // to somebody who already has a keyboard, but Linboard forwards its
+        // own binding as this, and it is what makes the board drivable at all
+        // on a machine with no pad plugged in.
+        Keysym::XF86_Keyboard => Some(Action::Keyboard),
         _ => None,
+    }
+}
+
+/// Which control a menu bar drives. The guide names the row; the system module
+/// names the thing that moves.
+fn knob(bar: guide::Bar) -> Knob {
+    match bar {
+        guide::Bar::Volume => Knob::Volume,
+        guide::Bar::Brightness => Knob::Brightness,
     }
 }
 
@@ -2123,6 +3100,10 @@ impl SlotLookup for Slots<'_> {
     fn slot_for(&self, icon: Option<&str>) -> Option<u32> {
         icon.and_then(|name| self.0.slot(name))
             .or_else(|| self.0.slot(FALLBACK_APP_ICON))
+    }
+
+    fn glyph(&self, name: &str) -> Option<u32> {
+        self.0.slot(name)
     }
 }
 
@@ -2243,6 +3224,15 @@ impl SeatHandler for Shell {
                 Err(err) => tracing::warn!(?err, "could not obtain the keyboard"),
             }
         }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(pointer) => self.pointer = Some(pointer),
+                // Not fatal, and not even unusual: a console with no mouse in
+                // it has a seat with no pointer on it. Everything but clicking
+                // the on-screen keyboard carries on.
+                Err(err) => tracing::info!(?err, "no pointer on this seat"),
+            }
+        }
     }
 
     fn remove_capability(
@@ -2258,9 +3248,58 @@ impl SeatHandler for Shell {
                 keyboard.release();
             }
         }
+        if capability == Capability::Pointer {
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
+        }
     }
 
     fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    }
+}
+
+impl PointerHandler for Shell {
+    /// The pointer, over the one part of the shell that accepts it.
+    ///
+    /// Only the on-screen keyboard has an input region at all — see
+    /// `sync_surface_state` — so anything arriving here is over the board, and
+    /// what is under the cursor is simply the key the cursor is on.
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            let Some(index) = self.panels.iter().position(|p| p.owns(&event.surface)) else {
+                continue;
+            };
+            let (width, height) = {
+                let panel = &self.panels[index];
+                (panel.width.max(16) as f32, panel.height.max(9) as f32)
+            };
+            let (x, y) = (event.position.0 as f32, event.position.1 as f32);
+            let key = ui::keyboard_key_at(x, y, width, height);
+
+            match event.kind {
+                PointerEventKind::Enter { serial } => {
+                    self.set_cursor_shape(qh, pointer, serial);
+                    self.hover_key(key);
+                }
+                PointerEventKind::Motion { .. } => self.hover_key(key),
+                // A press rather than a release, because that is when a key on
+                // a keyboard fires and when the board's own `A` fires. The key
+                // pressed is whatever the hover just put the selection on, so
+                // the button and the controller press exactly the same thing.
+                PointerEventKind::Press { button, .. } if button == BTN_LEFT && key.is_some() => {
+                    self.hover_key(key);
+                    self.press_key();
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -2401,6 +3440,10 @@ impl Dispatch<LinboardShellV1, ()> for Shell {
                 tracing::debug!("guide binding forwarded by the compositor");
                 state.on_action(Action::Guide);
             }
+            linboard_shell_v1::Event::Keyboard => {
+                tracing::debug!("keyboard binding forwarded by the compositor");
+                state.on_action(Action::Keyboard);
+            }
             linboard_shell_v1::Event::Foreground { title } => {
                 state.foreground = (!title.is_empty()).then_some(title);
                 tracing::debug!(foreground = ?state.foreground, "foreground application changed");
@@ -2421,6 +3464,23 @@ impl Dispatch<LinboardShellV1, ()> for Shell {
                             "foreground application changed on a display"
                         );
                         panel.foreground = title;
+                        state.needs_redraw = true;
+                    }
+                }
+            }
+            linboard_shell_v1::Event::OutputAppId { output, app_id } => {
+                let app_id = (!app_id.is_empty()).then_some(app_id);
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    if panel.app_id != app_id {
+                        tracing::debug!(
+                            display = %panel.name,
+                            app_id = ?app_id,
+                            "foreground application identity changed on a display"
+                        );
+                        panel.app_id = app_id;
+                        // The tile is drawn from this, and so is whether the
+                        // stick is driving anything: an application closing is
+                        // what turns the pointer back into a stick.
                         state.needs_redraw = true;
                     }
                 }
@@ -2496,11 +3556,30 @@ mod flight_tests {
         // Not on the stroke of the flight either: the compositor still has to
         // render that last step and have it scanned out.
         assert!(!cards_have_landed(HOME_FLIGHT));
-        assert!(cards_have_landed(HOME_FLIGHT + CARD_SETTLE));
+        assert!(cards_have_landed(CARD_ARRIVAL));
 
-        // And the wait stays short enough to be over before the cards have
-        // finished fading in, so the corners never round in plain sight.
-        assert!(ui::card_fade(HOME_FLIGHT + CARD_SETTLE) < 1.0);
+        // The corners are repaired on the same answer the decoration fades in
+        // on, so they can never round in plain sight: nothing is on the card
+        // to see them do it.
+        assert_eq!(ui::card_fade(CARD_ARRIVAL), 0.0);
+    }
+
+    /// The bug in its third form, and the one that could be watched: the frame
+    /// and title of a card drawn at the slot its window was still travelling
+    /// to, ruled across the middle of that window for the rest of the flight.
+    #[test]
+    fn no_card_is_decorated_while_its_window_is_still_flying() {
+        for age in [0.0, HOME_FLIGHT * 0.4, HOME_FLIGHT * 0.9, HOME_FLIGHT] {
+            assert_eq!(
+                ui::card_fade(age),
+                0.0,
+                "the cards must stay bare {age}s into a {HOME_FLIGHT}s flight"
+            );
+        }
+        // And they are up promptly once they have: the decoration settles onto
+        // a card that has stopped rather than being an animation of its own.
+        assert!(ui::card_fade(CARD_ARRIVAL + 0.1) > 0.5);
+        assert_eq!(ui::card_fade(CARD_ARRIVAL + 0.2), 1.0);
     }
 
     /// A press that lands mid-flight must carry on from where the start
@@ -2590,6 +3669,141 @@ mod flight_tests {
         assert!(should_draw(true, false, false));
     }
 
+    /// The keyboard and the bar share a surface and want opposite things of
+    /// it. Raising it for the board and then drawing the bar on it too put the
+    /// whole start screen over the running application — every icon of it,
+    /// beside the keys.
+    #[test]
+    fn the_bar_gives_the_screen_up_while_the_keyboard_is_on_it() {
+        const DRIVEN: bool = true;
+        const BOARD: bool = true;
+        const MENU: bool = true;
+
+        assert!(draws_only_the_keyboard(DRIVEN, BOARD, !MENU));
+        // The menu raises the surface for its own reasons and is meant to be
+        // seen, so it keeps drawing everything it draws.
+        assert!(!draws_only_the_keyboard(DRIVEN, BOARD, MENU));
+        // Nothing is being kept off a display that has no board on it.
+        assert!(!draws_only_the_keyboard(DRIVEN, !BOARD, !MENU));
+        // Nor off the displays the user is not driving: the board is on one
+        // screen, and the others carry on showing their own bar.
+        assert!(!draws_only_the_keyboard(!DRIVEN, BOARD, !MENU));
+    }
+
+    /// The one hole the shell ever opens for the pointer is the board, and it
+    /// is exactly the board: a fullscreen surface that swallowed clicks would
+    /// make the application under it unusable with a mouse, and one that
+    /// swallowed none of them would leave a picture of a keyboard that cannot
+    /// be pressed.
+    #[test]
+    fn only_the_keyboard_takes_clicks_from_the_application_underneath() {
+        let board = [420, 700, 1080, 340];
+        let over_app = (Layer::Overlay, KeyboardInteractivity::None);
+
+        assert_eq!(
+            clickable_region(over_app, Some(board)),
+            Clickable::Board(board)
+        );
+        // The launch splash and the corner hint are the same surface state
+        // with no board on it, and they take nothing.
+        assert_eq!(clickable_region(over_app, None), Clickable::Nothing);
+
+        // The menu is the shell being what the user is interacting with, so
+        // all of it takes clicks — and the board's rectangle is beside the
+        // point there, because the menu never has one on it.
+        for state in [
+            (Layer::Overlay, KeyboardInteractivity::Exclusive),
+            (Layer::Background, KeyboardInteractivity::Exclusive),
+            (Layer::Background, KeyboardInteractivity::OnDemand),
+        ] {
+            assert_eq!(clickable_region(state, None), Clickable::Everything);
+            assert_eq!(clickable_region(state, Some(board)), Clickable::Everything);
+        }
+    }
+
+    /// The board can be summoned anywhere; the hint appears only where there
+    /// is a text field waiting for it.
+    #[test]
+    fn the_board_goes_anywhere_and_the_hint_only_over_a_field() {
+        const MENU: bool = true;
+        const BOARD: bool = true;
+        const HINT: bool = true;
+        const APP: bool = true;
+
+        // Summoned over an application, and summoned over the bar with nothing
+        // running: both are the user asking for it, and neither is refused.
+        assert!(keyboard_is_visible(!MENU, BOARD, !HINT, APP));
+        assert!(
+            keyboard_is_visible(!MENU, BOARD, !HINT, !APP),
+            "a shortcut that silently does nothing on the home screen is worse \
+             than one that visibly does nothing"
+        );
+
+        // The hint needs both halves: a field waiting for typing, and an
+        // application for it to be drawn on top of.
+        assert!(keyboard_is_visible(!MENU, !BOARD, HINT, APP));
+        assert!(!keyboard_is_visible(!MENU, !BOARD, HINT, !APP));
+        assert!(!keyboard_is_visible(!MENU, !BOARD, !HINT, APP));
+
+        // And the menu takes precedence over either: it is a different screen,
+        // and a board on top of it would be typing into the shell.
+        assert!(!keyboard_is_visible(MENU, BOARD, HINT, APP));
+    }
+
+    /// The regression that made the keyboard look like a picture of a
+    /// keyboard: it was on screen, and every direction and press from the
+    /// controller was being dropped before it got there.
+    /// The stick is a mouse only where there is something to point at, and
+    /// only the half of it that nothing else wants stays behind the board.
+    #[test]
+    fn the_pointer_keeps_aiming_under_the_board_but_gives_up_its_buttons() {
+        const OFF: bool = false;
+        const ON: bool = true;
+
+        // Nothing turned on: nothing happens, whatever else is true.
+        assert!(!pointer_aims(OFF, OFF, OFF));
+        assert!(!pointer_clicks(pointer_aims(OFF, OFF, OFF), OFF));
+
+        // Turned on, with the application in front: the whole mouse.
+        let aiming = pointer_aims(OFF, OFF, ON);
+        assert!(aiming);
+        assert!(pointer_clicks(aiming, OFF));
+
+        // The board is up: still aiming, no longer clicking. It is driven
+        // with the D-pad, the left stick and `A`, and the right stick means
+        // nothing to it.
+        assert!(pointer_aims(OFF, OFF, ON));
+        assert!(!pointer_clicks(pointer_aims(OFF, OFF, ON), ON));
+
+        // The menu is over the application, or a launch is still in flight:
+        // the shell's own screens, with nothing on them to point at.
+        for (menu, launching) in [(ON, OFF), (OFF, ON), (ON, ON)] {
+            assert!(!pointer_aims(menu, launching, ON), "{menu} {launching}");
+            assert!(!pointer_clicks(pointer_aims(menu, launching, ON), OFF));
+        }
+    }
+
+    #[test]
+    fn the_controller_drives_the_board_that_has_left_it_the_keyboard() {
+        const GRABBED: bool = true;
+        const FOCUSED: bool = true;
+        const BOARD: bool = true;
+
+        // The case that was broken. The board holds no Wayland keyboard on
+        // purpose — that is what keeps the text field it types into focused —
+        // so focus is exactly the wrong thing to ask about here.
+        assert!(controller_is_driving(!GRABBED, !FOCUSED, BOARD));
+
+        // Unchanged either way round: the bar is driven when it holds the
+        // keyboard, or when it was told to keep hold of it.
+        assert!(controller_is_driving(!GRABBED, FOCUSED, !BOARD));
+        assert!(controller_is_driving(GRABBED, !FOCUSED, !BOARD));
+
+        // And with no board and no focus the shell is behind an application,
+        // where only the guide button and the keyboard chord reach it.
+        assert!(!controller_is_driving(!GRABBED, !FOCUSED, !BOARD));
+    }
+
     /// Animating a background nobody can see costs a game the frames it is
     /// asking for, so a covered bar stops drawing.
     #[test]
@@ -2635,6 +3849,40 @@ mod flight_tests {
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    /// A `tm` for a given local moment, so the header can be asserted on
+    /// without waiting for the clock to say the right thing.
+    fn at(hour: i32, minute: i32, wday: i32, mday: i32, mon: i32) -> libc::tm {
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        tm.tm_hour = hour;
+        tm.tm_min = minute;
+        tm.tm_wday = wday;
+        tm.tm_mday = mday;
+        tm.tm_mon = mon;
+        tm
+    }
+
+    #[test]
+    fn the_sidebars_header_reads_as_a_time_and_a_day() {
+        let (time, date) = clock_face(&at(15, 18, 2, 5, 7));
+        assert_eq!(time, "15:18");
+        assert_eq!(date, "Tue 5 Aug");
+
+        // Midnight is `0:04`, not `00:04` — the corner clock has always
+        // written it that way and the header should not disagree with it.
+        let (time, date) = clock_face(&at(0, 4, 0, 1, 0));
+        assert_eq!(time, "0:04");
+        assert_eq!(date, "Sun 1 Jan");
+
+        // The longest the day can get. It shares the clock's line, so this is
+        // the string the sidebar has to have room for beside the time.
+        assert_eq!(clock_face(&at(9, 0, 3, 28, 8)).1, "Wed 28 Sep");
+
+        // Out-of-range fields come from a `tm` this did not fill in; a header
+        // is not worth a panic over one.
+        let (time, _) = clock_face(&at(23, 59, 9, 31, 40));
+        assert_eq!(time, "23:59");
+    }
 
     #[test]
     fn debug_actions_parse_as_a_timed_script() {

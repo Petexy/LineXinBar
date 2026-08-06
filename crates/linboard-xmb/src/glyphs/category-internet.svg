@@ -1,0 +1,88 @@
+<!--
+The Internet column's glyph: a globe.
+
+  The one mark for "the network" that needs no caption in any language, which
+  is the whole job of a column heading.
+
+  A sphere, so it is shaded radially rather than split at a waist — see
+  brightness.svg, where the same decision is argued at a tenth the size. The
+  graticule is cut *into* the ball rather than laid on top of it: each line is
+  a groove with its near wall shadowed and a lit lip under it, which is what
+  keeps the lines on the surface. Drawn flat over the top they slide off it and
+  the ball goes back to being a disc with a cage in front.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f6f6f6"/>
+      <stop offset="0.8" stop-color="#dedede"/>
+      <stop offset="1" stop-color="#d2d2d2"/>
+    </radialGradient>
+
+    <clipPath id="globe-clip"><circle cx="16" cy="15.9" r="12.6"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <circle cx="16" cy="15.9" r="12.6" fill="url(#ball)"/>
+
+    <g clip-path="url(#globe-clip)">
+      <!-- Parallels: straight lines seen edge-on, which is what a circle
+           round a sphere is when you are looking at its side. -->
+      <g fill="none" stroke="#a4a4a4" stroke-opacity="0.7" stroke-width="1.1">
+        <path d="M3.4 15.9h25.2"/>
+        <path d="M5.9 8.4h20.2"/>
+        <path d="M5.9 23.4h20.2"/>
+      </g>
+      <g fill="none" stroke="#ffffff" stroke-opacity="0.65" stroke-width="0.7">
+        <path d="M3.4 16.75h25.2"/>
+        <path d="M5.9 9.25h20.2"/>
+        <path d="M5.9 24.25h20.2"/>
+      </g>
+      <!-- Meridians, and the rim of the ball itself as the outermost one. -->
+      <g fill="none" stroke="#a4a4a4" stroke-opacity="0.7" stroke-width="1.1">
+        <ellipse cx="16" cy="15.9" rx="5.3" ry="12.6"/>
+      </g>
+      <ellipse cx="16" cy="15.9" rx="5.3" ry="12.6"
+               fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="0.6"
+               transform="translate(0.55 0)"/>
+      <circle cx="16" cy="15.9" r="12.6" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
+    </g>
+  </g>
+</svg>
