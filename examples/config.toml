@@ -1,6 +1,6 @@
-# Example Linboard configuration.
+# Example LineXinBar configuration.
 #
-# Copy to ~/.config/linboard/config.toml and edit. Every field is optional;
+# Copy to ~/.config/lxb/config.toml and edit. Every field is optional;
 # deleting this whole file leaves you with a working single-display setup.
 #
 # See docs/configuration.md for the full reference.
@@ -9,9 +9,9 @@
 # Started once the Wayland socket exists.
 autostart = []
 
-# The session shell, used only with `linboard --shell`. It is started with the
+# The session shell, used only with `lxb --shell`. It is started with the
 # autostart list, and the session ends when it exits.
-shell = "linboard-xmb"
+shell = "lxb-desktop"
 
 # How outputs without an explicit `position` are arranged:
 # "horizontal", "vertical", or "mirror".
@@ -31,9 +31,9 @@ draw_cursor = true
 # cursor_theme = "Bibata-Modern-Classic"
 # cursor_size = 24
 
-# Exported to every process Linboard starts.
+# Exported to every process LineXinBar starts.
 [general.env]
-XDG_CURRENT_DESKTOP = "Linboard"
+XDG_CURRENT_DESKTOP = "LineXinBar"
 
 [input]
 keyboard_layout = "us"
@@ -56,6 +56,18 @@ pointer_accel = 0.0
 # scale = 1.0
 # transform = "normal"      # normal, 90, 180, 270, flipped, flipped-90, ...
 # enabled = true
+#
+# High dynamic range. These are only what the session comes up in — the shell
+# writes the same settings from Settings > Display > HDR and remembers them
+# itself, so set them here for a session with no shell.
+#
+# hdr = true                # needs a display whose EDID advertises ST 2084
+# hdr_sdr_brightness = 200  # what plain white is sent at, cd/m². Everything
+#                           # LineXinBar composites is SDR, so this is what
+#                           # decides whether the session is dim or blinding.
+# hdr_srgb_intensity = 0    # 0 is the colour SDR showed; 100 sends sRGB's
+#                           # primaries as BT.2020's, which is "vivid".
+# hdr_peak_brightness = 600 # omit to use whatever the display reports
 #
 # [[output]]
 # name = "HDMI-A-1"

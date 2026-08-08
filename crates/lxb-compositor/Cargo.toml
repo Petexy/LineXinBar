@@ -1,0 +1,63 @@
+[package]
+name = "lxb-compositor"
+description = "A micro Wayland compositor with first-class multi-display support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lxb"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true
+clap.workspace = true
+
+libc = "0.2"
+x11rb = "0.13"
+# The colour pipeline and HDR infoframe are set through property blobs whose
+# length the driver chooses at runtime, which `drm`'s own type-sized helper
+# cannot express. Pinned to the version smithay's `drm` is built on.
+drm-ffi = "0.9"
+# Loading the pointer's XCursor theme (Bibata is bundled in share/icons/).
+xcursor = "0.3"
+# Writing a captured window out. Only the encoder is wanted — the pixels come
+# from the renderer, already RGBA — so this is `png` rather than the whole
+# `image` crate the shell decodes icons with.
+png = "0.18"
+
+lxb-protocol = { path = "../lxb-protocol", features = ["server"] }
+
+# Connector scanning / CRTC mapping for the DRM backend. `display-info` is off
+# because its bundled bindings target an older libdisplay-info than most distros
+# ship; connector names come from the connector type instead, as elsewhere.
+smithay-drm-extras = { version = "0.1", default-features = false }
+
+[dependencies.smithay]
+version = "0.7"
+default-features = false
+features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_winit",
+    "backend_x11",
+    "desktop",
+    "renderer_gl",
+    "renderer_multi",
+    "wayland_frontend",
+    "xwayland",
+    "use_system_lib",
+]
+
+[features]
+default = []

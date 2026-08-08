@@ -1364,61 +1364,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "linboard-compositor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "linboard-protocol",
- "serde",
- "smithay",
- "smithay-drm-extras",
- "thiserror 2.0.19",
- "toml",
- "tracing",
- "tracing-subscriber",
- "x11rb",
- "xcursor",
-]
-
-[[package]]
-name = "linboard-protocol"
-version = "0.1.0"
-dependencies = [
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
- "wayland-server",
-]
-
-[[package]]
-name = "linboard-xmb"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "clap",
- "gilrs",
- "glyphon",
- "image",
- "libc",
- "linboard-protocol",
- "pollster",
- "raw-window-handle",
- "resvg",
- "serde",
- "smithay-client-toolkit 0.21.1",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wgpu",
-]
-
-[[package]]
 name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1468,6 +1413,66 @@ name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+
+[[package]]
+name = "lxb-compositor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "drm-ffi",
+ "libc",
+ "lxb-protocol",
+ "png",
+ "serde",
+ "smithay",
+ "smithay-drm-extras",
+ "thiserror 2.0.19",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "x11rb",
+ "xcursor",
+]
+
+[[package]]
+name = "lxb-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "clap",
+ "gilrs",
+ "glyphon",
+ "image",
+ "libc",
+ "lxb-protocol",
+ "pollster",
+ "raw-window-handle",
+ "resvg",
+ "serde",
+ "smithay-client-toolkit 0.21.1",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wgpu",
+ "xkbcommon",
+]
+
+[[package]]
+name = "lxb-protocol"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+]
 
 [[package]]
 name = "matchers"

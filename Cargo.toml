@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/linboard-compositor",
-    "crates/linboard-protocol",
-    "crates/linboard-xmb",
+    "crates/lxb-compositor",
+    "crates/lxb-protocol",
+    "crates/lxb-desktop",
 ]
 
 [workspace.package]
@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-only"
-repository = "https://github.com/petexy/project-linboard"
+repository = "https://github.com/petexy/project-linexinbar"
 
 [workspace.dependencies]
 anyhow = "1"

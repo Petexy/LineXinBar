@@ -1,0 +1,49 @@
+[package]
+name = "lxb-desktop"
+description = "An XMB-style shell for the LineXinBar compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lxb-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true
+clap.workspace = true
+
+# Wayland client: layer-shell, seat, keyboard.
+#
+# `calloop`/`system`: wgpu needs a real `wl_display` / `wl_surface` pointer from
+# libwayland, which only the system backend exposes.
+smithay-client-toolkit = "0.21"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# The on-screen keyboard's three halves: hearing that a text field took the
+# cursor, borrowing the physical keyboard while the board is up, and typing.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# Reading the session's own keymap, which the compositor hands over with the
+# keyboard grab: the board has to know which key the user actually pressed.
+# Pinned to the version smithay-client-toolkit uses, so `Keysym` is one type.
+xkbcommon = "0.8"
+lxb-protocol = { path = "../lxb-protocol", features = ["client"] }
+
+# GPU rendering.
+wgpu = "30"
+glyphon = "0.12"
+raw-window-handle = "0.6"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+libc = "0.2"
+gilrs = "0.11.2"
+
+# Icon decoding.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = { version = "0.48", default-features = false, features = ["raster-images"] }

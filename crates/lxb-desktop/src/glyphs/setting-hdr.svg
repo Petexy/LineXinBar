@@ -1,0 +1,112 @@
+<!--
+The HDR setting's glyph: an explicit HDR badge in a rounded display frame.
+
+  The old half-lit disc asked the user to decode a dynamic-range metaphor, and
+  was also borrowed by unrelated read-only rows.  HDR is already the short,
+  familiar name shown beside this mark, so spelling those three letters makes
+  the setting recognisable before the row has been read.  The proportions come
+  from the certification-style badge people already meet on displays.
+
+  The shell's SVG rasteriser deliberately has no text support.  H, D and R are
+  therefore paths, not a font dependency, and keep their shape on a console
+  with nothing installed but LineXinBar.  The centre remains transparent rather
+  than becoming a large pale plaque: the dark wallpaper supplies the contrast
+  while the neutral frame and letters remain cleanly tintable by the atlas.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The same neutral material and upper lamp as the neighbouring Display,
+         Resolution and Refresh rate glyphs. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f8f8"/>
+      <stop offset="0.3" stop-color="#eeeeee"/>
+      <stop offset="0.56" stop-color="#d4d4d4"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="1" stop-color="#fafafa"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.76" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.86"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.62"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.11"/>
+      <stop offset="0.2" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.8" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-25%" width="150%" height="165%">
+      <feDropShadow dx="0.35" dy="0.8" stdDeviation="0.38"
+                    flood-color="#303030" flood-opacity="0.46"/>
+    </filter>
+    <filter id="lift" x="-25%" y="-30%" width="160%" height="175%">
+      <feDropShadow dx="0.22" dy="0.42" stdDeviation="0.18"
+                    flood-color="#252525" flood-opacity="0.46"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.15"/>
+    </filter>
+
+    <rect id="badge" x="1" y="5" width="30" height="22" rx="4"/>
+    <rect id="opening" x="4" y="8" width="24" height="16" rx="1.25"/>
+    <!-- The bezel is a real ring, not a dark rectangle painted over a face. -->
+    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
+          d="M5 5h22a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H5a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4z
+             M5.25 8h21.5A1.25 1.25 0 0 1 28 9.25v13.5A1.25 1.25 0 0 1 26.75 24H5.25A1.25 1.25 0 0 1 4 22.75V9.25A1.25 1.25 0 0 1 5.25 8z"/>
+    <path id="frame-gloss" d="M0 3h32v9.2c-8.2 2.5-23.8 2.5-32 0z"/>
+    <clipPath id="frame-clip"><use href="#frame"/></clipPath>
+    <!-- Keep every part of the raised letters inside the dark opening, even
+         their antialiasing and lift shadow.  Geometry should leave visible air
+         before this boundary; the clip is the last guard against ink ever
+         landing on the bezel again. -->
+    <clipPath id="letter-clip">
+      <rect x="4.75" y="8.8" width="22.5" height="14.4" rx="0.7"/>
+    </clipPath>
+
+    <!-- Each letter is authored in one local 7.5-unit cell, then placed in the
+         three exact thirds of the 22.5-unit safe band below.  Every skeleton
+         spans x=1.25..6.25, so the 2.05 stroke gives H, D and R the same 7.05
+         painted width and leaves the same 0.45 gap between neighbours. -->
+    <path id="h" d="M1.25 10.7v10.6M6.25 10.7v10.6M1.25 16h5"/>
+    <path id="d"
+          d="M1.25 10.7v10.6h1.3c2.7 0 3.7-2 3.7-5.3s-1-5.3-3.7-5.3z"/>
+    <path id="r"
+          d="M1.25 21.3V10.7h1.8c2.1 0 3.2 1.15 3.2 2.9s-1.1 2.9-3.2 2.9H1.25
+             M3.45 16.5l2.8 4.8"/>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#frame" fill="url(#face)"/>
+    <g clip-path="url(#frame-clip)">
+      <use href="#frame-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#frame" fill="url(#turn)"/>
+    <use href="#badge" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+    <use href="#opening" fill="none" stroke="#ffffff" stroke-opacity="0.34"
+         stroke-width="0.55"/>
+  </g>
+
+  <!-- Draw the three letters from the same raised material, then lay a fine
+       lamp edge over them.  There is no dark authored ink: the wallpaper in
+       the transparent centre provides all of the negative space. -->
+  <g clip-path="url(#letter-clip)">
+    <g fill="none" stroke="url(#face)" stroke-width="2.05"
+       stroke-linecap="round" stroke-linejoin="round" filter="url(#lift)">
+      <use href="#h" transform="translate(4.75 0)"/>
+      <use href="#d" transform="translate(12.25 0)"/>
+      <use href="#r" transform="translate(19.75 0)"/>
+    </g>
+    <g fill="none" stroke="url(#edge)" stroke-width="0.55"
+       stroke-linecap="round" stroke-linejoin="round">
+      <use href="#h" transform="translate(4.75 0)"/>
+      <use href="#d" transform="translate(12.25 0)"/>
+      <use href="#r" transform="translate(19.75 0)"/>
+    </g>
+  </g>
+</svg>

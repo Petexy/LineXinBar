@@ -1,0 +1,107 @@
+<!--
+The Display subcategory's glyph: a screen on a stand.
+
+  The one object in this set that is a drawing of the thing it configures, and
+  it can afford to be: a display is the only piece of hardware in the room the
+  user is definitely looking at, so the picture of one cannot be mistaken for
+  anything else. The rest of the set has to be metaphor because "the colour of
+  being chosen" has no object.
+
+  Widescreen and slightly wider than a real 16:9 panel, because the cell is
+  square and a correctly proportioned screen leaves so much empty space above
+  and below it that the drawing reads as small rather than as wide. The stand
+  is short and the foot is broad for the same reason: a tall neck spends the
+  cell's height on nothing and, at 64 px, comes back as a stalk.
+
+  The face is a recess rather than a dark fill. Nothing in this set may go
+  dark — the atlas multiplies the quad's colour into the texel, so a near-black
+  mark comes back as a hole punched in the drawing — so the screen is sunk with
+  the same gradient the palette's wells use, lightest at the bottom where a
+  recess returns the lamp off its far wall. What makes it read as glass rather
+  than as a tray is the diagonal sweep across it, which is the one mark here
+  that is a reflection instead of a shape.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The screen, sunk into the bezel: darkest under the near wall,
+         lightest at the bottom of the far one. The palette's wells again. -->
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8e8e"/>
+      <stop offset="0.45" stop-color="#a8a8a8"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+
+    <path id="bezel" d="M4.4 5.1h23.2a2 2 0 0 1 2 2v12.9a2 2 0 0 1-2 2H4.4a2 2 0 0 1-2-2V7.1a2 2 0 0 1 2-2z"/>
+    <path id="bezel-gloss" d="M1 3H31v9.4C22.6 15 9.4 15 1 12.4z"/>
+    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <path id="pane" d="M5.4 7.6h21.2v11.9H5.4z"/>
+    <clipPath id="pane-clip"><use href="#pane"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- Stand first, so the bezel sits in front of the neck it grows out
+         of rather than being cut by it. -->
+    <path d="M13.4 21.4h5.2v4.2h-5.2z" fill="url(#face)"/>
+    <path d="M8.6 25.4h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
+          fill="url(#face)"/>
+    <path d="M8.6 25.4h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
+          fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <use href="#bezel" fill="url(#face)"/>
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#bezel" fill="url(#turn)"/>
+
+    <use href="#pane" fill="url(#recess)"/>
+    <!-- The one reflection in the set: a sweep across the glass, which is
+         what tells a sunk rectangle from a screen. -->
+    <g clip-path="url(#pane-clip)">
+      <path d="M5.4 17.6L14.8 7.6h5.6L8.9 19.5z" fill="#ffffff" fill-opacity="0.34"
+            filter="url(#polish)"/>
+      <path d="M5.4 12.2L10.1 7.6h2.4L5.4 14.4z" fill="#ffffff" fill-opacity="0.22"
+            filter="url(#polish)"/>
+    </g>
+    <use href="#pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+  </g>
+</svg>

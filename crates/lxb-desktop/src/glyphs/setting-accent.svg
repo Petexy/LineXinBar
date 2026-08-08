@@ -1,0 +1,83 @@
+<!--
+The Accent color subcategory's glyph: a drop.
+
+  What the column below it holds is one colour, so the mark for it is the
+  smallest possible quantity of colour — a single drop, about to be let go.
+  Read as a heading it says "the colour", which is exactly what the setting is;
+  a palette or a wheel would say "colours", plural, and that is a different
+  screen.
+
+  Drawn as glass rather than as paint, because it is drawn in white: the row it
+  labels is a subcategory, not a value, and the values live one step further in
+  where they are drawn in themselves. A drop of clear glass is lit like every
+  other object in this set — one lamp above, the rim catching it, a shadow
+  under — and the two things that make it a *drop* are the caustic pooled in
+  its lower half, where the whole body of it funnels the light down, and the
+  small hard specular high on the shoulder facing the lamp.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The light the body of the drop funnels into its floor. -->
+    <radialGradient id="caustic" cx="0.5" cy="0.78" r="0.42">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <path id="bead" d="M16 3.4C16 3.4 25.1 14.1 25.1 19.7A9.1 9.1 0 0 1 6.9 19.7C6.9 14.1 16 3.4 16 3.4z"/>
+    <path id="bead-gloss" d="M4 2H28V15.4C20.8 18.4 11.2 18.4 4 15.4z"/>
+    <clipPath id="bead-clip"><use href="#bead"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#bead" fill="url(#face)"/>
+    <g clip-path="url(#bead-clip)">
+      <use href="#bead-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <use href="#bead" fill="url(#caustic)"/>
+    </g>
+    <use href="#bead" fill="url(#turn)"/>
+    <g clip-path="url(#bead-clip)">
+      <use href="#bead" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+
+    <!-- The specular, high on the shoulder that faces the lamp. -->
+    <ellipse cx="12.7" cy="17.4" rx="1.7" ry="2.5" transform="rotate(-18 12.7 17.4)"
+             fill="#ffffff" fill-opacity="0.9" filter="url(#polish)"/>
+  </g>
+</svg>

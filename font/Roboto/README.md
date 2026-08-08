@@ -3,8 +3,8 @@
 Roboto by Christian Robertson, licensed under the Apache License 2.0 — see
 `LICENSE.txt`.
 
-Two of these faces are compiled into `linboard-xmb` by `include_bytes!` (see
-`UI_FONT_REGULAR` and `UI_FONT_BOLD` in `crates/linboard-xmb/src/gpu.rs`):
+Two of these faces are compiled into `lxb-desktop` by `include_bytes!` (see
+`UI_FONT_REGULAR` and `UI_FONT_BOLD` in `crates/lxb-desktop/src/gpu.rs`):
 
 * `static/Roboto-Regular.ttf`
 * `static/Roboto-Bold.ttf`

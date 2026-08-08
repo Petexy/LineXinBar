@@ -1,0 +1,94 @@
+<!--
+The Resolution row's glyph: a screen whose pixel width and height are measured.
+
+This follows the visual hierarchy of the reference drawing: a thick rounded
+frame around a dark picture, six bright pixel blocks, then two large white
+dimension arrows. The arrows occupy the screen rather than sitting beside it as
+fine annotation, so width and height remain the first read at the normal 64 px
+row size.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The frame and controls use the same neutral material as the other
+         Settings glyphs; the atlas supplies the active theme colour. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f8f8"/>
+      <stop offset="0.3" stop-color="#eeeeee"/>
+      <stop offset="0.56" stop-color="#d4d4d4"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="1" stop-color="#fafafa"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.75" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.86"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.62"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.11"/>
+      <stop offset="0.2" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.8" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="drop" x="-25%" y="-25%" width="160%" height="165%">
+      <feDropShadow dx="0.35" dy="0.75" stdDeviation="0.35"
+                    flood-color="#303030" flood-opacity="0.44"/>
+    </filter>
+    <filter id="lift" x="-35%" y="-35%" width="180%" height="190%">
+      <feDropShadow dx="0.22" dy="0.42" stdDeviation="0.18"
+                    flood-color="#252525" flood-opacity="0.46"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.15"/>
+    </filter>
+
+    <path id="frame-outline"
+          d="M4.4 4h23.2A3.4 3.4 0 0 1 31 7.4v17.2a3.4 3.4 0 0 1-3.4 3.4H4.4A3.4 3.4 0 0 1 1 24.6V7.4A3.4 3.4 0 0 1 4.4 4z"/>
+    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
+          d="M4.4 4h23.2A3.4 3.4 0 0 1 31 7.4v17.2a3.4 3.4 0 0 1-3.4 3.4H4.4A3.4 3.4 0 0 1 1 24.6V7.4A3.4 3.4 0 0 1 4.4 4z
+             M4.4 7h23.2v17.7H4.4z"/>
+    <path id="frame-gloss" d="M0 0h32v11.4c-7.8 2.5-24.2 2.5-32 0z"/>
+    <clipPath id="frame-clip"><use href="#frame"/></clipPath>
+    <rect id="picture" x="4.4" y="7" width="23.2" height="17.7" rx="0.45"/>
+    <rect id="pixel" width="4" height="3.6" rx="0.24"/>
+  </defs>
+
+  <!-- A real opening: the shell's dark wallpaper supplies the black screen in
+       the reference while the icon stays cleanly tintable by the atlas. -->
+  <use href="#picture" fill="none" stroke="#ffffff" stroke-opacity="0.28"
+       stroke-width="0.5"/>
+
+  <g filter="url(#drop)">
+    <use href="#frame" fill="url(#face)"/>
+    <g clip-path="url(#frame-clip)">
+      <use href="#frame-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#frame" fill="url(#turn)"/>
+    <use href="#frame-outline" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+  </g>
+
+  <!-- Three columns by two rows, as in the reference. They are deliberately
+       rectangular rather than a generic app-grid of rounded squares. -->
+  <g fill="url(#face)" stroke="url(#edge)" stroke-width="0.5" filter="url(#lift)">
+    <use href="#pixel" x="6" y="8.4"/>
+    <use href="#pixel" x="10.8" y="8.4"/>
+    <use href="#pixel" x="15.6" y="8.4"/>
+    <use href="#pixel" x="6" y="12.7"/>
+    <use href="#pixel" x="10.8" y="12.7"/>
+    <use href="#pixel" x="15.6" y="12.7"/>
+  </g>
+
+  <!-- The dominant marks: one broad arrow for each dimension. Their solid
+       shafts and heads follow the reference rather than reducing it to thin
+       ruler strokes. -->
+  <g fill="url(#face)" stroke="url(#edge)" stroke-width="0.65"
+     stroke-linejoin="round" filter="url(#lift)">
+    <path d="m23.8 7.6 2.8 3.2h-1.8v4.3h1.8l-2.8 3.2-2.8-3.2h1.8v-4.3H21z"/>
+    <path d="m5.5 21.4 3.5-2.6v1.6h7.6v-1.6l3.5 2.6-3.5 2.6v-1.6H9V24z"/>
+  </g>
+</svg>

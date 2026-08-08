@@ -1,0 +1,23 @@
+[package]
+name = "lxb-protocol"
+description = "The private Wayland protocol LineXinBar's compositor and shell speak"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wayland-backend = "0.3"
+wayland-scanner = "0.31"
+# The scanner emits `bitflags::bitflags!` for every bitfield enum in the XML,
+# and expects the crate to be in scope where the generated code lands.
+bitflags = "2"
+wayland-client = { version = "0.31", optional = true }
+wayland-server = { version = "0.31", optional = true }
+
+[features]
+default = []
+# The two sides are separate features so the compositor never pulls in
+# wayland-client, nor the shell wayland-server.
+client = ["dep:wayland-client"]
+server = ["dep:wayland-server"]
