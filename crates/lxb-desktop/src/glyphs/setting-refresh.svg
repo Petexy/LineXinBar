@@ -1,16 +1,14 @@
 <!--
-The Refresh rate row's glyph: the same screen, redrawing itself.
+The Refresh rate row's glyph: a monitor redrawing its picture.
 
-The frame is setting-resolution.svg's, to the coordinate, because the two rows
-are the two halves of one setting and sit one under the other on the same page:
-what tells them apart has to be the mark inside the screen, not the screen. So
-the pixel blocks and the dimension arrows come out and one broad cycle arrow
-goes in, sized to the same weight as the arrows it replaces so neither row
-reads as the louder of the pair.
+  It shares Resolution's complete monitor silhouette — widescreen pane, short
+  neck and foot — so the two rows read as properties of a display rather than
+  as generic rounded boxes. What distinguishes this one is the broad cycle
+  arrow inside the pane: a repeated scan at the same visual weight as the
+  neighbouring dimension arrows.
 
-The picture stays a real opening, as it is there: the shell's dark wallpaper
-supplies the black screen while the drawing itself stays cleanly tintable by
-the atlas.
+  The pane remains transparent. The shell's dark wallpaper supplies its
+  contrast while all authored ink stays neutral enough to take the atlas tint.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
@@ -50,39 +48,50 @@ the atlas.
       <feGaussianBlur stdDeviation="0.15"/>
     </filter>
 
-    <path id="frame-outline"
-          d="M4.4 4h23.2A3.4 3.4 0 0 1 31 7.4v17.2a3.4 3.4 0 0 1-3.4 3.4H4.4A3.4 3.4 0 0 1 1 24.6V7.4A3.4 3.4 0 0 1 4.4 4z"/>
-    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
-          d="M4.4 4h23.2A3.4 3.4 0 0 1 31 7.4v17.2a3.4 3.4 0 0 1-3.4 3.4H4.4A3.4 3.4 0 0 1 1 24.6V7.4A3.4 3.4 0 0 1 4.4 4z
-             M4.4 7h23.2v17.7H4.4z"/>
-    <path id="frame-gloss" d="M0 0h32v11.4c-7.8 2.5-24.2 2.5-32 0z"/>
-    <clipPath id="frame-clip"><use href="#frame"/></clipPath>
-    <rect id="picture" x="4.4" y="7" width="23.2" height="17.7" rx="0.45"/>
+    <path id="bezel-outline"
+          d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z"/>
+    <path id="bezel" fill-rule="evenodd" clip-rule="evenodd"
+          d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z
+             M4.2 6h23.6v14.7H4.2z"/>
+    <path id="bezel-gloss" d="M0 1h32v10.2c-7.8 2.5-24.2 2.5-32 0z"/>
+    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <rect id="pane" x="4.2" y="6" width="23.6" height="14.7" rx="0.45"/>
+    <!-- The cycle clears the pane geometrically. This inset clip is the final
+         guard for the soft lift shadow, which must never wash over the bezel. -->
+    <clipPath id="content-clip">
+      <rect x="4.95" y="6.8" width="22.1" height="13.1" rx="0.2"/>
+    </clipPath>
   </defs>
 
-  <use href="#picture" fill="none" stroke="#ffffff" stroke-opacity="0.28"
-       stroke-width="0.5"/>
-
+  <!-- Stand first, so the bezel grows cleanly out of its neck. -->
   <g filter="url(#drop)">
-    <use href="#frame" fill="url(#face)"/>
-    <g clip-path="url(#frame-clip)">
-      <use href="#frame-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    <path d="M13.4 22.4h5.2v3.8h-5.2z" fill="url(#face)"/>
+    <path d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
+          fill="url(#face)"/>
+    <path d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
+          fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <use href="#bezel" fill="url(#face)"/>
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
     </g>
-    <use href="#frame" fill="url(#turn)"/>
-    <use href="#frame-outline" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+    <use href="#bezel" fill="url(#turn)"/>
+    <use href="#bezel-outline" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+    <use href="#pane" fill="none" stroke="#ffffff" stroke-opacity="0.28"
+         stroke-width="0.5"/>
   </g>
 
-  <!-- The cycle: three quarters of a ring with a head on the leading end, so
-       it reads as one turn continuing rather than as a broken circle. Drawn at
-       the weight of the dimension arrows next door, and left open at the top
-       right where the head has room to sit clear of the frame. -->
-  <g filter="url(#lift)">
-    <path d="M21.11 13.25A5.9 5.9 0 1 1 16 10.3"
-          fill="none" stroke="url(#face)" stroke-width="2.5" stroke-linecap="butt"/>
-    <path d="M21.11 13.25A5.9 5.9 0 1 1 16 10.3"
-          fill="none" stroke="url(#edge)" stroke-width="0.5" stroke-linecap="butt"/>
-    <path d="m19.1 10.3-3.5 2.1V8.2z"
-          fill="url(#face)" stroke="url(#edge)" stroke-width="0.55"
-          stroke-linejoin="round"/>
+  <!-- Three quarters of a ring and a head on its leading end: one continuous
+       redraw cycle rather than a generic pair of opposing arrows. -->
+  <g clip-path="url(#content-clip)">
+    <g filter="url(#lift)">
+      <path d="M20.16 11.2A4.8 4.8 0 1 1 16 8.8"
+            fill="none" stroke="url(#face)" stroke-width="2.4" stroke-linecap="butt"/>
+      <path d="M20.16 11.2A4.8 4.8 0 1 1 16 8.8"
+            fill="none" stroke="url(#edge)" stroke-width="0.48" stroke-linecap="butt"/>
+      <path d="m18.8 8.9-3.1 1.6V7.3z"
+            fill="url(#face)" stroke="url(#edge)" stroke-width="0.55"
+            stroke-linejoin="round"/>
+    </g>
   </g>
 </svg>

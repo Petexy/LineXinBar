@@ -80,6 +80,8 @@ one feature:
 | `dbus` (`dbus-update-activation-environment`) | D-Bus activation inside the session | Activated apps may appear on the outer desktop |
 | `wpctl` / `pactl` / `amixer`              | The volume bar, in that order of preference | No volume bar                             |
 | `ddcutil`                                 | Brightness for external monitors, over DDC/CI | Brightness only where the kernel has a backlight |
+| `xdg-open`                                | Opening one of the user's own files when nothing installed declares its type | Those rows are listed but report that nothing opens them |
+| `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
 
 ### Permissions
 
@@ -257,9 +259,174 @@ The bar opens with Settings, LineXinBar's own column, which holds the shell's
 settings the way the XMB's Settings region held the PS3's. Everything after it
 comes from `.desktop` files in the usual XDG search path, grouped into the
 categories Plasma's launcher uses: System, Multimedia, Graphics, Internet,
-Office, Games, Development, Education & Science, Utilities, and Other. Empty
-categories are hidden — except Settings, which is part of the bar rather than a
-result of what is installed.
+Office, Games, Development, Education & Science, Utilities, and Other. A
+category with no application in it is hidden — except Settings, which is part
+of the bar rather than a result of what is installed.
+
+Multimedia carries two subcategories of its own, Music and Video, and Graphics
+carries one, Images. What is in them is the user's own files rather than
+applications. No `.desktop` file can say which half of Multimedia an
+application belongs to — the menu spec requires `AudioVideo` alongside `Audio`
+or `Video` but never the reverse, so an entry may declare `AudioVideo` and
+stop, and many of the best-known media applications do exactly that — so the
+players and the editors stay in their columns, where nothing has to be guessed
+about them.
+
+### Music, Video and Images
+
+All three rows list what is on the disk: every audio, video or image file
+anywhere under `$HOME`, alphabetically, with the folder it came from written
+under its name. A file's kind is its extension, and its row opens it in
+whatever the user has already set as their handler for that type — the default
+from `mimeapps.list`, then any installed application that declares the type,
+preferring one that calls itself a `Player` or a `Viewer` over one that calls
+itself an editor, then `xdg-open`. So a song opens in mpv rather than Audacity
+and a photograph in Gwenview rather than GIMP, without the user having chosen
+either.
+
+One walk fills all three: the expensive half is reading the directories, and
+what is in them decides which row a file lands on. It runs on a worker thread
+from the moment the shell starts and what it finds is hung on the bar as it
+arrives, so stepping into Music never waits on the disk. It repeats every five
+minutes, which is how a file copied in during a session turns up and how one
+deleted goes away again. Hidden folders are skipped, as every desktop's
+indexer skips them, and symbolic links are not followed.
+
+A row holds everything found, however much that is. Nothing about a frame the
+shell draws depends on how much music somebody owns: a column is a screen tall,
+so the drawing and the hand both walk the rows that can be on the display and
+never the list, and a picture is made only for the handful either side of the
+cursor.
+
+The shelves live on the worker, not in the shell. It walks, it keeps what it
+finds, it puts the chosen order on, and it builds the rows themselves — and
+what crosses back is a finished list, which the shell swaps into the bar in a
+few microseconds however long it is. Everything that costs anything in
+proportion to the size of a collection happens on that side of the wire: the
+merge, the sort, letting go of the list that was replaced. The shell sends
+three things the other way — list this shelf differently, this file has been
+deleted, and here are the rows you can let go of now — and holds no files at
+all.
+
+This is what the first two seconds of a session are made of. On the home
+directory it was written against, half a million pictures, the shell used to
+spend about 1.4 of those two seconds blocked: a quarter of a second to rebuild
+the rows, four times a second, on the thread that draws. It now spends four
+microseconds per delivery and drops no frames. Deliveries also thin out as the
+shelves grow, since a shelf that takes a tenth of a second to build is not
+worth rebuilding four times a second for one more file nobody could pick out of
+half a million — the walk hands over eight times instead of fifty-seven.
+
+Everywhere under `$HOME` means everywhere: a repository checked out in the home
+directory has its screenshots and its SVGs listed like anything else, since
+nothing about where a file sits says it is not a picture. Icon and dump formats
+(`.ico`, `.xpm`, `.pbm`) are left out, and so are `.ts` and `.mts` — both name
+MPEG transport streams and both name TypeScript sources, and a development
+machine would otherwise file several thousand of the second kind under Video.
+
+#### Thumbnails
+
+Video and Images draw the files themselves rather than a mark standing for
+them: a row is a card with a frame of the film or the photograph on it, fitted
+to its own shape so nothing is cropped and a portrait picture stays portrait.
+Music does not, because getting cover art out of an audio file means parsing a
+tag format per container — and a track is picked by its name anyway.
+
+Nothing is made ahead of time. Each display asks for the rows within four of
+its cursor, once a frame; two workers make those and nothing else, and the
+atlas holds only what is on screen. Scrolling a thousand photographs therefore
+costs the same as looking at six, and a library of any size costs nothing at
+all until somebody opens the column.
+
+What is made is written to `$XDG_CACHE_HOME/thumbnails/large`, in the layout
+the freedesktop thumbnail specification lays down — a PNG named for the MD5 of
+the file's URI, carrying the source's URI and modification time so a stale one
+can be told from a good one. That is the same cache every file manager fills,
+so on a machine where the user has browsed their pictures in Dolphin they are
+already there, and the ones this shell makes are still there afterwards.
+
+Photographs are decoded in-process (PNG, JPEG, GIF, WebP, BMP, TIFF, and SVG
+through the same renderer the shell's own glyphs use). Films need
+`ffmpegthumbnailer` or `ffmpeg`; without either, and for a format nothing here
+decodes — AVIF, HEIC, camera raw — the row keeps the column's glyph.
+
+A machine with music on it but no media player installed gets its Multimedia
+column back the moment the first file is found, and the same goes for Graphics
+and a photograph: a column is hidden for having nothing in it, not for having
+no applications in it.
+
+#### What the menu over a file offers
+
+`Y` on one of these rows raises a menu of five, in two bands — three that act
+on the file and two that do not:
+
+**Open** starts it in whatever a plain `A` would have used. **Open with** lists
+every installed application that says it handles the type, best first, each
+under its own name and its own icon; the one at the top is the one Open would
+take, and wears the same tick the Settings column puts on a value in force. The
+row is greyed where nothing installed claims the type, since there is then
+nothing to choose between.
+
+Choosing one of them opens nothing. It records that application as the default
+for the type — written into the user's own `mimeapps.list`, where every other
+desktop keeps it, so it holds for the file manager and the browser too and it
+holds after a restart. Open is what acts on it, which is the whole difference
+between the two rows: one plays the file, the other answers "which program
+plays these", and a list that did both would make changing the answer cost a
+window every time.
+
+The list stays up, and the tick moves to the row that was pressed. It is a
+setting being made rather than a command being run — the same bargain the
+mixer's tracks strike, where the row changing *is* the answer — so it is the
+user's to leave, by Cancel or `B`, when they are satisfied. The rows keep the
+order the panel opened in while it is up, even though the newly chosen one now
+belongs at the head: a list that reordered itself under a press would move the
+row somebody was already reaching for.
+
+**Delete** asks first, and what it does is move the file to
+`~/.local/share/Trash` in the layout the freedesktop trash specification lays
+down — the same trash Dolphin, Nautilus and `gio trash` fill, so a file put
+there by this shell can be restored from any of them by somebody who has never
+heard of LineXinBar. A file on a volume mounted inside `$HOME` goes to a trash
+at the top of *that* volume, because a rename cannot cross a filesystem and
+copying forty gigabytes to delete it is not a deletion. Nothing is ever
+unlinked and nothing is ever copied; if the move fails the file stays exactly
+where it was and the panel says so. The row is greyed for a file outside the
+user's home directory. The row it was on goes at once rather than at the walk's
+next pass, so the bar is never still offering to play something the user has
+just watched themselves delete.
+
+Below the rule, **Sort** and **Cancel**. Sort is about the column rather than
+the file, which is what the rule is saying.
+
+#### What order the rows are in
+
+Alphabetical to begin with, and nine orders altogether: name either way, size
+either way, type, created either way and modified either way. Chosen from the
+Sort row and remembered per shelf in `[media-sort]` of the shell's settings
+file, because how somebody wants their music listed says nothing about how they
+want their photographs listed.
+
+Size and both dates are read once, when the walk first sees a file — one
+`stat` per media file per session, and none at all on the passes after. Type is
+the mime type rather than the extension, so `.jpg` and `.jpeg` are one group.
+A file the disk knows no date for sorts last in *both* directions of a date
+order, because "no date" is not an early date; and an order the whole shelf has
+nothing to answer with is drawn greyed rather than offered and silently doing
+nothing — several filesystems keep no creation time at all.
+
+The order is put on when the rows are drawn, not when the shelf is filled. The
+shelf itself is always alphabetical, because that is the order it is merged in:
+what the walk finds arrives in whatever order the filesystem answered, and
+merging a batch into a list already in the same order is one pass over both
+rather than a re-sort of everything.
+
+Choosing an order shows the column from its first row. Somebody who has just
+asked for the newest first is asking to be shown the newest, and a cursor held
+on whichever file it happened to be standing on would answer with that file's
+new position instead. Only the display the order was chosen on moves; any other
+screen showing the same shelf keeps its file, because the order changed
+underneath it rather than at its request.
 
 ### Subcategories
 
@@ -334,7 +501,7 @@ desktop's menu.
 `Settings > Display` is the one part of the Settings column the shell does not
 carry out itself. It sends what was chosen over `lxb_shell_v1` and the
 compositor does the work, because none of it is a client's to touch. There are
-three pages: **Resolution**, **Refresh rate**, and **HDR**.
+four pages: **Resolution**, **Refresh rate**, **Orientation**, and **HDR**.
 
 Every one of them is *per screen*, and every one of them names the screen
 before it offers anything — see below, where the rule is written out once for
@@ -387,6 +554,54 @@ empty column.
 The mark is on what the display is **actually** running, not on what was last
 asked for: the answer comes back over the same protocol in the same breath as
 the change, and a mode the hardware refused must not read as chosen.
+
+#### Orientation
+
+```
+Settings > Display > Orientation  >  DP-1  >  90° Rotation
+```
+
+For a screen standing on its side. Four turns, on every screen the compositor
+turns itself:
+
+| | |
+| --- | --- |
+| **0° Rotation** | Landscape, the way the display is built. |
+| **90° Rotation** | Portrait, for a screen turned clockwise. |
+| **180° Rotation** | Landscape, for a screen hung upside down. |
+| **270° Rotation** | Portrait, for a screen turned the other way. |
+
+Each row is a *drawing* of the monitor stood that way, its stand saying which
+way up — the same monitor the screen list beside it is drawn with. They are the
+only values in the Settings tree with pictures of their own: a brightness in
+cd/m² has no shape, and inventing one would be drawing a picture of a number,
+but an orientation is a shape, and the row matching the screen in front of you
+can then be picked without reading it. The degrees are what the drawing cannot
+say — which of the two portraits this is, and how far from where the display
+started.
+
+Unlike a mode, none of these is a list the display has: nothing here reaches
+the connector. The picture is composited turned and scanned out at the mode's
+own pixels, which is why no hardware can refuse a turn and why every screen is
+offered all four. What a quarter turn does move is everything else — the
+display's logical width and height swap, so the screens laid out beside it
+shift along, the bar and every other layer surface are re-arranged to the new
+shape, and every window on it is re-tiled. That is the whole reason it is the
+compositor's to do.
+
+**90°** is the turn a screen swivelled clockwise wants — the picture is drawn a
+quarter turn anticlockwise, which stands up on a monitor whose foot has gone to
+the left — and **270°** is the other one. The four mirrored orientations
+`wl_output` also has are not offered: a mirrored picture is a projector rig
+rather than a way up. The compositor's own config can still set one, and a
+screen in one is named in the row above the list with none of the four marked,
+because it is in none of them.
+
+Which screens are listed is the compositor's answer rather than a guess: it
+reports an orientation for every display it turns itself, and for no others. A
+nested session is the ordinary "no others" — the way up of its window belongs
+to the compositor LineXinBar is running inside — and where nothing reports one,
+the row says so instead of opening onto an empty column.
 
 #### HDR
 
@@ -509,6 +724,7 @@ hdr-sdr-brightness = 200
 
 [display.DP-1]
 mode = "2560x1440@144"
+transform = "90"
 hdr = true
 hdr-sdr-brightness = 250
 hdr-srgb-intensity = 50
@@ -518,11 +734,13 @@ hdr-peak-brightness = 0
 `mode` holds both halves of the page, spelled and named as the compositor's own
 config spells and names a mode, so a line can be moved between the two files
 and mean the same thing. Without an `@rate` it asks for the fastest mode of
-that size. A display with no `mode` line is left at whatever the compositor
-brought it up at.
+that size. `transform` is the Orientation page, spelled the same way and for
+the same reason: `normal`, `90`, `180`, `270`, or one of the four mirrored
+spellings the page does not offer. A display with no `mode` or no `transform`
+line is left at whatever the compositor brought it up at.
 
-The compositor's own `config.toml` has the same mode and the same four HDR
-settings per output, for a session with no shell — see
+The compositor's own `config.toml` has the same mode, the same transform and
+the same four HDR settings per output, for a session with no shell — see
 [docs/configuration.md](docs/configuration.md).
 
 ### Several displays
@@ -563,8 +781,8 @@ passes it to a neighbour.
 | `←` inside a subcategory                    | Step back out one level             |
 | `Tab` / `Shift+Tab`, `L1` / `R1`            | Move to another display             |
 | `Esc`, `Backspace` or controller `B`        | Step out, then open the guide overlay |
-| `Home`, controller Guide/STEAM button       | Open the guide overlay              |
-| `Y`, `F10`, controller `Y`/`Triangle`       | Open [the context menu](#the-context-menu) on what is selected |
+| `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
+| `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](#the-context-menu) on what is selected |
 
 Keyboard navigation also accepts the keypad arrows, WASD, and HJKL. Held
 directions repeat after a short delay; the analogue stick uses a dead zone
@@ -784,13 +1002,18 @@ side of the display has room, and folds back into it when the menu is answered
 or dismissed. Adding a command later is one line in a list; raising a menu
 somewhere new is one function that returns those three things.
 
-Two of them exist so far, and **the entries in both are placeholders** — they
-log what was chosen and do nothing else, and are there to be replaced:
+Three of them exist so far:
 
-| Where | What it is about |
-| ----- | ---------------- |
-| The bar | The application on the focused tile, out of the disc it stands on |
-| The guide | The window under the selected card, out of that card |
+| Where | What it is about | Rows |
+| ----- | ---------------- | ---- |
+| The bar | The application on the focused tile, out of the disc it stands on | Information, Uninstall / Launch, Close |
+| The bar | One of the user's own files, out of the same disc | Open, Open with, Delete / Sort, Cancel |
+| The guide | The window under the selected card, out of that card | Move to next display, Move to previous display, Screenshot the app / Cancel |
+
+A row can also lead to a *further* list rather than doing something — Open with
+and Sort both do. The panel stays exactly where it is and swaps what is written
+on it, once the row that asked has been seen going down; `B` steps back out to
+the list it came from, and only closes the panel from the outermost one.
 
 The rows themselves are ordinary furniture. A row can carry a glyph, sit in a
 band of its own below a hairline, be warm for something there is no coming back
@@ -1004,6 +1227,8 @@ protocol generated from one XML file for both sides:
 | event `output_hdr_controls` | Which of the HDR settings that display can actually honour. |
 | event `output_mode` | One mode a display can be driven at, with whether it is the current one and whether the display names it as its own. A batch of them ends in `output_modes_done`. |
 | request `set_output_mode` | Drive one display at a different resolution and refresh rate. |
+| event `output_transform` | Which way up a display's picture is drawn — and, by being sent at all, that this compositor is the one turning it. |
+| request `set_output_transform` | Turn one display's picture, for a screen standing on its side. |
 | request `hide_pointer` | Take the cursor off screen, because the user has picked up the controller. |
 
 `output_foreground` is what lets the menu say *Close KWrite* and notice when an
@@ -1038,6 +1263,22 @@ it is what the page marks: a mode the hardware refused must not read as chosen.
 A nested session reports no modes at all, because the size of its window is the
 parent compositor's business and not this one's to change.
 
+`set_output_transform` is a request for a different reason: turning is not
+something the connector does at all. The picture is composited turned and
+scanned out at the mode's own pixels, so no hardware can refuse it — but a
+quarter turn swaps the display's logical width and height, which moves the
+displays laid out beside it, re-arranges every layer surface anchored to it and
+re-tiles every window on it. That is the compositor's, all of it.
+
+`output_transform` is sent only for the displays this compositor turns itself,
+which is what a shell needs and what `wl_output.geometry`'s own transform does
+not answer: that one describes what a client should do about the output it is
+drawing on, and it is advertised even for a display whose orientation belongs
+to somebody else — a nested session, or a backend whose output carries a flip
+of its own to compensate for the way it draws. A display absent from these
+events is one the Orientation page leaves out rather than offers and cannot
+honour.
+
 `set_launch_output` exists because keyboard focus is the wrong thing to infer
 the launch display from. Starting a second application from the guide hands
 focus back to the *first* one long before the new window maps, so the new
@@ -1050,6 +1291,49 @@ It is session-private and on the same trust footing as wlr-layer-shell: any
 client of this compositor may bind it. The shell degrades cleanly without it —
 on another compositor it falls back to signalling the process group of what it
 started itself, and `Quit` simply exits the shell.
+
+## Mouse and touch
+
+The shell is drawn for a controller and none of that changes to be pointed at.
+What a click does is what moving the selection there and pressing `A` does,
+carried out through the same actions, so there is one answer to what every
+control means rather than two that can drift apart.
+
+One rule shapes the rest of it:
+
+> Things that **stand still** light up under the pointer and answer the first
+> click. Things that **move when they are selected** take one click to select
+> and another to act.
+
+The guide's sidebar, the context menu, the modal panel's buttons, the power
+question and the on-screen keyboard are the first kind: hovering a row *is*
+selecting it, exactly as it always has been on the board. The start screen's
+own rows and the overview's cards are the second, and the reason is the shape
+of the bar: selecting a row slides it to the middle of the screen, so a hover
+that selected would pull whatever was under the cursor away and leave its
+neighbour there to be selected in turn. The cursor would walk the bar across
+the display with nobody touching the mouse.
+
+| Input                    | What it does                                     |
+| ------------------------ | ------------------------------------------------ |
+| Left button              | Presses what is under it, or selects it first     |
+| Right button             | Opens the context menu on what is under it        |
+| Side button (rear)       | Opens the guide overlay, from inside anything     |
+| Wheel                    | Moves the selection: the column, the rows of a menu, the deck of cards |
+| Moving onto a display    | Hands control to that display                     |
+
+The quick-settings bars and the mixer's rows are the one place a press carries
+something with it: on the groove it sets the value where it was clicked, and on
+the speaker at the groove's head it silences — which is what pressing the bar
+has always meant.
+
+Touch is the same hit test without the hovering. A finger going down selects,
+lifting it presses, and a finger that has travelled more than a couple of dozen
+pixels has stopped being a tap and presses nothing however it ends.
+
+The pointer only reaches what the shell is actually showing. The input region
+is cut to the same answer the drawing is, so a keyboard drawn over a game takes
+clicks on its keys and nowhere else, and a launch splash takes none at all.
 
 ## The cursor
 
@@ -1163,12 +1447,19 @@ applications stop properly.
 | ---------------------- | ------------------------------- |
 | `Ctrl+Alt+Backspace`   | Quit the compositor             |
 | `Super+Q`              | Close the focused window        |
-| `Super+G`, `Super+Home`, `XF86HomePage` | Show the guide overlay |
+| `Super` on its own, `Super+Home`, `XF86HomePage`, mouse side button | Show the guide overlay |
 | `Super+K`, `XF86Keyboard` | Show the on-screen keyboard  |
 | `Super+Tab`            | Cycle windows on this output    |
 | `Super+←` / `Super+→`  | Focus the previous/next output  |
 | `Super+Shift+→`        | Move the window to the next output |
 | `Ctrl+Alt+F1`…`F12`    | Switch VT (udev backend only)   |
+
+The Windows key is the home button, and it is watched for rather than looked up
+in the table: a bare modifier is half of every chord in it, so a guide that
+opened on the press would shadow all of them. What names the key on its own is
+the release — down, up, and nothing in between — and both edges still reach the
+client, because swallowing the release of a modifier whose press was forwarded
+leaves an application holding a Super it is never told about again.
 
 Any of these can be overridden in the `[keybindings]` table, except the guide:
 its chords always summon the home menu, ahead of every other binding, and
@@ -1203,6 +1494,9 @@ crates/lxb-desktop/
   guide.rs        the overlay's modes and menu
   menu.rs         the context menu: entries, selection, scrolling and
                   growth, with no idea what raised it
+  media.rs        the walk over $HOME for music, films and photographs,
+                  what order the rows are in, and what opens one
+  trash.rs        the freedesktop trash, for the Delete row
   pointer.rs      the right stick as a mouse, and which applications it is
                   turned on for
   keyboard.rs     the on-screen keyboard: its keys, the input method and

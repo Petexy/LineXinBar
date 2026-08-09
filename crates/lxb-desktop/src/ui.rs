@@ -23,7 +23,7 @@ use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
 use crate::icons;
 use crate::keyboard;
 use crate::menu::{Entry as MenuEntry, Menu};
-use crate::model::{Cursor, Xmb};
+use crate::model::{Cursor, Standing, Xmb};
 use crate::system::Level;
 use crate::theme::theme;
 use lxb_protocol::overview;
@@ -43,6 +43,57 @@ const ITEM_ICON: f32 = 64.0;
 /// column's gaps are measured in, so the icon is the one of the two free to
 /// move once the fit below is satisfied.
 const ITEM_ICON_FOCUSED: f32 = 105.0;
+
+/// How tall a row is drawn in a column of the user's own pictures, unfocused
+/// and focused.
+///
+/// A column of films or photographs is not a list of names with marks beside
+/// them; the picture *is* the row, and it has to be big enough to be looked at
+/// rather than identified. Half again the icon unfocused, and getting on for
+/// three times it under the light.
+const CARD_HEIGHT: f32 = 96.0;
+const CARD_HEIGHT_FOCUSED: f32 = 176.0;
+
+/// The clear glass between the focused card and the unfocused one next to it.
+const CARD_AIR: f32 = 12.0;
+
+/// And how far apart such rows stand.
+///
+/// Added up rather than chosen, for the reason [`ITEM_GAP_BELOW`] is: what has
+/// to fit between two centres is half of the focused card, half of the
+/// unfocused one beside it, and the air between them — three numbers that move.
+///
+/// It is the focused card that sets this, not the unfocused ones the gap looks
+/// too big between: the pitch is uniform, so the only way to close up what is
+/// between two small cards is to make the big one smaller. Hand-picked at 224
+/// against cards of 112 and 196, the gap between two unfocused rows came out as
+/// tall as the cards themselves — a column half pictures and half wallpaper.
+///
+/// What settles the three sizes is where the row *after* the last one lands. A
+/// column is meant to dissolve at the foot of the display rather than stop, and
+/// the fade is 70 deep ending 48 up from the bottom, so the pitch wants to put
+/// a fourth row inside that band: it reads as a column that carries on, which
+/// is the truth of it. Merely closing the gaps left three rows at full strength
+/// and a hard-edged card with a third of the screen empty under it, which says
+/// the opposite about a folder holding twenty-five thousand pictures.
+const CARD_SPACING: f32 = (CARD_HEIGHT_FOCUSED + CARD_HEIGHT) / 2.0 + CARD_AIR;
+
+/// The shape of the card itself, whatever shape the picture in it is.
+///
+/// Fixed rather than the picture's own, and that is the whole of what makes a
+/// column of them read as a list: with a card per aspect the labels beside
+/// them would step in and out by a hundred pixels a row, and a column of
+/// holiday photographs half of which are portrait would look like a fault. So
+/// the card is one shape — the one a film is — and the picture is fitted
+/// inside it, standing on the glass with the plate showing either side of a
+/// tall one. Which is what a photograph on a light table looks like.
+const CARD_ASPECT: f32 = 16.0 / 9.0;
+
+/// How much of the card is border, as a fraction of its height.
+const CARD_MOUNT: f32 = 0.05;
+
+/// The corner of a card, likewise.
+const CARD_CORNER: f32 = 0.09;
 /// The glass disc an icon stands on, as a multiple of the icon. The item's is
 /// named because the launch splash grows out of exactly that disc; the
 /// category's because the label under it has to clear it.
@@ -160,6 +211,43 @@ fn receded(steps: f32) -> (f32, f32) {
         DEPTH_SHRINK.powf(steps).max(DEPTH_FLOOR_SCALE),
         DEPTH_HAZE.powf(steps).max(DEPTH_FLOOR_HAZE),
     )
+}
+
+/// How much of its journey out something still has to run by the time it has
+/// given up the last of its ink: a third of it.
+///
+/// The number is where the two lists cross. Any lower and they cross while
+/// both are still strong enough to read, which is the thing this exists to
+/// stop; much higher and what is leaving is gone before what replaces it is
+/// halfway up, leaving the middle of the screen briefly empty.
+const COLUMN_GONE_BY: f32 = 0.35;
+
+/// What a row on its way off the screen has left, from how much of that
+/// journey is still to run — 1 as the button lands, 0 once it is
+/// [`COLUMN_GONE_BY`] of the way there.
+///
+/// Every step the bar takes through a path lays one list over another. Going
+/// in, the column opening slides over the one it was opened from, which keeps
+/// its trail row and gives up everything else; coming back, the column being
+/// left stands over that same list the whole way home. Either way the two are
+/// read in the same place — cards across labels, labels across the column
+/// after that — and ink given up at the pace of the slide leaves the pair at
+/// half strength each across the middle of the move. That is not one list
+/// handing over to another. It is two lists printed over one another, and
+/// neither of them can be read while it lasts.
+///
+/// So the ink goes first and the movement follows: what is leaving keeps
+/// sliding and receding for the whole glide, which is what says where it went,
+/// but it is out of the way while what replaces it is still coming up. Eased
+/// at both ends like everything else the shell fades, so it leans out rather
+/// than blinking off on the frame the button lands.
+///
+/// Only what leaves. What *arrives* has the space ahead of it and nothing to
+/// clear, so it fades up over the whole of its glide: the same ramp applied
+/// there would be a column that waited until it had almost stopped and then
+/// appeared.
+fn departing(left: f32) -> f32 {
+    ease((left - COLUMN_GONE_BY) / (1.0 - COLUMN_GONE_BY))
 }
 
 /// The mark on the row a settings list is currently set to: how big it is as a
@@ -568,6 +656,19 @@ fn guide_scale(height: f32) -> f32 {
     (height / REFERENCE_HEIGHT).clamp(0.6, 2.5)
 }
 
+/// How far left of where it settles the sidebar still is, `age` seconds after
+/// the menu opened. Zero once it has arrived.
+///
+/// Every rectangle in the column is measured from the sidebar's settled edge —
+/// that is what lets the selection glide between rows without the entrance
+/// dragging it about — so this is what the drawing adds and what a hit test has
+/// to add with it. A quarter of a second is short, but a click landing a
+/// sidebar's width away from what it looked like it was on is not something to
+/// leave to the user being slow.
+pub fn sidebar_slide_x(age: f32, width: f32) -> f32 {
+    (ease(age / GUIDE_SLIDE) - 1.0) * overview::sidebar_width(width as f64) as f32
+}
+
 /// One frame's worth of drawing.
 ///
 /// Quads are drawn before text, so a scene cannot be layered over another one:
@@ -800,6 +901,31 @@ pub trait SlotLookup {
     fn glyph(&self, name: &str) -> Option<u32> {
         self.slot_for(Some(name))
     }
+
+    /// The picture of one of the user's own files, if one has been made and is
+    /// still in the atlas.
+    ///
+    /// Answers `None` far more often than not, and that is the ordinary case
+    /// rather than a failure: a thumbnail is made only for the rows around the
+    /// cursor, and a row drawn before its picture arrives shows the glyph the
+    /// column is marked with. Nothing about the row's size or place depends on
+    /// the answer — see [`CARD_ASPECT`] — so the picture fades into a card
+    /// that was already there instead of pushing the list about as it lands.
+    fn thumbnail(&self, _path: &std::path::Path) -> Option<crate::gpu::Thumb> {
+        None
+    }
+}
+
+/// Whether a column shows its rows as pictures rather than as icons.
+///
+/// A property of the *column* and not of what has loaded: the rows have to
+/// stand in the same places from the first frame, or arriving thumbnails would
+/// walk the list up and down under the cursor.
+fn shows_pictures(entries: &[Entry]) -> bool {
+    entries
+        .first()
+        .and_then(Entry::media)
+        .is_some_and(|file| file.kind.has_picture())
 }
 
 /// Lay out one display's bar.
@@ -889,9 +1015,7 @@ pub fn build(
     // rather than the near end running off it.
     let columns = cursor.columns(xmb);
     let depth = cursor.depth_position();
-    let step = subcolumn_step(height);
-    let shift = depth * step;
-    let column_x = |level: usize| cross_x - shift + level as f32 * step;
+    let column_x = |level: usize| bar_column_x(level as f32, depth, width, height);
 
     // --- the columns of the path taken -----------------------------------
     // Drawn first so the category row overlaps them, as on the real bar.
@@ -921,8 +1045,15 @@ pub fn build(
         let active = 1.0 - (depth - level as f32).abs().min(1.0);
         // And how much of it is on screen at all. A column arrives as the bar
         // travels to it and then stays, however many are opened in front of
-        // it; only one being stepped back out of drops away.
+        // it; only one being stepped back out of drops away — and that one
+        // drops away on a ramp of its own, so it is out of the way of the
+        // column it is standing over rather than fading in step with the
+        // slide. See [`departing`].
         let present = (1.0 - (level as f32 - depth)).clamp(0.0, 1.0);
+        let present = match column.standing {
+            Standing::Leaving => departing(present),
+            Standing::Open | Standing::Behind => present,
+        };
         if present <= 0.01 {
             continue;
         }
@@ -935,6 +1066,16 @@ pub fn build(
         let x = column_x(level);
         // What it has left of itself by the time it reaches the near edge.
         let clarity = clarity * leaving(x, scale);
+
+        // A column of pictures is measured differently from a column of
+        // applications: taller rows, further apart, and a text column that
+        // clears a card rather than a disc.
+        let pictures = shows_pictures(column.entries);
+        let item_spacing = if pictures {
+            CARD_SPACING * scale
+        } else {
+            item_spacing
+        };
         // Fixed text column: anchored to the focused entry's extent so labels
         // do not shuffle sideways as focus (and therefore icon size) moves
         // around.
@@ -947,7 +1088,11 @@ pub fn build(
         // The whole column recedes about its own icons, this offset included:
         // a label that kept its distance from an icon half the size would read
         // as a name that had drifted off the row it belongs to.
-        let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near;
+        let text_x = if pictures {
+            x + (CARD_HEIGHT_FOCUSED * CARD_ASPECT / 2.0 + 14.0) * scale * near
+        } else {
+            x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near
+        };
         // A column gives up its half of the screen to the one opened in front
         // of it, over the same glide: a label that snapped to the shorter box
         // the instant a subcategory opened would re-wrap in front of the user.
@@ -957,13 +1102,35 @@ pub fn build(
             depth - level as f32,
         );
 
-        for (index, entry) in column.entries.iter().enumerate() {
+        // Only the rows that can be on screen are looked at at all. A shelf of
+        // the user's own files is as long as their home directory is full, and
+        // a column is a screen tall: reading the whole list to throw all but
+        // twenty of it away would put the size of somebody's photograph
+        // collection into the cost of every frame the shell draws.
+        let shown = rows_in_view(
+            column.position,
+            column.entries.len(),
+            item_spacing * near,
+            height,
+        );
+        for index in shown {
+            let entry = &column.entries[index];
             let offset = index as f32 - column.position;
             // Its rows close on the one the column was opened from as it goes
             // back, since that is the row that stays: a column receding with
             // its spacing untouched would be a stack of shrinking icons that
             // had all drifted apart from one another.
-            let y = item_y(offset, cross_y, gap_above, gap_below, item_spacing * near);
+            let y = if level == 0 {
+                item_y(offset, cross_y, gap_above, gap_below, item_spacing * near)
+            } else {
+                nested_y(
+                    offset,
+                    cross_y,
+                    gap_below,
+                    item_spacing * near,
+                    row_swell(pictures, scale) * near,
+                )
+            };
 
             // Skip rows that cannot be on screen.
             if y < -item_spacing || y > height + item_spacing {
@@ -976,7 +1143,18 @@ pub fn build(
             // behind — the trail. Every other row of it exists only while the
             // column is the one in front.
             let trail = index == column.selected;
-            let presence = if trail { present } else { active } * clarity;
+            // What each row has left of itself. Everything on its way off the
+            // screen takes the leaving ramp, whichever way the bar is going:
+            // a column stepped back out of goes whole, and a column stepped
+            // *past* gives up everything but its trail. Both are lying over
+            // the rows arriving in their place, and `active` — the pace of the
+            // slide — is the pace they have to beat.
+            let presence = match column.standing {
+                _ if trail => present,
+                Standing::Leaving => present,
+                Standing::Behind => departing(active),
+                Standing::Open => active,
+            } * clarity;
             // Fade with distance so the column dissolves instead of ending
             // abruptly.
             let mut alpha = (1.0 - (distance / 6.0)).clamp(0.0, 1.0) * column_alpha * presence;
@@ -990,7 +1168,18 @@ pub fn build(
             // and a small margin remain now that there is no control footer.
             let fade_range = 70.0 * scale;
             alpha *= ((y - 90.0 * scale) / fade_range).clamp(0.0, 1.0);
-            let bottom_clearance = (ITEM_ICON / 2.0 + 16.0) * scale;
+            // A column of pictures runs off the bottom of the display rather
+            // than stopping short of it. An icon is a mark that has to be whole
+            // to be read, so it dissolves while it is still clear of the edge;
+            // a card cut off by the edge is a photograph with more underneath,
+            // which is both true and the plainest way of saying it. Stopping
+            // short cost the best part of a row, in the column that has the
+            // most rows to show.
+            let bottom_clearance = if pictures {
+                -CARD_HEIGHT / 2.0
+            } else {
+                ITEM_ICON / 2.0 + 16.0
+            } * scale;
             alpha *= ((height - bottom_clearance - y) / fade_range).clamp(0.0, 1.0);
             if alpha <= 0.01 {
                 continue;
@@ -1001,43 +1190,128 @@ pub fn build(
             // row on screen is lit however deep the path runs.
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
+            // The card a picture stands on, when this column is one of
+            // pictures. It exists whether or not the picture has arrived, so
+            // nothing moves when one does.
+            let card = pictures.then(|| {
+                let h = lerp(CARD_HEIGHT, CARD_HEIGHT_FOCUSED, focus) * scale * near;
+                [x - h * CARD_ASPECT / 2.0, y - h / 2.0, h * CARD_ASPECT, h]
+            });
 
             if distance < 0.5 && active > 0.01 {
-                // The breathing bloom behind the focused entry, and then the
-                // glass it stands on: a disc of the same material the menu's
-                // buttons are cut from, so "this is the thing you have
-                // chosen" looks the same everywhere in the shell.
+                // The breathing bloom behind the focused entry.
                 //
-                // Both ride `active`, so as a subcategory opens the light
+                // It rides `active`, so as a subcategory opens the light
                 // crosses from the row it was opened from to the row it opened
                 // on instead of appearing twice or blinking once.
-                let glow = icon_size * (2.3 + 0.2 * pulse);
+                //
+                // Behind a card it is stretched to the card's own shape rather
+                // than drawn as the square a disc wants. The bloom is one
+                // radial drawing either way, and a square one big enough to
+                // reach past a card's long side stands half its own height
+                // above and below it — which is not a light behind an object,
+                // it is a haze the object is somewhere inside.
+                let (glow_w, glow_h) = match card {
+                    Some([_, _, w, h]) => {
+                        let out = h * (0.30 + 0.04 * pulse);
+                        (w + out * 2.0, h + out * 2.0)
+                    }
+                    None => {
+                        let glow = icon_size * (2.3 + 0.2 * pulse);
+                        (glow, glow)
+                    }
+                };
                 quads.push(Quad {
-                    x: x - glow / 2.0,
-                    y: y - glow / 2.0,
-                    w: glow,
-                    h: glow,
+                    x: x - glow_w / 2.0,
+                    y: y - glow_h / 2.0,
+                    w: glow_w,
+                    h: glow_h,
                     slot: GLOW_SLOT,
                     color: theme.accent.a((0.34 + 0.26 * pulse) * alpha * active),
                     ..Quad::default()
                 });
+            }
+
+            // The glass the row stands on: a disc under an icon, a card under
+            // a picture, of the same material the menu's buttons are cut from,
+            // so "this is the thing you have chosen" looks the same everywhere
+            // in the shell.
+            //
+            // Under the chosen row only, where it is a disc — an unfocused
+            // application is its icon and nothing else. Under every row where
+            // it is a card, because a card is not decoration there: it is the
+            // mount the picture is on, and a photograph with a transparent
+            // corner or a drawing on a white ground needs something to sit on
+            // whether or not it is the one being looked at.
+            let plate = if card.is_some() {
+                card
+            } else if distance < 0.5 && active > 0.01 {
                 let disc = icon_size * ITEM_DISC;
+                Some([x - disc / 2.0, y - disc / 2.0, disc, disc])
+            } else {
+                None
+            };
+            if let Some([px, py, pw, ph]) = plate {
+                // The chosen row's glass is fuller; the rest of a column of
+                // pictures is a quieter mount so the pictures are what the
+                // column is made of.
+                let lit = if card.is_some() {
+                    lerp(0.45, 1.0, focus * active)
+                } else {
+                    active
+                };
                 quads.push(Quad {
-                    x: x - disc / 2.0,
-                    y: y - disc / 2.0,
-                    w: disc,
-                    h: disc,
+                    x: px,
+                    y: py,
+                    w: pw,
+                    h: ph,
                     slot: SOLID_SLOT,
                     // Lightly stained, because what is behind it is already
                     // the accent: the bloom above shows *through* this, and
                     // tinting a purple bloom purple is how a pane stops
                     // looking like glass and starts looking like paint.
-                    color: theme.accent.a(0.13),
-                    radius: disc / 2.0,
+                    color: theme.accent.a(0.13 * lit),
+                    radius: if card.is_some() {
+                        ph * CARD_CORNER
+                    } else {
+                        ph / 2.0
+                    },
                     thickness: DEPTH_CONTROL * scale,
                     frost: FROST_CONTROL,
                     gloss: GLOSS_FULL,
-                    fade: alpha * active,
+                    fade: alpha * lit,
+                    ..Quad::default()
+                });
+            }
+
+            // The picture itself, on the card, at its own shape. An unfocused
+            // row gets one too — a column of pictures where only the chosen
+            // one is a picture would be a column of empty cards.
+            let picture = card.zip(
+                entry
+                    .media()
+                    .and_then(|file| slots.thumbnail(&file.path))
+                    .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0),
+            );
+            if let Some(([cx, cy, cw, ch], thumb)) = picture {
+                let mount = ch * CARD_MOUNT;
+                let (room_w, room_h) = (cw - mount * 2.0, ch - mount * 2.0);
+                // Fitted rather than filled: a photograph cropped to the
+                // card's shape is a photograph with its subject cut off, and
+                // the shell has no way of knowing which half mattered.
+                let (w, h) = if thumb.aspect >= room_w / room_h {
+                    (room_w, room_w / thumb.aspect)
+                } else {
+                    (room_h * thumb.aspect, room_h)
+                };
+                quads.push(Quad {
+                    x: cx + (cw - w) / 2.0,
+                    y: cy + (ch - h) / 2.0,
+                    w,
+                    h,
+                    slot: thumb.slot,
+                    color: [1.0, 1.0, 1.0, alpha],
+                    radius: (ch * CARD_CORNER - mount).max(0.0),
                     ..Quad::default()
                 });
             }
@@ -1048,18 +1322,22 @@ pub fn build(
             // stands in for the missing-icon tint too — a colour with no
             // drawing behind it is still that colour.
             let tint = entry.swatch().map(|swatch| swatch.a(alpha));
-            let mut icon = icon_quad(
-                entry_slot(entry, slots),
-                x - icon_size / 2.0,
-                y - icon_size / 2.0,
-                icon_size,
-                alpha,
-                tint.unwrap_or_else(|| theme.accent_deep.a(alpha * 0.75)),
-            );
-            if let Some(tint) = tint {
-                icon.color = tint;
+            // Only where there is no picture. A row that drew both would be a
+            // film strip stamped over the frame it stands for.
+            if picture.is_none() {
+                let mut icon = icon_quad(
+                    entry_slot(entry, slots),
+                    x - icon_size / 2.0,
+                    y - icon_size / 2.0,
+                    icon_size,
+                    alpha,
+                    tint.unwrap_or_else(|| theme.accent_deep.a(alpha * 0.75)),
+                );
+                if let Some(tint) = tint {
+                    icon.color = tint;
+                }
+                quads.push(icon);
             }
-            quads.push(icon);
 
             // The mark that says this row is the value in force. On the icon
             // rather than beside the label, because what it is marking is the
@@ -1142,11 +1420,11 @@ pub fn build(
     // step arrives over the first move rather than the instant one begins,
     // because at the top of a column the row is not behind anything: it is
     // the thing the cursor is on.
-    let (row_near, row_clarity) = receded(depth + inside);
+    let (row_near, row_clarity) = category_row_recession(depth);
     let category_spacing = category_spacing * row_near;
     for (index, category) in xmb.categories.iter().enumerate() {
         let offset = index as f32 - cursor.category_position;
-        let x = cross_x - shift + offset * category_spacing;
+        let x = bar_category_x(offset, depth, width, height);
 
         if x < -category_spacing || x > width + category_spacing {
             continue;
@@ -1298,6 +1576,252 @@ fn subcolumn_step(height: f32) -> f32 {
     SUBCOLUMN_STEP * guide_scale(height)
 }
 
+/// Where the column at `level` of the open path stands.
+///
+/// The whole chain slides one step left per column opened, so this is the cross
+/// less however far in the bar has travelled — which is why the level is taken
+/// as a float: nothing here is at a whole number of steps while a path is being
+/// walked into or out of.
+fn bar_column_x(level: f32, depth: f32, width: f32, height: f32) -> f32 {
+    width * BAR_CROSS_X + (level - depth) * subcolumn_step(height)
+}
+
+/// How far back the category row stands, and what that leaves of it: one step
+/// behind the outermost column, and another once a path has been opened at all.
+fn category_row_recession(depth: f32) -> (f32, f32) {
+    receded(depth + depth.clamp(0.0, 1.0))
+}
+
+/// Where a category `offset` places along the row from the one selected stands.
+fn bar_category_x(offset: f32, depth: f32, width: f32, height: f32) -> f32 {
+    let (row_near, _) = category_row_recession(depth);
+    bar_column_x(0.0, depth, width, height)
+        + offset * CATEGORY_SPACING * guide_scale(height) * row_near
+}
+
+/// The vertical centre of the row `offset` item-units from a column's selection,
+/// when that column stands `near` of full size.
+///
+/// `level` is how far along the path the column stands, and only the outermost
+/// — level 0 — is laid out around the category row. See [`nested_y`].
+fn bar_item_y(offset: f32, level: usize, near: f32, height: f32, pictures: bool) -> f32 {
+    let scale = guide_scale(height);
+    let cross_y = height * BAR_CROSS_Y;
+    let spacing = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale * near;
+    if level == 0 {
+        item_y(
+            offset,
+            cross_y,
+            ITEM_GAP_ABOVE * scale,
+            ITEM_GAP_BELOW * scale,
+            spacing,
+        )
+    } else {
+        nested_y(
+            offset,
+            cross_y,
+            ITEM_GAP_BELOW * scale,
+            spacing,
+            row_swell(pictures, scale) * near,
+        )
+    }
+}
+
+/// What a click at `(x, y)` on the start screen has landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarSpot {
+    /// A button on the category row.
+    Category(usize),
+    /// A row of the column the user is standing in.
+    Item(usize),
+    /// The row a column further back was opened from — the trail. Carries how
+    /// many columns back it is, which is how many steps out reach it.
+    Trail(usize),
+}
+
+/// What is under `(x, y)` on the start screen, if anything.
+///
+/// The order is the order the bar is drawn in, back to front: the category row
+/// overlaps the columns, so it is asked first, and a click in the band it
+/// occupies belongs to it even where a column's rows are gliding through.
+///
+/// Bands rather than the drawn discs. Every icon on the bar has a name beside
+/// it and air around it, and a user aiming at a row is aiming at the row, not
+/// at the circle of glass under its picture — so a column's rows divide the
+/// height between them and a category's buttons divide the width, and there is
+/// nowhere on the cross that belongs to nothing.
+pub fn bar_hit(
+    xmb: &Xmb,
+    cursor: &Cursor,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Option<BarSpot> {
+    if xmb.is_empty() {
+        return None;
+    }
+    let depth = cursor.depth_position();
+    category_row_hit(xmb, cursor, x, y, width, height, depth)
+        .or_else(|| column_hit(xmb, cursor, x, y, width, height, depth))
+}
+
+/// The category row's half of [`bar_hit`].
+#[allow(clippy::too_many_arguments)]
+fn category_row_hit(
+    xmb: &Xmb,
+    cursor: &Cursor,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    depth: f32,
+) -> Option<BarSpot> {
+    let scale = guide_scale(height);
+    let cross_y = height * BAR_CROSS_Y;
+    let (row_near, _) = category_row_recession(depth);
+    // The band the eye reads as "the row": the height a focused button takes,
+    // held to that whatever size the one being pointed at currently is, so the
+    // row does not grow and shrink under the hand crossing it.
+    let band = CATEGORY_ICON_FOCUSED * CATEGORY_DISC * scale * row_near;
+    if (y - cross_y).abs() > band * 0.5 {
+        return None;
+    }
+
+    let spacing = CATEGORY_SPACING * scale * row_near;
+    let offset = (x - bar_column_x(0.0, depth, width, height)) / spacing;
+    let index = (cursor.category_position + offset).round();
+    if index < 0.0 || index as usize >= xmb.categories.len() {
+        return None;
+    }
+    let index = index as usize;
+
+    // Inside a path the row has faded out but for the one category the path
+    // hangs off, which stays as the head of the trail. So that button is the
+    // only thing up here a click can still be about, and what it means is the
+    // same as clicking any other row of the trail: back out to it.
+    let steps_back = depth.round() as usize;
+    if steps_back > 0 {
+        return (index == cursor.selected_category).then_some(BarSpot::Trail(steps_back));
+    }
+    Some(BarSpot::Category(index))
+}
+
+/// The columns' half of [`bar_hit`], front to back — the order they stand in.
+#[allow(clippy::too_many_arguments)]
+fn column_hit(
+    xmb: &Xmb,
+    cursor: &Cursor,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    depth: f32,
+) -> Option<BarSpot> {
+    let scale = guide_scale(height);
+    let columns = cursor.columns(xmb);
+    for (level, column) in columns.iter().enumerate().rev() {
+        // A column the bar has stepped out of is not something the hand can be
+        // pointing at. It is on its way off the screen — and once the step has
+        // settled it is not on the screen at all, only still held so that going
+        // straight back in returns to the row it was left on. Answering from it
+        // meant a click on the right-hand side of the open column's names
+        // coming back as a row of the column the user had just left.
+        if column.standing == Standing::Leaving {
+            continue;
+        }
+        let (near, _) = receded(depth - level as f32);
+        // The strip this column has to itself: from its own glass across to
+        // where the next one's begins, or to the far side of the display for
+        // the one in front. That is the box its labels are laid into, and a
+        // name is as much the row as its icon is.
+        // A column of pictures is wider and taller than one of applications,
+        // and the hand has to land where the eye says the row is.
+        let pictures = shows_pictures(column.entries);
+        let reach = if pictures {
+            CARD_HEIGHT_FOCUSED * CARD_ASPECT
+        } else {
+            ITEM_ICON_FOCUSED * ITEM_DISC
+        };
+        let left = bar_column_x(level as f32, depth, width, height) - reach * scale * near * 0.5;
+        // The strip ends where the next column *the user can act on* begins, so
+        // a column stepped out of does not go on holding back the one it came
+        // out of: half the open column would answer to nothing until the next
+        // move dropped the one being kept.
+        let right = match columns
+            .get(level + 1)
+            .filter(|next| next.standing != Standing::Leaving)
+        {
+            Some(_) => {
+                bar_column_x(level as f32 + 1.0, depth, width, height) - COLUMN_CLEAR * scale
+            }
+            None => width,
+        };
+        if x < left || x > right {
+            continue;
+        }
+
+        let band = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale * near;
+        let row_at = |index: usize| {
+            bar_item_y(
+                index as f32 - column.position,
+                level,
+                near,
+                height,
+                pictures,
+            )
+        };
+
+        // A column behind the open one shows one row and no more — the row it
+        // was opened from — so that is the only thing in it a click can mean,
+        // and what it means is stepping back out to it.
+        let steps_back = (depth - level as f32).round();
+        if steps_back >= 1.0 {
+            if (y - row_at(column.selected)).abs() <= band * 0.5 {
+                return Some(BarSpot::Trail(steps_back as usize));
+            }
+            continue;
+        }
+
+        // The open column: the row whose band `y` falls in. Walked rather than
+        // solved, because neither layout is one line — an application column is
+        // two, either side of the gap the category row sits in, and a column of
+        // pictures has no single pitch at all — and what is walked is a
+        // screen's worth of rows rather than the list, which is what keeps a
+        // click off the size of the user's collection.
+        //
+        // Each row reaches half the way to the row on either side of it, which
+        // is the only description that leaves nothing between two rows
+        // belonging to neither. The pitch would do where every row is the same
+        // distance from the next; in a column of pictures the chosen card
+        // pushes its neighbours out, so the pair either side of it stand
+        // further apart than the pitch and a strip of each of those gaps would
+        // answer to nothing.
+        for index in rows_in_view(column.position, column.entries.len(), band, height) {
+            let row_y = row_at(index);
+            if row_y < -band || row_y > height + band {
+                continue;
+            }
+            let reach = |neighbour: f32| {
+                let step = (neighbour - row_y).abs();
+                // The ends of the column have a row on one side only, and there
+                // the band is the one it would have had on the other.
+                if step > 0.0 {
+                    step * 0.5
+                } else {
+                    band * 0.5
+                }
+            };
+            let above = reach(row_at(index.saturating_sub(1)));
+            let below = reach(row_at((index + 1).min(column.entries.len() - 1)));
+            if y >= row_y - above && y <= row_y + below {
+                return Some(BarSpot::Item(index));
+            }
+        }
+    }
+    None
+}
+
 /// How much of something standing at `x` has not yet left the screen.
 ///
 /// The chain slides one step left for every subcategory opened, so the far end
@@ -1332,6 +1856,72 @@ fn item_y(offset: f32, cross_y: f32, gap_above: f32, gap_below: f32, spacing: f3
         cross_y - gap_above + (offset + 1.0) * spacing
     } else {
         cross_y + gap_below + offset * (gap_below + gap_above)
+    }
+}
+
+/// Where a row of a column that is *not* the outermost sits, `offset` rows from
+/// the chosen one — which stands where [`item_y`] would put it, so the row a
+/// column was opened from and the row it opened on are level.
+///
+/// One step throughout, about the chosen row, instead of two lines either side
+/// of the gap the category row sits in. Only the outermost column straddles
+/// that row. Step into a subcategory and the category row recedes to the far
+/// left, keeping the one it was opened from and nothing else, and the band
+/// across the middle of the display is empty — but every column went on holding
+/// it open, at a cost of two and a half rows in a library and three in a
+/// column of settings.
+///
+/// `swell` is how much taller the chosen row is drawn than its neighbours, and
+/// it pushes what is above it up and what is below it down by half each, so
+/// that the clear space between any two neighbours is the same whichever row is
+/// chosen. A column of pictures needs this and a column of icons does not: a
+/// card is drawn under every row, and the chosen one is nearly twice the rest,
+/// so on a plain step it eats the gap on both sides and sits almost touching
+/// them while the pairs further off stand well apart. An unfocused application
+/// is its icon and nothing else, which leaves the room already.
+///
+/// The clamp is what makes that exact rather than approximate. A row two or
+/// more away is pushed by the full half — the swelling between them is over and
+/// done with — and one part-way there is pushed in proportion, which is exactly
+/// how much the row between them has swollen by. So the gap holds not only when
+/// the cursor is settled on a row but all the way through the glide to the next.
+fn nested_y(offset: f32, cross_y: f32, gap_below: f32, spacing: f32, swell: f32) -> f32 {
+    cross_y + gap_below + offset * spacing + swell * 0.5 * offset.clamp(-1.0, 1.0)
+}
+
+/// Which rows of a column can be on the display, when it is drawn at
+/// `position` with `pitch` between one row and the next.
+///
+/// The bound the drawing and the hit test are both cut down to, and the reason
+/// neither of them costs anything in proportion to how much music somebody
+/// owns. A column is a screen tall however long its list is, so the rows that
+/// can be seen are the ones within a screen's worth of the position it is
+/// drawn at, and everything else is a row whose `y` the caller would work out
+/// only to throw away.
+///
+/// Generous rather than exact: both [`item_y`] and [`nested_y`] step by the
+/// pitch and then move a row or so about — the gap the category row sits in,
+/// the swell of a chosen card — so this answers with three rows more than the
+/// arithmetic needs at either end, and the callers still ask of each row it
+/// returns whether that row is really on screen. What it must never do is
+/// leave out a row that is, which is why it errs the way it does.
+fn rows_in_view(position: f32, rows: usize, pitch: f32, height: f32) -> std::ops::Range<usize> {
+    if pitch <= 0.0 || !pitch.is_finite() || !position.is_finite() {
+        return 0..rows;
+    }
+    let reach = height / pitch + 3.0;
+    let from = (position - reach).clamp(0.0, rows as f32) as usize;
+    let to = ((position + reach).clamp(0.0, rows as f32) as usize + 1).min(rows);
+    from..to.max(from)
+}
+
+/// How much taller a column's chosen row is drawn than the rest — see
+/// [`nested_y`]. Only a column of pictures has any.
+fn row_swell(pictures: bool, scale: f32) -> f32 {
+    if pictures {
+        (CARD_HEIGHT_FOCUSED - CARD_HEIGHT) * scale
+    } else {
+        0.0
     }
 }
 
@@ -1487,7 +2077,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
 
     let theme = theme();
     let sidebar_w = overview::sidebar_width(width as f64) as f32;
-    let sidebar_x = (slide - 1.0) * sidebar_w;
+    let sidebar_x = sidebar_slide_x(age, width);
     let [panel_x, panel_y, panel_w, panel_h] = sidebar_panel_rect(width, height);
     let padding = GUIDE_PADDING * scale;
     let text_x = panel_x + padding * 0.8;
@@ -1927,6 +2517,27 @@ pub fn power_dialog_rect(width: f32, height: f32, rows: usize) -> [f32; 4] {
     ]
 }
 
+/// The capsule of power choice `index`, in the panel's settled coordinates.
+///
+/// Shared by the drawing and by the hit test, for the reason every rectangle
+/// here is shared: two places computing one shape have to agree, and a row that
+/// answers to a click a few pixels away from where it is drawn is worse than a
+/// row that cannot be clicked at all.
+pub fn power_dialog_row_rect(width: f32, height: f32, rows: usize, index: usize) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [panel_x, panel_y, panel_w, _] = power_dialog_rect(width, height, rows);
+    let row_h = POWER_ROW * scale;
+    let title_h = 78.0 * scale;
+    let inset = 12.0 * scale;
+    let capsule = row_h - 8.0 * scale;
+    [
+        panel_x + inset,
+        panel_y + title_h + index as f32 * row_h + 4.0 * scale,
+        panel_w - inset * 2.0,
+        capsule,
+    ]
+}
+
 /// Where the dialog is when it is `progress` of the way out of its button.
 ///
 /// It leaves as one shape rather than growing into its proportions: a single
@@ -2055,8 +2666,8 @@ fn push_power_dialog(
     for (index, item) in items.iter().enumerate() {
         let y = panel_y + title_h + index as f32 * row_h;
         let focused = index == selected;
-        let inset = 12.0 * scale;
-        let capsule = row_h - 8.0 * scale;
+        let [row_x, row_y, row_w, capsule] =
+            power_dialog_row_rect(width, height, items.len(), index);
         // Warm for the two choices there is no coming back from, so the
         // difference is visible before the label is read.
         let tint = if item.is_grave() {
@@ -2065,9 +2676,9 @@ fn push_power_dialog(
             theme.accent
         };
         inside.quads.push(Quad {
-            x: panel_x + inset,
-            y: y + 4.0 * scale,
-            w: panel_w - inset * 2.0,
+            x: row_x,
+            y: row_y,
+            w: row_w,
             h: capsule,
             slot: SOLID_SLOT,
             color: if focused {
@@ -2132,6 +2743,14 @@ const MIXER_ROW: f32 = 96.0;
 /// and the air between it and what it labels.
 const MIXER_ICON: f32 = 0.62;
 const MIXER_ICON_GAP: f32 = 14.0;
+/// The same on a plain command row, for a row that is about an application
+/// rather than about an act — the Open with list is a column of programs.
+///
+/// Larger than a glyph on the same row, and deliberately: one of the shell's
+/// own marks is a symbol standing for a verb, and this is a picture of a
+/// particular program, which is the thing the user is picking between. Below
+/// [`MIXER_ICON`] because the row it is on is two thirds as tall.
+const CONTEXT_ICON: f32 = 0.7;
 /// Where the name and the track sit inside the chip, as shares of its height:
 /// the middle of the line the name is on, and the middle of the track's own.
 const MIXER_NAME_LINE: f32 = 0.32;
@@ -2581,15 +3200,9 @@ fn mixer_row(
     // picture without it.
     let glyph = h * MIXER_GLYPH;
     let middle = y + h * MIXER_TRACK_LINE;
-    let mut track_x = text_x;
-    let name = if level.muted {
-        icons::VOLUME_MUTED
-    } else {
-        icons::VOLUME
-    };
-    if let Some(slot) = slots.glyph(name) {
+    if let Some(slot) = slots.glyph(mixer_glyph(level)) {
         scene.quads.push(Quad {
-            x: track_x,
+            x: text_x,
             y: middle - glyph * 0.5,
             w: glyph,
             h: glyph,
@@ -2597,14 +3210,85 @@ fn mixer_row(
             color: [1.0, 1.0, 1.0, if level.muted { 0.55 } else { 0.9 }],
             ..Quad::default()
         });
-        track_x += glyph + MIXER_GLYPH_GAP * scale;
     }
     scene.quads.extend(track(
-        [track_x, middle, x + w - padding - track_x, 0.0],
+        mixer_track_line(chip, entry, level, scale, slots),
         level,
         scale,
         1.0,
     ));
+}
+
+/// Which speaker a row at this level carries.
+fn mixer_glyph(level: Level) -> &'static str {
+    if level.muted {
+        icons::VOLUME_MUTED
+    } else {
+        icons::VOLUME
+    }
+}
+
+/// Where the name of a mixer row begins, which is also where its speaker does:
+/// past the application's icon, or at the padding when the machine could not
+/// produce one.
+fn mixer_text_x(chip: [f32; 4], entry: &MenuEntry, scale: f32, slots: &dyn SlotLookup) -> f32 {
+    let [x, _, _, h] = chip;
+    let padding = GUIDE_LABEL_PADDING * scale * 0.6;
+    let icon = h * MIXER_ICON;
+    let drawn = entry
+        .icon
+        .as_deref()
+        .and_then(|name| slots.slot_for(Some(name)))
+        .is_some();
+    x + padding
+        + if drawn {
+            icon + MIXER_ICON_GAP * scale
+        } else {
+            0.0
+        }
+}
+
+/// The line a mixer row's groove runs along, in the shape [`track`] takes.
+///
+/// Shared with the hit test, and it has to be: a row's track begins after an
+/// icon and a speaker that the atlas may or may not have been able to produce,
+/// so where it starts is not something a second reading of the layout could
+/// work out for itself.
+fn mixer_track_line(
+    chip: [f32; 4],
+    entry: &MenuEntry,
+    level: Level,
+    scale: f32,
+    slots: &dyn SlotLookup,
+) -> [f32; 4] {
+    let [x, y, w, h] = chip;
+    let padding = GUIDE_LABEL_PADDING * scale * 0.6;
+    let mut track_x = mixer_text_x(chip, entry, scale, slots);
+    if slots.glyph(mixer_glyph(level)).is_some() {
+        track_x += h * MIXER_GLYPH + MIXER_GLYPH_GAP * scale;
+    }
+    [
+        track_x,
+        y + h * MIXER_TRACK_LINE,
+        x + w - padding - track_x,
+        0.0,
+    ]
+}
+
+/// What a mixer row in the chip at `chip` is being set to by a click at `x`, or
+/// `None` when the click was on the speaker at the groove's head rather than on
+/// the groove — which is the button that silences it, exactly as it is on
+/// every mixer ever drawn.
+pub fn mixer_level_at(
+    chip: [f32; 4],
+    entry: &MenuEntry,
+    level: Level,
+    height: f32,
+    slots: &dyn SlotLookup,
+    x: f32,
+) -> Option<f32> {
+    let [track_x, _, track_w, _] = mixer_track_line(chip, entry, level, guide_scale(height), slots);
+    (x >= track_x && track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
 }
 
 /// Draw the context menu: a panel out of the control it is about, and a short
@@ -2823,12 +3507,48 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             continue;
         }
 
-        // The glyph at the head of the row, where there is one and the shell
-        // could rasterise it. A row without one simply starts at its label, so
-        // a menu can mix the two without leaving a column of holes.
+        // What is at the head of the row: a picture of the thing it is about
+        // where it has one, and one of the shell's own marks otherwise. A row
+        // without either simply starts at its label, so a menu can mix all
+        // three without leaving a column of holes.
         let mut label_x = chip[0] + label_padding;
         let mut label_w = chip[2] - label_padding * 2.0;
-        if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
+        let pictured = entry
+            .icon
+            .as_deref()
+            .and_then(|name| view.slots.slot_for(Some(name)));
+        if let Some(slot) = pictured {
+            let icon = chip[3] * CONTEXT_ICON;
+            let top = chip[1] + (chip[3] - icon) * 0.5;
+            inside.quads.push(Quad {
+                x: label_x,
+                y: top,
+                w: icon,
+                h: icon,
+                slot,
+                color: [1.0, 1.0, 1.0, if entry.enabled { 1.0 } else { 0.4 }],
+                ..Quad::default()
+            });
+            // A row with a picture *and* a mark wears the mark as a badge on
+            // the corner of it — the tick on the value in force, exactly as the
+            // Settings column draws it, and for the same reason: the mark is
+            // saying something about the picture rather than standing in for
+            // it.
+            if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
+                let badge = icon * CHOSEN_BADGE;
+                inside.quads.push(Quad {
+                    x: label_x + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
+                    y: top + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
+                    w: badge,
+                    h: badge,
+                    slot,
+                    color: theme.rim.a(if entry.enabled { 1.0 } else { 0.4 }),
+                    ..Quad::default()
+                });
+            }
+            label_x += icon + label_padding * 0.5;
+            label_w -= icon + label_padding * 0.5;
+        } else if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
             let glyph = chip[3] * 0.46;
             inside.quads.push(Quad {
                 x: label_x,
@@ -4093,7 +4813,7 @@ fn quick_bar(
     alpha: f32,
     slots: &dyn SlotLookup,
 ) -> Vec<Quad> {
-    let [x, y, w, h] = chip;
+    let [x, y, _, h] = chip;
     let mut quads = Vec::with_capacity(4);
 
     let glyph = h * BAR_GLYPH;
@@ -4115,15 +4835,38 @@ fn quick_bar(
         });
     }
 
-    let track_x = glyph_x + glyph + BAR_GAP * scale;
-    let track_w = (x + w - BAR_INSET * scale) - track_x;
-    quads.extend(track(
-        [track_x, y + h * 0.5, track_w, 0.0],
-        level,
-        scale,
-        alpha,
-    ));
+    let [track_x, middle, track_w, _] = bar_track_line(chip, scale);
+    quads.extend(track([track_x, middle, track_w, 0.0], level, scale, alpha));
     quads
+}
+
+/// The line a quick-settings bar's groove runs along inside the chip at `chip`:
+/// `[x, middle, width, 0]`, in the same shape [`track`] takes.
+///
+/// Shared with the hit test, because a bar is the one control in the sidebar
+/// where *where* it was clicked is the whole of the answer.
+fn bar_track_line(chip: [f32; 4], scale: f32) -> [f32; 4] {
+    let [x, y, w, h] = chip;
+    let glyph = h * BAR_GLYPH;
+    let track_x = x + BAR_INSET * scale + glyph + BAR_GAP * scale;
+    [
+        track_x,
+        y + h * 0.5,
+        (x + w - BAR_INSET * scale) - track_x,
+        0.0,
+    ]
+}
+
+/// What a quick-settings bar in the chip at `chip` is being set to by a click
+/// at `x`, or `None` when the click was on the glyph at the groove's head
+/// rather than on the groove itself.
+///
+/// The head is not part of the value. On the volume bar it is the crossed-out
+/// speaker, and a click there means silence — which is what pressing the bar
+/// has always meant — rather than "as quiet as this display can express".
+pub fn bar_level_at(chip: [f32; 4], height: f32, x: f32) -> Option<f32> {
+    let [track_x, _, track_w, _] = bar_track_line(chip, guide_scale(height));
+    (x >= track_x && track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
 }
 
 /// A level drawn as a track: the groove, the part of it that is filled, and the
@@ -4482,7 +5225,7 @@ mod tests {
     use super::*;
     use crate::apps::{App, Category, Choice, Folder};
     use crate::model::Action;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// An icon, as opposed to the glass it stands on or the bloom behind it:
     /// icons are drawn square and unlit, everything else is material.
@@ -4550,10 +5293,42 @@ mod tests {
             exec: "true".into(),
             terminal: false,
             categories: Vec::new(),
+            mime_types: Vec::new(),
             path: PathBuf::from("/tmp/x.desktop"),
             wm_class: None,
         })
     }
+
+    /// A row that stands for one of the user's own pictures.
+    fn picture(path: &str) -> Entry {
+        Entry::Media(std::sync::Arc::new(
+            crate::media::File::at(Path::new(path)).expect("a listable file"),
+        ))
+    }
+
+    /// Slots for everything, and a picture of a given shape for every file —
+    /// so a test can see what the layout does with one it has and one it has
+    /// not yet been given.
+    struct Pictures(f32);
+    impl SlotLookup for Pictures {
+        fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
+            Some(7)
+        }
+        fn thumbnail(&self, _path: &Path) -> Option<crate::gpu::Thumb> {
+            Some(crate::gpu::Thumb {
+                slot: THUMB_SLOT,
+                aspect: self.0,
+                // Not the layout's business — it places the card and fits the
+                // picture from the aspect, and how much of an atlas block the
+                // picture happens to occupy is the renderer's problem.
+                covers: [1.0, 1.0],
+            })
+        }
+    }
+
+    /// A slot no icon uses, so a quad drawn with it is a thumbnail and nothing
+    /// else.
+    const THUMB_SLOT: u32 = 4242;
 
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
@@ -4809,6 +5584,143 @@ mod tests {
             .find(|text| text.content == "No applications found")
             .expect("an empty scan is still worth saying");
         assert!(note.y > 1080.0 * 0.6);
+    }
+
+    /// Two categories with rows in them, for the pointing tests: the shape of
+    /// the cross needs an arm in each direction to be aimed at.
+    fn crossed() -> Xmb {
+        Xmb::new(vec![
+            Category {
+                id: "play",
+                title: "Play",
+                icon: "play",
+                entries: vec![app("one"), app("two"), app("three")],
+            },
+            Category {
+                id: "settings",
+                title: "Settings",
+                icon: "settings",
+                entries: vec![app("only")],
+            },
+        ])
+    }
+
+    /// The hit test and the layout are one answer read two ways, the same way
+    /// the on-screen keyboard's are: the row under a point has to be the row
+    /// drawn at that point, or a click launches something other than what it
+    /// was aimed at.
+    #[test]
+    fn the_row_under_the_pointer_is_the_row_drawn_there() {
+        let xmb = crossed();
+        let (width, height) = (1920.0, 1080.0);
+        let cursor = Cursor::new(xmb.categories.len());
+        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+
+        // The icons of the open column, top to bottom. Nothing is scrolled, so
+        // they are its rows in order — the selection is the first of them.
+        let column_x = width * BAR_CROSS_X;
+        let mut rows: Vec<[f32; 2]> = scene
+            .quads
+            .iter()
+            .filter(|quad| is_icon(quad) && (quad.x + quad.w * 0.5 - column_x).abs() < 1.0)
+            .map(|quad| [quad.x + quad.w * 0.5, quad.y + quad.h * 0.5])
+            .filter(|[_, y]| *y > height * BAR_CROSS_Y)
+            .collect();
+        rows.sort_by(|a, b| a[1].total_cmp(&b[1]));
+        assert_eq!(rows.len(), 3, "every row of the column is drawn");
+
+        for (index, [x, y]) in rows.iter().enumerate() {
+            assert_eq!(
+                bar_hit(&xmb, &cursor, *x, *y, width, height),
+                Some(BarSpot::Item(index)),
+                "the icon drawn at ({x}, {y}) is row {index}"
+            );
+        }
+
+        // And the row the selection is on is the one at the cross, which is
+        // where the launch splash grows out of.
+        let [ox, oy, ow, oh] = launch_origin(width, height);
+        assert_eq!(
+            bar_hit(&xmb, &cursor, ox + ow * 0.5, oy + oh * 0.5, width, height),
+            Some(BarSpot::Item(0))
+        );
+    }
+
+    /// The two arms of the cross do not answer for one another: the category
+    /// row is drawn over the columns, and the gap it sits in is wide enough
+    /// that neither reaches the other.
+    #[test]
+    fn the_category_row_takes_the_line_it_is_drawn_on() {
+        let xmb = crossed();
+        let (width, height) = (1920.0, 1080.0);
+        let cursor = Cursor::new(xmb.categories.len());
+        let (cross_x, cross_y) = (width * BAR_CROSS_X, height * BAR_CROSS_Y);
+        let spacing = CATEGORY_SPACING * guide_scale(height);
+
+        assert_eq!(
+            bar_hit(&xmb, &cursor, cross_x, cross_y, width, height),
+            Some(BarSpot::Category(0))
+        );
+        assert_eq!(
+            bar_hit(&xmb, &cursor, cross_x + spacing, cross_y, width, height),
+            Some(BarSpot::Category(1)),
+            "the next button along the row"
+        );
+        // Past the last category there is no button, and nothing invented.
+        assert_eq!(
+            bar_hit(
+                &xmb,
+                &cursor,
+                cross_x + spacing * 3.0,
+                cross_y,
+                width,
+                height
+            ),
+            None
+        );
+    }
+
+    /// A row of the trail is a column the path was opened through, and pointing
+    /// at it is asking to walk back out to it — which is what the user can see
+    /// it is, because it is the only row of that column still drawn.
+    #[test]
+    fn pointing_at_the_trail_is_asking_to_step_back_out() {
+        let xmb = nested();
+        let (width, height) = (1920.0, 1080.0);
+        let cursor = stepped(&xmb);
+
+        // The trail's row and the open column's row sit on the same line; the
+        // trail is the one further left.
+        let icons = trail_icons(
+            &build_with(&xmb, &cursor, width, height, true, &AllSlots),
+            height,
+        );
+        let line = launch_origin(width, height);
+        let middle = line[1] + line[3] * 0.5;
+        assert_eq!(
+            bar_hit(&xmb, &cursor, icons[0][0], middle, width, height),
+            Some(BarSpot::Trail(1))
+        );
+        assert_eq!(
+            bar_hit(&xmb, &cursor, icons[1][0], middle, width, height),
+            Some(BarSpot::Item(0)),
+            "and the column in front of it is still being browsed"
+        );
+
+        // The category button at the head of the trail is the same journey,
+        // all the way out.
+        let category_x = bar_category_x(0.0, cursor.depth_position(), width, height);
+        assert_eq!(
+            bar_hit(
+                &xmb,
+                &cursor,
+                category_x,
+                height * BAR_CROSS_Y,
+                width,
+                height
+            ),
+            Some(BarSpot::Trail(1))
+        );
     }
 
     /// A column with a path through it: one plain row, then a subcategory two
@@ -5346,6 +6258,153 @@ mod tests {
         assert!((travelled[travelled.len() - 1] - settled).abs() < 1.0);
     }
 
+    /// What the layout gives a named row, or nothing where it has faded out
+    /// altogether. Names rather than icons because a name is the half of a row
+    /// that lands on the column beside it.
+    fn row_ink(xmb: &Xmb, cursor: &Cursor, name: &str) -> Option<f32> {
+        build_with(xmb, cursor, 1920.0, 1080.0, true, &Named)
+            .texts
+            .iter()
+            .find(|text| text.content == name)
+            .map(|text| text.color[3])
+    }
+
+    /// One step of the bar, watched as a handover between two rows laid over
+    /// one another: `going` is the row the step takes away, `coming` the row
+    /// taking its place.
+    struct Handover {
+        /// What `going` had before the step, and then frame by frame for as
+        /// long as it was still drawn.
+        going: Vec<f32>,
+        /// What `coming` had on the frame `going` had gone, and what it
+        /// settles at once the step is over.
+        coming: f32,
+        settled: f32,
+        /// How many frames the whole step took.
+        frames: usize,
+    }
+
+    /// Take `step`, and watch the two rows trade places over it.
+    ///
+    /// Every step through a path is this same shape — one list laid over
+    /// another with one of them on its way out — so a step in and a step out
+    /// are measured the same way and held to the same thing.
+    fn handover(
+        xmb: &Xmb,
+        cursor: &mut Cursor,
+        step: impl FnOnce(&mut Cursor) -> bool,
+        going: &str,
+        coming: &str,
+    ) -> Handover {
+        let mut inks = vec![row_ink(xmb, cursor, going).expect("the row the step takes away")];
+        assert_eq!(row_ink(xmb, cursor, coming), None, "and the one it brings");
+
+        assert!(step(cursor), "the step should move the bar");
+        let (mut frames, mut arriving) = (0, None);
+        while cursor.animate(1.0 / 60.0) {
+            frames += 1;
+            match row_ink(xmb, cursor, going) {
+                Some(alpha) => inks.push(alpha),
+                None if arriving.is_none() => arriving = row_ink(xmb, cursor, coming),
+                None => {}
+            }
+        }
+
+        Handover {
+            going: inks,
+            coming: arriving.expect("the row taking its place is on screen by then"),
+            settled: row_ink(xmb, cursor, coming).expect("and it is there at the end"),
+            frames,
+        }
+    }
+
+    impl Handover {
+        /// What both directions have to do.
+        fn is_clean(&self) {
+            // It leans out rather than blinking off on the frame the button
+            // lands, and it never comes back.
+            let [at_rest, first] = [self.going[0], self.going[1]];
+            assert!(
+                first > at_rest * 0.8,
+                "it went from {at_rest:.2} to {first:.2} in one frame"
+            );
+            for pair in self.going.windows(2) {
+                assert!(pair[1] <= pair[0] + 0.001, "it must not come back");
+            }
+
+            // It is out of the way inside the first half of the step, which is
+            // the whole point: what is left of the journey belongs to the row
+            // taking its place.
+            assert!(
+                self.going.len() * 2 < self.frames,
+                "it held the screen for {} of the {} frames of the step",
+                self.going.len(),
+                self.frames
+            );
+            // Gone, but not before that row can be read — what leaves must not
+            // leave a hole where what replaces it has not arrived.
+            assert!(
+                self.coming > self.settled / 3.0,
+                "it left at {:.2} against the {:.2} it settles at",
+                self.coming,
+                self.settled
+            );
+        }
+    }
+
+    /// Stepping into a subcategory, the column it opens over keeps the row it
+    /// was opened from — the trail — and gives up the rest of itself before
+    /// the column arriving is strong enough to read.
+    ///
+    /// The complaint this answers, in the direction it was raised second: a
+    /// shelf of film cards came up over a list of applications while every
+    /// name in that list was still at full strength, so the cards were laid
+    /// across the words.
+    #[test]
+    fn a_column_opening_clears_the_one_it_stands_over() {
+        let xmb = nested();
+        let mut cursor = Cursor::new(1);
+        cursor.navigate(Action::Down, &xmb);
+        settle(&mut cursor);
+
+        // "plain" is the row this column is losing — the cursor is on
+        // "Appearance", so that one stays as the trail and "plain" does not.
+        // "Wallpaper" is a row of the column about to open over it.
+        let step = handover(
+            &xmb,
+            &mut cursor,
+            |cursor| cursor.enter(&xmb),
+            "plain",
+            "Wallpaper",
+        );
+        step.is_clean();
+    }
+
+    /// And coming back out is not that move played backwards: there the whole
+    /// column is what leaves, standing over the one it came out of the entire
+    /// way home.
+    ///
+    /// The complaint this answers, in the direction it was raised first: a
+    /// subcategory's rows sat at half strength across the middle of the
+    /// journey back, printed over the names of the column underneath them.
+    #[test]
+    fn a_column_stepped_out_of_is_gone_before_the_bar_has_finished_leaving_it() {
+        let xmb = nested();
+        let mut cursor = walked(&xmb);
+
+        // Two deep: "Purple" is a row of the column standing open, and
+        // "Wallpaper" a row of the one it was opened out of — which is the
+        // column being come back to, and is not on screen until that starts.
+        let step = handover(
+            &xmb,
+            &mut cursor,
+            |cursor| cursor.navigate(Action::Left, &xmb),
+            "Purple",
+            "Wallpaper",
+        );
+        step.is_clean();
+    }
+
     /// The value a setting is set to is marked, and a colour is drawn in
     /// itself: the swatch is the answer, and the word beside it is its name.
     #[test]
@@ -5409,6 +6468,236 @@ mod tests {
         assert!((lit.y + lit.h * 0.5 - centre[1]).abs() < 0.5);
     }
 
+    /// A column of the user's own pictures, for the card tests.
+    ///
+    /// Inside a subcategory, which is the only place one is ever reached: the
+    /// user's files hang on a row of their own — Music, Video, Images — under
+    /// the column that owns them, so a library is always a column stepped into
+    /// and never the outermost. Which is what lets it use the band the category
+    /// row would otherwise be holding open, so a fixture that stood one at the
+    /// top level would be testing a layout the shell never draws.
+    fn album(paths: &[&str]) -> Xmb {
+        Xmb::new(vec![Category {
+            id: "graphics",
+            title: "Graphics",
+            icon: "g",
+            entries: vec![folder(
+                "Images",
+                paths.iter().map(|path| picture(path)).collect(),
+            )],
+        }])
+    }
+
+    /// That album, open, with the cursor settled on its first picture.
+    fn opened(xmb: &Xmb, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(xmb));
+        settle(&mut cursor);
+        build_with(xmb, &cursor, width, height, true, slots)
+    }
+
+    /// The picture is the row. It stands on the card at its own shape, fitted
+    /// rather than filled, and the glyph the column is marked with is not
+    /// drawn over it.
+    #[test]
+    fn a_picture_stands_on_its_card_at_its_own_shape() {
+        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg"]);
+        let wide = opened(&xmb, 1920.0, 1080.0, &Pictures(16.0 / 9.0));
+        let scale = guide_scale(1080.0);
+
+        let drawn: Vec<&Quad> = wide
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .collect();
+        assert_eq!(drawn.len(), 2, "every row of it, not only the chosen one");
+
+        // The focused one is the taller, and it is a card rather than a disc.
+        let card = drawn
+            .iter()
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("a picture");
+        assert!(
+            (card.w / card.h - 16.0 / 9.0).abs() < 0.01,
+            "drawn at its own shape: {}x{}",
+            card.w,
+            card.h
+        );
+        let mount = CARD_HEIGHT_FOCUSED * scale * CARD_MOUNT;
+        assert!(
+            (card.h - (CARD_HEIGHT_FOCUSED * scale - mount * 2.0)).abs() < 1.0,
+            "inside the card's mount: {}",
+            card.h
+        );
+
+        // A tall picture is fitted into the same card, so the row keeps its
+        // height and the labels keep their column.
+        let tall = opened(&xmb, 1920.0, 1080.0, &Pictures(0.5));
+        let portrait = tall
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("a picture");
+        assert!((portrait.h - card.h).abs() < 1.0, "the same height");
+        assert!(portrait.w < card.w * 0.4, "and much narrower");
+        assert!(
+            (portrait.w / portrait.h - 0.5).abs() < 0.01,
+            "still its own shape"
+        );
+    }
+
+    /// Until the picture arrives the row is the column's glyph, and the moment
+    /// it does the glyph goes: a film strip stamped over a frame is two marks
+    /// for one thing.
+    #[test]
+    fn the_glyph_gives_way_to_the_picture() {
+        let xmb = album(&["/home/x/a.jpg"]);
+
+        // Slot 7 is every glyph these doubles hand out, the category button's
+        // included, so what says the row's own glyph has gone is one fewer of
+        // them rather than none.
+        let glyphs = |scene: &Scene| scene.quads.iter().filter(|q| q.slot == 7).count();
+
+        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&xmb, 1920.0, 1080.0, &Pictures(1.5));
+        assert!(
+            glyphs(&waiting) > 0,
+            "the glyph stands in until there is a picture"
+        );
+        assert!(arrived.quads.iter().any(|quad| quad.slot == THUMB_SLOT));
+        assert_eq!(
+            glyphs(&arrived),
+            glyphs(&waiting) - 1,
+            "and steps aside once it has"
+        );
+    }
+
+    /// The rows have to stand in the same places whether or not any picture
+    /// has loaded — otherwise a column would walk up and down under the cursor
+    /// as the workers finished.
+    #[test]
+    fn a_picture_arriving_moves_nothing() {
+        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
+        // Where each row's own name was drawn. The titles are one letter each,
+        // so nothing else in the scene can be mistaken for one.
+        let rows = |scene: &Scene| -> Vec<f32> {
+            let mut ys: Vec<f32> = scene
+                .texts
+                .iter()
+                .filter(|text| matches!(text.content.as_str(), "a" | "b" | "c"))
+                .map(|text| text.y)
+                .collect();
+            ys.sort_by(f32::total_cmp);
+            ys
+        };
+
+        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&xmb, 1920.0, 1080.0, &Pictures(1.5));
+        assert_eq!(rows(&waiting).len(), 3);
+        assert_eq!(rows(&waiting), rows(&arrived));
+
+        // And a column of pictures stands further apart than a column of
+        // applications, which is what makes room for them.
+        let apps = Xmb::new(vec![Category {
+            id: "a",
+            title: "A",
+            icon: "a",
+            entries: vec![app("a"), app("b"), app("c")],
+        }]);
+        let icons = focused(&apps, 1920.0, 1080.0, &AllSlots);
+        let ys = rows(&arrived);
+        assert!(
+            ys[2] - ys[1] > rows(&icons)[2] - rows(&icons)[1],
+            "a picture needs the room"
+        );
+
+        // Every card, top to bottom, as where its middle is and how tall it is.
+        //
+        // Measured from the pictures rather than from the labels beside them:
+        // the chosen row's title sits above its own centre to leave room for
+        // the line under it, so a column of labels is not a straight ruler. A
+        // picture is fitted inside its card's mount, which is what turns its
+        // height back into the card's.
+        let mut cards: Vec<(f32, f32)> = arrived
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .map(|quad| (quad.y + quad.h / 2.0, quad.h / (1.0 - 2.0 * CARD_MOUNT)))
+            .collect();
+        cards.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(cards.len(), 3);
+
+        // The clear glass between two of them. The chosen card is nearly twice
+        // its neighbours, so these two gaps come out equal only if the *pitch*
+        // does not — which is the whole of why a column of pictures is laid out
+        // about its chosen row rather than on one step.
+        let air = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) - (a.1 + b.1) / 2.0;
+        let beside_chosen = air(cards[0], cards[1]);
+        let between_rest = air(cards[1], cards[2]);
+
+        // Under nothing, the chosen picture is drawn over the one after it.
+        assert!(beside_chosen > 0.0, "rows overlap: {beside_chosen}");
+        // Equal, or the chosen card has eaten its neighbour's air: on one step
+        // it sat almost touching the rows either side of it while every other
+        // pair in the column stood well apart.
+        assert!(
+            (beside_chosen - between_rest).abs() < 1.0,
+            "uneven: {beside_chosen} beside the chosen row, {between_rest} below it"
+        );
+        // And the air stays shorter than the cards. It is the one number a
+        // column of pictures is judged by from across the room, and at the
+        // pitch this started out with it was a dead heat — as much wallpaper as
+        // picture, with a display's worth of room going to neither.
+        assert!(
+            between_rest < cards[2].1,
+            "more gap than card: {between_rest} against {}",
+            cards[2].1
+        );
+    }
+
+    /// And a click has to land where the eye says the row is, which for a card
+    /// column is a different band from an icon column's.
+    #[test]
+    fn a_card_is_pointed_at_where_it_is_drawn() {
+        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb));
+        settle(&mut cursor);
+        let (width, height) = (1920.0, 1080.0);
+
+        // The library stands one column in, which is where the hand finds it.
+        let depth = cursor.depth_position();
+        let x = bar_column_x(1.0, depth, width, height);
+        let row_y =
+            |row: usize| bar_item_y(row as f32 - cursor.item_position, 1, 1.0, height, true);
+        for row in 0..3 {
+            assert_eq!(
+                bar_hit(&xmb, &cursor, x, row_y(row), width, height),
+                Some(BarSpot::Item(row)),
+                "row {row}"
+            );
+        }
+
+        // And every point between the first row and the last belongs to one of
+        // them. The rows of a column of pictures are not evenly spaced — the
+        // chosen card pushes the two beside it out — so bands cut from the
+        // pitch fall short of meeting either side of it, and the strip left
+        // over answers to nothing and swallows the click.
+        let (top, bottom) = (row_y(0), row_y(2));
+        let mut step = top;
+        while step <= bottom {
+            assert!(
+                matches!(
+                    bar_hit(&xmb, &cursor, x, step, width, height),
+                    Some(BarSpot::Item(_))
+                ),
+                "nothing at {step}, between {top} and {bottom}"
+            );
+            step += 1.0;
+        }
+    }
+
     #[test]
     fn offscreen_rows_are_culled() {
         // A long list must not emit a quad per entry.
@@ -5426,6 +6715,71 @@ mod tests {
             "expected culling, got {} quads",
             scene.quads.len()
         );
+    }
+
+    /// And they are culled without being *looked at*: the drawing and the hit
+    /// test walk [`rows_in_view`] rather than the list, so a shelf holding
+    /// everything under somebody's home directory costs a screen's worth of
+    /// rows per frame and no more.
+    ///
+    /// The window has to be generous, though. Every row it leaves out is a row
+    /// that will not be drawn however plainly it is on screen, so this asserts
+    /// the whole of what the layout would have put on the display is inside it.
+    #[test]
+    fn only_a_screens_worth_of_a_long_column_is_ever_looked_at() {
+        let (height, rows) = (1080.0, 4_000);
+        let scale = guide_scale(height);
+
+        for pictures in [false, true] {
+            let pitch = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale;
+            // The outermost column straddles the category row; every column
+            // opened out of one is laid out about its own chosen row.
+            for level in [0, 1] {
+                for position in [0.0, 3.5, 1_500.0, (rows - 1) as f32] {
+                    let shown = rows_in_view(position, rows, pitch, height);
+                    assert!(
+                        shown.len() < 40,
+                        "{} rows for one screen at {position}",
+                        shown.len()
+                    );
+                    for index in 0..rows {
+                        let y = bar_item_y(index as f32 - position, level, 1.0, height, pictures);
+                        // The same bound the callers cull against, one row
+                        // either side of the display.
+                        if y < -pitch || y > height + pitch {
+                            continue;
+                        }
+                        assert!(
+                            shown.contains(&index),
+                            "row {index} is on screen at {y} and would not be drawn"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A row deep inside a long column is still the row the hand lands on.
+    #[test]
+    fn a_click_finds_a_row_far_down_a_long_list() {
+        let paths: Vec<String> = (0..5_000).map(|i| format!("/home/x/{i:05}.jpg")).collect();
+        let xmb = album(&paths.iter().map(String::as_str).collect::<Vec<&str>>());
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.point_at_row(2_500, &xmb));
+        settle(&mut cursor);
+
+        let (width, height) = (1920.0, 1080.0);
+        let x = bar_column_x(1.0, cursor.depth_position(), width, height);
+        let position = cursor.columns(&xmb)[1].position;
+        for row in 2_499..=2_501 {
+            let y = bar_item_y(row as f32 - position, 1, 1.0, height, true);
+            assert_eq!(
+                bar_hit(&xmb, &cursor, x, y, width, height),
+                Some(BarSpot::Item(row)),
+                "row {row}"
+            );
+        }
     }
 
     #[test]
@@ -5918,6 +7272,69 @@ mod tests {
         blind.clock = None;
         let scene = build_guide(blind, 1920.0, 1080.0);
         assert!(scene.texts.iter().any(|text| text.content == "LineXinBar"));
+    }
+
+    /// A bar is a groove with a value in it, so where it was pressed is the
+    /// answer — and its head is not part of that. On the volume bar the head is
+    /// the crossed-out speaker, and a click there means silence rather than
+    /// "as quiet as this groove can express".
+    #[test]
+    fn a_bar_is_set_by_where_along_it_the_press_landed() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut guide = Guide::default();
+        guide.set_bars(BOTH_BARS);
+        let items = guide.items(true);
+        let row = items
+            .iter()
+            .position(|item| *item == Item::Volume)
+            .expect("the volume bar is in the column");
+        let chip = menu_item_rect(&items, row, width, height);
+        let [track_x, _, track_w, _] = bar_track_line(chip, guide_scale(height));
+
+        assert_eq!(bar_level_at(chip, height, track_x), Some(0.0));
+        assert_eq!(bar_level_at(chip, height, track_x + track_w), Some(1.0));
+        let half = bar_level_at(chip, height, track_x + track_w * 0.5).unwrap();
+        assert!((half - 0.5).abs() < 0.001, "{half}");
+
+        // The glyph at its head, and the chip's own padding before that.
+        assert_eq!(bar_level_at(chip, height, chip[0] + 1.0), None);
+        assert_eq!(bar_level_at(chip, height, track_x - 1.0), None);
+
+        // Past the far end is the top of the range rather than nothing: a
+        // finger that overshoots the groove's last pixel meant "all the way".
+        assert_eq!(
+            bar_level_at(chip, height, chip[0] + chip[2] * 2.0),
+            Some(1.0)
+        );
+    }
+
+    /// The mixer's rows are the same instrument: a groove to set, and a speaker
+    /// at its head to silence. Its start depends on what the atlas could draw,
+    /// which is exactly why the drawing and the hit test read it from one
+    /// place.
+    #[test]
+    fn a_mixer_rows_groove_starts_after_whatever_was_drawn_before_it() {
+        let chip = [100.0, 100.0, 400.0, 90.0];
+        let height = 1080.0;
+        let level = Level {
+            value: 0.5,
+            muted: false,
+        };
+        let entry = MenuEntry::new(crate::menu::Command::MuteOutput, "System")
+            .icon("icon")
+            .level(level);
+
+        let with_icons = mixer_level_at(chip, &entry, level, height, &Named, chip[0] + 1.0);
+        assert_eq!(with_icons, None, "the icon and the speaker come first");
+        let far = mixer_level_at(chip, &entry, level, height, &Named, chip[0] + chip[2]);
+        assert_eq!(far, Some(1.0));
+
+        // With nothing in the atlas the groove starts further left, because
+        // nothing is drawn in front of it — and the hit test has to know that
+        // or every press lands short of where the user aimed.
+        let bare = mixer_track_line(chip, &entry, level, guide_scale(height), &NoSlots);
+        let drawn = mixer_track_line(chip, &entry, level, guide_scale(height), &Named);
+        assert!(bare[0] < drawn[0]);
     }
 
     /// The two bars sit at the top of the column, above everything the menu

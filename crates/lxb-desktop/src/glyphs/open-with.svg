@@ -1,0 +1,65 @@
+<!--
+  The file menu's Open with row: three beads.
+
+  An ellipsis, which is what a desktop has meant by "this row does not do the
+  thing, it asks you which" for forty years — every menu item that opens a
+  chooser ends in one. Drawn as three beads rather than set as three full stops
+  because a row's glyph is a picture in this shell and never a letter, and
+  because a sphere is the one form in this set that needs no silhouette at all
+  to be read at 25 px: it is round, it has a lamp on it, and that is the whole
+  drawing.
+
+  Deliberately unlike sort.svg, which is the other row in the same menu that
+  leads onward. Those are bars: left-aligned, stepping down, filling the width.
+  These are centred, round and evenly spaced, so the two are told apart by their
+  rhythm before either is read.
+
+  See pointer-stick.svg for the gradients. The highlight here is per bead rather
+  than one band across the group — three spheres each catching the lamp is what
+  makes them spheres, where one band across all three would flatten them into a
+  strip with a shine on it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <radialGradient id="face" cx="0.36" cy="0.3" r="0.85">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f2f2f2"/>
+      <stop offset="0.78" stop-color="#d4d4d4"/>
+      <stop offset="1" stop-color="#e6e6e6"/>
+    </radialGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.72"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="0.34" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
+                    flood-color="#383838" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="0.2"/>
+    </filter>
+
+    <!-- One bead, moved into place three times: the spacing is a shade wider
+         than the beads are, which is what keeps them three marks rather than
+         one dashed line. -->
+    <g id="bead">
+      <circle cx="0" cy="16" r="3.5" fill="url(#face)"/>
+      <ellipse cx="-0.35" cy="13.9" rx="2.2" ry="1.35"
+               fill="url(#gloss)" filter="url(#polish)"/>
+      <circle cx="0" cy="16" r="3.5" fill="none"
+              stroke="url(#edge)" stroke-width="0.8"/>
+    </g>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#bead" x="6.4"/>
+    <use href="#bead" x="16"/>
+    <use href="#bead" x="25.6"/>
+  </g>
+</svg>

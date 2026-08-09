@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="15">
+  <interface name="lxb_shell_v1" version="16">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -459,6 +459,59 @@
       <arg name="refresh" type="uint" summary="refresh in mHz; 0 for the fastest of that size"/>
     </request>
 
+    <enum name="transform" since="16">
+      <description summary="how a display's picture is turned">
+        The same eight values as wl_output.transform, with the same numbers and
+        the same meanings, so a shell that reads one does not have to translate
+        it into the other.
+
+        Four of them are rotations and four are the same rotations with the
+        picture flipped about a vertical axis first. A display standing on its
+        side wants a rotation; the flipped values are for a picture reaching
+        the eye through a mirror, and a shell has no reason to offer them
+        unless it knows there is one.
+      </description>
+      <entry name="normal" value="0" summary="no rotation"/>
+      <entry name="90" value="1" summary="a quarter turn"/>
+      <entry name="180" value="2" summary="upside down"/>
+      <entry name="270" value="3" summary="a quarter turn the other way"/>
+      <entry name="flipped" value="4" summary="mirrored"/>
+      <entry name="flipped_90" value="5" summary="mirrored, then a quarter turn"/>
+      <entry name="flipped_180" value="6" summary="mirrored, then upside down"/>
+      <entry name="flipped_270" value="7" summary="mirrored, then a quarter turn the other way"/>
+    </enum>
+
+    <request name="set_output_transform" since="16">
+      <description summary="turn one display's picture">
+        Asks the compositor to draw a display's picture turned: a screen
+        standing on its side is given a quarter turn so that what it shows
+        stands up with it.
+
+        It belongs to the compositor for the plainest of the reasons a mode
+        does: everything on that display is laid out in the space the turn
+        creates. A quarter turn swaps the display's logical width and height,
+        which moves the outputs laid out beside it, re-arranges every layer
+        surface anchored to it — the shell's own bar included — and re-tiles
+        every window on it. A client can no more do that than it can choose
+        its own geometry under this layout.
+
+        Unlike a mode this is the compositor's own rendering rather than the
+        connector's: the picture is composited turned and scanned out at the
+        mode's own pixels, so every display can be turned and no display has a
+        list of turns it will accept. What varies is only whether the
+        compositor owns the picture at all — see the output_transform event,
+        which is how a shell knows whether to offer this.
+
+        Silently ignored when the output is gone, when the value is not one of
+        the eight, and on a display the compositor does not report a transform
+        for. In each case the display keeps the orientation it has, and the
+        output_transform event says so — a shell should mark what that reports
+        rather than what it asked for.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to turn"/>
+      <arg name="transform" type="uint" enum="transform" summary="how to turn its picture"/>
+    </request>
+
     <request name="hide_pointer" since="12">
       <description summary="the user has picked up something that is not the pointer">
         Takes the cursor off screen, exactly as the compositor does by itself
@@ -741,6 +794,31 @@
       </description>
       <arg name="id" type="uint" summary="the window that was asked about"/>
       <arg name="path" type="string" summary="the file that was written, empty when none was"/>
+    </event>
+
+    <event name="output_transform" since="16">
+      <description summary="how one display's picture is turned">
+        Says how a display's picture is currently turned, and by being sent at
+        all, that this display's orientation is the shell's to set.
+
+        wl_output.geometry carries a transform too, and it is not the same
+        statement. That one describes what a client should do about the output
+        it is drawing on, and a compositor may advertise it for a display whose
+        orientation it does not own — a nested session, whose window is turned
+        by the compositor above it, or a backend whose output carries a
+        transform of its own to compensate for how it draws. This event is sent
+        only for displays this compositor turns itself, so a shell listing them
+        offers the setting exactly where it does something.
+
+        transform is what the compositor is actually drawing at, not what it
+        was last asked for. They differ when a request could not be carried
+        out, which is the case a shell must not present as success.
+
+        Sent once per display when a version 16 object is bound, and again
+        whenever it changes.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="transform" type="uint" enum="transform" summary="how its picture is turned"/>
     </event>
 
     <event name="output_modes_done" since="11">

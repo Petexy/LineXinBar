@@ -28,8 +28,19 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(8);
 
 const STICK_ENGAGE: f32 = 0.55;
 const STICK_RELEASE: f32 = 0.35;
-const INITIAL_REPEAT_DELAY: Duration = Duration::from_millis(350);
-const REPEAT_INTERVAL: Duration = Duration::from_millis(90);
+
+/// How long a direction has to be held before it starts stepping on its own,
+/// and how long between steps after that.
+///
+/// The D-pad's rhythm and the keyboard's alike. Wayland hands a client one
+/// press and one release and leaves everything in between to it, so the shell
+/// invents the middle for both controls — the pad in [`Navigation::update`],
+/// the arrow keys in `Shell::repeat_held_key` — and it invents the same
+/// middle, because a held arrow that walked the bar at a different pace from a
+/// held D-pad would make the two controls two interfaces.
+pub const INITIAL_REPEAT_DELAY: Duration = Duration::from_millis(350);
+/// See [`INITIAL_REPEAT_DELAY`].
+pub const REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 
 /// One poll's worth of controller input.
 ///

@@ -312,6 +312,65 @@ impl Quick {
         true
     }
 
+    /// Put a bar exactly where it has been clicked.
+    ///
+    /// The pointer's counterpart to [`Self::nudge`], and the same in every other
+    /// respect: a direction can only ask for the next step, where a click names
+    /// the value outright. Dragging a silenced session up brings it back, for
+    /// the same reason turning it up does — it is the same gesture, made with a
+    /// different instrument.
+    pub fn set(&self, knob: Knob, value: f32) -> bool {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = state.slot(knob);
+        let Some(level) = slot.level else {
+            return false;
+        };
+        let floor = match knob {
+            Knob::Volume => 0.0,
+            Knob::Brightness => DIMMEST,
+        };
+        let value = value.clamp(floor, 1.0);
+        let unmute = knob == Knob::Volume && level.muted && value > level.value;
+        if value == level.value && !unmute {
+            return false;
+        }
+
+        slot.level = Some(Level {
+            value,
+            muted: level.muted && !unmute,
+        });
+        slot.wanted = Some(value);
+        if unmute {
+            slot.mute = Some(false);
+        }
+        slot.epoch += 1;
+        state.dirty = true;
+        self.shared.signal.notify_one();
+        true
+    }
+
+    /// The same for one application's row.
+    pub fn set_stream(&self, key: u32, value: f32) -> bool {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(stream) = state.streams.iter_mut().find(|stream| stream.key == key) else {
+            return false;
+        };
+        let level = stream.level;
+        let value = value.clamp(0.0, 1.0);
+        let unmute = level.muted && value > level.value;
+        if value == level.value && !unmute {
+            return false;
+        }
+        stream.level = Level {
+            value,
+            muted: level.muted && !unmute,
+        };
+        let inputs = stream.inputs.clone();
+        state.ask_stream(inputs, Some(value), unmute.then_some(false));
+        self.shared.signal.notify_one();
+        true
+    }
+
     /// Move one application's row by one step, on exactly the terms the session
     /// bar moves on: the row lands on screen before the server has heard about
     /// it, and turning it up brings a silenced application back.

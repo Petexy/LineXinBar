@@ -175,9 +175,79 @@ fn fold_case(keysym: Keysym) -> Keysym {
 
 /// The chords that summon the guide, before anything in the config is read.
 ///
-/// Two spellings for a keyboard, one for the media key handhelds and remotes
-/// actually send.
-const GUIDE_BINDINGS: [&str; 3] = ["Super+G", "Super+Home", "XF86HomePage"];
+/// The Windows key *on its own* is the home button on a keyboard, and it is not
+/// in here: a bare modifier cannot be a chord. See [`HomeTap`] for what it is
+/// instead. What is left is a spelling for a keyboard whose Super key is being
+/// used for something else, and the media key handhelds and remotes send for
+/// exactly this.
+const GUIDE_BINDINGS: [&str; 2] = ["Super+Home", "XF86HomePage"];
+
+/// Whether a key is the Windows key, under either of its two names.
+fn is_logo_key(syms: &[Keysym]) -> bool {
+    syms.iter()
+        .any(|sym| matches!(sym.raw(), keysyms::KEY_Super_L | keysyms::KEY_Super_R))
+}
+
+/// The Windows key on its own: the home button, on a keyboard that has none.
+///
+/// A modifier cannot be looked up in the binding table like any other key.
+/// Held down it is half of `Super+Q` and half of every other chord in the
+/// table, and pressing it is how the user *begins* one of those — so a guide
+/// that opened on the press would open on the way to closing a window, and
+/// every chord in the session would be shadowed by it. What names the key on
+/// its own is the release: down, up, and nothing in between.
+///
+/// Both edges still reach the client. Swallowing the release of a modifier
+/// whose press was forwarded leaves the application holding a Super that is
+/// never let go of — a stuck modifier is a worse fault than an application
+/// seeing a key that also meant something to the shell.
+#[derive(Debug, Default)]
+pub struct HomeTap {
+    /// Whether a Super that is down has, so far, been pressed on its own.
+    armed: bool,
+    /// Whether the last event completed a tap, waiting to be acted on once the
+    /// keyboard has finished with the event that produced it.
+    fired: bool,
+}
+
+impl HomeTap {
+    /// Note one key of the seat's keyboard.
+    fn key(&mut self, logo: bool, pressed: bool) {
+        self.fired = false;
+        match (logo, pressed) {
+            (true, true) => self.armed = true,
+            (true, false) => self.fired = std::mem::take(&mut self.armed),
+            // Anything else going down while Super is held makes a chord of it,
+            // and a chord is not a tap however it ends.
+            (false, true) => self.armed = false,
+            (false, false) => {}
+        }
+    }
+
+    /// Whether the guide is owed a tap, clearing the debt.
+    fn take(&mut self) -> bool {
+        std::mem::take(&mut self.fired)
+    }
+
+    /// Whatever was under way, it was not a tap.
+    ///
+    /// A hand that has reached the mouse is a hand that has left the chord it
+    /// was in the middle of; so is a session that has just had the keys taken
+    /// off it, which would otherwise hold the arming across the gap and open
+    /// the guide on a release belonging to somewhere else entirely.
+    pub fn interrupt(&mut self) {
+        self.armed = false;
+        self.fired = false;
+    }
+}
+
+/// The button on the side of a mouse, as Linux numbers it.
+///
+/// The rear one — `BTN_SIDE`, what a browser reads as Back — because that is
+/// what the guide is: the way back out of whatever is in front of it. Its
+/// neighbour is deliberately left alone. A mouse has two of these, and taking
+/// both would leave a browser running inside the session with no way forward.
+const BTN_SIDE: u32 = 0x113;
 
 /// The compositor's keybinding table.
 #[derive(Debug, Default)]
@@ -377,8 +447,17 @@ impl LxbState {
         let Some(keyboard) = self.lxb.seat.get_keyboard() else {
             return;
         };
+        let pressed = state == KeyState::Pressed;
 
         let action = keyboard.input(self, keycode, state, serial, time, |state, mods, handle| {
+            // Which key this is, in the one place the symbols it produces are
+            // known. Every key passes through here, because what makes a tap a
+            // tap is as much the keys that are *not* the Windows key.
+            state
+                .lxb
+                .home_tap
+                .key(is_logo_key(&handle.raw_syms()), pressed);
+
             // The modified symbol as well as the raw ones, so that both
             // `Super+Q` and shift-rewritten combos like `Super+Shift+Right`
             // resolve to the same binding.
@@ -393,16 +472,24 @@ impl LxbState {
         // user telling it they are not using the mouse. Done for every key,
         // including the ones that turn out to be bindings: the guide button is
         // as much a hand off the mouse as a letter is.
-        if state == KeyState::Pressed {
+        if pressed {
             self.pointer_put_down();
         }
 
         // Actions fire on press only; the matching release is swallowed too,
         // which is what clients expect from a grabbed binding.
         if let Some(action) = action {
-            if state == KeyState::Pressed {
+            if pressed {
                 self.run_action(action);
             }
+        }
+
+        // And the home button last, on the release of a Windows key that was
+        // pressed on its own. After the binding table rather than before it,
+        // because a tap cannot be a chord: by the time one has completed there
+        // is nothing else this event could also have been.
+        if self.lxb.home_tap.take() {
+            self.run_action(Action::Guide);
         }
     }
 
@@ -751,7 +838,25 @@ impl LxbState {
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
-        self.pointer_button_at(event.button_code(), event.state(), event.time_msec());
+        let button = event.button_code();
+        let state = event.state();
+        // A hand that has arrived at the mouse is a hand that has left whatever
+        // chord it was in the middle of.
+        self.lxb.home_tap.interrupt();
+
+        // The home button, on a mouse. Held back from the client outright —
+        // both edges, so nothing is left half pressed — for the same reason the
+        // guide's chords are held back: it is the way out of an application
+        // that is holding everything else, and an application that could take
+        // it over would be an application there is no way out of.
+        if button == BTN_SIDE {
+            if state == ButtonState::Pressed {
+                self.run_action(Action::Guide);
+            }
+            return;
+        }
+
+        self.pointer_button_at(button, state, event.time_msec());
     }
 
     /// One pointer button, from wherever it came from — see
@@ -983,6 +1088,10 @@ impl LxbState {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        // `Super+wheel` is a zoom in a great many applications, and a hand that
+        // is doing that is not tapping the Windows key.
+        self.lxb.home_tap.interrupt();
+
         let horizontal = event
             .amount(Axis::Horizontal)
             .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) / 120.0 * 15.0);
@@ -1302,6 +1411,11 @@ impl LxbState {
     }
 
     fn release_pressed_keys(&mut self) {
+        // These releases are the compositor's own, not the user's fingers
+        // leaving the keys, so a Windows key that was down when focus went away
+        // must not summon the guide on the way back.
+        self.lxb.home_tap.interrupt();
+
         let Some(keyboard) = self.lxb.seat.get_keyboard() else {
             return;
         };
@@ -1899,7 +2013,7 @@ mod tests {
         let mut config = Config::default();
         config
             .keybindings
-            .insert("Super+G".into(), "spawn:foot".into());
+            .insert("Super+Home".into(), "spawn:foot".into());
         let bindings = KeyBindings::from_config(&config);
 
         let mods = ModifiersState {
@@ -1907,9 +2021,78 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            bindings.lookup(&mods, [Keysym::from(keysyms::KEY_g)]),
+            bindings.lookup(&mods, [Keysym::from(keysyms::KEY_Home)]),
             Some(Action::Guide)
         );
+    }
+
+    /// The Windows key on its own is the home button: pressed, let go of, and
+    /// nothing in between.
+    #[test]
+    fn the_windows_key_summons_the_guide_when_it_is_let_go_of_alone() {
+        let mut tap = HomeTap::default();
+
+        // The press itself does nothing. It is also the start of every chord
+        // in the table, and a guide that opened here would shadow all of them.
+        tap.key(true, true);
+        assert!(!tap.take());
+        tap.key(true, false);
+        assert!(tap.take(), "letting it go alone is the home button");
+
+        // Taken once, not once per frame afterwards.
+        assert!(!tap.take());
+    }
+
+    /// `Super+Q` is `Super+Q`, not the guide followed by a closed window.
+    #[test]
+    fn a_chord_is_not_a_tap_however_it_ends() {
+        let mut tap = HomeTap::default();
+        tap.key(true, true);
+        tap.key(false, true);
+        assert!(!tap.take());
+        // Neither edge of the other key brings the tap back.
+        tap.key(false, false);
+        assert!(!tap.take());
+        tap.key(true, false);
+        assert!(!tap.take());
+
+        // And a Windows key pressed after the chord has been let go of is a
+        // fresh tap: the hand went back to it deliberately.
+        tap.key(true, true);
+        tap.key(true, false);
+        assert!(tap.take());
+    }
+
+    /// A key of some other name, pressed and released on its own, is not a tap
+    /// of a key that was never touched.
+    #[test]
+    fn an_ordinary_key_on_its_own_summons_nothing() {
+        let mut tap = HomeTap::default();
+        tap.key(false, true);
+        assert!(!tap.take());
+        tap.key(false, false);
+        assert!(!tap.take());
+    }
+
+    /// A hand on the mouse, or the keys being taken off the session, ends the
+    /// tap that was waiting to complete — a release arriving after either of
+    /// those belongs to something else.
+    #[test]
+    fn an_interruption_ends_the_tap() {
+        let mut tap = HomeTap::default();
+        tap.key(true, true);
+        tap.interrupt();
+        tap.key(true, false);
+        assert!(!tap.take());
+    }
+
+    /// Both names of the key are the key.
+    #[test]
+    fn either_windows_key_is_the_home_button() {
+        assert!(is_logo_key(&[Keysym::from(keysyms::KEY_Super_L)]));
+        assert!(is_logo_key(&[Keysym::from(keysyms::KEY_Super_R)]));
+        assert!(!is_logo_key(&[Keysym::from(keysyms::KEY_q)]));
+        assert!(!is_logo_key(&[]));
     }
 
     /// A chord the user adds for the guide gets the same protection, and stops
@@ -1953,7 +2136,10 @@ mod tests {
         assert_eq!(
             bindings.lookup(
                 &mods,
-                [Keysym::from(keysyms::KEY_x), Keysym::from(keysyms::KEY_g)]
+                [
+                    Keysym::from(keysyms::KEY_x),
+                    Keysym::from(keysyms::KEY_Home)
+                ]
             ),
             Some(Action::Guide)
         );

@@ -63,6 +63,8 @@ pub enum DisplayValue {
     /// Refresh it this many times a second, in mHz, at whatever size it is
     /// already being scanned out at.
     RefreshRate(u32),
+    /// Draw its picture turned this way, for a screen standing on its side.
+    Orientation(Orientation),
     /// Drive this display in high dynamic range, or stop.
     Hdr(bool),
     /// The luminance plain white is sent at while HDR is on, in cd/m².
@@ -82,6 +84,162 @@ pub enum DisplayValue {
 pub struct Resolution {
     pub width: u32,
     pub height: u32,
+}
+
+/// How a display's picture is turned.
+///
+/// The same eight the compositor has, which are `wl_output`'s own: four
+/// rotations, and the four rotations of a mirrored picture. Only the rotations
+/// are offered — see [`ROTATIONS`] — but all eight are named, because the
+/// compositor's own config file can put a display into any of them and a page
+/// that could not say what a display was doing would be worse than one that
+/// cannot change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Landscape,
+    Portrait,
+    LandscapeFlipped,
+    PortraitFlipped,
+    Mirrored,
+    MirroredPortrait,
+    MirroredFlipped,
+    MirroredPortraitFlipped,
+}
+
+/// The four the page offers: the turns a screen can be stood on its side by.
+///
+/// The mirrored four are left out because a mirrored picture is not an
+/// orientation anybody's screen is in — it is what a picture reaching the eye
+/// through a mirror needs, which is a projector rig and not something to offer
+/// on the way past. A display the config has put into one is still named, in
+/// the row above the list.
+pub const ROTATIONS: [Orientation; 4] = [
+    Orientation::Landscape,
+    Orientation::Portrait,
+    Orientation::LandscapeFlipped,
+    Orientation::PortraitFlipped,
+];
+
+impl Orientation {
+    /// What a row of the list is titled with, and what the row above it says a
+    /// screen is at.
+    ///
+    /// The turn itself, in degrees, rather than "Portrait" and "Landscape".
+    /// Those two words name the *shape* that comes out, which is the one thing
+    /// the row does not have to say — the drawing beside it is that shape. The
+    /// number is what the row cannot show: which of the two portraits this is,
+    /// and how far from where the display started.
+    pub fn title(self) -> &'static str {
+        match self {
+            Orientation::Landscape => "0° Rotation",
+            Orientation::Portrait => "90° Rotation",
+            Orientation::LandscapeFlipped => "180° Rotation",
+            Orientation::PortraitFlipped => "270° Rotation",
+            Orientation::Mirrored => "Mirrored",
+            Orientation::MirroredPortrait => "Mirrored, 90° rotation",
+            Orientation::MirroredFlipped => "Mirrored, 180° rotation",
+            Orientation::MirroredPortraitFlipped => "Mirrored, 270° rotation",
+        }
+    }
+
+    /// The drawing beside it: one monitor, stood the way this turn stands it.
+    ///
+    /// `None` for the mirrored four, which are never a row — they are named in
+    /// the row above a list they are not in. See [`ROTATIONS`].
+    fn icon(self) -> Option<&'static str> {
+        Some(match self {
+            Orientation::Landscape => icons::SETTING_ROTATION_0,
+            Orientation::Portrait => icons::SETTING_ROTATION_90,
+            Orientation::LandscapeFlipped => icons::SETTING_ROTATION_180,
+            Orientation::PortraitFlipped => icons::SETTING_ROTATION_270,
+            _ => return None,
+        })
+    }
+
+    /// The line under it: which way the screen it is meant for has been turned,
+    /// since the title alone does not say which way a quarter turn goes.
+    ///
+    /// Said as where the screen's *top edge* ends up, rather than which edge it
+    /// stands on: a user looking at a monitor knows where its top is, and the
+    /// edge it is resting on is the one they cannot see. The turns are named
+    /// from what the compositor actually draws — at `90` the picture is drawn a
+    /// quarter turn anticlockwise, which stands up on a screen that has been
+    /// turned clockwise.
+    fn note(self) -> &'static str {
+        match self {
+            Orientation::Landscape => "Landscape, the way the display is built",
+            Orientation::Portrait => "Portrait, for a screen turned clockwise",
+            Orientation::LandscapeFlipped => "Landscape, for a screen hung upside down",
+            Orientation::PortraitFlipped => "Portrait, for a screen turned the other way",
+            // Not offered, and so never the title of a row that has a line
+            // under it. Named for the row above the list, which prints the
+            // title alone.
+            _ => "Mirrored about a vertical axis",
+        }
+    }
+
+    /// How the protocol counts them, which is how `wl_output` counts them.
+    pub fn code(self) -> u32 {
+        match self {
+            Orientation::Landscape => 0,
+            Orientation::Portrait => 1,
+            Orientation::LandscapeFlipped => 2,
+            Orientation::PortraitFlipped => 3,
+            Orientation::Mirrored => 4,
+            Orientation::MirroredPortrait => 5,
+            Orientation::MirroredFlipped => 6,
+            Orientation::MirroredPortraitFlipped => 7,
+        }
+    }
+
+    /// The same, read back. `None` for a value this shell does not have, which
+    /// a compositor built against a later protocol could send.
+    pub fn from_code(code: u32) -> Option<Self> {
+        Some(match code {
+            0 => Orientation::Landscape,
+            1 => Orientation::Portrait,
+            2 => Orientation::LandscapeFlipped,
+            3 => Orientation::PortraitFlipped,
+            4 => Orientation::Mirrored,
+            5 => Orientation::MirroredPortrait,
+            6 => Orientation::MirroredFlipped,
+            7 => Orientation::MirroredPortraitFlipped,
+            _ => return None,
+        })
+    }
+
+    /// How the settings file spells it — which is how the compositor's own
+    /// config spells it, for the reason the mode is spelled that way: one
+    /// format across the two halves of the session, so a line can be moved
+    /// between the files and mean the same thing.
+    fn key(self) -> &'static str {
+        match self {
+            Orientation::Landscape => "normal",
+            Orientation::Portrait => "90",
+            Orientation::LandscapeFlipped => "180",
+            Orientation::PortraitFlipped => "270",
+            Orientation::Mirrored => "flipped",
+            Orientation::MirroredPortrait => "flipped-90",
+            Orientation::MirroredFlipped => "flipped-180",
+            Orientation::MirroredPortraitFlipped => "flipped-270",
+        }
+    }
+
+    /// The same, read back, accepting everything the compositor's config
+    /// accepts. `None` for anything else, which a hand-edited file may hold.
+    fn from_key(raw: &str) -> Option<Self> {
+        Some(match raw.trim().to_ascii_lowercase().as_str() {
+            "normal" | "0" => Orientation::Landscape,
+            "90" => Orientation::Portrait,
+            "180" => Orientation::LandscapeFlipped,
+            "270" => Orientation::PortraitFlipped,
+            "flipped" => Orientation::Mirrored,
+            "flipped-90" | "flipped90" => Orientation::MirroredPortrait,
+            "flipped-180" | "flipped180" => Orientation::MirroredFlipped,
+            "flipped-270" | "flipped270" => Orientation::MirroredPortraitFlipped,
+            _ => return None,
+        })
+    }
 }
 
 /// A whole mode: a size and a rate.
@@ -182,6 +340,25 @@ static MODES: Mutex<Vec<(String, Vec<Offered>)>> = Mutex::new(Vec::new());
 /// whatever the compositor brought it up at.
 static MODE: Mutex<BTreeMap<String, Mode>> = Mutex::new(BTreeMap::new());
 
+/// How each display's picture is turned, for the displays the compositor turns
+/// itself, in the order it announced them.
+///
+/// A display missing from here is one whose orientation is not the shell's to
+/// set — a nested session, whose window is turned by the compositor above it —
+/// which is why this is a list of what was reported rather than a value read
+/// off every screen. It is the Orientation page's screen list, exactly as
+/// [`SUPPORT`] is the HDR page's.
+static TURNED: Mutex<Vec<(String, Orientation)>> = Mutex::new(Vec::new());
+
+/// The orientation chosen for a display, for the displays one was chosen for.
+///
+/// Filed on its own, like [`MODE`] and for the same reason: a screen given a
+/// turn has not thereby been given a colour pipeline. Nothing inherited stands
+/// behind it either — a display nobody has turned is left the way the
+/// compositor brought it up, which is its own config's answer and not the
+/// shell's to overrule.
+static TURN: Mutex<BTreeMap<String, Orientation>> = Mutex::new(BTreeMap::new());
+
 /// What was read out of the settings file for displays it says nothing about.
 ///
 /// The first version of this page had one set of HDR settings for the whole
@@ -194,6 +371,49 @@ static INHERITED: Mutex<Hdr> = Mutex::new(Hdr {
     srgb_intensity: 0,
     peak_brightness: 0,
 });
+
+/// What order each shelf of the user's own files is listed in, by the name the
+/// row it hangs on has: `Music`, `Video`, `Images`.
+///
+/// Here rather than in [`crate::media`] for one reason: this is the module that
+/// reads and writes the settings file, and everything in the file is built out
+/// of the live values at the moment it is written — see [`stored`]. A setting
+/// held somewhere the writer cannot see is a setting that gets left out of the
+/// file the next time anything else changes.
+///
+/// Chosen from the Sort row of the context menu rather than from the Settings
+/// column, which is the only reason it has no page of its own. It is a
+/// preference all the same.
+static MEDIA_SORT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Write down that a shelf is listed in this order from now on.
+pub fn remember_media_sort(kind: crate::media::Kind, sort: crate::media::Sort) {
+    MEDIA_SORT.lock().unwrap().insert(
+        crate::apps::shelf_title(kind).to_string(),
+        sort.key().to_string(),
+    );
+    save(&stored());
+}
+
+/// What the settings file says a shelf is listed in, if it says anything.
+///
+/// Asked once, when the library is made. An order the shell does not have —
+/// a hand-edited typo, or a file written by a later version — is nothing
+/// rather than an error: the shelf comes up alphabetical, which is the answer
+/// that is never wrong.
+pub fn media_sort(kind: crate::media::Kind) -> Option<crate::media::Sort> {
+    let held = MEDIA_SORT.lock().unwrap();
+    let named = held.get(crate::apps::shelf_title(kind))?;
+    let sort = crate::media::Sort::from_key(named);
+    if sort.is_none() {
+        tracing::warn!(
+            shelf = crate::apps::shelf_title(kind),
+            order = named,
+            "the settings name an order this shell does not have"
+        );
+    }
+    sort
+}
 
 /// What the shell is asking the compositor for on one display.
 pub fn hdr_for(display: &str) -> Hdr {
@@ -239,6 +459,29 @@ pub fn note_modes(reported: Vec<(String, Vec<Offered>)>) -> bool {
 /// one.
 pub fn mode_for(display: &str) -> Option<Mode> {
     MODE.lock().unwrap().get(display).copied()
+}
+
+/// How every display the compositor turns itself is currently turned, in the
+/// order they were announced.
+pub fn turned() -> Vec<(String, Orientation)> {
+    TURNED.lock().unwrap().clone()
+}
+
+/// Record what the compositor said about the orientations. `true` when it is a
+/// change, as [`note_support`].
+pub fn note_turned(reported: Vec<(String, Orientation)>) -> bool {
+    let mut held = TURNED.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
+/// The orientation the shell is asking one display for, if it has ever been
+/// asked for one.
+pub fn turn_for(display: &str) -> Option<Orientation> {
+    TURN.lock().unwrap().get(display).copied()
 }
 
 /// The modes one display offers, as the compositor last listed them.
@@ -340,13 +583,19 @@ fn accent_colour() -> Entry {
 ///
 /// The mode comes first, in its two halves, because it is the plainest thing
 /// about a display and the one a user is most likely to have come here for;
-/// everything under HDR describes the picture that mode carries.
+/// the orientation is the other thing about the picture's shape, and stands
+/// with them. Everything under HDR describes the picture those carry.
 fn display() -> Entry {
     folder(
         "Display",
         "How the picture reaches the screen",
         icons::SETTING_DISPLAY,
-        vec![resolution(), refresh_rate(), high_dynamic_range()],
+        vec![
+            resolution(),
+            refresh_rate(),
+            orientation(),
+            high_dynamic_range(),
+        ],
     )
 }
 
@@ -456,6 +705,93 @@ fn refresh_rate() -> Entry {
                 .collect(),
         ),
     }
+}
+
+/// Orientation: which way up each screen's picture is drawn.
+///
+/// The same three shapes as the two pages above it, and for the same reasons —
+/// one screen and there is no screen to choose, several and they are named
+/// first, none and the row says why rather than opening onto nothing.
+///
+/// The screens are the ones the compositor says it turns itself. That is not
+/// the same list as the one on the Resolution page and must not be derived
+/// from it: a turn is the compositor's own drawing rather than anything the
+/// connector has to support, so a display with no mode list can still be
+/// turned, and one the compositor is not the last word on cannot be — which is
+/// exactly what it reports.
+///
+/// Every turn is offered on every screen, unlike a mode: there is no list of
+/// orientations a display has, because none of it reaches the hardware. What a
+/// screen is at is what the compositor says it is drawing.
+fn orientation() -> Entry {
+    let listed = turned();
+
+    match listed.as_slice() {
+        [] => folder(
+            "Orientation",
+            "Which way up the picture is",
+            icons::SETTING_ORIENTATION,
+            vec![nothing_can_be_turned()],
+        ),
+        [(name, turn)] => folder(
+            "Orientation",
+            &format!("{name} — {}", turn.title()),
+            icons::SETTING_ORIENTATION,
+            turn_values(name, *turn),
+        ),
+        _ => folder(
+            "Orientation",
+            "Which way up the picture is",
+            icons::SETTING_ORIENTATION,
+            listed
+                .iter()
+                .map(|(name, turn)| {
+                    folder(
+                        name,
+                        turn.title(),
+                        icons::SETTING_DISPLAY,
+                        turn_values(name, *turn),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The four turns, for one screen.
+///
+/// The mark is on what the compositor says it is drawing, not on what was last
+/// asked for — the rule the Resolution page follows, and here the answer comes
+/// back in the same breath as well. A screen the config has put into one of
+/// the mirrored orientations therefore has no row marked, which is the truth:
+/// it is not in any of these, and the row above the list says which one it is
+/// in.
+fn turn_values(name: &str, turned: Orientation) -> Vec<Entry> {
+    let display = intern(name);
+    ROTATIONS
+        .iter()
+        .map(|turn| {
+            drawn_value(
+                turn.title(),
+                Some(turn.note()),
+                // Never the bead: see [`icons::SETTING_ROTATION_0`]. A turn is
+                // the one setting in this tree whose value has a shape, and
+                // four identical beads would throw that away.
+                turn.icon().unwrap_or(icons::SWATCH),
+                *turn == turned,
+                setting(display, DisplayValue::Orientation(*turn)),
+            )
+        })
+        .collect()
+}
+
+/// The row that stands in for the screen list when nothing can be turned.
+fn nothing_can_be_turned() -> Entry {
+    reading(
+        "No display can be turned",
+        "Nothing here owns its own picture: the session is running inside \
+         another compositor, which owns which way up its window is",
+    )
 }
 
 /// The sizes of one screen, largest first.
@@ -990,10 +1326,26 @@ fn swatch(title: &str, colour: Color, chosen: bool, setting: Setting) -> Entry {
 /// other icon in the bar, so a list of numbers reads as a list rather than as
 /// five colourless swatches.
 fn value(title: &str, comment: Option<&str>, chosen: bool, setting: Setting) -> Entry {
+    drawn_value(title, comment, icons::SWATCH, chosen, setting)
+}
+
+/// The same, for a value that is a picture of something rather than a number.
+///
+/// The bead is the mark of "one of these", and it is the right mark for nearly
+/// everything here: a brightness in cd/m² has no shape, and drawing one would
+/// be inventing a picture of a number. An orientation does have a shape — it is
+/// the only value in this tree that is one — so it is drawn instead.
+fn drawn_value(
+    title: &str,
+    comment: Option<&str>,
+    icon: &str,
+    chosen: bool,
+    setting: Setting,
+) -> Entry {
     Entry::Choice(Choice {
         title: title.to_string(),
         comment: comment.map(str::to_string),
-        icon: Some(icons::SWATCH.to_string()),
+        icon: Some(icon.to_string()),
         swatch: None,
         chosen,
         setting: Some(setting),
@@ -1128,6 +1480,14 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                     };
                     MODE.lock().unwrap().insert(screen.to_string(), mode);
                 }
+                // Filed on its own for the same reason the mode is: a screen
+                // that has been turned has not been given a mode or a colour
+                // pipeline, and writing one it never asked for would put a
+                // display's whole picture in the file the first time somebody
+                // stood one on its side.
+                DisplayValue::Orientation(turn) => {
+                    TURN.lock().unwrap().insert(screen.to_string(), turn);
+                }
                 _ => {
                     let mut held = HDR.lock().unwrap();
                     let inherited = *INHERITED.lock().unwrap();
@@ -1142,8 +1502,10 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                             settings.srgb_intensity = percent.min(100)
                         }
                         DisplayValue::PeakBrightness(nits) => settings.peak_brightness = nits,
-                        // Taken by the arm above; the compiler cannot see it.
-                        DisplayValue::Resolution(_) | DisplayValue::RefreshRate(_) => {}
+                        // Taken by the arms above; the compiler cannot see it.
+                        DisplayValue::Resolution(_)
+                        | DisplayValue::RefreshRate(_)
+                        | DisplayValue::Orientation(_) => {}
                     }
                 }
             }
@@ -1197,6 +1559,8 @@ pub fn load() {
 ///
 /// Split from [`load`] so the file format can be exercised without one.
 fn adopt(stored: Stored) {
+    *MEDIA_SORT.lock().unwrap() = stored.media_sort;
+
     // The flat keys a single-display version of this page wrote, which become
     // the starting point for every display the file says nothing about.
     let defaults = Hdr::default();
@@ -1218,8 +1582,10 @@ fn adopt(stored: Stored) {
     let inherited = *INHERITED.lock().unwrap();
     let mut held = HDR.lock().unwrap();
     let mut modes = MODE.lock().unwrap();
+    let mut turns = TURN.lock().unwrap();
     held.clear();
     modes.clear();
+    turns.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
         // than refusing the file: this is a text file the user is entitled to
@@ -1236,6 +1602,21 @@ fn adopt(stored: Stored) {
                 screen = %name,
                 mode = written.unwrap_or_default(),
                 "ignoring a mode that is not WIDTHxHEIGHT@REFRESH"
+            ),
+            None => {}
+        }
+        // The same again for the turn, and dropped the same way: a screen the
+        // file names an orientation this shell does not have is left the way
+        // the compositor brought it up.
+        let written = display.transform.clone();
+        match written.as_deref().map(Orientation::from_key) {
+            Some(Some(turn)) => {
+                turns.insert(name.clone(), turn);
+            }
+            Some(None) => tracing::warn!(
+                screen = %name,
+                transform = written.unwrap_or_default(),
+                "ignoring an orientation this shell does not have"
             ),
             None => {}
         }
@@ -1293,6 +1674,11 @@ struct Stored {
     /// One section per display, by connector name. Sorted, so the file does
     /// not reshuffle itself every time it is written.
     display: BTreeMap<String, StoredDisplay>,
+    /// What order each shelf of the user's own files is listed in, by the name
+    /// of the row it hangs on. Sorted for the same reason, and a map rather
+    /// than three keys because the shelves are a table in [`crate::apps`] and a
+    /// fourth one should not need a field here.
+    media_sort: BTreeMap<String, String>,
 }
 
 /// One display's section of the file.
@@ -1308,6 +1694,13 @@ struct StoredDisplay {
     /// Absent for a display nobody has chosen either half for, which is not
     /// the same as a display set to its preferred mode.
     mode: Option<String>,
+    /// `normal`, `90`, `180`, `270`, or one of the four mirrored spellings —
+    /// again the compositor's own config's word for the same thing, so a line
+    /// can be moved between the two files.
+    ///
+    /// Absent for a display nobody has turned, which is left the way the
+    /// compositor brought it up rather than being asked for `normal`.
+    transform: Option<String>,
     hdr: Option<bool>,
     hdr_sdr_brightness: Option<u16>,
     hdr_srgb_intensity: Option<u8>,
@@ -1365,9 +1758,10 @@ fn stored() -> Stored {
     let inherited = *INHERITED.lock().unwrap();
     let hdr = HDR.lock().unwrap();
     let modes = MODE.lock().unwrap();
+    let turns = TURN.lock().unwrap();
 
-    // A screen may have been given one of the two and not the other, so the
-    // sections are the union rather than either list: writing only the screens
+    // A screen may have been given one of these and not the others, so the
+    // sections are the union rather than any one list: writing only the screens
     // with HDR settings would drop a mode the moment it was chosen.
     let mut display: BTreeMap<String, StoredDisplay> = BTreeMap::new();
     for (name, hdr) in hdr.iter() {
@@ -1375,6 +1769,9 @@ fn stored() -> Stored {
     }
     for (name, mode) in modes.iter() {
         display.entry(name.clone()).or_default().mode = Some(mode.to_config());
+    }
+    for (name, turn) in turns.iter() {
+        display.entry(name.clone()).or_default().transform = Some(turn.key().to_string());
     }
 
     Stored {
@@ -1384,6 +1781,7 @@ fn stored() -> Stored {
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
         hdr_peak_brightness: Some(inherited.peak_brightness),
         display,
+        media_sort: MEDIA_SORT.lock().unwrap().clone(),
     }
 }
 
@@ -1460,6 +1858,14 @@ const PREAMBLE: &str = "\
 #                       display at whatever the compositor brought it up at.
 #                       A size the display does not offer is refused, and the
 #                       display keeps the mode it has.
+# transform:            which way up the picture is drawn, again as the
+#                       compositor's own config spells it: normal, 90, 180,
+#                       270, or flipped, flipped-90, flipped-180,
+#                       flipped-270 for a mirrored picture. Settings >
+#                       Display > Orientation offers the four turns; the
+#                       mirrored four can be set here and are named there.
+#                       Omit it to leave the display the way the compositor
+#                       brought it up.
 # hdr:                  drive this display in high dynamic range.
 # hdr-sdr-brightness:   what plain white is sent at, in cd/m².
 # hdr-srgb-intensity:   how far sRGB colour is stretched towards BT.2020,
@@ -1468,6 +1874,13 @@ const PREAMBLE: &str = "\
 #                       compositor says so and this has no effect.
 # hdr-peak-brightness:  the peak declared to the display, in cd/m².
 #                       0 means whatever the display says about itself.
+#
+# [media-sort] is what order the rows of the user's own files are listed in,
+# one key per shelf — Music, Video, Images — chosen from the Sort row of the
+# context menu over any file in them. The orders are: name, name-reversed,
+# size-largest-first, size-smallest-first, type, created-newest-first,
+# created-oldest-first, modified-newest-first, modified-oldest-first. A shelf
+# with no key here is listed by name.
 
 ";
 
@@ -1550,6 +1963,8 @@ mod tests {
         support: Vec<(String, Support)>,
         offered: Vec<(String, Vec<Offered>)>,
         mode: BTreeMap<String, Mode>,
+        reported_turns: Vec<(String, Orientation)>,
+        turn: BTreeMap<String, Orientation>,
     }
 
     fn take_settings() -> Saved {
@@ -1559,9 +1974,13 @@ mod tests {
             support: support(),
             offered: modes(),
             mode: MODE.lock().unwrap().clone(),
+            reported_turns: turned(),
+            turn: TURN.lock().unwrap().clone(),
         };
         HDR.lock().unwrap().clear();
         MODE.lock().unwrap().clear();
+        TURN.lock().unwrap().clear();
+        note_turned(Vec::new());
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
     }
@@ -1570,8 +1989,10 @@ mod tests {
         *HDR.lock().unwrap() = saved.hdr;
         *INHERITED.lock().unwrap() = saved.inherited;
         *MODE.lock().unwrap() = saved.mode;
+        *TURN.lock().unwrap() = saved.turn;
         note_support(saved.support);
         note_modes(saved.offered);
+        note_turned(saved.reported_turns);
     }
 
     /// Run `body` with the display settings empty and `displays` reported, and
@@ -1608,6 +2029,27 @@ mod tests {
             displays
                 .iter()
                 .map(|(name, modes)| (name.to_string(), listed(modes)))
+                .collect(),
+        );
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// The same again for the orientations: `displays` reported as being drawn
+    /// this way up, and nothing else touched.
+    fn with_turns(displays: &[(&str, Orientation)], body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_turned(
+            displays
+                .iter()
+                .map(|(name, turn)| (name.to_string(), *turn))
                 .collect(),
         );
 
@@ -1963,8 +2405,10 @@ mod tests {
                             }
                             // Not on this page: the HDR controls are what
                             // `controls_for` walks, and neither half of a mode
-                            // is one of them.
-                            DisplayValue::Resolution(_) | DisplayValue::RefreshRate(_) => {
+                            // nor the turn is one of them.
+                            DisplayValue::Resolution(_)
+                            | DisplayValue::RefreshRate(_)
+                            | DisplayValue::Orientation(_) => {
                                 unreachable!()
                             }
                         }
@@ -2108,12 +2552,17 @@ mod tests {
                 FIRST.to_string(),
                 StoredDisplay {
                     mode: Some("2560x1440@144".to_string()),
+                    transform: Some("90".to_string()),
                     hdr: Some(true),
                     hdr_sdr_brightness: Some(250),
                     hdr_srgb_intensity: Some(50),
                     hdr_peak_brightness: Some(1000),
                 },
             )]),
+            media_sort: BTreeMap::from([
+                ("Images".to_string(), "created-newest-first".to_string()),
+                ("Music".to_string(), "type".to_string()),
+            ]),
             ..Stored::default()
         };
         let body = format!("{PREAMBLE}{}", toml::to_string_pretty(&written).unwrap());
@@ -2132,6 +2581,7 @@ mod tests {
         assert_eq!(toml::from_str::<Stored>(&quoted).unwrap(), awkward);
         for key in [
             "mode",
+            "transform",
             "hdr-sdr-brightness",
             "hdr-srgb-intensity",
             "hdr-peak-brightness",
@@ -2151,6 +2601,34 @@ mod tests {
                 }
             );
             assert_eq!(mode_for(FIRST), Some(mode(2560, 1440, 144)));
+            // The order each shelf is listed in comes back with the rest of
+            // it, and a shelf the file says nothing about is left alphabetical
+            // rather than given somebody else's answer.
+            assert_eq!(
+                media_sort(crate::media::Kind::Audio),
+                Some(crate::media::Sort::Type)
+            );
+            assert_eq!(
+                media_sort(crate::media::Kind::Image),
+                Some(crate::media::Sort::NewestFirst)
+            );
+            assert_eq!(media_sort(crate::media::Kind::Video), None);
+        });
+        assert!(body.contains("[media-sort]"), "{body}");
+
+        // An order this shell does not have is ignored rather than refused:
+        // the file is one the user is entitled to open and edit.
+        //
+        // Inside `with_displays`, empty though it is, because `adopt` replaces
+        // every display setting in the process — a bare call here is a second
+        // test wiping the one running beside it, which is exactly what a shared
+        // `static` and a parallel runner do to each other.
+        with_displays(&[], || {
+            adopt(Stored {
+                media_sort: BTreeMap::from([("Music".to_string(), "by vibes".to_string())]),
+                ..Stored::default()
+            });
+            assert_eq!(media_sort(crate::media::Kind::Audio), None);
         });
 
         // A file cut down to nothing still parses, and says nothing.
@@ -2312,8 +2790,8 @@ hdr-peak-brightness = 600
                 let display = column[1].entries().expect("Display opens a column");
                 assert_eq!(
                     display.iter().map(Entry::title).collect::<Vec<_>>(),
-                    ["Resolution", "Refresh rate", "HDR"],
-                    "the two halves of a mode come before what it carries"
+                    ["Resolution", "Refresh rate", "Orientation", "HDR"],
+                    "the shape of the picture comes before what it carries"
                 );
 
                 // Every screen the compositor reports modes for, on both
@@ -2917,6 +3395,249 @@ hdr = true
             assert_eq!(rates[0].comment(), None, "a rate is its own label");
             assert!(rates[1].chosen(), "and the one on screen is marked");
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // orientation
+    // -----------------------------------------------------------------------
+
+    /// The third page of the same shape: several screens are named first, and
+    /// every one of them is offered all four turns — unlike a mode, none of
+    /// which is a list a display has.
+    #[test]
+    fn the_orientation_page_names_the_screen_before_it_offers_a_turn() {
+        with_turns(
+            &[
+                (FIRST, Orientation::Landscape),
+                (SECOND, Orientation::Portrait),
+                (AWKWARD, Orientation::LandscapeFlipped),
+            ],
+            || {
+                assert_eq!(
+                    page("Orientation")
+                        .iter()
+                        .map(Entry::title)
+                        .collect::<Vec<_>>(),
+                    [FIRST, SECOND, AWKWARD],
+                    "every screen the compositor turns is listed"
+                );
+                // Each screen row says which way up it is, so the page answers
+                // before it is stepped into.
+                assert_eq!(page("Orientation")[1].comment(), Some("90° Rotation"));
+
+                for screen in page("Orientation") {
+                    let turns = screen.entries().expect("a screen opens its turns");
+                    assert_eq!(
+                        turns.iter().map(Entry::title).collect::<Vec<_>>(),
+                        [
+                            "0° Rotation",
+                            "90° Rotation",
+                            "180° Rotation",
+                            "270° Rotation",
+                        ],
+                        "the same four on every screen"
+                    );
+                    // And each is drawn as the shape it stands for: four
+                    // distinct monitors, none of them the bead every other
+                    // value in this tree wears.
+                    let drawn: Vec<Option<&str>> = turns.iter().map(Entry::icon).collect();
+                    assert_eq!(
+                        drawn,
+                        [
+                            Some(icons::SETTING_ROTATION_0),
+                            Some(icons::SETTING_ROTATION_90),
+                            Some(icons::SETTING_ROTATION_180),
+                            Some(icons::SETTING_ROTATION_270),
+                        ],
+                        "a turn is drawn, not beaded"
+                    );
+                    assert_eq!(
+                        turns.iter().filter(|entry| entry.chosen()).count(),
+                        1,
+                        "one turn is in force on {}",
+                        screen.title()
+                    );
+                    assert!(turns.iter().all(|entry| entry.setting().is_some()));
+                }
+
+                // And they are that screen's turns, not a nameless set.
+                assert_eq!(
+                    values_for("Orientation", SECOND)[3].setting(),
+                    Some(setting(
+                        intern(SECOND),
+                        DisplayValue::Orientation(Orientation::PortraitFlipped)
+                    ))
+                );
+            },
+        );
+    }
+
+    /// One screen is not a choice of screen here either, and a session where
+    /// nothing can be turned says so rather than opening onto an empty column.
+    #[test]
+    fn one_screen_is_not_something_to_choose_between_to_turn() {
+        with_turns(&[(FIRST, Orientation::Portrait)], || {
+            assert_eq!(
+                display_row("Orientation").comment(),
+                Some(format!("{FIRST} — 90° Rotation").as_str()),
+                "the one screen is named where the list would have been"
+            );
+            let turns = page("Orientation");
+            assert_eq!(
+                turns.len(),
+                4,
+                "the turns stand where the screen list would"
+            );
+            assert!(turns[1].chosen(), "and the one on screen is marked");
+            assert_eq!(
+                turns[1].setting(),
+                Some(setting(
+                    intern(FIRST),
+                    DisplayValue::Orientation(Orientation::Portrait)
+                ))
+            );
+        });
+
+        with_turns(&[], || {
+            let empty = page("Orientation");
+            assert_eq!(empty.len(), 1);
+            assert_eq!(empty[0].title(), "No display can be turned");
+            assert_eq!(empty[0].setting(), None, "a reason is not a choice");
+            assert_eq!(empty[0].icon(), Some(icons::SETTING_INFO));
+        });
+    }
+
+    /// The mark is on what the compositor says it is drawing, not on what was
+    /// last asked for — and a screen the config has put into a mirrored
+    /// orientation is in none of the four, which the page says by marking none
+    /// of them and naming what it is in instead.
+    #[test]
+    fn the_turn_marked_is_the_one_the_display_is_drawn_at() {
+        with_turns(&[(FIRST, Orientation::Landscape)], || {
+            assert!(apply_with(
+                setting(
+                    intern(FIRST),
+                    DisplayValue::Orientation(Orientation::Portrait)
+                ),
+                |_| {}
+            ));
+            assert_eq!(turn_for(FIRST), Some(Orientation::Portrait));
+            assert!(
+                page("Orientation")[0].chosen(),
+                "the compositor has not said it turned, so the page has not moved"
+            );
+
+            // The compositor answering is what moves the mark.
+            note_turned(vec![(FIRST.to_string(), Orientation::Portrait)]);
+            assert!(page("Orientation")[1].chosen());
+        });
+
+        with_turns(&[(FIRST, Orientation::MirroredFlipped)], || {
+            assert_eq!(
+                display_row("Orientation").comment(),
+                Some(format!("{FIRST} — Mirrored, 180° rotation").as_str())
+            );
+            assert!(
+                page("Orientation").iter().all(|entry| !entry.chosen()),
+                "it is in none of the four, and nothing may say otherwise"
+            );
+        });
+    }
+
+    /// Highlighting a turn must not make it: every display on the page
+    /// re-tiles everything on it, which is the reason no Display value
+    /// previews.
+    #[test]
+    fn walking_over_a_turn_changes_nothing() {
+        with_turns(&[(FIRST, Orientation::Landscape)], || {
+            for entry in page("Orientation") {
+                preview(entry.setting());
+            }
+            assert_eq!(turn_for(FIRST), None);
+        });
+    }
+
+    /// A turn survives the file, in the compositor's own spelling, and is
+    /// filed on its own: turning a screen must not write it a mode or a colour
+    /// pipeline nobody asked for.
+    #[test]
+    fn a_turn_survives_the_file() {
+        with_turns(&[(FIRST, Orientation::Landscape)], || {
+            let mut written = None;
+            assert!(apply_with(
+                setting(
+                    intern(FIRST),
+                    DisplayValue::Orientation(Orientation::PortraitFlipped)
+                ),
+                |stored| written = Some(stored.display.clone())
+            ));
+
+            let written = written.unwrap();
+            assert_eq!(written[FIRST].transform.as_deref(), Some("270"));
+            assert_eq!(written[FIRST].mode, None);
+            assert_eq!(written[FIRST].hdr, None);
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(turn_for(FIRST), Some(Orientation::PortraitFlipped));
+        });
+    }
+
+    /// Every spelling the compositor's own config accepts is accepted here,
+    /// and anything else is dropped with a word about it rather than taking
+    /// the rest of the display's section down with it.
+    #[test]
+    fn an_orientation_that_is_not_one_is_dropped_on_its_own() {
+        for (raw, turn) in [
+            ("normal", Orientation::Landscape),
+            ("0", Orientation::Landscape),
+            ("90", Orientation::Portrait),
+            ("180", Orientation::LandscapeFlipped),
+            ("270", Orientation::PortraitFlipped),
+            ("flipped", Orientation::Mirrored),
+            ("flipped-90", Orientation::MirroredPortrait),
+            ("flipped180", Orientation::MirroredFlipped),
+            (" FLIPPED-270 ", Orientation::MirroredPortraitFlipped),
+        ] {
+            assert_eq!(Orientation::from_key(raw), Some(turn), "{raw}");
+            // And every one of them is written back the way this shell spells
+            // it, which is a spelling the compositor reads.
+            assert_eq!(Orientation::from_key(turn.key()), Some(turn));
+        }
+        assert_eq!(Orientation::from_key("sideways"), None);
+
+        let file = "\
+[display.TEST-OUT-1]
+transform = \"sideways\"
+hdr = true
+";
+        with_turns(&[], || {
+            adopt(toml::from_str(file).unwrap());
+            assert_eq!(turn_for(FIRST), None);
+            assert!(hdr_for(FIRST).enabled, "the rest of the section stands");
+        });
+    }
+
+    /// The numbers on the wire are `wl_output`'s, in both directions: a shell
+    /// that renumbered them would turn every display the wrong way.
+    #[test]
+    fn the_turns_are_counted_as_wl_output_counts_them() {
+        for (code, turn) in [
+            (0, Orientation::Landscape),
+            (1, Orientation::Portrait),
+            (2, Orientation::LandscapeFlipped),
+            (3, Orientation::PortraitFlipped),
+            (4, Orientation::Mirrored),
+            (5, Orientation::MirroredPortrait),
+            (6, Orientation::MirroredFlipped),
+            (7, Orientation::MirroredPortraitFlipped),
+        ] {
+            assert_eq!(Orientation::from_code(code), Some(turn));
+            assert_eq!(turn.code(), code);
+        }
+        // A ninth value is a compositor speaking a later protocol, and is not
+        // guessed at.
+        assert_eq!(Orientation::from_code(8), None);
     }
 
     /// Rates are printed the way somebody would say them: 60, not 60.00, and

@@ -106,6 +106,10 @@ pub struct Lxb {
 
     pub config: Config,
     pub keybindings: KeyBindings,
+    /// The Windows key, watched for being pressed and let go of on its own.
+    /// That is the home button on a keyboard, and it cannot live in the table
+    /// above: see [`crate::input::HomeTap`].
+    pub home_tap: crate::input::HomeTap,
 
     // Protocol globals. Several of these are never read after construction,
     // but dropping them would unadvertise the global, so they are owned here
@@ -299,6 +303,7 @@ impl LxbState {
                 running: true,
                 config,
                 keybindings,
+                home_tap: crate::input::HomeTap::default(),
                 compositor_state,
                 xdg_shell_state,
                 xdg_decoration_state,

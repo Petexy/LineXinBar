@@ -120,4 +120,55 @@ impl crate::state::LxbState {
             }
         }
     }
+
+    /// How one display's picture is turned, where the turn is this
+    /// compositor's to make.
+    ///
+    /// Turning is renderer-side rather than anything a connector has to
+    /// support, so unlike a mode list it is not the DRM backend's alone: an
+    /// x11 window standing in for a display is composited into just as much as
+    /// a panel is, and is turned the same way.
+    ///
+    /// `None` for winit, which is the one output whose transform is not the
+    /// user's answer to anything: the backend gives it a flip of its own to
+    /// compensate for the way it draws, and a turn assigned over the top of
+    /// that would land the picture upside down at "landscape". Nothing is
+    /// reported for it, so the shell leaves it off the page rather than
+    /// offering a setting that would come out wrong.
+    pub fn output_transform(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<smithay::utils::Transform> {
+        match self.backend {
+            Backend::Winit(_) => None,
+            _ => Some(output.current_transform()),
+        }
+    }
+
+    /// Turn one display's picture. `true` when anything changed.
+    pub fn set_output_transform(
+        &mut self,
+        output: &smithay::output::Output,
+        transform: smithay::utils::Transform,
+    ) -> bool {
+        if self.output_transform(output).is_none() {
+            tracing::debug!(
+                output = %output.name(),
+                "this display's orientation is not this compositor's to set"
+            );
+            return false;
+        }
+        let config = self.lxb.config.clone();
+        let turned =
+            self.lxb
+                .outputs
+                .set_transform(&mut self.lxb.space, output, transform, &config);
+        if turned {
+            // The turn is drawn rather than scanned out, so nothing reaches the
+            // screen until the display draws again — which on an idle session
+            // is a retrace away and on a covered one may never come.
+            self.queue_redraw();
+        }
+        turned
+    }
 }

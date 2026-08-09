@@ -15,6 +15,7 @@ use smithay::reexports::wayland_server::backend::{ClientId, GlobalId};
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
+use smithay::utils::Transform;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
@@ -73,6 +74,11 @@ pub struct ShellControlState {
     /// with more at stake: a connector offers dozens of modes, and resending
     /// them all whenever a window moved would be a batch of events per frame.
     output_modes: Vec<(Output, Vec<DisplayMode>)>,
+    /// Last orientation broadcast per display, for the displays this
+    /// compositor turns itself. Diffed like the rest; a display missing from
+    /// it is one whose picture is not ours to turn, and no event is sent for
+    /// it at all.
+    output_transform: Vec<(Output, Transform)>,
     /// Display the shell says the user is on, from `set_launch_output`.
     launch_output: Option<Output>,
 }
@@ -137,9 +143,14 @@ const RESTORE_SINCE: u32 = 14;
 /// pixels both belong to the compositor.
 const WINDOW_MOVE_AND_CAPTURE_SINCE: u32 = 15;
 
+/// First version that says how each display's picture is turned, and can be
+/// asked to turn it. Below it a shell has no way to know a display is standing
+/// on its side, and the compositor draws whatever its own config asked for.
+const TRANSFORM_SINCE: u32 = 16;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = WINDOW_MOVE_AND_CAPTURE_SINCE;
+const CURRENT_VERSION: u32 = TRANSFORM_SINCE;
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -156,6 +167,7 @@ impl ShellControlState {
             output_windows: Vec::new(),
             output_hdr: Vec::new(),
             output_modes: Vec::new(),
+            output_transform: Vec::new(),
             launch_output: None,
         }
     }
@@ -314,6 +326,26 @@ impl ShellControlState {
         self.output_modes = current;
     }
 
+    /// Publish how each display's picture is turned.
+    ///
+    /// `current` lists only the displays this compositor turns itself, so one
+    /// it does not — and one that has gone away — simply stops being named.
+    fn broadcast_output_transform(&mut self, current: Vec<(Output, Transform)>) {
+        for (output, transform) in &current {
+            let known = self
+                .output_transform
+                .iter()
+                .any(|(seen, seen_transform)| seen == output && seen_transform == transform);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_transform(instance, output, *transform);
+            }
+        }
+        self.output_transform = current;
+    }
+
     /// Bring a newly bound shell up to date, since the broadcasts above only
     /// carry changes.
     ///
@@ -339,6 +371,9 @@ impl ShellControlState {
         }
         for (output, modes) in &self.output_modes {
             sent |= send_output_modes(shell, output, modes);
+        }
+        for (output, transform) in &self.output_transform {
+            sent |= send_output_transform(shell, output, *transform);
         }
         sent
     }
@@ -450,6 +485,55 @@ fn send_output_modes(shell: &LxbShellV1, output: &Output, modes: &[DisplayMode])
         sent = true;
     }
     sent
+}
+
+/// Send how one display's picture is turned, resolved through the receiving
+/// client's own `wl_output` for the same reason the title is.
+fn send_output_transform(shell: &LxbShellV1, output: &Output, transform: Transform) -> bool {
+    if shell.version() < TRANSFORM_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_transform(&wl_output, wire_transform(transform));
+        sent = true;
+    }
+    sent
+}
+
+/// One of the eight orientations as the protocol counts them, which is how
+/// `wl_output` counts them.
+fn wire_transform(transform: Transform) -> lxb_shell_v1::Transform {
+    match transform {
+        Transform::Normal => lxb_shell_v1::Transform::Normal,
+        Transform::_90 => lxb_shell_v1::Transform::_90,
+        Transform::_180 => lxb_shell_v1::Transform::_180,
+        Transform::_270 => lxb_shell_v1::Transform::_270,
+        Transform::Flipped => lxb_shell_v1::Transform::Flipped,
+        Transform::Flipped90 => lxb_shell_v1::Transform::Flipped90,
+        Transform::Flipped180 => lxb_shell_v1::Transform::Flipped180,
+        Transform::Flipped270 => lxb_shell_v1::Transform::Flipped270,
+    }
+}
+
+/// The same, read back off the wire. `None` for a value that is not one of the
+/// eight, which a shell built against a later version of this protocol could
+/// send and which must not be turned into a guess.
+fn output_transform_of(transform: lxb_shell_v1::Transform) -> Option<Transform> {
+    Some(match transform {
+        lxb_shell_v1::Transform::Normal => Transform::Normal,
+        lxb_shell_v1::Transform::_90 => Transform::_90,
+        lxb_shell_v1::Transform::_180 => Transform::_180,
+        lxb_shell_v1::Transform::_270 => Transform::_270,
+        lxb_shell_v1::Transform::Flipped => Transform::Flipped,
+        lxb_shell_v1::Transform::Flipped90 => Transform::Flipped90,
+        lxb_shell_v1::Transform::Flipped180 => Transform::Flipped180,
+        lxb_shell_v1::Transform::Flipped270 => Transform::Flipped270,
+        _ => return None,
+    })
 }
 
 /// Send one display's whole window list, ending with the done event that
@@ -638,6 +722,33 @@ impl LxbState {
             })
             .collect();
         self.lxb.shell_control.broadcast_output_modes(modes);
+    }
+
+    /// Publish how each display's picture is turned, if any of them changed.
+    ///
+    /// Called on the same occasions the mode lists are — a display arriving or
+    /// leaving, and a turn having been made — and for the same reason: an
+    /// orientation changes only when somebody asks for it, so there is nothing
+    /// for the refresh that rides on window changes to find.
+    ///
+    /// Displays whose picture this compositor does not turn are left out
+    /// entirely rather than reported as unturned, which is what tells the
+    /// shell's page apart from a display that is simply the right way up.
+    pub fn refresh_transforms(&mut self) {
+        if !self.lxb.shell_control.has_shell() {
+            return;
+        }
+        let outputs: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        let transforms = outputs
+            .into_iter()
+            .filter_map(|output| {
+                let transform = self.output_transform(&output)?;
+                Some((output, transform))
+            })
+            .collect();
+        self.lxb
+            .shell_control
+            .broadcast_output_transform(transforms);
     }
 
     /// The window an overview id names, if it is still mapped.
@@ -1012,10 +1123,12 @@ impl GlobalDispatch<LxbShellV1, ()> for LxbState {
         // The first instance turns foreground tracking on; publish the current
         // window straight away rather than waiting for the next change.
         state.refresh_foreground();
-        // And what every display can be driven at, which is otherwise only
-        // published when one is plugged in — on a session that started with
-        // its displays already there, that is never.
+        // And what every display can be driven at, and how each one's picture
+        // is turned, which are otherwise only published when a display is
+        // plugged in — on a session that started with its displays already
+        // there, that is never.
         state.refresh_modes();
+        state.refresh_transforms();
     }
 }
 
@@ -1214,6 +1327,25 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                         state.set_output_mode(&output, want);
                     }
                     None => tracing::debug!("a mode was requested for a display that is gone"),
+                }
+            }
+            lxb_shell_v1::Request::SetOutputTransform { output, transform } => {
+                let turn = transform.into_result().ok().and_then(output_transform_of);
+                match (Output::from_resource(&output), turn) {
+                    (Some(output), Some(turn)) => {
+                        if state.set_output_transform(&output, turn) {
+                            // What the display is now drawing, for the page
+                            // that asked — and for the page on every other
+                            // display, which lists this one too.
+                            state.refresh_transforms();
+                        }
+                    }
+                    (None, _) => tracing::debug!("a display that is gone was asked to turn"),
+                    // Not one of the eight: a shell built against a later
+                    // version of this protocol than the compositor is.
+                    (_, None) => tracing::debug!(
+                        "a display was asked for an orientation this compositor does not have"
+                    ),
                 }
             }
             lxb_shell_v1::Request::HidePointer => state.pointer_put_down(),

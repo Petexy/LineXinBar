@@ -357,6 +357,46 @@ impl OutputManager {
         remap_window_preserving_stack(space, window, area.loc);
     }
 
+    /// Turn one display's picture, and rebuild everything the turn moved.
+    ///
+    /// `false` when it is already at that orientation, which is what keeps this
+    /// idempotent: a shell that sends what a display is already doing — as one
+    /// re-sending its settings for a display plugged back in does — must not
+    /// re-tile every window on it for nothing.
+    ///
+    /// A quarter turn swaps the display's logical width and height, so the
+    /// order below is the order a mode change uses and for the same reasons:
+    /// the layer surfaces anchored to this display are arranged against its new
+    /// geometry first, and the windows are then tiled into what those leave
+    /// over. `relayout` re-packs the displays laid out after this one as well,
+    /// because a screen that has just become tall and narrow has moved them.
+    ///
+    /// Nothing is sent to the connector. This is the compositor's own drawing:
+    /// the picture is composited turned and scanned out at the mode's own
+    /// pixels, which is why it needs no hardware support and can never be
+    /// refused by the hardware.
+    pub fn set_transform(
+        &mut self,
+        space: &mut Space<Window>,
+        output: &Output,
+        transform: Transform,
+        config: &Config,
+    ) -> bool {
+        if output.current_transform() == transform {
+            return false;
+        }
+        output.change_current_state(None, Some(transform), None, None);
+        layer_map_for_output(output).arrange();
+        self.relayout(space, config);
+        tracing::info!(
+            output = %output.name(),
+            ?transform,
+            size = ?logical_size(output),
+            "turned a display's picture"
+        );
+        true
+    }
+
     /// Re-tile every mapped window. Cheap enough to call on any layout change.
     pub fn relayout_windows(&self, space: &mut Space<Window>) {
         let windows: Vec<Window> = space.elements().cloned().collect();

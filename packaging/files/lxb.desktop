@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=LineXinBar
+Comment=XMB-style console shell on the LineXinBar compositor
+Exec=lxb-session
+TryExec=lxb-session
+Type=Application
+DesktopNames=LineXinBar
+Keywords=console;gamepad;launcher;

@@ -1,0 +1,10 @@
+Source: linexinbar
+Section: x11
+Priority: optional
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+
+Package: linexinbar
+Architecture: linux-any
+Description: multi-display Wayland desktop with an XMB-style shell

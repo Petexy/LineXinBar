@@ -120,6 +120,21 @@ shell, or to choose what a fresh profile starts at. A size the connector does
 not list is refused whichever file asked for it, and the display keeps the mode
 it has.
 
+`transform` is the same arrangement for which way up the picture is drawn. The
+shell changes it from Settings → Display → Orientation and writes it back under
+this same key and these same spellings, so a line can be moved between the two
+files and mean the same thing. The page offers the four rotations; the four
+`flipped-*` values are here only, and a display set to one of them is named on
+that page with none of its four rows marked.
+
+Turning is the compositor's own drawing rather than anything the connector
+does: the picture is composited turned and scanned out at the mode's own
+pixels, so it needs no hardware support and works on any display this
+compositor owns. What it changes is the display's *logical* size — a quarter
+turn swaps its width and height, which moves the outputs laid out after it —
+so `position`, `scale` and the window layout are all resolved against the
+turned size.
+
 ### High dynamic range
 
 The four `hdr_*` keys are what the session **comes up in**. The shell writes
@@ -207,16 +222,26 @@ shift and `Super+Shift+Q` is a separate binding.
 
 `guide` is the console "home" button. It is a compositor binding because a
 fullscreen application holds the keyboard, so the shell would never see the
-key itself; the compositor forwards it over `lxb_shell_v1`. The defaults
-are `Super+G`, `Super+Home`, and `XF86HomePage`. It does nothing when no shell
-has bound that protocol.
+key itself; the compositor forwards it over `lxb_shell_v1`. The chords are
+`Super+Home` and `XF86HomePage`. It does nothing when no shell has bound that
+protocol.
 
-It also outranks every other binding, and those three chords cannot be bound
-to anything else: the guide is the way back out of whatever is running, so a
-configuration file that took its key for something else would leave a session
-with no way home. Binding `guide` to a further chord adds it to the protected
-set rather than moving it — `"Super+K" = "guide"`, say, makes that chord the
-home button too and takes it away from the on-screen keyboard.
+Three more ways in are not chords at all and are therefore not in the table.
+The **Windows key on its own** is the home button: it is watched for being
+pressed and let go of with nothing in between, because a bare modifier is half
+of every `Super+…` binding here and one looked up as a chord would shadow all
+of them. Both edges of the key still reach the application, so nothing is left
+holding a modifier it is never told about again. The **rear side button of a
+mouse** does the same, and is held back from the application entirely, both
+edges of it. So does a **controller's Guide or STEAM button**, which the shell
+reads from `/dev/input` itself.
+
+The chords also outrank every other binding, and cannot be bound to anything
+else: the guide is the way back out of whatever is running, so a configuration
+file that took its key for something else would leave a session with no way
+home. Binding `guide` to a further chord adds it to the protected set rather
+than moving it — `"Super+K" = "guide"`, say, makes that chord the home button
+too and takes it away from the on-screen keyboard.
 
 When running nested for debugging, the host compositor's own global shortcuts
 win: KDE claims most `Super`+letter combinations, so pick something it does not
@@ -229,7 +254,7 @@ use, or drive the overlay with Escape inside the shell instead.
 | `Ctrl+Alt+BackSpace` | `quit` |
 | `Ctrl+Alt+F1`…`F12`  | `vt:1`…`vt:12` |
 | `Super+Q`            | `close` |
-| `Super+G`, `Super+Home`, `XF86HomePage` | `guide` |
+| `Super+Home`, `XF86HomePage` | `guide` (and `Super` on its own, which is not a chord) |
 | `Super+Tab`          | `cycle-window` |
 | `Super+Left` / `Super+Right` | `focus-prev-output` / `focus-next-output` |
 | `Super+Shift+Right`  | `move-to-next-output` |

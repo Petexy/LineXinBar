@@ -1,0 +1,80 @@
+<!--
+The 270° Rotation row's glyph: the screen turned the other way.
+
+  The stand goes to the right — the mirror of 90°, and the mirror of the turn.
+  See setting-rotation-0.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material and the lamp above it, identical to setting-display.svg's:
+         these are the same monitor, and a row whose screen was lit differently
+         from the screen list's would read as a different object. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8e8e"/>
+      <stop offset="0.45" stop-color="#a8a8a8"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <path id="bezel" d="M6.35 3.15h12.9a2.0 2.0 0 0 1 2.0 2.0v23.2a2.0 2.0 0 0 1 -2.0 2.0h-12.9a2.0 2.0 0 0 1 -2.0 -2.0v-23.2a2.0 2.0 0 0 1 2.0 -2.0z"/>
+    <path id="bezel-gloss" d="M2.95 1.05H22.65V14.57C17.58 18.92 8.02 18.92 2.95 14.57z"/>
+    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <path id="pane" d="M6.85 6.15h11.9v21.2h-11.9z"/>
+    <clipPath id="pane-clip"><use href="#pane"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- Stand first, so the bezel sits in front of the neck it grows out of. -->
+    <path d="M20.65 14.15h4.2v5.2h-4.2z" fill="url(#face)"/>
+    <path d="M25.75 8.25h0.8a1.1 1.1 0 0 1 1.1 1.1v14.8a1.1 1.1 0 0 1 -1.1 1.1h-0.8a1.1 1.1 0 0 1 -1.1 -1.1v-14.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="url(#face)"/>
+    <path d="M25.75 8.25h0.8a1.1 1.1 0 0 1 1.1 1.1v14.8a1.1 1.1 0 0 1 -1.1 1.1h-0.8a1.1 1.1 0 0 1 -1.1 -1.1v-14.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <use href="#bezel" fill="url(#face)"/>
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#bezel" fill="url(#turn)"/>
+
+    <use href="#pane" fill="url(#recess)"/>
+    <g clip-path="url(#pane-clip)">
+      <path d="M6.85 24.38L12.32 6.15L15.42 6.15L9.11 27.35z" fill="#ffffff" fill-opacity="0.34" filter="url(#polish)"/>
+      <path d="M6.85 14.63L9.59 6.15L10.9 6.15L6.85 18.45z" fill="#ffffff" fill-opacity="0.22" filter="url(#polish)"/>
+    </g>
+    <use href="#pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+  </g>
+</svg>

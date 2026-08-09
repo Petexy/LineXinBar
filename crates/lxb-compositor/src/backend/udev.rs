@@ -728,10 +728,12 @@ fn connector_connected(
         "display connected"
     );
 
-    // What this display can be driven at is a page in the shell's Settings
-    // column, and a display that has just arrived has to appear in it without
-    // waiting for something else on screen to change.
+    // What this display can be driven at, and how its picture is turned, are
+    // pages in the shell's Settings column, and a display that has just
+    // arrived has to appear in them without waiting for something else on
+    // screen to change.
     state.refresh_modes();
+    state.refresh_transforms();
 
     schedule_render(state, node, crtc, Duration::ZERO);
 }
@@ -773,9 +775,10 @@ fn remove_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         .remove_output(&mut state.lxb.space, &surface.output, &config);
     // What it was set to survives; what it can do does not, until it is back.
     state.lxb.hdr.disconnected(&surface.output);
-    // Nor can it be driven at anything until then, which the shell's page has
-    // to hear about the same way it heard the display arrive.
+    // Nor can it be driven at anything, or turned, until then — which the
+    // shell's pages have to hear about the same way they heard it arrive.
     state.refresh_modes();
+    state.refresh_transforms();
 
     if let Some(global) = surface.global {
         state.lxb.display_handle.remove_global::<LxbState>(global);

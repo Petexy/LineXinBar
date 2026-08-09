@@ -18,6 +18,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::apps::{App, Category, Entry};
@@ -40,6 +41,26 @@ const DEPTH_EASE_RATE: f32 = 14.0;
 
 /// Below this distance the animation is finished and we stop redrawing.
 const SETTLED: f32 = 0.001;
+
+/// The same, at `target` — which is [`SETTLED`] everywhere a float has the
+/// resolution to say so, and a few of its own steps where it has not.
+///
+/// A position here is counted in rows, and a shelf of the user's own files is
+/// as long as their home directory is full. Scrolled a thousand rows down one,
+/// an `f32` cannot hold two positions a thousandth of a row apart at all: the
+/// spring arrives one representable step short of its target, cannot move
+/// again, and its velocity settles on a small number instead of on nothing —
+/// so the bar was never finished, and the shell went on drawing sixty frames a
+/// second, for ever, over a distance a hundredth the width of a pixel. It is
+/// the one place where "close enough" has to be asked in the units the number
+/// is actually kept in.
+///
+/// Thirty-two steps, which is three times the worst a stalled spring holds on
+/// to at any frame rate, and still a fraction of a pixel at any position a bar
+/// can be scrolled to.
+fn settled_within(target: f32) -> f32 {
+    SETTLED.max(target.abs() * 32.0 * f32::EPSILON)
+}
 
 /// How a terminal emulator separates its own options from the program it
 /// should run. Unfortunately there is no universally implemented CLI here.
@@ -191,6 +212,28 @@ pub struct Column<'a> {
     pub selected: usize,
     /// Eased row position, in item units.
     pub position: f32,
+    /// Where this column stands in relation to the cursor.
+    pub standing: Standing,
+}
+
+/// Where a column of the path stands in relation to the cursor.
+///
+/// The drawing needs this because a step in and a step out are not each
+/// other's mirror. Whichever way the bar is going, one column is arriving into
+/// the space in front of it and the rest are giving that space up — and it is
+/// the giving up that has to be quick, because those rows are laid over the
+/// ones taking their place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// The column the cursor is in. Whole, lit, and the one thing on screen
+    /// that is never on its way anywhere.
+    Open,
+    /// One the path runs *through*: opened, and then stepped past. It keeps
+    /// the row it was opened from — the trail — and gives up the rest.
+    Behind,
+    /// The one just stepped back out of, kept for as long as it takes to
+    /// leave so it can be watched going rather than blinking out.
+    Leaving,
 }
 
 struct LaunchedApp {
@@ -237,10 +280,11 @@ impl Xmb {
     ///
     /// Not the same as having no columns, nor even as having no rows: the
     /// shell's own Settings column is always present and is full of rows that
-    /// start no process at all. An empty catalogue is one with no
-    /// *applications* anywhere in it, subcategories included.
+    /// start no process at all. An empty catalogue is one with nothing
+    /// anywhere in it that a press would start — no application and none of
+    /// the user's own music or films — subcategories included.
     pub fn is_empty(&self) -> bool {
-        !self.categories.iter().any(Category::has_app)
+        !self.categories.iter().any(Category::has_launchable)
     }
 
     /// Start whatever `cursor` is pointing at. Returns the process id of what
@@ -248,6 +292,10 @@ impl Xmb {
     /// start, which the caller needs to tell apart from a slow launch before
     /// it puts a splash up over one that is never coming.
     pub fn launch_selected(&mut self, cursor: &Cursor) -> Option<u32> {
+        if let Some(file) = cursor.current_entry(self).and_then(Entry::media) {
+            return self.open_media(&file.clone());
+        }
+
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -275,6 +323,62 @@ impl Xmb {
             }
             Err(err) => {
                 tracing::warn!(app = %name, command, ?err, "failed to start application");
+                None
+            }
+        }
+    }
+
+    /// Play one of the user's own files, in whatever they have chosen to open
+    /// that kind of file with.
+    ///
+    /// The player joins the launched applications like anything else the bar
+    /// starts, under the *file's* name rather than its own: what the user
+    /// pressed was a song, so that is what the guide should say is running and
+    /// what Close should offer to end. The program behind it is in the log,
+    /// which is where the question "why did that open in VLC" is answered.
+    fn open_media(&mut self, file: &crate::media::File) -> Option<u32> {
+        let opening = crate::media::opening(file, &self.categories)?;
+        self.open_media_with(file, opening)
+    }
+
+    /// The same, in an application the user has picked by name off the Open
+    /// with list rather than the one their desktop already answers with.
+    ///
+    /// One function underneath both, so a file opened either way joins the
+    /// launched applications on identical terms — under the file's name, and
+    /// closable like anything else. The only difference between the two is
+    /// which command line got here.
+    pub fn open_media_with(
+        &mut self,
+        file: &crate::media::File,
+        opening: crate::media::Opening,
+    ) -> Option<u32> {
+        tracing::info!(
+            file = %file.path.display(),
+            with = %opening.name,
+            "opening a file the shell found"
+        );
+
+        match launch(
+            &opening.command,
+            false,
+            &self.wayland_display,
+            self.xwayland_display.as_deref(),
+        ) {
+            Ok(child) => {
+                let pid = child.id();
+                tracing::info!(command = %opening.command, pid, "player process started");
+                self.launched_apps.push(LaunchedApp {
+                    name: file.title.clone(),
+                    command: opening.command,
+                    child,
+                    started_at: Instant::now(),
+                    wait_error_reported: false,
+                });
+                Some(pid)
+            }
+            Err(err) => {
+                tracing::warn!(command = %opening.command, ?err, "failed to start a player");
                 None
             }
         }
@@ -429,7 +533,7 @@ impl Cursor {
     /// where it belongs on the first frame.
     pub fn for_model(xmb: &Xmb) -> Self {
         let mut cursor = Self::new(xmb.categories.len());
-        if let Some(populated) = xmb.categories.iter().position(Category::has_app) {
+        if let Some(populated) = xmb.categories.iter().position(Category::has_launchable) {
             cursor.selected_category = populated;
             cursor.category_position = populated as f32;
         }
@@ -509,6 +613,14 @@ impl Cursor {
                 // from under it must not take the drawing with it.
                 selected: self.row_at(level).min(entries.len().saturating_sub(1)),
                 position: self.position_at(level),
+                // Deeper than the user is standing: the only column that can
+                // be is the one just stepped out of, which `stack` holds on to
+                // for exactly as long as it takes to leave.
+                standing: match level.cmp(&self.open) {
+                    std::cmp::Ordering::Less => Standing::Behind,
+                    std::cmp::Ordering::Equal => Standing::Open,
+                    std::cmp::Ordering::Greater => Standing::Leaving,
+                },
             });
         }
         out
@@ -608,6 +720,137 @@ impl Cursor {
         // Whatever was kept beyond here hung off the row being left, so it is
         // no longer a column anybody can step back into.
         self.stack.truncate(self.open);
+    }
+
+    /// Put the cursor straight on `row` of the column it is standing in.
+    ///
+    /// What a mouse or a finger does, and the one way of moving the cursor that
+    /// is not a step: a pointer names the row it wants outright, where a
+    /// direction can only ask for the next one. The bar still *travels* there —
+    /// the eased position is untouched — so a click three rows down looks like
+    /// the column being scrolled to rather than the list being replaced.
+    ///
+    /// Reports whether that moved anything, and refuses a row the column does
+    /// not have.
+    pub fn point_at_row(&mut self, row: usize, xmb: &Xmb) -> bool {
+        if row >= self.current_entries(xmb).len() || row == self.selected_item() {
+            return false;
+        }
+        self.select_row(row);
+        true
+    }
+
+    /// The same for the category row: put the cursor on category `index`.
+    ///
+    /// Steps out of whatever path is open first, exactly as walking left to the
+    /// row would: the categories are behind the columns, and arriving at one
+    /// with a path still open would leave the cross showing a trail belonging
+    /// to a category the user is no longer in.
+    pub fn point_at_category(&mut self, index: usize, xmb: &Xmb) -> bool {
+        if index >= xmb.categories.len() {
+            return false;
+        }
+        if index == self.selected_category && self.open == 0 {
+            return false;
+        }
+        self.selected_category = index;
+        self.restore_column();
+        true
+    }
+
+    /// Keep the cursor on the file it is standing on, after rows have been put
+    /// into the column above or below it.
+    ///
+    /// Music arrives all through a session and arrives *in order*, so a track
+    /// found now goes wherever the alphabet says rather than onto the end.
+    /// Without this the row under the cursor would change identity every time
+    /// the walk turned up something earlier in the alphabet — the user would
+    /// be looking at one song and pressing another.
+    ///
+    /// The drawn position moves with it, by the same distance. What happened is
+    /// that the list slid under a stationary cursor, and a spring left to
+    /// travel would instead scroll the column past the row being read.
+    ///
+    /// The file is named by the handle the row held rather than by its path.
+    /// Every list is built out of the same shared files, so this is a pointer
+    /// against a pointer where a path would be a string against a string — and
+    /// it is asked of every row of a shelf that may hold half a million. A file
+    /// that has been found *again* since — deleted and put back between two
+    /// passes of the walk — is a different handle, and the cursor treats it as
+    /// the file having gone, which is what it did.
+    pub fn keep_on_media(&mut self, xmb: &Xmb, file: &crate::media::Shelved) {
+        let was = self.selected_item();
+        let Some(row) = self
+            .current_entries(xmb)
+            .iter()
+            .position(|entry| entry.shelved().is_some_and(|held| Arc::ptr_eq(held, file)))
+        else {
+            // The file has gone off the disk. The cursor keeps its row, which
+            // is now whichever file closed the gap — the same thing that
+            // happens to a paper list when a line is struck out of it.
+            return;
+        };
+        if row == was {
+            return;
+        }
+        self.select_row(row);
+        self.shift_position(row as f32 - was as f32);
+    }
+
+    /// Put the cursor on the head of the column it is standing in, with the
+    /// column drawn there rather than travelling to it.
+    ///
+    /// For a column that has just been *reordered*: every row in it is a
+    /// different row now, so there is no journey through the list to show. A
+    /// spring let loose from row twelve thousand would scroll a collection past
+    /// the user at a speed nothing could be read at, to arrive somewhere the
+    /// list they were looking at no longer exists. Placed, the way a category
+    /// being returned to is placed — see [`Self::restore_column`].
+    pub fn rest_on_first_row(&mut self) {
+        self.select_row(0);
+        match self.open.checked_sub(1) {
+            None => {
+                self.item_position = 0.0;
+                self.item_speed = 0.0;
+            }
+            Some(level) => {
+                if let Some(column) = self.stack.get_mut(level) {
+                    column.position = 0.0;
+                    column.speed = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Move where a column is *drawn* without moving what is selected in it.
+    fn shift_position(&mut self, rows: f32) {
+        match self.open.checked_sub(1) {
+            None => self.item_position += rows,
+            Some(level) => {
+                if let Some(column) = self.stack.get_mut(level) {
+                    column.position += rows;
+                }
+            }
+        }
+    }
+
+    /// A column has appeared in the bar at `at`. Keep this cursor on the column
+    /// it was on.
+    ///
+    /// Multimedia can arrive mid-session — on a machine with music but no media
+    /// player installed there was nothing to make a column out of until the
+    /// walk found a file — and every column after it has just moved along one.
+    /// The drawn position moves with the selection for the same reason it does
+    /// in [`Self::keep_on_media`]: the bar grew, the user did not travel.
+    pub fn category_added(&mut self, at: usize) {
+        if at > self.selected_items.len() {
+            return;
+        }
+        self.selected_items.insert(at, 0);
+        if self.selected_category >= at {
+            self.selected_category += 1;
+            self.category_position += 1.0;
+        }
     }
 
     /// Step into the subcategory under the cursor. `false` if the row is not
@@ -791,9 +1034,10 @@ impl Cursor {
         let mut columns_moving = false;
         for column in &mut self.stack {
             let target = column.selected as f32;
+            let close = settled_within(target);
             (column.position, column.speed) =
                 step(column.position, column.speed, target, EASE_RATE);
-            if (target - column.position).abs() > SETTLED || column.speed.abs() > SETTLED {
+            if (target - column.position).abs() > close || column.speed.abs() > close {
                 columns_moving = true;
             } else {
                 column.position = target;
@@ -804,12 +1048,13 @@ impl Cursor {
         // Still moving while it is either away from its target or on its way
         // back to it: a spring an instant from crossing centre is at the
         // target and nowhere near finished.
+        let item_close = settled_within(target_item);
         let moving = columns_moving
             || (target_category - self.category_position).abs() > SETTLED
-            || (target_item - self.item_position).abs() > SETTLED
+            || (target_item - self.item_position).abs() > item_close
             || (target_depth - self.depth_position).abs() > SETTLED
             || self.category_speed.abs() > SETTLED
-            || self.item_speed.abs() > SETTLED
+            || self.item_speed.abs() > item_close
             || self.depth_speed.abs() > SETTLED;
 
         if !moving {
@@ -1030,7 +1275,9 @@ fn split_terminal_command(input: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn executable_on_path(program: &OsStr) -> bool {
+/// Whether `program` is something this machine can actually run — a name found
+/// on `PATH`, or a path that is there and executable.
+pub fn executable_on_path(program: &OsStr) -> bool {
     let path = Path::new(program);
     if path.components().count() > 1 {
         return is_executable_file(path);
@@ -1088,6 +1335,7 @@ mod tests {
             exec: "true".into(),
             terminal: false,
             categories: Vec::new(),
+            mime_types: Vec::new(),
             path: PathBuf::from("/tmp/x.desktop"),
             wm_class: None,
         }
@@ -1262,6 +1510,60 @@ mod tests {
         assert!(!cursor.navigate(Action::Right, &xmb));
     }
 
+    /// A pointer names the row it wants outright, where a direction can only
+    /// ask for the next one — and the bar still travels there, so the click
+    /// reads as the column being scrolled rather than replaced.
+    #[test]
+    fn a_row_can_be_pointed_at_directly() {
+        let xmb = model();
+        let mut cursor = cursor(&xmb);
+
+        assert!(cursor.point_at_row(2, &xmb));
+        assert_eq!(cursor.selected_item(), 2);
+        assert!(cursor.item_position < 2.0, "and travels there");
+
+        // The row it is already on is not a move, which is what tells a second
+        // click on a row apart from the first.
+        assert!(!cursor.point_at_row(2, &xmb));
+        // Nor is a row the column does not have.
+        assert!(!cursor.point_at_row(9, &xmb));
+        assert_eq!(cursor.selected_item(), 2);
+    }
+
+    /// Pointing at a category steps out of whatever path is open first, exactly
+    /// as walking left to the row would: arriving with a path still open would
+    /// leave a trail belonging to a category the user has left.
+    #[test]
+    fn pointing_at_a_category_leaves_the_path_behind() {
+        let xmb = nested();
+        let mut cursor = cursor(&xmb);
+        cursor.navigate(Action::Down, &xmb);
+        assert!(cursor.enter(&xmb));
+        assert_eq!(cursor.depth(), 1);
+
+        assert!(cursor.point_at_category(1, &xmb));
+        assert_eq!(cursor.selected_category, 1);
+        assert_eq!(cursor.depth(), 0);
+
+        // The category it is already on, with nothing open, is not a move.
+        assert!(!cursor.point_at_category(1, &xmb));
+        assert!(!cursor.point_at_category(7, &xmb));
+    }
+
+    /// The one case where pointing at the category already selected *is* a
+    /// move: the cursor is inside a path hanging off it, and the button at the
+    /// head of that trail is the way back out.
+    #[test]
+    fn pointing_at_the_open_categorys_button_walks_back_out_to_it() {
+        let xmb = nested();
+        let mut cursor = cursor(&xmb);
+        cursor.navigate(Action::Down, &xmb);
+        assert!(cursor.enter(&xmb));
+
+        assert!(cursor.point_at_category(cursor.selected_category, &xmb));
+        assert_eq!(cursor.depth(), 0);
+    }
+
     #[test]
     fn remembers_selection_per_category() {
         let xmb = model();
@@ -1363,6 +1665,223 @@ mod tests {
         assert_eq!(cursor.depth(), 0);
         // Only now does Left mean the category row again.
         assert!(!cursor.navigate(Action::Left, &xmb));
+    }
+
+    /// A subcategory with nothing in it is a row, not a way in. Multimedia
+    /// ships two of them — Music and Video, empty until the walk over the
+    /// user's home directory finds something to hang on them — so this is what
+    /// the bar does in the first seconds of a session on a machine with no
+    /// music on it, rather than a case that cannot arise.
+    ///
+    /// What must not happen is the cursor landing in a column with no rows: it
+    /// would be standing on nothing, with Back the only key that did anything
+    /// and no row under the light to say why.
+    #[test]
+    fn an_empty_subcategory_is_a_dead_end_rather_than_an_empty_column() {
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "multimedia",
+                title: "Multimedia",
+                icon: "multimedia",
+                entries: vec![folder("Music", Vec::new()), entry("Audacity")],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("Music"));
+
+        assert!(
+            !cursor.enter(&xmb),
+            "there is nothing in there to step into"
+        );
+        assert_eq!(cursor.depth(), 0);
+        assert_eq!(cursor.columns(&xmb).len(), 1);
+
+        // And the row is still the one under the light, so the column the user
+        // is looking at is the column they were looking at.
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("Music"));
+        assert!(cursor.navigate(Action::Down, &xmb));
+        assert_eq!(
+            cursor.current_entry(&xmb).map(Entry::title),
+            Some("Audacity")
+        );
+    }
+
+    /// One of the user's own files, as the shelf holds it.
+    fn shelved(path: &str) -> crate::media::Shelved {
+        Arc::new(crate::media::File::at(Path::new(path)).expect("a listable file"))
+    }
+
+    /// A row standing for it. Rebuilding a column means new rows for the *same*
+    /// files, which is what the cursor follows — see [`Cursor::keep_on_media`].
+    fn song(file: &crate::media::Shelved) -> Entry {
+        Entry::Media(Arc::clone(file))
+    }
+
+    /// Music arrives all through a session and arrives in alphabetical order,
+    /// so a track found now lands *above* the one the user is looking at as
+    /// often as below it. The cursor has to stay on the song, not on the row
+    /// number — otherwise the shell would be quietly changing what Accept is
+    /// about while somebody reads the screen.
+    #[test]
+    fn a_song_arriving_does_not_move_the_one_under_the_cursor() {
+        let column = |songs: Vec<Entry>| {
+            Xmb::with_wayland_display(
+                vec![Category {
+                    id: "multimedia",
+                    title: "Multimedia",
+                    icon: "multimedia",
+                    entries: vec![folder("Music", songs)],
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let (alpha, beta) = (shelved("/m/alpha.mp3"), shelved("/m/beta.mp3"));
+        let (delta, epsilon) = (shelved("/m/delta.mp3"), shelved("/m/epsilon.mp3"));
+        let xmb = column(vec![song(&beta), song(&delta)]);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.navigate(Action::Down, &xmb));
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("delta"));
+        while cursor.animate(1.0 / 60.0) {}
+        let settled = cursor.position_at(1);
+
+        // Two more turn up, one of them above the row being read.
+        let xmb = column(vec![
+            song(&alpha),
+            song(&beta),
+            song(&delta),
+            song(&epsilon),
+        ]);
+        cursor.keep_on_media(&xmb, &delta);
+
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("delta"));
+        assert_eq!(cursor.selected_item(), 2, "one row further down the list");
+        // And the column moved with it, so nothing is left travelling: the
+        // list slid under a cursor that never went anywhere.
+        assert_eq!(cursor.position_at(1), settled + 1.0);
+        assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// A file that has gone off the disk takes its row with it, and the cursor
+    /// stays where it is standing rather than following the file into nothing.
+    #[test]
+    fn a_song_deleted_from_under_the_cursor_leaves_it_where_it_stands() {
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "multimedia",
+                title: "Multimedia",
+                icon: "multimedia",
+                entries: vec![folder(
+                    "Music",
+                    vec![song(&shelved("/m/a.mp3")), song(&shelved("/m/c.mp3"))],
+                )],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.navigate(Action::Down, &xmb));
+
+        cursor.keep_on_media(&xmb, &shelved("/m/b.mp3"));
+        assert_eq!(cursor.selected_item(), 1);
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("c"));
+    }
+
+    /// A shelf listed in a different order is a different list, so the cursor
+    /// goes to the head of it — placed there, with nothing left travelling.
+    #[test]
+    fn a_reordered_column_is_shown_from_its_first_row() {
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "multimedia",
+                title: "Multimedia",
+                icon: "multimedia",
+                entries: vec![folder(
+                    "Music",
+                    vec![
+                        song(&shelved("/m/a.mp3")),
+                        song(&shelved("/m/b.mp3")),
+                        song(&shelved("/m/c.mp3")),
+                    ],
+                )],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.navigate(Action::Down, &xmb));
+        assert!(cursor.navigate(Action::Down, &xmb));
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(cursor.selected_item(), 2);
+
+        cursor.rest_on_first_row();
+        assert_eq!(cursor.selected_item(), 0);
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+        // Placed, not travelled to: there is no journey through a list whose
+        // every row has just changed.
+        assert_eq!(cursor.position_at(1), 0.0);
+        assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// A column long enough that an `f32` cannot hold a thousandth of a row
+    /// still *finishes* moving.
+    ///
+    /// It did not. The spring arrived one representable step short of its
+    /// target, could not move again, and kept a velocity it could never shed —
+    /// so the bar reported itself still travelling on every frame for the rest
+    /// of the session, and the shell drew sixty of them a second over a
+    /// distance smaller than a pixel. A shelf of the user's own photographs is
+    /// exactly the column long enough to reach it.
+    #[test]
+    fn a_cursor_a_long_way_down_a_column_stops_moving() {
+        let rows: Vec<Entry> = (0..8_000).map(|i| entry(&format!("row{i}"))).collect();
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: rows,
+            }],
+            OsString::from("lxb-test"),
+        );
+
+        for row in [1_024, 4_097, 7_999] {
+            let mut cursor = cursor(&xmb);
+            assert!(cursor.point_at_row(row, &xmb));
+            // A second is far longer than any of these takes to arrive; what
+            // is being asserted is that it ever says so.
+            let mut frames = 0;
+            while cursor.animate(1.0 / 60.0) {
+                frames += 1;
+                assert!(frames < 600, "still moving at row {row} after ten seconds");
+            }
+            assert_eq!(cursor.selected_item(), row);
+        }
+    }
+
+    /// The bar can grow a column mid-session — a machine with music on it but
+    /// no media player installed has no Multimedia column until the walk finds
+    /// a file. Every display is standing in that bar at the time.
+    #[test]
+    fn a_column_appearing_does_not_move_the_one_the_user_is_on() {
+        let xmb = model();
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.navigate(Action::Right, &xmb));
+        assert_eq!(cursor.selected_category, 1);
+        while cursor.animate(1.0 / 60.0) {}
+        let settled = cursor.category_position;
+
+        // One arrives in front of where they are standing.
+        cursor.category_added(1);
+        assert_eq!(cursor.selected_category, 2, "the same column, moved along");
+        assert_eq!(cursor.category_position, settled + 1.0);
+        assert_eq!(cursor.selected_items.len(), xmb.categories.len() + 1);
+
+        // And one behind it moves nothing at all.
+        cursor.category_added(3);
+        assert_eq!(cursor.selected_category, 2);
+        assert_eq!(cursor.category_position, settled + 1.0);
     }
 
     /// The trap this avoids: the shell's own Settings column is subcategories

@@ -16,8 +16,9 @@
 //! costs is proportional to how much glass is on screen, and a frame with none
 //! takes no snapshot at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
 
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache, Color as TextColor, Family, FontSystem, Metrics,
@@ -306,6 +307,21 @@ pub const GLOW_SLOT: u32 = 1;
 /// Atlas cells taken by the procedural sprites above; icons start after them.
 const RESERVED_SLOTS: u32 = 2;
 
+/// How many cells a thumbnail spans, per side.
+///
+/// [`crate::thumbs::SIZE`] over [`CELL`]: a thumbnail is a picture rather than
+/// a mark, drawn on a card several times the width of an icon, and one cell of
+/// it would be visibly soft there.
+const THUMB_CELLS: u32 = crate::thumbs::SIZE.div_ceil(CELL);
+
+/// How many thumbnails the atlas holds at once.
+///
+/// Not a cache size: the shell asks for the rows around the cursor and drops
+/// the rest every frame, so this only has to cover what one screen can show
+/// with room to move. Two dozen is about four screensful, and costs six
+/// megabytes of the atlas.
+const THUMB_BLOCKS: u32 = 24;
+
 /// The shell's typeface, carried in the binary rather than looked up.
 ///
 /// A session shell draws its first frame before anything about the machine is
@@ -511,6 +527,20 @@ pub struct Gpu {
     /// Icon name to atlas slot.
     slots: HashMap<String, u32>,
     atlas_cells_per_row: u32,
+    atlas_cells_per_col: u32,
+    /// The atlas itself, kept because thumbnails are written into it while the
+    /// session runs — the icons were all decoded before the device existed,
+    /// but a picture of a film is made the moment somebody looks at the row.
+    atlas_texture: wgpu::Texture,
+    /// The band of cells set aside for thumbnails: which file each block is
+    /// holding, in block order. `None` is a free block.
+    thumb_blocks: Vec<Option<PathBuf>>,
+    /// Where that band starts, in cell rows.
+    thumb_band: u32,
+    /// The slot and texture rectangle of each resident thumbnail. Separate
+    /// from [`Self::slots`] because a thumbnail is not square: it uses only
+    /// part of its block, and [`Self::uv_for`] has to be told which part.
+    thumbs: HashMap<PathBuf, Thumb>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -633,8 +663,10 @@ impl Gpu {
         surface.configure(&device, &config);
 
         // --- atlas -------------------------------------------------------
-        let (atlas_texture, slots, cells_per_row) = build_atlas(&device, &queue, icons)?;
-        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas = build_atlas(&device, &queue, icons)?;
+        let atlas_view = atlas
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("atlas sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -901,8 +933,13 @@ impl Gpu {
                 sample_layout,
                 sampler: frame_sampler,
                 atlas_bind_group,
-                slots,
-                atlas_cells_per_row: cells_per_row,
+                atlas_cells_per_row: atlas.cells_per_row,
+                atlas_cells_per_col: atlas.cells_per_col,
+                thumb_blocks: vec![None; atlas.thumb_blocks],
+                thumb_band: atlas.thumb_band,
+                thumbs: HashMap::new(),
+                atlas_texture: atlas.texture,
+                slots: atlas.slots,
                 font_system,
                 swash_cache,
                 text_atlas,
@@ -964,6 +1001,113 @@ impl Gpu {
     /// Atlas slot for an icon name, if it was loaded.
     pub fn slot(&self, name: &str) -> Option<u32> {
         self.slots.get(name).copied()
+    }
+
+    /// The thumbnail resident in the atlas for a file, if there is one.
+    pub fn thumbnail(&self, path: &Path) -> Option<Thumb> {
+        self.thumbs.get(path).copied()
+    }
+
+    /// Put a thumbnail into the atlas, taking a free block.
+    ///
+    /// The whole block is written, not just the part the picture covers: a
+    /// portrait photograph landing where a wide one was would otherwise leave
+    /// two strips of the old one showing beside it, and a full block is one
+    /// aligned write of a quarter of a megabyte rather than a special case.
+    pub fn put_thumbnail(&mut self, path: &Path, picture: &crate::thumbs::Picture) -> bool {
+        let edge = THUMB_CELLS * CELL;
+        if picture.width == 0 || picture.height == 0 {
+            return false;
+        }
+        let Some(block) = self
+            .thumb_blocks
+            .iter()
+            .position(Option::is_none)
+            .or_else(|| {
+                // Only reachable if more rows were asked for than the atlas
+                // holds; the shell drops what the cursor has left behind
+                // before it asks for more.
+                tracing::debug!("no free thumbnail block; this one is not drawn");
+                None
+            })
+        else {
+            return false;
+        };
+
+        let width = picture.width.min(edge);
+        let height = picture.height.min(edge);
+        let mut cell = vec![0u8; (edge * edge * 4) as usize];
+        for y in 0..height {
+            let src = (y * picture.width * 4) as usize;
+            let dst = (y * edge * 4) as usize;
+            let len = (width * 4) as usize;
+            if src + len <= picture.rgba.len() && dst + len <= cell.len() {
+                cell[dst..dst + len].copy_from_slice(&picture.rgba[src..src + len]);
+            }
+        }
+
+        let (col, row) = self.block_cell(block);
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: col * CELL,
+                    y: row * CELL,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &cell,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(edge * 4),
+                rows_per_image: Some(edge),
+            },
+            wgpu::Extent3d {
+                width: edge,
+                height: edge,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.thumb_blocks[block] = Some(path.to_path_buf());
+        self.thumbs.insert(
+            path.to_path_buf(),
+            Thumb {
+                slot: row * self.atlas_cells_per_row + col,
+                aspect: width as f32 / height as f32,
+                // What was written, not what would have been written by a
+                // picture that filled the block: see [`Thumb::covers`].
+                covers: Self::thumb_coverage(width, height),
+            },
+        );
+        true
+    }
+
+    /// Give up every thumbnail block whose file is not in `wanted`.
+    ///
+    /// This is the whole of the eviction policy, and it is deliberately not a
+    /// cache: what the atlas holds is what is on screen. A row the cursor has
+    /// scrolled away from is a picture nothing is drawing, and the disk cache
+    /// underneath means getting it back costs a read rather than a decode.
+    pub fn retain_thumbnails(&mut self, wanted: &HashSet<PathBuf>) {
+        for block in &mut self.thumb_blocks {
+            if block.as_ref().is_some_and(|path| !wanted.contains(path)) {
+                *block = None;
+            }
+        }
+        self.thumbs.retain(|path, _| wanted.contains(path));
+    }
+
+    /// The top-left cell of a thumbnail block.
+    fn block_cell(&self, block: usize) -> (u32, u32) {
+        let per_row = (self.atlas_cells_per_row / THUMB_CELLS).max(1);
+        let block = block as u32;
+        (
+            (block % per_row) * THUMB_CELLS,
+            self.thumb_band + (block / per_row) * THUMB_CELLS,
+        )
     }
 
     /// Draw one frame.
@@ -1222,15 +1366,34 @@ impl Gpu {
     /// Texture coordinates of an atlas slot.
     fn uv_for(&self, slot: u32) -> [f32; 4] {
         let per_row = self.atlas_cells_per_row.max(1);
+        let per_col = self.atlas_cells_per_col.max(1);
         let col = slot % per_row;
         let row = slot / per_row;
-        let step = 1.0 / per_row as f32;
+        let step_x = 1.0 / per_row as f32;
+        let step_y = 1.0 / per_col as f32;
 
         if slot == SOLID_SLOT {
             // Sample the middle of the white cell so filtering never bleeds in
             // a neighbouring icon's edge.
-            let c = step * 0.5;
-            return [c, c, c, c];
+            let (cx, cy) = (step_x * 0.5, step_y * 0.5);
+            return [cx, cy, cx, cy];
+        }
+
+        // A thumbnail covers only part of its block — a wide picture leaves
+        // the bottom of it empty, and one smaller than the block leaves the
+        // right of it empty too — so what is sampled is the picture, not the
+        // block. Taken from what was actually written, because how much of the
+        // block a picture covers does not follow from its shape: see
+        // [`Thumb::covers`].
+        let inset_x = step_x * (1.5 / CELL as f32);
+        let inset_y = step_y * (1.5 / CELL as f32);
+        if let Some(thumb) = self.thumb_at(slot) {
+            return thumb_uv(
+                [col as f32 * step_x, row as f32 * step_y],
+                [step_x, step_y],
+                [inset_x, inset_y],
+                thumb.covers,
+            );
         }
 
         // Keep the sample footprint well inside the cell: bilinear filtering
@@ -1238,13 +1401,30 @@ impl Gpu {
         // the border blends in the neighbouring cell. The glow sits next to
         // the opaque-white solid cell, where that bleed used to draw a bright
         // hairline along the edge of every (heavily magnified) glow quad.
-        let inset = step * (1.5 / CELL as f32);
         [
-            col as f32 * step + inset,
-            row as f32 * step + inset,
-            (col + 1) as f32 * step - inset,
-            (row + 1) as f32 * step - inset,
+            col as f32 * step_x + inset_x,
+            row as f32 * step_y + inset_y,
+            (col + 1) as f32 * step_x - inset_x,
+            (row + 1) as f32 * step_y - inset_y,
         ]
+    }
+
+    /// The part of a block a picture of `width` by `height` pixels covers,
+    /// along each axis. See [`Thumb::covers`].
+    fn thumb_coverage(width: u32, height: u32) -> [f32; 2] {
+        let edge = (THUMB_CELLS * CELL) as f32;
+        [width as f32 / edge, height as f32 / edge]
+    }
+
+    /// The thumbnail occupying `slot`, if the slot is in the thumbnail band.
+    ///
+    /// Looked up by slot rather than kept beside it, because a [`Quad`] can
+    /// only carry a slot number and the band is small.
+    fn thumb_at(&self, slot: u32) -> Option<Thumb> {
+        if slot / self.atlas_cells_per_row.max(1) < self.thumb_band {
+            return None;
+        }
+        self.thumbs.values().copied().find(|t| t.slot == slot)
     }
 }
 
@@ -1612,10 +1792,12 @@ fn build_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     icons: Vec<(String, Icon)>,
-) -> anyhow::Result<(wgpu::Texture, HashMap<String, u32>, u32)> {
+) -> anyhow::Result<Atlas> {
     let needed = icons.len() as u32 + RESERVED_SLOTS;
     let mut cells_per_row = (needed as f64).sqrt().ceil() as u32;
     cells_per_row = cells_per_row.max(2);
+    // Even, so the thumbnail band divides into whole blocks.
+    cells_per_row += cells_per_row % THUMB_CELLS;
 
     let max_dim = device.limits().max_texture_dimension_2d;
     let max_cells_per_row = (max_dim / CELL).max(1);
@@ -1627,8 +1809,23 @@ fn build_atlas(
         cells_per_row = max_cells_per_row;
     }
 
-    let dimension = cells_per_row * CELL;
-    let mut pixels = vec![0u8; (dimension * dimension * 4) as usize];
+    // The icons fill whole rows from the top; the thumbnails get a band of
+    // their own under them. A band rather than the leftovers of the icon rows,
+    // because a thumbnail is a block of cells and has to be aligned to one.
+    let icon_rows = needed.div_ceil(cells_per_row);
+    let blocks_per_row = (cells_per_row / THUMB_CELLS).max(1);
+    let mut band_rows = THUMB_BLOCKS.div_ceil(blocks_per_row) * THUMB_CELLS;
+    let max_rows = (max_dim / CELL).max(1);
+    if icon_rows + band_rows > max_rows {
+        band_rows = max_rows.saturating_sub(icon_rows) / THUMB_CELLS * THUMB_CELLS;
+        tracing::warn!(band_rows, "the atlas has little room left for thumbnails");
+    }
+    let cells_per_col = icon_rows + band_rows;
+
+    let width = cells_per_row * CELL;
+    let height = cells_per_col * CELL;
+    let dimension = width;
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
 
     // Slot 0: opaque white.
     for y in 0..CELL {
@@ -1656,7 +1853,7 @@ fn build_atlas(
         }
     }
 
-    let capacity = cells_per_row * cells_per_row;
+    let capacity = cells_per_row * icon_rows;
     let mut slots = HashMap::new();
 
     for (index, (name, icon)) in icons.into_iter().enumerate() {
@@ -1683,8 +1880,8 @@ fn build_atlas(
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("icon atlas"),
         size: wgpu::Extent3d {
-            width: dimension,
-            height: dimension,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -1705,28 +1902,142 @@ fn build_atlas(
         &pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(dimension * 4),
-            rows_per_image: Some(dimension),
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
         },
         wgpu::Extent3d {
-            width: dimension,
-            height: dimension,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
     );
 
+    let blocks = (blocks_per_row * (band_rows / THUMB_CELLS)).min(THUMB_BLOCKS);
     tracing::debug!(
-        dimension,
+        width,
+        height,
         cells_per_row,
         icons = slots.len(),
+        thumbnails = blocks,
         "built icon atlas"
     );
-    Ok((texture, slots, cells_per_row))
+    Ok(Atlas {
+        texture,
+        slots,
+        cells_per_row,
+        cells_per_col,
+        thumb_band: icon_rows,
+        thumb_blocks: blocks as usize,
+    })
+}
+
+/// The atlas as it comes out of [`build_atlas`].
+struct Atlas {
+    texture: wgpu::Texture,
+    slots: HashMap<String, u32>,
+    cells_per_row: u32,
+    cells_per_col: u32,
+    /// First cell row of the thumbnail band.
+    thumb_band: u32,
+    /// How many thumbnails fit in it.
+    thumb_blocks: usize,
+}
+
+/// The texture rectangle of a thumbnail inside its block.
+///
+/// `origin` and `step` are the block's top-left corner and one cell, both in
+/// texture coordinates; `inset` keeps the sample footprint off the border so
+/// bilinear filtering cannot reach into the next cell.
+///
+/// Split out of [`Gpu::uv_for`] so the arithmetic can be checked without a
+/// GPU. It is worth checking on its own: getting it wrong draws the picture
+/// into a corner of its card and leaves the rest empty, which no other test the
+/// shell has can see, and which looks enough like a deliberate mount that it
+/// went unnoticed.
+fn thumb_uv(origin: [f32; 2], step: [f32; 2], inset: [f32; 2], covers: [f32; 2]) -> [f32; 4] {
+    let width = step[0] * THUMB_CELLS as f32 * covers[0];
+    let height = step[1] * THUMB_CELLS as f32 * covers[1];
+    [
+        origin[0] + inset[0],
+        origin[1] + inset[1],
+        origin[0] + width - inset[0],
+        origin[1] + height - inset[1],
+    ]
+}
+
+/// A thumbnail resident in the atlas.
+#[derive(Debug, Clone, Copy)]
+pub struct Thumb {
+    /// The cell its block starts at, which is what a [`Quad`] carries.
+    pub slot: u32,
+    /// Width over height of the picture itself, so the row can draw a card of
+    /// the same shape rather than squashing a photograph into a square.
+    pub aspect: f32,
+    /// How much of the block the picture actually covers, along each axis, as
+    /// a fraction of the block's edge.
+    ///
+    /// Kept rather than worked back out of [`Self::aspect`], which is what this
+    /// used to do and which was wrong for every thumbnail that is not 256 on
+    /// its long side. The freedesktop `large` directory is a ceiling, not a
+    /// size: a picture smaller than the ceiling is stored at its own size, and
+    /// so is one another desktop wrote there — the cache on the machine this
+    /// was found on is largely 160 across, from a file manager that thumbnails
+    /// to 160 and files it under `large` like everything else. Those went into
+    /// a 256-wide block at 160 wide and were then sampled as if they filled it,
+    /// so five eighths of the picture was drawn into the top-left corner of the
+    /// card and the rest of the card was the empty part of the block.
+    pub covers: [f32; 2],
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What is sampled has to be what was written, whatever size the picture
+    /// turned out to be.
+    ///
+    /// A thumbnail is written into the top-left of a fixed 256-pixel block at
+    /// its own size, so how much of the block it covers is a fact about the
+    /// file and not about its shape. Deriving it from the aspect instead — the
+    /// bug this pins — happens to be right for the pictures that do fill the
+    /// block on their long side and wrong for every other one, which is why a
+    /// column of thumbnails came out with some of its pictures correct and the
+    /// rest tucked into the corner of their cards.
+    #[test]
+    fn a_thumbnail_is_sampled_where_its_pixels_are() {
+        let edge = (THUMB_CELLS * CELL) as f32;
+        // One cell of a notional 32-cell-square atlas, and a block at its
+        // origin, so the numbers below are the fractions themselves.
+        let step = [1.0 / 32.0, 1.0 / 32.0];
+        let block = [step[0] * THUMB_CELLS as f32, step[1] * THUMB_CELLS as f32];
+        let sampled = |w: u32, h: u32| {
+            let uv = thumb_uv([0.0, 0.0], step, [0.0, 0.0], Gpu::thumb_coverage(w, h));
+            [uv[2] / block[0], uv[3] / block[1]]
+        };
+
+        // A picture that fills its block on the long side: the case the old
+        // arithmetic got right, and it still is.
+        let full = sampled(edge as u32, (edge / 16.0 * 9.0) as u32);
+        assert!((full[0] - 1.0).abs() < 1e-5, "{full:?}");
+        assert!((full[1] - 9.0 / 16.0).abs() < 1e-3, "{full:?}");
+
+        // And one that does not, which is most of what a real cache holds —
+        // 160 across is what the machine this was found on had. Both axes have
+        // to shrink; the shape is the same 16:9 as above, so an aspect is no
+        // help in telling the two apart.
+        let small = sampled(160, 90);
+        assert!((small[0] - 160.0 / edge).abs() < 1e-5, "{small:?}");
+        assert!((small[1] - 90.0 / edge).abs() < 1e-5, "{small:?}");
+        assert!(
+            small[0] < full[0] && small[1] < full[1],
+            "a smaller picture must sample a smaller part of the block"
+        );
+
+        // A tall picture is the same rule the other way up.
+        let tall = sampled(91, 160);
+        assert!((tall[0] - 91.0 / edge).abs() < 1e-5, "{tall:?}");
+        assert!((tall[1] - 160.0 / edge).abs() < 1e-5, "{tall:?}");
+    }
 
     /// A pane of glass, `size` across, at `x`.
     fn pane(x: f32, size: f32) -> Quad {

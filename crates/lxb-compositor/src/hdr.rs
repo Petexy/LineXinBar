@@ -934,7 +934,9 @@ fn create_blob(device: &impl ControlDevice, data: &[u8]) -> std::io::Result<u64>
 
 fn cast<T: Copy>(values: &[T]) -> &[u8] {
     // SAFETY: every type this is used with is `#[repr(C)]` and made entirely
-    // of integers, so it has no padding to leak and no invalid bit patterns.
+    // of integers, so it has no invalid bit patterns; where alignment would
+    // leave a hole, the structure names it as a field and fills it, so there
+    // is no padding to leak either.
     unsafe {
         std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
     }
@@ -1045,6 +1047,11 @@ struct HdrMetadataInfoframe {
 struct HdrOutputMetadata {
     metadata_type: u32,
     hdmi_metadata_type1: HdrMetadataInfoframe,
+    /// The two bytes alignment adds after the 26-byte infoframe, spelled out
+    /// so they are written rather than left as whatever the stack held. The
+    /// kernel ignores them; [`cast`] does not, and a blob is no place for two
+    /// bytes of this process's memory.
+    _tail: [u8; 2],
 }
 
 /// The kernel rejects a blob that is not exactly this structure, so its size
@@ -1075,6 +1082,7 @@ impl HdrOutputMetadata {
                 max_cll: sdr_brightness,
                 max_fall: 0,
             },
+            _tail: [0; 2],
         }
     }
 
@@ -1094,6 +1102,7 @@ impl HdrOutputMetadata {
                 metadata_type: 0,
                 ..HdrMetadataInfoframe::default()
             },
+            _tail: [0; 2],
         }
     }
 }

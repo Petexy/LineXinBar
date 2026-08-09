@@ -98,6 +98,36 @@ pub enum Command {
     /// because it is a different thing being silenced: one is an application,
     /// and this is the machine.
     MuteOutput,
+    /// Open one of the user's own files — a song, a film, a photograph — in
+    /// whatever their desktop already opens that kind of file with.
+    ///
+    /// Not [`Command::Launch`], although the shell carries both out the same
+    /// way. What the row says is "Open", the thing it acts on is a file rather
+    /// than an installation, and the two menus that carry them have nothing
+    /// else in common: keeping one name for both would mean the day one of them
+    /// grows a step the other must not take, there is nowhere to put it.
+    Open,
+    /// Ask *which* application, instead of taking the answer the desktop has
+    /// already given.
+    OpenWith,
+    /// Open it with the `n`th of the applications that list offered.
+    ///
+    /// An index rather than a name, for the reason [`Command::MuteApplication`]
+    /// carries a key: a command is copied around and matched on, the list it
+    /// indexes is the one the shell built when it raised the menu, and a menu
+    /// that is not up has no list to index.
+    OpenWithHandler(usize),
+    /// Put the selected file in the trash — after asking.
+    Delete,
+    /// Answer that question with yes. Separate from [`Command::Delete`] for the
+    /// same reason [`Command::ConfirmUninstall`] is separate: one of these
+    /// opens a question and the other takes somebody's photograph off the
+    /// disk.
+    ConfirmDelete,
+    /// Ask what order the column should be listed in.
+    Sort,
+    /// List it in this one.
+    SortBy(crate::media::Sort),
     /// Put the menu away and do nothing else. The row that says so out loud,
     /// for a user who has opened the menu and changed their mind; `B` does the
     /// same thing and is not discoverable.
@@ -169,6 +199,18 @@ pub struct Entry {
     /// grouping is a number on an entry rather than a separator entry that
     /// navigation would then have to skip.
     pub group: u8,
+    /// Whether choosing it leaves the panel standing.
+    ///
+    /// The ordinary row is a way *off* the menu: it is chosen, it is watched
+    /// going down, and the panel folds back into the control it grew out of.
+    /// This one is a control *on* the menu — it answers by changing something
+    /// the user is still looking at, and a panel that folded away would take
+    /// the answer with it before it could be read. A mixer's tracks are like
+    /// that, and so is a list of alternatives where exactly one is in force:
+    /// the tick moving to the row just pressed *is* the answer, and the user
+    /// leaves when they have finished setting it rather than because the shell
+    /// decided one press was enough.
+    pub holds: bool,
 }
 
 impl Entry {
@@ -183,6 +225,7 @@ impl Entry {
             grave: false,
             destructive: false,
             group: 0,
+            holds: false,
         }
     }
 
@@ -196,9 +239,16 @@ impl Entry {
         self
     }
 
-    /// Make the row a track standing at `level`.
+    /// Make the row a track standing at `level`. A track is driven rather than
+    /// pressed, so it holds the panel by definition.
     pub fn level(mut self, level: Level) -> Self {
         self.level = Some(level);
+        self.holds()
+    }
+
+    /// Leave the panel standing when this row is chosen — see [`Entry::holds`].
+    pub fn holds(mut self) -> Self {
+        self.holds = true;
         self
     }
 
@@ -283,6 +333,25 @@ pub struct Menu {
     /// the button went down on.
     pressed: Option<(usize, Instant)>,
     closing_after_press: bool,
+    /// The list a row has asked for, waiting for that row to finish going down
+    /// — see [`Menu::descend`].
+    next: Option<(Option<String>, Vec<Entry>)>,
+    /// The lists this one was reached through, innermost last, so [`Menu::back`]
+    /// can put one of them back.
+    stack: Vec<Step>,
+}
+
+/// A list the menu has stepped out of, held so it can be stepped back into.
+///
+/// The scroll is in here as well as the selection, because coming back to a
+/// long list at the top of it and not where it was left is the same failure as
+/// coming back to it with the wrong row highlighted.
+#[derive(Debug)]
+struct Step {
+    title: Option<String>,
+    entries: Vec<Entry>,
+    selected: usize,
+    scroll: usize,
 }
 
 impl Menu {
@@ -339,6 +408,8 @@ impl Menu {
         self.scroll = 0;
         self.pressed = None;
         self.closing_after_press = false;
+        self.next = None;
+        self.stack.clear();
         self.highlight = None;
         self.highlight_speed = [0.0; 4];
         self.keep_selection_in_view();
@@ -369,8 +440,94 @@ impl Menu {
         self.scroll = 0;
         self.pressed = None;
         self.closing_after_press = false;
+        self.next = None;
+        self.stack.clear();
         self.highlight = None;
         self.highlight_speed = [0.0; 4];
+    }
+
+    // -- one list leading to another ---------------------------------------
+
+    /// Step into a further list, out of the row that was just chosen.
+    ///
+    /// The panel stays exactly where it is and keeps the keys; what changes is
+    /// what is written on it, and not until the row that asked for it has been
+    /// seen to go down. That wait is the whole of why this is not simply
+    /// [`Self::open_at`] a second time. A menu that swapped its rows on the
+    /// frame of the press would take the pressed row's label away underneath
+    /// the press, and one that folded into its anchor and grew back out would
+    /// spend two thirds of a second saying nothing — for a step the user reads
+    /// as going one level deeper into the same panel, which is what it is.
+    ///
+    /// Returns whether there was anything to step into. A list with nothing
+    /// choosable in it is refused here for the same reason [`Self::open_at`]
+    /// refuses one: it is a dead end with no way out but Back.
+    pub fn descend(&mut self, title: Option<String>, entries: Vec<Entry>) -> bool {
+        if !entries.iter().any(|entry| entry.enabled) {
+            return false;
+        }
+        self.next = Some((title, entries));
+        // Choosing a row handed the keys back. The step is not a way *off* the
+        // panel, so it takes them again — and cancels the fold that was about
+        // to start.
+        self.open = true;
+        self.closing_after_press = false;
+        true
+    }
+
+    /// Whether a further list is on its way in, so a caller that is about to do
+    /// something else with the panel knows one has been asked for.
+    pub fn is_descending(&self) -> bool {
+        self.next.is_some()
+    }
+
+    /// Step back out to the list this one was reached from. `false` when there
+    /// is none, which is what tells the caller that Back means closing the
+    /// whole panel.
+    ///
+    /// The highlight is deliberately not reset: it glides from wherever it is
+    /// to the row being returned to, exactly as it would between two rows of
+    /// one list. Coming back is a movement, not a new panel.
+    pub fn back(&mut self) -> bool {
+        // A list that has been asked for but has not arrived is simply
+        // forgotten. The user has changed their mind inside the press.
+        if self.next.take().is_some() {
+            return true;
+        }
+        let Some(step) = self.stack.pop() else {
+            return false;
+        };
+        self.title = step.title;
+        self.entries = step.entries;
+        self.selected = step.selected;
+        self.scroll = step.scroll;
+        self.pressed = None;
+        self.closing_after_press = false;
+        self.keep_selection_in_view();
+        true
+    }
+
+    /// How deep in it is: zero on the list it was opened with.
+    #[cfg(test)]
+    pub fn depth(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Put the waiting list on the panel, keeping the one it replaces.
+    fn enter(&mut self, title: Option<String>, entries: Vec<Entry>) {
+        self.stack.push(Step {
+            title: std::mem::replace(&mut self.title, title),
+            entries: std::mem::replace(&mut self.entries, entries),
+            selected: self.selected,
+            scroll: self.scroll,
+        });
+        self.selected = self
+            .entries
+            .iter()
+            .position(|entry| entry.enabled)
+            .unwrap_or_default();
+        self.scroll = 0;
+        self.keep_selection_in_view();
     }
 
     /// Put it away. Returns whether it was open, so a caller can tell a
@@ -382,6 +539,11 @@ impl Menu {
         let was = self.open;
         self.open = false;
         self.closing_after_press = false;
+        // Whatever it was in the middle of going into, it is not going there:
+        // the panel folding into its anchor is the end of the whole journey,
+        // not of the innermost list.
+        self.next = None;
+        self.stack.clear();
         was
     }
 
@@ -499,6 +661,28 @@ impl Menu {
         next != current
     }
 
+    /// Put the highlight straight on row `index`.
+    ///
+    /// What a pointer does: the panel stands still, so the row under the cursor
+    /// simply is the selected row. A row that cannot be chosen is left alone
+    /// rather than landed on — its outline has already said as much, and moving
+    /// the highlight onto it would leave the user with a selection that answers
+    /// nothing.
+    ///
+    /// The window is not moved. A row being pointed at is by definition a row
+    /// already on screen, and scrolling to it would take it out from under the
+    /// cursor that arrived on it.
+    pub fn select(&mut self, index: usize) -> bool {
+        if !self.entries.get(index).is_some_and(|entry| entry.enabled) {
+            return false;
+        }
+        if self.selected() == index {
+            return false;
+        }
+        self.selected = index;
+        true
+    }
+
     /// Choose the highlighted row: start its press, hand the keys back, and
     /// return what was asked for.
     ///
@@ -507,15 +691,15 @@ impl Menu {
     /// so what the user watches is the button they pressed answering them,
     /// rather than a menu that vanished at the moment of the press.
     ///
-    /// A row that carries a level is the exception, and keeps the keys: it is a
-    /// control *on* the panel rather than a way off it, its answer is the row
-    /// itself changing, and a panel that folded away would take that answer
-    /// with it before it could be seen.
+    /// A row that holds is the exception, and keeps the keys: it is a control
+    /// *on* the panel rather than a way off it, its answer is the panel itself
+    /// changing, and one that folded away would take that answer with it
+    /// before it could be seen. See [`Entry::holds`].
     pub fn choose(&mut self) -> Option<Command> {
         let index = self.selected();
         let entry = self.entries.get(index).filter(|entry| entry.enabled)?;
         let command = entry.command;
-        let holds = entry.level.is_some();
+        let holds = entry.holds;
         self.pressed = Some((index, Instant::now()));
         self.closing_after_press = !holds;
         self.open = holds;
@@ -611,6 +795,14 @@ impl Menu {
             self.pressed = None;
             self.closing_after_press = false;
         }
+        // And a press that has finished is also what lets a further list on to
+        // the panel — for the same reason and in the same breath. The row is
+        // watched all the way down, and then the list it asked for arrives.
+        if self.pressed.is_none() {
+            if let Some((title, entries)) = self.next.take() {
+                self.enter(title, entries);
+            }
+        }
         let held_open = self.open || self.closing_after_press;
         let target = if held_open { 1.0 } else { 0.0 };
         let step = dt / FLIGHT;
@@ -705,6 +897,26 @@ mod tests {
         entries[0] = entries[0].clone().disabled();
         assert!(menu.open_at([0.0; 4], None, entries, 8));
         assert_eq!(menu.selected(), 1);
+    }
+
+    /// A pointer names the row it is on, and a row it may not choose refuses
+    /// the highlight: a click on one must not press whatever was selected
+    /// before, and the outline has already said it is not for pressing.
+    #[test]
+    fn a_row_can_be_pointed_at_and_a_disabled_one_refuses() {
+        let mut menu = Menu::default();
+        let mut entries = rows(&["one", "two", "three"]);
+        entries[1] = entries[1].clone().disabled();
+        menu.open_at([0.0; 4], None, entries, 8);
+
+        assert!(menu.select(2));
+        assert_eq!(menu.selected(), 2);
+        // The row it is already on is not a move.
+        assert!(!menu.select(2));
+
+        assert!(!menu.select(1), "a disabled row is not selected by a click");
+        assert_eq!(menu.selected(), 2);
+        assert!(!menu.select(9));
     }
 
     #[test]
@@ -948,6 +1160,117 @@ mod tests {
             menu.selected_entry().map(|row| row.command),
             Some(Command::MuteApplication(2))
         );
+    }
+
+    /// A row that leads onward: the panel keeps the keys, keeps its place, and
+    /// does not change what it says until the row has been seen going down.
+    #[test]
+    fn a_further_list_arrives_only_once_the_row_has_finished_going_down() {
+        let mut menu = open(&["open", "sort"]);
+        while menu.animate(0.05) < 1.0 {}
+        menu.move_selection(1);
+
+        assert_eq!(menu.choose(), Some(Command::Placeholder("sort")));
+        assert!(!menu.is_open(), "choosing always hands the keys back first");
+        assert!(menu.descend(Some("Sort".to_string()), rows(&["a-z", "z-a"])));
+        assert!(menu.is_open(), "a step inward takes them straight back");
+        assert!(menu.is_descending());
+
+        // Half way down: still the list that was pressed.
+        menu.backdate_press(PRESS_TIME * 0.5);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0, "the panel must not fold");
+        assert_eq!(menu.entries().len(), 2);
+        assert_eq!(menu.title(), None);
+        assert_eq!(menu.depth(), 0);
+
+        // And once it has been: the further list, from the top, on a panel
+        // that never went anywhere.
+        menu.backdate_press(PRESS_TIME);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(menu.title(), Some("Sort"));
+        assert_eq!(
+            menu.selected_entry().map(|row| row.command),
+            Some(Command::Placeholder("a-z"))
+        );
+        assert_eq!(menu.depth(), 1);
+        assert!(!menu.is_descending());
+    }
+
+    /// Back is one level at a time, and the list is found as it was left —
+    /// the same row highlighted, and a long one scrolled to the same place.
+    #[test]
+    fn back_returns_to_the_list_it_was_reached_from() {
+        let mut menu = open(&["a", "b", "c", "d", "e"]);
+        menu.set_window(2);
+        for _ in 0..3 {
+            menu.move_selection(1);
+        }
+        assert_eq!((menu.selected(), menu.first_visible()), (3, 2));
+
+        menu.choose();
+        menu.descend(None, rows(&["one", "two"]));
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(menu.entries().len(), 2);
+        assert_eq!((menu.selected(), menu.first_visible()), (0, 0));
+
+        assert!(menu.back());
+        assert_eq!(menu.entries().len(), 5);
+        assert_eq!(
+            (menu.selected(), menu.first_visible()),
+            (3, 2),
+            "the list should be found exactly as it was left"
+        );
+        assert!(!menu.back(), "there is nothing behind the first list");
+        assert!(
+            menu.is_open(),
+            "and Back off the end does not close it here"
+        );
+    }
+
+    /// Changing your mind inside the press: the list that was asked for never
+    /// arrives, and the panel is still the one that was pressed.
+    #[test]
+    fn a_step_inward_can_be_taken_back_before_it_lands() {
+        let mut menu = open(&["open", "sort"]);
+        menu.choose();
+        menu.descend(None, rows(&["a-z"]));
+        assert!(menu.back());
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(menu.entries().len(), 2);
+        assert_eq!(menu.depth(), 0);
+    }
+
+    /// A further list with nothing choosable in it is refused, on the same
+    /// ground an empty menu is: it would be a panel Back is the only way off.
+    #[test]
+    fn a_further_list_with_nothing_in_it_is_refused() {
+        let mut menu = open(&["open", "sort"]);
+        menu.choose();
+        assert!(!menu.descend(None, Vec::new()));
+        assert!(!menu.descend(
+            None,
+            rows(&["a"]).into_iter().map(Entry::disabled).collect()
+        ));
+        assert!(!menu.is_descending());
+    }
+
+    /// Putting the panel away abandons the whole journey, not the innermost
+    /// list of it — a menu that folded away and came back one level deeper
+    /// would be a menu that remembered something the user had left.
+    #[test]
+    fn closing_it_forgets_where_it_had_got_to() {
+        let mut menu = open(&["open", "sort"]);
+        menu.choose();
+        menu.descend(None, rows(&["a-z", "z-a"]));
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(menu.depth(), 1);
+
+        assert!(menu.close());
+        assert_eq!(menu.depth(), 0);
+        assert!(!menu.back());
     }
 
     #[test]

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# A display manager may leave its own display variables in the environment.
+# LineXinBar is the new native session, never a client of that greeter.
+set -eu
+
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=LineXinBar
+export XDG_SESSION_DESKTOP=LineXinBar
+export DESKTOP_SESSION=lxb
+export LXB_PRIVATE_DBUS=1
+
+exec dbus-run-session -- lxb --backend udev --shell

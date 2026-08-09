@@ -78,6 +78,22 @@ pub const CATEGORY_EDUCATION: &str = "lxb:category-education";
 pub const CATEGORY_UTILITIES: &str = "lxb:category-utilities";
 pub const CATEGORY_OTHER: &str = "lxb:category-other";
 
+/// The subcategories a column carries, which are rows inside a column rather
+/// than columns of the row above: Multimedia's two, and the one under
+/// Graphics.
+///
+/// Drawn to the same standard all the same, and for a reason the theme cannot
+/// help with either: a subcategory that fell back to the missing-icon square
+/// would read as an application that will not start, which is the one thing a
+/// way further in must never look like.
+///
+/// Each is also the mark of the *files* inside it, since what they hold is the
+/// user's own music, films and photographs rather than applications — a track
+/// with no cover art was drawn as the mark of its column on the console too.
+pub const CATEGORY_MUSIC: &str = "lxb:category-music";
+pub const CATEGORY_VIDEO: &str = "lxb:category-video";
+pub const CATEGORY_IMAGES: &str = "lxb:category-images";
+
 /// The shell's own rows in the Settings column, and the two marks a list of
 /// values is made of.
 ///
@@ -92,7 +108,21 @@ pub const SETTING_ACCENT: &str = "lxb:setting-accent";
 pub const SETTING_DISPLAY: &str = "lxb:setting-display";
 pub const SETTING_RESOLUTION: &str = "lxb:setting-resolution";
 pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
+pub const SETTING_ORIENTATION: &str = "lxb:setting-orientation";
 pub const SETTING_HDR: &str = "lxb:setting-hdr";
+
+/// The four turns under Settings > Display > Orientation, drawn as what they
+/// are: one monitor, stood four ways, its stand saying which way up.
+///
+/// Values rather than subcategories, and the only values in the Settings tree
+/// with drawings of their own — everything else there is a colour, a number or
+/// a switch, and wears the bead [`SWATCH`] instead. These earn the exception
+/// because what is being chosen *is* a shape: the row that matches the screen
+/// in front of the user can be picked without reading it.
+pub const SETTING_ROTATION_0: &str = "lxb:setting-rotation-0";
+pub const SETTING_ROTATION_90: &str = "lxb:setting-rotation-90";
+pub const SETTING_ROTATION_180: &str = "lxb:setting-rotation-180";
+pub const SETTING_ROTATION_270: &str = "lxb:setting-rotation-270";
 /// A read-only explanation in Settings, visually distinct from the control it
 /// sits beneath so an unavailable mode or capability is not mistaken for HDR.
 pub const SETTING_INFO: &str = "lxb:setting-info";
@@ -108,6 +138,17 @@ pub const CHOSEN: &str = "lxb:chosen";
 /// installed, and the menu they sit in has one lamp over it.
 pub const UNINSTALL: &str = "lxb:uninstall";
 pub const LAUNCH: &str = "lxb:launch";
+
+/// The two rows of the menu over one of the user's own files that lead onward
+/// rather than doing something: choosing which application opens it, and
+/// choosing what order the column is listed in.
+///
+/// Drawn rather than themed for the same reason as the two above, and drawn
+/// unlike each other on purpose: they sit four rows apart in one panel, and two
+/// marks that both said "there is more this way" would leave the panel with two
+/// rows the eye cannot tell apart.
+pub const OPEN_WITH: &str = "lxb:open-with";
+pub const SORT: &str = "lxb:sort";
 
 /// The guide menu's Screenshot row.
 ///
@@ -133,7 +174,7 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 36] = [
+pub const BUILTIN: [(&str, &str); 46] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -180,6 +221,10 @@ pub const BUILTIN: [(&str, &str); 36] = [
         include_str!("glyphs/category-utilities.svg"),
     ),
     (CATEGORY_OTHER, include_str!("glyphs/category-other.svg")),
+    // Then the rows that stand inside a column rather than along the row.
+    (CATEGORY_MUSIC, include_str!("glyphs/category-music.svg")),
+    (CATEGORY_VIDEO, include_str!("glyphs/category-video.svg")),
+    (CATEGORY_IMAGES, include_str!("glyphs/category-images.svg")),
     // The Settings column's own rows, and the marks its lists are made of.
     (
         SETTING_APPEARANCE,
@@ -192,6 +237,26 @@ pub const BUILTIN: [(&str, &str); 36] = [
         include_str!("glyphs/setting-resolution.svg"),
     ),
     (SETTING_REFRESH, include_str!("glyphs/setting-refresh.svg")),
+    (
+        SETTING_ORIENTATION,
+        include_str!("glyphs/setting-orientation.svg"),
+    ),
+    (
+        SETTING_ROTATION_0,
+        include_str!("glyphs/setting-rotation-0.svg"),
+    ),
+    (
+        SETTING_ROTATION_90,
+        include_str!("glyphs/setting-rotation-90.svg"),
+    ),
+    (
+        SETTING_ROTATION_180,
+        include_str!("glyphs/setting-rotation-180.svg"),
+    ),
+    (
+        SETTING_ROTATION_270,
+        include_str!("glyphs/setting-rotation-270.svg"),
+    ),
     (SETTING_HDR, include_str!("glyphs/setting-hdr.svg")),
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
     (SWATCH, include_str!("glyphs/swatch.svg")),
@@ -199,6 +264,8 @@ pub const BUILTIN: [(&str, &str); 36] = [
     // The context menu's own rows.
     (UNINSTALL, include_str!("glyphs/uninstall.svg")),
     (LAUNCH, include_str!("glyphs/launch.svg")),
+    (OPEN_WITH, include_str!("glyphs/open-with.svg")),
+    (SORT, include_str!("glyphs/sort.svg")),
     (SCREENSHOT, include_str!("glyphs/screenshot.svg")),
 ];
 
@@ -395,7 +462,7 @@ fn load_path(path: &Path, size: u32) -> Option<Icon> {
     Some(Icon { size, rgba })
 }
 
-fn rasterise_svg(data: &[u8], resources_dir: Option<&Path>, size: u32) -> Option<Vec<u8>> {
+pub fn rasterise_svg(data: &[u8], resources_dir: Option<&Path>, size: u32) -> Option<Vec<u8>> {
     use resvg::tiny_skia;
     use resvg::usvg;
 
@@ -842,12 +909,14 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            36,
+            46,
             "a speaker, a struck-out one, a sun, a stick pointer, a mixer, two \
              controller buttons, four arrows, a keyboard folding away, a power \
-             symbol, one per column of the category row, the nine marks the \
-             Settings column is drawn from, and the context menu's bin, play \
-             mark and camera"
+             symbol, one per column of the category row, the two subcategories \
+             Multimedia is divided into and the one under Graphics, the ten \
+             marks the Settings column is drawn from plus its four turns of a \
+             monitor, and the context menu's bin, play mark, ellipsis, sort \
+             bars and camera"
         );
 
         for (name, drawing) in BUILTIN {
@@ -921,17 +990,27 @@ mod tests {
                 CATEGORY_EDUCATION,
                 CATEGORY_UTILITIES,
                 CATEGORY_OTHER,
+                CATEGORY_MUSIC,
+                CATEGORY_VIDEO,
+                CATEGORY_IMAGES,
                 SETTING_APPEARANCE,
                 SETTING_ACCENT,
                 SETTING_DISPLAY,
                 SETTING_RESOLUTION,
                 SETTING_REFRESH,
+                SETTING_ORIENTATION,
+                SETTING_ROTATION_0,
+                SETTING_ROTATION_90,
+                SETTING_ROTATION_180,
+                SETTING_ROTATION_270,
                 SETTING_HDR,
                 SETTING_INFO,
                 SWATCH,
                 CHOSEN,
                 UNINSTALL,
                 LAUNCH,
+                OPEN_WITH,
+                SORT,
                 SCREENSHOT
             ]
         );

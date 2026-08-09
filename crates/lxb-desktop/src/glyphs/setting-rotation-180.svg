@@ -1,0 +1,80 @@
+<!--
+The 180° Rotation row's glyph: the screen hung upside down.
+
+  The stand goes above the panel, which is what a display mounted the other way
+  up looks like from in front. See setting-rotation-0.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material and the lamp above it, identical to setting-display.svg's:
+         these are the same monitor, and a row whose screen was lit differently
+         from the screen list's would read as a different object. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8e8e"/>
+      <stop offset="0.45" stop-color="#a8a8a8"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <path id="bezel" d="M4.4 11.5h23.2a2.0 2.0 0 0 1 2.0 2.0v12.9a2.0 2.0 0 0 1 -2.0 2.0h-23.2a2.0 2.0 0 0 1 -2.0 -2.0v-12.9a2.0 2.0 0 0 1 2.0 -2.0z"/>
+    <path id="bezel-gloss" d="M1.0 9.4H31.0V18.6C22.84 21.3 9.16 21.3 1.0 18.6z"/>
+    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <path id="pane" d="M5.4 14.0h21.2v11.9h-21.2z"/>
+    <clipPath id="pane-clip"><use href="#pane"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- Stand first, so the bezel sits in front of the neck it grows out of. -->
+    <path d="M13.4 7.9h5.2v4.2h-5.2z" fill="url(#face)"/>
+    <path d="M8.6 5.1h14.8a1.1 1.1 0 0 1 1.1 1.1v0.8a1.1 1.1 0 0 1 -1.1 1.1h-14.8a1.1 1.1 0 0 1 -1.1 -1.1v-0.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="url(#face)"/>
+    <path d="M8.6 5.1h14.8a1.1 1.1 0 0 1 1.1 1.1v0.8a1.1 1.1 0 0 1 -1.1 1.1h-14.8a1.1 1.1 0 0 1 -1.1 -1.1v-0.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <use href="#bezel" fill="url(#face)"/>
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#bezel" fill="url(#turn)"/>
+
+    <use href="#pane" fill="url(#recess)"/>
+    <g clip-path="url(#pane-clip)">
+      <path d="M5.4 24.23L15.15 14.0L20.66 14.0L9.43 25.9z" fill="#ffffff" fill-opacity="0.34" filter="url(#polish)"/>
+      <path d="M5.4 18.76L10.28 14.0L12.61 14.0L5.4 20.9z" fill="#ffffff" fill-opacity="0.22" filter="url(#polish)"/>
+    </g>
+    <use href="#pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <g clip-path="url(#bezel-clip)">
+      <use href="#bezel" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+  </g>
+</svg>

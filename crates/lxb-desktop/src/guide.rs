@@ -673,6 +673,61 @@ impl Guide {
         next != current
     }
 
+    /// Put the highlight straight on `item`, wherever it is in the column.
+    ///
+    /// What a pointer does. The column stands still whatever is selected, so
+    /// unlike the bar there is nothing here to chase: an entry under the cursor
+    /// simply *is* the selected entry, the way a hovered key on the on-screen
+    /// keyboard is the selected key. One highlight, one thing `A` acts on, and
+    /// one place for the user to look.
+    ///
+    /// Refuses an entry that is not in the column, and one the highlight is not
+    /// allowed to stop on — the pointer tile with nothing running is drawn as a
+    /// control out of reach, and being pointed at is not a change of mind.
+    pub fn select(&mut self, item: Item, closable: bool) -> bool {
+        let items = self.items(closable);
+        let Some(index) = items.iter().position(|candidate| *candidate == item) else {
+            return false;
+        };
+        if !self.is_enabled(item) {
+            return false;
+        }
+        if self.selected == Some(item) && self.pane() == Pane::Menu {
+            return false;
+        }
+        // Where along its line it sits, so that stepping off the tiles with a
+        // direction and back returns to the tile the pointer left the highlight
+        // on rather than to the one the keys last used.
+        if let Some((first, _)) = line_at(&lines(&items), index) {
+            self.selected_column = index - first;
+        }
+        self.selected = Some(item);
+        self.pane = Some(Pane::Menu);
+        true
+    }
+
+    /// The same for the deck: put the highlight on card `index`.
+    pub fn select_window(&mut self, index: usize, count: usize) -> bool {
+        if index >= count {
+            return false;
+        }
+        if self.pane() == Pane::Windows && self.selected_window(count) == index {
+            return false;
+        }
+        self.pane = Some(Pane::Windows);
+        self.selected_window = index;
+        true
+    }
+
+    /// And for the power dialog, which only answers while it is open.
+    pub fn select_power(&mut self, index: usize) -> bool {
+        if self.power.is_none() || index >= POWER_ITEMS.len() || self.power_index() == index {
+            return false;
+        }
+        self.power = Some(index);
+        true
+    }
+
     /// Move the highlight along the line it is on — which only the tiles have
     /// more than one entry in.
     ///
@@ -929,6 +984,82 @@ mod tests {
         for closable in [WINDOW, START_CARD] {
             assert_eq!(guide.items(closable).last(), Some(&Item::Power));
         }
+    }
+
+    /// The column stands still whatever is selected, so an entry under the
+    /// pointer simply *is* the selected entry — one highlight, and one thing
+    /// for the accept button to act on however the user reached it.
+    #[test]
+    fn an_entry_can_be_pointed_at() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+
+        assert!(guide.select(Item::Close, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Close));
+        // The entry it is already on is not a move.
+        assert!(!guide.select(Item::Close, WINDOW));
+        // Nor is one the column does not currently have: Close is offered only
+        // while a window's card is the one selected.
+        assert!(!guide.select(Item::Close, START_CARD));
+    }
+
+    /// A tile the highlight is not allowed to stop on does not take it from a
+    /// click either. The pointer switch with nothing running is drawn as a
+    /// control out of reach, and being pointed at is not a change of mind.
+    #[test]
+    fn a_tile_that_is_out_of_reach_refuses_the_pointer() {
+        let mut guide = Guide::default();
+        guide.set_pointer_control(true);
+        guide.open();
+        assert!(guide.items(WINDOW).contains(&Item::Pointer));
+
+        assert!(!guide.select(Item::Pointer, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+
+        // With an application in front it is a switch like any other.
+        guide.set_pointer_target(true);
+        assert!(guide.select(Item::Pointer, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Pointer));
+    }
+
+    /// Pointing at a card crosses to the deck, and pointing back at an entry
+    /// crosses back: the two panes are one space to a mouse as much as to the
+    /// directions.
+    #[test]
+    fn pointing_crosses_between_the_column_and_the_deck() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(guide.pane(), Pane::Menu);
+
+        assert!(guide.select_window(2, 4));
+        assert_eq!(guide.pane(), Pane::Windows);
+        assert_eq!(guide.selected_window(4), 2);
+        assert!(!guide.select_window(2, 4), "already there");
+        assert!(!guide.select_window(9, 4), "past the end of the deck");
+
+        assert!(guide.select(Item::Resume, WINDOW));
+        assert_eq!(guide.pane(), Pane::Menu);
+    }
+
+    /// The power dialog answers the pointer only while it is up. A press that
+    /// moved its highlight after it had been dismissed would leave the next
+    /// one opening on something other than the first choice.
+    #[test]
+    fn the_power_dialog_takes_the_pointer_only_while_it_is_open() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert!(!guide.select_power(2));
+
+        guide.open_power();
+        assert_eq!(guide.power_index(), 0);
+        assert!(guide.select_power(2));
+        assert_eq!(guide.power_index(), 2);
+        assert!(!guide.select_power(2));
+        assert!(!guide.select_power(99));
+
+        guide.close_power();
+        assert!(!guide.select_power(1));
     }
 
     #[test]

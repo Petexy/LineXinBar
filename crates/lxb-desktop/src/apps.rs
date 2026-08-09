@@ -20,6 +20,12 @@ pub struct App {
     pub exec: String,
     pub terminal: bool,
     pub categories: Vec<String>,
+    /// `MimeType`: what this application says it can open. Read for one
+    /// question only — which program one of the user's own files should be
+    /// handed to — and answered out of the catalogue rather than by asking a
+    /// tool, since the catalogue has already parsed every entry on the
+    /// machine. See [`crate::media::opening`].
+    pub mime_types: Vec<String>,
     pub path: PathBuf,
     /// `StartupWMClass`: what this application's windows will call themselves,
     /// stated by the application itself. Only 16 of the 235 entries installed
@@ -104,14 +110,23 @@ fn program_name(exec: &str) -> Option<String> {
 /// One row of a column.
 ///
 /// A column is a tree rather than a list, as the original cross media bar's
-/// were: a row is something to launch, a subcategory holding a column of its
-/// own, or one of a set of values the shell is set to. One type rather than
-/// three, because a row is drawn the same way whichever it is — an icon, a
-/// title, and a line under it — and the bar's whole job is that they all sit
-/// in one column together.
+/// were: a row is something to launch, a file of the user's own, a subcategory
+/// holding a column of its own, or one of a set of values the shell is set to.
+/// One type rather than four, because a row is drawn the same way whichever it
+/// is — an icon, a title, and a line under it — and the bar's whole job is that
+/// they all sit in one column together.
 #[derive(Debug, Clone)]
 pub enum Entry {
     App(App),
+    /// A piece of music, a film or a photograph found under the user's home
+    /// directory. Not an [`App`] wearing a file's name: the two answer
+    /// different questions — nothing installed it, nothing uninstalls it, and
+    /// no window will ever call itself by its name — and the rows that would
+    /// offer to do those things to it are the reason it is its own kind of row.
+    ///
+    /// Shared with the library it came from rather than copied out of it; see
+    /// [`crate::media::Shelved`].
+    Media(crate::media::Shelved),
     Folder(Folder),
     Choice(Choice),
 }
@@ -170,6 +185,11 @@ pub struct Category {
 pub const SHELL_SETTINGS: (&str, &str, &str) =
     ("settings", "Settings", crate::icons::CATEGORY_SETTINGS);
 
+/// The two columns that hold something the shell found rather than something
+/// installed, and are therefore named in more than one place.
+const MULTIMEDIA: &str = "multimedia";
+const GRAPHICS: &str = "graphics";
+
 /// Where installed applications go, in XMB order.
 ///
 /// Each entry lists the XDG main categories that map onto it, and the first
@@ -184,13 +204,13 @@ const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
         &["Settings", "System"],
     ),
     (
-        "multimedia",
+        MULTIMEDIA,
         "Multimedia",
         crate::icons::CATEGORY_MULTIMEDIA,
         &["AudioVideo", "Audio", "Video"],
     ),
     (
-        "graphics",
+        GRAPHICS,
         "Graphics",
         crate::icons::CATEGORY_GRAPHICS,
         &["Graphics"],
@@ -228,6 +248,230 @@ const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
     ),
     ("other", "Other", crate::icons::CATEGORY_OTHER, &[]),
 ];
+
+/// Which column each shelf of the user's own files hangs in, and what its row
+/// is called there.
+///
+/// The one table that says a kind of file belongs under a particular column,
+/// so the row, the glyph, the walk's own sorting and the place a new column is
+/// made all read it rather than each carrying their own copy.
+const SHELVES: &[(&str, &str, crate::media::Kind)] = &[
+    (MULTIMEDIA, "Music", crate::media::Kind::Audio),
+    (MULTIMEDIA, "Video", crate::media::Kind::Video),
+    (GRAPHICS, "Images", crate::media::Kind::Image),
+];
+
+/// What the row a kind of file hangs on is called.
+///
+/// Read out of [`SHELVES`] rather than written down a second time, so the row
+/// on the bar and every panel that names it cannot come to disagree.
+pub fn shelf_title(kind: crate::media::Kind) -> &'static str {
+    SHELVES
+        .iter()
+        .find(|(_, _, own)| *own == kind)
+        .map(|(_, title, _)| *title)
+        .unwrap_or_default()
+}
+
+/// The rows a column carries of its own, before anything on disk is filed into
+/// it.
+///
+/// Multimedia is one column over two subjects, and which of the two an
+/// *application* belongs to is a question `.desktop` files answer badly: the
+/// spec requires `AudioVideo` alongside `Audio` or `Video` but never the
+/// reverse, so an entry is free to say `AudioVideo` and stop — and the
+/// best-known ones do. Splitting the column on that would put VLC in whichever
+/// half won a coin toss, so the players stay in the column itself.
+///
+/// The rows hold what the machine can answer for without guessing: the user's
+/// own music, films and photographs, gathered from under their home directory
+/// by [`crate::media`] and hung here as they are found. A file's kind is its
+/// extension and nothing else has to be inferred from it.
+///
+/// Graphics carries one row rather than two, because there is one subject
+/// under it. It is the same kind of row all the same — a way in to what the
+/// user has, standing above the tools that make more of it.
+fn subcategories(id: &str) -> Vec<Entry> {
+    SHELVES
+        .iter()
+        .filter(|(column, ..)| *column == id)
+        .map(|(_, title, kind)| {
+            Entry::Folder(Folder {
+                title: title.to_string(),
+                // What an empty shelf says while the walk is still on its first
+                // pass, which is what these rows are on the first frame of
+                // every session. Replaced by the library's own note as it fills.
+                comment: Some(crate::media::note(*kind, 0, false)),
+                icon: Some(kind.glyph().to_string()),
+                entries: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// The rows a shelf of the user's own files makes.
+///
+/// Here rather than in [`crate::media`] because what a row *is* belongs to the
+/// bar, and called from there because of when it has to happen: this is one
+/// allocation the size of the collection and a write per file, and it is done
+/// on the worker that already holds the files rather than on the thread that
+/// draws. See [`crate::media::Made`].
+pub fn media_rows(listing: Vec<crate::media::Shelved>) -> Vec<Entry> {
+    listing.into_iter().map(Entry::Media).collect()
+}
+
+/// Hang a shelf the worker has finished on the row that holds it.
+///
+/// The library is the truth and the tree is a copy of it, rather than the rows
+/// owning what they hold: the catalogue is rebuilt whenever something is
+/// installed or removed, and a list of the user's music that a package removal
+/// emptied would be a strange way to answer for the disk.
+///
+/// Returns where a column had to be *made*, if one was. A machine with
+/// photographs on it but no graphics application installed has no Graphics
+/// column at scan time — there was nothing to put in it — and the first file
+/// found is what earns it one. The caller has to know, because every display's
+/// cursor is standing in a bar that has just grown a column.
+///
+/// The rows that were there come back in [`Hung::worn`], whole, for the caller
+/// to hand back to the worker rather than let go of on this thread; see
+/// [`crate::media::Library::discard`].
+pub fn shelve_media(categories: &mut Vec<Category>, made: crate::media::Made) -> Hung {
+    let mut hung = Hung::default();
+    let Some((id, _, kind)) = SHELVES.iter().find(|(_, _, kind)| *kind == made.kind) else {
+        return hung;
+    };
+
+    let at = match categories.iter().position(|column| column.id == *id) {
+        Some(at) => at,
+        // Nothing found of this kind, so nothing to make a column for.
+        // Deliberately not "nothing found of any kind it holds": a column
+        // conjured for a row that would be empty is a column with nothing
+        // in it to reach.
+        None if made.rows.is_empty() => return hung,
+        None => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| own == id)
+                .expect("every shelf names a column of the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: subcategories(id),
+                },
+            );
+            hung.column = Some(at);
+            at
+        }
+    };
+
+    let found = categories[at]
+        .entries
+        .iter_mut()
+        .find_map(|entry| match entry {
+            Entry::Folder(folder) if folder.icon.as_deref() == Some(kind.glyph()) => Some(folder),
+            _ => None,
+        });
+    if let Some(folder) = found {
+        folder.comment = Some(made.note);
+        hung.worn = std::mem::replace(&mut folder.entries, made.rows);
+    }
+    hung
+}
+
+/// Lift the shelves out of a catalogue that is about to be thrown away.
+///
+/// The rows of the user's own files are the only thing in the tree that did not
+/// come off the disk with the desktop entries, so a rescan — something was
+/// installed, something was removed — would otherwise drop them and leave the
+/// columns empty until the walk next came round. Taken whole and handed to
+/// [`shelve_media`] against the new catalogue, which is a move of three vectors
+/// rather than the collection's worth of work rebuilding them would be.
+pub fn carried_media(categories: &mut [Category]) -> Vec<crate::media::Made> {
+    let mut carried = Vec::new();
+    for (_, _, kind) in SHELVES {
+        for category in categories.iter_mut() {
+            let found = category.entries.iter_mut().find_map(|entry| match entry {
+                Entry::Folder(folder) if folder.icon.as_deref() == Some(kind.glyph()) => {
+                    Some(folder)
+                }
+                _ => None,
+            });
+            let Some(folder) = found else {
+                continue;
+            };
+            if folder.entries.is_empty() {
+                continue;
+            }
+            carried.push(crate::media::Made {
+                kind: *kind,
+                rows: std::mem::take(&mut folder.entries),
+                note: folder.comment.clone().unwrap_or_default(),
+                // Filled in by the caller, which is the only one holding the
+                // library that knows.
+                orders: crate::media::Orders::default(),
+            });
+        }
+    }
+    carried
+}
+
+/// Take the row for `path` off whichever shelf holds it, because the file is
+/// not on the disk any more. Says whether there was one.
+///
+/// The bar's own copy only. The shelf it was built from is the worker's, and is
+/// told separately — see [`crate::media::Library::forget`] — because the answer
+/// the user is owed is the row leaving the screen on the frame they deleted it,
+/// and waiting for a shelf of half a million rows to be rebuilt and sent back
+/// is not that.
+pub fn forget_media(categories: &mut [Category], path: &std::path::Path) -> bool {
+    for category in categories {
+        for entry in &mut category.entries {
+            let Entry::Folder(folder) = entry else {
+                continue;
+            };
+            let before = folder.entries.len();
+            folder
+                .entries
+                .retain(|row| row.media().is_none_or(|file| file.path != path));
+            if folder.entries.len() != before {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// What hanging a shelf on the bar disturbed.
+#[derive(Debug, Default)]
+pub struct Hung {
+    /// Where a column had to be made, if one was — every display's cursor is
+    /// standing in a bar that has just grown one.
+    pub column: Option<usize>,
+    /// The rows the new ones replaced, taken whole rather than emptied out:
+    /// moving half a million of them one at a time is the copy this hands back
+    /// to the worker to avoid.
+    pub worn: Vec<Entry>,
+}
+
+/// Where a column belongs among the columns there already are.
+///
+/// The bar is in [`CATEGORY_TABLE`] order, so this is the first column that
+/// belongs *after* this one — or the end, when there is none. The shell's own
+/// Settings column is not in the table and is therefore never landed in front
+/// of, which is the whole of what it needs from this.
+fn column_place(categories: &[Category], id: &str) -> usize {
+    let rank = |id: &str| CATEGORY_TABLE.iter().position(|(own, ..)| *own == id);
+    let mine = rank(id).unwrap_or_default();
+    categories
+        .iter()
+        .position(|column| rank(column.id).is_some_and(|other| other > mine))
+        .unwrap_or(categories.len())
+}
 
 impl App {
     /// Parse one `.desktop` file. Returns `None` for entries that should not
@@ -289,6 +533,17 @@ impl App {
             })
             .unwrap_or_default();
 
+        let mime_types = fields
+            .get("MimeType")
+            .map(|list| {
+                list.split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Some(App {
             name,
             comment: localised(&fields, "Comment"),
@@ -296,6 +551,7 @@ impl App {
             exec,
             terminal: is_true(fields.get("Terminal")),
             categories,
+            mime_types,
             path: path.to_path_buf(),
             wm_class: fields.get("StartupWMClass").cloned(),
         })
@@ -320,6 +576,7 @@ impl Entry {
     pub fn title(&self) -> &str {
         match self {
             Entry::App(app) => &app.name,
+            Entry::Media(file) => &file.title,
             Entry::Folder(folder) => &folder.title,
             Entry::Choice(choice) => &choice.title,
         }
@@ -329,6 +586,9 @@ impl Entry {
     pub fn comment(&self) -> Option<&str> {
         match self {
             Entry::App(app) => app.comment.as_deref(),
+            // Where it was found, which for a music collection is the only
+            // thing telling the album's copy of a track from the compilation's.
+            Entry::Media(file) => Some(&file.folder),
             Entry::Folder(folder) => folder.comment.as_deref(),
             Entry::Choice(choice) => choice.comment.as_deref(),
         }
@@ -337,6 +597,7 @@ impl Entry {
     pub fn icon(&self) -> Option<&str> {
         match self {
             Entry::App(app) => app.icon.as_deref(),
+            Entry::Media(file) => Some(file.kind.glyph()),
             Entry::Folder(folder) => folder.icon.as_deref(),
             Entry::Choice(choice) => choice.icon.as_deref(),
         }
@@ -368,6 +629,32 @@ impl Entry {
         }
     }
 
+    /// The file this row stands for, if it stands for one of the user's own.
+    pub fn media(&self) -> Option<&crate::media::File> {
+        match self {
+            Entry::Media(file) => Some(file.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// The same, as the shared handle the shelf holds — for telling one row
+    /// from another across a list that has been rebuilt, where comparing the
+    /// handles is comparing two pointers and comparing the files means
+    /// comparing two paths.
+    pub fn shelved(&self) -> Option<&crate::media::Shelved> {
+        match self {
+            Entry::Media(file) => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Whether pressing this row starts something: an application, or a player
+    /// for a file. A subcategory leads somewhere and a value means something;
+    /// neither is a process.
+    pub fn starts_something(&self) -> bool {
+        matches!(self, Entry::App(_) | Entry::Media(_))
+    }
+
     /// The colour this row stands for — see [`Choice::swatch`].
     pub fn swatch(&self) -> Option<Color> {
         match self {
@@ -394,9 +681,14 @@ impl Entry {
 /// subcategories.
 ///
 /// The bar's columns are trees, so anything that has to see all of them — the
-/// icon atlas being filled, an application being counted — has to walk rather
-/// than iterate.
-pub fn walk(entries: &[Entry], visit: &mut impl FnMut(&Entry)) {
+/// icon atlas being filled, an application being counted, a handler for a file
+/// being looked for — has to walk rather than iterate.
+///
+/// What the visitor is handed borrows the catalogue rather than the walk, so a
+/// caller may keep it: finding something in the tree is one of the things this
+/// is for, and a search that could only answer "yes" would need a second walk
+/// to say what it found.
+pub fn walk<'a>(entries: &'a [Entry], visit: &mut impl FnMut(&'a Entry)) {
     for entry in entries {
         visit(entry);
         if let Some(children) = entry.entries() {
@@ -406,14 +698,17 @@ pub fn walk(entries: &[Entry], visit: &mut impl FnMut(&Entry)) {
 }
 
 impl Category {
-    /// Whether there is an application anywhere in this column, subcategories
+    /// Whether there is anything anywhere in this column that a press would
+    /// start — an application, or one of the user's own files — subcategories
     /// included.
     ///
     /// Not the same as having no rows: the shell's own Settings column is full
     /// of rows and holds nothing that can be launched.
-    pub fn has_app(&self) -> bool {
+    pub fn has_launchable(&self) -> bool {
         let mut found = false;
-        walk(&self.entries, &mut |entry| found |= entry.app().is_some());
+        walk(&self.entries, &mut |entry| {
+            found |= entry.starts_something()
+        });
         found
     }
 
@@ -589,19 +884,27 @@ fn assemble(apps: Vec<App>) -> Vec<Category> {
         .zip(&mut sorted)
         .map(|((id, title, icon, _), apps)| {
             apps.sort_by_key(|a| a.name.to_lowercase());
+            let mut entries = subcategories(id);
+            entries.extend(apps.drain(..).map(Entry::App));
             Category {
                 id,
                 title,
                 icon,
-                entries: apps.drain(..).map(Entry::App).collect(),
+                entries,
             }
         })
         .collect();
 
-    // Empty columns would just be dead space to scroll past. The shell's own
-    // is exempt: it is a fixed part of the bar rather than a consequence of
-    // what happens to be installed, and it has its own rows in it.
-    categories.retain(|c| !c.entries.is_empty());
+    // Empty columns would just be dead space to scroll past. Measured in what
+    // can be started rather than in rows, because a column now carries rows of
+    // its own: Multimedia with nothing installed under it is two empty
+    // subcategories, which is still a column with nothing in it to reach. It
+    // earns its place back the moment the walk finds a file to put in one —
+    // see [`shelve_media`].
+    //
+    // The shell's own is exempt: it is a fixed part of the bar rather than a
+    // consequence of what happens to be installed, and nothing in it launches.
+    categories.retain(Category::has_launchable);
     categories.insert(0, shell_settings);
     categories
 }
@@ -846,7 +1149,7 @@ mod tests {
                 )],
             })],
         };
-        assert!(buried.has_app());
+        assert!(buried.has_launchable());
         assert_eq!(buried.apps(), 1);
 
         let hollow = Category {
@@ -858,7 +1161,10 @@ mod tests {
             })],
             ..buried.clone()
         };
-        assert!(!hollow.has_app(), "a subcategory is not an application");
+        assert!(
+            !hollow.has_launchable(),
+            "a subcategory is not an application"
+        );
     }
 
     #[test]
@@ -936,5 +1242,236 @@ mod tests {
             .unwrap();
             assert_eq!(app.category_id(), "multimedia", "for {raw}");
         }
+    }
+
+    /// Multimedia is divided in the column rather than in the classifier: the
+    /// two subcategories are there whatever is installed, and nothing is filed
+    /// into them yet.
+    #[test]
+    fn multimedia_carries_its_two_subcategories() {
+        let app =
+            parse("[Desktop Entry]\nType=Application\nName=Player\nExec=x\nCategories=Audio;\n")
+                .unwrap();
+        let categories = assemble(vec![app]);
+        let multimedia = categories.iter().find(|c| c.id == "multimedia").unwrap();
+
+        let titles: Vec<&str> = multimedia.entries.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["Music", "Video", "Player"]);
+
+        // Rows of the column, not applications in it — and empty, so the
+        // application is still the only thing there is to launch.
+        for row in &multimedia.entries[..2] {
+            assert!(row.app().is_none());
+            assert!(row.entries().is_some_and(<[Entry]>::is_empty));
+        }
+        assert_eq!(multimedia.apps(), 1);
+
+        // Both are drawn with a glyph of the shell's own: a subcategory left
+        // to the icon theme's fallback reads as an application that will not
+        // start.
+        assert_eq!(
+            multimedia.entries[0].icon(),
+            Some(crate::icons::CATEGORY_MUSIC)
+        );
+        assert_eq!(
+            multimedia.entries[1].icon(),
+            Some(crate::icons::CATEGORY_VIDEO)
+        );
+    }
+
+    /// And they are structure rather than content: a machine with no
+    /// multimedia application on it and nothing found on its disk has no
+    /// Multimedia column, exactly as before they existed.
+    #[test]
+    fn two_empty_subcategories_are_not_a_column() {
+        let categories = assemble(vec![parse(
+            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=Office;\n",
+        )
+        .unwrap()]);
+        assert_eq!(
+            categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", "office"]
+        );
+    }
+
+    fn found(path: &str) -> crate::media::Shelved {
+        std::sync::Arc::new(crate::media::File::at(Path::new(path)).expect("a listable file"))
+    }
+
+    /// Hang these files on the bar the way the worker's deliveries do — one
+    /// shelf at a time — and say where a column had to be made.
+    fn hang(categories: &mut Vec<Category>, files: Vec<crate::media::Shelved>) -> Vec<usize> {
+        crate::media::made_from(files)
+            .into_iter()
+            .filter_map(|made| shelve_media(categories, made).column)
+            .collect()
+    }
+
+    /// What the rows are now for: the user's own files, in order, with the row
+    /// above saying how many there are.
+    #[test]
+    fn the_rows_hold_the_files_the_walk_found() {
+        let player =
+            parse("[Desktop Entry]\nType=Application\nName=Player\nExec=x\nCategories=Audio;\n")
+                .unwrap();
+        let editor =
+            parse("[Desktop Entry]\nType=Application\nName=Paint\nExec=p\nCategories=Graphics;\n")
+                .unwrap();
+        let mut categories = assemble(vec![player, editor]);
+        let files = || {
+            vec![
+                found("/home/x/Music/zebra.mp3"),
+                found("/home/x/Music/apple.flac"),
+                found("/home/x/Videos/holiday.mkv"),
+                found("/home/x/Pictures/sunset.jpg"),
+                found("/home/x/Desktop/Screenshot.png"),
+            ]
+        };
+
+        // Both columns were already there, so nothing had to be made.
+        assert!(hang(&mut categories, files()).is_empty());
+
+        // Graphics gets its one row, above the tools, holding the pictures.
+        let graphics = categories.iter().find(|c| c.id == GRAPHICS).unwrap();
+        let titles: Vec<&str> = graphics.entries.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["Images", "Paint"]);
+        assert_eq!(
+            graphics.entries[0].icon(),
+            Some(crate::icons::CATEGORY_IMAGES)
+        );
+        assert_eq!(
+            graphics.entries[0].comment(),
+            Some("2 images in your home folder")
+        );
+        let images: Vec<&str> = graphics.entries[0]
+            .entries()
+            .unwrap()
+            .iter()
+            .map(Entry::title)
+            .collect();
+        assert_eq!(images, ["Screenshot", "sunset"], "alphabetical, any folder");
+        assert_eq!(graphics.apps(), 1, "the editor, and not the pictures");
+
+        let multimedia = categories.iter().find(|c| c.id == MULTIMEDIA).unwrap();
+
+        let music = multimedia.entries[0].entries().unwrap();
+        let titles: Vec<&str> = music.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["apple", "zebra"], "alphabetical, not as found");
+        assert_eq!(
+            multimedia.entries[0].comment(),
+            Some("2 audio files in your home folder")
+        );
+        assert_eq!(
+            multimedia.entries[1].comment(),
+            Some("1 video file in your home folder")
+        );
+
+        // A file is a row that starts something, and is not an application:
+        // nothing installed it and nothing here would offer to remove it.
+        assert!(music[0].starts_something());
+        assert!(music[0].app().is_none());
+        assert!(music[0].media().is_some());
+        assert_eq!(multimedia.apps(), 1, "the player, and not the music");
+
+        // Publishing again replaces what is there rather than doubling it.
+        hang(&mut categories, files());
+        let multimedia = categories.iter().find(|c| c.id == MULTIMEDIA).unwrap();
+        assert_eq!(multimedia.entries[0].entries().unwrap().len(), 2);
+    }
+
+    /// Music on a machine with no media player installed still deserves
+    /// somewhere to be, and the column it earns stands where it always does.
+    #[test]
+    fn a_file_alone_earns_the_column_back() {
+        let office =
+            parse("[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=Office;\n")
+                .unwrap();
+        let system =
+            parse("[Desktop Entry]\nType=Application\nName=Y\nExec=y\nCategories=System;\n")
+                .unwrap();
+        let mut categories = assemble(vec![office, system]);
+        assert_eq!(
+            categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", "system", "office"]
+        );
+
+        assert_eq!(hang(&mut categories, vec![found("/home/x/a.mp3")]), vec![2]);
+        assert_eq!(
+            categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", "system", MULTIMEDIA, "office"],
+            "in the bar's own order, not on the end"
+        );
+        assert!(categories[2].has_launchable());
+        assert_eq!(categories[2].entries[0].entries().unwrap().len(), 1);
+
+        // And an empty library never makes one.
+        let mut bare = assemble(Vec::new());
+        assert!(hang(&mut bare, Vec::new()).is_empty());
+        assert_eq!(bare.len(), 1);
+    }
+
+    /// Both columns can be earned in the same pass, and the second index is
+    /// worked out in the bar the first one has already changed — which is why
+    /// a cursor has to replay them in order.
+    #[test]
+    fn two_columns_can_arrive_together_and_are_reported_in_order() {
+        let mut categories = assemble(vec![parse(
+            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=Office;\n",
+        )
+        .unwrap()]);
+        assert_eq!(
+            hang(
+                &mut categories,
+                vec![found("/home/x/a.mp3"), found("/home/x/b.png")]
+            ),
+            vec![1, 2]
+        );
+        assert_eq!(
+            categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", MULTIMEDIA, GRAPHICS, "office"]
+        );
+
+        // A kind with nothing found never conjures the column that holds it.
+        let mut only_pictures = assemble(Vec::new());
+        assert_eq!(
+            hang(&mut only_pictures, vec![found("/home/x/b.png")]),
+            vec![1]
+        );
+        assert_eq!(
+            only_pictures.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", GRAPHICS]
+        );
+    }
+
+    /// The column is made wherever it belongs, including at both ends.
+    #[test]
+    fn the_column_lands_in_the_bars_own_order() {
+        let column = |id: &'static str| Category {
+            id,
+            title: "X",
+            icon: "x",
+            entries: Vec::new(),
+        };
+        // Only the shell's own, which is not in the table and is never landed
+        // in front of.
+        assert_eq!(column_place(&[column("settings")], MULTIMEDIA), 1);
+        // Before everything that comes after it, after everything that does not.
+        assert_eq!(
+            column_place(&[column("settings"), column("games")], MULTIMEDIA),
+            1
+        );
+        assert_eq!(
+            column_place(&[column("settings"), column("system")], MULTIMEDIA),
+            2
+        );
+        // And Graphics sits behind Multimedia, as the table has it.
+        assert_eq!(
+            column_place(&[column("settings"), column(MULTIMEDIA)], GRAPHICS),
+            2
+        );
+        assert_eq!(
+            column_place(&[column("settings"), column("internet")], GRAPHICS),
+            1
+        );
     }
 }

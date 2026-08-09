@@ -13,6 +13,7 @@ mod guide;
 mod icons;
 mod keyboard;
 mod launch;
+mod media;
 mod menu;
 mod model;
 mod pointer;
@@ -21,6 +22,8 @@ mod settings;
 mod steam_hid;
 mod system;
 mod theme;
+mod thumbs;
+mod trash;
 mod ui;
 mod uninstall;
 
@@ -36,13 +39,16 @@ use smithay_client_toolkit::compositor::{
     CompositorHandler, CompositorState, FrameCallbackData, Region,
 };
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1 as shape;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
-    cursor_shape::CursorShapeManager, PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT,
+    cursor_shape::CursorShapeManager, AxisScroll, PointerEvent, PointerEventKind, PointerHandler,
+    BTN_LEFT, BTN_RIGHT,
 };
+use smithay_client_toolkit::seat::touch::TouchHandler;
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -51,7 +57,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::controller::ControllerInput;
@@ -131,12 +137,20 @@ const HIDE_POINTER_VERSION: u32 = 12;
 const RESTORE_SHELL_VERSION: u32 = 14;
 
 /// First version that will move a window to another display and photograph
-/// one. The highest this shell asks for.
+/// one.
 ///
 /// Below it the guide's menu still draws both rows and both refuse: neither is
 /// something a shell can do for itself. The window's place in the layout
 /// belongs to the compositor, and so do its pixels.
 const WINDOW_MOVE_AND_CAPTURE_VERSION: u32 = 15;
+
+/// First version that says which way up each display's picture is drawn, and
+/// can be asked to turn it. The highest this shell asks for.
+///
+/// Below it no display reports an orientation, so Settings > Display >
+/// Orientation says there is nothing to turn — which is the truth on a
+/// compositor that cannot be asked.
+const TRANSFORM_SHELL_VERSION: u32 = 16;
 
 /// First version that names the application behind every window rather than
 /// only the one in front.
@@ -409,6 +423,17 @@ fn main() -> anyhow::Result<()> {
         "scanned applications"
     );
 
+    // Started here rather than with the rest of the shell's state: the walk
+    // over the user's home directory runs on a worker, the first frame is
+    // several hundred milliseconds of GPU setup away, and Multimedia's two
+    // rows can be full by the time anybody sees them.
+    let media = media::Library::start();
+    if !thumbs::films_can_be_thumbnailed() {
+        tracing::info!(
+            "neither ffmpegthumbnailer nor ffmpeg is installed; films will keep their glyph"
+        );
+    }
+
     // Decode every icon once, up front, so the atlas can be built in one go.
     let icons = load_icons(&categories);
 
@@ -426,11 +451,8 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(
-        &qh,
-        1..=WINDOW_MOVE_AND_CAPTURE_VERSION,
-        (),
-    ) {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=TRANSFORM_SHELL_VERSION, ())
+    {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -466,6 +488,10 @@ fn main() -> anyhow::Result<()> {
         pending_capture: None,
         removal_plan: None,
         uninstalling: None,
+        open_with: Vec::new(),
+        open_with_chosen: 0,
+        sorting: None,
+        deleting: None,
         quick: Quick::start(),
         osk: keyboard::Osk::default(),
         menu_frame_drawn: false,
@@ -474,7 +500,16 @@ fn main() -> anyhow::Result<()> {
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
         keyboard: None,
+        held_key: None,
+        // Until the seat says otherwise, which it does with every keyboard it
+        // hands out. Repeat is what a keyboard does; off is the setting.
+        key_repeat_on: true,
         pointer: None,
+        touch: None,
+        touches: std::collections::HashMap::new(),
+        pointer_enter: None,
+        pointer_shape: None,
+        scrolled: (0.0, 0.0),
         cursor_shape: CursorShapeManager::bind(&globals, &qh).ok(),
         focused_surface: None,
         keep_keyboard_grabbed: cli.grab_keyboard,
@@ -487,6 +522,8 @@ fn main() -> anyhow::Result<()> {
         gpu: None,
         pending_icons: Some(icons),
         xmb: Xmb::with_session_displays(categories, child_wayland_display, child_xwayland_display),
+        media,
+        thumbs: thumbs::Thumbs::start(),
         exit: false,
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
@@ -534,6 +571,10 @@ fn main() -> anyhow::Result<()> {
 
         let now = Instant::now();
         shell.poll_controller(now);
+        // And the keyboard on the same clock: a held arrow is as much an
+        // input still happening as a held D-pad is, and neither of them is a
+        // Wayland event that would have woken this loop by itself.
+        shell.repeat_held_key(now);
         // Scheduled actions, for capturing the menu's transitions.
         while action_schedule
             .last()
@@ -553,6 +594,14 @@ fn main() -> anyhow::Result<()> {
         // this loop, but the loop wakes anyway to poll the controller — which
         // is the only reason a worker can hand its answer to a frame at all.
         shell.sync_app_facts();
+        // The same again for the walk over the user's home directory: a song
+        // found on a worker thread is not a Wayland event either, and this is
+        // the frame it reaches the bar on.
+        shell.sync_media();
+        // And the pictures of what it found, which are made on two more
+        // workers and land in the atlas here — for the rows the cursor is
+        // near, and nowhere else.
+        shell.sync_thumbnails();
         // And likewise for a removal: neither the survey nor the removal itself
         // is a Wayland event, so the frame this loop was going to draw anyway is
         // what carries their answers on to the screen.
@@ -564,9 +613,10 @@ fn main() -> anyhow::Result<()> {
         shell.sync_overview();
         // Last of the three, and unconditional: a display plugged in
         // mid-session has to be told what the session is set to, and the only
-        // thing that knows it has not been told is the diff inside this.
+        // thing that knows it has not been told is the diff inside these.
         shell.sync_hdr();
         shell.sync_mode();
+        shell.sync_turn();
         if now >= shell.next_frame_deadline {
             shell.needs_redraw = true;
         }
@@ -799,6 +849,14 @@ struct Panel {
     /// resent — and so a display is not put back into a mode the user changed
     /// from somewhere else.
     applied_mode: Option<settings::Mode>,
+    /// Which way up the compositor says it is drawing this display, where the
+    /// turn is the compositor's to make. `None` where it is not — a nested
+    /// session, or a compositor too old to be asked — which is what keeps the
+    /// display off the Orientation page rather than on it and inert.
+    turned: Option<settings::Orientation>,
+    /// The orientation this display was last asked for, so a choice is not
+    /// resent, for the reason `applied_mode` is not.
+    applied_turn: Option<settings::Orientation>,
     /// The windows on this display, topmost first, as the compositor lists
     /// them for the overview. Empty on compositors without the protocol.
     windows: Vec<WindowCard>,
@@ -942,6 +1000,33 @@ struct Shell {
     removal_plan: Option<(apps::App, uninstall::Survey)>,
     /// A removal the user has agreed to, and how far it has got.
     uninstalling: Option<Uninstall>,
+    /// The applications the open Open with list is offering, in the order it is
+    /// offering them: [`menu::Command::OpenWithHandler`] carries a position in
+    /// this and nothing else. Emptied when the menu goes away, so a stale index
+    /// can never name a program.
+    open_with: Vec<media::Handler>,
+    /// Which of them opens the type at the moment — the row wearing the tick.
+    ///
+    /// Held beside the list rather than worked out from it, because the list is
+    /// deliberately *not* rebuilt while the panel is up. The user picks by
+    /// pointing at a row, and rows that reordered themselves under the press —
+    /// the newly chosen application jumping to the head, where the default
+    /// belongs — would move the next row they were reaching for.
+    open_with_chosen: usize,
+    /// The shelf a display has just asked to have listed in a different order,
+    /// and which display that was.
+    ///
+    /// Held only until those rows arrive. See [`Shell::sort_selected_shelf`]:
+    /// the cursor goes to the head of the column at once *and* again when the
+    /// new order lands, and this is what remembers that the second one is owed.
+    sorting: Option<(media::Kind, usize)>,
+    /// The file the Delete question is about.
+    ///
+    /// Held rather than looked up again when the question is answered, for the
+    /// reason [`Shell::removal_plan`] is held: the panel is about one particular
+    /// thing, and the one command in the shell that destroys somebody's file
+    /// must act on the file the panel named and on nothing else.
+    deleting: Option<media::File>,
     /// The volume and brightness bars in the guide's sidebar, and the worker
     /// that keeps them true.
     quick: Quick,
@@ -964,15 +1049,48 @@ struct Shell {
     /// shell draws travel with the windows the compositor is easing.
     guide_card_rects: std::collections::HashMap<u64, Glide>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
-    /// The seat's pointer, taken for one thing only: the on-screen keyboard.
+    /// The key the user is holding down, if any, and when it next acts.
     ///
-    /// The rest of the shell is deliberately not clickable — it is a console
-    /// bar driven from a controller, and every one of its surfaces covers a
-    /// whole display, so a shell that accepted clicks anywhere would swallow
-    /// them from the application it is sitting in front of. The board is the
-    /// exception because it is a picture of a keyboard: keys are for pressing,
-    /// and anyone with a mouse plugged in will try.
+    /// Repeat is the client's own work under Wayland — the compositor sends
+    /// one press and one release, and the toolkit only fills the gap for a
+    /// client that runs its repeat in a calloop, which this loop is not. So
+    /// the shell keeps the key itself and steps it in [`Shell::repeat_held_key`],
+    /// at the rate the D-pad already walks the bar at.
+    held_key: Option<HeldKey>,
+    /// Whether the seat repeats keys at all. The user can turn repeat off for
+    /// the session, and the shell's own is still the session's.
+    key_repeat_on: bool,
+    /// The seat's pointer.
+    ///
+    /// A console is driven from a controller and the shell is drawn for one,
+    /// but the machine it runs on is a PC with a mouse in the drawer, and every
+    /// one of the shell's surfaces covers a whole display. So what the pointer
+    /// can reach is exactly what the shell is currently showing — see
+    /// [`Shell::spot_at`] — and nothing while the shell is standing out of an
+    /// application's way, which is the same rule the input region is cut to.
     pointer: Option<wl_pointer::WlPointer>,
+    /// The seat's touchscreen, on the machines that have one. Everything a
+    /// finger does goes through the same hit test the pointer does; what
+    /// differs is only that there is no hovering — see [`Shell::on_touch`].
+    touch: Option<wl_touch::WlTouch>,
+    /// Where each finger currently down went down, so a tap can be told from a
+    /// drag across the display. Keyed by the touch point's own id.
+    touches: std::collections::HashMap<i32, Touch>,
+    /// The serial of the last pointer enter, which is what a request to change
+    /// the cursor's shape has to carry however long ago the pointer arrived.
+    pointer_enter: Option<u32>,
+    /// The shape it was last set to, so an unchanged one is not resent on every
+    /// motion event. Cleared on each enter rather than assumed: what the cursor
+    /// looks like when it arrives is whatever the surface it came from asked
+    /// for, which over a text field is a beam.
+    pointer_shape: Option<shape::Shape>,
+    /// Wheel movement, in notches, that has not yet added up to a step of the
+    /// selection.
+    ///
+    /// A touchpad sends a continuous stream of fractions of a notch and the
+    /// shell moves in whole rows; keeping the remainder is what makes a slow
+    /// two-finger drag scroll one row at a time instead of nothing at all.
+    scrolled: (f64, f64),
     /// Says what the cursor should look like over our surfaces, when the
     /// compositor supports being told. Without it the pointer keeps whatever
     /// shape the application under the board last asked for, which over a
@@ -1004,6 +1122,17 @@ struct Shell {
     pending_icons: Option<Vec<(String, icons::Icon)>>,
 
     xmb: Xmb,
+    /// The user's own music, films and photographs, and the walk over their
+    /// home directory that keeps finding them. Held beside the catalogue
+    /// rather than in it:
+    /// the catalogue is rebuilt whenever software is installed or removed, and
+    /// what is on the disk does not change because a package did.
+    media: media::Library,
+    /// The workers that make a picture of a film or a photograph, and what
+    /// they have been asked for. Kept beside the library for the same reason
+    /// it is kept beside the catalogue: what is on the disk is not the shell's
+    /// to rebuild when something is installed.
+    thumbs: thumbs::Thumbs,
     exit: bool,
     needs_redraw: bool,
     next_frame_deadline: Instant,
@@ -1072,6 +1201,8 @@ impl Shell {
             modes: Vec::new(),
             pending_modes: Vec::new(),
             applied_mode: None,
+            turned: None,
+            applied_turn: None,
             windows: Vec::new(),
             pending_windows: Vec::new(),
             width: 0,
@@ -1101,6 +1232,13 @@ impl Shell {
         if self.focused_panel > index || self.focused_panel >= self.panels.len() {
             self.focused_panel = self.focused_panel.saturating_sub(1);
         }
+        // The screen lists under Settings > Display are built from the panels,
+        // and a display that has gone has to leave them here: the compositor's
+        // per-display events only ever carry the displays that are still
+        // there, so nothing else is going to mention this one again.
+        self.refresh_hdr_support();
+        self.refresh_display_modes();
+        self.refresh_display_turns();
         self.sync_setting_preview();
         self.needs_redraw = true;
     }
@@ -1113,7 +1251,13 @@ impl Shell {
         }
         let count = self.panels.len() as i32;
         let next = (self.focused_panel as i32 + delta).rem_euclid(count) as usize;
-        if next == self.focused_panel {
+        self.focus_panel(next);
+    }
+
+    /// Hand control to display `index`, whichever way the user asked for it: a
+    /// shoulder button, or a mouse that has crossed onto it.
+    fn focus_panel(&mut self, next: usize) {
+        if next >= self.panels.len() || next == self.focused_panel {
             return;
         }
         self.focused_panel = next;
@@ -1994,6 +2138,37 @@ impl Shell {
         }
     }
 
+    /// Step the key the user is holding down, if it is time and if it is a key
+    /// that repeats at all.
+    ///
+    /// The keyboard's half of what the D-pad gets from [`controller`]: a held
+    /// direction walks the bar until it is let go of, rather than moving one
+    /// row and stopping. It is done here rather than by the toolkit because
+    /// Wayland gives a client the press and the release and nothing between
+    /// them, and the toolkit's own filler runs in a calloop this shell does not
+    /// have. The loop wakes for the controller often enough that a step is
+    /// never more than a poll late.
+    fn repeat_held_key(&mut self, now: Instant) {
+        if !self.key_repeat_on {
+            return;
+        }
+        let Some(held) = self.held_key.as_mut() else {
+            return;
+        };
+        if !held.due(now) {
+            return;
+        }
+        let keysym = held.keysym;
+        if !key_repeats(keysym, self.password_wanted()) {
+            // Acted once when it was pressed, and that was the whole of it.
+            // Dropped rather than left to be asked about every pass: what the
+            // key is worth cannot change while it is down.
+            self.held_key = None;
+            return;
+        }
+        self.on_key(keysym);
+    }
+
     fn poll_controller(&mut self, now: Instant) {
         // Being driven is not the same as holding the keyboard, and the
         // on-screen keyboard is the case that separates them: it is up, the
@@ -2515,8 +2690,13 @@ impl Shell {
         }
         // The context menu is drawn over whatever raised it, so Back from it is
         // back to that — not out of both, and not out of the guide underneath
-        // it.
-        if self.context_menu.close() {
+        // it. One layer at a time inside the panel as well: a menu that has
+        // stepped into a further list steps back out of it first, because that
+        // list was reached by a press and Back undoes one press.
+        if self.context_menu.is_open() {
+            if !self.context_menu.back() {
+                self.context_menu.close();
+            }
             self.needs_redraw = true;
             return;
         }
@@ -2616,10 +2796,16 @@ impl Shell {
         // Everything the splash needs, read before the launch: the tile it
         // opens out of, and what was already on the display, so the
         // application's own window can be told from them.
-        let opening = panel
-            .cursor
-            .current_app(&self.xmb)
-            .map(|app| (app.name.clone(), app.icon.clone()));
+        // A file is answered for by its own name and its own mark, not by the
+        // player's: the user pressed a song, and a splash that said "VLC"
+        // would be about a program they never chose to think about.
+        let opening = match panel.cursor.current_entry(&self.xmb) {
+            Some(apps::Entry::App(app)) => Some((app.name.clone(), app.icon.clone())),
+            Some(apps::Entry::Media(file)) => {
+                Some((file.title.clone(), Some(file.kind.glyph().to_string())))
+            }
+            _ => None,
+        };
         let from = ui::launch_origin(panel.width as f32, panel.height as f32);
         let known: Vec<u32> = panel.windows.iter().map(|window| window.id).collect();
         let foreground = panel.foreground.clone().unwrap_or_default();
@@ -2695,19 +2881,38 @@ impl Shell {
         }
     }
 
-    /// The menu for the bar's focused tile: the disc it stands on, the name of
-    /// what is on it, and what can be done to it.
+    /// The menu for the bar's focused tile.
     ///
-    /// Only over an application. A subcategory and a settings value are rows
-    /// that lead somewhere or mean something rather than objects with a life of
-    /// their own, and neither has anything a menu would offer yet.
+    /// Two of them, because the bar holds two kinds of thing a menu can be
+    /// about: an application that was installed, and a file the user made or
+    /// downloaded. A subcategory and a settings value are neither — they are
+    /// rows that lead somewhere or mean something rather than objects with a
+    /// life of their own — and neither has anything a menu would offer.
+    ///
+    /// The two lists have not one row in common, which is why they are two
+    /// functions rather than one with the differences picked out inside it.
+    /// Everything the application menu offers is about an *installation*: what
+    /// put it there, how much disk it takes, how to take it off. None of those
+    /// is a question about a song, and the one that looks closest —
+    /// Uninstall — is the one that would be most wrong, because a piece of
+    /// music has no package to remove and the only thing the row could mean is
+    /// deleting it.
+    fn bar_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        if self.selected_media().is_some() {
+            return self.media_entry_menu();
+        }
+        self.application_entry_menu()
+    }
+
+    /// The menu for an installed application: the disc it stands on, the name
+    /// of what is on it, and what can be done to it.
     ///
     /// Two bands: what the menu can *tell* the user about the application and
     /// what it can do to the installation, then what it can do with the
     /// application right now. Close is in the second band because it is the way
     /// out of the menu rather than something done to the tile — on the bar
     /// nothing is running yet, so there is nothing here for a Close to end.
-    fn bar_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+    fn application_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
         let app = panel.cursor.current_app(&self.xmb)?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
@@ -2727,6 +2932,269 @@ impl Shell {
                 menu::Entry::new(menu::Command::Dismiss, "Close").group(1),
             ],
         ))
+    }
+
+    // --- the menu over one of the user's own files -------------------------
+
+    /// The menu for a song, a film or a photograph on the bar.
+    ///
+    /// Five rows in two bands. The first three act on the file itself, in the
+    /// order somebody reaches for them — open it, open it in something else,
+    /// get rid of it. The last two are not about the file at all: Sort is about
+    /// the *column*, and Cancel is about the menu. That is what the rule between
+    /// them is saying, and it is why Sort is below it rather than up with the
+    /// commands it is nothing like.
+    ///
+    /// Two of the five can be unavailable, and both are drawn greyed rather
+    /// than left out, so the panel keeps its shape wherever it is raised:
+    ///
+    /// * **Open with**, when nothing installed says it handles this type. There
+    ///   is then nothing to choose *between* — Open would fall through to
+    ///   `xdg-open`, which is not an answer to "which program".
+    /// * **Delete**, for a file that is not under the user's home directory.
+    ///   See [`crate::trash::is_the_users_own`].
+    fn media_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let file = self.selected_media()?;
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((
+            anchor,
+            Some(file.title.clone()),
+            media_rows(
+                !media::handlers(file, &self.xmb.categories).is_empty(),
+                trash::is_the_users_own(&file.path),
+            ),
+        ))
+    }
+
+    /// The Open with list: every application that says it opens this kind of
+    /// file, best first, each under its own name and its own picture.
+    ///
+    /// The first row is always the one a plain Open would use, because both
+    /// come out of [`media::handlers`]. A tick marks it, the same tick the
+    /// Settings column puts on the value a setting is currently set to — it is
+    /// the same statement, that this is the answer already in force.
+    ///
+    /// Held as well as listed. The rows carry a position in this list and
+    /// nothing else, so the list has to outlive the press that chose one.
+    fn open_with_entries(&mut self) -> Vec<menu::Entry> {
+        let Some(file) = self.selected_media().cloned() else {
+            return Vec::new();
+        };
+        self.open_with = media::handlers(&file, &self.xmb.categories)
+            .into_iter()
+            .filter_map(|app| media::handler_row(&file, app))
+            .collect();
+        // The head of the list, because that is where [`media::handlers`] puts
+        // the answer already in force.
+        self.open_with_chosen = 0;
+        open_with_rows(&self.open_with, self.open_with_chosen)
+    }
+
+    /// The Sort list: the nine orders a shelf can be listed in, with the one it
+    /// is in now ticked.
+    ///
+    /// An order that this collection cannot be put in is drawn greyed. Several
+    /// filesystems keep no creation time at all, and on one of those the two
+    /// Created rows would otherwise be offered, chosen, and do nothing — which
+    /// the user would read as the shell being broken rather than as the disk
+    /// not knowing.
+    fn sort_entries(&self) -> Vec<menu::Entry> {
+        let Some(kind) = self.selected_media().map(|file| file.kind) else {
+            return Vec::new();
+        };
+        sort_rows(self.media.sort(kind), self.media.orders(kind))
+    }
+
+    /// The file the bar's cursor is on, if it is on one.
+    fn selected_media(&self) -> Option<&media::File> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.xmb)
+            .and_then(apps::Entry::media)
+    }
+
+    /// What the row the cursor is standing inside is called — "Music", "Video",
+    /// "Images" — which is what the Sort list is titled after.
+    ///
+    /// The column and not the file: what is being ordered is the whole shelf,
+    /// and a panel headed with the name of one song would be saying it was
+    /// about that song.
+    fn selected_column_title(&self) -> Option<String> {
+        let kind = self.selected_media()?.kind;
+        Some(apps::shelf_title(kind).to_string())
+    }
+
+    /// Make the application the Open with list offered at `index` the one that
+    /// opens files of this type.
+    ///
+    /// It does not open anything. The list answers "which program opens these",
+    /// and that is a question about every file of the type rather than about
+    /// the one the menu was raised over — so what a press does is write the
+    /// answer down, and Open is what acts on it. Opening the file as well would
+    /// make the two rows of the menu impossible to tell apart: a user who
+    /// wanted to *change* which program handles their photographs would have to
+    /// watch one of them open every time they did it.
+    ///
+    /// Written where every other desktop keeps it, so it holds outside this
+    /// shell and after a restart. See [`media::make_default`].
+    ///
+    /// The panel stays up, and the tick moves to the row that was pressed. That
+    /// is the whole answer — there is nothing else to see — and it is the same
+    /// bargain the mixer's tracks strike: a list where exactly one row is in
+    /// force is a control being *set*, so it is the user's to leave when they
+    /// are satisfied rather than the shell's to close after one press.
+    fn choose_default_handler(&mut self, index: usize) {
+        let Some(handler) = self.open_with.get(index).cloned() else {
+            return;
+        };
+        if !media::make_default(&handler) {
+            // The tick stays where it was: nothing was written, so nothing
+            // about what opens these files has changed.
+            return;
+        }
+        tracing::info!(
+            mime = handler.mime,
+            with = %handler.name,
+            entry = %handler.id,
+            "this is what opens files of this type now"
+        );
+        self.open_with_chosen = index;
+        if self
+            .context_menu
+            .refresh(open_with_rows(&self.open_with, index))
+        {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// List the shelf the cursor is standing in in a different order.
+    ///
+    /// Written down as well as applied. An order is a preference rather than an
+    /// action — nobody chooses "largest first" meaning "until I next start the
+    /// shell" — so it goes in the settings file beside the accent and the
+    /// display modes, per shelf, because how somebody wants their music listed
+    /// says nothing about how they want their photographs listed.
+    fn sort_selected_shelf(&mut self, sort: media::Sort) {
+        let Some(kind) = self.selected_media().map(|file| file.kind) else {
+            return;
+        };
+        if !self.media.set_sort(kind, sort) {
+            return;
+        }
+        tracing::info!(
+            shelf = apps::shelf_title(kind),
+            order = sort.key(),
+            "listing a shelf in a different order"
+        );
+        settings::remember_media_sort(kind, sort);
+        // At the top of it, on the display that asked. Somebody who has just
+        // said "newest first" is asking to be shown the newest, and a cursor
+        // held on the file it happened to be standing on would answer with that
+        // file's new position instead — which on a large shelf is somewhere in
+        // the middle of a list they never see the head of. Every other display
+        // keeps its file, because the order changed underneath it rather than
+        // at its request.
+        //
+        // Twice over, and deliberately. The cursor goes to the top now, so the
+        // press is answered on the frame it lands rather than whenever the
+        // worker has finished reordering half a million rows; and the note here
+        // is what puts it there *again* when they arrive, because otherwise the
+        // ordinary rule would take over and put the cursor back on the file it
+        // is standing on. The first row is the first row either way, so the
+        // second one moves nothing the user can see.
+        self.sorting = Some((kind, self.focused_panel));
+        if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+            panel.cursor.rest_on_first_row();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Ask whether to delete the selected file.
+    ///
+    /// The one question in the shell about something the user made rather than
+    /// something they installed, and the panel says where the file is going.
+    /// "Delete" is what the row is called because that is what the user means
+    /// by it; the trash is where it lands, and a person who has just deleted a
+    /// photograph by accident needs to be told, on the way past, that there is
+    /// somewhere to get it back from.
+    fn ask_to_delete(&mut self, from: [f32; 4]) {
+        let Some(file) = self.selected_media().cloned() else {
+            return;
+        };
+        // Nothing else may be waiting on this panel.
+        self.app_facts = None;
+        self.removal_plan = None;
+        let name = file.title.clone();
+        let icon = file.kind.glyph().to_string();
+        self.deleting = Some(file);
+        self.dialog.ask(
+            from,
+            Some(icon),
+            vec![
+                // Broken across two lines at the one place it can always be
+                // broken, for the reason the uninstall question is: every run
+                // the shell draws is a single line with an ellipsis where the
+                // rest would have been, and the name is the half that must not
+                // be the half that gets cut.
+                dialog::Line::Note("Do you want to delete".to_string()),
+                dialog::Line::Heading(format!("{name}?")),
+                dialog::Line::Note("It will be moved to the trash.".to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::ConfirmDelete, "Yes").destructive(),
+                menu::Entry::new(menu::Command::Dismiss, "No"),
+            ],
+            // On No, for the reason the uninstall question opens on No.
+            1,
+        );
+    }
+
+    /// The user has said yes.
+    ///
+    /// The row goes as soon as the file does, rather than at the walk's next
+    /// pass five minutes later: the user has just watched themselves delete
+    /// something, and a bar still offering to play it is a bar that has not
+    /// understood. A failure is reported in a panel rather than a line in the
+    /// log, for the reason a screenshot's failure is — a button that silently
+    /// either worked or did not is a button nobody trusts twice.
+    fn delete_the_file(&mut self, from: [f32; 4]) {
+        let Some(file) = self.deleting.take() else {
+            return;
+        };
+        match trash::discard(&file.path) {
+            Ok(_) => {
+                // The row goes from the bar here and the file goes from the
+                // shelf on the worker, rather than the shelf being rebuilt and
+                // sent back: one row has gone, and rebuilding the column to say
+                // so would be the whole collection's worth of work for it.
+                self.media.forget(&file.path);
+                let xmb = &mut self.xmb;
+                if apps::forget_media(&mut xmb.categories, &file.path) {
+                    self.needs_redraw = true;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    file = %file.path.display(),
+                    "could not move a file to the trash"
+                );
+                self.dialog.ask(
+                    from,
+                    Some(file.kind.glyph().to_string()),
+                    vec![
+                        dialog::Line::Heading(file.title.clone()),
+                        dialog::Line::Note("This could not be deleted.".to_string()),
+                        dialog::Line::Rule,
+                    ],
+                    vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+                    0,
+                );
+            }
+        }
     }
 
     // --- the volume mixer --------------------------------------------------
@@ -2989,6 +3457,14 @@ impl Shell {
 
     /// Carry out the menu's highlighted command.
     fn choose_context_menu(&mut self) {
+        // A row that has asked for a further list has already been answered.
+        // The panel is still showing the list it was pressed on for as long as
+        // that press is being watched, and a second Accept in that moment would
+        // press the same row again — so it is swallowed rather than carried out
+        // against rows that are on their way off the panel.
+        if self.context_menu.is_descending() {
+            return;
+        }
         // Where the row is *before* it is chosen. A command that opens a panel
         // grows it out of the very control that was pressed, and by the time
         // `choose` has returned the menu is already on its way back into its own
@@ -3057,6 +3533,27 @@ impl Shell {
             menu::Command::Information => self.show_app_information(from),
             menu::Command::Uninstall => self.ask_to_uninstall(from),
             menu::Command::Launch => self.start_selection(),
+            // The same thing Accept on the row does, and deliberately the same
+            // code: the cursor has not moved — the menu has had every button
+            // since it went up — so what "the selection" means here is the file
+            // the panel is titled after.
+            menu::Command::Open => self.start_selection(),
+            // These two do not act, they ask. The panel stays where it is and
+            // shows what was asked for; see `Menu::descend`.
+            menu::Command::OpenWith => {
+                let entries = self.open_with_entries();
+                let title = self.selected_media().map(|file| file.title.clone());
+                self.context_menu.descend(title, entries);
+            }
+            menu::Command::Sort => {
+                let entries = self.sort_entries();
+                let title = self.selected_column_title();
+                self.context_menu.descend(title, entries);
+            }
+            menu::Command::OpenWithHandler(index) => self.choose_default_handler(index),
+            menu::Command::SortBy(sort) => self.sort_selected_shelf(sort),
+            menu::Command::Delete => self.ask_to_delete(from),
+            menu::Command::ConfirmDelete => self.delete_the_file(from),
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
             menu::Command::SubmitPassword => self.submit_password(),
             menu::Command::MoveToNextDisplay => self.move_selected_window(Toward::Next),
@@ -3079,6 +3576,7 @@ impl Shell {
             // waiting on whatever it was for.
             menu::Command::Dismiss => {
                 self.removal_plan = None;
+                self.deleting = None;
                 self.abandon_uninstall("cancelled");
             }
             menu::Command::Placeholder(name) => tracing::info!(
@@ -3529,7 +4027,17 @@ impl Shell {
             applications = total,
             "scanned applications again"
         );
+        // The files the walk has found are the shell's own record of what is on
+        // the disk, and a package coming off the machine has not changed that.
+        // So they are carried across to the columns that were just rebuilt
+        // rather than asked for again — see [`apps::carried_media`].
+        let carried = apps::carried_media(&mut self.xmb.categories);
         self.xmb.categories = categories;
+        for mut made in carried {
+            made.orders = self.media.orders(made.kind);
+            let hung = apps::shelve_media(&mut self.xmb.categories, made);
+            self.media.discard(hung.worn);
+        }
         for panel in &mut self.panels {
             panel.cursor = Cursor::for_model(&self.xmb);
         }
@@ -3562,6 +4070,143 @@ impl Shell {
             self.needs_redraw = true;
         }
         self.app_facts = None;
+    }
+
+    /// Keep the atlas holding pictures of the rows that are being looked at,
+    /// and nothing else.
+    ///
+    /// Three steps, once a frame, and the order matters: work out what is worth
+    /// having, give up everything else so there is room, then take whatever the
+    /// workers have finished. A picture that arrives for a row the cursor has
+    /// since left is dropped on the floor here rather than uploaded — it cost
+    /// nothing to make the second time, because it is on the disk now.
+    fn sync_thumbnails(&mut self) {
+        let wanted = self.pictures_worth_having();
+        for path in &wanted {
+            if self
+                .gpu
+                .as_ref()
+                .is_some_and(|gpu| gpu.thumbnail(path).is_none())
+            {
+                self.thumbs.want(path);
+            }
+        }
+
+        let made = self.thumbs.take();
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        gpu.retain_thumbnails(&wanted);
+        for (path, picture) in made {
+            if !wanted.contains(&path) || gpu.thumbnail(&path).is_some() {
+                continue;
+            }
+            if gpu.put_thumbnail(&path, &picture) {
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// The files whose pictures are on screen, or about to be.
+    ///
+    /// The rows around each display's cursor, in whichever column it is
+    /// standing in — a handful either side, so scrolling meets pictures that
+    /// are already there instead of a column that fills in behind the user.
+    /// Every other file in the library, which may be twenty thousand of them,
+    /// is not asked about at all. That is the whole of "only when they are
+    /// needed": the work is bounded by the size of the screen rather than by
+    /// the size of the collection.
+    fn pictures_worth_having(&self) -> HashSet<PathBuf> {
+        /// How many rows either side of the cursor are worth having ready.
+        const REACH: usize = 4;
+
+        let mut wanted = HashSet::new();
+        for panel in &self.panels {
+            let entries = panel.cursor.current_entries(&self.xmb);
+            let selected = panel.cursor.selected_item();
+            let from = selected.saturating_sub(REACH);
+            let to = (selected + REACH + 1).min(entries.len());
+            for entry in &entries[from..to] {
+                if let Some(file) = entry.media().filter(|file| file.kind.has_picture()) {
+                    wanted.insert(file.path.clone());
+                }
+            }
+        }
+        wanted
+    }
+
+    /// Hang whatever the worker has finished on the rows that hold it.
+    ///
+    /// The rows are replaced wholesale rather than added to, because what
+    /// arrives is a whole shelf in its own order and lands anywhere in the
+    /// list. So every display's cursor is asked which *file* it is standing on
+    /// before the swap and put back on that same file after it: a row number
+    /// means nothing across a list that has grown in the middle, and a cursor
+    /// left on one would have the user reading one song and pressing another.
+    ///
+    /// All of the work is already done by the time this runs. What is left is
+    /// swapping a vector in, putting the cursors right, and handing the rows
+    /// that were there back to the worker to let go of — see
+    /// [`media::Library::discard`].
+    fn sync_media(&mut self) {
+        let ready = self.media.take();
+        if ready.is_empty() {
+            return;
+        }
+
+        for made in ready {
+            let kind = made.kind;
+            // Which file each display is standing on, if it is standing on one.
+            // By the row it holds rather than by its path: the worker builds
+            // every list out of the same shared files, so this is a pointer
+            // against a pointer where a path is a string against a string —
+            // and it is asked once per row of a shelf that may hold half a
+            // million of them.
+            let xmb = &self.xmb;
+            let standing: Vec<Option<media::Shelved>> = self
+                .panels
+                .iter()
+                .map(|panel| {
+                    panel
+                        .cursor
+                        .current_entry(xmb)
+                        .and_then(apps::Entry::shelved)
+                        .cloned()
+                })
+                .collect();
+
+            // Disjoint fields: the catalogue is written while this display's
+            // own state is read.
+            let hung = apps::shelve_media(&mut self.xmb.categories, made);
+            if let Some(at) = hung.column {
+                tracing::info!(
+                    at,
+                    column = self.xmb.categories[at].title,
+                    "the walk found files on a machine with nothing installed to \
+                     open them; that column is back"
+                );
+            }
+
+            let to_top = self
+                .sorting
+                .take_if(|(sorted, _)| *sorted == kind)
+                .map(|(_, panel)| panel);
+            let xmb = &self.xmb;
+            for (at_panel, (panel, was)) in self.panels.iter_mut().zip(standing).enumerate() {
+                if let Some(at) = hung.column {
+                    panel.cursor.category_added(at);
+                }
+                if to_top == Some(at_panel) {
+                    panel.cursor.rest_on_first_row();
+                    continue;
+                }
+                if let Some(file) = was {
+                    panel.cursor.keep_on_media(xmb, &file);
+                }
+            }
+            self.media.discard(hung.worn);
+        }
+        self.needs_redraw = true;
     }
 
     /// The application the bar's cursor is on, which is what a menu raised from
@@ -3667,25 +4312,450 @@ impl Shell {
         }
     }
 
-    /// Ask for the cursor a keyboard deserves, if the compositor will be told.
+    /// Ask for the cursor whatever is under it deserves, if the compositor will
+    /// be told.
     ///
-    /// Over a text field the application has usually asked for a beam, and a
-    /// beam left hanging over a picture of a keyboard says the letters can be
-    /// selected rather than pressed. A pointing hand is what a row of buttons
-    /// takes.
-    fn set_cursor_shape(
-        &self,
-        qh: &QueueHandle<Self>,
-        pointer: &wl_pointer::WlPointer,
-        serial: u32,
-    ) {
-        use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1 as shape;
-        let Some(manager) = self.cursor_shape.as_ref() else {
+    /// Two shapes and one rule: a pointing hand over anything the shell will
+    /// answer for, and the ordinary arrow everywhere else. That is the only
+    /// thing the cursor can say about a screen it is being used on by someone
+    /// who was given a controller — where a press does something — and over a
+    /// text field the application has usually asked for a beam, which left
+    /// hanging over a picture of a keyboard says the letters can be selected
+    /// rather than pressed.
+    ///
+    /// Only sent when it changes. A shape device per motion event would be an
+    /// object created and destroyed for every pixel the mouse travels.
+    fn set_cursor_shape(&mut self, qh: &QueueHandle<Self>, wanted: shape::Shape) {
+        let (Some(manager), Some(pointer)) = (self.cursor_shape.as_ref(), self.pointer.as_ref())
+        else {
             return;
         };
+        let Some(serial) = self.pointer_enter else {
+            return;
+        };
+        if self.pointer_shape == Some(wanted) {
+            return;
+        }
         let device = manager.get_shape_device(pointer, qh);
-        device.set_shape(serial, shape::Shape::Pointer);
+        device.set_shape(serial, wanted);
         device.destroy();
+        self.pointer_shape = Some(wanted);
+    }
+
+    // -- the pointer and the finger -----------------------------------------
+    //
+    // A console is driven from a controller and the shell is drawn for one, but
+    // the machine under it is a PC with a mouse in the drawer and, often
+    // enough, a touchscreen. Nothing about the design has to change to be
+    // pointed at: what a click does is what moving the selection there and
+    // pressing `A` does, reached through the same actions, so there is one
+    // answer to what every control means rather than two that can drift apart.
+    //
+    // One rule shapes all of it. Things that *stand still* light up under the
+    // pointer and answer the first click; things that *move when they are
+    // selected* take one click to select and another to act. The sidebar's
+    // rows, the menus, the dialog's buttons and the keyboard's keys are the
+    // first kind, and hovering one is selecting it — the board has worked that
+    // way since it was drawn. The bar's rows and the overview's cards are the
+    // second: selecting one slides it to the middle of the screen, so a hover
+    // that selected would pull the thing being pointed at out from under the
+    // cursor and leave its neighbour there to be selected in turn. The cursor
+    // would walk the bar across the display with nobody touching the mouse.
+
+    /// What display `index` has under `(x, y)`, in that display's own
+    /// coordinates.
+    ///
+    /// Read back to front, in the order [`Shell::draw`] lays the screen down:
+    /// whatever is nearest the user is what a press at that point is about. The
+    /// panels that are modal — the board, the centred dialog, the power
+    /// question — swallow everything outside themselves rather than letting it
+    /// through, which is exactly what they do to the directions on a pad.
+    fn spot_at(&self, index: usize, x: f32, y: f32) -> Spot {
+        let Some(panel) = self.panels.get(index) else {
+            return Spot::Nothing;
+        };
+        let (width, height) = (panel.width.max(16) as f32, panel.height.max(9) as f32);
+        // Only the display being driven has any of this on it; the others are
+        // showing their own bar and nothing else. See `draw`.
+        let focused = index == self.focused_panel;
+
+        // The board is in front of everything else the shell draws, and takes
+        // whatever lands on its keys. What the rest of the display is depends
+        // on what the board is typing into: the shell's own field leaves the
+        // panel holding that field still standing and still answerable, and
+        // everything else belongs to the application underneath — which is why
+        // nothing outside the keys reaches us there at all.
+        if focused && self.keyboard_visible() && self.osk.is_open() {
+            if let Some((row, column)) = ui::keyboard_key_at(x, y, width, height) {
+                return Spot::Key(row, column);
+            }
+            if !self.osk.types_here() {
+                return Spot::Nothing;
+            }
+        }
+
+        if focused && self.dialog.is_open() {
+            for button in 0..self.dialog.buttons.entries().len() {
+                if let Some(rect) = ui::dialog_button_rect(width, height, &self.dialog, button) {
+                    if within(rect, x, y) {
+                        return Spot::DialogButton(button);
+                    }
+                }
+            }
+            return Spot::Nothing;
+        }
+
+        if focused && self.context_menu.is_open() {
+            return self.menu_spot_at(x, y, width, height);
+        }
+
+        if focused && self.guide.is_menu() {
+            if self.guide.power_open() {
+                let rows = self.guide.power_items().len();
+                return (0..rows)
+                    .find(|row| within(ui::power_dialog_row_rect(width, height, rows, *row), x, y))
+                    .map_or(Spot::Nothing, Spot::PowerRow);
+            }
+            return self.guide_spot_at(index, x, y, width, height);
+        }
+
+        match ui::bar_hit(&self.xmb, &panel.cursor, x, y, width, height) {
+            Some(spot) => Spot::Bar(spot),
+            None => Spot::Nothing,
+        }
+    }
+
+    /// The context menu's part of [`Self::spot_at`].
+    fn menu_spot_at(&self, x: f32, y: f32, width: f32, height: f32) -> Spot {
+        let slots = self.gpu.as_ref().map(Slots);
+        for row in 0..self.context_menu.entries().len() {
+            let Some(rect) = ui::context_menu_row_rect(width, height, &self.context_menu, row)
+            else {
+                continue;
+            };
+            if !within(rect, x, y) {
+                continue;
+            }
+            // A row of the mixer is a name with a groove under it, so where it
+            // was pressed is part of the answer — the groove sets the level and
+            // the speaker at its head silences it, which is the same pair of
+            // gestures the sidebar's own bars take.
+            let level = self
+                .context_menu
+                .entries()
+                .get(row)
+                .and_then(|entry| Some((entry, entry.level?)))
+                .zip(slots.as_ref())
+                .and_then(|((entry, level), slots)| {
+                    ui::mixer_level_at(rect, entry, level, height, slots, x)
+                });
+            return Spot::MenuRow { row, level };
+        }
+        // Outside the panel altogether. A menu is a note attached to something
+        // on the screen behind it, and pressing that screen is how every menu
+        // ever drawn is dismissed.
+        if within(
+            ui::context_menu_rect(width, height, &self.context_menu),
+            x,
+            y,
+        ) {
+            Spot::Nothing
+        } else {
+            Spot::OutsideMenu
+        }
+    }
+
+    /// The guide's part of [`Self::spot_at`]: the sidebar, then the deck.
+    fn guide_spot_at(&self, index: usize, x: f32, y: f32, width: f32, height: f32) -> Spot {
+        // The column is measured from where the sidebar settles, so a click
+        // arriving while it is still sliding in has to be measured from there
+        // too — see [`ui::sidebar_slide_x`].
+        let slide = ui::sidebar_slide_x(self.guide.age(), width);
+        let closable = self.closable();
+        let items = self.guide.items(closable);
+        for (row, item) in items.iter().enumerate() {
+            let mut rect = ui::menu_item_rect(&items, row, width, height);
+            rect[0] += slide;
+            if !within(rect, x, y) {
+                continue;
+            }
+            let level = item
+                .bar()
+                .and_then(|_| ui::bar_level_at(rect, height, x))
+                .filter(|_| self.guide.is_enabled(*item));
+            return Spot::Entry { item: *item, level };
+        }
+
+        // The sidebar's own glass. Nothing under the point, and nothing behind
+        // it either: the cards begin where the panel ends.
+        let mut sidebar = ui::sidebar_panel_rect(width, height);
+        sidebar[0] += slide;
+        if within(sidebar, x, y) {
+            return Spot::Nothing;
+        }
+
+        // The deck, at the rectangles it is actually drawn at rather than the
+        // slots it is heading for: a card halfway through a glide is where the
+        // user can see it, and that is what they are pointing at.
+        let Some(panel) = self.panels.get(index) else {
+            return Spot::Nothing;
+        };
+        let keys = panel
+            .windows
+            .iter()
+            .map(|window| window.id as u64)
+            .chain(std::iter::once(u64::MAX));
+        for (card, key) in keys.enumerate() {
+            if let Some(glide) = self.guide_card_rects.get(&key) {
+                if within(glide.at, x, y) {
+                    return Spot::Card(card);
+                }
+            }
+        }
+        Spot::Nothing
+    }
+
+    /// Put the selection on `spot`, and say whether it now *is* the selection.
+    ///
+    /// `false` where there was nothing to select — a gap between two rows, a
+    /// control the highlight is not allowed to stop on — and for the two kinds
+    /// a click reaches in two steps, which are not selected by being pointed at
+    /// at all. A press acts on nothing when this says no, which is what keeps a
+    /// click on a disabled tile from pressing the row that was selected before.
+    fn point_at(&mut self, spot: Spot) -> bool {
+        let closable = self.closable();
+        let (moved, landed) = match spot {
+            Spot::Key(row, column) => {
+                self.hover_key(Some((row, column)));
+                (false, true)
+            }
+            Spot::DialogButton(button) => (
+                self.dialog.buttons.select(button),
+                self.dialog.buttons.selected() == button,
+            ),
+            Spot::MenuRow { row, .. } => (
+                self.context_menu.select(row),
+                self.context_menu.selected() == row,
+            ),
+            Spot::PowerRow(row) => (
+                self.guide.select_power(row),
+                self.guide.power_index() == row,
+            ),
+            Spot::Entry { item, .. } => (
+                self.guide.select(item, closable),
+                self.guide.selected_item(closable) == Some(item),
+            ),
+            Spot::Card(_) | Spot::Bar(_) | Spot::OutsideMenu | Spot::Nothing => (false, false),
+        };
+        if moved {
+            self.needs_redraw = true;
+        }
+        landed
+    }
+
+    /// Put the selection on `spot` outright, whatever kind of thing it is —
+    /// the bar's rows and the deck's cards included, which a left click reaches
+    /// in two steps.
+    ///
+    /// What the right button does before it raises a menu. A menu is *about*
+    /// something, and the something has to be the thing that was pointed at:
+    /// one raised over the row that happened to be selected already would be a
+    /// list of things to do to an application the user is not pointing at.
+    fn aim_at(&mut self, spot: Spot) -> bool {
+        let moved = match spot {
+            Spot::Card(card) => {
+                let count = self
+                    .panels
+                    .get(self.focused_panel)
+                    .map(|panel| panel.windows.len() + 1)
+                    .unwrap_or(1);
+                card < count && {
+                    self.guide.select_window(card, count);
+                    true
+                }
+            }
+            Spot::Bar(ui::BarSpot::Item(row)) => match self.panels.get_mut(self.focused_panel) {
+                Some(panel) => {
+                    panel.cursor.point_at_row(row, &self.xmb);
+                    true
+                }
+                None => false,
+            },
+            Spot::Bar(ui::BarSpot::Category(category)) => {
+                match self.panels.get_mut(self.focused_panel) {
+                    Some(panel) => {
+                        panel.cursor.point_at_category(category, &self.xmb);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => return self.point_at(spot),
+        };
+        if moved {
+            self.needs_redraw = true;
+            self.sync_setting_preview();
+        }
+        moved
+    }
+
+    /// The pointer resting on `spot`: select it where selecting is what
+    /// pointing at a thing means, and say so with the cursor either way.
+    fn hover(&mut self, qh: &QueueHandle<Self>, spot: Spot) {
+        self.point_at(spot);
+        self.set_cursor_shape(
+            qh,
+            if spot.is_actionable() {
+                shape::Shape::Pointer
+            } else {
+                shape::Shape::Default
+            },
+        );
+    }
+
+    /// Press whatever is at `spot`: a click of the left button, or a tap.
+    ///
+    /// Everything that can be selected goes through [`Action::Launch`] rather
+    /// than being carried out here, so a press of the mouse and a press of `A`
+    /// are the same press. What is left are the things a controller reaches
+    /// another way — a value set by *where* it was clicked, a screen dismissed
+    /// by pressing past it, and the two kinds that take a click to select.
+    fn press_at(&mut self, spot: Spot) {
+        let landed = self.point_at(spot);
+        match spot {
+            Spot::Key(..) if landed => self.press_key(),
+            Spot::DialogButton(_) | Spot::PowerRow(_) if landed => self.on_action(Action::Launch),
+            // A groove carries its answer in where it was pressed — the one
+            // control in the shell that a press says something *with* rather
+            // than merely to. Off the groove it is the button at its head, and
+            // that is the ordinary press.
+            Spot::MenuRow {
+                level: Some(level), ..
+            } if landed => {
+                if self.set_mixer_level(level) {
+                    self.sync_mixer();
+                    self.needs_redraw = true;
+                }
+            }
+            Spot::Entry {
+                item,
+                level: Some(level),
+            } if landed => {
+                if let Some(bar) = item.bar() {
+                    if self.quick.set(knob(bar), level) {
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            Spot::MenuRow { .. } | Spot::Entry { .. } if landed => self.on_action(Action::Launch),
+            // The deck and the bar move when they are selected, so the first
+            // press is the selection travelling to the pointer and the second
+            // is the press of what has arrived there.
+            Spot::Card(card) => self.press_card(card),
+            Spot::Bar(spot) => self.press_bar(spot),
+            Spot::OutsideMenu if self.context_menu.close() => self.needs_redraw = true,
+            _ => {}
+        }
+    }
+
+    /// Set the level of the mixer row the highlight is on, wherever the click
+    /// along its groove put it.
+    fn set_mixer_level(&mut self, level: f32) -> bool {
+        match self
+            .context_menu
+            .selected_entry()
+            .map(|entry| entry.command)
+        {
+            Some(menu::Command::MuteApplication(key)) => self.quick.set_stream(key, level),
+            Some(menu::Command::MuteOutput) => self.quick.set(Knob::Volume, level),
+            _ => false,
+        }
+    }
+
+    /// A press on window card `card` of the deck.
+    fn press_card(&mut self, card: usize) {
+        let count = self
+            .panels
+            .get(self.focused_panel)
+            .map(|panel| panel.windows.len() + 1)
+            .unwrap_or(1);
+        if card >= count {
+            return;
+        }
+        if self.guide.select_window(card, count) {
+            self.needs_redraw = true;
+            return;
+        }
+        self.on_action(Action::Launch);
+    }
+
+    /// A press somewhere on the start screen.
+    fn press_bar(&mut self, spot: ui::BarSpot) {
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return;
+        };
+        let moved = match spot {
+            ui::BarSpot::Item(row) => {
+                if !panel.cursor.point_at_row(row, &self.xmb) {
+                    // Already the selection, so this is the press of it.
+                    self.on_action(Action::Launch);
+                    return;
+                }
+                true
+            }
+            // A category is a place rather than a thing to open: the column
+            // under it is already showing whatever it holds, so arriving is the
+            // whole of what a press on one does.
+            ui::BarSpot::Category(category) => panel.cursor.point_at_category(category, &self.xmb),
+            // A row of the trail is a column the path was opened *through*, and
+            // pressing it is walking back out to it — however many steps that
+            // takes, because that is how many columns the user can see between
+            // where they are and where they pointed.
+            ui::BarSpot::Trail(steps) => {
+                (0..steps).fold(false, |left, _| panel.cursor.leave() || left)
+            }
+        };
+        if moved {
+            self.needs_redraw = true;
+            self.sync_setting_preview();
+        }
+    }
+
+    /// One display's worth of pointer or finger, at `(x, y)` on it.
+    ///
+    /// Control follows the pointer between displays. A shell that kept the
+    /// keyboard on one screen while the mouse was being used on another would
+    /// be answering presses on a display it was not drawing the selection on.
+    fn point(&mut self, index: usize, x: f32, y: f32) -> Spot {
+        self.focus_panel(index);
+        self.spot_at(index, x, y)
+    }
+
+    /// Move the wheel, in the units `wl_pointer.axis` reports.
+    ///
+    /// The wheel is the directions, which is what makes it work everywhere at
+    /// once: on the bar it walks the column, in a menu it walks the rows, and
+    /// across the cards it walks the deck — because that is what Up and Down
+    /// already mean in each of those places.
+    fn scroll_by(&mut self, horizontal: &AxisScroll, vertical: &AxisScroll) {
+        // The upright axis first: a wheel that can also be tilted must not move
+        // the selection diagonally, which would be two moves for the one
+        // gesture the user made.
+        let (down, carried) = scroll_steps(self.scrolled.1 + scroll_notches(vertical));
+        self.scrolled.1 = carried;
+        for _ in 0..down.abs() {
+            self.on_action(if down > 0 { Action::Down } else { Action::Up });
+        }
+
+        let (right, carried) = scroll_steps(self.scrolled.0 + scroll_notches(horizontal));
+        self.scrolled.0 = carried;
+        for _ in 0..right.abs() {
+            self.on_action(if right > 0 {
+                Action::Right
+            } else {
+                Action::Left
+            });
+        }
     }
 
     /// Send whatever the selected key types.
@@ -4600,6 +5670,65 @@ impl Shell {
         }
     }
 
+    /// Ask each display to be turned the way it was left, if it has been
+    /// turned and is not already there.
+    ///
+    /// Diffed per display like [`Shell::sync_mode`], and for the same reason:
+    /// a display plugged in halfway through the session comes back standing on
+    /// its side by the same path that stood it there in the first place.
+    ///
+    /// Only displays somebody has turned are told anything. One nobody has is
+    /// left the way the compositor brought it up — which is the compositor's
+    /// own config, and not something the shell should overrule by sending an
+    /// orientation it invented.
+    fn sync_turn(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < TRANSFORM_SHELL_VERSION {
+            return;
+        }
+        let mut sent = false;
+        for panel in &mut self.panels {
+            let Some(wanted) = settings::turn_for(&panel.name) else {
+                continue;
+            };
+            if panel.applied_turn == Some(wanted) {
+                continue;
+            }
+            let Ok(turn) = lxb_shell_v1::Transform::try_from(wanted.code()) else {
+                continue;
+            };
+            control.set_output_transform(&panel.output, turn);
+            panel.applied_turn = Some(wanted);
+            sent = true;
+            tracing::debug!(display = %panel.name, ?wanted, "asked for this orientation");
+        }
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not send the orientation");
+            }
+        }
+    }
+
+    /// Hand the Settings column which way up each display is being drawn, and
+    /// rebuild it if that changed.
+    ///
+    /// Only the displays the compositor reports one for, which are the ones it
+    /// turns itself: a display it says nothing about is one the Orientation
+    /// page must not list, because choosing there would do nothing.
+    fn refresh_display_turns(&mut self) {
+        let reported: Vec<(String, settings::Orientation)> = self
+            .panels
+            .iter()
+            .filter_map(|panel| Some((panel.name.clone(), panel.turned?)))
+            .collect();
+        if settings::note_turned(reported) {
+            settings::refresh(&mut self.xmb.categories);
+            self.needs_redraw = true;
+        }
+    }
+
     /// Hand the Settings column the mode lists, and rebuild it if they
     /// changed.
     ///
@@ -4789,6 +5918,91 @@ impl Shell {
     }
 }
 
+/// The rows of the menu over one of the user's own files.
+///
+/// A free function rather than a method, so the one thing about this menu that
+/// is a decision — which rows it has, in what order, and where the rule between
+/// the bands falls — can be exercised without a running session behind it.
+/// `handled` is whether anything installed says it opens files of this kind;
+/// `deletable` is whether the file is the user's own to delete.
+fn media_rows(handled: bool, deletable: bool) -> Vec<menu::Entry> {
+    let open_with = menu::Entry::new(menu::Command::OpenWith, "Open with").glyph(icons::OPEN_WITH);
+    let delete = menu::Entry::new(menu::Command::Delete, "Delete").glyph(icons::UNINSTALL);
+    vec![
+        menu::Entry::new(menu::Command::Open, "Open").glyph(icons::LAUNCH),
+        if handled {
+            open_with
+        } else {
+            open_with.disabled()
+        },
+        // Not drawn as grave, for the reason Uninstall is not: this row does
+        // not delete anything, it asks. The warmth belongs on the button that
+        // answers.
+        if deletable { delete } else { delete.disabled() },
+        // The band break: everything above acts on the file, and neither of
+        // these two does — one is about the column and the other is about the
+        // menu.
+        menu::Entry::new(menu::Command::Sort, "Sort")
+            .glyph(icons::SORT)
+            .group(1),
+        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+    ]
+}
+
+/// The rows of the Open with list, built from the applications it is offering,
+/// with the tick on the one at `chosen` — the application that opens the type
+/// as things stand.
+///
+/// The same tick the Settings column puts on the value a setting is currently
+/// set to, making the same statement. Every row holds the panel: this is a list
+/// of alternatives being set rather than a list of commands being run, so a
+/// press moves the tick and the user leaves in their own time.
+fn open_with_rows(offering: &[media::Handler], chosen: usize) -> Vec<menu::Entry> {
+    let mut rows: Vec<menu::Entry> = offering
+        .iter()
+        .enumerate()
+        .map(|(index, handler)| {
+            let row = menu::Entry::new(menu::Command::OpenWithHandler(index), handler.name.clone())
+                // An application the icon theme cannot answer for falls back to the
+                // generic application picture, which the atlas already does for a
+                // name it does not know — the empty one included.
+                .icon(handler.icon.clone().unwrap_or_default())
+                .holds();
+            if index == chosen {
+                row.glyph(icons::CHOSEN)
+            } else {
+                row
+            }
+        })
+        .collect();
+    // And the way out does not hold, because leaving is what it is for.
+    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows
+}
+
+/// The rows of the Sort list: the nine orders, the one in force ticked, and any
+/// this collection cannot be put in greyed out.
+fn sort_rows(now: media::Sort, knows: media::Orders) -> Vec<menu::Entry> {
+    let mut rows: Vec<menu::Entry> = media::SORTS
+        .iter()
+        .map(|sort| {
+            let row = menu::Entry::new(menu::Command::SortBy(*sort), sort.label());
+            let row = if *sort == now {
+                row.glyph(icons::CHOSEN)
+            } else {
+                row
+            };
+            if sort.orders(knows) {
+                row
+            } else {
+                row.disabled()
+            }
+        })
+        .collect();
+    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows
+}
+
 /// What the information panel says about `app`.
 ///
 /// One function for both passes — the panel as it opens, before the package
@@ -4957,6 +6171,168 @@ fn controller_is_driving(grabbed: bool, has_keyboard_focus: bool, board_open: bo
 /// fact, declined to be what the user is interacting with.
 fn passes_pointer_through(state: (Layer, KeyboardInteractivity)) -> bool {
     state == (Layer::Overlay, KeyboardInteractivity::None)
+}
+
+/// What one of the shell's surfaces has under a point.
+///
+/// Named after the thing on screen rather than after the command it carries:
+/// what a press does is the selection's business — see [`Shell::press_at`] —
+/// and this is only where the finger is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Spot {
+    /// A key of the on-screen keyboard.
+    Key(usize, usize),
+    /// A button of the modal panel.
+    DialogButton(usize),
+    /// A row of the context menu. `level` is where along a mixer row's groove
+    /// the point fell, and `None` for every row that has no groove — the
+    /// speaker at its head included, which is a button rather than a value.
+    MenuRow { row: usize, level: Option<f32> },
+    /// The screen around the context menu, which is a way out of it.
+    OutsideMenu,
+    /// A choice in the power dialog.
+    PowerRow(usize),
+    /// An entry in the guide's sidebar, with the same reading of `level` as a
+    /// menu row's for the two quick-settings bars.
+    Entry { item: Item, level: Option<f32> },
+    /// A window miniature in the overview; the start screen's own card last.
+    Card(usize),
+    /// Something on the start screen.
+    Bar(ui::BarSpot),
+    /// Somewhere the shell is drawing but nothing of it is: the sidebar's own
+    /// glass, the air between two keys, the wallpaper past the end of the bar.
+    Nothing,
+}
+
+impl Spot {
+    /// Whether the cursor over this should say there is something here.
+    ///
+    /// A groove counts, and so does the screen around a menu: pressing past a
+    /// menu dismisses it, which is one of the things a press can do.
+    fn is_actionable(self) -> bool {
+        !matches!(self, Spot::Nothing)
+    }
+}
+
+/// Whether `(x, y)` is inside a rectangle.
+fn within([x, y, w, h]: [f32; 4], at_x: f32, at_y: f32) -> bool {
+    at_x >= x && at_x < x + w && at_y >= y && at_y < y + h
+}
+
+/// How far a device with no notches has to travel to be worth one, in the units
+/// `wl_pointer.axis` reports.
+///
+/// Fifteen has been a wheel click in every toolkit since X11, and it is near
+/// enough what a touchpad reports for a comfortable finger's travel — which is
+/// what it is here for: the shell moves in whole rows, so a two-finger drag
+/// should be about one row per centimetre. A wheel says how many notches it
+/// turned and is never measured against this at all.
+const SCROLL_STEP: f64 = 15.0;
+
+/// How many notches of the wheel one axis of one scroll event is worth.
+///
+/// Three ways of being told the same thing, in the order they can be trusted. A
+/// high-resolution wheel counts in hundred-and-twentieths of a notch, an older
+/// one counts whole notches, and a device with no notches at all — a touchpad,
+/// a trackpoint, a stick — reports only a distance and is measured against
+/// [`SCROLL_STEP`]. Taking a wheel at its word is what makes one click of it
+/// one row on every machine, whatever that compositor decided a notch is worth
+/// in pixels.
+fn scroll_notches(axis: &AxisScroll) -> f64 {
+    if axis.value120 != 0 {
+        return f64::from(axis.value120) / 120.0;
+    }
+    if axis.discrete != 0 {
+        return f64::from(axis.discrete);
+    }
+    axis.absolute / SCROLL_STEP
+}
+
+/// How many whole steps of the selection `notches` are worth, and what is left
+/// over to be carried into the next event.
+///
+/// The remainder is the point of it. A touchpad reports a stream of fractions
+/// of a notch, and a shell that rounded each of them to nothing would never
+/// move at all under a slow two-finger drag; one that rounded each of them up
+/// would cross the whole column under the same drag.
+fn scroll_steps(notches: f64) -> (i32, f64) {
+    let whole = notches.trunc();
+    (whole as i32, notches - whole)
+}
+
+/// How far a finger may wander and still have been a tap, in logical pixels.
+///
+/// A finger is never still, and a screen that dropped a press over two pixels
+/// of tremble would be one that ignores half of what it is told. Wider than a
+/// mouse would need, because a fingertip is wider than a cursor.
+const TAP_SLOP: f32 = 24.0;
+
+/// A finger that is currently down.
+#[derive(Debug, Clone, Copy)]
+struct Touch {
+    /// Which display it landed on, and where on it.
+    panel: usize,
+    at: (f32, f32),
+    /// Whether it has since travelled far enough to be a drag rather than a
+    /// tap, in which case letting go of it presses nothing.
+    dragged: bool,
+}
+
+/// A key currently held down on the keyboard, and when it next acts.
+///
+/// One at a time, which is what `wl_keyboard` describes: a second key pressed
+/// before the first is let go takes the repeat over, and the release of a key
+/// that already lost it changes nothing.
+#[derive(Debug, Clone, Copy)]
+struct HeldKey {
+    keysym: Keysym,
+    next: Instant,
+}
+
+impl HeldKey {
+    fn pressed(keysym: Keysym, now: Instant) -> Self {
+        Self {
+            keysym,
+            next: now + controller::INITIAL_REPEAT_DELAY,
+        }
+    }
+
+    /// Whether the key is due to act again, booking the step after it if so.
+    fn due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        // Booked from `now` rather than from the deadline just passed, so a
+        // frame that ran long is never followed by a burst of stale steps —
+        // the same rule the D-pad's repeat is scheduled by.
+        self.next = now + controller::REPEAT_INTERVAL;
+        true
+    }
+}
+
+/// Whether holding this key down should go on acting, or acted once and is
+/// now simply a key that is down.
+///
+/// Only the directions are a *rate*: a held Return would launch the same
+/// application over and over, a held Home would flicker the guide open and
+/// shut, and a held Escape would back out of every column the user has opened
+/// rather than the one they are in.
+///
+/// A field being typed into is the exception, and takes the ordinary meaning
+/// of a held key: a letter fills it and Backspace empties it. The two keys
+/// that *finish* the field are not among them, for the reason above — one
+/// password is submitted once.
+fn key_repeats(keysym: Keysym, typing: bool) -> bool {
+    if typing {
+        return matches!(
+            keyboard::stroke_for(keysym),
+            Some(keyboard::Stroke::Char(_) | keyboard::Stroke::BACKSPACE)
+        );
+    }
+    matches!(
+        action_for_keysym(keysym),
+        Some(Action::Left | Action::Right | Action::Up | Action::Down)
+    )
 }
 
 /// What of one of the shell's surfaces accepts the pointer.
@@ -5348,6 +6724,10 @@ impl SlotLookup for Slots<'_> {
     fn glyph(&self, name: &str) -> Option<u32> {
         self.0.slot(name)
     }
+
+    fn thumbnail(&self, path: &std::path::Path) -> Option<gpu::Thumb> {
+        self.0.thumbnail(path)
+    }
 }
 
 impl LayerShellHandler for Shell {
@@ -5471,9 +6851,15 @@ impl SeatHandler for Shell {
             match self.seat_state.get_pointer(qh, &seat) {
                 Ok(pointer) => self.pointer = Some(pointer),
                 // Not fatal, and not even unusual: a console with no mouse in
-                // it has a seat with no pointer on it. Everything but clicking
-                // the on-screen keyboard carries on.
+                // it has a seat with no pointer on it. Everything the
+                // controller reaches — which is everything — carries on.
                 Err(err) => tracing::info!(?err, "no pointer on this seat"),
+            }
+        }
+        if capability == Capability::Touch && self.touch.is_none() {
+            match self.seat_state.get_touch(qh, &seat) {
+                Ok(touch) => self.touch = Some(touch),
+                Err(err) => tracing::info!(?err, "no touchscreen on this seat"),
             }
         }
     }
@@ -5492,8 +6878,15 @@ impl SeatHandler for Shell {
             }
         }
         if capability == Capability::Pointer {
+            self.pointer_enter = None;
             if let Some(pointer) = self.pointer.take() {
                 pointer.release();
+            }
+        }
+        if capability == Capability::Touch {
+            self.touches.clear();
+            if let Some(touch) = self.touch.take() {
+                touch.release();
             }
         }
     }
@@ -5503,46 +6896,180 @@ impl SeatHandler for Shell {
 }
 
 impl PointerHandler for Shell {
-    /// The pointer, over the one part of the shell that accepts it.
+    /// The pointer, over whatever of the shell it has reached.
     ///
-    /// Only the on-screen keyboard has an input region at all — see
-    /// `sync_surface_state` — so anything arriving here is over the board, and
-    /// what is under the cursor is simply the key the cursor is on.
+    /// The input region is cut to exactly what the shell is showing — see
+    /// `sync_surface_state` — so an event arriving here is one the shell is
+    /// meant to answer, and what it is about is whatever [`Shell::spot_at`]
+    /// finds under it.
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
         qh: &QueueHandle<Self>,
-        pointer: &wl_pointer::WlPointer,
+        _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
         for event in events {
             let Some(index) = self.panels.iter().position(|p| p.owns(&event.surface)) else {
                 continue;
             };
-            let (width, height) = {
-                let panel = &self.panels[index];
-                (panel.width.max(16) as f32, panel.height.max(9) as f32)
-            };
             let (x, y) = (event.position.0 as f32, event.position.1 as f32);
-            let key = ui::keyboard_key_at(x, y, width, height);
 
             match event.kind {
                 PointerEventKind::Enter { serial } => {
-                    self.set_cursor_shape(qh, pointer, serial);
-                    self.hover_key(key);
+                    // Kept because every later request for a cursor shape has
+                    // to carry the serial of the enter that put the pointer
+                    // here, however long ago that was.
+                    self.pointer_enter = Some(serial);
+                    self.pointer_shape = None;
+                    let spot = self.point(index, x, y);
+                    self.hover(qh, spot);
                 }
-                PointerEventKind::Motion { .. } => self.hover_key(key),
-                // A press rather than a release, because that is when a key on
-                // a keyboard fires and when the board's own `A` fires. The key
-                // pressed is whatever the hover just put the selection on, so
-                // the button and the controller press exactly the same thing.
-                PointerEventKind::Press { button, .. } if button == BTN_LEFT && key.is_some() => {
-                    self.hover_key(key);
-                    self.press_key();
+                PointerEventKind::Leave { .. } => {
+                    self.pointer_enter = None;
+                    self.pointer_shape = None;
+                    // Half a notch of wheel left over belongs to the surface
+                    // the pointer has left, not to the next one it arrives on.
+                    self.scrolled = (0.0, 0.0);
+                }
+                PointerEventKind::Motion { .. } => {
+                    let spot = self.point(index, x, y);
+                    self.hover(qh, spot);
+                }
+                // On the press rather than the release, because that is when a
+                // key on a keyboard fires, when a controller's `A` fires, and
+                // when every other button in this shell fires.
+                PointerEventKind::Press { button, .. } => {
+                    let spot = self.point(index, x, y);
+                    match button {
+                        BTN_LEFT => self.press_at(spot),
+                        // The context menu is the pad's `Y`: the short list of
+                        // things that can be done to whatever is selected, as
+                        // against the one thing a press does. That is what a
+                        // right button has meant on every desktop since there
+                        // were two of them, so it is bound to the same action
+                        // and inherits every rule about where it may be raised.
+                        BTN_RIGHT if self.aim_at(spot) => self.on_action(Action::Menu),
+                        _ => {}
+                    }
+                }
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    // Where the wheel was turned decides which display it turns
+                    // rather than what on it: it moves the selection, and where
+                    // the selection is is not the pointer's business.
+                    self.focus_panel(index);
+                    self.scroll_by(&horizontal, &vertical);
                 }
                 _ => {}
             }
         }
+    }
+}
+
+impl TouchHandler for Shell {
+    /// A finger arriving.
+    ///
+    /// It selects but does not press: what a tap does is decided when it is
+    /// lifted, because until then it may yet turn out to be a drag. The
+    /// selection moving under the finger is the whole of the feedback a
+    /// touchscreen can give — there is no hovering, so this is the only chance
+    /// to say what is about to be pressed.
+    fn down(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _serial: u32,
+        _time: u32,
+        surface: wl_surface::WlSurface,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        let Some(index) = self.panels.iter().position(|p| p.owns(&surface)) else {
+            return;
+        };
+        let at = (position.0 as f32, position.1 as f32);
+        self.touches.insert(
+            id,
+            Touch {
+                panel: index,
+                at,
+                dragged: false,
+            },
+        );
+        let spot = self.point(index, at.0, at.1);
+        self.point_at(spot);
+    }
+
+    /// A finger lifting, which is the press — if it stayed where it was put.
+    fn up(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _serial: u32,
+        _time: u32,
+        id: i32,
+    ) {
+        let Some(touch) = self.touches.remove(&id) else {
+            return;
+        };
+        if touch.dragged {
+            return;
+        }
+        let spot = self.point(touch.panel, touch.at.0, touch.at.1);
+        self.press_at(spot);
+    }
+
+    /// A finger moving. Past the slop it stops being a tap, and from then on it
+    /// presses nothing however it ends.
+    fn motion(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _time: u32,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        let Some(touch) = self.touches.get_mut(&id) else {
+            return;
+        };
+        let travelled = (position.0 as f32 - touch.at.0).hypot(position.1 as f32 - touch.at.1);
+        if travelled > TAP_SLOP {
+            touch.dragged = true;
+        }
+    }
+
+    /// The compositor has taken the sequence away — a gesture it decided was
+    /// its own. Nothing was pressed, and nothing is now.
+    fn cancel(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _touch: &wl_touch::WlTouch) {
+        self.touches.clear();
+    }
+
+    fn shape(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _id: i32,
+        _major: f64,
+        _minor: f64,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _id: i32,
+        _orientation: f64,
+    ) {
     }
 }
 
@@ -5573,6 +7100,9 @@ impl KeyboardHandler for Shell {
         // leave for the old one may arrive after the enter for the new.
         if self.focused_surface.as_ref() == Some(surface) {
             self.focused_surface = None;
+            // Every key is released by a leave, and a repeat the shell never
+            // hears the end of is a bar that walks by itself.
+            self.held_key = None;
             tracing::debug!("keyboard focus left the shell; controller navigation paused");
         }
     }
@@ -5585,6 +7115,9 @@ impl KeyboardHandler for Shell {
         _serial: u32,
         event: KeyEvent,
     ) {
+        // Taken before the key is acted on, so that whatever the press opens
+        // is already the screen the repeat will be walking through.
+        self.held_key = Some(HeldKey::pressed(event.keysym, Instant::now()));
         self.on_key(event.keysym);
     }
 
@@ -5594,10 +7127,13 @@ impl KeyboardHandler for Shell {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        event: KeyEvent,
+        _event: KeyEvent,
     ) {
-        // Held arrows should scroll, so repeats are treated as presses.
-        self.on_key(event.keysym);
+        // Never called here: the toolkit only repeats for a client that runs
+        // its keyboard in a calloop, and this shell runs its own loop so that
+        // a gamepad — which is no Wayland object — can wake it. The repeat is
+        // therefore the shell's own, in [`Shell::repeat_held_key`], and acting
+        // on this as well would step the bar twice for every one press.
     }
 
     fn release_key(
@@ -5606,8 +7142,17 @@ impl KeyboardHandler for Shell {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: KeyEvent,
+        event: KeyEvent,
     ) {
+        // Only if it is still the key that is repeating: a second key pressed
+        // meanwhile has taken the repeat over, and letting go of the first must
+        // not stop it.
+        if self
+            .held_key
+            .is_some_and(|held| held.keysym == event.keysym)
+        {
+            self.held_key = None;
+        }
     }
 
     fn update_modifiers(
@@ -5620,6 +7165,26 @@ impl KeyboardHandler for Shell {
         _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
+    }
+
+    /// The seat's repeat setting, of which only the switch is the shell's
+    /// business.
+    ///
+    /// A user who turned repeat off gets no repeat here either. The *rate*
+    /// they set is a different matter and is not taken: it is the rate their
+    /// applications type at, and the bar is not being typed into — it steps
+    /// through categories, at the one pace the D-pad already steps them at.
+    fn update_repeat_info(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        info: RepeatInfo,
+    ) {
+        self.key_repeat_on = !matches!(info, RepeatInfo::Disable);
+        if !self.key_repeat_on {
+            self.held_key = None;
+        }
     }
 }
 
@@ -5804,6 +7369,27 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                         current: flags.contains(lxb_shell_v1::ModeFlag::Current),
                         preferred: flags.contains(lxb_shell_v1::ModeFlag::Preferred),
                     });
+                }
+            }
+            lxb_shell_v1::Event::OutputTransform { output, transform } => {
+                // Anything that is not one of the eight is a compositor
+                // speaking a later version of this protocol than the shell.
+                // Left as it was rather than guessed at: a page that marked
+                // the wrong row would be worse than one that marks none.
+                let reported = transform
+                    .into_result()
+                    .ok()
+                    .and_then(|transform| settings::Orientation::from_code(transform as u32));
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    if reported.is_some() && panel.turned != reported {
+                        tracing::info!(
+                            display = %panel.name,
+                            turned = ?reported,
+                            "which way up a display is drawn"
+                        );
+                        panel.turned = reported;
+                        state.refresh_display_turns();
+                    }
                 }
             }
             lxb_shell_v1::Event::OutputModesDone { output } => {
@@ -6076,6 +7662,81 @@ mod flight_tests {
             assert_eq!(clickable_region(state, None), Clickable::Everything);
             assert_eq!(clickable_region(state, Some(board)), Clickable::Everything);
         }
+    }
+
+    /// The wheel moves the selection in whole rows, and what is left over is
+    /// carried rather than dropped: a touchpad reports a stream of fractions of
+    /// a notch, and a shell that rounded each of them to nothing would never
+    /// move at all under a slow two-finger drag.
+    #[test]
+    fn the_wheel_moves_in_whole_rows_and_keeps_the_remainder() {
+        assert_eq!(scroll_steps(1.0), (1, 0.0));
+        assert_eq!(scroll_steps(-1.0), (-1, 0.0));
+        assert_eq!(scroll_steps(3.0), (3, 0.0));
+
+        // Less than a notch moves nothing and is all remainder.
+        let (steps, left) = scroll_steps(0.4);
+        assert_eq!(steps, 0);
+        assert!((left - 0.4).abs() < 1e-9);
+
+        // And the remainder is what carries the next one over the line: four
+        // tenths and then eight is one row, with two tenths still to come.
+        let (steps, left) = scroll_steps(left + 0.8);
+        assert_eq!(steps, 1);
+        assert!((left - 0.2).abs() < 1e-9, "{left}");
+    }
+
+    /// A wheel says how many notches it turned and is taken at its word, so one
+    /// click of it is one row whatever a compositor thinks a notch is worth in
+    /// pixels. Only a device with nothing to count — a touchpad — is measured.
+    #[test]
+    fn a_wheel_is_counted_in_notches_and_a_touchpad_is_measured() {
+        let axis = |absolute: f64, discrete: i32, value120: i32| AxisScroll {
+            absolute,
+            discrete,
+            value120,
+            relative_direction: None,
+            stop: false,
+        };
+
+        // A high-resolution wheel, which is what a modern compositor sends.
+        assert_eq!(scroll_notches(&axis(10.0, 1, 120)), 1.0);
+        assert_eq!(scroll_notches(&axis(-10.0, -1, -120)), -1.0);
+        // Part of a notch from a free-spinning wheel is part of a row.
+        assert_eq!(scroll_notches(&axis(2.5, 0, 30)), 0.25);
+        // An older compositor, counting whole notches only.
+        assert_eq!(scroll_notches(&axis(10.0, 2, 0)), 2.0);
+        // And a touchpad, which reports a distance and nothing else.
+        assert_eq!(scroll_notches(&axis(SCROLL_STEP, 0, 0)), 1.0);
+        assert_eq!(scroll_notches(&axis(0.0, 0, 0)), 0.0);
+    }
+
+    /// A rectangle holds its own top-left corner and not the next one's, so two
+    /// rows laid edge to edge never both answer for the pixel between them.
+    #[test]
+    fn a_point_belongs_to_one_rectangle() {
+        let rect = [10.0, 20.0, 30.0, 40.0];
+        assert!(within(rect, 10.0, 20.0));
+        assert!(within(rect, 39.9, 59.9));
+        assert!(!within(rect, 40.0, 40.0));
+        assert!(!within(rect, 20.0, 60.0));
+        assert!(!within(rect, 9.9, 40.0));
+    }
+
+    /// The cursor says whether there is anything under it, and the screen
+    /// around a menu counts: pressing past a menu dismisses it, which is one of
+    /// the things a press can do.
+    #[test]
+    fn the_cursor_says_where_a_press_would_do_something() {
+        assert!(Spot::Key(0, 0).is_actionable());
+        assert!(Spot::OutsideMenu.is_actionable());
+        assert!(Spot::Bar(ui::BarSpot::Category(0)).is_actionable());
+        assert!(Spot::Entry {
+            item: Item::Resume,
+            level: None
+        }
+        .is_actionable());
+        assert!(!Spot::Nothing.is_actionable());
     }
 
     /// The board can be summoned anywhere; the hint appears only where there
@@ -6425,6 +8086,75 @@ mod input_tests {
         }
     }
 
+    /// The smallest step worth asserting either side of a deadline.
+    const MOMENT: Duration = Duration::from_millis(1);
+
+    /// A held arrow walks the bar, exactly as a held D-pad does.
+    #[test]
+    fn holding_a_direction_steps_at_the_pads_rate() {
+        let start = Instant::now();
+        let mut held = HeldKey::pressed(Keysym::Down, start);
+
+        // Nothing at all until the initial delay is up: a tap is one row.
+        assert!(!held.due(start));
+        assert!(!held.due(start + controller::INITIAL_REPEAT_DELAY - MOMENT));
+        assert!(held.due(start + controller::INITIAL_REPEAT_DELAY));
+
+        // And a step every interval from then on.
+        let second = start + controller::INITIAL_REPEAT_DELAY + controller::REPEAT_INTERVAL;
+        assert!(!held.due(second - MOMENT));
+        assert!(held.due(second));
+
+        // A pass that ran long steps once and books the next from where it
+        // finished, rather than paying out every step it slept through.
+        let late = second + controller::REPEAT_INTERVAL * 10;
+        assert!(held.due(late));
+        assert!(!held.due(late + MOMENT));
+        assert!(held.due(late + controller::REPEAT_INTERVAL));
+    }
+
+    /// Only a direction is a rate. Everything else acts once however long it
+    /// is held for.
+    #[test]
+    fn only_the_directions_repeat() {
+        for keysym in [Keysym::Left, Keysym::Right, Keysym::Up, Keysym::Down] {
+            assert!(key_repeats(keysym, false), "{keysym:?} should walk the bar");
+        }
+        // Launch, Back, Guide, Menu, the screen keys: one press, one answer.
+        for keysym in [
+            Keysym::Return,
+            Keysym::space,
+            Keysym::Escape,
+            Keysym::BackSpace,
+            Keysym::Home,
+            Keysym::Menu,
+            Keysym::F10,
+            Keysym::Tab,
+            Keysym::ISO_Left_Tab,
+        ] {
+            assert!(
+                !key_repeats(keysym, false),
+                "{keysym:?} should act once however long it is held"
+            );
+        }
+    }
+
+    /// A password field is a text field, and a held key fills or empties it.
+    #[test]
+    fn a_field_being_typed_into_repeats_its_letters() {
+        for keysym in [Keysym::a, Keysym::Z, Keysym::_9, Keysym::BackSpace] {
+            assert!(key_repeats(keysym, true), "{keysym:?} should type on");
+        }
+        // The keys that finish the field still finish it once, and the
+        // directions the field ignores have nothing to repeat.
+        for keysym in [Keysym::Return, Keysym::Escape, Keysym::Down, Keysym::Tab] {
+            assert!(
+                !key_repeats(keysym, true),
+                "{keysym:?} should not repeat into a password"
+            );
+        }
+    }
+
     /// The context menu never takes a key off the guide.
     ///
     /// The Menu key was given to it once and taken straight back: with Steam
@@ -6439,6 +8169,174 @@ mod input_tests {
         }
         for keysym in [Keysym::Home, Keysym::XF86_HomePage, Keysym::Menu] {
             assert_ne!(action_for_keysym(keysym), Some(Action::Menu));
+        }
+    }
+}
+
+/// The menu over one of the user's own files: which rows it has, in what order,
+/// and which of them can be pressed from where.
+///
+/// The rows are the whole of what this menu *is*, and they are the part a later
+/// change is most likely to disturb without meaning to — so they are asserted
+/// against by name rather than left to be noticed on screen.
+#[cfg(test)]
+mod file_menu_tests {
+    use super::*;
+
+    fn commands(rows: &[menu::Entry]) -> Vec<menu::Command> {
+        rows.iter().map(|row| row.command).collect()
+    }
+
+    fn labels(rows: &[menu::Entry]) -> Vec<&str> {
+        rows.iter().map(|row| row.label.as_str()).collect()
+    }
+
+    /// Five rows in two bands, and the rule falls above Sort: everything over
+    /// it acts on the file, and neither of the two under it does.
+    #[test]
+    fn the_file_menu_is_five_rows_with_sort_and_cancel_below_the_rule() {
+        let rows = media_rows(true, true);
+        assert_eq!(
+            labels(&rows),
+            ["Open", "Open with", "Delete", "Sort", "Cancel"]
+        );
+        assert_eq!(
+            commands(&rows),
+            [
+                menu::Command::Open,
+                menu::Command::OpenWith,
+                menu::Command::Delete,
+                menu::Command::Sort,
+                menu::Command::Dismiss,
+            ]
+        );
+
+        let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
+        assert_eq!(bands, [0, 0, 0, 1, 1], "one rule, and it falls above Sort");
+        assert!(rows.iter().all(|row| row.enabled));
+        // Nothing here is the irreversible act itself. Delete asks; the warmth
+        // belongs on the button that answers.
+        assert!(rows.iter().all(|row| !row.grave));
+    }
+
+    /// The two rows that can be unavailable are drawn greyed rather than left
+    /// out, so the panel is the same shape wherever it is raised.
+    #[test]
+    fn a_row_that_cannot_be_taken_here_is_still_drawn() {
+        let rows = media_rows(false, false);
+        assert_eq!(labels(&rows).len(), 5);
+        let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
+        assert_eq!(enabled, [true, false, false, true, true]);
+    }
+
+    /// The Open with list names every application it was given, ticks the one
+    /// that opens the type now, and ends in its own way out. Its rows hold the
+    /// panel, because setting which program opens a kind of file is not a thing
+    /// anybody does once and leaves.
+    #[test]
+    fn the_open_with_list_ticks_the_one_open_would_have_used() {
+        let offering = |names: &[&str]| -> Vec<media::Handler> {
+            names
+                .iter()
+                .map(|name| media::Handler {
+                    name: name.to_string(),
+                    icon: Some(format!("{name}-icon")),
+                    id: format!("{name}.desktop"),
+                    mime: "audio/flac",
+                })
+                .collect()
+        };
+        let offered = offering(&["mpv", "VLC", "Audacity"]);
+        let rows = open_with_rows(&offered, 0);
+
+        assert_eq!(labels(&rows), ["mpv", "VLC", "Audacity", "Cancel"]);
+        assert_eq!(
+            commands(&rows)[..3],
+            [
+                menu::Command::OpenWithHandler(0),
+                menu::Command::OpenWithHandler(1),
+                menu::Command::OpenWithHandler(2),
+            ]
+        );
+        assert_eq!(rows[0].glyph, Some(icons::CHOSEN));
+        assert!(rows[1].glyph.is_none() && rows[2].glyph.is_none());
+        assert_eq!(rows[1].icon.as_deref(), Some("VLC-icon"));
+        // Its own band, like every other way off a panel.
+        assert_eq!(rows[3].group, 1);
+        assert_eq!(rows[3].command, menu::Command::Dismiss);
+
+        // Choosing one moves the tick and nothing else: the rows stay in the
+        // order the panel opened with, so the row under the next press is the
+        // row the user was already looking at.
+        let after = open_with_rows(&offered, 2);
+        assert_eq!(labels(&after), labels(&rows));
+        assert_eq!(after[2].glyph, Some(icons::CHOSEN));
+        assert!(after[0].glyph.is_none());
+
+        // And every application holds the panel; only the way out lets go.
+        assert!(rows[..3].iter().all(|row| row.holds), "{rows:?}");
+        assert!(!rows[3].holds);
+    }
+
+    /// Nine orders and a way out, the one in force ticked, and the two the disk
+    /// cannot answer for greyed.
+    #[test]
+    fn the_sort_list_offers_every_order_and_marks_the_one_in_force() {
+        // A shelf the filesystem could tell nothing about the dates of.
+        let undated = media::Orders::default();
+
+        let rows = sort_rows(media::Sort::LargestFirst, undated);
+        assert_eq!(rows.len(), media::SORTS.len() + 1);
+        assert_eq!(
+            commands(&rows).last(),
+            Some(&menu::Command::Dismiss),
+            "the way out is last"
+        );
+        let ticked: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.glyph == Some(icons::CHOSEN))
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(ticked, [media::Sort::LargestFirst.label()]);
+
+        // Knowing no dates, the four date orders are offered greyed — and the
+        // rest are not.
+        for row in &rows {
+            let by_date = matches!(
+                row.command,
+                menu::Command::SortBy(
+                    media::Sort::NewestFirst
+                        | media::Sort::OldestFirst
+                        | media::Sort::LastChangedFirst
+                        | media::Sort::LongestUntouchedFirst
+                )
+            );
+            assert_eq!(row.enabled, !by_date, "{}", row.label);
+        }
+
+        // And a shelf that knows when its files were last written can be put in
+        // both of the Modified orders — which every filesystem can answer for.
+        {
+            let rows = sort_rows(
+                media::Sort::NameAscending,
+                media::Orders {
+                    created: false,
+                    modified: true,
+                },
+            );
+            let modified: Vec<bool> = rows
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row.command,
+                        menu::Command::SortBy(
+                            media::Sort::LastChangedFirst | media::Sort::LongestUntouchedFirst
+                        )
+                    )
+                })
+                .map(|row| row.enabled)
+                .collect();
+            assert_eq!(modified, [true, true]);
         }
     }
 }

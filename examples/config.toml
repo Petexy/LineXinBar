@@ -78,7 +78,9 @@ pointer_accel = 0.0
 "Ctrl+Alt+BackSpace" = "quit"
 "Super+Q" = "close"
 # Shows the shell's guide overlay, which is the way back out of a fullscreen
-# application. Bound to Super+Home and XF86HomePage as well by default.
+# application. The Windows key on its own already does this, as do Super+Home,
+# XF86HomePage and the rear side button of a mouse; this adds another chord
+# rather than moving any of them.
 "Super+G" = "guide"
 "Super+Tab" = "cycle-window"
 "Super+Left" = "focus-prev-output"

@@ -1,0 +1,88 @@
+# Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+
+pkgname=linexinbar
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Multi-display Wayland desktop with an XMB-style shell'
+arch=('x86_64' 'aarch64')
+url='https://github.com/petexy/project-linexinbar'
+license=('GPL-3.0-only' 'Apache-2.0')
+depends=(
+    'dbus'
+    'glibc'
+    'libgcc'
+    'libdrm'
+    'libglvnd'
+    'libinput'
+    'libx11'
+    'libxcb'
+    'libxcursor'
+    'libxi'
+    'libxkbcommon'
+    'libxkbcommon-x11'
+    'mesa'
+    'seatd'
+    'systemd-libs'
+    'wayland'
+)
+# Arch's rust package provides the cargo name without a versioned provide.
+# The build wrapper checks rustc/cargo >= 1.89 before invoking makepkg.
+makedepends=('cargo' 'gcc' 'pkgconf')
+optdepends=(
+    'xorg-xwayland: X11 application support'
+    'vulkan-icd-loader: Vulkan renderer backend'
+    'wireplumber: volume control through wpctl'
+    'libpulse: volume control through pactl'
+    'alsa-utils: volume control through amixer'
+    'ddcutil: external-monitor brightness control'
+    'hicolor-icon-theme: fallback application icons'
+    'sudo: application removal from the shell'
+)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+_linexinbar_rustflags="${RUSTFLAGS:-}"
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    _cargo_target="$(rustc -vV | sed -n 's/^host: //p')"
+    cargo fetch --locked --target "$_cargo_target"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+    cargo build --frozen --release --workspace --bins
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    # `cargo test` already builds in the dev profile. Nothing here may pin an
+    # optimisation level: RUSTFLAGS is appended after the profile's own flags
+    # and wins, so a level named here would silently override the workspace's
+    # `profile.dev.package."*"` and compile every dependency unoptimised.
+    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+    cargo test --frozen --workspace --lib --bins
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    ./packaging/install.sh \
+        --destdir "$pkgdir" \
+        --prefix /usr \
+        --target-dir target
+
+    install -Dm0644 LICENSE \
+        "$pkgdir/usr/share/licenses/$pkgname/GPL-3.0-only.txt"
+    install -Dm0644 font/Roboto/LICENSE.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/Roboto-Apache-2.0.txt"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm0644 docs/configuration.md \
+        "$pkgdir/usr/share/doc/$pkgname/configuration.md"
+    install -Dm0644 examples/config.toml \
+        "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
+}

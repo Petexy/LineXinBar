@@ -1,0 +1,21 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: LineXinBar
+Source: https://github.com/petexy/project-linexinbar
+
+Files: *
+Copyright: 2026 Piotr Lewandowski and contributors
+License: GPL-3.0-only
+ The complete GNU General Public License version 3 is available in
+ /usr/share/common-licenses/GPL-3 on Debian systems.
+
+Files: share/icons/Bibata-Modern-Classic/*
+Copyright: ful1e5 and Bibata Cursor contributors
+License: GPL-3.0
+ The complete GNU General Public License version 3 is available in
+ /usr/share/common-licenses/GPL-3 on Debian systems.
+
+Files: font/Roboto/*
+Copyright: Christian Robertson
+License: Apache-2.0
+ The complete Apache License version 2.0 is available in
+ /usr/share/common-licenses/Apache-2.0 on Debian systems.
