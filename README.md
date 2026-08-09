@@ -78,7 +78,7 @@ one feature:
 | ----------------------------------------- | -------------------------------------- | ---------------------------------------------- |
 | `Xwayland`                                | X11 applications                       | A Wayland-only session; logged, never fatal    |
 | `dbus` (`dbus-update-activation-environment`) | D-Bus activation inside the session | Activated apps may appear on the outer desktop |
-| `wpctl` / `pactl` / `amixer`              | The volume bar, in that order of preference | No volume bar                             |
+| `wpctl` / `pactl` / `amixer`              | The volume bar, in that order of preference. `pactl` also lists what each application is playing, which is the mixer | No volume bar; with `amixer` alone, a mixer holding only the session's own output |
 | `ddcutil`                                 | Brightness for external monitors, over DDC/CI | Brightness only where the kernel has a backlight |
 | `xdg-open`                                | Opening one of the user's own files when nothing installed declares its type | Those rows are listed but report that nothing opens them |
 | `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
@@ -760,9 +760,11 @@ moved on to something else by the time the new window maps.
 And it stays there. The display a window is placed on is recorded on the window
 itself, so every later re-tile — a sibling window closing, the client asking to
 be maximized or fullscreened, an X11 client moving itself — puts it back on the
-same screen. Only `Super+Shift+→` moves a window between displays. Without that
-record the placement would be re-derived from the window's bounding box, which
-a window that has mapped but not yet drawn does not have: an application whose
+same screen. Nothing moves a window between displays but a user asking for it:
+`Super+Shift+→`, or the two move rows in [the menu](#the-context-menu) over its
+card in the guide. Without that record the placement would be re-derived from
+the window's bounding box, which a window that has mapped but not yet drawn does
+not have: an application whose
 updater or splash window closes as the real one appears would arrive on the
 first display instead of the one it was started from.
 
@@ -805,6 +807,18 @@ menu; the cost of refusing to guess was a controller with no context menu at
 all. A pad the database does know is read by name only, and there `X` alone
 stays the running application's.
 
+One pad escapes the gamepad API entirely. The second-generation Steam
+Controller has no kernel driver — `hid-steam` claims the original, its receiver
+and the Deck, and this one falls through to `hid-generic` — so it has no
+joystick node at all and the gamepad API enumerates nothing. It is read from
+its hidraw report instead, which is the only source that survives both of the
+states it has: on its own it is in the firmware's lizard mode, pretending to be
+a keyboard and a mouse, and the moment Steam is launched Steam claims it and
+writes lizard mode off. Reading hidraw is not exclusive, so it works alongside
+Steam's own reads, and it is opened read-only — leaving lizard mode means
+*writing* feature reports, which is Steam's business. The compositor drops the
+pad's lizard keyboard so the same button cannot arrive twice.
+
 Every button press is logged at debug level with its mapped name, its raw code
 and which of the two namings it came under, which is the fastest way to work
 out what an unusual pad is actually sending:
@@ -834,24 +848,60 @@ menu over whatever is running:
 | Entry             | Effect |
 | ----------------- | ------ |
 | Stick pointer     | Whether the right stick is a mouse inside the application in front |
-| Volume mixer      | How loud that application is, on its own. Not built yet |
+| Volume mixer      | Opens [a panel](#the-volume-mixer) of everything making a noise, a row per application |
 | Volume            | How loud the session is — a bar, moved with Left/Right; `A` mutes |
 | Brightness        | How bright *this* display is, where that can be changed |
 | Resume            | Dismiss the overlay |
-| Close *app*       | Ask the application to close, so it can prompt about unsaved work |
+| Close *app*       | End the application on the selected card. It is asked first and cannot refuse |
 | Dashboard         | Show the bar over the running application, without closing it |
 | Power             | Suspend, turn off, or end the session |
 
-Close and Dashboard are offered only while something is running. Nothing but
-the power button ends the session: `Esc` opens this menu rather than quitting,
-so leaving is always a deliberate choice.
+Close and Dashboard are offered only while the card beside the column is a
+window. The start screen is the last card in the deck, and it is neither
+something to close nor something for Dashboard to bring up that Resume does not
+already. Nothing but the power button ends the session: `Esc` opens this menu
+rather than quitting, so leaving is always a deliberate choice.
 
-The first two are square tiles sharing one line at the head of the column,
-because they are switches rather than rows: Up and Down treat the pair as one
-stop on the way down the column, and a switch that cannot be thrown from where
-the user is standing is stepped over rather than stopped on.
+Close names the application on the *selected* card rather than the one in
+front, and ends it rather than asking it to go: it is sent the polite close a
+window manager sends, and `SIGTERM` then `SIGKILL` four seconds later if that
+is ignored. What is ended is the application rather than the window's own
+process — killing the window Steam draws leaves `steam` to put up another one —
+so the compositor works out what the application is before it works out how to
+end it. The grace is there so an application can finish writing, not so it can
+decline.
+
+The first two are square tiles sharing one line at the head of the column
+rather than rows of their own: Up and Down treat the pair as one stop on the way
+down the column, and a tile that can do nothing from where the user is standing
+is stepped over rather than stopped on. The stick pointer is a switch and is in
+that state with nothing running; the mixer is the one tile that opens something,
+and it is never in it, because the panel always has the session's own output on
+it.
 
 The header is the wall clock, and under it whatever is running on this display.
+
+### The cards
+
+Beside the entry column stands a second one: a card per window on this display,
+one above another, with the start screen as the last card of all. Right leaves
+the entries for them and Left comes back; Up and Down step the cards, which stop
+at their ends rather than wrapping, and the selected card is always centred with
+its neighbours peeking in past the top and bottom edges — the cut-off card is
+what says there is more to scroll to.
+
+`A` on a card goes back to that window, so the guide is also the window
+switcher; `A` on the last card is the bar, over the running application or
+plainly if there is none. Close, and [the menu](#the-context-menu) the top face
+button raises, are both about the *selected* card rather than about whatever is
+in front.
+
+They are the live windows rather than pictures of them. The compositor animates
+each window into its slot and draws it there, out of the same layout crate the
+shell decorates the slots from, so the two processes paint one composition
+without either sending the other any pixels; leaving flies every window back to
+where it was. Which is also why opening the guide wakes everything on the
+display up — see [What draws, and when](#what-draws-and-when).
 
 ### Quick settings
 
@@ -890,9 +940,9 @@ on showing their own bar. `L1` / `R1` and `Tab` / `Shift+Tab` work from inside
 the menu, and it follows control to the next display; with more than one
 display it names the one it is on.
 
-Everything it says is about that display: it offers to resume or close the
-application running *there*, and reads *Nothing is running* on a display that
-has none, whatever is on the others.
+Everything it says is about that display: the cards are the windows *there*, it
+offers to resume or close one of those, and it reads *Nothing is running* on a
+display that has none, whatever is on the others.
 
 Two input paths reach it, because neither alone is enough:
 
@@ -904,6 +954,34 @@ Two input paths reach it, because neither alone is enough:
 - **Keyboards** go to the focused application, so the shell would never see the
   key. The compositor therefore owns the `guide` binding and forwards it over
   `lxb_shell_v1` (see below).
+
+### The volume mixer
+
+The tile beside the stick pointer's opens a panel of everything the machine is
+playing: one row per application, each under the name and the icon the bar
+already knows it by, with the session's own output in a band at the foot. Left
+and Right slide a row, `A` silences it and brings it back, and the panel stays
+up while they do — a track answers by *changing*, and a panel that folded away
+on the press would take the answer with it.
+
+A row is an application rather than a sound. A browser with three tabs playing
+has three streams open in the sound server and is one thing anybody wants to
+turn down, so they are grouped by the program behind them and the row moves all
+of them together — which also means a tab falling silent does not renumber the
+panel under the user's hand. What the row is called is what the desktop entry
+that installed it is called, not what the stream calls itself: the bar has the
+name the user chose it by, and the server has "Zen" or "Music Player Daemon".
+
+It is [the same panel](#the-context-menu) every context menu is drawn as,
+because it is the same kind of object — a short list about one control, grown
+out of that control. What makes it a mixer is the rows.
+
+The output row is always there, which is why the tile is never dimmed. The
+application rows come from `pactl list sink-inputs`, which PipeWire answers as
+well as PulseAudio; a machine with neither — the `amixer` case in
+[Quick settings](#quick-settings) — gets a mixer with the session's own volume
+on it and nothing else, because per-application volume is not something the
+kernel mixer has.
 
 ### The stick pointer
 
@@ -954,10 +1032,11 @@ machine would be worse than none.
 
 Which is also what the tile does with nothing in front of it to be about: it is
 drawn, dimmed, and the highlight steps over it rather than stopping on a switch
-that cannot be thrown. The mixer beside it is in that state permanently, until
-there is a mixer behind it. Both are still drawn, because a line that came and
-went with the application would slide the other tile across the sidebar every
-time something was closed.
+that cannot be thrown. [The mixer](#the-volume-mixer) beside it never is,
+whatever is running, because the panel it opens always has the session's own
+output on it. Both are still drawn, because a line that came and went with the
+application would slide the other tile across the sidebar every time something
+was closed.
 
 The pointer is the seat's own, not a drawing of the shell's: `wl_pointer`
 belongs to the compositor, and the point is to reach the application. The shell
@@ -1002,13 +1081,19 @@ side of the display has room, and folds back into it when the menu is answered
 or dismissed. Adding a command later is one line in a list; raising a menu
 somewhere new is one function that returns those three things.
 
-Three of them exist so far:
+Four of them exist so far:
 
 | Where | What it is about | Rows |
 | ----- | ---------------- | ---- |
 | The bar | The application on the focused tile, out of the disc it stands on | Information, Uninstall / Launch, Close |
 | The bar | One of the user's own files, out of the same disc | Open, Open with, Delete / Sort, Cancel |
 | The guide | The window under the selected card, out of that card | Move to next display, Move to previous display, Screenshot the app / Cancel |
+| The guide | [Everything making a noise](#the-volume-mixer), out of the mixer tile | One row per application / the session's own output |
+
+The last is a menu in shape and material and not in kind: its rows are tracks
+rather than commands, so it is slid rather than pressed and it is raised by `A`
+on the tile rather than by the button below. Nothing about the panel had to
+change to carry it, which is the point of it being a component.
 
 A row can also lead to a *further* list rather than doing something — Open with
 and Sort both do. The panel stays exactly where it is and swaps what is written
@@ -1017,10 +1102,11 @@ the list it came from, and only closes the panel from the outermost one.
 
 The rows themselves are ordinary furniture. A row can carry a glyph, sit in a
 band of its own below a hairline, be warm for something there is no coming back
-from, or be offered and out of reach — "Move to Other Screen" is drawn as an
-outline on a session with one display rather than being left out, so the command
-is still discoverable. The highlight steps straight over anything it cannot
-stop on, wraps at both ends, and glides between rows rather than jumping. A list
+from, or be offered and out of reach — "Move to next display" is drawn as an
+outline on the last display rather than being left out, so the command is still
+discoverable and the menu keeps its shape on every screen. The highlight steps
+straight over anything it cannot stop on, wraps at both ends, and glides between
+rows rather than jumping. A list
 longer than the display can hold scrolls under a panel that does not change
 size, with an arrow at whichever end still has rows past it.
 
@@ -1218,9 +1304,20 @@ protocol generated from one XML file for both sides:
 | request `close_foreground` | The same for the session as a whole. Superseded. |
 | request `quit`      | End the session. |
 | request `set_launch_output` | Name the display new applications should open on. |
+| event `output_window` | One window on one display: a stable handle, its title and its logical size. A batch of them ends in `output_windows_done`. |
+| event `output_window_app_id` | What one listed window's application calls itself, which is the only thing a running application can be recognised by. |
+| request `set_output_overview` | Enter or leave the window overview on one display, which is what draws the cards. |
+| request `set_overview_selection` | Which card the shell is on, so the compositor scrolls the column the same way. |
+| request `activate_window` | Raise and focus one window: how the overview doubles as a window switcher. |
+| request `activate_window_from` | The same, flown in out of a rectangle — the tile an already-running application was pressed on. |
+| request `kill_window` | End one window's application. Not a request it can refuse; see [the guide](#the-guide-overlay). |
+| request `move_window_to_output` | Put one window on another display. |
+| request `capture_window` | Photograph one window into a PNG at a path the shell chooses. |
+| event `window_captured` | Where that picture went, or that it did not happen. |
 | request `move_pointer` | Move the seat's pointer, as a mouse would. |
 | request `pointer_button` | Press or release one of its buttons. |
 | request `scroll_pointer` | Scroll where it is, as a wheel or a touchpad would. |
+| request `keyboard_key` | Press or release a key on the seat's keyboard — the arrows, not text. |
 | event `output_app_id` | What the application on one display *is*, as opposed to what its title says. |
 | request `set_output_hdr` | Drive one display in high dynamic range, and say how bright and how saturated. |
 | event `output_hdr` | Whether a display can be driven in HDR, whether it is, and the peak it reports. |
@@ -1238,6 +1335,15 @@ offers to resume, or close, something on a screen the user is not looking at.
 
 A window is attributed to the display it covers most of, rather than every
 display it touches — otherwise one spilling over an edge claims both.
+
+`capture_window` is a request because a Wayland client cannot photograph
+another client's window, and the shell is a client: what it holds is a layer
+surface of its own, so it cannot read even the application it is drawn over.
+Only the compositor has those pixels. Where the file goes is the shell's to
+decide, though, and is passed in — that is a question about the user's home
+directory rather than about the display server — and `window_captured` always
+answers, because a shell that has told the user it took a screenshot has to be
+able to say where it went or that it did not happen.
 
 `set_output_hdr` is a request rather than something the shell does itself
 because neither half of HDR is a client's to touch: the metadata infoframe is a
@@ -1472,10 +1578,19 @@ crates/lxb-compositor/
   state.rs        global state, split so a render pass can borrow the
                   backend and the compositor state at once; session shell
   handlers.rs     Wayland protocol handler implementations
+  config.rs       config.toml, and the defaults a missing one gives
   outputs.rs      multi-display layout: positions, scale, transform, tiling
   input.rs        input routing, focus policy, keybindings
   focus.rs        common Wayland/X11 keyboard, pointer and touch targets
+  cursor.rs       the compositor-drawn cursor and its XCursor theme
+  text_input.rs   text-input, input-method and virtual-keyboard, for the
+                  on-screen keyboard
   shell_control.rs  compositor half of lxb_shell_v1
+  overview.rs     the windows of a display animated into the guide's cards
+  restore.rs      one window flown back out of the tile that asked for it
+  teardown.rs     ending an application, as against ending a process
+  capture.rs      photographing one window into a PNG
+  hdr.rs          the connector's metadata and the CRTC's colour pipeline
   xwayland.rs     private XWayland server's X window manager and selections
   render.rs       render element assembly, shared by every backend
   backend/
@@ -1489,23 +1604,36 @@ crates/lxb-protocol/
 
 crates/lxb-desktop/
   apps.rs         .desktop parsing and Plasma-style categorisation
+  appinfo.rs      what installed an application, and what that says about it
+  uninstall.rs    one Origin translated into one argv, and whether it may run
   icons.rs        icon theme lookup, PNG/SVG rasterisation
+  theme.rs        the palette: five accents, and every colour read as it is drawn
+  settings.rs     the Settings column, written here rather than found on disk
   model.rs        the shared catalogue, and one cursor per display
+  controller.rs   gamepads through gilrs, and what a button means
+  steam_hid.rs    the second-generation Steam Controller, read from hidraw
   guide.rs        the overlay's modes and menu
   menu.rs         the context menu: entries, selection, scrolling and
                   growth, with no idea what raised it
+  dialog.rs       the centred panel: a question that has taken the screen over
+  launch.rs       the splash between pressing A and the application being there
   media.rs        the walk over $HOME for music, films and photographs,
                   what order the rows are in, and what opens one
+  thumbs.rs       a frame of the film, a photograph scaled down, and the
+                  freedesktop cache both are kept in
   trash.rs        the freedesktop trash, for the Delete row
+  screenshot.rs   where a screenshot goes, in the language the account was made in
   pointer.rs      the right stick as a mouse, and which applications it is
                   turned on for
   keyboard.rs     the on-screen keyboard: its keys, the input method and
                   virtual keyboard behind them, and the grab that lets a
                   real keyboard drive it
-  system.rs       volume and brightness, off the main thread
+  system.rs       volume, per-application volume and brightness, off the
+                  main thread
   ui.rs           layout: model to quads and text runs
   gpu.rs          wgpu renderer, one atlas and two pipelines
   shaders.wgsl    animated backdrop, instanced quads
+  offscreen.wgsl  the blur the glass reads through, and the copy to the display
 ```
 
 ## Not implemented
@@ -1516,15 +1644,16 @@ Worth knowing before you rely on this:
   a premultiplied-alpha surface so the running application shows through it.
   A driver offering only `Opaque` gets a working menu on a solid background
   instead, and says so in the log.
-- **Screen capture.** No `wlr-screencopy` or xdg-desktop-portal, so
-  screenshots and screen sharing do not work from inside.
-- **Pointer- or touch-driven shell navigation.** The XMB has no pointer,
-  touch, or gesture navigation handlers yet. The compositor still routes those
-  input types normally to other clients; keyboard and game-controller XMB
-  navigation are fully supported. The stick pointer above is about the
-  application in front, not about the shell.
-- **The per-application volume mixer.** Its tile is drawn beside the stick
-  pointer's and does nothing yet. The session's own volume works.
+- **Screen capture by anything but the shell.** The guide's menu photographs
+  the selected window through `lxb_shell_v1`'s own `capture_window`, so
+  [Screenshot the app](#the-context-menu) works. What is missing is the
+  standard way in: there is no `wlr-screencopy` and no xdg-desktop-portal, so a
+  recorder or a browser sharing a tab sees nothing, and there is no way to
+  photograph a whole display rather than one window.
+- **Gesture navigation in the shell.** [Mouse and touch](#mouse-and-touch)
+  answers clicks, taps and the wheel; there is no swipe, pinch or two-finger
+  handler on the bar. The compositor forwards pointer gestures to clients
+  normally.
 - **Unlimited relative-pointer capture in the nested debug backends.** They
   synthesize relative events from the parent cursor and enforce client locks,
   but movement stops at the outer window edge because Smithay's nested event
