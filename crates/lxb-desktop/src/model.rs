@@ -62,6 +62,14 @@ fn settled_within(target: f32) -> f32 {
     SETTLED.max(target.abs() * 32.0 * f32::EPSILON)
 }
 
+/// Which row of `entries` a column opens on, and comes back to rest on when it
+/// is reordered: the first that belongs to the list rather than standing over
+/// it. Zero for every column carrying no such row, which is all but the three
+/// shelves of the user's own files.
+fn first_row(entries: &[Entry]) -> usize {
+    crate::apps::head_rows(entries).min(entries.len().saturating_sub(1))
+}
+
 /// How a terminal emulator separates its own options from the program it
 /// should run. Unfortunately there is no universally implemented CLI here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +133,14 @@ pub enum Action {
     /// Hand control to the previous / next display.
     PrevScreen,
     NextScreen,
+    /// Photograph the whole of the display being driven.
+    ///
+    /// Honoured from outside like [`Action::Guide`] and [`Action::Keyboard`],
+    /// and for a stronger reason than either: what a person wants a picture of
+    /// is almost always the game holding the screen, so an action that only
+    /// worked on the shell's own screens would work everywhere except where it
+    /// is wanted.
+    Screenshot,
 }
 
 /// The applications available to launch, and the processes started from them.
@@ -554,12 +570,9 @@ impl Cursor {
 
     /// How many subcategories deep the cursor is standing.
     ///
-    /// Nothing outside the model needs this any more: opening a subcategory
-    /// slides the whole chain along rather than adding a column to the end of
-    /// it, so the drawing asks where the bar *is* — [`Self::depth_position`] —
-    /// and never how many steps that took. It stays for the tests, which check
-    /// the path against the moves that walked it.
-    #[cfg(test)]
+    /// Drawing asks where the bar *is* — [`Self::depth_position`] — while
+    /// input routing asks how many steps opened the path: a move whose depth
+    /// falls is the one that needs the distinct back sound.
     pub fn depth(&self) -> usize {
         self.open
     }
@@ -806,16 +819,22 @@ impl Cursor {
     /// the user at a speed nothing could be read at, to arrive somewhere the
     /// list they were looking at no longer exists. Placed, the way a category
     /// being returned to is placed — see [`Self::restore_column`].
-    pub fn rest_on_first_row(&mut self) {
-        self.select_row(0);
+    ///
+    /// The head of the *list*, not of the column: somebody who has just asked
+    /// for "newest first" is asking to be shown the newest, and the search
+    /// standing over the shelf is not it.
+    pub fn rest_on_first_row(&mut self, xmb: &Xmb) {
+        let row = first_row(self.current_entries(xmb));
+        self.select_row(row);
+        let at = row as f32;
         match self.open.checked_sub(1) {
             None => {
-                self.item_position = 0.0;
+                self.item_position = at;
                 self.item_speed = 0.0;
             }
             Some(level) => {
                 if let Some(column) = self.stack.get_mut(level) {
-                    column.position = 0.0;
+                    column.position = at;
                     column.speed = 0.0;
                 }
             }
@@ -870,7 +889,14 @@ impl Cursor {
             // A list of values opens on the value in force, the way a settings
             // list does: the answer to "what is this set to" should be where
             // the cursor already is, not something to go looking for.
-            let selected = entries.iter().position(Entry::chosen).unwrap_or(0);
+            //
+            // Everything else opens on its first row — except that a shelf of
+            // the user's own files carries the search above its files, and a
+            // column of music opens on music. See [`crate::apps::head_rows`].
+            let selected = entries
+                .iter()
+                .position(Entry::chosen)
+                .unwrap_or_else(|| first_row(entries));
             self.stack.push(SubColumn {
                 selected,
                 // Placed, not travelled to: a column arrives by sliding in
@@ -1815,13 +1841,106 @@ mod tests {
         while cursor.animate(1.0 / 60.0) {}
         assert_eq!(cursor.selected_item(), 2);
 
-        cursor.rest_on_first_row();
+        cursor.rest_on_first_row(&xmb);
         assert_eq!(cursor.selected_item(), 0);
         assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
         // Placed, not travelled to: there is no journey through a list whose
         // every row has just changed.
         assert_eq!(cursor.position_at(1), 0.0);
         assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// A shelf of the user's own files, as the worker hands it over: the search
+    /// at the head of it, and then the files.
+    /// `paths` is what the search has left; `found` is how many are on the
+    /// shelf altogether, which is not the same number once one is running.
+    fn shelf_of(query: &str, paths: &[&str], found: usize) -> Xmb {
+        let listing: Vec<crate::media::Shelved> = paths.iter().map(|path| shelved(path)).collect();
+        Xmb::with_wayland_display(
+            vec![Category {
+                id: "multimedia",
+                title: "Multimedia",
+                icon: "multimedia",
+                entries: vec![Entry::Folder(crate::apps::Folder {
+                    title: "Music".into(),
+                    comment: None,
+                    icon: Some("music".into()),
+                    entries: crate::apps::media_rows(
+                        listing,
+                        crate::media::Kind::Audio,
+                        query,
+                        found,
+                    ),
+                })],
+            }],
+            OsString::from("lxb-test"),
+        )
+    }
+
+    /// A column of music opens on music. The field is above the first file
+    /// rather than in front of it: every visit to a shelf would otherwise begin
+    /// by stepping over a control nobody asked for.
+    #[test]
+    fn a_shelf_opens_on_its_first_file_and_not_on_its_search() {
+        let xmb = shelf_of("", &["/m/a.mp3", "/m/b.mp3"], 2);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert_eq!(cursor.selected_item(), 1);
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+
+        // And the field is exactly one press of Up away, which is where a
+        // person looks for the thing above the first thing.
+        assert!(cursor.navigate(Action::Up, &xmb));
+        assert!(cursor.current_entry(&xmb).and_then(Entry::search).is_some());
+        assert!(!cursor.navigate(Action::Up, &xmb), "and nothing above that");
+
+        // Reordering the shelf brings the cursor back to the first file for the
+        // same reason: what "newest first" asks to be shown is the newest file.
+        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &xmb);
+        while cursor.animate(1.0 / 60.0) {}
+        cursor.rest_on_first_row(&xmb);
+        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+        assert!(!cursor.animate(1.0 / 60.0), "placed, not travelled to");
+
+        // A column with no such row is untouched by any of it.
+        let plain = installed();
+        let mut walker = Cursor::new(plain.categories.len());
+        assert!(walker.enter(&plain));
+        assert_eq!(walker.selected_item(), 0);
+    }
+
+    /// A search narrowed down to nothing still opens somewhere the user can act
+    /// from, rather than on a row that is not there.
+    #[test]
+    fn a_shelf_with_no_matches_opens_on_the_way_out_of_the_search() {
+        let xmb = shelf_of("zzz", &[], 40);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb), "the two rows are still a column");
+        assert_eq!(
+            cursor.current_entry(&xmb).map(Entry::title),
+            Some("Clear search")
+        );
+    }
+
+    /// The condition the shell watches to know a search field has been left:
+    /// the cursor is simply no longer standing on it. The bar can be walked out
+    /// from under an open keyboard by routes that never touch the field — a
+    /// pointer resting on the category row is one — so what ends the typing is
+    /// this, asked once a frame, rather than any particular way of leaving.
+    #[test]
+    fn walking_out_to_the_categories_leaves_the_search_field_behind() {
+        let xmb = shelf_of("", &["/m/a.mp3"], 1);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.navigate(Action::Up, &xmb));
+        assert!(cursor.current_entry(&xmb).and_then(Entry::search).is_some());
+
+        cursor.point_at_category(0, &xmb);
+        assert!(
+            cursor.current_entry(&xmb).and_then(Entry::search).is_none(),
+            "the cursor is back on the category's own column"
+        );
     }
 
     /// A column long enough that an `f32` cannot hold a thousandth of a row

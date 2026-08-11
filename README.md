@@ -52,6 +52,11 @@ kernel interfaces underneath it have no portable substitute.
 | `libdrm` + `libgbm`                       | Modesetting and scanout buffers            | compositor |
 | `libEGL` (+ a GLES driver)                | The compositor's renderer                  | compositor |
 | `libvulkan` **or** `libEGL`               | The shell's renderer, whichever is present | shell      |
+| `libasound`                                | The shell's effects and Start music         | shell      |
+| `libpipewire-0.3`                          | The frames a shared screen is carried on    | portal     |
+
+`libpipewire`'s Rust bindings are generated at build time, so building the
+portal also wants **`clang`** for `bindgen`.
 
 The X libraries — `libX11`, `libxcb`, `libXcursor`, `libXi`,
 `libxkbcommon-x11` — are pulled in by the nested `winit` and `x11` backends
@@ -77,11 +82,14 @@ one feature:
 | Program                                   | Gives                                  | Missing                                        |
 | ----------------------------------------- | -------------------------------------- | ---------------------------------------------- |
 | `Xwayland`                                | X11 applications                       | A Wayland-only session; logged, never fatal    |
-| `dbus` (`dbus-update-activation-environment`) | D-Bus activation inside the session | Activated apps may appear on the outer desktop |
+| `dbus` (`dbus-update-activation-environment`) | D-Bus activation inside the session — including the desktop portal, which is what screen sharing is | No screen sharing at all, and activated apps may appear on the outer desktop |
 | `wpctl` / `pactl` / `amixer`              | The volume bar, in that order of preference. `pactl` also lists what each application is playing, which is the mixer | No volume bar; with `amixer` alone, a mixer holding only the session's own output |
 | `ddcutil`                                 | Brightness for external monitors, over DDC/CI | Brightness only where the kernel has a backlight |
 | `xdg-open`                                | Opening one of the user's own files when nothing installed declares its type | Those rows are listed but report that nothing opens them |
 | `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
+| `pipewire`                                | The frames a shared screen is carried on | `lxb-portal` will not start, and screen sharing is unavailable |
+| `xdg-desktop-portal`                      | The front desk applications ask for a screen — [screen sharing](#screen-sharing) needs both this and `lxb-portal` | Applications find no portal and cannot share anything |
+| `polkit` (`polkitd`, and its agent helper) | [Authorisation prompts](#authorisation-prompts): mounting a disk, installing a package, managing a service | Every action whose policy needs a human is refused, with nothing on screen to allow it |
 
 ### Permissions
 
@@ -122,7 +130,8 @@ Arch (headers ship in the same packages):
 
 ```sh
 pacman -S --needed rust pkgconf wayland libinput seatd systemd-libs libdrm \
-    mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11
+    mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11 \
+    alsa-lib
 pacman -S --needed xorg-xwayland dbus wireplumber ddcutil   # optional
 ```
 
@@ -132,7 +141,7 @@ Debian and Ubuntu:
 apt install build-essential pkg-config cargo libwayland-dev libinput-dev \
     libseat-dev libudev-dev libdrm-dev libgbm-dev libxkbcommon-dev \
     libegl1-mesa-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
-    libxkbcommon-x11-dev
+    libxkbcommon-x11-dev libasound2-dev
 ```
 
 Fedora:
@@ -141,7 +150,7 @@ Fedora:
 dnf install cargo pkgconf-pkg-config wayland-devel libinput-devel \
     libseat-devel systemd-devel libdrm-devel mesa-libgbm-devel \
     libxkbcommon-devel mesa-libEGL-devel libX11-devel libxcb-devel \
-    libXcursor-devel libXi-devel libxkbcommon-x11-devel
+    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel
 ```
 
 Package names drift; the library list above is the thing to match if yours
@@ -292,6 +301,22 @@ minutes, which is how a file copied in during a session turns up and how one
 deleted goes away again. Hidden folders are skipped, as every desktop's
 indexer skips them, and symbolic links are not followed.
 
+Five minutes is the right interval for a collection nobody is looking at, and
+the wrong one in the two cases where somebody is. So neither of those waits:
+
+- **A file this session wrote is shelved as it is written.** The shell asked
+  for the screenshot and knows the path in the answer, so that one file goes
+  straight onto the shelf — a picture taken while standing in Images appears in
+  the column a moment later, under its own thumbnail, without anything being
+  searched for.
+- **Stepping into a shelf brings the next walk forward.** Opening Music, Video
+  or Images is somebody asking what they have, and the answer should include
+  the film they recorded a minute ago in an application this shell knows
+  nothing about. It is the same walk started early rather than a scan of its
+  own, and it cannot happen more than once every twenty seconds, so a column
+  stepped in and out of ten times still costs one pass. Walking *past* the row
+  asks nothing: idle scrolling must not read the disk.
+
 A row holds everything found, however much that is. Nothing about a frame the
 shell draws depends on how much music somebody owns: a column is a screen tall,
 so the drawing and the hand both walk the rows that can be on the display and
@@ -303,10 +328,10 @@ finds, it puts the chosen order on, and it builds the rows themselves — and
 what crosses back is a finished list, which the shell swaps into the bar in a
 few microseconds however long it is. Everything that costs anything in
 proportion to the size of a collection happens on that side of the wire: the
-merge, the sort, letting go of the list that was replaced. The shell sends
-three things the other way — list this shelf differently, this file has been
-deleted, and here are the rows you can let go of now — and holds no files at
-all.
+merge, the sort, the search, letting go of the list that was replaced. The
+shell sends four things the other way — list this shelf differently, show only
+what matches this, this file has been deleted, and here are the rows you can
+let go of now — and holds no files at all.
 
 This is what the first two seconds of a session are made of. On the home
 directory it was written against, half a million pictures, the shell used to
@@ -323,6 +348,52 @@ nothing about where a file sits says it is not a picture. Icon and dump formats
 (`.ico`, `.xpm`, `.pbm`) are left out, and so are `.ts` and `.mts` — both name
 MPEG transport streams and both name TypeScript sources, and a development
 machine would otherwise file several thousand of the second kind under Video.
+
+#### Searching a shelf
+
+Each of the three columns carries a field at its head, and pressing `A` on it
+raises the on-screen keyboard, because on a console there is nothing else to
+type with. What is typed goes onto the row itself rather than into a panel over
+it: the row *is* the field, and it carries the caret while the board is up.
+
+A column of music still opens on music. The field stands over the list where
+anything standing over a list stands, and is reached by pressing Up from the
+top of it — the one direction nothing else was using, and where a person looks
+for the thing above the first thing. Opening on it instead would make every
+visit to a shelf begin by stepping over a control nobody asked for. The same
+goes for a shelf that has just been reordered: what "newest first" asks to be
+shown is the newest file, not the search.
+
+Walking off the field ends the typing, and the board goes with it. That is
+asked once a frame rather than of any particular way of leaving, because the
+bar can be walked out from under an open keyboard by routes that never touch
+the field — a pointer resting on the category row is one, and control passing
+to another display is another.
+
+The column narrows as each letter lands. A file matches when what was typed
+appears anywhere in its name, ignoring case, so `radio` finds both *Radiohead*
+and *Old Radio Show*. The folder is not searched — an album answering to the
+name of the shelf it sits in would bury the one track that was meant — and
+neither is anything on another shelf: a search of Music returns audio files
+because the shelf it narrows holds nothing else. The line under the field says
+how much of the collection is being kept back (`2590 of 517488 images match`),
+and the row that the column hangs on says it too, so a narrowed column can be
+told from a small one without stepping into it.
+
+`Enter` puts the board away and takes the cursor to the first match. Back does
+the same without moving it. Neither undoes the search: the column has been
+narrowing in plain sight with every letter, so there is no earlier list still
+on screen for a cancel to mean — what puts the whole shelf back is the **Clear
+search** row, which is on the column for exactly as long as there is something
+to clear. A search lasts the session and is not written to the settings file:
+an order is a preference, and a search is something somebody is doing.
+
+The narrowing itself happens where the files are, on the same worker and for
+the same reason as the sort. Half a million photographs are filtered per
+keystroke there rather than between two frames, and the field does not wait for
+it — the letter is on the bar on the frame the key was pressed, and the rows
+under it are whatever the worker last finished. So the two are never
+inconsistent with each other, only with the future.
 
 #### Thumbnails
 
@@ -743,14 +814,88 @@ The compositor's own `config.toml` has the same mode, the same transform and
 the same four HDR settings per output, for a session with no shell — see
 [docs/configuration.md](docs/configuration.md).
 
+### Sounds
+
+`Settings > Sounds` holds two kinds of thing: where the *machine's* sound goes
+and comes from, and what the shell itself plays. The devices come first, because
+a session is set up before it is decorated and because nothing else on the page
+can be heard until the sound is coming out of the right place.
+
+```
+Settings > Sounds > Output device  >  the cards this machine can play through
+                    Input device   >  the ones it can record from
+                    Start music    >  Off
+```
+
+**Output device** and **Input device** set what the whole machine plays through
+and records from — every application on it, not just this shell, and whether or
+not LineXinBar is running when they start. Each row lists what the sound server
+offers, with the card on the line the eye lands on and how it is being driven
+under it, and marks the one in use; the row above the list names that one too, so
+the usual question is answered without stepping in at all. Monitors are left out
+of the inputs: every output has one — its own sound, offered back for recording —
+and none of them is a microphone.
+
+This is the one setting in the column the shell does **not** write down. The
+sound server is what remembers a default device, exactly as it remembers the
+volume, and a shell that kept its own copy would be a second opinion about it at
+every login: a device chosen in any other mixer would be quietly undone the next
+time this one started. So the choice is handed to the server — `pactl
+set-default-sink` and `set-default-source`, which is what PipeWire and PulseAudio
+both answer — and the mark on the row is read back from it.
+
+Choosing does not preview. Moving every sound on the machine to a device as the
+cursor passes over it would put somebody's film in the wrong room four times on
+the way down a list of four; the names are what the list is for, and the sound
+follows when a row is chosen.
+
+A machine with no sound server has nothing to choose here, and the page says so
+rather than opening onto nothing: without PipeWire or PulseAudio nothing decides
+this for the machine, and each program opens the sound card itself. A server that
+answers and lists no output is a different fact — a machine with no sound card —
+and reads differently.
+
+**Start music** is the Start screen's [background
+music](#shell-audio) — on, which is what the shell comes up doing, or off. It is
+the one recording the shell can be told not to play, because it is the one it
+plays at somebody who has pressed nothing: every other sound is an answer to a
+control, and a shell with a button that answered silently would be a shell with a
+dead button on it.
+
+Turning it off is heard at once rather than faded out. A fade is what an
+application taking the display gets, because that is a handover; this is somebody
+saying *stop*, and most of a second of music going anyway is not what they asked
+for. Turning it back on starts the track from its beginning, exactly as returning
+to Start from an application does.
+
+It says nothing about how loud the rest of the shell is. Every click, the
+keyboard and the shutter stay exactly where the mixer's `System` row left them —
+that row is how loud the shell is, and this is whether one of the things it plays
+exists at all. Silencing `System` still silences the music too, and turning the
+music back on does not unmute anything.
+
+Nothing about it previews as the cursor passes over it, for a reason the Display
+pages do not have. Turning music off is instant and costs nothing; turning it
+back *on* rebuilds the track from sample zero, so a cursor walked between the two
+rows would answer with the same four hundred milliseconds of fade-in over and
+over, which is not what the setting sounds like. It is written to
+`~/.config/lxb/shell.toml` beside the accent:
+
+```toml
+start-music = false
+```
+
 ### Several displays
 
 Each display gets its own bar, not a copy of one: they browse independently and
 remember where they were. Only one takes input at a time — the others are
 dimmed and drop the footer, so it is obvious which one the controller is
-driving. `L1` / `R1`, or `Tab` / `Shift+Tab`, hand control to the next display;
-the compositor's first output has it at startup, since Wayland has no notion of
-a primary display.
+driving. `L1` / `R1`, or `Tab` / `Shift+Tab`, hand control to the next display,
+and a click on a display takes it there; the compositor's first output has it at
+startup, since Wayland has no notion of a primary display. Nothing else moves
+it — a pointer merely crossing onto the other screen leaves control where it
+is, because a mouse on its way somewhere else is not a decision about which
+screen the user is using.
 
 An application launched from a display opens on that display, because the shell
 names that display with `set_launch_output` before starting anything. It does
@@ -785,6 +930,7 @@ passes it to a neighbour.
 | `Esc`, `Backspace` or controller `B`        | Step out, then open the guide overlay |
 | `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
 | `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](#the-context-menu) on what is selected |
+| `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3`, controller Guide/STEAM + `R1` | [Photograph](#screenshots) the display being driven |
 
 Keyboard navigation also accepts the keypad arrows, WASD, and HJKL. Held
 directions repeat after a short delay; the analogue stick uses a dead zone
@@ -948,9 +1094,10 @@ Two input paths reach it, because neither alone is enough:
 
 - **Controllers** are read straight from `/dev/input` rather than through
   Wayland, so the guide button arrives even while a game holds the keyboard —
-  as does the on-screen keyboard's chord, for the same reason. Every other
-  control is ignored in that state, so the bar cannot react behind a running
-  game.
+  as do the two chords spelled on it and on Select: the on-screen keyboard's,
+  and [the screenshot's](#screenshots), which is wanted in that state more than
+  in any other. Every other control is ignored there, so the bar cannot react
+  behind a running game.
 - **Keyboards** go to the focused application, so the shell would never see the
   key. The compositor therefore owns the `guide` binding and forwards it over
   `lxb_shell_v1` (see below).
@@ -959,7 +1106,7 @@ Two input paths reach it, because neither alone is enough:
 
 The tile beside the stick pointer's opens a panel of everything the machine is
 playing: one row per application, each under the name and the icon the bar
-already knows it by, with the session's own output in a band at the foot. Left
+already knows it by, with the shell's own audio in a band at the foot. Left
 and Right slide a row, `A` silences it and brings it back, and the panel stays
 up while they do — a track answers by *changing*, and a panel that folded away
 on the press would take the answer with it.
@@ -976,12 +1123,34 @@ It is [the same panel](#the-context-menu) every context menu is drawn as,
 because it is the same kind of object — a short list about one control, grown
 out of that control. What makes it a mixer is the rows.
 
-The output row is always there, which is why the tile is never dimmed. The
+The row at the foot, `System`, is [the shell's own audio](#shell-audio) — how
+loudly the interface answers and its Start background plays. It is not the
+machine's output, and that is deliberate: what the whole session comes out at
+is the volume bar a few rows above it in the same sidebar, which is there
+whether or not this panel is opened, and a row that turned the machine down as
+well would be the same control twice while leaving the shell's own audio with
+none. It is also the one row here that no sound server knows about, which is why
+it is in a band of its own and why it is written to `shell.toml` rather than
+left with the mixer. Sliding it is its own preview: the click a direction makes
+is heard at the level that direction has just moved it to.
+
+That row is always there, which is why the tile is never dimmed — the
+applications come and go with what the machine is playing, and the shell is the
+one thing on the list that is certainly there, being the thing drawing it. The
 application rows come from `pactl list sink-inputs`, which PipeWire answers as
 well as PulseAudio; a machine with neither — the `amixer` case in
-[Quick settings](#quick-settings) — gets a mixer with the session's own volume
-on it and nothing else, because per-application volume is not something the
-kernel mixer has.
+[Quick settings](#quick-settings) — gets a mixer with the shell's own row on it
+and nothing else, because per-application volume is not something the kernel
+mixer has.
+
+The shell is in that listing too, as `ALSA plug-in [lxb-desktop]`, and it is
+struck out of the applications: it is already on the panel as `System`, and two
+rows over one thing would be one control too many — the one a user reached for
+first being the one that does not last, since the server forgets a stream the
+moment it closes and the shell opens a new one for the next click. It is
+recognised by the process the server names it under, and, on a server that
+names no process at all, by the program in the brackets the ALSA plug-in puts
+it in.
 
 ### The stick pointer
 
@@ -1288,6 +1457,205 @@ button filled in is true on all of them. Both drawings are in the tree, at
 [`crates/lxb-desktop/src/glyphs/`](crates/lxb-desktop/src/glyphs/), and
 compiled into the binary the way the font and the shaders are.
 
+## Screenshots
+
+`Print` — the key with a picture of it on it — photographs the display the
+keyboard is on, and it does so **whatever is held down with it**. Every desktop
+spells a different variant of the picture with a modifier (the whole screen on
+`Shift+Print` here, the clipboard on `Ctrl+Print` there, a region on
+`Meta+Shift+Print`) and this shell takes one kind of picture, so a hand that
+learnt any of those spellings is right. For a keyboard with no Print key at all
+— a sixty-percent board — there is the chord every Mac has had for thirty
+years, in both of the ways it gets transcribed onto a PC: `Ctrl+Shift+3`, with
+Command read as Control, and `Alt+Shift+3`, with Command read as the key that
+sits where it sits. Those two are ordinary chords and need their modifiers
+exactly, because the key under them is a digit and belongs to whoever is
+typing.
+
+On a controller it is the **guide button with `R1`**, held together: the same chord a Steam Deck photographs a game with, and
+the same two controls under every thumb — `STEAM`+`R1` on a Deck or a Steam
+Controller, the PlayStation button and `R1` on a DualSense, Guide and `RB` on an
+Xbox pad. It photographs the display that has control, which is the one the
+shoulder buttons move between. The bumper on its own still moves to the next
+display; a chord rather than a button of its own because there is no spare
+control on a controller, every face button and both shoulders already belonging
+to whatever is running.
+
+The guide button is what pays for that chord: it is answered when it comes back
+*up* rather than when it goes down, so that holding it can mean something. A tap
+still opens the overlay and is still a tap; a hold spent on the chord opens
+nothing at all. The alternative would be an overlay already drawn over the game
+by the time the bumper arrived, and a photograph of the overlay.
+
+What lands in the file is what was on that screen: the wallpaper, the
+application over it, and the shell's own bar or overlay over that, at as many
+pixels as the display is being driven at. The pointer is not in it. The cursor
+is drawn by the compositor rather than being part of anything, it is off screen
+entirely while the session is driven from a controller, and an arrow burnt into
+a picture cannot be taken back out of it.
+
+The guide's menu over a window card offers the other picture: [Screenshot the
+app](#the-context-menu), which is that application on its own — its own
+contents at its own size, with nothing in front of it and no wallpaper behind.
+
+Both land in the `Screenshots` folder inside the user's pictures — the folder
+`xdg-user-dirs` recorded in the language the account was made in, so `Bilder`
+on a German installation and `画像` on a Japanese one, never a second English
+`Pictures` beside the real one. They turn up in the shell's own
+[Images](#music-video-and-images) row like any other photograph on the disk.
+
+Nothing pops up to say so. The display **flashes** instead, once, and the shell
+sounds `screenshot.ogg` beside it — both after the file has actually been
+written, which is why the flash is never in the picture it is answering for and
+why the pair mean the screenshot happened rather than that a key was pressed.
+Two senses because the chord is often spelled without looking: a person watching
+the screen sees the flash, a person with their eyes on the game hears the
+shutter. A panel would have to be drawn either behind the fullscreen application
+it was reporting on, where nobody would see it, or in front of it with the
+keyboard taken off whatever the user was doing.
+
+Only the compositor can take either picture. A Wayland client reads its own
+surfaces and nothing else, and the shell is a client: it cannot photograph even
+the application it is drawn over. So both are requests over
+[`lxb_shell_v1`](#lxb_shell_v1), with the compositor supplying the pixels and
+the shell the folder.
+
+## Screen sharing
+
+OBS records this session and Discord shares it, the same way they do on any
+other desktop — which is to say through three pieces that have to all be there,
+because none of them can do the job alone.
+
+**The compositor speaks `wlr-screencopy-unstable-v1`.** A client asks for one
+frame of one display, or of a rectangle of one, is told what buffer to bring,
+and hands it over; the copy happens the next time that display draws. That is
+also what paces a recording, so nothing has to guess the refresh rate. What
+lands in the buffer is the composite, out of the same element list the display
+draws, and whether the pointer is in it is the client's choice —
+`copy_with_damage` really does wait, so a recorder pointed at a still screen is
+given one frame and then nothing until something moves. Any tool that speaks
+this protocol works: `grim`, `wf-recorder`, `wl-screenrec`.
+
+**`lxb-portal` is the session's xdg-desktop-portal backend.** No application
+speaks Wayland to share a screen: it asks `xdg-desktop-portal` over D-Bus, and
+that hands the question to whichever backend the desktop installed. GNOME ships
+one, KDE ships one, and this is LineXinBar's — `org.freedesktop.impl.portal.ScreenCast`,
+answering with the number of a PipeWire node.
+
+**The frames go over PipeWire, and are copied once.** Every buffer in the
+stream is a memfd the portal allocates, and a memfd is exactly what a
+`wl_shm_pool` is made from — so the memory PipeWire hands the application is
+the same memory the compositor was told to copy the display into. The picture
+goes from the GPU to the application in one step; nothing in the portal ever
+touches a pixel.
+
+The three files that make a session find it are in
+[`share/`](share/xdg-desktop-portal): the `.portal` file that names the D-Bus
+backend, the `linexinbar-portals.conf` that says this backend answers screen
+sharing and leaves file choosers and the rest to whatever else the machine has,
+and a D-Bus service file so anything asking early can start it. The compositor
+starts it beside the shell under `--shell`, because a portal is a client of
+this compositor and has to be given the session's own display.
+
+**Those files have to be installed, or nothing ever calls it.**
+`xdg-desktop-portal` chooses its backends by reading `.portal` files out of the
+data directories, and it does so once, at startup — a session whose portal was
+never registered has `lxb-portal` sitting on the bus answering nothing, while
+every application that asks is told there is no ScreenCast portal at all. That
+is not an error anybody is shown: OBS simply offers no screen-capture source
+and Discord's picker never appears. A package installs them; a session run
+straight out of a checkout installs nothing, and
+[`scripts/install-portal.sh`](scripts/install-portal.sh) registers that build
+for the current user instead (`--uninstall` takes it back). The portal says so
+in the log when it cannot find its own registration.
+
+**And the session has to tell the bus what it is.** A D-Bus activated service
+inherits nothing from whatever asked for it — it is started by the bus, from
+the bus's own snapshot of the environment — so a session that never updates
+that snapshot has the portal come up with no `XDG_CURRENT_DESKTOP` and no
+display, which lands in exactly the same place: a front desk with no screen
+sharing on it. The compositor updates it (through
+`dbus-update-activation-environment --systemd`) as soon as it owns the seat, or
+when `LXB_PRIVATE_DBUS=1` says it has been given a bus of its own; nested on
+somebody else's bus it leaves the snapshot alone, because rewriting it would
+send *their* activated services into this compositor.
+
+The other half of that is giving it back. The portal is one service per user
+rather than one per session, and nothing restarts it, so a portal left running
+with LineXinBar's answers is inherited by whatever the user logs into next —
+and screen sharing is broken *there* instead, which is how this was found. A
+session that owns the seat therefore stops `xdg-desktop-portal` on its way out,
+and `lxb-portal` holds a connection to its own compositor for no other reason
+than to exit when that connection breaks.
+
+`lxb-portal --list-outputs` names the displays, and `lxb-portal --debug-cast
+[DISPLAY]` shares one without a portal or D-Bus in front of it and prints the
+node — which is how the pipeline is proved by hand with `gst-launch-1.0
+pipewiresrc`.
+
+**Nothing is shared until the user says so.** The portal cannot draw — the
+shell owns the renderer, the glass and the panel every other question in this
+session is asked through — so the question goes over `lxb_shell_v1`: the
+compositor carries it to the shell, which opens the guide and puts up a panel
+naming the application and offering one row per display, and carries the answer
+back. The refusal is the row the panel opens on, so a press on a question
+nobody read is a no. So is a question nobody answers, a session with no shell,
+and a display unplugged between the question and the answer: there is no path
+through `consent.rs` that shares a screen because something was missing.
+
+One question at a time. The panel is modal and takes every button while it is
+up, so a second application asking while the first question is on screen is
+refused rather than queued behind a panel the user cannot see.
+
+## Authorisation prompts
+
+Mounting somebody else's disk, installing a package, restarting a service: none
+of those are done by the program the user pressed. It asks `polkitd`, which
+reads the action's policy, and where the policy says a human has to agree,
+`polkitd` asks *the session's authentication agent* for proof. A desktop with no
+agent registered is a desktop where every one of those is refused with nothing
+on screen to allow it, which is what this was until the shell grew one.
+
+**The agent is the shell itself.** It is the one part of LineXinBar with a D-Bus
+connection of its own — the portal owns the rest of the session's D-Bus, and
+deliberately — and the reason is what travels back: a *password*. The shell holds
+one in a single allocation that never moves, never prints it, and overwrites it
+when it is dropped; carrying it across a Wayland connection, through the
+compositor and into a second process would undo all three. So `polkitd` is
+answered on a thread of its own, and what is typed goes from the field straight
+down the helper's socket without leaving the process.
+
+**The password is checked by polkit, not by the shell.** Every agent hands it to
+`polkit-agent-helper-1`, which is the only part of this that runs as root and the
+only part that talks to PAM — over `/run/polkit/agent-helper.socket` where the
+machine's polkit is socket-activated, or by running the setuid helper where it is
+not. The helper tells `polkitd` directly whether the password was right, so
+nothing the shell can get wrong turns a "no" into a "yes": the most a bug here
+can do is fail to ask.
+
+**The panel is the one a removal uses**, because it is the same question: a
+padlock, what the authorisation is for in polkit's own words, whose password is
+wanted, and a field drawn as one mark per character. The on-screen keyboard comes
+up with it — on a console there is nothing else to type a password with — and the
+guide is opened underneath, so the question is readable over a game filling the
+screen. It opens on Cancel: a panel that appears without being asked for must not
+have the answer that hands over authority sitting under somebody's thumb.
+
+A password PAM refuses is offered again, exactly as a removal offers a refused
+`sudo` password again, and PAM's own complaint is what the panel says when it has
+one. A helper that fails *before* asking for anything is a machine that could not
+be asked at all, and says so rather than looping. Cancel, Back and Escape all
+decline, and a question `polkitd` withdraws — because whoever asked gave up —
+takes the panel away with it. Every one of those routes ends the helper, which
+leaves PAM without the answer it was waiting for.
+
+Two things are worth knowing. **A second question waits** rather than being
+refused: the shell asks one thing at a time, and the next is put up as soon as
+the panel is free. And **the agent registers for the login session** where there
+is one, falling back to the shell's own process — which is what a machine with no
+`logind` gets, and what a LineXinBar started inside another desktop gets, since
+`polkitd` allows one agent per session and that desktop's got there first.
+
 ## `lxb_shell_v1`
 
 Layer-shell says nothing about either half of the problem above, so
@@ -1314,6 +1682,9 @@ protocol generated from one XML file for both sides:
 | request `move_window_to_output` | Put one window on another display. |
 | request `capture_window` | Photograph one window into a PNG at a path the shell chooses. |
 | event `window_captured` | Where that picture went, or that it did not happen. |
+| event `screenshot`  | The compositor's screenshot binding fired, and on which display. |
+| request `capture_output` | Photograph a whole display — everything on it — into a PNG. |
+| event `output_captured` | Where *that* picture went, or that it did not happen. |
 | request `move_pointer` | Move the seat's pointer, as a mouse would. |
 | request `pointer_button` | Press or release one of its buttons. |
 | request `scroll_pointer` | Scroll where it is, as a wheel or a touchpad would. |
@@ -1327,6 +1698,10 @@ protocol generated from one XML file for both sides:
 | event `output_transform` | Which way up a display's picture is drawn — and, by being sent at all, that this compositor is the one turning it. |
 | request `set_output_transform` | Turn one display's picture, for a screen standing on its side. |
 | request `hide_pointer` | Take the cursor off screen, because the user has picked up the controller. |
+| request `ask_to_share` | The desktop portal asking whether an application may see a display. |
+| event `share_request` | That question, on its way to the shell — the only client that can draw it. |
+| request `answer_share` | The shell's answer: a display, or nothing, which is a no. |
+| event `share_answered` | That answer, on its way back to whoever asked. |
 
 `output_foreground` is what lets the menu say *Close KWrite* and notice when an
 application it started has exited. It is reported per display because the
@@ -1344,6 +1719,27 @@ decide, though, and is passed in — that is a question about the user's home
 directory rather than about the display server — and `window_captured` always
 answers, because a shell that has told the user it took a screenshot has to be
 able to say where it went or that it did not happen.
+
+`capture_output` is the same trade for a whole screen, and answers a different
+question: not "what does this application look like" but "what is on this
+display", which is a picture of the composite — wallpaper, windows, and the
+shell's own bar or overlay over them, in the order they are drawn. It is taken
+at as many pixels as the display is driven at and turned the way the display is
+turned, and the pointer is left out of it: the cursor is drawn by the
+compositor rather than being part of any surface, it is not on screen at all
+while the session is driven from a controller, and an arrow burnt into a
+screenshot cannot be taken back out.
+
+`screenshot` is the round trip that makes a screenshot *key* possible. The
+binding has to be the compositor's — the picture is of whatever is in front, so
+a key that only worked while the shell had focus would never work over the game
+somebody wanted a picture of — and the folder has to be the shell's, because
+which folder that is depends on the language the account was made in. So the
+key comes down as an event naming the display it was pressed on, and the path
+goes back up as `capture_output`. The display then **flashes**, once, and only
+after the picture has actually been written: it is the whole answer the user
+gets, because a panel would be drawn behind the fullscreen application it was
+reporting on, or in front of it with the keys taken off what they were doing.
 
 `set_output_hdr` is a request rather than something the shell does itself
 because neither half of HDR is a client's to touch: the metadata infoframe is a
@@ -1426,7 +1822,20 @@ the display with nobody touching the mouse.
 | Right button             | Opens the context menu on what is under it        |
 | Side button (rear)       | Opens the guide overlay, from inside anything     |
 | Wheel                    | Moves the selection: the column, the rows of a menu, the deck of cards |
-| Moving onto a display    | Hands control to that display                     |
+| Clicking on another display | Hands control to that display, and nothing more |
+
+Control is taken, never wandered into. A pointer resting on the other screen
+changes nothing there: it is answered by the shape of the cursor and by nothing
+else, and the display holding control goes on holding it until a click, a
+shoulder button or `Tab` says otherwise. Control used to follow the pointer
+across, which made a mouse crossing a screen edge — on the way to somewhere
+else — enough to move the guide, the keyboard and the next launch onto a
+display the user was not using. The first click on a display without control is
+spent taking it, for the same reason: what that click would otherwise press was
+chosen while another screen was being driven, and the overlay it appears to
+land on was somewhere else when the button went down. The wheel is the one
+exception, because turning it *is* an act on the display under it: it takes
+control and then turns what it has taken.
 
 The quick-settings bars and the mixer's rows are the one place a press carries
 something with it: on the groove it sets the value where it was clicked, and on
@@ -1506,6 +1915,146 @@ Waiting for XWayland's display-ready signal has a five-second deadline and
 falls back to a Wayland-only shell if the server is missing, broken, or never
 becomes ready.
 
+## Shell audio
+
+Every move that lands somewhere clicks, and a move that lands nowhere does not.
+Pressing an edge is answered by nothing happening, which is why nothing sounds
+there either. Which control made the move is not part of it: a click or a
+finger on a row of the bar puts the selection there exactly as a direction
+does, and the same move made by hand is owed the same answer.
+
+The shell's two screens each have a voice, and each answers a move and a press
+in it. Start moves with `press.ogg` and takes a press with `press-selected.ogg`
+— a subcategory opened, a setting chosen, a search field raised. The Home
+Button guide moves with `press-guide.ogg` and takes a press with
+`press-guide-selected.ogg`. They are separate because the guide is a screen of
+its own rather than another column of Start, and a user who has looked away
+should be able to hear which of the two they are driving.
+
+Panels are not screens and do not follow the one they were opened over. A
+context menu, a centred dialog and the mixer keep the same voice wherever they
+were raised, because a component that changed its sound with its backdrop would
+be two controls that look alike. Raising the guide from an otherwise empty
+Start screen also leaves its background music playing; raising it over an
+application does not start that music above the application.
+
+Leaving an XMB subcategory is `press-back.ogg`, whether Left or Back walks out
+of it or a pointer or finger presses the visible trail or category row. One
+gesture makes one sound even when a trail press crosses several levels: the
+sound answers the decision to go back, not every column it passes.
+
+A key of the on-screen keyboard going down is `keyboard-click.ogg` rather than
+either screen's click, because the board is its own instrument: putting a key
+*down* is the thing that only happens there, while walking across its keys is
+walking a bar and still sounds like one. Every key of it, including Shift and
+the key that puts the board away, because a board where two of the keys
+answered silently would read as a board with two dead keys on it.
+
+An application starting from Start is `app-launch.ogg`, and it is the one sound
+here that is not a click, because it is not an acknowledgement: the press has
+already been answered by the splash growing out of the tile, and what this one
+says is that something is on its way. It belongs to that screen, and only to
+it: a tile pressed on Start sounds it whether the shell forks for it or comes
+back to a program that is already up, because the tile is where an application
+is *started* from. The guide never sounds it. Every press made on the overlay
+is answered in the overlay's own voice, the ones that hand an application the
+display included — Resume with something running behind it, and a window card
+chosen out of the deck, both `press-guide-selected.ogg`. A screen with a voice
+of its own does not borrow another's for half of its rows. A press that failed
+to start anything sounds nothing at all.
+
+`guide-open.ogg` belongs to a *button* rather than to a screen, and it is the
+only one that does. The guide button works from inside anything — a game holding
+every other key, a panel, the on-screen keyboard — so it is the one press whose
+answer cannot be "look at the screen and see": it may have been pressed exactly
+because what is on the screen has stopped listening. It sounds when that press
+*opens* the overlay and at no other time. Closing it is silent, because the
+overlay leaving is the screen behind it coming back. So is the guide arriving by
+any other route — Back walking out of the top of the bar, a portal's question
+about sharing a screen, an authorisation panel raised over a game — because none
+of those is somebody asking for the guide.
+
+`screenshot.ogg` is one of the two sounds here that answer something the shell
+*did* rather than something the user pressed. It is the pair of the white flash the
+compositor draws over a display that has just been [photographed](#screenshots),
+and it sounds at the same moment for the same reason: the chord is often spelled
+with the user's eyes on the game, and an acknowledgement only one sense can
+reach is one half of an acknowledgement. Like the flash it waits for the file to
+be on the disk, so it says a picture exists rather than that a chord was
+spelled, and a capture that failed sounds nothing. The picture of a single
+window does not take it either — that one is answered by a panel naming the
+folder, on a screen the user is already looking at.
+
+`polkit.ogg` is the other, and it answers the one panel in the shell that nobody
+asked for: an [authorisation prompt](#authorisation-prompts), raised over
+whatever was in front of the user because a program somewhere wants a password.
+Everything else the shell says is a reply to a control that was just pressed;
+this one has to announce itself, or a question that has taken the screen arrives
+in silence for anybody who happened to be looking at the room. It sounds as the
+panel goes up and only if it went up, and a password refused does not sound it
+again — that is the same question still waiting, not a new one.
+
+The Start screen has the eleventh recording, `start-bg-music.ogg`. It belongs to
+the session rather than to a screen: it loops while every display is showing
+Start and nothing at all is open, and it fades as a launch or a returning window
+begins taking any of them. One application anywhere ends it — a game on the
+first display and Start on the second is a session with a game in it, and
+crossing to that second screen must not start music up behind the game. When the
+last application closes, the shell constructs a fresh stream at sample zero —
+even if the previous one is still fading — so coming back never resumes halfway
+through the track.
+
+It is also the one recording that can be turned off outright, from [`Settings >
+Sounds > Start music`](#sounds), which is where the rest of that is written down.
+The ten short clips cannot: each of them answers a control that was pressed or an
+event that arrived, and a press with no answer reads as a button that does not
+work. A background is the sound the shell makes at somebody who has pressed
+nothing, which is exactly what a person reading in the same room may not want.
+Turned off it stops the way muting stops it — at once, and without the fade an
+application gets — and turned back on it begins again from the beginning.
+
+All eleven recordings are shipped in the repository beside the shell's source
+for the same reason the fonts and the cursor are: there may be no desktop on
+the machine, and so no theme of sounds to borrow one from. The ten short
+effects are decoded once at start-up, and every press is its own sound rather
+than one restarted, so a held D-pad walks the bar to a run of clicks rather
+than to one click held at the point the repeats overtook it. The much longer
+music stays compressed and is decoded as it plays instead of occupying a
+whole decoded track's worth of memory.
+
+What no press does is lay a sound on top of a copy of itself. Identical
+recordings add, and being identical they add in phase, so a spun wheel used to
+answer with one click many times its own height: a single scroll event can be
+worth several rows, every row it crosses clicks, and a dozen arriving together
+took the output to full scale. A click asked for within a sixteenth of a second
+of the last of its kind is dropped rather than mixed. Two clicks that close are
+not two sounds anyone can hear apart, and the gap is shorter than the repeat of
+a held direction, so a run of clicks is still a run of clicks.
+
+The `System` row of the volume mixer in the guide sets how loud all of this is —
+the shell's effects and background music, and the one row on that panel no
+sound server knows about. Left and Right move it, `A` silences it, and the
+click the direction makes is heard at the level it has just been moved to, so
+the row previews itself. Muting also drops the music rather than advancing it
+silently; unmuting on Start begins it again. The setting is written to
+`shell.toml` as `sound-volume` and `sound-muted` at every step rather than when
+the user stops moving it: the shell is idle between presses, and a level nobody
+wrote down is the one a machine switched off at the wall would lose.
+
+Playing is in-process, unlike everything else the shell does with audio. The
+volume bars in the guide shell out to `wpctl`, `pactl` or `amixer`, because
+what they set is what the *session* is doing; shell audio is one more stream
+playing into that session, its effects have to start within a frame of the
+button, and a process spawned per step would be a fork every 90 ms under a held
+direction.
+The output is opened through ALSA, which is PipeWire or PulseAudio on a machine
+that has one and the sound card itself on a machine that does not. A session
+whose sound server is not up yet is retried a few seconds later; if an open
+output disappears, the next loop drops the dead stream and opens the current
+default. Start music is rebuilt there from sample zero if the XMB still owns
+the display. A machine with no output at all is silent, and nothing else about
+the shell changes.
+
 ## What draws, and when
 
 A frame callback is how a Wayland client is told to draw its next frame, and
@@ -1555,6 +2104,7 @@ applications stop properly.
 | `Super+Q`              | Close the focused window        |
 | `Super` on its own, `Super+Home`, `XF86HomePage`, mouse side button | Show the guide overlay |
 | `Super+K`, `XF86Keyboard` | Show the on-screen keyboard  |
+| `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3` | Photograph this display |
 | `Super+Tab`            | Cycle windows on this output    |
 | `Super+←` / `Super+→`  | Focus the previous/next output  |
 | `Super+Shift+→`        | Move the window to the next output |
@@ -1589,7 +2139,10 @@ crates/lxb-compositor/
   overview.rs     the windows of a display animated into the guide's cards
   restore.rs      one window flown back out of the tile that asked for it
   teardown.rs     ending an application, as against ending a process
-  capture.rs      photographing one window into a PNG
+  capture.rs      photographing one window, or one whole display, into a PNG
+  flash.rs        the white a display gives when it has just been photographed
+  screencopy.rs   wlr-screencopy: the standard way anything else reads the
+                  screen, and what the portal is built on
   hdr.rs          the connector's metadata and the CRTC's colour pipeline
   xwayland.rs     private XWayland server's X window manager and selections
   render.rs       render element assembly, shared by every backend
@@ -1606,6 +2159,10 @@ crates/lxb-desktop/
   apps.rs         .desktop parsing and Plasma-style categorisation
   appinfo.rs      what installed an application, and what that says about it
   uninstall.rs    one Origin translated into one argv, and whether it may run
+  polkit.rs       the session's polkit agent: polkitd on one side, PAM's
+                  helper on the other, and the panel in between
+  secret.rs       a password, from the key that types it to the pipe that
+                  consumes it
   icons.rs        icon theme lookup, PNG/SVG rasterisation
   theme.rs        the palette: five accents, and every colour read as it is drawn
   settings.rs     the Settings column, written here rather than found on disk
@@ -1630,10 +2187,17 @@ crates/lxb-desktop/
                   real keyboard drive it
   system.rs       volume, per-application volume and brightness, off the
                   main thread
+  sound.rs        the ten effects and Start music, and the output and focus
+                  transitions they go through
   ui.rs           layout: model to quads and text runs
   gpu.rs          wgpu renderer, one atlas and two pipelines
   shaders.wgsl    animated backdrop, instanced quads
   offscreen.wgsl  the blur the glass reads through, and the copy to the display
+
+crates/lxb-portal/
+  cast.rs         one display, going out as a PipeWire stream
+  screencast.rs   org.freedesktop.impl.portal.ScreenCast, over D-Bus
+  consent.rs      who may see the screen, and which one
 ```
 
 ## Not implemented
@@ -1644,12 +2208,10 @@ Worth knowing before you rely on this:
   a premultiplied-alpha surface so the running application shows through it.
   A driver offering only `Opaque` gets a working menu on a solid background
   instead, and says so in the log.
-- **Screen capture by anything but the shell.** The guide's menu photographs
-  the selected window through `lxb_shell_v1`'s own `capture_window`, so
-  [Screenshot the app](#the-context-menu) works. What is missing is the
-  standard way in: there is no `wlr-screencopy` and no xdg-desktop-portal, so a
-  recorder or a browser sharing a tab sees nothing, and there is no way to
-  photograph a whole display rather than one window.
+- **Sharing one window rather than a whole display.** The portal offers
+  displays only. A window's pixels can be photographed (`capture_window`) but
+  not streamed, and `AvailableSourceTypes` says so rather than offering it and
+  failing.
 - **Gesture navigation in the shell.** [Mouse and touch](#mouse-and-touch)
   answers clicks, taps and the wheel; there is no swipe, pinch or two-finger
   handler on the bar. The compositor forwards pointer gestures to clients

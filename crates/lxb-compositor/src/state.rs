@@ -152,6 +152,11 @@ pub struct Lxb {
     pub overview: crate::overview::Overviews,
     /// Windows on their way back out of the tile that asked for them.
     pub restores: crate::restore::Restores,
+    /// Displays answering for a screenshot that has just been taken of them.
+    pub flashes: crate::flash::Flashes,
+    /// Frames other clients have asked for over wlr-screencopy, and the damage
+    /// each of them has been told about.
+    pub screencopy: crate::screencopy::ScreencopyState,
     /// High dynamic range, per display: what the shell asked for, and what the
     /// connector turned out to be able to do about it.
     pub hdr: crate::hdr::Manager,
@@ -205,7 +210,11 @@ impl LxbState {
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(dh);
-        let shm_state = ShmState::new::<Self>(dh, Vec::new());
+        // The one extra format wl_shm offers beyond the two every compositor
+        // must: it is what a screen copy is handed over in, and a client cannot
+        // make a buffer in a format the compositor never advertised. See
+        // [`crate::screencopy::FORMAT`].
+        let shm_state = ShmState::new::<Self>(dh, vec![crate::screencopy::FORMAT]);
         // `new_with_xdg_output` also exports xdg-output, which clients need to
         // reason about logical positions in a multi-display layout.
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(dh);
@@ -219,6 +228,7 @@ impl LxbState {
         let xwayland_shell_state = XWaylandShellState::new::<Self>(dh);
         let xwayland_keyboard_grab_state = XWaylandKeyboardGrabState::new::<Self>(dh);
         let shell_control = ShellControlState::new::<Self>(dh);
+        let screencopy = crate::screencopy::ScreencopyState::new::<Self>(dh);
 
         smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(dh);
         smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(dh);
@@ -329,6 +339,8 @@ impl LxbState {
                 outputs: OutputManager::new(),
                 overview: crate::overview::Overviews::default(),
                 restores: crate::restore::Restores::default(),
+                flashes: crate::flash::Flashes::default(),
+                screencopy,
                 hdr: crate::hdr::Manager::default(),
                 seat,
                 pointer_location: (0.0, 0.0).into(),
@@ -528,13 +540,56 @@ impl LxbState {
     }
 
     fn launch_pending_autostart(&mut self) {
-        self.lxb.update_private_dbus_activation_environment();
+        let owns_seat = self.owns_the_seat();
+        self.lxb.update_dbus_activation_environment(owns_seat);
+        // Before anything in this session can ask for a portal, and for a
+        // reason the pair of calls makes plain: a desktop portal reads *both*
+        // which desktop it serves and what that desktop's backend can do
+        // exactly once, when it starts. One left over from before this session
+        // — from the login screen, from another desktop, from this session's
+        // own predecessor — answers with whatever it learnt then, and there is
+        // no request that makes it look again.
+        if owns_seat {
+            stop_desktop_portal("so the one this session gets is built inside it");
+        }
         for command in std::mem::take(&mut self.lxb.pending_autostart) {
             self.lxb.spawn(&command);
         }
         if let Some(command) = self.lxb.pending_shell.take() {
             self.start_session_shell(&command);
+            self.lxb.start_portal();
         }
+    }
+
+    /// Whether this compositor is the machine's session rather than a window
+    /// inside somebody else's.
+    ///
+    /// The DRM backend is the whole of the answer: it drives the connectors and
+    /// holds the seat, which is what "this is the session" means. The nested
+    /// backends are a window on a desktop that already has one.
+    pub fn owns_the_seat(&self) -> bool {
+        matches!(self.backend, Backend::Udev(_))
+    }
+
+    /// Let go of the session-wide services this session caused to start.
+    ///
+    /// The desktop portal is the one that matters. It is one service per *user*
+    /// rather than one per session, it reads which desktop it belongs to once
+    /// at startup, and nothing restarts it — so a portal left running with
+    /// LineXinBar's answers is inherited by whatever the user logs into next,
+    /// and screen sharing is broken there instead. Stopping it here is what
+    /// keeps a session from outliving itself: the next thing to ask for a
+    /// portal gets a fresh one, started from that session's own environment.
+    ///
+    /// Only where the seat was ours to begin with. Nested inside another
+    /// desktop the portal belongs to that desktop, and `systemctl --user`
+    /// reaches the same user manager either way — so a development session
+    /// ending must not take the host's portal down with it.
+    pub fn release_session_services(&self) {
+        if !self.owns_the_seat() {
+            return;
+        }
+        stop_desktop_portal("so nothing after this session inherits its answers");
     }
 
     /// Start the session shell and end the session when it exits.
@@ -609,13 +664,36 @@ impl LxbState {
 }
 
 impl Lxb {
-    /// Replace the private bus daemon's startup snapshot with LineXinBar's own
-    /// display names before any D-Bus-activated GUI can be requested.
+    /// Tell the bus what this session is, so that everything it starts on
+    /// demand is started *into* the session rather than beside it.
     ///
-    /// The marker is deliberately required: mutating an inherited desktop bus
-    /// would redirect unrelated host services into this compositor.
-    fn update_private_dbus_activation_environment(&self) {
-        if std::env::var_os("LXB_PRIVATE_DBUS").as_deref() != Some(std::ffi::OsStr::new("1")) {
+    /// A D-Bus activated service inherits nothing from the process that asked
+    /// for it: it is started by the bus, from the bus's own snapshot of the
+    /// environment. So a session that never updates that snapshot has every
+    /// activated service come up blind — with no display to draw on and, worse,
+    /// no idea which desktop it is part of.
+    ///
+    /// The desktop portal is the one that matters, and it is the reason this is
+    /// no longer confined to the nested case. `xdg-desktop-portal` chooses its
+    /// backend from `XDG_CURRENT_DESKTOP` *once*, when it starts: activated
+    /// without it, it finds no backend able to share a screen and answers every
+    /// application that asks — OBS, Discord, a browser — with a portal that has
+    /// no ScreenCast interface on it at all. That is not an error anybody sees;
+    /// it looks exactly like an application that cannot capture screens.
+    ///
+    /// `owns_seat` is what keeps this from happening the other way round. On a
+    /// nested backend the bus belongs to the desktop LineXinBar is a window on,
+    /// and rewriting its snapshot would send *its* activated services into this
+    /// compositor. There the marker is still required: `LXB_PRIVATE_DBUS=1`
+    /// says the session was given a bus of its own — see `scripts/run-nested.sh`
+    /// — and only then is the snapshot ours to write.
+    fn update_dbus_activation_environment(&self, owns_seat: bool) {
+        let private =
+            std::env::var_os("LXB_PRIVATE_DBUS").as_deref() == Some(std::ffi::OsStr::new("1"));
+        if !owns_seat && !private {
+            tracing::debug!(
+                "nested on somebody else's bus; leaving its activation environment alone"
+            );
             return;
         }
 
@@ -629,21 +707,29 @@ impl Lxb {
             "XDG_SESSION_DESKTOP=LineXinBar".to_string(),
             "DESKTOP_SESSION=lxb".to_string(),
         ];
+        // `--systemd` as well as the bus, because on a systemd machine the user
+        // manager is what starts the portal and it keeps a snapshot of its own.
+        // The flag is ignored where there is no user manager to tell.
         match std::process::Command::new("dbus-update-activation-environment")
+            .arg("--systemd")
             .args(assignments)
             .env_remove("WAYLAND_SOCKET")
             .status()
         {
             Ok(status) if status.success() => {
-                tracing::debug!("updated private D-Bus activation environment")
+                tracing::info!(
+                    display = %self.socket_name,
+                    "the bus knows what this session is"
+                )
             }
             Ok(status) => tracing::warn!(
                 ?status,
-                "failed to update private D-Bus activation environment"
+                "failed to update the D-Bus activation environment; screen sharing will not work"
             ),
             Err(err) => tracing::warn!(
                 ?err,
-                "dbus-update-activation-environment is unavailable; D-Bus activation may not inherit LineXinBar's displays"
+                "dbus-update-activation-environment is unavailable; D-Bus activation \
+                 will not inherit LineXinBar's displays, and screen sharing will not work"
             ),
         }
     }
@@ -693,6 +779,26 @@ impl Lxb {
         Some(cmd)
     }
 
+    /// Start the session's desktop portal.
+    ///
+    /// This is what an application outside the session asks when it wants a
+    /// piece of it — a screen to share, and in time the rest of what a portal
+    /// answers. It is started here, beside the shell, rather than being left to
+    /// D-Bus activation, for one reason: it is a client of this compositor, so
+    /// it needs this session's `WAYLAND_DISPLAY`, and a portal activated by a
+    /// bus that has not been told about the session yet would come up unable to
+    /// see the very thing it exists to hand over.
+    ///
+    /// Only with `--shell`. A bare compositor is somebody debugging, and a
+    /// second portal claiming the bus name in a session that already has one is
+    /// worse than no portal at all.
+    fn start_portal(&self) {
+        // By name rather than by path, so a portal built beside the compositor
+        // and one installed by a package are both found the way everything else
+        // in the session is.
+        self.spawn("lxb-portal");
+    }
+
     /// Spawn a command, detached from the compositor's own process group.
     pub fn spawn(&self, command: &str) {
         let Some(mut cmd) = self.command_for(command) else {
@@ -723,6 +829,37 @@ impl Lxb {
             }
             Err(err) => tracing::warn!(command, ?err, "failed to spawn"),
         }
+    }
+}
+
+/// Take the desktop portal down, so that the next one is built from scratch.
+///
+/// Called at both ends of a session that owns the seat, and it is the same act
+/// both times: `xdg-desktop-portal` decides which backend answers screen
+/// sharing — and asks that backend, once, what it can do — while it is
+/// starting, and there is nothing that makes it ask again. A portal started a
+/// moment before this session's own backend claimed its bus name therefore
+/// believes for ever that the backend cannot embed a cursor, cannot hide one,
+/// cannot do anything at all: the frontend's cached copy of those properties is
+/// empty and every request that names one is refused as unavailable. OBS's
+/// screen capture failed at exactly that, with the portal and the backend both
+/// running and both perfectly well.
+///
+/// So the session ends whatever portal it inherited before its own backend
+/// starts, and ends its own on the way out. What starts one again is the first
+/// application to want one, which is long after the backend is listening.
+///
+/// Never fatal, and barely worth a line at the failure: a machine with no
+/// systemd user manager never started a portal this way, and a portal that is
+/// not running cannot be stale.
+fn stop_desktop_portal(why: &str) {
+    let stopped = std::process::Command::new("systemctl")
+        .args(["--user", "stop", "xdg-desktop-portal.service"])
+        .status();
+    match stopped {
+        Ok(status) if status.success() => tracing::info!(why, "stopped the desktop portal"),
+        Ok(status) => tracing::debug!(?status, why, "could not stop the desktop portal"),
+        Err(err) => tracing::debug!(?err, "systemctl is unavailable"),
     }
 }
 

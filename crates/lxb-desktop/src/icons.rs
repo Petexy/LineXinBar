@@ -110,6 +110,15 @@ pub const SETTING_RESOLUTION: &str = "lxb:setting-resolution";
 pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
 pub const SETTING_ORIENTATION: &str = "lxb:setting-orientation";
 pub const SETTING_HDR: &str = "lxb:setting-hdr";
+/// The device everything on the machine records from, under Settings > Sounds.
+///
+/// The one row of that page with a drawing of its own rather than a borrowed
+/// one: the output beside it wears [`VOLUME`], which is the speaker the volume
+/// bar wears, because a second speaker drawn for this set could only be that
+/// same speaker again or a worse one. There is no microphone anywhere else in
+/// the shell to borrow, and an input device drawn as a speaker would be saying
+/// the wrong thing rather than repeating a right one.
+pub const SETTING_MICROPHONE: &str = "lxb:setting-microphone";
 
 /// The four turns under Settings > Display > Orientation, drawn as what they
 /// are: one monitor, stood four ways, its stand saying which way up.
@@ -150,12 +159,38 @@ pub const LAUNCH: &str = "lxb:launch";
 pub const OPEN_WITH: &str = "lxb:open-with";
 pub const SORT: &str = "lxb:sort";
 
+/// The two rows at the head of a column of the user's own files: the field
+/// that searches it, and the row that empties the field.
+///
+/// Built in for the same reason as everything above, and for one more that is
+/// particular to them. These sit *in a column*, beside a row drawn with a
+/// photograph out of the user's own collection and a row drawn with a note —
+/// so they have to be of the same material as the rest of the shell, and an
+/// icon theme's flat `edit-find` beside a glossy note would be the seam
+/// showing.
+pub const SEARCH: &str = "lxb:search";
+pub const SEARCH_CLEAR: &str = "lxb:search-clear";
+
 /// The guide menu's Screenshot row.
 ///
 /// Built in like the two above, and for the third reason again: `camera-photo`
 /// is a coloured icon from whichever theme is installed, and the row it sits in
 /// has one lamp over it and two arrows drawn under that lamp already.
 pub const SCREENSHOT: &str = "lxb:screenshot";
+
+/// The panel that asks the user to prove they may do something — see
+/// [`crate::polkit`].
+///
+/// Built in, and here rather than taken from the icon theme for a reason none
+/// of the others have. polkit hands the agent an icon *name* with every
+/// question, chosen by whoever wrote the policy file, and it names an icon out
+/// of whatever theme happens to be installed. Two things are wrong with using
+/// it: the shell stands an application icon in for any name it cannot find, so
+/// a panel asking for a password could come up wearing the generic executable
+/// mark, and a themed icon on the one panel in the shell that takes a password
+/// is a picture chosen by the program doing the asking. One padlock, always the
+/// same one, is the honest answer.
+pub const AUTHENTICATE: &str = "lxb:authenticate";
 
 /// The power button at the foot of the guide's sidebar.
 ///
@@ -174,7 +209,7 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 46] = [
+pub const BUILTIN: [(&str, &str); 50] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -258,6 +293,10 @@ pub const BUILTIN: [(&str, &str); 46] = [
         include_str!("glyphs/setting-rotation-270.svg"),
     ),
     (SETTING_HDR, include_str!("glyphs/setting-hdr.svg")),
+    (
+        SETTING_MICROPHONE,
+        include_str!("glyphs/setting-microphone.svg"),
+    ),
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
     (SWATCH, include_str!("glyphs/swatch.svg")),
     (CHOSEN, include_str!("glyphs/chosen.svg")),
@@ -267,6 +306,10 @@ pub const BUILTIN: [(&str, &str); 46] = [
     (OPEN_WITH, include_str!("glyphs/open-with.svg")),
     (SORT, include_str!("glyphs/sort.svg")),
     (SCREENSHOT, include_str!("glyphs/screenshot.svg")),
+    // The rows a column of the user's own files carries above the files.
+    (SEARCH, include_str!("glyphs/search.svg")),
+    (SEARCH_CLEAR, include_str!("glyphs/search-clear.svg")),
+    (AUTHENTICATE, include_str!("glyphs/authenticate.svg")),
 ];
 
 /// A decoded icon, always square RGBA8.
@@ -909,14 +952,16 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            46,
+            50,
             "a speaker, a struck-out one, a sun, a stick pointer, a mixer, two \
              controller buttons, four arrows, a keyboard folding away, a power \
              symbol, one per column of the category row, the two subcategories \
-             Multimedia is divided into and the one under Graphics, the ten \
+             Multimedia is divided into and the one under Graphics, the eleven \
              marks the Settings column is drawn from plus its four turns of a \
-             monitor, and the context menu's bin, play mark, ellipsis, sort \
-             bars and camera"
+             monitor, the context menu's bin, play mark, ellipsis, sort bars \
+             and camera, the magnifier at the head of a shelf with the \
+             struck-through one that empties it, and the padlock on the panel \
+             that asks for a password"
         );
 
         for (name, drawing) in BUILTIN {
@@ -1004,6 +1049,7 @@ mod tests {
                 SETTING_ROTATION_180,
                 SETTING_ROTATION_270,
                 SETTING_HDR,
+                SETTING_MICROPHONE,
                 SETTING_INFO,
                 SWATCH,
                 CHOSEN,
@@ -1011,7 +1057,10 @@ mod tests {
                 LAUNCH,
                 OPEN_WITH,
                 SORT,
-                SCREENSHOT
+                SCREENSHOT,
+                SEARCH,
+                SEARCH_CLEAR,
+                AUTHENTICATE
             ]
         );
         let drawn: Vec<Vec<u8>> = BUILTIN

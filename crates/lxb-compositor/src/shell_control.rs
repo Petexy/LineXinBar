@@ -81,6 +81,23 @@ pub struct ShellControlState {
     output_transform: Vec<(Output, Transform)>,
     /// Display the shell says the user is on, from `set_launch_output`.
     launch_output: Option<Output>,
+    /// Questions in flight: who asked, and what number they gave it.
+    ///
+    /// One list rather than one per client, because an answer names only the
+    /// question — the shell has no idea who is behind it, and should not: what
+    /// it is answering is "may this application see a screen", not "reply to
+    /// that client".
+    asked: Vec<Question>,
+}
+
+/// One application waiting to be told whether it may see a display.
+#[derive(Debug)]
+struct Question {
+    /// The client that asked, and the number *it* gave the question. A second
+    /// client may be using the same number for a different question, so both
+    /// halves are needed to name one.
+    asker: LxbShellV1,
+    id: u32,
 }
 
 /// First version that reports the foreground application per display. Below
@@ -148,9 +165,20 @@ const WINDOW_MOVE_AND_CAPTURE_SINCE: u32 = 15;
 /// on its side, and the compositor draws whatever its own config asked for.
 const TRANSFORM_SINCE: u32 = 16;
 
+/// First version that can photograph a whole display, and that forwards the
+/// screenshot binding. Below it the only picture a shell can ask for is of one
+/// window, and the key does nothing at all.
+const SCREENSHOT_SINCE: u32 = 17;
+
+/// First version that can put a question to the shell on another client's
+/// behalf: the desktop portal asking whether an application may see a display.
+/// Below it there is nowhere to ask, and the portal refuses rather than
+/// sharing a screen nobody agreed to.
+const SHARE_SINCE: u32 = 18;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = TRANSFORM_SINCE;
+const CURRENT_VERSION: u32 = SHARE_SINCE;
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -169,6 +197,7 @@ impl ShellControlState {
             output_modes: Vec::new(),
             output_transform: Vec::new(),
             launch_output: None,
+            asked: Vec::new(),
         }
     }
 
@@ -214,6 +243,93 @@ impl ShellControlState {
             if instance.version() >= KEYBOARD_SINCE {
                 instance.keyboard();
             }
+        }
+    }
+
+    /// Whether any shell listening can be asked for a screenshot. Used only to
+    /// explain a key that did nothing.
+    fn wants_screenshot(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|instance| instance.version() >= SCREENSHOT_SINCE)
+    }
+
+    /// Tell every shell that the screenshot binding fired, and on which
+    /// display. Whether it reached anybody, so a key pressed on a display the
+    /// shell has never bound is not silently dropped.
+    fn send_screenshot(&self, output: &Output) -> bool {
+        let mut sent = false;
+        for instance in &self.instances {
+            if instance.version() < SCREENSHOT_SINCE {
+                continue;
+            }
+            let Some(client) = instance.client() else {
+                continue;
+            };
+            for wl_output in output.client_outputs(&client) {
+                instance.screenshot(&wl_output);
+                sent = true;
+            }
+        }
+        sent
+    }
+
+    /// Put one client's question to everybody else bound to this interface,
+    /// which in a running session is the shell.
+    ///
+    /// Never back to the asker: the portal binds this interface too, and a
+    /// question that came back to the client that asked it would be a portal
+    /// answering itself.
+    fn send_share_request(&mut self, asker: &LxbShellV1, id: u32, app_id: &str) -> bool {
+        let mut asked = false;
+        for instance in &self.instances {
+            if instance == asker || instance.version() < SHARE_SINCE {
+                continue;
+            }
+            instance.share_request(id, app_id.to_string());
+            asked = true;
+        }
+        if asked {
+            self.asked.push(Question {
+                asker: asker.clone(),
+                id,
+            });
+        }
+        asked
+    }
+
+    /// Tell whoever asked what the shell decided.
+    ///
+    /// The display is resolved into the asking client's *own* `wl_output`: the
+    /// one the shell answered with belongs to the shell, and an object from one
+    /// client means nothing to another.
+    fn send_share_answer(&mut self, id: u32, output: Option<&Output>) {
+        // The first question with this number, which is the oldest outstanding
+        // one. A shell answering out of order is answering the wrong question,
+        // and that cannot be told apart from here — but it can be kept from
+        // answering the same one twice.
+        let Some(index) = self.asked.iter().position(|question| question.id == id) else {
+            return;
+        };
+        let question = self.asked.remove(index);
+        let resolved = output.and_then(|output| {
+            let client = question.asker.client()?;
+            output.client_outputs(&client).next()
+        });
+        question.asker.share_answered(id, resolved.as_ref());
+    }
+
+    /// Forget the questions of a client that has gone. There is nobody left to
+    /// tell, and the answer was only ever for them.
+    fn forget_shares(&mut self, gone: &LxbShellV1) {
+        self.asked.retain(|question| &question.asker != gone);
+    }
+
+    /// Refuse everything outstanding: the shell that was going to answer has
+    /// gone, and a question nobody can answer is a no.
+    fn refuse_all_shares(&mut self) {
+        for question in std::mem::take(&mut self.asked) {
+            question.asker.share_answered(question.id, None);
         }
     }
 
@@ -591,6 +707,103 @@ impl LxbState {
             return;
         }
         self.lxb.shell_control.send_keyboard();
+    }
+
+    /// Ask the shell to photograph the display the user is on.
+    ///
+    /// The compositor could take the picture without asking anybody — it has
+    /// the pixels — and deliberately does not: where a screenshot goes is a
+    /// question about the user's home directory, in the language their account
+    /// was made in, and that is the shell's half of the session. So the
+    /// binding is forwarded and the path comes back.
+    pub fn screenshot_focused_output(&mut self) {
+        if !self.lxb.shell_control.wants_screenshot() {
+            tracing::debug!("screenshot binding pressed but no shell is listening for it");
+            return;
+        }
+        // Where the user is, in order of how well each answer knows. Keyboard
+        // focus first, because this *is* a key: whatever has the keys is on
+        // the display the hand that pressed it is looking at — an application
+        // holding them fullscreen, or the shell's own overlay. Then the
+        // display the shell says it is being driven on, which is the answer
+        // that survives a session where nothing has taken focus at all.
+        let output = self
+            .keyboard_focus_output()
+            .or_else(|| self.shell_launch_output())
+            .or_else(|| {
+                self.lxb
+                    .outputs
+                    .output_at(&self.lxb.space, self.lxb.pointer_location)
+            })
+            .or_else(|| self.lxb.space.outputs().next().cloned());
+        let Some(output) = output else {
+            tracing::debug!("screenshot binding pressed with no display to photograph");
+            return;
+        };
+        if !self.lxb.shell_control.send_screenshot(&output) {
+            // The shell is new enough to be asked, but has not bound this
+            // display's wl_output — it has only just started, and its outputs
+            // have not arrived yet.
+            tracing::debug!(
+                display = %output.name(),
+                "screenshot binding pressed on a display no shell has bound"
+            );
+        }
+    }
+
+    /// Photograph one display into `path`, and answer with where it went.
+    ///
+    /// `None` for every way this can fail, on the same terms as
+    /// [`Self::capture_window_to`]: the shell's answer to all of them is the
+    /// same, and which one it was is in the log here.
+    pub fn capture_output_to(&mut self, output: &Output, path: &str) -> Option<String> {
+        let path = std::path::Path::new(path);
+        // Absolute, and into a directory that already exists — the same terms
+        // a window capture is written on, for the same reason.
+        if !path.is_absolute() {
+            tracing::warn!(?path, "refusing to write a capture to a relative path");
+            return None;
+        }
+        if !path.parent().is_some_and(|parent| parent.is_dir()) {
+            tracing::warn!(
+                ?path,
+                "refusing to write a capture into a missing directory"
+            );
+            return None;
+        }
+        // The display has to still be one of ours: an output resource outlives
+        // the connector by however long it takes the client to hear about it.
+        if !self.lxb.space.outputs().any(|known| known == output) {
+            tracing::debug!(display = %output.name(), "capture of a display that is gone");
+            return None;
+        }
+
+        let shot = match self.backend.capture_output(&self.lxb, output) {
+            Ok(shot) => shot,
+            Err(err) => {
+                tracing::warn!(?err, display = %output.name(), "could not photograph the display");
+                return None;
+            }
+        };
+        if let Err(err) = crate::capture::write_png(&shot, path) {
+            tracing::warn!(?err, ?path, "could not write the capture out");
+            return None;
+        }
+        tracing::info!(
+            display = %output.name(),
+            ?path,
+            width = shot.width,
+            height = shot.height,
+            "photographed a display"
+        );
+
+        // Only now, and only because it worked: the flash says a picture was
+        // taken, and it is started after the pixels have been read back so it
+        // cannot be in the picture it is answering for.
+        self.lxb.flashes.begin(output, std::time::Instant::now());
+        self.queue_redraw();
+
+        Some(path.to_string_lossy().into_owned())
     }
 
     /// Publish the foreground application's title, if it changed — both for
@@ -1257,6 +1470,19 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     resource.window_captured(id, written);
                 }
             }
+            lxb_shell_v1::Request::CaptureOutput { output, path } => {
+                // Answered on the object that asked, as a window capture is,
+                // and answered even when the display has gone: a request that
+                // got no reply is one the shell waits on forever.
+                let written = match Output::from_resource(&output) {
+                    Some(display) => state.capture_output_to(&display, &path).unwrap_or_default(),
+                    None => {
+                        tracing::debug!("capture of a display that is gone");
+                        String::new()
+                    }
+                };
+                resource.output_captured(&output, written);
+            }
             lxb_shell_v1::Request::MovePointer { dx, dy } => {
                 state.shell_move_pointer((dx, dy).into());
             }
@@ -1348,6 +1574,33 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     ),
                 }
             }
+            lxb_shell_v1::Request::AskToShare { id, app_id } => {
+                tracing::info!(id, %app_id, "an application is asking to see a display");
+                if !state
+                    .lxb
+                    .shell_control
+                    .send_share_request(resource, id, &app_id)
+                {
+                    // Nobody to ask, so nobody said yes. Refused here and now
+                    // rather than left for a timeout somewhere else, because a
+                    // session with no shell is not one that is about to grow
+                    // one mid-question.
+                    tracing::info!(id, "refusing: no shell to put the question to");
+                    resource.share_answered(id, None);
+                }
+            }
+            lxb_shell_v1::Request::AnswerShare { id, output } => {
+                let chosen = output.as_ref().and_then(Output::from_resource);
+                tracing::info!(
+                    id,
+                    display = chosen.as_ref().map(|o| o.name()).unwrap_or_default(),
+                    "the shell answered a share request"
+                );
+                state
+                    .lxb
+                    .shell_control
+                    .send_share_answer(id, chosen.as_ref());
+            }
             lxb_shell_v1::Request::HidePointer => state.pointer_put_down(),
             lxb_shell_v1::Request::KeyboardKey { key, state: down } => {
                 // As above: anything that is not "pressed" is a release.
@@ -1372,6 +1625,13 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             .shell_control
             .instances
             .retain(|instance| instance != resource);
+        // Anything this client was waiting on is nobody's business now.
+        state.lxb.shell_control.forget_shares(resource);
+        // And anything anybody else was waiting on has lost the client that
+        // could have said yes to it. An unanswered question is a no.
+        if state.lxb.shell_control.instances.len() < 2 {
+            state.lxb.shell_control.refuse_all_shares();
+        }
 
         // With no shell left there is nobody to close the overview, and a
         // desktop whose windows are all shrunk into cards is unusable. A

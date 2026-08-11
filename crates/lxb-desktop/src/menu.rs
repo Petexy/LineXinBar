@@ -69,6 +69,16 @@ pub enum Command {
     /// for it. The one command that carries nothing with it: what was typed
     /// lives where the shell can look after it, not in a menu entry.
     SubmitPassword,
+    /// The same, for the field on the panel `polkitd` raised — see
+    /// [`crate::polkit`].
+    ///
+    /// Its own command rather than [`Command::SubmitPassword`] arriving from a
+    /// different panel, because the two hand what was typed to different
+    /// things: one goes to `sudo` and destroys an application, the other goes
+    /// to PAM and proves who is at the machine. A single name for both would be
+    /// one mis-routed press away from answering the wrong question with a
+    /// password meant for the other.
+    Authenticate,
     /// Start it — or come back to it, if it is already running.
     Launch,
     /// Send the selected window to the display after this one, or the one
@@ -84,6 +94,15 @@ pub enum Command {
     /// Photograph the selected window and put the picture with the user's
     /// other ones.
     Screenshot,
+    /// Let the application that is asking see one of this session's displays,
+    /// by its place in the shell's own list of them.
+    ///
+    /// The display travels in the command because the question offers one row
+    /// per screen, and which row was pressed is the whole answer. Its
+    /// counterpart is deliberately a separate command rather than an absent
+    /// one: refusing is a thing the user *did*, and it is answered as such.
+    ShareDisplay(usize),
+    RefuseShare,
     /// Silence the application this mixer row is about, or bring it back.
     ///
     /// The one command that names its subject. Every other row here is about
@@ -91,13 +110,19 @@ pub enum Command {
     /// up again when the row is chosen; a mixer lists several applications at
     /// once, so the row has to say which of them it is.
     MuteApplication(u32),
-    /// The same for the session's own output — what the volume bar in the
-    /// sidebar moves.
+    /// The same for the shell's own sounds — navigation, keys, launches and
+    /// Start's background music.
     ///
-    /// Its own command rather than a number that stands for the session,
-    /// because it is a different thing being silenced: one is an application,
-    /// and this is the machine.
-    MuteOutput,
+    /// Its own command rather than a number that stands for one more program,
+    /// because the shell is not one: it has no stream in the mixer to be found
+    /// among the applications, and it is the one thing on the list whose sound
+    /// this session decides for itself.
+    ///
+    /// Deliberately *not* the session's output. That is what the volume bar in
+    /// the sidebar moves, which is why the bar is there without the mixer
+    /// having to open; a row that turned the whole machine down would be the
+    /// same control twice, and would leave the shell's own sounds with none.
+    MuteShell,
     /// Open one of the user's own files — a song, a film, a photograph — in
     /// whatever their desktop already opens that kind of file with.
     ///
@@ -1097,7 +1122,7 @@ mod tests {
             vec![
                 Entry::new(Command::MuteApplication(1), "One").level(level(value)),
                 Entry::new(Command::MuteApplication(2), "Two").level(level(0.2)),
-                Entry::new(Command::MuteOutput, "System").level(level(0.9)),
+                Entry::new(Command::MuteShell, "System").level(level(0.9)),
             ]
         };
         let mut menu = Menu::default();
@@ -1130,7 +1155,7 @@ mod tests {
             vec![
                 Entry::new(Command::MuteApplication(1), "One").level(level(0.5)),
                 Entry::new(Command::MuteApplication(2), "Two").level(level(0.5)),
-                Entry::new(Command::MuteOutput, "System").level(level(0.5)),
+                Entry::new(Command::MuteShell, "System").level(level(0.5)),
             ],
             8,
         );
@@ -1138,16 +1163,16 @@ mod tests {
         menu.move_selection(1);
         assert_eq!(
             menu.selected_entry().map(|row| row.command),
-            Some(Command::MuteOutput)
+            Some(Command::MuteShell)
         );
 
         assert!(menu.refresh(vec![
             Entry::new(Command::MuteApplication(2), "Two").level(level(0.5)),
-            Entry::new(Command::MuteOutput, "System").level(level(0.5)),
+            Entry::new(Command::MuteShell, "System").level(level(0.5)),
         ]));
         assert_eq!(
             menu.selected_entry().map(|row| row.command),
-            Some(Command::MuteOutput),
+            Some(Command::MuteShell),
             "the highlight followed the row rather than staying on row two"
         );
 

@@ -36,6 +36,18 @@ xkbcommon = "0.8"
 lxb-protocol = { path = "../lxb-protocol", features = ["client"] }
 
 # GPU rendering.
+# The session's polkit agent, which is the shell's only D-Bus: `polkitd` lives
+# on the system bus and an agent is registered there or not at all. See
+# `src/polkit.rs` for why this is the shell rather than a process beside it.
+# `async-channel` is what holds a `BeginAuthentication` call open while the
+# panel is up — zbus already builds it, and a channel that can be awaited is
+# what keeps that wait off the connection's own thread.
+zbus = { version = "5", default-features = false, features = [
+    "async-io",
+    "blocking-api",
+] }
+async-channel = "2"
+
 wgpu = "30"
 glyphon = "0.12"
 raw-window-handle = "0.6"
@@ -43,6 +55,23 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 libc = "0.2"
 gilrs = "0.11.2"
+
+# The shell's own sounds: decoding its four effects, streaming its Start music,
+# and putting them on the machine's output.
+#
+# Playing, not mixing — the volume bars in the guide still go through `wpctl`
+# and friends, because those set what the *session* is doing and this only adds
+# one more thing playing into it. Cut to the two jobs it is here for: `playback`
+# is the output device, `vorbis` is the format the clips are in. Every decoder
+# beyond that would be a codec compiled in for a file this shell never opens.
+# `tracing` is not optional in practice: without it rodio reports a lost device
+# with `eprintln!`, and this shell's stderr is the console the session started
+# from.
+rodio = { version = "0.22", default-features = false, features = [
+    "playback",
+    "vorbis",
+    "tracing",
+] }
 
 # Icon decoding, and the user's own photographs.
 #

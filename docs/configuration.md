@@ -61,12 +61,22 @@ LineXinBar also identifies children as a Wayland session through
 tokens inherited from the outer compositor are removed because they are not
 valid in the inner session.
 
-D-Bus is a separate activation boundary. Run the complete session through
-`env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY LXB_PRIVATE_DBUS=1
-dbus-run-session -- lxb --shell` (the nested helper already does).
-The marker lets LineXinBar safely replace that private bus daemon's activation
-environment once its Wayland and XWayland sockets are ready; LineXinBar never
-modifies an inherited host bus.
+D-Bus is a separate activation boundary, and the same names have to reach it:
+a service the bus starts on demand inherits nothing from whatever asked for it,
+so a bus that has not been told what this session is starts the desktop portal
+with no display and no desktop name — which is a session with no screen sharing
+in it, silently. LineXinBar therefore replaces the bus daemon's activation
+environment (and the systemd user manager's) once its Wayland and XWayland
+sockets are ready, on a session that **owns the seat** — the DRM backend, which
+is the machine's own session — and stops the portal again on its way out so the
+next session starts one of its own.
+
+Nested inside another desktop the host's bus is not LineXinBar's to rewrite.
+Run the complete session through `env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u
+DISPLAY LXB_PRIVATE_DBUS=1 dbus-run-session -- lxb --shell` (the nested helper
+already does); the marker says the session has a bus of its own, and only then
+is that bus's environment replaced. Without it, a nested session leaves the
+host's activation environment — and the host's portal — alone.
 
 ## `[input]`
 
@@ -211,6 +221,8 @@ Actions:
 | `move-to-next-output` | Send the focused window to the next output. |
 | `cycle-window`        | Rotate the window stack on this output. |
 | `guide`               | Show the session shell's guide overlay. |
+| `keyboard`            | Show the session shell's on-screen keyboard. |
+| `screenshot`          | Photograph the display the user is on. |
 
 Anything defined here replaces the built-in binding for the same key
 combination, with one exception: the `guide` chords below cannot be taken over
@@ -219,6 +231,17 @@ aborting startup.
 
 Letter keys name the physical key, so `Super+Q` matches Q pressed without
 shift and `Super+Shift+Q` is a separate binding.
+
+`Any+` in front of a key binds the key rather than a chord: it fires whatever
+modifiers are held, and none of them can be spelled beside it. It is for a key
+with one job printed on its cap, whose variants elsewhere are all the same job
+here — `Any+Print` is the only built-in that uses it, so that `Shift+Print`,
+`Ctrl+Print` and `Meta+Shift+Print` all take the one kind of picture this shell
+takes. Reach for it sparingly: a loose binding on a letter takes that letter
+away from every application in the session, in every chord it appears in.
+Binding the same key here, decorated or not, takes the whole key back from a
+loose built-in — writing `"Print" = "spawn:grim"` leaves `Shift+Print` doing
+nothing rather than still photographing the screen.
 
 `guide` is the console "home" button. It is a compositor binding because a
 fullscreen application holds the keyboard, so the shell would never see the
@@ -234,7 +257,10 @@ of them. Both edges of the key still reach the application, so nothing is left
 holding a modifier it is never told about again. The **rear side button of a
 mouse** does the same, and is held back from the application entirely, both
 edges of it. So does a **controller's Guide or STEAM button**, which the shell
-reads from `/dev/input` itself.
+reads from `/dev/input` itself — on its release rather than its press, because
+holding it with `R1` is the shell's screenshot chord and a modifier that also
+acted on the way down could not be one. A tap is still a tap; a hold spent on
+the chord opens nothing.
 
 The chords also outrank every other binding, and cannot be bound to anything
 else: the guide is the way back out of whatever is running, so a configuration
@@ -242,6 +268,25 @@ file that took its key for something else would leave a session with no way
 home. Binding `guide` to a further chord adds it to the protected set rather
 than moving it — `"Super+K" = "guide"`, say, makes that chord the home button
 too and takes it away from the on-screen keyboard.
+
+`screenshot` is a compositor binding for the same reason `guide` is — the
+picture is of whatever is in front, so the key has to work while something is
+in front of everything — but it is not protected, and any of its chords can be
+given to something else. Its three spellings are the ones hands arrive already
+knowing: the Print key under any modifiers, and the Mac chord transcribed onto
+a PC keyboard both of the ways it gets transcribed, for a keyboard that has no
+Print key at all. It photographs the display holding the keyboard,
+writes it into the folder `xdg-user-dirs` records for pictures, and answers
+with a flash of that display and the shell's `screenshot.ogg`. Unlike `guide` it
+is a *round trip*: the compositor asks the shell where the file should go, so
+the key does nothing at all when no shell has bound the protocol.
+
+A controller reaches the same picture without going through this binding at
+all. **Guide or STEAM held with `R1`** photographs the display holding control,
+and it is the shell's own chord rather than the compositor's, because a pad is
+not the compositor's to read: the shell opens it from `/dev/input`, which is
+also why the chord works while a game holds everything else. Nothing in this
+file changes it.
 
 When running nested for debugging, the host compositor's own global shortcuts
 win: KDE claims most `Super`+letter combinations, so pick something it does not
@@ -255,6 +300,8 @@ use, or drive the overlay with Escape inside the shell instead.
 | `Ctrl+Alt+F1`…`F12`  | `vt:1`…`vt:12` |
 | `Super+Q`            | `close` |
 | `Super+Home`, `XF86HomePage` | `guide` (and `Super` on its own, which is not a chord) |
+| `Super+K`, `XF86Keyboard` | `keyboard` |
+| `Any+Print`, `Ctrl+Shift+3`, `Alt+Shift+3` | `screenshot` |
 | `Super+Tab`          | `cycle-window` |
 | `Super+Left` / `Super+Right` | `focus-prev-output` / `focus-next-output` |
 | `Super+Shift+Right`  | `move-to-next-output` |

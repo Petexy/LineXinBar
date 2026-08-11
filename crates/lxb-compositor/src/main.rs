@@ -4,6 +4,7 @@ mod backend;
 mod capture;
 mod config;
 mod cursor;
+mod flash;
 mod focus;
 mod handlers;
 mod hdr;
@@ -12,6 +13,7 @@ mod outputs;
 mod overview;
 mod render;
 mod restore;
+mod screencopy;
 mod shell_control;
 mod state;
 mod teardown;
@@ -135,9 +137,11 @@ fn main() -> anyhow::Result<()> {
         }
         state.lxb.space.refresh();
         state.lxb.popups.cleanup();
-        // Landed flights stop being flights. Kept here rather than in the
-        // render pass, which sees this state immutably and runs per display.
+        // Landed flights stop being flights, and burnt-out flashes stop being
+        // flashes. Kept here rather than in the render pass, which sees this
+        // state immutably and runs per display.
         state.lxb.restores.prune(std::time::Instant::now());
+        state.lxb.flashes.prune(std::time::Instant::now());
         // One place to notice that the window stack changed, rather than a
         // hook on every path that can map, unmap or retitle a window.
         state.refresh_foreground();
@@ -150,6 +154,9 @@ fn main() -> anyhow::Result<()> {
     // function it knows nothing about. The session ending badly is exactly when
     // they are least able to put it right by hand.
     backend::udev::restore_displays(&mut state);
+    // And for the same reason, on the same terms: what this session started on
+    // the user's bus must not be inherited by the one they log into next.
+    state.release_session_services();
     result?;
 
     if let Some(error) = state.lxb.fatal_error.take() {

@@ -94,6 +94,13 @@ pub struct ControllerInput {
     /// because the kernel gives that pad no gamepad node at all. Read from its
     /// HID report instead — see [`crate::steam_hid`].
     pad: SteamPad,
+    /// Whether the guide button now held down has already been spent on a
+    /// chord, and so must not open the overlay when it comes back up.
+    ///
+    /// One flag for every pad on the machine, because the guide button is one
+    /// control however many controllers are plugged in — and because a chord
+    /// is answered once, not once per device that could have spelled it.
+    guide_chorded: bool,
 }
 
 impl ControllerInput {
@@ -104,6 +111,7 @@ impl ControllerInput {
                 gilrs: None,
                 navigation: Navigation::default(),
                 dpad_held: [false; Direction::COUNT],
+                guide_chorded: false,
                 pad: SteamPad::new(false),
             };
         }
@@ -116,6 +124,7 @@ impl ControllerInput {
                     gilrs: Some(gilrs),
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
+                    guide_chorded: false,
                     pad: SteamPad::new(true),
                 }
             }
@@ -125,6 +134,7 @@ impl ControllerInput {
                     gilrs: None,
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
+                    guide_chorded: false,
                     // Still worth watching: this pad's Steam button never came
                     // through GilRs in the first place, so whatever stopped
                     // GilRs from starting has not cost us this.
@@ -141,10 +151,11 @@ impl ControllerInput {
     /// discarded in that case, which prevents the background shell reacting
     /// to controls intended for a running game.
     ///
-    /// The guide button is the deliberate exception.  Controllers are read
-    /// straight from `/dev/input` rather than through Wayland, so it reaches
-    /// the shell even while a game holds the keyboard — which is the only
-    /// reason a user can get back out of that game at all.
+    /// The guide button is the deliberate exception, along with the two chords
+    /// spelled on it and on Select.  Controllers are read straight from
+    /// `/dev/input` rather than through Wayland, so they reach the shell even
+    /// while a game holds the keyboard — which is the only reason a user can
+    /// get back out of that game at all, or photograph it.
     ///
     /// The right stick and the two stick presses are read on the same terms
     /// and for the same reason: the pointer they drive is wanted *inside* the
@@ -152,6 +163,10 @@ impl ControllerInput {
     pub fn poll(&mut self, now: Duration, active: bool) -> Poll {
         let mut actions = Vec::new();
         let mut clicks = Vec::new();
+        // Whether the guide button has already been spent, carried out of the
+        // field and back into it so both halves below can read and write it
+        // while GilRs is borrowed.
+        let mut chorded = self.guide_chorded;
 
         // The Steam Controller first, and outside everything GilRs does: that
         // pad has no gamepad node for GilRs to have opened, so it is reachable
@@ -159,18 +174,7 @@ impl ControllerInput {
         // and writes lizard mode off, this is the *only* way any of it arrives.
         let pad = self.pad.poll(now);
         if let Some(frame) = &pad {
-            for (button, action) in PAD_ACTIONS {
-                if frame.pressed.has(*button) {
-                    actions.push(*action);
-                }
-            }
-            // The keyboard chord, spelled on this pad as View with the
-            // left-hand face button — the same two controls as everywhere
-            // else. `X` is deliberately absent from `PAD_ACTIONS`, so it is
-            // this or nothing.
-            if frame.held.has(Buttons::VIEW) && frame.pressed.has(Buttons::X) {
-                actions.push(Action::Keyboard);
-            }
+            actions.extend(pad_actions(frame, &mut chorded));
             for (button, code) in PAD_CLICKS {
                 if frame.pressed.has(*button) {
                     clicks.push((*code, true));
@@ -204,12 +208,20 @@ impl ControllerInput {
                         if let Some(click) = pointer_button(button, code) {
                             clicks.push((click, true));
                         }
+                        if is_guide(button, code) {
+                            // A fresh hold; see the same line on the pad above.
+                            chorded = false;
+                        }
                         // Which of GilRs' two naming conventions this pad's
                         // names came from. Without it the face buttons cannot
                         // be told apart at all; see [`Layout`].
                         let layout = Layout::of(gilrs, event.id);
                         let action = chord_action(button, code, layout, select_is_held(gilrs))
+                            .or_else(|| photograph_chord(button, code, guide_is_held(gilrs)))
                             .or_else(|| action_for_button(button, code, layout));
+                        if action == Some(Action::Screenshot) {
+                            chorded = true;
+                        }
                         // Every press is logged: a button that does nothing is
                         // otherwise indistinguishable from a broken controller,
                         // and this names both what the mapping made of it and
@@ -226,12 +238,19 @@ impl ControllerInput {
                         }
                     }
                     EventType::ButtonReleased(button, code) => {
-                        // Only the buttons the pointer borrows. Every other
-                        // release is nothing: the shell acts on presses, and a
-                        // menu row activated on the way back up would fire
-                        // twice.
-                        if let Some(click) = pointer_button(button, code.into_u32()) {
+                        let code = code.into_u32();
+                        // The buttons the pointer borrows, and the guide
+                        // button. Every other release is nothing: the shell
+                        // acts on presses, and a menu row activated on the way
+                        // back up would fire twice.
+                        if let Some(click) = pointer_button(button, code) {
                             clicks.push((click, false));
+                        }
+                        if is_guide(button, code) {
+                            if !chorded {
+                                actions.push(Action::Guide);
+                            }
+                            chorded = false;
                         }
                     }
                     _ => {}
@@ -251,14 +270,11 @@ impl ControllerInput {
         let right_stick = sticks.right;
         let scroll_stick = sticks.left;
         let arrows = self.arrow_edges(sticks.dpad);
+        self.guide_chorded = chorded;
 
         if !active {
             self.navigation.reset();
-            // The two controls that reach the shell past a running
-            // application: the way back out of it, and the way to type into
-            // it. Both are read straight from `/dev/input`, which is the only
-            // reason either works while the game holds the keyboard.
-            actions.retain(|action| matches!(action, Action::Guide | Action::Keyboard));
+            actions.retain(survives_an_application);
             return Poll {
                 actions,
                 right_stick,
@@ -399,20 +415,76 @@ fn hat_directions(x: f32, y: f32) -> [bool; Direction::COUNT] {
 /// from an SDL entry that does not cover it.
 ///
 /// Absent on purpose: `X`, which belongs to whatever is running until `View` is
-/// held with it; `View` itself, which is only that chord's modifier; the two
-/// stick presses, which are the pointer's and never the menu's; and the whole
-/// D-pad, which goes through [`Navigation`] instead so that holding a direction
-/// repeats at the same rate every other pad's does. Listed here as well it
-/// would walk the menu two rows per press.
+/// held with it; `View` itself, which is only that chord's modifier; `Steam`,
+/// which acts on its release instead so the screenshot chord can claim the hold
+/// (see [`is_guide`]); the two stick presses, which are the pointer's
+/// and never the menu's; and the whole D-pad, which goes through [`Navigation`]
+/// instead so that holding a direction repeats at the same rate every other
+/// pad's does. Listed here as well it would walk the menu two rows per press.
 const PAD_ACTIONS: &[(Buttons, Action)] = &[
     (Buttons::A, Action::Launch),
     (Buttons::B, Action::Back),
     (Buttons::Y, Action::Menu),
     (Buttons::MENU, Action::Launch),
-    (Buttons::STEAM, Action::Guide),
     (Buttons::L1, Action::PrevScreen),
     (Buttons::R1, Action::NextScreen),
 ];
+
+/// What one frame of the Steam Controller is worth to the shell.
+///
+/// `chorded` is the guide button's hold, carried between polls: whether the
+/// button now down has already been spent on a chord and so must not open the
+/// overlay when it comes back up.
+///
+/// Separate from [`ControllerInput::poll`] because it is the one part of
+/// reading this pad that can be exercised without the pad: everything else
+/// there is a device to open and a report to be handed. Two chords and an
+/// edge-triggered guide button between them have more to get wrong than the
+/// table lookup they surround.
+fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Action> {
+    let mut actions = Vec::new();
+    // A guide button going down begins a fresh hold with nothing spent on it.
+    // Defensive rather than necessary: a release that never arrived must not
+    // leave the one way out of a game dead for the rest of the session.
+    if frame.pressed.has(Buttons::STEAM) {
+        *chorded = false;
+    }
+    // The screenshot chord, spelled on this pad as Steam with the right bumper
+    // — the same two controls as everywhere else.
+    let photograph = frame.held.has(Buttons::STEAM) && frame.pressed.has(Buttons::R1);
+    for (button, action) in PAD_ACTIONS {
+        if !frame.pressed.has(*button) {
+            continue;
+        }
+        // R1 moves to the next display on its own. Held with Steam it is the
+        // other half of a chord and nothing else, or the picture would be taken
+        // of one display and the flash answering for it drawn on the next.
+        if photograph && *button == Buttons::R1 {
+            continue;
+        }
+        actions.push(*action);
+    }
+    if photograph {
+        actions.push(Action::Screenshot);
+        *chorded = true;
+    }
+    // The guide button acts on the way back up rather than the way down, so the
+    // chord above can claim it; `STEAM` is absent from `PAD_ACTIONS` for that
+    // reason. See [`is_guide`].
+    if frame.released.has(Buttons::STEAM) {
+        if !*chorded {
+            actions.push(Action::Guide);
+        }
+        *chorded = false;
+    }
+    // The keyboard chord, spelled on this pad as View with the left-hand face
+    // button — the same two controls as everywhere else. `X` is deliberately
+    // absent from `PAD_ACTIONS`, so it is this or nothing.
+    if frame.held.has(Buttons::VIEW) && frame.pressed.has(Buttons::X) {
+        actions.push(Action::Keyboard);
+    }
+    actions
+}
 
 /// Which mouse button each of the pad's borrowed buttons is.
 ///
@@ -505,6 +577,103 @@ fn chord_action(button: Button, code: u32, layout: Layout, select_held: bool) ->
         return None;
     }
     is_left_face(button, code, layout).then_some(Action::Keyboard)
+}
+
+/// Whether an action still counts once an application owns the screen.
+///
+/// Three of them do, and everything else is meant for the game rather than for
+/// the shell behind it: the way back out of the application, the way to type
+/// into it, and the way to photograph it. All three are read straight from
+/// `/dev/input` rather than through Wayland, which is the only reason any of
+/// them arrives at all while the game holds the keyboard — and a picture is
+/// nearly always wanted of the game rather than of the bar, so this is the one
+/// case that matters most for the last of them.
+fn survives_an_application(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Guide | Action::Keyboard | Action::Screenshot
+    )
+}
+
+/// Whether a press, with the guide button held, is the screenshot chord.
+///
+/// The guide button and the right bumper: `STEAM`+`R1` on a Steam Controller or
+/// a Deck, the PlayStation button and `R1` on a DualSense, Guide and `RB` on an
+/// Xbox pad. The same two controls under every thumb, and the same chord the
+/// Deck itself photographs a game with, which is the one a person arriving here
+/// from that machine will try first.
+///
+/// A chord rather than a button of its own for the reason the keyboard's is
+/// one: every face button and both shoulders already belong to whatever is
+/// running, and there is no spare control on a controller. The bumper alone
+/// still moves to the next display.
+fn photograph_chord(button: Button, code: u32, guide_held: bool) -> Option<Action> {
+    if !guide_held {
+        return None;
+    }
+    is_right_bumper(button, code).then_some(Action::Screenshot)
+}
+
+/// Whether a press is the guide button — the one with a logo on it, in the
+/// middle of the pad.
+///
+/// Named the same two ways every other button here is: by the mapping when
+/// there is one, and by the kernel's own code when GilRs could name nothing.
+/// Unlike the face buttons the two never disagree, because there is only one
+/// button in the middle to be ambiguous about.
+///
+/// ## Why this button is answered on its release
+///
+/// It is the modifier of [`photograph_chord`], and a modifier that also did
+/// something on the way down could not be one: the overlay would already be up
+/// by the time the bumper arrived, and the picture would be of the overlay
+/// rather than of whatever the user wanted a picture of. So the press only
+/// begins a hold, and letting go is what opens or closes the guide — unless the
+/// hold was spent on a chord, in which case nothing happens at all and the
+/// button has done the one job it was pressed for.
+///
+/// The cost is a few milliseconds on the one control that has to work while a
+/// game holds everything else, and a tap is still a tap. What is not paid for
+/// is the alternative: opening the overlay on the press and closing it again
+/// when the chord lands would leave the shell racing its own capture for the
+/// frame the compositor photographs.
+///
+/// Select, the keyboard chord's modifier, needs none of this. It is not an
+/// action in the first place — see [`chord_action`].
+fn is_guide(button: Button, code: u32) -> bool {
+    match button {
+        Button::Mode => true,
+        Button::Unknown => code == evdev::BTN_MODE,
+        _ => false,
+    }
+}
+
+/// Whether a press is the right bumper — the chord's other half, and on its own
+/// the step to the next display.
+fn is_right_bumper(button: Button, code: u32) -> bool {
+    match button {
+        // GilRs calls the bumpers `*Trigger`; the analogue triggers behind them
+        // are `*Trigger2`.
+        Button::RightTrigger => true,
+        Button::Unknown => code == evdev::BTN_TR,
+        _ => false,
+    }
+}
+
+/// Whether the guide button is down on any connected pad.
+///
+/// Read from the devices rather than tracked, like [`select_is_held`] and for
+/// the same reason: a button that went down before this shell started still
+/// counts as held. The raw code is consulted as well as the mapping so that a
+/// pad missing from the database can still spell the chord.
+fn guide_is_held(gilrs: &Gilrs) -> bool {
+    gilrs.gamepads().any(|(_, gamepad)| {
+        gamepad.is_pressed(Button::Mode)
+            || gamepad
+                .state()
+                .buttons()
+                .any(|(code, data)| data.is_pressed() && code.into_u32() == evdev::BTN_MODE)
+    })
 }
 
 /// Where a pad's button *names* came from, which is the one thing that decides
@@ -668,11 +837,14 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
         Button::South => return Some(Action::Launch),
         // Xbox B / PlayStation Circle / Nintendo A / Steam Deck B.
         Button::East => return Some(Action::Back),
-        // Xbox Guide / PlayStation button / Steam Deck STEAM.
-        Button::Mode => return Some(Action::Guide),
         Button::Start => return Some(Action::Launch),
         // Select is missing on purpose: it is the keyboard chord's modifier
         // and nothing else. See [`chord_action`].
+        //
+        // So is the guide button — Xbox Guide, the PlayStation button, Steam
+        // Deck STEAM — which is answered when it comes back up rather than
+        // when it goes down, because on the way down it is the screenshot
+        // chord's modifier. See [`is_guide`].
         // The shoulder buttons move between displays. GilRs calls the bumpers
         // `LeftTrigger`; the analogue triggers behind them are `*Trigger2`.
         Button::LeftTrigger => return Some(Action::PrevScreen),
@@ -684,7 +856,6 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
     match code {
         evdev::BTN_SOUTH | evdev::BTN_START | evdev::BTN_TRIGGER => Some(Action::Launch),
         evdev::BTN_EAST | evdev::BTN_THUMB => Some(Action::Back),
-        evdev::BTN_MODE => Some(Action::Guide),
         evdev::BTN_TL => Some(Action::PrevScreen),
         evdev::BTN_TR => Some(Action::NextScreen),
         _ => None,
@@ -920,10 +1091,10 @@ mod tests {
             action_for_button(Button::East, 0, Layout::Mapped),
             Some(Action::Back)
         );
-        assert_eq!(
-            action_for_button(Button::Mode, 0, Layout::Mapped),
-            Some(Action::Guide)
-        );
+        // The guide button is not one of these: it is answered on its release,
+        // because on the way down it is the screenshot chord's modifier.
+        assert_eq!(action_for_button(Button::Mode, 0, Layout::Mapped), None);
+        assert!(is_guide(Button::Mode, 0));
         // The top face button — Y, or Triangle — raises the context menu. Its
         // raw code is whatever the driver sends: `hid-playstation` reports
         // Triangle as `BTN_NORTH` and xpad reports Y as `BTN_WEST`, and the
@@ -1027,10 +1198,13 @@ mod tests {
             action_for_button(Button::Unknown, evdev::BTN_EAST, Layout::Guessed),
             Some(Action::Back)
         );
+        // Including the guide button, which is recognised by its raw code the
+        // same way — but on the way back up. See [`is_guide`].
         assert_eq!(
             action_for_button(Button::Unknown, evdev::BTN_MODE, Layout::Guessed),
-            Some(Action::Guide)
+            None
         );
+        assert!(is_guide(Button::Unknown, evdev::BTN_MODE));
         // Joystick-style pads number their buttons from BTN_TRIGGER.
         assert_eq!(
             action_for_button(Button::Unknown, evdev::BTN_TRIGGER, Layout::Guessed),
@@ -1121,6 +1295,70 @@ mod tests {
         }
     }
 
+    /// The guide button with the right bumper photographs the display, and it
+    /// is spelled the same way on a pad nothing knows the layout of: unlike
+    /// the face buttons, neither of these two is ambiguous under either naming.
+    #[test]
+    fn the_guide_button_with_the_right_bumper_photographs_the_screen() {
+        assert_eq!(
+            photograph_chord(Button::RightTrigger, 0, true),
+            Some(Action::Screenshot)
+        );
+        assert_eq!(
+            photograph_chord(Button::Unknown, evdev::BTN_TR, true),
+            Some(Action::Screenshot)
+        );
+
+        // The bumper on its own is still the step to the next display, which is
+        // what the chord must not cost it.
+        assert_eq!(photograph_chord(Button::RightTrigger, 0, false), None);
+        assert_eq!(
+            action_for_button(Button::RightTrigger, 0, Layout::Mapped),
+            Some(Action::NextScreen)
+        );
+
+        // And nothing else spells it. The *left* bumper especially: it is the
+        // step the other way, and a chord that took both would leave a pad
+        // with the guide held unable to move between displays at all.
+        for (button, code) in [
+            (Button::LeftTrigger, evdev::BTN_TL),
+            (Button::South, evdev::BTN_SOUTH),
+            (Button::Mode, evdev::BTN_MODE),
+            (Button::Unknown, evdev::BTN_TL),
+        ] {
+            assert_eq!(photograph_chord(button, code, true), None, "{button:?}");
+        }
+    }
+
+    /// The guide button is the chord's modifier, so it cannot also act on the
+    /// way down: the overlay would be up before the bumper arrived, and the
+    /// picture would be of the overlay rather than of the game underneath it.
+    #[test]
+    fn the_guide_button_acts_on_its_release_and_not_its_press() {
+        assert_eq!(action_for_button(Button::Mode, 0, Layout::Mapped), None);
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_MODE, Layout::Guessed),
+            None
+        );
+        assert_eq!(pad_action(Buttons::STEAM), None);
+
+        // What the release is recognised by, under both namings.
+        assert!(is_guide(Button::Mode, 0));
+        assert!(is_guide(Button::Unknown, evdev::BTN_MODE));
+
+        // And nothing else is ever it — including the buttons whose raw codes
+        // sit either side of `BTN_MODE`.
+        for (button, code) in [
+            (Button::Start, evdev::BTN_START),
+            (Button::Select, evdev::BTN_SELECT),
+            (Button::RightTrigger, evdev::BTN_TR),
+            (Button::Unknown, evdev::BTN_START),
+            (Button::Unknown, evdev::BTN_SELECT),
+        ] {
+            assert!(!is_guide(button, code), "{button:?} {code:#x}");
+        }
+    }
+
     /// Select is a modifier and nothing else. It used to open the menu as
     /// well, which was wrong twice over: the menu appeared behind every
     /// keyboard summoned with the chord, and — because the menu closes the
@@ -1138,16 +1376,11 @@ mod tests {
             None
         );
 
-        // The guide button still opens the menu, on the press, and so does `B`
-        // from the bar — Select was never the only way in.
-        assert_eq!(
-            action_for_button(Button::Mode, 0, Layout::Mapped),
-            Some(Action::Guide)
-        );
-        assert_eq!(
-            action_for_button(Button::Unknown, evdev::BTN_MODE, Layout::Guessed),
-            Some(Action::Guide)
-        );
+        // The guide button still opens the menu — on its release now, rather
+        // than its press — and so does `B` from the bar: Select was never the
+        // only way in.
+        assert!(is_guide(Button::Mode, 0));
+        assert!(is_guide(Button::Unknown, evdev::BTN_MODE));
         assert_eq!(
             action_for_button(Button::East, 0, Layout::Mapped),
             Some(Action::Back)
@@ -1156,18 +1389,22 @@ mod tests {
 
     #[test]
     fn the_keyboard_chord_reaches_the_shell_past_a_running_application() {
-        // The two actions an inactive shell still acts on. Everything else is
-        // meant for the game that has the screen; these two are the way out of
-        // it and the way to type into it.
+        // The three actions an inactive shell still acts on. Everything else
+        // is meant for the game that has the screen; these are the way out of
+        // it, the way to type into it, and the way to photograph it.
         let mut actions = vec![
             Action::Guide,
             Action::Keyboard,
+            Action::Screenshot,
             Action::Launch,
             Action::Left,
             Action::Back,
         ];
-        actions.retain(|action| matches!(action, Action::Guide | Action::Keyboard));
-        assert_eq!(actions, [Action::Guide, Action::Keyboard]);
+        actions.retain(survives_an_application);
+        assert_eq!(
+            actions,
+            [Action::Guide, Action::Keyboard, Action::Screenshot]
+        );
     }
 
     /// Two pairs of buttons click, and nothing else does: `A` and `B` where a
@@ -1224,7 +1461,7 @@ mod tests {
         assert_eq!(pointer_button(Button::South, 0), Some(BTN_LEFT));
 
         let mut actions = vec![Action::Launch, Action::Back, Action::Guide];
-        actions.retain(|action| matches!(action, Action::Guide | Action::Keyboard));
+        actions.retain(survives_an_application);
         assert_eq!(
             actions,
             [Action::Guide],
@@ -1344,7 +1581,10 @@ mod tests {
     fn the_steam_controller_maps_to_the_same_actions() {
         assert_eq!(pad_action(Buttons::A), Some(Action::Launch));
         assert_eq!(pad_action(Buttons::B), Some(Action::Back));
-        assert_eq!(pad_action(Buttons::STEAM), Some(Action::Guide));
+        // Steam is absent on purpose: like every other pad's guide button it
+        // is answered when it comes back up, so that holding it can spell the
+        // screenshot chord. See [`is_guide`].
+        assert_eq!(pad_action(Buttons::STEAM), None);
         assert_eq!(pad_action(Buttons::MENU), Some(Action::Launch));
         assert_eq!(pad_action(Buttons::L1), Some(Action::PrevScreen));
         assert_eq!(pad_action(Buttons::R1), Some(Action::NextScreen));
@@ -1365,11 +1605,79 @@ mod tests {
             right: (0.0, 0.0),
             dpad: [false; Direction::COUNT],
         };
-        let mut frame = crate::steam_hid::Frame::default();
-        frame.held = Buttons::DOWN;
+        let frame = pad_frame(Buttons::DOWN, Buttons::DOWN, Buttons::empty());
         sticks.merge_pad(&frame);
         assert!(sticks.dpad[Direction::Down.index()]);
         assert!(!sticks.dpad[Direction::Up.index()]);
+    }
+
+    /// One poll of the Steam Controller, written as what is down and what
+    /// moved since the last one.
+    fn pad_frame(held: Buttons, pressed: Buttons, released: Buttons) -> crate::steam_hid::Frame {
+        crate::steam_hid::Frame {
+            held,
+            pressed,
+            released,
+            ..Default::default()
+        }
+    }
+
+    /// Steam held with R1 photographs the screen, and does only that: the
+    /// bumper does not also step to the next display, or the picture would be
+    /// taken of one screen and the flash answering for it drawn on the other.
+    #[test]
+    fn the_pads_screenshot_chord_takes_its_bumper_with_it() {
+        let mut chorded = false;
+        let steam_down = pad_frame(Buttons::STEAM, Buttons::STEAM, Buttons::empty());
+        assert_eq!(
+            pad_actions(&steam_down, &mut chorded),
+            Vec::new(),
+            "the guide button does nothing on the way down"
+        );
+
+        let with_bumper = pad_frame(
+            Buttons::STEAM.union(Buttons::R1),
+            Buttons::R1,
+            Buttons::empty(),
+        );
+        assert_eq!(
+            pad_actions(&with_bumper, &mut chorded),
+            vec![Action::Screenshot]
+        );
+        assert!(chorded, "the hold has been spent");
+
+        // And letting go of Steam afterwards opens nothing: the button did the
+        // one job it was pressed for.
+        let steam_up = pad_frame(Buttons::empty(), Buttons::empty(), Buttons::STEAM);
+        assert_eq!(pad_actions(&steam_up, &mut chorded), Vec::new());
+        assert!(!chorded, "and the next press begins a fresh hold");
+    }
+
+    /// A tap of the guide button on its own still opens the overlay, which is
+    /// the whole reason a user can get back out of a game.
+    #[test]
+    fn the_pads_guide_button_opens_the_overlay_when_it_comes_back_up() {
+        let mut chorded = false;
+        let down = pad_frame(Buttons::STEAM, Buttons::STEAM, Buttons::empty());
+        assert_eq!(pad_actions(&down, &mut chorded), Vec::new());
+
+        let up = pad_frame(Buttons::empty(), Buttons::empty(), Buttons::STEAM);
+        assert_eq!(pad_actions(&up, &mut chorded), vec![Action::Guide]);
+
+        // Including a tap short enough that both edges land in one poll.
+        let tapped = pad_frame(Buttons::empty(), Buttons::STEAM, Buttons::STEAM);
+        assert_eq!(pad_actions(&tapped, &mut chorded), vec![Action::Guide]);
+    }
+
+    /// The bumper on its own is untouched by the chord: it is how a session
+    /// with two displays moves between them, and it is pressed far more often
+    /// than the chord is.
+    #[test]
+    fn the_pads_bumper_alone_still_moves_between_displays() {
+        let mut chorded = false;
+        let bumper = pad_frame(Buttons::R1, Buttons::R1, Buttons::empty());
+        assert_eq!(pad_actions(&bumper, &mut chorded), vec![Action::NextScreen]);
+        assert!(!chorded);
     }
 
     /// `X` belongs to whatever is running, and `View` is only the chord's
@@ -1402,13 +1710,21 @@ mod tests {
     }
 
     /// The whole point of reading this pad from hidraw: the way out of a
-    /// running application has to survive the gate that drops everything else.
+    /// running application has to survive the gate that drops everything else,
+    /// and so does the chord that photographs it. Neither is in the table —
+    /// one is answered on a release and the other is a chord — so what the
+    /// table must not do is smuggle anything *else* past the gate.
     #[test]
-    fn the_pads_guide_button_survives_a_running_application() {
+    fn only_the_three_outside_actions_survive_a_running_application() {
         let mut actions: Vec<Action> = PAD_ACTIONS.iter().map(|(_, action)| *action).collect();
-        assert!(actions.contains(&Action::Guide));
-        actions.retain(|action| matches!(action, Action::Guide | Action::Keyboard));
-        assert_eq!(actions, [Action::Guide]);
+        actions.retain(survives_an_application);
+        assert!(
+            actions.is_empty(),
+            "every plain press on this pad belongs to the application in front"
+        );
+        for action in [Action::Guide, Action::Keyboard, Action::Screenshot] {
+            assert!(survives_an_application(&action), "{action:?}");
+        }
     }
 
     /// A pad with no GilRs behind it at all still reads as centred rather than

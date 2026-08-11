@@ -83,7 +83,9 @@ impl Buttons {
         self.0 == 0
     }
 
-    const fn union(self, other: Self) -> Self {
+    /// Both sets at once — two pads merged, or the several buttons of a chord
+    /// written down together.
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 

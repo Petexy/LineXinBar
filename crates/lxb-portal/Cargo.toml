@@ -1,0 +1,38 @@
+[package]
+name = "lxb-portal"
+description = "LineXinBar's xdg-desktop-portal backend: screen sharing and screenshots for applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lxb-portal"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+
+# The Wayland half: this is a client of LineXinBar's own compositor, and reads
+# the screen with the same protocol any other recorder would.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+lxb-protocol = { path = "../lxb-protocol", features = ["client"] }
+
+# The PipeWire half: what every application on the other side of the portal
+# actually reads its frames from.
+pipewire = "0.10"
+libspa = "0.10"
+
+# D-Bus, which is how xdg-desktop-portal reaches a backend at all.
+blocking = "1"
+zbus = "5"
+serde = { workspace = true }
+
+# Frames are copied straight into PipeWire's own memfd buffers, which means
+# making a wl_shm pool out of a file descriptor somebody else allocated.
+rustix = { version = "1", features = ["fs", "mm"] }
+libc = "0.2"

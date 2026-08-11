@@ -8,6 +8,7 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/petexy/project-linexinbar'
 license=('GPL-3.0-only' 'Apache-2.0')
 depends=(
+    'alsa-lib'
     'dbus'
     'glibc'
     'libgcc'
@@ -19,6 +20,7 @@ depends=(
     'libxcursor'
     'libxi'
     'libxkbcommon'
+    'libpipewire'
     'libxkbcommon-x11'
     'mesa'
     'seatd'
@@ -27,9 +29,13 @@ depends=(
 )
 # Arch's rust package provides the cargo name without a versioned provide.
 # The build wrapper checks rustc/cargo >= 1.89 before invoking makepkg.
-makedepends=('cargo' 'gcc' 'pkgconf')
+# clang is bindgen's, which the PipeWire bindings the portal is built on run
+# at compile time.
+makedepends=('cargo' 'clang' 'gcc' 'pkgconf')
 optdepends=(
     'xorg-xwayland: X11 application support'
+    'xdg-desktop-portal: screen sharing, through lxb-portal'
+    'pipewire: the frames a shared screen is carried on'
     'vulkan-icd-loader: Vulkan renderer backend'
     'wireplumber: volume control through wpctl'
     'libpulse: volume control through pactl'

@@ -129,6 +129,102 @@ pub enum Entry {
     Media(crate::media::Shelved),
     Folder(Folder),
     Choice(Choice),
+    /// The field at the head of a shelf of the user's own files, and the row
+    /// that empties it.
+    ///
+    /// A row rather than a control drawn over the column, because on this bar
+    /// a row is the only thing there is. The user reaches it by pressing Up
+    /// from the first file, presses it with the same button that opens a file,
+    /// and it sits where anything standing over a list sits — at the top of it.
+    /// Nothing new had to be learnt to find it.
+    Search(Search),
+}
+
+/// The field at the head of a shelf, or the row beneath it that clears the
+/// field.
+///
+/// One kind of row for both, because they are one thing: the search a column
+/// is under, offered as the two presses that can be made about it. Splitting
+/// them into two variants would put the shelf, the query and the counts on
+/// both of them and leave nothing to say they were about the same search.
+#[derive(Debug, Clone)]
+pub struct Search {
+    /// Which shelf this searches, so a press on the row knows what to narrow.
+    pub kind: crate::media::Kind,
+    /// What is being searched for, as the user typed it. Empty for a shelf
+    /// nobody has searched, which is the state every column starts in.
+    ///
+    /// The one thing on this row the shell writes to directly. Everything else
+    /// arrives from the worker with the rows it built; this is what has been
+    /// typed, and it has to be on screen on the frame the key was pressed
+    /// rather than on the frame the shelf has finished being narrowed.
+    pub query: String,
+    /// The line under the row, worked out where the shelf is because it counts
+    /// the shelf. It therefore lags the query by one delivery while somebody is
+    /// typing — as do the rows below it, which is the point: the field says
+    /// what has been asked, and everything under it says what has been found so
+    /// far. The two are never inconsistent with each other, only with the
+    /// future.
+    note: String,
+    pub role: Role,
+}
+
+/// Which of the two rows a [`Search`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The field itself: pressing it raises the keyboard to type into.
+    Field,
+    /// Empties the field, and is only on the column while there is something
+    /// in it to empty. A search cleared by backspacing would be ten presses of
+    /// one key on a board driven with a thumb.
+    Clear,
+}
+
+impl Search {
+    /// The field at the head of a shelf that holds `found` files, `matched` of
+    /// which the query has kept.
+    fn field(kind: crate::media::Kind, query: &str, matched: usize, found: usize) -> Search {
+        Search {
+            kind,
+            query: query.to_string(),
+            note: if query.is_empty() {
+                format!("Search {} by name", kind.plural())
+            } else {
+                crate::media::search_note(kind, matched, found)
+            },
+            role: Role::Field,
+        }
+    }
+
+    /// The row under it that empties it.
+    fn clear(kind: crate::media::Kind, query: &str, found: usize) -> Search {
+        Search {
+            kind,
+            query: query.to_string(),
+            note: format!("Show all {found} {}", kind.plural()),
+            role: Role::Clear,
+        }
+    }
+
+    /// What the row is called.
+    ///
+    /// The query itself, once there is one — the field *is* the row, so what
+    /// it holds is what it says. The word "Search" only stands in while it is
+    /// empty, which is exactly when there is nothing else for the row to be.
+    fn label(&self) -> &str {
+        match self.role {
+            Role::Clear => "Clear search",
+            Role::Field if self.query.is_empty() => "Search",
+            Role::Field => &self.query,
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self.role {
+            Role::Field => crate::icons::SEARCH,
+            Role::Clear => crate::icons::SEARCH_CLEAR,
+        }
+    }
 }
 
 /// A subcategory: a column of its own, stepped into from the row that names it.
@@ -309,15 +405,105 @@ fn subcategories(id: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// The rows a shelf of the user's own files makes.
+/// The rows a shelf of the user's own files makes: the search at the head of
+/// the column, and then whatever the search has left of it.
 ///
 /// Here rather than in [`crate::media`] because what a row *is* belongs to the
 /// bar, and called from there because of when it has to happen: this is one
 /// allocation the size of the collection and a write per file, and it is done
 /// on the worker that already holds the files rather than on the thread that
 /// draws. See [`crate::media::Made`].
-pub fn media_rows(listing: Vec<crate::media::Shelved>) -> Vec<Entry> {
-    listing.into_iter().map(Entry::Media).collect()
+///
+/// `listing` is what the search has kept and `found` is how many there are
+/// altogether, so a column that has been narrowed to nothing still carries the
+/// two rows that say why — a user left looking at an empty column with no
+/// field in it would have no way back to their own files but the one they
+/// could not see.
+///
+/// A shelf with nothing on it at all gets neither row. There is nothing there
+/// to search, and a column holding only the offer to search it is a column
+/// worth stepping into for nothing.
+pub fn media_rows(
+    listing: Vec<crate::media::Shelved>,
+    kind: crate::media::Kind,
+    query: &str,
+    found: usize,
+) -> Vec<Entry> {
+    let mut rows = Vec::with_capacity(listing.len() + 2);
+    if found > 0 {
+        rows.push(Entry::Search(Search::field(
+            kind,
+            query,
+            listing.len(),
+            found,
+        )));
+        if !query.is_empty() {
+            rows.push(Entry::Search(Search::clear(kind, query, found)));
+        }
+    }
+    rows.extend(listing.into_iter().map(Entry::Media));
+    rows
+}
+
+/// Which shelf of the user's own files a column is, if it is one of the three.
+///
+/// Asked of the rows rather than of the row they hang under, because that is
+/// what a cursor standing in a column has in front of it. The field at the head
+/// is what answers: nothing but a shelf carries one, and it names the shelf it
+/// searches — see [`media_rows`].
+///
+/// `None` for every other column, and for a shelf with nothing on it at all,
+/// which carries no rows and cannot be stepped into.
+pub fn shelf_shown(entries: &[Entry]) -> Option<crate::media::Kind> {
+    match entries.first() {
+        Some(Entry::Search(search)) => Some(search.kind),
+        _ => None,
+    }
+}
+
+/// How many rows at the head of a column are the search rather than what the
+/// column is a list *of*.
+///
+/// A column of music opens on music. The field stands over the list in the
+/// place anything standing over a list stands, and is reached by pressing Up
+/// from the top of it — which is the one direction nothing else was using, and
+/// where a person looks for the thing above the first thing. Opening *on* it
+/// would make every visit to a shelf start by stepping over a control the user
+/// did not ask for.
+pub fn head_rows(entries: &[Entry]) -> usize {
+    entries
+        .iter()
+        .take_while(|entry| entry.search().is_some())
+        .count()
+}
+
+/// Put `query` on the field at the head of whichever column searches `kind`,
+/// without waiting for the worker to narrow anything.
+///
+/// What makes the field a field. Everything else about the column is built
+/// where the files are and arrives a moment later; the letter that was just
+/// typed has to be on the next frame, and this is the whole of how it gets
+/// there. Returns whether a field was found to write to.
+pub fn set_search_text(categories: &mut [Category], kind: crate::media::Kind, query: &str) -> bool {
+    for category in categories {
+        for entry in &mut category.entries {
+            let Some(rows) = entry.entries_mut() else {
+                continue;
+            };
+            // The head of the column or nowhere: the field is the first row of
+            // the shelf it belongs to, and a scan of half a million files
+            // looking for it would be the one thing this exists to avoid.
+            let Some(Entry::Search(search)) = rows.first_mut() else {
+                continue;
+            };
+            if search.kind != kind {
+                continue;
+            }
+            search.query = query.to_string();
+            return true;
+        }
+    }
+    false
 }
 
 /// Hang a shelf the worker has finished on the row that holds it.
@@ -579,6 +765,7 @@ impl Entry {
             Entry::Media(file) => &file.title,
             Entry::Folder(folder) => &folder.title,
             Entry::Choice(choice) => &choice.title,
+            Entry::Search(search) => search.label(),
         }
     }
 
@@ -591,6 +778,7 @@ impl Entry {
             Entry::Media(file) => Some(&file.folder),
             Entry::Folder(folder) => folder.comment.as_deref(),
             Entry::Choice(choice) => choice.comment.as_deref(),
+            Entry::Search(search) => Some(&search.note),
         }
     }
 
@@ -600,6 +788,15 @@ impl Entry {
             Entry::Media(file) => Some(file.kind.glyph()),
             Entry::Folder(folder) => folder.icon.as_deref(),
             Entry::Choice(choice) => choice.icon.as_deref(),
+            Entry::Search(search) => Some(search.icon()),
+        }
+    }
+
+    /// The search this row is about, if it is one of the two that are.
+    pub fn search(&self) -> Option<&Search> {
+        match self {
+            Entry::Search(search) => Some(search),
+            _ => None,
         }
     }
 
@@ -1349,14 +1546,22 @@ mod tests {
             .iter()
             .map(Entry::title)
             .collect();
-        assert_eq!(images, ["Screenshot", "sunset"], "alphabetical, any folder");
+        assert_eq!(
+            images,
+            ["Search", "Screenshot", "sunset"],
+            "the field, and then the pictures alphabetically from any folder"
+        );
         assert_eq!(graphics.apps(), 1, "the editor, and not the pictures");
 
         let multimedia = categories.iter().find(|c| c.id == MULTIMEDIA).unwrap();
 
         let music = multimedia.entries[0].entries().unwrap();
         let titles: Vec<&str> = music.iter().map(Entry::title).collect();
-        assert_eq!(titles, ["apple", "zebra"], "alphabetical, not as found");
+        assert_eq!(
+            titles,
+            ["Search", "apple", "zebra"],
+            "alphabetical, not as found"
+        );
         assert_eq!(
             multimedia.entries[0].comment(),
             Some("2 audio files in your home folder")
@@ -1368,15 +1573,20 @@ mod tests {
 
         // A file is a row that starts something, and is not an application:
         // nothing installed it and nothing here would offer to remove it.
-        assert!(music[0].starts_something());
-        assert!(music[0].app().is_none());
-        assert!(music[0].media().is_some());
+        assert!(music[1].starts_something());
+        assert!(music[1].app().is_none());
+        assert!(music[1].media().is_some());
+        // The field above them is none of those things. It starts nothing, so
+        // the button that opens a file cannot open it by accident, and it is
+        // not a file, so nothing that acts on one can act on it.
+        assert!(!music[0].starts_something());
+        assert!(music[0].media().is_none());
         assert_eq!(multimedia.apps(), 1, "the player, and not the music");
 
         // Publishing again replaces what is there rather than doubling it.
         hang(&mut categories, files());
         let multimedia = categories.iter().find(|c| c.id == MULTIMEDIA).unwrap();
-        assert_eq!(multimedia.entries[0].entries().unwrap().len(), 2);
+        assert_eq!(multimedia.entries[0].entries().unwrap().len(), 3);
     }
 
     /// Music on a machine with no media player installed still deserves
@@ -1402,7 +1612,8 @@ mod tests {
             "in the bar's own order, not on the end"
         );
         assert!(categories[2].has_launchable());
-        assert_eq!(categories[2].entries[0].entries().unwrap().len(), 1);
+        // The one song, with the field above it.
+        assert_eq!(categories[2].entries[0].entries().unwrap().len(), 2);
 
         // And an empty library never makes one.
         let mut bare = assemble(Vec::new());
@@ -1441,6 +1652,115 @@ mod tests {
             only_pictures.iter().map(|c| c.id).collect::<Vec<_>>(),
             ["settings", GRAPHICS]
         );
+    }
+
+    /// The rows a shelf carries above its files, and when it carries them.
+    #[test]
+    fn a_shelf_is_headed_by_the_field_that_searches_it() {
+        let songs = vec![found("/home/x/a.mp3"), found("/home/x/b.mp3")];
+
+        // Unsearched: the field alone, saying what it is for. Nothing offers to
+        // clear a search nobody has made.
+        let rows = media_rows(songs.clone(), crate::media::Kind::Audio, "", 2);
+        let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["Search", "a", "b"]);
+        assert_eq!(rows[0].comment(), Some("Search audio files by name"));
+        assert_eq!(rows[0].icon(), Some(crate::icons::SEARCH));
+
+        // Searched: the field says what was typed rather than the word
+        // "Search", and the way back to the whole shelf is the row under it.
+        let rows = media_rows(vec![songs[0].clone()], crate::media::Kind::Audio, "a", 2);
+        let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["a", "Clear search", "a"]);
+        assert_eq!(rows[0].comment(), Some("1 of 2 audio files matches"));
+        assert_eq!(rows[1].comment(), Some("Show all 2 audio files"));
+        assert_eq!(rows[1].icon(), Some(crate::icons::SEARCH_CLEAR));
+
+        // A search that found nothing keeps both rows all the same. A column
+        // emptied of everything including the way out of it would be a place
+        // the user could reach and not leave.
+        let rows = media_rows(Vec::new(), crate::media::Kind::Audio, "zzz", 2);
+        let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
+        assert_eq!(titles, ["zzz", "Clear search"]);
+        assert_eq!(rows[0].comment(), Some("No audio files match"));
+
+        // And a shelf with nothing on it at all carries neither: there is
+        // nothing to search, and a column holding only the offer to search it
+        // is a column worth opening for nothing.
+        assert!(media_rows(Vec::new(), crate::media::Kind::Audio, "", 0).is_empty());
+    }
+
+    /// That field is also how a column says what it *is*, which is what tells
+    /// the shell somebody has just stepped into a shelf and the disk is worth
+    /// another look.
+    #[test]
+    fn a_column_of_the_users_own_files_says_which_shelf_it_is() {
+        let songs = vec![found("/home/x/a.mp3")];
+        let rows = media_rows(songs, crate::media::Kind::Audio, "", 1);
+        assert_eq!(shelf_shown(&rows), Some(crate::media::Kind::Audio));
+
+        // Narrowed to nothing, it is still the shelf it was: the field stands
+        // whatever the search left under it.
+        let rows = media_rows(Vec::new(), crate::media::Kind::Image, "zzz", 4);
+        assert_eq!(shelf_shown(&rows), Some(crate::media::Kind::Image));
+
+        // A column of applications is not one, and neither is a shelf so empty
+        // it carries no rows — which is also a column nothing can step into.
+        let installed = parse(
+            "[Desktop Entry]\nType=Application\nName=Files\nExec=files\nCategories=Utility;\n",
+        )
+        .expect("a desktop entry");
+        let columns = assemble(vec![installed]);
+        let utilities = columns
+            .iter()
+            .find(|column| column.id == "utilities")
+            .expect("the column the entry asked for");
+        assert_eq!(shelf_shown(&utilities.entries), None);
+        assert_eq!(shelf_shown(&[]), None);
+    }
+
+    /// The letter that has just been typed goes onto the field without waiting
+    /// for the shelf behind it to be narrowed.
+    #[test]
+    fn what_is_typed_reaches_the_field_before_the_rows_do() {
+        let mut categories = assemble(Vec::new());
+        hang(
+            &mut categories,
+            vec![found("/home/x/song.mp3"), found("/home/x/pic.png")],
+        );
+
+        assert!(set_search_text(
+            &mut categories,
+            crate::media::Kind::Audio,
+            "rad"
+        ));
+        let music = categories
+            .iter()
+            .find(|category| category.id == MULTIMEDIA)
+            .unwrap();
+        let rows = music.entries[0].entries().unwrap();
+        assert_eq!(rows[0].title(), "rad");
+        // Only the field moved. The rows under it are the ones the worker last
+        // built, and they stay exactly as they were until it sends more —
+        // which is what keeps the list and the count it is described by from
+        // ever disagreeing with each other.
+        assert_eq!(rows[1].title(), "song");
+        assert_eq!(rows[0].comment(), Some("Search audio files by name"));
+
+        // The shelf that was not being typed into is untouched.
+        let pictures = categories
+            .iter()
+            .find(|category| category.id == GRAPHICS)
+            .unwrap();
+        assert_eq!(pictures.entries[0].entries().unwrap()[0].title(), "Search");
+
+        // A kind with no column on the bar has no field to write to, and says
+        // so rather than pretending it wrote one.
+        assert!(!set_search_text(
+            &mut categories,
+            crate::media::Kind::Video,
+            "x"
+        ));
     }
 
     /// The column is made wherever it belongs, including at both ends.

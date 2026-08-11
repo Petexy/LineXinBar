@@ -100,9 +100,10 @@ pub enum Item {
     /// front. A square tile, not a row: see [`Item::is_tile`].
     Pointer,
     /// Opens the per-application volume mixer: a panel out of this tile with
-    /// every application making a noise on it. A tile like the switch beside
-    /// it, and the only one that opens something rather than turning something
-    /// over — see [`Item::is_tile`].
+    /// every application making a noise on it, and the shell's own audio
+    /// under them. A tile like the switch beside it, and the only one that
+    /// opens something rather than turning something over — see
+    /// [`Item::is_tile`].
     Mixer,
     /// How loud the session is. A bar, not a button.
     Volume,
@@ -856,8 +857,11 @@ impl Guide {
     /// once.
     ///
     /// `focused` is whether this is the display being driven; `keyboard` is
-    /// whether the on-screen keyboard or its hint is on it; `base` is the
-    /// layer the bar sits on when it is not covering anything.
+    /// whether the on-screen keyboard or its hint is on it; `typing_here` is
+    /// whether that keyboard is typing into a field of the shell's own rather
+    /// than into whatever is in front; `base` is the layer the bar sits on when
+    /// it is not covering anything.
+    #[allow(clippy::too_many_arguments)]
     pub fn surface_state(
         &self,
         focused: bool,
@@ -865,6 +869,7 @@ impl Guide {
         keep_grabbed: bool,
         launching: bool,
         keyboard: bool,
+        typing_here: bool,
         base: Layer,
     ) -> (Layer, KeyboardInteractivity) {
         // A launch splash is over the application it is waiting for — that is
@@ -897,8 +902,27 @@ impl Guide {
         // because a field was focused would put itself away again. So it is
         // driven from the controller, and the keys it types are sent through
         // the seat as any other keyboard's would be.
+        //
+        // None of which is true of a board typing into the shell's own field —
+        // a password, or the search at the head of a column. Nothing out there
+        // has a text field to deactivate, nothing is sent through the seat, and
+        // the shell is the one thing that wants the keys. It wants them *while*
+        // the board is up, too, and not only afterwards: the board holds the
+        // physical keyboard through the input method's grab, and the first key
+        // pressed on it puts the board away and hands the keys back. A surface
+        // that had given up focus for the board spends that handover with
+        // nowhere for a keystroke to land, and the letter typed in the gap is
+        // simply lost — which on a field somebody is typing a name into is one
+        // character missing out of the middle of the word.
         if keyboard {
-            return (Layer::Overlay, KeyboardInteractivity::None);
+            return (
+                Layer::Overlay,
+                if typing_here {
+                    KeyboardInteractivity::Exclusive
+                } else {
+                    KeyboardInteractivity::None
+                },
+            );
         }
 
         // Behind it, where a running application owns input. With nothing in
@@ -1658,14 +1682,14 @@ mod tests {
         let guide = Guide::default();
         for driven in [true, false] {
             assert_eq!(
-                guide.surface_state(driven, true, false, true, false, Layer::Background),
+                guide.surface_state(driven, true, false, true, false, false, Layer::Background),
                 (Layer::Overlay, KeyboardInteractivity::None),
                 "the splash is on the display it was started from, driven or not"
             );
         }
         // And the display goes straight back to where it was afterwards.
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
     }
@@ -1676,7 +1700,7 @@ mod tests {
         guide.open();
 
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, false, Layer::Background),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
         );
         for mode in [Mode::Menu, Mode::BarOverApp] {
@@ -1684,7 +1708,7 @@ mod tests {
                 guide.show_bar_over_app();
             }
             assert_eq!(
-                guide.surface_state(false, true, false, false, false, Layer::Background),
+                guide.surface_state(false, true, false, false, false, false, Layer::Background),
                 (Layer::Background, KeyboardInteractivity::None),
                 "{mode:?} must leave the displays nobody is driving alone"
             );
@@ -1711,6 +1735,7 @@ mod tests {
                         keep_grabbed,
                         false,
                         false,
+                        false,
                         Layer::Background,
                     );
                     assert_eq!(
@@ -1732,18 +1757,18 @@ mod tests {
     fn the_on_screen_keyboard_rises_above_the_application_without_taking_its_keys() {
         let guide = Guide::default();
         assert_eq!(
-            guide.surface_state(true, true, false, false, true, Layer::Background),
+            guide.surface_state(true, true, false, false, true, false, Layer::Background),
             (Layer::Overlay, KeyboardInteractivity::None)
         );
         // Even when the shell was told to hold the keyboard regardless: the
         // debugging flag cannot be allowed to make the keyboard useless.
         assert_eq!(
-            guide.surface_state(true, true, true, false, true, Layer::Background),
+            guide.surface_state(true, true, true, false, true, false, Layer::Background),
             (Layer::Overlay, KeyboardInteractivity::None)
         );
         // Not on displays nobody is driving.
         assert_eq!(
-            guide.surface_state(false, true, false, false, true, Layer::Background),
+            guide.surface_state(false, true, false, false, true, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::None)
         );
         // And the menu wins if both somehow claim the display, because the
@@ -1751,8 +1776,46 @@ mod tests {
         let mut guide = Guide::default();
         guide.open();
         assert_eq!(
-            guide.surface_state(true, true, false, false, true, Layer::Background),
+            guide.surface_state(true, true, false, false, true, false, Layer::Background),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+    }
+
+    /// The one board that does take the keys: the one typing into the shell.
+    ///
+    /// Nothing out there has a text field for it to deactivate, and the shell
+    /// needs them held *through* the board rather than handed back when it
+    /// goes — the board holds the physical keyboard itself, and the key that
+    /// dismisses it lands in the gap left by a surface that had given up
+    /// focus.
+    #[test]
+    fn a_board_typing_into_the_shell_keeps_the_keys_it_is_typing_with() {
+        let guide = Guide::default();
+        for app_running in [false, true] {
+            assert_eq!(
+                guide.surface_state(
+                    true,
+                    app_running,
+                    false,
+                    false,
+                    true,
+                    true,
+                    Layer::Background
+                ),
+                (Layer::Overlay, KeyboardInteractivity::Exclusive),
+                "app_running={app_running}: the field is the shell's, so the keys are too"
+            );
+        }
+        // Still only on the display being driven, and still nothing at all
+        // while a launch is on screen: neither of those is about where the
+        // letters are going.
+        assert_eq!(
+            guide.surface_state(false, true, false, false, true, true, Layer::Background),
+            (Layer::Background, KeyboardInteractivity::None)
+        );
+        assert_eq!(
+            guide.surface_state(true, true, false, true, true, true, Layer::Background),
+            (Layer::Overlay, KeyboardInteractivity::None)
         );
     }
 
@@ -1760,16 +1823,16 @@ mod tests {
     fn the_bar_yields_the_keyboard_to_a_running_application() {
         let guide = Guide::default();
         assert_eq!(
-            guide.surface_state(true, false, false, false, false, Layer::Background),
+            guide.surface_state(true, false, false, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, Layer::Background),
+            guide.surface_state(true, true, false, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
         // Unless it was told not to.
         assert_eq!(
-            guide.surface_state(true, true, true, false, false, Layer::Background),
+            guide.surface_state(true, true, true, false, false, false, Layer::Background),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
     }

@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="16">
+  <interface name="lxb_shell_v1" version="18">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -534,6 +534,81 @@
       </description>
     </request>
 
+    <request name="capture_output" since="17">
+      <description summary="write one display's pixels to a PNG file">
+        Photographs a whole display — everything on it, in the order it is
+        drawn: the wallpaper, every application window, the shell's own bar or
+        overlay over them — and writes it to `path` as a PNG.
+
+        This is capture_window's companion and not a wider version of it. That
+        one answers "what does this application look like", and cuts the window
+        out of its surroundings to do it. This one answers "what is on this
+        screen", which is a picture of the composite and can be taken of a
+        display with nothing running on it at all.
+
+        The picture has as many pixels as the display is driven at, turned the
+        way the display is turned. The pointer is left out: the cursor is drawn
+        by the compositor rather than being part of any surface, it is not on
+        screen at all while the session is being driven from a controller, and
+        an arrow burnt into a screenshot cannot be taken back out of it.
+
+        The path is the shell's to choose, on the same terms as capture_window:
+        absolute, into a directory that already exists, and refused otherwise.
+
+        The answer comes back as output_captured, always, for the reason
+        window_captured always answers.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to photograph"/>
+      <arg name="path" type="string" summary="absolute path of the PNG file to write"/>
+    </request>
+
+    <request name="ask_to_share" since="18">
+      <description summary="ask the user whether an application may see a display">
+        Puts a question to the session shell: this application wants to share a
+        screen — may it, and which one? The answer comes back as
+        share_answered, always, so a portal waiting on it is never left
+        waiting.
+
+        Sent by the session's desktop portal rather than by the shell. Screen
+        sharing is not something an application does for itself: it asks
+        xdg-desktop-portal, which asks the portal backend, which is a client of
+        this compositor like any other — and the one thing that client cannot
+        do is draw. Only the shell can, and only the compositor can reach the
+        shell while a fullscreen application holds the screen.
+
+        id is the asking client's own number for this question, unique among
+        the questions it currently has outstanding, and is quoted back in the
+        answer. app_id is what the application asking calls itself, for the
+        shell to name in the question; it may be empty, and a shell should then
+        say so rather than showing an empty name.
+
+        The question goes to every other client bound to this interface, and
+        never back to the one that asked. In a running session that is the
+        shell, which is the only client that has anywhere to put it.
+
+        Refused outright when nobody can be asked — no shell has bound this
+        interface, or none new enough to hear the question — because a
+        screen shared without anybody being asked is the thing this request
+        exists to prevent.
+      </description>
+      <arg name="id" type="uint" summary="the asking client's number for this question"/>
+      <arg name="app_id" type="string" summary="what the application asking calls itself"/>
+    </request>
+
+    <request name="answer_share" since="18">
+      <description summary="answer a share_request">
+        The shell's answer to one share_request: the display the user chose, or
+        nothing at all, which is the user saying no.
+
+        Answering a question nobody asked, or one that has already been
+        answered, is ignored — a client that has gone away takes its question
+        with it.
+      </description>
+      <arg name="id" type="uint" summary="the question, from share_request"/>
+      <arg name="output" type="object" interface="wl_output" allow-null="true"
+           summary="the display that may be shared, or nothing for a refusal"/>
+    </request>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -828,6 +903,71 @@
         has no mode list to offer.
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
+    </event>
+
+    <event name="screenshot" since="17">
+      <description summary="the screenshot binding was activated">
+        Sent when the user pressed the compositor's screenshot binding, naming
+        the display they were on. The shell is expected to answer with a
+        capture_output request for that display.
+
+        Routed by the compositor for the reason the guide and keyboard events
+        are: a fullscreen application holds the keyboard, and a screenshot key
+        that only worked while the shell had focus would be one that never
+        worked over the game somebody wanted a picture of.
+
+        The compositor asks rather than simply taking the picture itself
+        because the two halves of a screenshot live in different processes.
+        Only the compositor has the pixels, and only the shell knows where a
+        user's pictures go — which folder the desktop records for them, in the
+        language the account was made in, and what the file should be called.
+        So the binding comes here and the path goes back.
+
+        The display named is the one the user is driving, which is where the
+        keyboard that pressed the binding is. A shell may photograph a
+        different one, or every one; nothing here obliges it to take the
+        picture at all.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display the binding was pressed on"/>
+    </event>
+
+    <event name="share_request" since="18">
+      <description summary="an application is asking to see a display">
+        Sent to every client bound to this interface except the one that asked,
+        which in a running session means the shell. It is expected to put the
+        question to the user and answer with answer_share.
+
+        A shell that does not answer leaves the application waiting, which the
+        portal treats as a refusal after a while. That is the safe way round:
+        an unanswered question is not a yes.
+      </description>
+      <arg name="id" type="uint" summary="the question, to be quoted back"/>
+      <arg name="app_id" type="string" summary="what the application asking calls itself, possibly empty"/>
+    </event>
+
+    <event name="share_answered" since="18">
+      <description summary="what came of an ask_to_share request">
+        Answers exactly one ask_to_share, whether the user said yes or no.
+
+        output is the display the application may see, resolved to this
+        client's own wl_output. It is absent when the user refused, when
+        nobody could be asked, or when the display was unplugged between the
+        question and the answer — all of which the client must treat the same
+        way, because they all mean it may not record anything.
+      </description>
+      <arg name="id" type="uint" summary="the question that was asked"/>
+      <arg name="output" type="object" interface="wl_output" allow-null="true"
+           summary="the display that may be shared, or nothing"/>
+    </event>
+
+    <event name="output_captured" since="17">
+      <description summary="what came of a capture_output request">
+        Answers exactly one capture_output request, whether or not it worked,
+        on the same terms as window_captured: path is the file that was
+        written, and is empty when nothing was.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display that was asked about"/>
+      <arg name="path" type="string" summary="the file that was written, empty when none was"/>
     </event>
   </interface>
 </protocol>

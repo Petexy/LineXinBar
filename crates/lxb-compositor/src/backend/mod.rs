@@ -71,6 +71,26 @@ impl Backend {
             Backend::Udev(b) => b.capture_window(window, scale),
         }
     }
+
+    /// Photograph one whole display with this backend's renderer.
+    ///
+    /// The compositor state comes in beside the backend rather than being
+    /// reached through it, because the picture is the composite: everything on
+    /// that display, which is what [`crate::render::output_elements`] assembles
+    /// and what only the session state knows. The two halves are separate
+    /// fields of [`crate::state::LxbState`] for exactly this reason — a render
+    /// pass borrows both at once, and a screenshot is a render pass.
+    pub fn capture_output(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &smithay::output::Output,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        match self {
+            Backend::Winit(b) => b.capture_output(lxb, output),
+            Backend::X11(b) => b.capture_output(lxb, output),
+            Backend::Udev(b) => b.capture_output(lxb, output),
+        }
+    }
 }
 
 impl crate::state::LxbState {

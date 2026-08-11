@@ -57,6 +57,14 @@ impl WinitBackend {
     ) -> anyhow::Result<crate::capture::Shot> {
         crate::capture::window(self.backend.renderer(), window, scale)
     }
+
+    pub fn capture_output(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &smithay::output::Output,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        crate::capture::output(self.backend.renderer(), lxb, output)
+    }
 }
 
 /// Bring up the compositor on a nested winit window.
@@ -279,6 +287,20 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
 
     let time = state.lxb.start_time.elapsed();
     post_repaint(&state.lxb, &output, time, Some(Duration::ZERO));
+    // Anything else recording this display is answered here, with the screen
+    // in the state it was just drawn in and a renderer already in hand.
+    if state.lxb.screencopy.wanted(&output) {
+        let LxbState { backend, lxb } = state;
+        let super::Backend::Winit(backend) = backend else {
+            return Ok(());
+        };
+        let cursor = lxb
+            .config
+            .general
+            .draw_cursor
+            .then_some(&mut backend.cursor);
+        crate::screencopy::serve(backend.backend.renderer(), lxb, &output, cursor, time);
+    }
 
     Ok(())
 }

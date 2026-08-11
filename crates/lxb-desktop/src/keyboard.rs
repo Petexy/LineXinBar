@@ -733,10 +733,10 @@ pub fn interpret(keysym: Keysym) -> Typed {
 
 /// The stroke the board's keymap would use for this keysym, if it has one.
 ///
-/// Public because the shell has one field of its own — the password a removal
-/// is authorised with — and a key pressed on a real keyboard has to reach it by
-/// the same route a key on the board does, so that the two cannot disagree
-/// about what Backspace or Return mean.
+/// Public because the shell has fields of its own — the password a removal is
+/// authorised with, and the one polkit asks for — and a key pressed on a real
+/// keyboard has to reach them by the same route a key on the board does, so
+/// that the two cannot disagree about what Backspace or Return mean.
 pub fn stroke_for(keysym: Keysym) -> Option<Stroke> {
     // The function keysyms are consecutive, and so is the row.
     let function = keysym.raw().checked_sub(Keysym::F1.raw());
@@ -1128,7 +1128,8 @@ impl Osk {
     }
 
     /// Show it for a field of the shell's own — the password a removal has to
-    /// be authorised with.
+    /// be authorised with, or the one an authorisation this session has been
+    /// asked to prove needs.
     ///
     /// Two things differ, and both follow from there being no application
     /// involved. It opens whether or not a virtual keyboard was ever handed

@@ -58,6 +58,12 @@ pub enum Action {
     /// A compositor binding for the same reason, and rather more pointedly:
     /// the application the keys are meant for is the one holding them.
     Keyboard,
+    /// Photograph the display the user is on.
+    ///
+    /// A compositor binding for the third time, and the plainest case of all:
+    /// the picture is of whatever is in front, so the key has to work while
+    /// something is in front of everything.
+    Screenshot,
 }
 
 impl Action {
@@ -79,6 +85,7 @@ impl Action {
             "cycle-window" => Action::CycleWindow,
             "guide" | "overlay" => Action::Guide,
             "keyboard" | "osk" => Action::Keyboard,
+            "screenshot" | "capture-screen" => Action::Screenshot,
             _ => return None,
         })
     }
@@ -91,6 +98,21 @@ pub struct KeyPattern {
     pub alt: bool,
     pub shift: bool,
     pub logo: bool,
+    /// Whether the modifiers are part of this chord at all.
+    ///
+    /// Set by writing `Any+` in front of the key, and meant for the handful of
+    /// keys that are not a letter with something held down but a key with one
+    /// job printed on it. The screenshot key is the case it exists for: every
+    /// desktop spells a variant of it with a modifier — `Shift+Print` for the
+    /// whole screen here, `Ctrl+Print` to the clipboard there, `Meta+Shift+Print`
+    /// for a region — and this shell draws none of those distinctions, so all
+    /// of them are the same picture and a user's hand is right whichever one it
+    /// has learnt.
+    ///
+    /// Not something to reach for otherwise. A loose binding on a letter would
+    /// take that letter away from every application in the session, in every
+    /// chord it appears in.
+    pub loose: bool,
     pub keysym: Keysym,
 }
 
@@ -103,6 +125,7 @@ impl KeyPattern {
             alt: false,
             shift: false,
             logo: false,
+            loose: false,
             keysym: Keysym::from(0),
         };
 
@@ -119,6 +142,7 @@ impl KeyPattern {
                 "alt" | "mod1" => pattern.alt = true,
                 "shift" => pattern.shift = true,
                 "super" | "logo" | "mod4" | "meta" => pattern.logo = true,
+                "any" => pattern.loose = true,
                 other => {
                     tracing::warn!(modifier = other, "unknown modifier in keybinding");
                     return None;
@@ -144,13 +168,26 @@ impl KeyPattern {
     }
 
     fn matches(&self, mods: &ModifiersState, keysym: Keysym) -> bool {
-        self.ctrl == mods.ctrl
-            && self.alt == mods.alt
-            && self.logo == mods.logo
-            // Shift changes the modified keysym, so compare the raw one and
-            // require an exact shift match.
-            && self.shift == mods.shift
-            && self.keysym == fold_case(keysym)
+        if self.keysym != fold_case(keysym) {
+            return false;
+        }
+        self.loose
+            || (self.ctrl == mods.ctrl
+                && self.alt == mods.alt
+                && self.logo == mods.logo
+                // Shift changes the modified keysym, so compare the raw one and
+                // require an exact shift match.
+                && self.shift == mods.shift)
+    }
+
+    /// Whether this is about the same key as `other`, whatever is held with it.
+    ///
+    /// What a binding in the config file is measured against before a loose
+    /// default is kept: somebody who writes down what `Print` should do has
+    /// said what that key is for, and a built-in that answers for the key under
+    /// every modifier would otherwise sit in front of theirs for ever.
+    fn same_key(&self, other: &KeyPattern) -> bool {
+        self.keysym == other.keysym
     }
 }
 
@@ -281,6 +318,24 @@ impl KeyBindings {
             // the media key a handheld or a remote sends for exactly this.
             ("Super+K", Action::Keyboard),
             ("XF86Keyboard", Action::Keyboard),
+            // The screenshot key, three times over, because it is the one
+            // control here that people arrive already knowing a spelling for
+            // and no two of them know the same one.
+            //
+            // `Any+Print` is the key with a picture of it printed on the
+            // keyboard, and it is deliberately deaf to the modifiers: every
+            // desktop puts a different variant of the picture on each of them —
+            // the whole screen on `Shift+Print`, the clipboard on `Ctrl+Print`,
+            // a region on `Meta+Shift+Print` — and this shell takes one kind of
+            // picture, so a hand that learnt any of those is right.
+            //
+            // The other two are the chord every Mac has had for thirty years,
+            // in both of the ways it gets transcribed onto a PC keyboard:
+            // Command read as Control, and Command read as the key that sits
+            // where it sits, which is Alt.
+            ("Any+Print", Action::Screenshot),
+            ("Ctrl+Shift+3", Action::Screenshot),
+            ("Alt+Shift+3", Action::Screenshot),
             ("Super+Tab", Action::CycleWindow),
             ("Super+Right", Action::FocusNextOutput),
             ("Super+Left", Action::FocusPrevOutput),
@@ -322,7 +377,11 @@ impl KeyBindings {
                     );
                 }
                 (Some(pattern), Some(action)) => {
-                    bindings.retain(|(p, _)| *p != pattern);
+                    // The chord itself, and any built-in that answers for the
+                    // whole key: a user who has said what `Print` does has said
+                    // it about the key, and a loose default standing in front of
+                    // theirs would make the config file look ignored.
+                    bindings.retain(|(p, _)| *p != pattern && !(p.loose && p.same_key(&pattern)));
                     bindings.push((pattern, action));
                 }
                 (None, _) => tracing::warn!(binding = raw, "ignoring unparseable keybinding"),
@@ -513,6 +572,7 @@ impl LxbState {
             Action::CycleWindow => self.cycle_window(),
             Action::Guide => self.open_guide(),
             Action::Keyboard => self.open_keyboard(),
+            Action::Screenshot => self.screenshot_focused_output(),
         }
     }
 
@@ -1985,6 +2045,147 @@ mod tests {
         };
         assert!(!pattern.matches(&shifted_mods, Keysym::from(keysyms::KEY_Q)));
         assert!(shifted.matches(&shifted_mods, Keysym::from(keysyms::KEY_Q)));
+    }
+
+    /// The screenshot chord is written with the digit on it, and the digit is
+    /// not what the keyboard produces while shift is held: on a US layout
+    /// `Shift+3` is `numbersign`, on a UK one it is `sterling`, and on neither
+    /// of them is it `3`. The binding matches because every spelling of the
+    /// key is tried, the unshifted one included — which is the whole reason
+    /// [`KeyBindings::lookup`] takes a list rather than one symbol.
+    #[test]
+    fn the_screenshot_chord_matches_the_key_under_the_shift() {
+        let bindings = KeyBindings::from_config(&Config::default());
+        let mods = ModifiersState {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        let pressed = [
+            Keysym::from(keysyms::KEY_numbersign),
+            Keysym::from(keysyms::KEY_3),
+        ];
+        assert_eq!(bindings.lookup(&mods, pressed), Some(Action::Screenshot));
+
+        // The digit on its own is a digit. Nothing about a screenshot may
+        // happen while somebody is typing a number.
+        assert_eq!(
+            bindings.lookup(&ModifiersState::default(), [Keysym::from(keysyms::KEY_3)]),
+            None
+        );
+        // And the key with a picture of it printed on the keyboard, which is
+        // what a hand reaches for without being told the chord.
+        assert_eq!(
+            bindings.lookup(
+                &ModifiersState::default(),
+                [Keysym::from(keysyms::KEY_Print)]
+            ),
+            Some(Action::Screenshot)
+        );
+
+        // The Mac chord under the other reading of the Command key: the one
+        // that sits where Command sits, rather than the one that does what it
+        // does. Both hands are right.
+        let held = ModifiersState {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(bindings.lookup(&held, pressed), Some(Action::Screenshot));
+    }
+
+    /// The screenshot key answers whatever is held down with it.
+    ///
+    /// Every desktop spells a *variant* of the picture with a modifier — the
+    /// whole screen on `Shift+Print`, the clipboard on `Ctrl+Print`, a region
+    /// on `Meta+Shift+Print` — and this shell takes one kind of picture. A
+    /// user whose hand knows one of those spellings must not press the key and
+    /// have nothing happen.
+    #[test]
+    fn the_screenshot_key_does_not_care_what_is_held_with_it() {
+        let bindings = KeyBindings::from_config(&Config::default());
+        let print = [Keysym::from(keysyms::KEY_Print)];
+        for held in [
+            ModifiersState {
+                shift: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                logo: true,
+                shift: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(bindings.lookup(&held, print), Some(Action::Screenshot));
+        }
+
+        // Loose is not contagious: the chord written with a digit still needs
+        // its modifiers, because the digit belongs to whoever is typing.
+        assert_eq!(
+            bindings.lookup(
+                &ModifiersState {
+                    logo: true,
+                    ..Default::default()
+                },
+                [Keysym::from(keysyms::KEY_3)]
+            ),
+            None
+        );
+    }
+
+    /// And a user who writes down what the key does has said it about the key,
+    /// not about one decoration of it — so the built-in stops answering for the
+    /// rest.
+    #[test]
+    fn a_screenshot_key_given_away_in_the_config_is_given_away_entirely() {
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("Print".into(), "spawn:grim".into());
+        let bindings = KeyBindings::from_config(&config);
+
+        let print = [Keysym::from(keysyms::KEY_Print)];
+        assert_eq!(
+            bindings.lookup(&ModifiersState::default(), print),
+            Some(Action::Spawn("grim".into()))
+        );
+        assert_eq!(
+            bindings.lookup(
+                &ModifiersState {
+                    shift: true,
+                    ..Default::default()
+                },
+                print
+            ),
+            None,
+            "the key is theirs now, decorated or not"
+        );
+    }
+
+    /// Every binding in the table is one the config file can move elsewhere —
+    /// the guide's chords excepted, which have a test of their own above.
+    #[test]
+    fn the_screenshot_chord_can_be_given_to_something_else() {
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("Ctrl+Shift+3".into(), "spawn:grim".into());
+        let bindings = KeyBindings::from_config(&config);
+
+        let mods = ModifiersState {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            bindings.lookup(&mods, [Keysym::from(keysyms::KEY_3)]),
+            Some(Action::Spawn("grim".into())),
+            "a chord the user has claimed is theirs"
+        );
     }
 
     #[test]

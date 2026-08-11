@@ -67,6 +67,14 @@ impl X11Backend {
     ) -> anyhow::Result<crate::capture::Shot> {
         crate::capture::window(&mut self.renderer, window, scale)
     }
+
+    pub fn capture_output(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &Output,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        crate::capture::output(&mut self.renderer, lxb, output)
+    }
 }
 
 /// Bring up the compositor with `count` nested windows.
@@ -357,6 +365,19 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
 
     let time = state.lxb.start_time.elapsed();
     post_repaint(&state.lxb, &output, time, Some(Duration::ZERO));
+    // Anything else recording this display is answered here, with the screen
+    // in the state it was just drawn in and a renderer already in hand.
+    if state.lxb.screencopy.wanted(&output) {
+        let LxbState { backend, lxb } = state;
+        let super::Backend::X11(backend) = backend else {
+            return Ok(());
+        };
+        let X11Backend {
+            renderer, cursor, ..
+        } = &mut **backend;
+        let cursor = lxb.config.general.draw_cursor.then_some(cursor);
+        crate::screencopy::serve(renderer, lxb, &output, cursor, time);
+    }
 
     Ok(())
 }

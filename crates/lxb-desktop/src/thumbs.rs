@@ -896,11 +896,16 @@ mod tests {
         thumbs.want(path);
         thumbs.want(path);
         assert_eq!(thumbs.asked.len(), 1);
-        assert_eq!(
-            thumbs.queue.jobs.lock().unwrap().len() + usize::from(thumbs.asked.is_empty()),
-            1,
-            "one job, or one already taken by a worker"
+        // At most one, because a worker may have taken it already — and the
+        // whole point, that a second `want` did not put a second copy in. The
+        // count alone cannot be asserted: the queue is drained by two threads
+        // that started before this test did.
+        let queued = thumbs.queue.jobs.lock().unwrap();
+        assert!(
+            queued.len() <= 1 && queued.iter().all(|job| job == path),
+            "one job at most, and never a second copy of it: {queued:?}"
         );
+        drop(queued);
 
         // The worker will find nothing there, and that answer sticks.
         let waited = std::time::Instant::now();

@@ -19,7 +19,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Which of the two bars.
@@ -64,6 +64,86 @@ pub struct Stream {
     pub binary: Option<String>,
     /// The loudest of its sounds, which is what the user is hearing.
     pub level: Level,
+}
+
+/// Which way sound is going.
+///
+/// The two questions the machine asks about a device are the same question
+/// twice, and every one of these programs spells them `sink` and `source`. The
+/// words the page uses are output and input, which are what they are called
+/// everywhere a person rather than a server is reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Out of the machine: what everything on it plays through.
+    Output,
+    /// Into it: what everything on it records from.
+    Input,
+}
+
+/// One device the machine can play through or record from, as the sound server
+/// lists them.
+///
+/// A *device* as the server means it, which is a card in one of its profiles
+/// rather than a socket on the back of the machine: the same sound card is two
+/// of these when it can be driven as stereo or as surround, and choosing
+/// between them is choosing how it is driven.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Device {
+    /// The server's own name for it — `alsa_output.…`, stable across sessions
+    /// and across replugs, and what naming one to the server names.
+    pub id: String,
+    /// What the device calls itself, in the words the machine's own mixer would
+    /// show: the card, without the profile.
+    pub title: String,
+    /// How it is being driven, where the server says so: `Analog Stereo`. This
+    /// is what separates two rows standing for one piece of hardware.
+    pub profile: Option<String>,
+    /// The one the machine is using, which is the whole of what this page sets.
+    pub default: bool,
+}
+
+/// What the machine has, both ways round.
+///
+/// One value rather than two lists passed about separately, because they are
+/// read in one go and are one answer: a session where the server has gone away
+/// has neither, and a page that showed a stale half of it would be showing
+/// devices that cannot be chosen.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Devices {
+    pub outputs: Vec<Device>,
+    pub inputs: Vec<Device>,
+    /// Whether a sound server answered at all.
+    ///
+    /// An empty list means two very different things, and the page has to say
+    /// which: a machine with no sound card in it, or a session with nothing
+    /// running that could be asked. Only the first is about the hardware.
+    pub server: bool,
+}
+
+impl Devices {
+    /// Nothing, before anything has been read — and the value a session with no
+    /// worker thread keeps.
+    pub const fn none() -> Self {
+        Self {
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            server: false,
+        }
+    }
+
+    pub fn of(&self, direction: Direction) -> &[Device] {
+        match direction {
+            Direction::Output => &self.outputs,
+            Direction::Input => &self.inputs,
+        }
+    }
+
+    fn of_mut(&mut self, direction: Direction) -> &mut Vec<Device> {
+        match direction {
+            Direction::Output => &mut self.outputs,
+            Direction::Input => &mut self.inputs,
+        }
+    }
 }
 
 /// How far one press of Left or Right moves a bar.
@@ -133,6 +213,22 @@ struct State {
     streams: Vec<Stream>,
     stream_asks: Vec<StreamAsk>,
     streams_epoch: u64,
+    /// What the machine can play through and record from, and what the user
+    /// has asked it to use since.
+    ///
+    /// One epoch again, and for the listing's own reason: both directions come
+    /// out of one pass over the server, so a press about the output makes the
+    /// answer already on its way back stale about the input too.
+    devices: Devices,
+    device_asks: Vec<(Direction, String)>,
+    devices_epoch: u64,
+    /// Whether the page that lists the devices is on screen, which is the only
+    /// time they are worth reading again. Its own flag rather than a use of
+    /// [`State::on_screen`]: that one is the guide's sidebar, and what it keeps
+    /// fresh is the bars and the mixer. These are two different things to be
+    /// looking at, each costing its own subprocesses, and neither implies the
+    /// other.
+    watching_devices: bool,
     /// The display the shell is on. Tracked whether or not the menu is open,
     /// so the brightness bar has an answer the moment the menu appears rather
     /// than a few hundred milliseconds of i2c later.
@@ -418,6 +514,71 @@ impl Quick {
         true
     }
 
+    /// What the machine can play through and record from, as the worker last
+    /// found them.
+    pub fn devices(&self) -> Devices {
+        let state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.devices.clone()
+    }
+
+    /// Say whether the page that lists the devices is on screen, and so whether
+    /// the listing is worth keeping fresh.
+    ///
+    /// The counterpart of [`Self::watch`] for a page rather than a sidebar. A
+    /// device is plugged in and unplugged while the session runs, and the only
+    /// moment that has to be noticed is while somebody is looking at the list of
+    /// them; the rest of the time this is three subprocesses saying what they
+    /// said two seconds ago.
+    pub fn watch_devices(&self, listing: bool) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.watching_devices == listing {
+            return;
+        }
+        state.watching_devices = listing;
+        // Only worth waking for the page arriving. The page leaving means the
+        // worker has one fewer thing to do next time it is up, which can wait
+        // until something else wakes it.
+        if listing {
+            state.dirty = true;
+            self.shared.signal.notify_one();
+        }
+    }
+
+    /// Send everything the machine plays to this device from now on, or take
+    /// everything it records from this one. Reports whether it was one of the
+    /// devices listed.
+    ///
+    /// The list is marked here rather than when the server confirms, on exactly
+    /// the terms a bar moves before the hardware has heard about it: the user
+    /// has just pressed a button and the row they pressed is the one that has to
+    /// look chosen. The epoch is what stops the listing already on its way back
+    /// from marking the old one again.
+    pub fn use_device(&self, direction: Direction, id: &str) -> bool {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let listed = state.devices.of_mut(direction);
+        if !listed.iter().any(|device| device.id == id) {
+            return false;
+        }
+        for device in listed.iter_mut() {
+            device.default = device.id == id;
+        }
+        // Replaced rather than queued, per direction: two presses on this page
+        // ask for the last device pressed, and a press about the output says
+        // nothing about the input.
+        match state
+            .device_asks
+            .iter_mut()
+            .find(|(asked, _)| *asked == direction)
+        {
+            Some(ask) => ask.1 = id.to_string(),
+            None => state.device_asks.push((direction, id.to_string())),
+        }
+        state.devices_epoch += 1;
+        state.dirty = true;
+        self.shared.signal.notify_one();
+        true
+    }
+
     /// Silence the session, or bring it back. Reports whether there was a
     /// volume control to do it to.
     pub fn toggle_mute(&self) -> bool {
@@ -469,6 +630,17 @@ impl Shared {
         }
     }
 
+    /// Hand a device listing to the Settings column, unless a press overtook
+    /// it. The same rule the mixer panel's listing is published under, and for
+    /// the same reason: the row the user has just chosen must not be unmarked
+    /// by an answer that was taken before they chose it.
+    fn publish_devices(&self, epoch: u64, devices: Devices) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.devices_epoch == epoch {
+            state.devices = devices;
+        }
+    }
+
     /// Take a control away, whatever is in flight for it.
     ///
     /// Unconditional, unlike a reading: the bar is not out of date, it belongs
@@ -495,12 +667,20 @@ struct Work {
     volume: Ask,
     brightness: Ask,
     streams: StreamWork,
+    devices: DeviceWork,
 }
 
 /// What the mixer rows are asking for this pass.
 struct StreamWork {
     asks: Vec<StreamAsk>,
     epoch: u64,
+}
+
+/// What the device page is asking for this pass, and whether it is up.
+struct DeviceWork {
+    asks: Vec<(Direction, String)>,
+    epoch: u64,
+    watching: bool,
 }
 
 /// What a control is being asked for this pass.
@@ -547,10 +727,37 @@ impl Worker {
             Some(audio) => tracing::info!(through = audio.name(), "volume"),
             None => tracing::info!("no mixer answered; the volume bar is off"),
         }
+        self.first_device_listing();
 
         while self.tick() {
             self.wait();
         }
+    }
+
+    /// Read the devices once, before the first pass.
+    ///
+    /// Unlike everything else here, which is read when something asks for it.
+    /// The Settings page that lists them is built from whatever is known at the
+    /// moment the column is assembled, and a page that came up saying the
+    /// machine has no sound devices and then filled itself in would have told
+    /// the user something untrue first. This costs three subprocesses at
+    /// startup, on the worker, behind the first frame — where discovery already
+    /// costs a handful.
+    fn first_device_listing(&mut self) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let epoch = {
+            let state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.devices_epoch
+        };
+        let devices = audio.devices();
+        tracing::info!(
+            outputs = devices.outputs.len(),
+            inputs = devices.inputs.len(),
+            "sound devices"
+        );
+        self.shared.publish_devices(epoch, devices);
     }
 
     /// One pass. `false` once the shell has gone.
@@ -570,8 +777,19 @@ impl Worker {
                     asks: std::mem::take(&mut state.stream_asks),
                     epoch: state.streams_epoch,
                 },
+                devices: DeviceWork {
+                    asks: std::mem::take(&mut state.device_asks),
+                    epoch: state.devices_epoch,
+                    watching: state.watching_devices,
+                },
             }
         };
+
+        // Before the display check below, which returns early: sound devices
+        // have nothing to do with which screen is in front of the user, and a
+        // chosen device dropped because a monitor was plugged in during the
+        // same pass would be a row left marked for a change nobody made.
+        self.drive_devices(&work);
 
         if work.display != self.on {
             self.shared.forget(Knob::Brightness);
@@ -594,6 +812,27 @@ impl Worker {
         self.drive_streams(&work);
         self.drive_brightness(&work);
         true
+    }
+
+    /// Pass on the device the user has chosen, and read the list back while the
+    /// page that shows it is up.
+    ///
+    /// The read is three programs — the two listings and the one answer saying
+    /// which of them is in use — so it happens on the same terms the mixer's
+    /// listing does: only while somebody is looking, and never on the pass that
+    /// carried a press out, where the answer would have been taken before the
+    /// press landed.
+    fn drive_devices(&mut self, work: &Work) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        for (direction, id) in &work.devices.asks {
+            audio.use_device(*direction, id);
+        }
+        if work.devices.watching && work.devices.asks.is_empty() {
+            self.shared
+                .publish_devices(work.devices.epoch, audio.devices());
+        }
     }
 
     /// Pass on what the mixer rows have been asked for, and read back what
@@ -685,8 +924,8 @@ impl Worker {
         state.dirty = true;
     }
 
-    /// Sleep until there is something to do — or, while the bars are on
-    /// screen, until it is time to read them again.
+    /// Sleep until there is something to do — or, while the bars or the device
+    /// page are on screen, until it is time to read them again.
     fn wait(&self) {
         let state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.done || state.dirty {
@@ -695,7 +934,7 @@ impl Worker {
         // Bound rather than dropped: the guard has to outlive the wait, or the
         // lock is released and immediately retaken and nothing has been
         // waited for.
-        if state.on_screen {
+        if state.on_screen || state.watching_devices {
             let _held = self.shared.signal.wait_timeout(state, REFRESH);
         } else {
             let _held = self.shared.signal.wait(state);
@@ -826,10 +1065,70 @@ impl Audio {
         match self {
             Audio::WirePlumber | Audio::Pulse => run("pactl", &["list", "sink-inputs"])
                 .as_deref()
-                .map(parse_sink_inputs)
+                .map(|listed| parse_sink_inputs(listed, own()))
                 .unwrap_or_default(),
             Audio::Alsa(_) => Vec::new(),
         }
+    }
+
+    /// Everything the machine can play through and record from, and which of
+    /// them it is using.
+    ///
+    /// Asked of `pactl` on both sound servers, as the mixer's listing is, and
+    /// for a sharper version of the same reason. `wpctl status` marks the
+    /// defaults with an asterisk in a tree drawn for a person to read; `wpctl
+    /// set-default` then takes the node number that tree is indexed by. Reading
+    /// a device list out of it would be parsing a drawing. PulseAudio's
+    /// interface names a device by a name that outlives the session, which is
+    /// also what makes the answer worth writing down anywhere.
+    ///
+    /// Three programs: the two listings, and `pactl info` for which of them is
+    /// in use. The alternative is `get-default-sink` and `get-default-source`,
+    /// which is one program more for the same two answers.
+    ///
+    /// The kernel mixer has none of this. ALSA has no notion of the device the
+    /// *machine* uses — that is a sound server's job, and the case with no
+    /// server is the case where every program picks its own.
+    fn devices(&self) -> Devices {
+        match self {
+            Audio::WirePlumber | Audio::Pulse => {
+                let info = run("pactl", &["info"]).unwrap_or_default();
+                let listing = |direction: Direction| {
+                    let out = run("pactl", &["list", direction.listing()]).unwrap_or_default();
+                    parse_devices(&out, direction, in_use(&info, direction).as_deref())
+                };
+                Devices {
+                    outputs: listing(Direction::Output),
+                    inputs: listing(Direction::Input),
+                    server: true,
+                }
+            }
+            Audio::Alsa(_) => Devices::none(),
+        }
+    }
+
+    /// Make one of them the machine's own, which is a statement about the whole
+    /// session rather than about this shell: every application that opens the
+    /// default device afterwards gets this one, and the server moves the ones
+    /// already playing.
+    ///
+    /// The server is also what remembers it. Nothing here writes it down — see
+    /// [`crate::settings`], where the same is said of the volume — because a
+    /// shell that kept its own copy would be a second opinion about it at every
+    /// login, and the one that lost would be whichever the user set last.
+    fn use_device(&self, direction: Direction, id: &str) {
+        if matches!(self, Audio::Alsa(_)) {
+            return;
+        }
+        if run("pactl", &[direction.command(), id]).is_none() {
+            tracing::warn!(
+                ?direction,
+                id,
+                "the sound server would not take that device"
+            );
+            return;
+        }
+        tracing::info!(?direction, id, "sound device");
     }
 
     fn set_stream(&self, input: u32, value: f32) {
@@ -854,16 +1153,225 @@ impl Audio {
     }
 }
 
-/// What `pactl list sink-inputs` says, as one row per application.
+impl Direction {
+    /// What `pactl list` calls them.
+    fn listing(self) -> &'static str {
+        match self {
+            Direction::Output => "sinks",
+            Direction::Input => "sources",
+        }
+    }
+
+    /// How each block of that listing begins. `Sink #` rather than `Sink`,
+    /// which is also what keeps `Sink Input #` — the mixer's own listing, and
+    /// the one thing in this file that starts with the same word — out of it.
+    fn head(self) -> &'static str {
+        match self {
+            Direction::Output => "Sink #",
+            Direction::Input => "Source #",
+        }
+    }
+
+    /// The line of `pactl info` that names the one in use.
+    fn in_use(self) -> &'static str {
+        match self {
+            Direction::Output => "Default Sink:",
+            Direction::Input => "Default Source:",
+        }
+    }
+
+    /// The subcommand that changes it.
+    fn command(self) -> &'static str {
+        match self {
+            Direction::Output => "set-default-sink",
+            Direction::Input => "set-default-source",
+        }
+    }
+}
+
+/// Which device `pactl info` says the machine is using.
+fn in_use(info: &str, direction: Direction) -> Option<String> {
+    let named = info
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(direction.in_use()))?
+        .trim();
+    (!named.is_empty()).then(|| named.to_string())
+}
+
+/// What `pactl list sinks` or `pactl list sources` says, as one row per device.
+///
+/// The same shape as [`parse_sink_inputs`]: a block per device, `Sink #N` and
+/// then indented lines, with the device's own description of itself in a
+/// `Properties:` section under that.
+///
+/// Two of those properties are preferred to the `Description:` line above them,
+/// which is the two of them run together — `Navi 48 HDMI/DP Audio Controller
+/// Digital Stereo (HDMI 2)`. Split, they are a row: the card on the line the
+/// eye lands on, and how it is being driven under it. A device that carries
+/// neither keeps the whole description, and one that has not even that is named
+/// by the server's own name for it, because a device that cannot be named is
+/// still a device that can be chosen.
+///
+/// Monitors are left out of the inputs. Every output has one — it is that
+/// output's own sound, offered back for recording — so listing them would
+/// double the input page with rows that are not microphones, and the row a user
+/// wants would be somewhere in the middle of them.
+fn parse_devices(out: &str, direction: Direction, in_use: Option<&str>) -> Vec<Device> {
+    let mut devices: Vec<Device> = Vec::new();
+    let mut block: Option<Listed> = None;
+
+    // Every block is finished by the next one starting, or by the end of the
+    // output — hence the trailing empty line, which no block can begin with.
+    for line in out.lines().chain(std::iter::once("")) {
+        if line.starts_with(direction.head()) {
+            if let Some(finished) = block.take() {
+                finished.add_to(&mut devices, in_use);
+            }
+            block = Some(Listed::default());
+            continue;
+        }
+        let Some(listed) = block.as_mut() else {
+            continue;
+        };
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Name:") {
+            listed.id = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("Description:") {
+            listed.described = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("Monitor of Sink:") {
+            // `n/a` is a source that is not one, which is every real input.
+            listed.monitors = (rest.trim() != "n/a").then(|| rest.trim().to_string());
+        } else if let Some(said) = property(trimmed, "device.description") {
+            listed.title = Some(said);
+        } else if let Some(said) = property(trimmed, "device.profile.description") {
+            listed.profile = Some(said);
+        }
+    }
+    if let Some(finished) = block.take() {
+        finished.add_to(&mut devices, in_use);
+    }
+    devices
+}
+
+/// One device, as the listing describes it, before it becomes a row.
+#[derive(Default)]
+struct Listed {
+    id: Option<String>,
+    /// The `Description:` line: the card and its profile run together.
+    described: Option<String>,
+    title: Option<String>,
+    profile: Option<String>,
+    /// The output this is the sound of, for a source that is one.
+    monitors: Option<String>,
+}
+
+impl Listed {
+    fn add_to(self, devices: &mut Vec<Device>, in_use: Option<&str>) {
+        if self.monitors.is_some() {
+            return;
+        }
+        let Some(id) = self.id else {
+            return;
+        };
+        let (title, profile) = match (self.title, self.profile) {
+            // The two halves the `Description:` line is made of, kept apart.
+            (Some(title), Some(profile)) => (title, Some(profile)),
+            // Anything less than both, and the line the server wrote is the
+            // better answer: half a description, under a title that is the
+            // other half of the same sentence, reads as a device the machine's
+            // own mixer would call something else.
+            (title, _) => (self.described.or(title).unwrap_or_else(|| id.clone()), None),
+        };
+        devices.push(Device {
+            default: in_use == Some(id.as_str()),
+            id,
+            title,
+            profile,
+        });
+    }
+}
+
+/// One sound, as the listing describes it, before it is folded into the row
+/// for the application making it.
+struct Block {
+    id: u32,
+    level: Level,
+    name: Option<String>,
+    binary: Option<String>,
+    /// The process behind it, where the server says. See [`Own`].
+    pid: Option<u32>,
+}
+
+/// How the shell's own sounds appear in that listing, so that they can be left
+/// out of it.
+///
+/// They are in the mixer already, as `System`: that row is the shell's own
+/// volume, kept in its settings and applied to every clip before it is played.
+/// A second row for the same sounds would be two controls over one thing — and
+/// the one the user reached for first would be the one that does not last, as
+/// the sound server forgets a stream the moment it closes and the shell opens
+/// a new one for the next click.
+struct Own {
+    pid: u32,
+    /// The program's own file name, taken from the running binary rather than
+    /// written down, so that it is still the shell's name after a rename.
+    program: Option<String>,
+}
+
+impl Own {
+    fn of_this_process() -> Self {
+        Own {
+            pid: std::process::id(),
+            program: std::env::current_exe().ok().and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            }),
+        }
+    }
+
+    /// Whether one sound in the listing is the shell's own.
+    ///
+    /// The process settles it where the server gives one, and PulseAudio's ALSA
+    /// plug-in does. PipeWire's own says nothing whatever about the process and
+    /// names the stream `PipeWire ALSA [lxb-desktop]`, so the program is read
+    /// out of the name as well — the brackets included, because they are what
+    /// separates a plug-in playing *for* this program from an application that
+    /// merely mentions it. A name that matches under some other process is
+    /// this program again, running twice, and its clicks are no more one of the
+    /// applications in the mixer than the first copy's are.
+    fn made(&self, block: &Block) -> bool {
+        if block.pid == Some(self.pid) {
+            return true;
+        }
+        let Some(program) = self.program.as_deref() else {
+            return false;
+        };
+        block.binary.as_deref() == Some(program)
+            || block
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains(&format!("[{program}]")))
+    }
+}
+
+/// This process, worked out once: `current_exe` is a walk of `/proc` and the
+/// listing is parsed every couple of seconds for as long as an overlay is up.
+fn own() -> &'static Own {
+    static OWN: OnceLock<Own> = OnceLock::new();
+    OWN.get_or_init(Own::of_this_process)
+}
+
+/// What `pactl list sink-inputs` says, as one row per application — leaving out
+/// `own`, whose sounds the mixer answers for under `System`.
 ///
 /// The format is a block per sound, `Sink Input #N` and then indented lines,
 /// with the application's own description of itself in a `Properties:` section
-/// under that. Only four of those lines matter, and a sound missing any of them
+/// under that. Only five of those lines matter, and a sound missing any of them
 /// is still listed: an application that names itself badly should turn up in
 /// the mixer under a poor name rather than not turn up at all.
-fn parse_sink_inputs(out: &str) -> Vec<Stream> {
+fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
     let mut streams: Vec<Stream> = Vec::new();
-    let mut input: Option<(u32, Level, Option<String>, Option<String>)> = None;
+    let mut input: Option<Block> = None;
 
     // Every block is finished by the next one starting, or by the end of the
     // output — hence the trailing empty line, which no block can begin with.
@@ -871,51 +1379,60 @@ fn parse_sink_inputs(out: &str) -> Vec<Stream> {
         let trimmed = line.trim();
         if let Some(head) = trimmed.strip_prefix("Sink Input #") {
             if let Some(finished) = input.take() {
-                add_stream(&mut streams, finished);
+                add_stream(&mut streams, finished, own);
             }
-            input = head.trim().parse().ok().map(|id| {
-                (
-                    id,
-                    Level {
-                        value: 1.0,
-                        muted: false,
-                    },
-                    None,
-                    None,
-                )
+            input = head.trim().parse().ok().map(|id| Block {
+                id,
+                level: Level {
+                    value: 1.0,
+                    muted: false,
+                },
+                name: None,
+                binary: None,
+                pid: None,
             });
             continue;
         }
-        let Some((_, level, name, binary)) = input.as_mut() else {
+        let Some(block) = input.as_mut() else {
             continue;
         };
         if let Some(rest) = trimmed.strip_prefix("Volume:") {
             if let Some(value) = first_percent(rest) {
-                level.value = value;
+                block.level.value = value;
             }
         } else if let Some(rest) = trimmed.strip_prefix("Mute:") {
-            level.muted = rest.trim() == "yes";
+            block.level.muted = rest.trim() == "yes";
         } else if let Some(said) = property(trimmed, "application.name") {
-            *name = Some(said);
+            block.name = Some(said);
         } else if let Some(said) = property(trimmed, "application.process.binary") {
-            *binary = Some(said);
+            block.binary = Some(said);
+        } else if let Some(said) = property(trimmed, "application.process.id") {
+            block.pid = said.parse().ok();
         }
     }
     if let Some(finished) = input.take() {
-        add_stream(&mut streams, finished);
+        add_stream(&mut streams, finished, own);
     }
     streams
 }
 
-/// Fold one sound into the row for the application that is making it.
+/// Fold one sound into the row for the application that is making it, or drop
+/// it if the application is this one.
 ///
 /// The row shows the loudest of them, because that is what the user is hearing
 /// and so what they are reaching for the mixer about, and it is silent only
 /// when every one of its sounds is.
-fn add_stream(
-    streams: &mut Vec<Stream>,
-    (id, level, name, binary): (u32, Level, Option<String>, Option<String>),
-) {
+fn add_stream(streams: &mut Vec<Stream>, block: Block, own: &Own) {
+    if own.made(&block) {
+        return;
+    }
+    let Block {
+        id,
+        level,
+        name,
+        binary,
+        ..
+    } = block;
     // The program first: two tabs of one browser name themselves after the
     // browser, but an application that gives every sound its own
     // `application.name` would otherwise be several rows.
@@ -1402,9 +1919,18 @@ Sink Input #905
 \tVolume: front-left: 32768 /  50% / -6.02 dB,   front-right: 32768 /  50%
 ";
 
+    /// A shell that made none of the sounds in a listing, for the tests that
+    /// are about everything except its own row.
+    fn elsewhere() -> Own {
+        Own {
+            pid: 4242,
+            program: Some("lxb-desktop".to_string()),
+        }
+    }
+
     #[test]
     fn one_applications_several_sounds_are_one_row() {
-        let streams = parse_sink_inputs(SINK_INPUTS);
+        let streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
         assert_eq!(streams.len(), 3, "{streams:#?}");
 
         let browser = &streams[0];
@@ -1435,7 +1961,7 @@ Sink Input #905
             "\tMute: no\n\tVolume: front-left: 19661",
             "\tMute: yes\n\tVolume: front-left: 19661",
         );
-        let streams = parse_sink_inputs(&both_muted);
+        let streams = parse_sink_inputs(&both_muted, &elsewhere());
         assert!(streams[0].level.muted, "{:?}", streams[0]);
         assert!(!streams[1].level.muted, "the game was never silenced");
     }
@@ -1444,17 +1970,76 @@ Sink Input #905
     /// silent does not move the highlight onto the row below it.
     #[test]
     fn a_rows_key_outlives_the_sounds_behind_it() {
-        let all = parse_sink_inputs(SINK_INPUTS);
+        let all = parse_sink_inputs(SINK_INPUTS, &elsewhere());
         let one_left: String = SINK_INPUTS
             .split("\nSink Input #212")
             .next()
             .unwrap()
             .to_string();
-        let fewer = parse_sink_inputs(&one_left);
+        let fewer = parse_sink_inputs(&one_left, &elsewhere());
         assert_eq!(fewer[0].key, all[0].key);
         assert_eq!(fewer[0].inputs, vec![196]);
         // And two applications are never one row.
         assert_ne!(all[0].key, all[1].key);
+    }
+
+    /// Both spellings of the shell's own stream, copied from what the two sound
+    /// servers were seen to say on 2026-08-10. The first is PulseAudio's ALSA
+    /// plug-in, which names the process; the second is PipeWire's, which names
+    /// nothing but the program, in brackets.
+    const OWN_INPUTS: &str = "\
+Sink Input #9498
+\tCorked: no
+\tMute: no
+\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100%
+\tProperties:
+\t\tapplication.name = \"ALSA plug-in [lxb-desktop]\"
+\t\tapplication.process.id = \"342662\"
+\t\tapplication.process.binary = \"lxb-desktop\"
+\t\tmedia.name = \"ALSA Playback\"
+
+Sink Input #9504
+\tCorked: no
+\tMute: no
+\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100%
+\tProperties:
+\t\tapplication.name = \"PipeWire ALSA [lxb-desktop]\"
+\t\tnode.name = \"alsa_playback.lxb-desktop\"
+";
+
+    /// The shell's own clicks are not one of the applications in the mixer.
+    /// They are `System`, the row the shell's own volume is under, and a second
+    /// row for them would be two controls over one thing.
+    #[test]
+    fn the_shells_own_sounds_are_never_a_row() {
+        let own = Own {
+            pid: 342662,
+            program: Some("lxb-desktop".to_string()),
+        };
+        let listing = format!("{SINK_INPUTS}\n{OWN_INPUTS}");
+        let streams = parse_sink_inputs(&listing, &own);
+        assert_eq!(streams.len(), 3, "{streams:#?}");
+        assert!(
+            !streams.iter().any(|stream| stream
+                .inputs
+                .iter()
+                .any(|id| { *id == 9498 || *id == 9504 })),
+            "{streams:#?}"
+        );
+
+        // Neither of them under a second copy of the shell, which is this
+        // program's sounds either way.
+        let twice = parse_sink_inputs(&listing, &elsewhere());
+        assert_eq!(twice.len(), 3, "{twice:#?}");
+
+        // And a server that reports no process at all leaves everyone else's
+        // sounds alone: the name has to be this program's, in the brackets the
+        // plug-in puts it in.
+        let anonymous = Own {
+            pid: 342662,
+            program: None,
+        };
+        assert_eq!(parse_sink_inputs(SINK_INPUTS, &anonymous).len(), 3);
     }
 
     #[test]
@@ -1479,6 +2064,210 @@ Sink Input #905
         assert_eq!(property("Corked: no", "application.name"), None);
     }
 
+    /// Two outputs, shaped exactly like `pactl list sinks` — the blocks, the
+    /// indentation, the properties section and the ports under it — with
+    /// invented hardware in them. Nothing here may depend on what is plugged
+    /// into the machine this is built on.
+    ///
+    /// The second is deliberately impoverished: a device that describes itself
+    /// with nothing but the `Description:` line, which is what a virtual output
+    /// created by a module looks like.
+    const SINKS: &str = "\
+Sink #41
+\tState: SUSPENDED
+\tName: alsa_output.pci-0000_00_00.0.test-stereo
+\tDescription: Test Audio Controller Digital Stereo (Test 1)
+\tDriver: PipeWire
+\tMute: no
+\tVolume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 /  40%
+\t        balance 0.00
+\tBase Volume: 65536 / 100% / 0.00 dB
+\tMonitor Source: alsa_output.pci-0000_00_00.0.test-stereo.monitor
+\tProperties:
+\t\tdevice.icon_name = \"audio-card-analog\"
+\t\tdevice.profile.description = \"Digital Stereo (Test 1)\"
+\t\tdevice.description = \"Test Audio Controller\"
+\t\tnode.name = \"alsa_output.pci-0000_00_00.0.test-stereo\"
+\tPorts:
+\t\ttest-output: Test port (type: HDMI, priority: 5900)
+\tActive Port: test-output
+
+Sink #42
+\tState: RUNNING
+\tName: test_virtual_output
+\tDescription: Test Virtual Output
+\tDriver: PipeWire
+\tMute: no
+\tProperties:
+\t\tnode.name = \"test_virtual_output\"
+";
+
+    /// Two monitors and one microphone, in the shape `pactl list sources` says
+    /// it — the monitors first, because that is where they turn up.
+    const SOURCES: &str = "\
+Source #41
+\tState: SUSPENDED
+\tName: alsa_output.pci-0000_00_00.0.test-stereo.monitor
+\tDescription: Monitor of Test Audio Controller Digital Stereo (Test 1)
+\tDriver: PipeWire
+\tMonitor of Sink: alsa_output.pci-0000_00_00.0.test-stereo
+\tProperties:
+\t\tdevice.profile.description = \"Digital Stereo (Test 1)\"
+\t\tdevice.description = \"Test Audio Controller\"
+
+Source #42
+\tState: RUNNING
+\tName: test_virtual_output.monitor
+\tDescription: Monitor of Test Virtual Output
+\tDriver: PipeWire
+\tMonitor of Sink: test_virtual_output
+\tProperties:
+\t\tnode.name = \"test_virtual_output.monitor\"
+
+Source #43
+\tState: SUSPENDED
+\tName: alsa_input.usb-Test_Microphone-00.mono-fallback
+\tDescription: Test Microphone Mono
+\tDriver: PipeWire
+\tMonitor of Sink: n/a
+\tProperties:
+\t\tdevice.profile.description = \"Mono\"
+\t\tdevice.description = \"Test Microphone\"
+";
+
+    /// What `pactl info` says, cut down to the two lines that are read out of
+    /// it and enough of its neighbours to prove they are found among them.
+    const INFO: &str = "\
+Server Name: PulseAudio (on PipeWire 1.6.8)
+Default Sample Specification: float32le 2ch 48000Hz
+Default Sink: test_virtual_output
+Default Source: alsa_input.usb-Test_Microphone-00.mono-fallback
+Cookie: 0000:0000
+";
+
+    /// A device is a row with the card on the line the eye lands on and the
+    /// profile under it — and the one the machine is using is marked.
+    #[test]
+    fn every_output_is_listed_and_the_one_in_use_is_marked() {
+        let devices = parse_devices(
+            SINKS,
+            Direction::Output,
+            in_use(INFO, Direction::Output).as_deref(),
+        );
+        assert_eq!(
+            devices,
+            vec![
+                Device {
+                    id: "alsa_output.pci-0000_00_00.0.test-stereo".to_string(),
+                    title: "Test Audio Controller".to_string(),
+                    profile: Some("Digital Stereo (Test 1)".to_string()),
+                    default: false,
+                },
+                Device {
+                    // Nothing but the `Description:` line to go on, so that is
+                    // the whole row rather than half of one.
+                    id: "test_virtual_output".to_string(),
+                    title: "Test Virtual Output".to_string(),
+                    profile: None,
+                    default: true,
+                },
+            ]
+        );
+    }
+
+    /// Every output has a monitor — its own sound, offered back for recording —
+    /// and none of them is an input device.
+    #[test]
+    fn the_inputs_are_the_ones_that_are_not_monitors() {
+        let devices = parse_devices(
+            SOURCES,
+            Direction::Input,
+            in_use(INFO, Direction::Input).as_deref(),
+        );
+        assert_eq!(devices.len(), 1, "{devices:#?}");
+        assert_eq!(devices[0].title, "Test Microphone");
+        assert_eq!(devices[0].profile.as_deref(), Some("Mono"));
+        assert!(devices[0].default);
+
+        // And the line that says an output *has* a monitor is not the line that
+        // says a source *is* one: every sink carries the first.
+        assert_eq!(parse_devices(SINKS, Direction::Output, None).len(), 2);
+    }
+
+    #[test]
+    fn the_device_in_use_is_read_from_the_server_and_only_under_its_own_name() {
+        assert_eq!(
+            in_use(INFO, Direction::Output),
+            Some("test_virtual_output".to_string())
+        );
+        assert_eq!(
+            in_use(INFO, Direction::Input),
+            Some("alsa_input.usb-Test_Microphone-00.mono-fallback".to_string())
+        );
+        // A server that names neither: no row is marked, which is not the same
+        // as no rows.
+        assert_eq!(in_use("Server Name: Test\n", Direction::Output), None);
+        assert!(parse_devices(SINKS, Direction::Output, None)
+            .iter()
+            .all(|device| !device.default));
+    }
+
+    /// The listing's own listing is not a device: `Sink Input #N` is one
+    /// application's sound, and the two are told apart by the `#`.
+    #[test]
+    fn the_applications_playing_are_not_output_devices() {
+        assert!(parse_devices(SINK_INPUTS, Direction::Output, None).is_empty());
+    }
+
+    /// The same rule the volume bar and the mixer rows are moved under: the row
+    /// the user pressed is marked before the sound server has heard about it,
+    /// because they are looking at it now.
+    #[test]
+    fn choosing_a_device_marks_it_before_the_server_hears_about_it() {
+        let quick = Quick::start();
+        {
+            let mut state = quick.shared.state.lock().unwrap();
+            state.devices = Devices {
+                outputs: parse_devices(
+                    SINKS,
+                    Direction::Output,
+                    in_use(INFO, Direction::Output).as_deref(),
+                ),
+                inputs: parse_devices(
+                    SOURCES,
+                    Direction::Input,
+                    in_use(INFO, Direction::Input).as_deref(),
+                ),
+                server: true,
+            };
+        }
+        let first = quick.devices().outputs[0].id.clone();
+
+        assert!(quick.use_device(Direction::Output, &first));
+        let moved = quick.devices();
+        assert!(moved.outputs[0].default, "{moved:#?}");
+        // One default, not two: choosing is moving the mark rather than adding
+        // one.
+        assert!(!moved.outputs[1].default, "{moved:#?}");
+        // And the other direction was not touched by a press about this one.
+        assert!(moved.inputs[0].default);
+
+        let state = quick.shared.state.lock().unwrap();
+        assert_eq!(state.device_asks, vec![(Direction::Output, first.clone())]);
+
+        // A device that is not in the listing is not chosen, and asks nothing
+        // of the server: the row was drawn from a listing that has since
+        // changed under it.
+        drop(state);
+        assert!(!quick.use_device(Direction::Output, "test_device_that_left"));
+        assert!(
+            !quick.use_device(Direction::Input, &first),
+            "wrong way round"
+        );
+        let state = quick.shared.state.lock().unwrap();
+        assert_eq!(state.device_asks.len(), 1);
+    }
+
     /// The whole reason a mixer row's position lives on this side of the
     /// worker, the same as the session bar's: a press has to land on screen
     /// before anything has been asked of the server.
@@ -1487,7 +2276,7 @@ Sink Input #905
         let quick = Quick::start();
         {
             let mut state = quick.shared.state.lock().unwrap();
-            state.streams = parse_sink_inputs(SINK_INPUTS);
+            state.streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
         }
         let key = quick.streams()[0].key;
 
@@ -1512,7 +2301,7 @@ Sink Input #905
         let quick = Quick::start();
         {
             let mut state = quick.shared.state.lock().unwrap();
-            state.streams = parse_sink_inputs(SINK_INPUTS);
+            state.streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
         }
         let [browser, game] = [quick.streams()[0].key, quick.streams()[1].key];
 
@@ -1537,7 +2326,7 @@ Sink Input #905
         let quick = Quick::start();
         {
             let mut state = quick.shared.state.lock().unwrap();
-            state.streams = parse_sink_inputs(SINK_INPUTS);
+            state.streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
             state.on_screen = true;
         }
         quick.watch(None, false);

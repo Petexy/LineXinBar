@@ -5,7 +5,7 @@ Summary:        Multi-display Wayland desktop with an XMB-style shell
 
 # LineXinBar/Bibata, embedded Roboto, and the locked statically linked Rust
 # dependency graph for Linux.
-License:        GPL-3.0-only AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC AND Unicode-3.0 AND Zlib
+License:        GPL-3.0-only AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MPL-2.0 AND Unicode-3.0 AND Zlib
 URL:            https://github.com/petexy/project-linexinbar
 Source0:        %{name}-%{version}.tar.gz
 
@@ -21,6 +21,7 @@ BuildRequires:  cargo >= 1.89
 BuildRequires:  rust >= 1.89
 BuildRequires:  gcc
 BuildRequires:  pkgconfig
+BuildRequires:  pkgconfig(alsa)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(libinput)
@@ -36,6 +37,8 @@ BuildRequires:  pkgconfig(x11)
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xcursor)
 BuildRequires:  pkgconfig(xi)
+BuildRequires:  pkgconfig(libpipewire-0.3)
+BuildRequires:  clang
 
 # Wayland, EGL/Vulkan and the nested X libraries are loaded dynamically, so
 # RPM's ELF dependency generator cannot discover them.
@@ -53,6 +56,8 @@ Requires:       libXcursor
 Requires:       libXi
 Requires:       libxkbcommon-x11
 Requires:       systemd
+Requires:       pipewire
+Recommends:     xdg-desktop-portal
 Recommends:     seatd
 Recommends:     xorg-x11-server-Xwayland
 Recommends:     mesa-vulkan-drivers
@@ -98,8 +103,12 @@ export CARGO_TARGET_DIR=target
 %doc README.md docs/configuration.md examples/config.toml
 %{_bindir}/lxb
 %{_bindir}/lxb-desktop
+%{_bindir}/lxb-portal
 %{_bindir}/lxb-session
 %{_datadir}/wayland-sessions/lxb.desktop
+%{_datadir}/xdg-desktop-portal/portals/lxb.portal
+%{_datadir}/xdg-desktop-portal/linexinbar-portals.conf
+%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
 %{_datadir}/icons/Bibata-Modern-Classic/
 
 %changelog

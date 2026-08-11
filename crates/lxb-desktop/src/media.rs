@@ -33,6 +33,22 @@
 //! directories a home holds; a re-walk costs one `readdir` per folder on a
 //! cache that is by then warm, and a song copied in during a session shows up
 //! within a few minutes. Files that have gone are taken back off the same way.
+//!
+//! ## What does not wait for the next pass
+//!
+//! Five minutes is the right interval for a file that appeared while nobody
+//! was looking, and the wrong one for the two cases where somebody *is*:
+//!
+//! - **A file this session made.** The shell knows the exact path of a
+//!   screenshot the moment the compositor answers for it, so that one file is
+//!   handed straight to the worker — see [`Library::found`]. It costs one
+//!   `stat` and it is the difference between a picture appearing in Images as
+//!   it is taken and appearing some minutes later.
+//! - **A shelf somebody has just stepped into.** Opening Music, Video or
+//!   Images is a person asking what they have, so it brings the next pass
+//!   forward — see [`Library::look_again`]. Not a scan of its own: it is the
+//!   same walk, started early, so a session where somebody bounces in and out
+//!   of a column cannot cost more than one pass per [`SOON`].
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -51,6 +67,20 @@ const DEPTH: usize = 12;
 
 /// How long after finishing a pass before the next one starts.
 const AGAIN: Duration = Duration::from_secs(300);
+
+/// The soonest after a pass that stepping into a shelf may start another.
+///
+/// The floor under [`Library::look_again`], and the whole of what stops it
+/// being expensive: without one, walking in and out of Images ten times would
+/// be ten walks of the home directory. With it, the tenth costs nothing —
+/// they are all answered by the one pass that was already going to happen.
+///
+/// Twenty seconds because that is about how long it takes to do the thing the
+/// user stepped out to do — take a screenshot, save a recording — and come
+/// back. Anything they made faster than that is already on the shelf: the
+/// shell hands over its own files as it makes them rather than waiting for a
+/// walk to find them.
+const SOON: Duration = Duration::from_secs(20);
 
 /// How often what has been found so far is hung on the bar during a pass.
 ///
@@ -88,7 +118,7 @@ impl Kind {
     }
 
     /// What a list of these is called, in a sentence.
-    fn plural(self) -> &'static str {
+    pub fn plural(self) -> &'static str {
         match self {
             Kind::Audio => "audio files",
             Kind::Video => "video files",
@@ -480,6 +510,9 @@ struct Shelves {
     /// What order each shelf is *listed* in, which is not the order it is
     /// *kept* in. See [`Shelves::listing`].
     sorts: [Sort; 3],
+    /// What each shelf is being searched for, empty for one nobody has
+    /// searched. As the user typed it; the folding happens once per listing.
+    queries: [String; 3],
     /// Whether a pass has finished, so an empty shelf can say whether it is
     /// still looking or has looked.
     settled: bool,
@@ -492,6 +525,7 @@ impl Shelves {
             video: Vec::new(),
             images: Vec::new(),
             sorts,
+            queries: Default::default(),
             settled: false,
         }
     }
@@ -544,14 +578,31 @@ impl Shelves {
         }
     }
 
-    /// One shelf in the order its rows are drawn in.
+    /// One shelf in the order its rows are drawn in, and holding only what the
+    /// user is searching for.
     ///
     /// Shared handles rather than files: copying a collection's worth of
     /// titles and paths to sort them would be the copy [`Shelved`] exists to
     /// avoid. The one order the shelf is already in costs nothing beyond the
     /// list of handles itself.
+    ///
+    /// The search is applied before the order rather than after it, which is
+    /// the whole reason it is worth doing here at all: a shelf of half a
+    /// million photographs narrowed to nine is nine files to sort.
     fn listing(&self, kind: Kind) -> Vec<Shelved> {
-        let mut listing: Vec<Shelved> = self.shelf(kind).to_vec();
+        let mut listing: Vec<Shelved> = match self.searched(kind) {
+            // Folded once per listing rather than once per file. The titles on
+            // the other side of the comparison are folded already — see
+            // [`File::order`] — so the whole of a search over a collection is
+            // one allocation and a substring search per file.
+            Some(needle) => self
+                .shelf(kind)
+                .iter()
+                .filter(|file| file.order.contains(&needle))
+                .cloned()
+                .collect(),
+            None => self.shelf(kind).to_vec(),
+        };
         let sort = self.sort(kind);
         if sort != Sort::NameAscending {
             listing.sort_by(|a, b| sort.compare(a, b));
@@ -559,8 +610,32 @@ impl Shelves {
         listing
     }
 
+    /// What a shelf is being searched for, folded for comparison. `None` for a
+    /// shelf nobody has searched, which is not the same as one searched for
+    /// nothing: an empty search is every file, and this says so by never
+    /// asking the question.
+    fn searched(&self, kind: Kind) -> Option<String> {
+        let query = self.query(kind);
+        (!query.is_empty()).then(|| query.to_lowercase())
+    }
+
     fn sort(&self, kind: Kind) -> Sort {
         self.sorts[shelf_index(kind)]
+    }
+
+    fn query(&self, kind: Kind) -> &str {
+        &self.queries[shelf_index(kind)]
+    }
+
+    /// Search a shelf for something else. Returns whether that is a change —
+    /// typing the query a shelf already holds is not news, and there is
+    /// nothing to build for it.
+    fn set_query(&mut self, kind: Kind, query: String) -> bool {
+        if self.query(kind) == query {
+            return false;
+        }
+        self.queries[shelf_index(kind)] = query;
+        true
     }
 
     /// List a shelf in a different order. Returns whether that is a change —
@@ -595,10 +670,22 @@ impl Shelves {
     /// One shelf, ready to hang on the bar.
     fn made(&self, kind: Kind) -> Made {
         let shelf = self.shelf(kind);
+        let found = shelf.len();
+        let query = self.query(kind);
+        let listing = self.listing(kind);
+        let matched = listing.len();
         Made {
             kind,
-            rows: crate::apps::media_rows(self.listing(kind)),
-            note: note(kind, shelf.len(), self.settled),
+            rows: crate::apps::media_rows(listing, kind, query, found),
+            // What the row the shelf hangs under says. A searched shelf says
+            // so from *outside* the column as well: a list that has been cut
+            // to nine of half a million photographs must not look like a
+            // machine that has only nine.
+            note: if query.is_empty() {
+                note(kind, found, self.settled)
+            } else {
+                search_note(kind, matched, found)
+            },
             orders: Orders {
                 created: shelf.iter().any(|file| file.created.is_some()),
                 modified: shelf.iter().any(|file| file.modified.is_some()),
@@ -657,8 +744,29 @@ pub struct Orders {
 enum Ask {
     /// List this shelf in a different order.
     Sort(Kind, Sort),
+    /// List only the files on this shelf whose names hold this.
+    ///
+    /// One of these per keystroke while somebody is typing into the field at
+    /// the head of a column, which is what the whole of this module's
+    /// arrangement is for: narrowing a shelf is work in proportion to the
+    /// collection, and it happens here rather than between two frames.
+    Search(Kind, String),
     /// This file is not on the disk any more — the user has just deleted it.
     Forget(PathBuf),
+    /// This file is on the disk now — the session has just written it.
+    ///
+    /// The exact opposite of [`Ask::Forget`], and there for the same reason:
+    /// the walk would find it within [`AGAIN`], and a picture the user watched
+    /// themselves take must not be missing from their own shelf for five
+    /// minutes.
+    Found(PathBuf),
+    /// Somebody has opened a shelf, so bring the next pass forward.
+    ///
+    /// Carries no kind. One walk answers for all three shelves — it is the
+    /// reading of the directories that costs, and the extension of what is in
+    /// them decides where a file lands — so "look again" is one question
+    /// however it was asked.
+    LookAgain,
     /// Rows the bar has finished with.
     ///
     /// Sent back to be dropped here rather than on the frame that replaced
@@ -677,6 +785,14 @@ pub struct Library {
     asks: Option<mpsc::Sender<Ask>>,
     made: Option<Receiver<Made>>,
     sorts: [Sort; 3],
+    /// What each shelf was last asked to be searched for.
+    ///
+    /// The shell's own record of what it asked, not a report of what has been
+    /// done — the same distinction [`Self::set_sort`] draws, and it matters
+    /// more here: the rows for one keystroke are still being built when the
+    /// next one is typed, so the query on the bar is always a little ahead of
+    /// the query the rows were made from.
+    queries: [String; 3],
     orders: [Orders; 3],
 }
 
@@ -708,11 +824,13 @@ impl Library {
 
         let (send_made, made) = mpsc::channel();
         let (asks, take_asks) = mpsc::channel();
-        std::thread::spawn(move || work(&home, sorts, &send_made, &take_asks));
+        let pace = Pace::default();
+        std::thread::spawn(move || work(&home, sorts, pace, &send_made, &take_asks));
         Library {
             asks: Some(asks),
             made: Some(made),
             sorts,
+            queries: Default::default(),
             orders: [Orders::default(); 3],
         }
     }
@@ -723,6 +841,7 @@ impl Library {
             asks: None,
             made: None,
             sorts: [Sort::default(); 3],
+            queries: Default::default(),
             orders: [Orders::default(); 3],
         }
     }
@@ -791,6 +910,33 @@ impl Library {
         true
     }
 
+    /// What a shelf is being searched for.
+    pub fn search(&self, kind: Kind) -> &str {
+        &self.queries[shelf_index(kind)]
+    }
+
+    /// Show only the files on a shelf whose names hold `query`, or all of them
+    /// again for an empty one. Returns whether that is a change.
+    ///
+    /// Called on every keystroke, which is why it answers that question rather
+    /// than the caller: a search field is a place where the same query is
+    /// arrived at twice — a letter typed and taken back — and each of those is
+    /// a shelf-sized rebuild that nobody would see the result of.
+    ///
+    /// The rows come back when the worker has narrowed the shelf and built
+    /// them, which for a large one is a moment later. The field itself does not
+    /// wait: it is the shell's own record of what has been typed, and a
+    /// keyboard whose letters appeared a quarter of a second after they were
+    /// pressed would be a keyboard nobody could type on.
+    pub fn set_search(&mut self, kind: Kind, query: &str) -> bool {
+        if self.search(kind) == query {
+            return false;
+        }
+        self.queries[shelf_index(kind)] = query.to_string();
+        self.ask(Ask::Search(kind, query.to_string()));
+        true
+    }
+
     /// Take a file off the shelves, because the user has just deleted it.
     ///
     /// The walk would find that out by itself within [`AGAIN`], which is far
@@ -800,6 +946,31 @@ impl Library {
     /// was built from honest.
     pub fn forget(&mut self, path: &Path) {
         self.ask(Ask::Forget(path.to_path_buf()));
+    }
+
+    /// Put a file on the shelves now, because the session has just written it.
+    ///
+    /// The screenshot the user has this second taken, and anything else this
+    /// shell comes to make: it knows the path, so the shelf can know it too
+    /// without anybody walking a home directory to rediscover a file that was
+    /// named in the request that created it.
+    ///
+    /// Nothing is checked here. What the path *is* — a picture, a film, or
+    /// something with no shelf at all — is the worker's question, answered the
+    /// same way it answers it for the walk, so the two cannot disagree about a
+    /// file they both found.
+    pub fn found(&mut self, path: &Path) {
+        self.ask(Ask::Found(path.to_path_buf()));
+    }
+
+    /// Somebody has stepped into a shelf: look at the disk again soon.
+    ///
+    /// Cheap to call and cheap to call often. It does not start a scan — it
+    /// moves the next pass forward to at most [`SOON`] after the last one
+    /// finished — so a column stepped into ten times in a minute is still one
+    /// walk of the home directory.
+    pub fn look_again(&mut self) {
+        self.ask(Ask::LookAgain);
     }
 
     /// Hand a list of rows back to be let go of on the worker.
@@ -854,6 +1025,31 @@ pub fn note(kind: Kind, found: usize, settled: bool) -> String {
     }
 }
 
+/// What a shelf narrowed to a search has to say for itself.
+///
+/// Both numbers, always, because the pair is the whole of what the user needs
+/// to know: how much they are being shown, and how much of their own
+/// collection is standing behind it. A row saying only "9 photographs" over a
+/// column of nine would be a shell claiming the other quarter million are not
+/// there.
+///
+/// Whether the walk has settled is deliberately not asked. It is a question
+/// about the *disk* — "there is nothing here" against "I have not looked yet" —
+/// and a search is a question about the shelf as it stands, which is answered
+/// the same way whether or not the walk has more to find. What is still coming
+/// arrives in this column exactly as it arrives in an unsearched one.
+pub fn search_note(kind: Kind, matched: usize, found: usize) -> String {
+    let of_all = format!("of {found} {}", kind.plural());
+    match matched {
+        0 => format!("No {} match", kind.plural()),
+        // The verb has to agree with the count, and the count is the user's
+        // rather than ours: a collection with exactly one Beatles track in it
+        // is a common enough answer to be worth writing the sentence for.
+        1 => format!("1 {of_all} matches"),
+        _ => format!("{matched} {of_all} match"),
+    }
+}
+
 /// Merge a batch of newly found files into a shelf that is already in order.
 ///
 /// A merge rather than a push and a sort: the shelf is sorted already and the
@@ -902,26 +1098,34 @@ type Reported = std::collections::HashMap<PathBuf, u64>;
 /// are the same job on the same files — what is found is merged in, ordered
 /// and built into rows, and none of it is wanted anywhere else — and a second
 /// thread would buy nothing but a channel to copy every file through.
-fn work(home: &Path, sorts: [Sort; 3], made: &mpsc::Sender<Made>, asks: &Receiver<Ask>) {
+fn work(
+    home: &Path,
+    sorts: [Sort; 3],
+    pace: Pace,
+    made: &mpsc::Sender<Made>,
+    asks: &Receiver<Ask>,
+) {
     let mut worker = Worker {
         shelves: Shelves::new(sorts),
         pending: Vec::new(),
         dirty: [false; 3],
         published: Instant::now(),
         built: Duration::ZERO,
+        reported: Reported::new(),
+        pass: 0,
         made,
         asks,
     };
-    let mut reported: Reported = Reported::new();
 
     for pass in 0.. {
+        worker.pass = pass;
         let started = Instant::now();
-        if sweep(home, 0, &mut worker, &mut reported, pass).is_err() {
+        if sweep(home, 0, &mut worker).is_err() {
             return;
         }
 
         let mut gone: Vec<PathBuf> = Vec::new();
-        reported.retain(|path, seen| {
+        worker.reported.retain(|path, seen| {
             if *seen == pass {
                 return true;
             }
@@ -934,7 +1138,7 @@ fn work(home: &Path, sorts: [Sort; 3], made: &mpsc::Sender<Made>, asks: &Receive
             }
         }
         tracing::debug!(
-            files = reported.len(),
+            files = worker.reported.len(),
             gone = gone.len(),
             took = started.elapsed().as_secs_f32(),
             "walked the home folder for music, video and pictures"
@@ -951,8 +1155,29 @@ fn work(home: &Path, sorts: [Sort; 3], made: &mpsc::Sender<Made>, asks: &Receive
         if worker.publish().is_err() {
             return;
         }
-        if worker.rest(AGAIN).is_err() {
+        if worker.rest(pace).is_err() {
             return;
+        }
+    }
+}
+
+/// How often the walk comes round, and how soon somebody stepping into a shelf
+/// may bring it forward.
+///
+/// A pair rather than two constants read where they are used, because a test
+/// that had to wait out a real [`AGAIN`] to prove anything about the second
+/// number would be a test nobody runs.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    again: Duration,
+    soon: Duration,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Pace {
+            again: AGAIN,
+            soon: SOON,
         }
     }
 }
@@ -995,14 +1220,24 @@ struct Worker<'a> {
     published: Instant,
     /// What the last delivery cost to build — see [`Worker::wait`].
     built: Duration,
+    /// Every file the shelves know about, and when each was last seen.
+    ///
+    /// Held by the worker rather than by the walk because the walk is no
+    /// longer the only thing that finds a file: a screenshot handed over by
+    /// [`Ask::Found`] has to be written down here too, or the next pass would
+    /// meet a file it has never heard of and shelve a second row for it.
+    reported: Reported,
+    /// Which pass is running, or has most recently run.
+    pass: u64,
     made: &'a mpsc::Sender<Made>,
     asks: &'a Receiver<Ask>,
 }
 
 impl Worker<'_> {
-    /// A file the walk has just turned up. Hands over what is ready, if it is
-    /// time to.
-    fn found(&mut self, file: File) -> Result<(), Gone> {
+    /// A file the walk has just turned up, and had not seen before. Hands over
+    /// what is ready, if it is time to.
+    fn found(&mut self, path: PathBuf, file: File) -> Result<(), Gone> {
+        self.reported.insert(path, self.pass);
         self.pending.push(Arc::new(file));
         if self.published.elapsed() < wait_after(self.built) {
             return Ok(());
@@ -1047,24 +1282,59 @@ impl Worker<'_> {
                     self.dirty[shelf_index(kind)] = true;
                 }
             }
+            Ask::Search(kind, query) => {
+                if self.shelves.set_query(kind, query) {
+                    self.dirty[shelf_index(kind)] = true;
+                }
+            }
             Ask::Forget(path) => {
+                self.reported.remove(&path);
                 if let Some(kind) = self.shelves.forget(&path) {
                     self.dirty[shelf_index(kind)] = true;
                 }
             }
+            Ask::Found(path) => {
+                // Already on a shelf: the walk reached it first, or the same
+                // file has been handed over twice. Either way there is one
+                // file and it gets one row.
+                if self.reported.contains_key(&path) {
+                    return;
+                }
+                let Some(file) = File::at(&path) else {
+                    // Not a kind the bar lists, or not a file at all. Said out
+                    // loud at debug because the caller believed it had just
+                    // written one.
+                    tracing::debug!(path = %path.display(), "nothing to shelve here");
+                    return;
+                };
+                let kind = file.kind;
+                self.reported.insert(path, self.pass);
+                self.pending.push(Arc::new(file));
+                self.dirty[shelf_index(kind)] = true;
+            }
+            // Answered by [`Worker::rest`], which is where waiting happens and
+            // so the only place that can stop doing it.
+            Ask::LookAgain => {}
             // Dropped here, on the way out of this function, which is the
             // whole point of it having been sent.
             Ask::Discard(rows) => drop(rows),
         }
     }
 
-    /// Wait `how_long` for the next pass, answering the shell in the meantime.
+    /// Wait for the next pass, answering the shell in the meantime.
     ///
     /// Not a sleep. Between passes is where this thread spends nearly all of
     /// its life, and a shelf asked for in a different order five seconds after
     /// the walk finished must not wait out the rest of five minutes for it.
-    fn rest(&mut self, how_long: Duration) -> Result<(), Gone> {
-        let until = Instant::now() + how_long;
+    ///
+    /// Nor a fixed wait. Somebody stepping into a shelf cuts it short — to
+    /// `pace.soon` after the last pass ended, which is now for a rest that has
+    /// been going longer than that. The floor is the whole of the rate limit:
+    /// the wait can only ever be shortened to it, so any number of people
+    /// asking any number of times is still one walk.
+    fn rest(&mut self, pace: Pace) -> Result<(), Gone> {
+        let began = Instant::now();
+        let mut until = began + pace.again;
         loop {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1072,6 +1342,9 @@ impl Worker<'_> {
             }
             match self.asks.recv_timeout(left) {
                 Ok(ask) => {
+                    if matches!(ask, Ask::LookAgain) {
+                        until = until.min(began + pace.soon);
+                    }
                     self.take(ask);
                     if self.dirty.iter().any(|dirty| *dirty) {
                         self.publish()?;
@@ -1095,16 +1368,11 @@ struct Gone;
 
 /// One directory, and everything under it. `Err` once nobody is listening,
 /// which is the only thing that stops a pass early.
-fn sweep(
-    dir: &Path,
-    depth: usize,
-    worker: &mut Worker,
-    reported: &mut Reported,
-    pass: u64,
-) -> Result<(), Gone> {
+fn sweep(dir: &Path, depth: usize, worker: &mut Worker) -> Result<(), Gone> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(());
     };
+    let pass = worker.pass;
 
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -1126,7 +1394,7 @@ fn sweep(
             // who has linked a music drive into their home is served by the
             // re-walk finding nothing there rather than by the shell hanging.
             if depth < DEPTH {
-                sweep(&path, depth + 1, worker, reported, pass)?;
+                sweep(&path, depth + 1, worker)?;
             }
             continue;
         }
@@ -1147,15 +1415,14 @@ fn sweep(
         // place during a session therefore keeps the dates it was found with
         // until the shell is started again — which is the cost of not holding
         // an open watch on every directory under `$HOME`.
-        if let Some(seen) = reported.get_mut(&path) {
+        if let Some(seen) = worker.reported.get_mut(&path) {
             *seen = pass;
             continue;
         }
         let Some(file) = File::at(&path) else {
             continue;
         };
-        reported.insert(path, pass);
-        worker.found(file)?;
+        worker.found(path, file)?;
     }
     Ok(())
 }
@@ -1778,6 +2045,96 @@ mod tests {
         }
     }
 
+    /// A search keeps the files whose *names* hold what was typed, whatever
+    /// case either was written in.
+    #[test]
+    fn a_shelf_lists_only_the_files_whose_names_hold_the_query() {
+        let mut shelves = Shelves::holding(vec![
+            shelved("/home/x/Music/Radiohead - Creep.mp3"),
+            shelved("/home/x/Music/Old RADIO Show.mp3"),
+            shelved("/home/x/Music/Let It Be.mp3"),
+            // In a folder that matches, with a name that does not. The folder
+            // is not searched: what the user typed is what they are looking
+            // for, and a whole album answering to the name of the shelf it
+            // sits in would bury the track they meant.
+            shelved("/home/x/Music/Radio Sessions/Karma Police.mp3"),
+        ]);
+
+        assert!(shelves.set_query(Kind::Audio, "radio".to_string()));
+        assert_eq!(
+            listed(&shelves, Kind::Audio),
+            ["Old RADIO Show", "Radiohead - Creep"]
+        );
+
+        // Folded on both sides, so the shift key never decides what is found.
+        shelves.set_query(Kind::Audio, "RaDiO".to_string());
+        assert_eq!(
+            listed(&shelves, Kind::Audio),
+            ["Old RADIO Show", "Radiohead - Creep"]
+        );
+
+        // Anywhere in the name, not only at the start of it.
+        shelves.set_query(Kind::Audio, "head".to_string());
+        assert_eq!(listed(&shelves, Kind::Audio), ["Radiohead - Creep"]);
+
+        // A search nothing answers is an empty shelf rather than a whole one.
+        shelves.set_query(Kind::Audio, "nothing here".to_string());
+        assert!(listed(&shelves, Kind::Audio).is_empty());
+
+        // And an empty query is every file again, which is not the same
+        // question as "match the empty string" happening to be true of all of
+        // them: the shelf is never asked at all.
+        assert!(shelves.set_query(Kind::Audio, String::new()));
+        assert_eq!(
+            listed(&shelves, Kind::Audio),
+            [
+                "Karma Police",
+                "Let It Be",
+                "Old RADIO Show",
+                "Radiohead - Creep"
+            ]
+        );
+
+        // Typing the query a shelf already holds is not news.
+        assert!(!shelves.set_query(Kind::Audio, String::new()));
+    }
+
+    /// The search happens before the order does, and it happens to one shelf.
+    #[test]
+    fn a_search_narrows_one_shelf_and_the_order_is_put_on_what_is_left() {
+        let mut shelves = Shelves::holding(vec![
+            shelved("/home/x/a-song.mp3"),
+            shelved("/home/x/b-song.mp3"),
+            shelved("/home/x/c-tune.mp3"),
+            shelved("/home/x/a-song.jpg"),
+            shelved("/home/x/holiday-song.mkv"),
+        ]);
+        shelves.set_query(Kind::Audio, "song".to_string());
+        shelves.set_sort(Kind::Audio, Sort::NameDescending);
+        assert_eq!(listed(&shelves, Kind::Audio), ["b-song", "a-song"]);
+
+        // Music was searched, so music is what was narrowed. A picture and a
+        // film with the same word in their names are on shelves nobody asked
+        // about, and they are all still there.
+        assert_eq!(listed(&shelves, Kind::Image), ["a-song"]);
+        assert_eq!(listed(&shelves, Kind::Video), ["holiday-song"]);
+    }
+
+    /// What the row over a searched column says, including the sentence that
+    /// has to agree with a count of one.
+    #[test]
+    fn a_searched_shelf_says_how_much_of_itself_it_is_showing() {
+        assert_eq!(
+            search_note(Kind::Audio, 12, 3400),
+            "12 of 3400 audio files match"
+        );
+        assert_eq!(
+            search_note(Kind::Video, 1, 20),
+            "1 of 20 video files matches"
+        );
+        assert_eq!(search_note(Kind::Image, 0, 250_000), "No images match");
+    }
+
     /// A file the disk knows no date for goes to the end of a list ordered by
     /// dates — at *both* ends of it, which is the thing `Option`'s own ordering
     /// gets wrong.
@@ -1905,7 +2262,15 @@ mod tests {
         let (asks, take_asks) = mpsc::channel();
         let walking = {
             let home = home.clone();
-            std::thread::spawn(move || work(&home, [Sort::default(); 3], &send_made, &take_asks))
+            std::thread::spawn(move || {
+                work(
+                    &home,
+                    [Sort::default(); 3],
+                    Pace::default(),
+                    &send_made,
+                    &take_asks,
+                )
+            })
         };
 
         // What the next delivery of one kind says. The three shelves are filled
@@ -1930,9 +2295,11 @@ mod tests {
             (titles, made.note)
         };
 
-        // Everywhere under the scratch home, alphabetically, whatever folder.
+        // Everywhere under the scratch home, alphabetically, whatever folder —
+        // under the field that searches them, which the worker builds along
+        // with the rows because it is the only one that can count them.
         let (titles, note) = shelf(Kind::Image);
-        assert_eq!(titles, ["alpha", "beta", "gamma"]);
+        assert_eq!(titles, ["Search", "alpha", "beta", "gamma"]);
         assert_eq!(note, "3 images in your home folder");
 
         // A different order is answered at once rather than at the next pass of
@@ -1940,18 +2307,36 @@ mod tests {
         asks.send(Ask::Sort(Kind::Image, Sort::NameDescending))
             .expect("the worker is listening");
         let (titles, _) = shelf(Kind::Image);
-        assert_eq!(titles, ["gamma", "beta", "alpha"]);
+        assert_eq!(titles, ["Search", "gamma", "beta", "alpha"]);
+
+        // A search is answered on the same terms, and the row that says what
+        // it did is built with it: the query stands in for the word "Search",
+        // and the row under it offers the whole shelf back.
+        asks.send(Ask::Search(Kind::Image, "ph".to_string()))
+            .expect("the worker is listening");
+        let (titles, note) = shelf(Kind::Image);
+        assert_eq!(titles, ["ph", "Clear search", "alpha"]);
+        assert_eq!(note, "1 of 3 images matches");
+
+        // Taking it back is the same ask with nothing in it, and the row that
+        // offered it goes with it.
+        asks.send(Ask::Search(Kind::Image, String::new()))
+            .expect("the worker is listening");
+        let (titles, note) = shelf(Kind::Image);
+        assert_eq!(titles, ["Search", "gamma", "beta", "alpha"]);
+        assert_eq!(note, "3 images in your home folder");
 
         // And so is a file the user has just deleted.
         asks.send(Ask::Forget(home.join("beta.png")))
             .expect("the worker is listening");
         let (titles, note) = shelf(Kind::Image);
-        assert_eq!(titles, ["gamma", "alpha"]);
+        assert_eq!(titles, ["Search", "gamma", "alpha"]);
         assert_eq!(note, "2 images in your home folder");
 
-        // The music was on its own shelf all along.
+        // The music was on its own shelf all along, and the search never
+        // crossed to it: a shelf is searched, not the collection.
         let (titles, note) = shelf(Kind::Audio);
-        assert_eq!(titles, ["song"]);
+        assert_eq!(titles, ["Search", "song"]);
         assert_eq!(note, "1 audio file in your home folder");
 
         // And the worker stops when the shell lets go, rather than sitting out
@@ -1962,6 +2347,102 @@ mod tests {
         walking.join().expect("the worker ends cleanly");
         assert!(stopped.elapsed() < Duration::from_secs(5));
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The two ways a file can reach a shelf without waiting out the five
+    /// minutes to the next pass: the session hands over one it has just
+    /// written, and somebody stepping into a column brings the walk forward.
+    ///
+    /// Both are what a user watching themselves take a screenshot expects, and
+    /// neither used to happen. The walk here is paced for a test — its next
+    /// pass is a minute away, so a shelf that filled in on its own would prove
+    /// nothing — and the file that appears out of nowhere is the one a
+    /// recording would be.
+    #[test]
+    fn a_new_file_reaches_the_shelf_without_waiting_for_the_next_walk() {
+        let home = std::env::temp_dir().join(format!("lxb-again-{}-{:?}", std::process::id(), {
+            std::thread::current().id()
+        }));
+        std::fs::create_dir_all(&home).expect("a scratch home");
+        std::fs::write(home.join("holiday.png"), b"not really a picture").expect("a scratch file");
+
+        let (send_made, made) = mpsc::channel();
+        let (asks, take_asks) = mpsc::channel();
+        let pace = Pace {
+            again: Duration::from_secs(60),
+            soon: Duration::from_millis(50),
+        };
+        let walking = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                work(&home, [Sort::default(); 3], pace, &send_made, &take_asks)
+            })
+        };
+
+        let mut waiting: Vec<Made> = Vec::new();
+        let mut images = || -> Vec<String> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let made = loop {
+                if let Some(at) = waiting.iter().position(|made| made.kind == Kind::Image) {
+                    break waiting.remove(at);
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                waiting.push(made.recv_timeout(left).expect("the worker answers"));
+            };
+            made.rows
+                .iter()
+                .map(|row| crate::apps::Entry::title(row).to_string())
+                .collect()
+        };
+        assert_eq!(images(), ["Search", "holiday"]);
+
+        // A screenshot: on the disk, and named to the worker in the same
+        // breath. It is on the shelf on the next delivery rather than at the
+        // next pass of the walk.
+        let shot = home.join("Screenshot 2026-08-11 01-15-06.png");
+        std::fs::write(&shot, b"not really a picture").expect("a scratch file");
+        asks.send(Ask::Found(shot.clone()))
+            .expect("the worker is listening");
+        assert_eq!(
+            images(),
+            ["Search", "holiday", "Screenshot 2026-08-11 01-15-06"]
+        );
+
+        // A file nothing told the worker about — a recording an application
+        // wrote — is found by the walk, and stepping into the column is what
+        // brings that walk forward from a minute away to now.
+        std::fs::write(home.join("capture.mkv"), b"not really a film").expect("a scratch file");
+        asks.send(Ask::LookAgain).expect("the worker is listening");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let films = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let made = made.recv_timeout(left).expect("the walk comes round");
+            if made.kind == Kind::Video {
+                break made
+                    .rows
+                    .iter()
+                    .map(|row| crate::apps::Entry::title(row).to_string())
+                    .collect::<Vec<_>>();
+            }
+        };
+        assert_eq!(films, ["Search", "capture"]);
+
+        // And that walk met the screenshot it had already been handed without
+        // shelving it twice. Asked for in the other order, because the walk
+        // finding a file it already knows about is not news and delivers
+        // nothing — where a second copy of it would have been.
+        asks.send(Ask::Sort(Kind::Image, Sort::NameDescending))
+            .expect("the worker is listening");
+        assert_eq!(
+            images(),
+            ["Search", "Screenshot 2026-08-11 01-15-06", "holiday"],
+            "one file is one row, however many ways the worker heard about it"
+        );
+
+        drop(asks);
+        drop(made);
+        walking.join().expect("the worker ends cleanly");
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -123,6 +123,21 @@ pub struct Quad {
     /// strongly it *stains* the wallpaper rather than how solid it is — a
     /// pane can be deeply tinted and still fading out.
     pub fade: f32,
+    /// A rectangle the pane is cut to, in the same pixels as `x` and `y`, or
+    /// `None` for one nothing is cutting.
+    ///
+    /// The counterpart of [`Text::clip`], and it exists for the same reason:
+    /// what a *display* cuts has to stay cut when the scene is shrunk into the
+    /// guide's start card, which has no edges of its own to hide an overhang
+    /// against. Cutting rather than dropping is the whole point — the category
+    /// icon a path has carried half off the left of the screen is half of an
+    /// icon there and must be half of one in the card, not missing from it.
+    ///
+    /// It cuts pixels and leaves the shape alone: the rounded corners, the
+    /// bevel and the light on it are all still those of the whole pane, so a
+    /// cut one reads as a pane running past an edge rather than as a smaller
+    /// pane with a straight side.
+    pub clip: Option<[f32; 4]>,
 }
 
 impl Default for Quad {
@@ -148,6 +163,7 @@ impl Default for Quad {
             // Written out because this is the one field whose zero is wrong:
             // every `..Quad::default()` in the shell would draw nothing.
             fade: 1.0,
+            clip: None,
         }
     }
 }
@@ -416,7 +432,16 @@ struct Instance {
     /// Broad-face reflection curvature, separate so compact controls keep the
     /// perfectly level face they have always had.
     face_curve: f32,
+    /// The rectangle this pane is cut to, as its two corners rather than as a
+    /// size: that is the comparison the shader makes against each pixel, and
+    /// the conversion belongs here rather than once per fragment. A pane with
+    /// nothing cutting it is given a box larger than any display.
+    cut: [f32; 4],
 }
+
+/// The `cut` of a pane nothing is cutting: far enough out that no pixel of any
+/// display can fall outside it.
+const UNCUT: [f32; 4] = [-1.0e9, -1.0e9, 1.0e9, 1.0e9];
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -870,6 +895,7 @@ impl Gpu {
                         4 => Float32x4,
                         5 => Float32,
                         6 => Float32,
+                        7 => Float32x4,
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -1167,6 +1193,7 @@ impl Gpu {
                 material: [q.thickness, q.behind, q.gloss, q.fade],
                 corner: q.corner,
                 face_curve: q.face_curve,
+                cut: q.clip.map_or(UNCUT, |[x, y, w, h]| [x, y, x + w, y + h]),
             })
             .collect();
 

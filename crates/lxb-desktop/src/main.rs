@@ -17,8 +17,11 @@ mod media;
 mod menu;
 mod model;
 mod pointer;
+mod polkit;
 mod screenshot;
+mod secret;
 mod settings;
+mod sound;
 mod steam_hid;
 mod system;
 mod theme;
@@ -145,12 +148,28 @@ const RESTORE_SHELL_VERSION: u32 = 14;
 const WINDOW_MOVE_AND_CAPTURE_VERSION: u32 = 15;
 
 /// First version that says which way up each display's picture is drawn, and
-/// can be asked to turn it. The highest this shell asks for.
+/// can be asked to turn it.
 ///
 /// Below it no display reports an orientation, so Settings > Display >
 /// Orientation says there is nothing to turn — which is the truth on a
 /// compositor that cannot be asked.
 const TRANSFORM_SHELL_VERSION: u32 = 16;
+
+/// First version that will photograph a whole display, and that forwards the
+/// screenshot key.
+///
+/// Below it the key is never heard of and there is no request to answer it
+/// with: photographing a screen means reading every client on it, which no
+/// client may do.
+const SCREENSHOT_SHELL_VERSION: u32 = 17;
+
+/// First version that carries the desktop portal's question — may this
+/// application see a display, and which one. The highest this shell asks for.
+///
+/// The shell is the only part of the session that can draw, so it is the only
+/// part that can ask; the portal is a client like any other and the compositor
+/// is what carries the question between them.
+const SHARE_SHELL_VERSION: u32 = 18;
 
 /// First version that names the application behind every window rather than
 /// only the one in front.
@@ -451,8 +470,7 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=TRANSFORM_SHELL_VERSION, ())
-    {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=SHARE_SHELL_VERSION, ()) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -485,14 +503,19 @@ fn main() -> anyhow::Result<()> {
         context_menu: menu::Menu::default(),
         dialog: dialog::Dialog::default(),
         app_facts: None,
+        polkit: polkit::Agent::start(),
+        authenticating: None,
+        sharing: None,
         pending_capture: None,
         removal_plan: None,
         uninstalling: None,
         open_with: Vec::new(),
         open_with_chosen: 0,
         sorting: None,
+        searching: None,
         deleting: None,
         quick: Quick::start(),
+        sounds: sound::Sounds::new(),
         osk: keyboard::Osk::default(),
         menu_frame_drawn: false,
         overview_started_at: None,
@@ -590,6 +613,10 @@ fn main() -> anyhow::Result<()> {
         // settled so a keyboard covering the values suspends their preview,
         // and closing it resumes the value still under the cursor.
         shell.sync_setting_preview();
+        // And a search field the cursor has been walked out of, on the same
+        // terms and for the same reason: the bar can move underneath a board
+        // by routes that never touch the field itself.
+        shell.sync_search();
         // A package manager answering is not a Wayland event and cannot wake
         // this loop, but the loop wakes anyway to poll the controller — which
         // is the only reason a worker can hand its answer to a frame at all.
@@ -598,6 +625,11 @@ fn main() -> anyhow::Result<()> {
         // found on a worker thread is not a Wayland event either, and this is
         // the frame it reaches the bar on.
         shell.sync_media();
+        // The other way round as well: a column stepped into is a question
+        // about the disk, asked here because every way of stepping into one —
+        // a stick, a key, a click, a finger — has by now settled into the same
+        // cursor.
+        shell.notice_open_shelves();
         // And the pictures of what it found, which are made on two more
         // workers and land in the atlas here — for the rows the cursor is
         // near, and nowhere else.
@@ -606,9 +638,25 @@ fn main() -> anyhow::Result<()> {
         // is a Wayland event, so the frame this loop was going to draw anyway is
         // what carries their answers on to the screen.
         shell.advance_uninstall();
+        // The same again for an authorisation this session has been asked to
+        // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
+        // answers on another.
+        shell.sync_polkit();
         // Applies whatever the last events settled on: an application exiting
         // changes what the surface should be doing just as much as a keypress.
         shell.sync_surface_state();
+        // The same settled answer drives Start's music. This is deliberately
+        // outside individual foreground and guide handlers: changing display,
+        // choosing the Start card, launching, restoring and an application
+        // exiting are different routes to the same ownership transition.
+        let music_wanted = xmb_music_wanted(
+            !shell.panels.is_empty(),
+            shell.any_app_open(),
+            // Wherever it is happening: an application taking either display is
+            // an application taking the session's sound with it.
+            shell.launching.is_some() || shell.restoring.is_some(),
+        );
+        shell.sounds.sync_music(music_wanted, now);
         shell.sync_launch_output();
         shell.sync_overview();
         // Last of the three, and unconditional: a display plugged in
@@ -763,7 +811,7 @@ enum Stage {
     /// [`dialog::Line::Secret`] — and this goes away with the stage.
     Asking {
         removal: uninstall::Removal,
-        password: uninstall::Secret,
+        password: secret::Secret,
     },
     /// The removal itself is running.
     Working(uninstall::Run),
@@ -791,6 +839,58 @@ enum Step {
     Removing,
     Removed,
     Failed(String),
+}
+
+/// An authorisation `polkitd` has asked this session to prove, and how far that
+/// has got.
+///
+/// One at a time, which the shell enforces by not taking a second question off
+/// the agent while this is set: the panel driving it holds every button, so a
+/// second would be a question the user cannot see — and one that would inherit
+/// the press meant for the first.
+struct Authenticating {
+    /// What was asked, and whose password will do.
+    request: polkit::Request,
+    /// The conversation with polkit's PAM helper.
+    ///
+    /// Replaced rather than reused when a password is refused: one helper is
+    /// one attempt, and another try means another helper. Dropping it kills the
+    /// one it replaces.
+    session: polkit::Session,
+    /// What has been typed.
+    ///
+    /// The password lives here and in no other field of the shell. The panel is
+    /// drawn from a count of characters — see [`dialog::Line::Secret`] — and
+    /// this goes away with the authentication.
+    password: secret::Secret,
+    /// The sentence above the field: what PAM asked, or what the shell says
+    /// while PAM has not asked anything yet.
+    note: String,
+    /// Whether the helper is waiting for a line. False while it is thinking,
+    /// which is when Enter must not send it an empty one.
+    asked: bool,
+    /// Whether anything has been handed to this helper at all. What separates a
+    /// password that was refused, which is worth offering another try at, from
+    /// a helper that failed before it could ask — which is not, and would loop
+    /// for ever if it were.
+    answered: bool,
+}
+
+/// A shelf of the user's own files being searched, and what has been typed
+/// into its field so far.
+///
+/// One at a time, for the same reason a removal is: there is one on-screen
+/// keyboard and it is up on one display, so there is never a second field
+/// wanting the letter that was just pressed.
+///
+/// The text is here rather than read back off the row it is drawn on because
+/// the row is rebuilt from the worker's own answer every time the shelf is
+/// narrowed — a field that read itself off the bar would lose whatever had
+/// been typed since the last delivery, which on a large collection is most of
+/// the word.
+struct Searching {
+    kind: media::Kind,
+    text: String,
 }
 
 /// Which way along the row of displays something is being sent.
@@ -903,6 +1003,13 @@ struct Panel {
     /// the end the start screen flies to, and flies back from once the menu
     /// has closed and the cards are gone.
     home_rect: [f32; 4],
+    /// Which shelf of the user's own files this display is standing in, if it
+    /// is standing in one — see [`Shell::notice_open_shelves`].
+    ///
+    /// Per display for the reason the cursor is: two screens browse
+    /// independently, and somebody opening Images on the second one is asking
+    /// the same question as somebody opening it on the first.
+    shelf_open: Option<media::Kind>,
 }
 
 impl Panel {
@@ -922,6 +1029,18 @@ struct Restore {
     /// the way it does when an application is started.
     from: [f32; 4],
     started: Instant,
+}
+
+/// A desktop portal's question, while it is on screen.
+#[derive(Debug, Clone)]
+struct ShareQuestion {
+    /// The portal's own number for it, quoted back in the answer.
+    id: u32,
+    /// Which display each offered row is, as a place in `panels`. Held rather
+    /// than re-derived when a row is pressed: a display can be unplugged while
+    /// the question is up, and the row that was drawn as "HDMI-A-1" must not
+    /// become whichever screen happens to be second by then.
+    displays: Vec<wl_output::WlOutput>,
 }
 
 /// One window in the overview, as announced by the compositor.
@@ -985,6 +1104,25 @@ struct Shell {
     /// thread. The application is carried along rather than looked up again so
     /// that the answer lands in a panel about the thing that was asked about.
     app_facts: Option<(apps::App, appinfo::Lookup)>,
+    /// This session's polkit agent, which is what answers `polkitd` when
+    /// something on the machine wants the user to prove they may do it.
+    ///
+    /// `None` on a session that cannot have one — no system bus, or a
+    /// LineXinBar started inside a desktop whose own agent got there first. See
+    /// [`polkit`], and note that the shell asks nothing of it: an agent that
+    /// never registered simply never has a question waiting.
+    polkit: Option<polkit::Agent>,
+    /// The authentication on screen now, if any: what was asked, the
+    /// conversation with polkit's PAM helper, and what has been typed into the
+    /// field so far.
+    authenticating: Option<Authenticating>,
+    /// The share question currently on screen: which question it is, and which
+    /// of this shell's displays each row of it offers.
+    ///
+    /// Held because the answer goes back over the protocol by number, and
+    /// because a second application asking while the first question is up must
+    /// not quietly replace it — see [`Shell::ask_to_share`].
+    sharing: Option<ShareQuestion>,
     /// A screenshot the compositor is taking: the menu row it was asked for on,
     /// and the name of the application it is of.
     ///
@@ -1020,6 +1158,15 @@ struct Shell {
     /// the cursor goes to the head of the column at once *and* again when the
     /// new order lands, and this is what remembers that the second one is owed.
     sorting: Option<(media::Kind, usize)>,
+    /// The shelf whose search field the on-screen keyboard is typing into, and
+    /// what has been typed so far.
+    ///
+    /// The field's own record of itself, ahead of both the bar and the worker:
+    /// the letter goes here on the frame the key is pressed, is written onto
+    /// the row for the frame to draw, and is sent to the worker to narrow the
+    /// shelf with. `None` whenever the board is not in a search, which is
+    /// nearly always.
+    searching: Option<Searching>,
     /// The file the Delete question is about.
     ///
     /// Held rather than looked up again when the question is answered, for the
@@ -1030,6 +1177,11 @@ struct Shell {
     /// The volume and brightness bars in the guide's sidebar, and the worker
     /// that keeps them true.
     quick: Quick,
+    /// The shell's own effects and Start music, and the output they go to.
+    /// Beside the bars rather than beside the controller, though most of them
+    /// answer a button: this is the other end of the machine's audio, and what
+    /// the bars set is what it comes out at.
+    sounds: sound::Sounds,
     /// The on-screen keyboard, and the two Wayland objects behind it: the
     /// input method that says when a text field wants one, and the virtual
     /// keyboard that types.
@@ -1216,6 +1368,7 @@ impl Shell {
             blur_linear: 0.0,
             depth_linear: 0.0,
             home_rect: [0.0; 4],
+            shelf_open: None,
         });
         self.needs_redraw = true;
     }
@@ -1255,10 +1408,13 @@ impl Shell {
     }
 
     /// Hand control to display `index`, whichever way the user asked for it: a
-    /// shoulder button, or a mouse that has crossed onto it.
-    fn focus_panel(&mut self, next: usize) {
+    /// shoulder button, or a press made on it.
+    ///
+    /// Answers whether control actually moved, because the press that moved it
+    /// is spent on the move — see [`Shell::press_on`].
+    fn focus_panel(&mut self, next: usize) -> bool {
         if next >= self.panels.len() || next == self.focused_panel {
-            return;
+            return false;
         }
         self.focused_panel = next;
         tracing::debug!(display = %self.panels[next].name, "control moved to a display");
@@ -1285,6 +1441,7 @@ impl Shell {
             self.menu_frame_drawn = false;
         }
         self.needs_redraw = true;
+        true
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) {
@@ -1363,6 +1520,9 @@ impl Shell {
         // application that has started making a noise appears in it, and one
         // that has stopped leaves.
         self.sync_mixer();
+        // And what it can play *through* changes the same way: headphones are
+        // plugged in while the page listing them is on screen.
+        self.sync_sound_devices();
         // Which rows the column has. Set from the same answer the bars are
         // drawn from, so a control that goes away cannot leave a row behind.
         self.guide.set_bars(guide::Bars {
@@ -1752,6 +1912,9 @@ impl Shell {
                     clock.as_deref(),
                     time,
                     &Slots(gpu),
+                    // The caret belongs to the display being typed on, which
+                    // is the one holding the keyboard.
+                    focused && self.searching.is_some(),
                 )
             };
             // The start screen steps back from whatever the shell has raised
@@ -2443,11 +2606,12 @@ impl Shell {
     }
 
     fn on_key(&mut self, keysym: Keysym) {
-        // A password field takes the whole keyboard while it is up, and takes
-        // it first. Everything below this line turns keys into *actions* — Q
-        // would be Back, Escape would leave the panel — and a password with a Q
-        // in it is a password the user cannot type.
-        if self.password_wanted() {
+        // A field of the shell's own takes the whole keyboard while it is up,
+        // and takes it first. Everything below this line turns keys into
+        // *actions* — Q would be Back, Escape would leave the panel — and a
+        // password with a Q in it is a password the user cannot type, as a
+        // search for a song with a Q in its name is a search nobody can make.
+        if self.field_wanted() {
             // Except the guide, which outranks everything the shell draws and
             // every grab an application can take. A modal that could swallow it
             // would be the one screen in the shell with no way out of it, which
@@ -2457,7 +2621,7 @@ impl Shell {
                 return;
             }
             if let Some(stroke) = keyboard::stroke_for(keysym) {
-                if self.type_into_password(stroke) {
+                if self.type_into_shell(stroke) {
                     return;
                 }
             }
@@ -2471,17 +2635,82 @@ impl Shell {
         }
     }
 
+    /// Apply one keystroke to whichever field of the shell's own is waiting for
+    /// it. Returns whether there was one.
+    ///
+    /// Three of them, and no two can be up together: both passwords are asked
+    /// for by a modal panel that takes every button — and the shell will not
+    /// raise a second while the first is on screen — and a search field is a
+    /// row on a bar those panels are drawn over. The passwords are asked first
+    /// all the same, because theirs are the letters that must never go anywhere
+    /// else.
+    fn type_into_shell(&mut self, stroke: keyboard::Stroke) -> bool {
+        self.type_into_password(stroke)
+            || self.type_into_authentication(stroke)
+            || self.type_into_search(stroke)
+    }
+
+    /// Whether something the shell has drawn is waiting to be typed into, and
+    /// so whether keys are letters rather than buttons.
+    fn field_wanted(&self) -> bool {
+        self.password_wanted() || self.search_wanted()
+    }
+
     /// Whether the panel on screen is waiting for a password to be typed into
     /// it.
+    ///
+    /// Either panel that has a field on it, because what this decides is the
+    /// same for both: keys are letters rather than buttons, they repeat, and
+    /// the board must not be taken away by Back — a field with no keyboard on a
+    /// console is a field that cannot be filled in.
     fn password_wanted(&self) -> bool {
         self.uninstalling
             .as_ref()
             .is_some_and(|state| matches!(state.stage, Stage::Asking { .. }))
+            || self.authenticating.is_some()
+    }
+
+    /// Whether the cursor is standing in a search field that is being typed
+    /// into.
+    ///
+    /// Both halves are asked, because the field is a row on the bar rather than
+    /// a panel over it: a search that had been opened and then walked away from
+    /// would otherwise go on swallowing the keyboard from wherever the cursor
+    /// had got to.
+    fn search_wanted(&self) -> bool {
+        self.searching.is_some()
+            && self
+                .selected_search()
+                .is_some_and(|search| search.role == apps::Role::Field)
     }
 
     /// Whether an application is on screen in front of this shell.
     fn app_running(&self) -> bool {
         self.app_label().is_some()
+    }
+
+    /// Whether *any* display in this session has an application open on it.
+    ///
+    /// The wider question, and a different one: [`Self::app_running`] is about
+    /// the display holding control, because that is the one the guide is drawn
+    /// on and the one its rows act on. This is about the session, for the
+    /// things that belong to the whole of it rather than to a screen — the
+    /// Start screen's background music, which must not start up behind a game
+    /// on the other display merely because control has crossed to a bar.
+    ///
+    /// A window nobody is looking at counts as much as the one in front: an
+    /// application left behind the bar on the second screen is still an
+    /// application the user has open. Where the compositor describes only the
+    /// session as a whole there is no per-display answer to gather, and that
+    /// one report is already the session's.
+    fn any_app_open(&self) -> bool {
+        if self.foreground_is_per_display() {
+            return self
+                .panels
+                .iter()
+                .any(|panel| panel.foreground.is_some() || !panel.windows.is_empty());
+        }
+        self.foreground.is_some() || self.xmb.running_app().is_some()
     }
 
     /// Whether the compositor reports the foreground application per display.
@@ -2542,6 +2771,94 @@ impl Shell {
         self.sync_setting_preview();
     }
 
+    /// A move that landed: the frame it changes, and the click the user hears
+    /// for it.
+    ///
+    /// Every place a move lands something goes through here or through
+    /// [`Self::stepped_back`] — the bar, a menu, a panel, the on-screen
+    /// keyboard — because a move that clicked on the start screen and went
+    /// silently over a menu would be two different buttons. Which control made
+    /// it is not part of it either: a click on a row of the bar puts the
+    /// selection there exactly as a direction does, and the user who made the
+    /// same move by hand is owed the same answer. Moves that landed on
+    /// *nothing* do neither: an edge the user has pushed into is answered by
+    /// nothing happening, and a click there would say something happened.
+    ///
+    /// The guide overlay is the exception, and it is an exception of voice
+    /// rather than of silence: it is a screen of its own rather than another
+    /// column of the bar, so it answers a direction with its own click — see
+    /// [`Self::guide_stepped`].
+    fn stepped(&mut self) {
+        self.needs_redraw = true;
+        self.sounds.step();
+    }
+
+    /// The same for the guide overlay's own controls: its entry column, its
+    /// tiles, its bars, its window cards and the power dialog in front of
+    /// them.
+    ///
+    /// The panels raised *out* of the guide are not these. A context menu is
+    /// the same component wherever it was raised from and keeps the sounds it
+    /// has everywhere else, because a component that changed voice with its
+    /// backdrop would be two controls that look alike.
+    fn guide_stepped(&mut self) {
+        self.needs_redraw = true;
+        self.sounds.guide_step();
+    }
+
+    /// The same, for the one move that undoes one: a step back out of a
+    /// subcategory.
+    ///
+    /// Whichever control made it — Back is the button for it and Left is the
+    /// direction, and they are the same move. The bar is a path walked into,
+    /// and answering the way in and the way out with the same noise would
+    /// leave the ear no way of telling which way the user is going.
+    fn stepped_back(&mut self) {
+        self.needs_redraw = true;
+        self.sounds.back();
+    }
+
+    /// Finish one cursor move with the feedback the place it landed calls for.
+    ///
+    /// The ordinary click, unless the move walked out of the open path —
+    /// including a click that crosses several visible levels at once, which is
+    /// still the one move out. This is one call per input action, so that jump
+    /// is answered by one back sound rather than one for every column it
+    /// crossed.
+    fn finish_cursor_move(&mut self, before_depth: usize) {
+        match cursor_feedback(before_depth, self.column_depth()) {
+            CursorFeedback::Step => self.stepped(),
+            CursorFeedback::Back => self.stepped_back(),
+        }
+    }
+
+    /// Answer one press that was carried out on a screen of the shell's own.
+    ///
+    /// Split from carrying it out because the two disagree about what the
+    /// press *was*: the shell has already begun doing it by the time it could
+    /// be asked what happened, and the sound is about what the user chose. So
+    /// the classification is read off the selection first — see
+    /// [`chosen_feedback`] — and spent here.
+    fn answer_choice(&mut self, chosen: ChosenFeedback, screen: Screen) {
+        match chosen {
+            ChosenFeedback::Silent => {}
+            ChosenFeedback::Kept => match screen {
+                Screen::Start => self.sounds.select(),
+                Screen::Guide => self.sounds.guide_select(),
+            },
+        }
+        self.needs_redraw = true;
+    }
+
+    /// How many subcategories deep the driven display's bar is standing. Zero
+    /// on the category's own column, and zero when there is no display to ask.
+    fn column_depth(&self) -> usize {
+        self.panels
+            .get(self.focused_panel)
+            .map(|panel| panel.cursor.depth())
+            .unwrap_or(0)
+    }
+
     /// Reconcile the temporary appearance with the row that is actually
     /// highlighted after an action. Leaving the values column by Back or Left
     /// therefore flows back to the applied accent; changing screens follows
@@ -2585,6 +2902,14 @@ impl Shell {
                 self.context_menu.close();
                 self.close_dialog();
                 if self.guide.toggle() {
+                    // The one sound in the shell that belongs to a button
+                    // rather than to a screen, and it is spent here rather than
+                    // in `open_guide` on purpose: the guide also comes up for a
+                    // portal's question and for an authorisation, and neither
+                    // of those is somebody asking for it. Only the press that
+                    // *opened* it — closing the overlay is the screen behind it
+                    // coming back, which needs nothing said about it.
+                    self.sounds.guide_open();
                     self.begin_home_flight(bar_on_top);
                 }
                 self.needs_redraw = true;
@@ -2594,6 +2919,12 @@ impl Shell {
                 self.close_dialog();
                 self.toggle_keyboard();
             }
+            // Ahead of everything that could be on screen, and it closes none
+            // of it. A photograph is of what is in front of the user at that
+            // instant, panels and boards and menus included: a chord that
+            // tidied the screen before photographing it would be a chord that
+            // cannot photograph the screen.
+            Action::Screenshot => self.screenshot_driven_display(),
             Action::Back => self.on_back(),
             // Ahead of the menu, not behind it: the guide is where the user is
             // told the shoulder buttons move between displays, so that is the
@@ -2630,7 +2961,7 @@ impl Shell {
                 // be the one row in the shell that nothing opens.
                 if let Some(panel) = self.panels.get_mut(self.focused_panel) {
                     if panel.cursor.enter(&self.xmb) {
-                        self.needs_redraw = true;
+                        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                         return;
                     }
                 }
@@ -2645,25 +2976,45 @@ impl Shell {
                     Some(panel) => panel.cursor.choose(&mut self.xmb),
                     None => None,
                 };
+                // A search is neither opened nor launched: the field takes the
+                // keyboard, and the row under it puts the whole shelf back.
+                if self.press_search_row() {
+                    self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+                    return;
+                }
                 if let Some(setting) = chosen {
                     settings::apply(setting);
+                    // A sound device is the sound server's to carry out, as a
+                    // display setting is the compositor's, and it is handed
+                    // over here for the same reason: `settings` records what
+                    // the shell remembers, and neither of these is that.
+                    if let settings::Setting::SoundDevice { direction, id } = setting {
+                        self.quick.use_device(direction, id);
+                    }
                     // The accent needs nobody told; a display setting does,
                     // and straight away rather than on the next loop pass —
                     // the user has just pressed a button and is waiting to see
                     // whether the screen changed.
                     self.sync_hdr();
-                    self.needs_redraw = true;
+                    self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                     return;
                 }
                 self.start_selection();
             }
             _ => {
+                // How deep in the path the cursor was, so a Left that came
+                // back out of a subcategory can be told from one that walked
+                // along the category row. They are one call and one answer —
+                // see [`Cursor::navigate`], where coming out is what Left
+                // means first — so what separates them is the depth either
+                // side of it rather than anything the move itself reports.
+                let before = self.column_depth();
                 let moved = match self.panels.get_mut(self.focused_panel) {
                     Some(panel) => panel.cursor.navigate(action, &self.xmb),
                     None => false,
                 };
                 if moved {
-                    self.needs_redraw = true;
+                    self.finish_cursor_move(before);
                 }
             }
         }
@@ -2706,7 +3057,15 @@ impl Shell {
         // then for. A board that came up for the shell's own password field is
         // the exception: taking it away leaves the field with nothing to fill
         // it in, so Back means "leave this panel" and is handled above.
-        if !self.osk.types_here() && self.osk.close() {
+        //
+        // A search field is not that exception, though it is also the shell's
+        // own. It is a row on the bar rather than a modal, so what is behind
+        // the board is a column the user can carry on using — and what they
+        // have typed stays on the row, narrowing it, exactly as it was. Back
+        // out of the field is not back out of the search; the row that says
+        // "Clear search" is the only thing that undoes one.
+        if !self.password_wanted() && self.osk.close() {
+            self.searching = None;
             self.sync_surface_state();
             self.needs_redraw = true;
             return;
@@ -2734,7 +3093,7 @@ impl Shell {
                     .get_mut(self.focused_panel)
                     .is_some_and(|panel| panel.cursor.leave());
                 if left {
-                    self.needs_redraw = true;
+                    self.stepped_back();
                 } else {
                     self.open_guide();
                 }
@@ -2785,6 +3144,10 @@ impl Shell {
         // take both — the application is what Close ends, not the window.
         if let Some((display, window)) = self.window_for_selection() {
             self.restore_window(display, window);
+            // The same answer a fresh start gets. No process is forked for
+            // this one, but the screen changes hands exactly as it would, and
+            // that is the half of it the user is watching.
+            self.sounds.launch();
             return;
         }
         // Say where this is being launched from before starting it, so the
@@ -2813,6 +3176,12 @@ impl Shell {
         // display's cursor is read.
         if let Some(pid) = self.xmb.launch_selected(&panel.cursor) {
             self.needs_redraw = true;
+            // Something is starting. Here rather than beside the splash, which
+            // is only built for a row the shell can name: the sound is about
+            // the process, and a launch nobody could put a title on is still a
+            // launch. And not before the process exists — a press that started
+            // nothing must not be answered as though it had.
+            self.sounds.launch();
             if let Some((name, icon)) = opening {
                 self.launching = Some(launch::Launch::new(
                     name,
@@ -3015,6 +3384,207 @@ impl Shell {
             .and_then(apps::Entry::media)
     }
 
+    /// The search row the bar's cursor is on, if it is on one of the two.
+    fn selected_search(&self) -> Option<&apps::Search> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.xmb)
+            .and_then(apps::Entry::search)
+    }
+
+    /// Act on a press of one of the two rows at the head of a shelf. Returns
+    /// whether the press was one of theirs.
+    ///
+    /// The field takes the keyboard rather than doing anything itself, which is
+    /// the whole of what makes it a field: what a press on it means is "I am
+    /// about to type", and the answer to that is a board.
+    fn press_search_row(&mut self) -> bool {
+        let Some((kind, role, query)) = self
+            .selected_search()
+            .map(|search| (search.kind, search.role, search.query.clone()))
+        else {
+            return false;
+        };
+        match role {
+            apps::Role::Field => self.open_search_field(kind, query),
+            // Straight to the whole shelf, with no board raised over it: the
+            // row says what it does and there is nothing to type. The cursor
+            // is left where it is, which is the row that has just gone — so it
+            // lands on the field above it, one row up, and the user is looking
+            // at the head of their own collection again.
+            apps::Role::Clear => {
+                tracing::info!(shelf = apps::shelf_title(kind), "cleared the search");
+                self.set_search(kind, String::new());
+            }
+        }
+        true
+    }
+
+    /// Raise the keyboard over the field at the head of `kind`'s shelf.
+    ///
+    /// It types *here* rather than through the virtual keyboard — see
+    /// [`keyboard::Osk::open_here`] — for the same reason the password field
+    /// does: what is being typed belongs to the shell, and a letter sent
+    /// through the virtual keyboard would go to whichever client is holding
+    /// the keys. That it also opens on a machine with no virtual keyboard at
+    /// all is the other half of the bargain, and here it is the difference
+    /// between a searchable collection and a field that could never be filled
+    /// in.
+    fn open_search_field(&mut self, kind: media::Kind, query: String) {
+        self.searching = Some(Searching { kind, text: query });
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Apply one keystroke to the search being typed. Returns whether there was
+    /// a field for it to go into.
+    fn type_into_search(&mut self, stroke: keyboard::Stroke) -> bool {
+        // Not merely that a search was opened, but that its field is still the
+        // row under the cursor. The bar can be walked away from underneath a
+        // board — a pointer resting on the category row is enough — and a
+        // letter that went on being filed into a field nobody is looking at
+        // would be the shell typing somewhere the user cannot see.
+        if !self.search_wanted() {
+            return false;
+        }
+        // Whether there is a field at all, and what the key did to it, decided
+        // with only the search borrowed: the two keys that finish typing need
+        // the whole shell afterwards.
+        let done = {
+            let Some(searching) = self.searching.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    searching.text.push(character);
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    searching.text.pop();
+                    None
+                }
+                // Done, and take me to it.
+                keyboard::Stroke::ENTER => Some(true),
+                // Away, and the search stands. Escape does not put back what
+                // was there before, and that is deliberate: the column has
+                // been narrowing under the user's eyes with every letter, so
+                // there is no earlier list still on screen for "cancel" to
+                // mean. What undoes a search is the row that says it does.
+                keyboard::Stroke::ESCAPE => Some(false),
+                // Tab, the arrows, the function keys. A field of one line has
+                // no use for any of them, and letting them past to the bar
+                // underneath would move the cursor off the row being typed
+                // into.
+                _ => return true,
+            }
+        };
+        match done {
+            Some(reached) => {
+                self.close_search_field();
+                // Down to the first thing the search found, because somebody
+                // who has just finished typing a name is asking to be taken to
+                // what it names — and leaving them on the field with the
+                // answer below it would make them ask twice.
+                if reached {
+                    self.rest_on_first_match();
+                }
+            }
+            None => self.refresh_search(),
+        }
+        true
+    }
+
+    /// Put what has been typed on the field, and narrow the shelf to it.
+    ///
+    /// Two different speeds on purpose. The letter is written onto the row
+    /// here, so it is on the next frame; the shelf is narrowed on the worker
+    /// and its rows arrive when they are ready. See
+    /// [`media::Library::set_search`].
+    fn refresh_search(&mut self) {
+        let Some(searching) = self.searching.as_ref() else {
+            return;
+        };
+        let (kind, text) = (searching.kind, searching.text.clone());
+        apps::set_search_text(&mut self.xmb.categories, kind, &text);
+        self.media.set_search(kind, &text);
+        self.needs_redraw = true;
+    }
+
+    /// Narrow a shelf without a board being up: the Clear row, and anything
+    /// else that changes a search outright rather than a letter at a time.
+    fn set_search(&mut self, kind: media::Kind, query: String) {
+        if let Some(searching) = self.searching.as_mut().filter(|open| open.kind == kind) {
+            searching.text = query.clone();
+        }
+        apps::set_search_text(&mut self.xmb.categories, kind, &query);
+        self.media.set_search(kind, &query);
+        self.needs_redraw = true;
+    }
+
+    /// Put this display's cursor on the first file the search found.
+    ///
+    /// The rows it lands among are the ones the *last* delivery brought, which
+    /// while a large shelf is still being narrowed may not be the final answer.
+    /// That is the right list to move into all the same: it is the one on the
+    /// screen the user is looking at, and a cursor that waited for the shelf to
+    /// settle would be a press that did nothing.
+    fn rest_on_first_match(&mut self) {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        let first = panel
+            .cursor
+            .current_entries(&self.xmb)
+            .iter()
+            .position(|entry| entry.media().is_some());
+        // Nothing matched, so there is nowhere to go and the field keeps the
+        // cursor — which is where the user will want it, since the next thing
+        // to do with a search that found nothing is change it.
+        let Some(first) = first else {
+            return;
+        };
+        // Disjoint fields: this display's cursor is moved while the catalogue
+        // it is being moved through is read.
+        let xmb = &self.xmb;
+        if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+            if panel.cursor.point_at_row(first, xmb) {
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// End a search the cursor is no longer standing in.
+    ///
+    /// The field is a row on the bar rather than a panel over it, so the bar
+    /// can be walked out from under the board without the field ever being
+    /// touched: a pointer resting on the category row moves the cursor, and so
+    /// does control passing to another display, or the shelf emptying beneath
+    /// it. None of those goes anywhere near the field, so the question is asked
+    /// once a frame after every source of input has settled — exactly as the
+    /// settings preview is, and for exactly the same reason.
+    ///
+    /// The board goes with it. A keyboard left standing over a column that
+    /// nobody is typing into is the one thing on the screen with nothing to do,
+    /// and the keys it swallows are the ones that would have moved the bar.
+    fn sync_search(&mut self) {
+        if self.searching.is_none() || self.search_wanted() {
+            return;
+        }
+        tracing::debug!("the cursor left the search field; the board goes with it");
+        self.close_search_field();
+    }
+
+    /// Put the board away and leave the field with what was typed in it.
+    fn close_search_field(&mut self) {
+        self.searching = None;
+        if self.osk.close() {
+            self.sync_surface_state();
+        }
+        self.needs_redraw = true;
+    }
+
     /// What the row the cursor is standing inside is called — "Music", "Video",
     /// "Images" — which is what the Sort list is titled after.
     ///
@@ -3105,8 +3675,11 @@ impl Shell {
         // is standing on. The first row is the first row either way, so the
         // second one moves nothing the user can see.
         self.sorting = Some((kind, self.focused_panel));
+        // Disjoint fields: this display's cursor is moved while the catalogue
+        // it is being moved through is read.
+        let xmb = &self.xmb;
         if let Some(panel) = self.panels.get_mut(self.focused_panel) {
-            panel.cursor.rest_on_first_row();
+            panel.cursor.rest_on_first_row(xmb);
         }
         self.needs_redraw = true;
     }
@@ -3220,26 +3793,31 @@ impl Shell {
         // user needs saying — an application, a window — and this one is a
         // column of applications each carrying its own name and picture. A
         // header would be the panel telling them what they are looking at.
+        // It always opens: the shell's own row is on the list whatever the
+        // machine is playing, and whatever the machine can be asked about its
+        // playing. That is what makes the tile beside the stick pointer one
+        // that is never dimmed.
         if self
             .context_menu
             .open_at(anchor, None, entries, ui::mixer_rows_that_fit(height))
         {
             self.needs_redraw = true;
-        } else {
-            // Nothing to mix: a machine with no volume control at all. The
-            // tile still went down, which is the honest answer — there is no
-            // mixer here rather than a mixer that failed to open.
-            tracing::info!("nothing on this machine has a volume to set");
         }
     }
 
-    /// The mixer's rows, newest sound first, with the session's own output at
-    /// the foot of the list.
+    /// The mixer's rows, newest sound first, with the shell's own audio at the
+    /// foot of the list.
     ///
-    /// The output is last and in a band of its own because it is not one of the
-    /// applications: it is the thing they are all playing through, and turning
-    /// *it* down turns all of them down. A user looking for the game they can
-    /// hear should find it before they find the master control.
+    /// The shell is last and in a band of its own because it is not one of the
+    /// applications: it is the thing the panel is being drawn *by*, and it is
+    /// the only row here that no sound server knows about. A user looking for
+    /// the game they can hear should find it before they find the interface.
+    ///
+    /// The session's own output is deliberately not a row. It is the thing all
+    /// of these play through, and it already has a control — the volume bar in
+    /// the sidebar, which is why that bar is there whether or not this panel
+    /// opens. Putting it here as well would be the same control twice, and the
+    /// shell's own audio would have nowhere to be set from.
     fn mixer_entries(&self) -> Vec<menu::Entry> {
         let mut entries: Vec<menu::Entry> = self
             .quick
@@ -3273,14 +3851,15 @@ impl Shell {
                     )
             })
             .collect();
-        if let Some(level) = self.quick.level(Knob::Volume) {
-            entries.push(
-                menu::Entry::new(menu::Command::MuteOutput, "System")
-                    .icon(icons::CATEGORY_SYSTEM)
-                    .level(level)
-                    .group(1),
-            );
-        }
+        // Always, unlike every row above it: the applications come and go with
+        // what the machine is playing, and the shell is the one thing on the
+        // list that is certainly there — it is the thing drawing the list.
+        entries.push(
+            menu::Entry::new(menu::Command::MuteShell, "System")
+                .icon(icons::CATEGORY_SYSTEM)
+                .level(settings::sound())
+                .group(1),
+        );
         entries
     }
 
@@ -3329,7 +3908,7 @@ impl Shell {
         }
         match entry.command {
             menu::Command::MuteApplication(key) => self.quick.nudge_stream(key, delta),
-            menu::Command::MuteOutput => self.quick.nudge(Knob::Volume, delta),
+            menu::Command::MuteShell => nudge_shell_sound(delta),
             _ => false,
         }
     }
@@ -3440,14 +4019,14 @@ impl Shell {
             Action::Up | Action::Down => {
                 let delta = if action == Action::Up { -1 } else { 1 };
                 if self.context_menu.move_selection(delta) {
-                    self.needs_redraw = true;
+                    self.stepped();
                 }
             }
             Action::Left | Action::Right => {
                 let delta = if action == Action::Left { -1 } else { 1 };
                 if self.nudge_mixer(delta) {
                     self.sync_mixer();
-                    self.needs_redraw = true;
+                    self.stepped();
                 }
             }
             Action::Launch => self.choose_context_menu(),
@@ -3498,7 +4077,7 @@ impl Shell {
             Action::Up | Action::Down => {
                 let delta = if action == Action::Up { -1 } else { 1 };
                 if self.dialog.buttons.move_selection(delta) {
-                    self.needs_redraw = true;
+                    self.stepped();
                 }
             }
             Action::Launch => {
@@ -3556,6 +4135,7 @@ impl Shell {
             menu::Command::ConfirmDelete => self.delete_the_file(from),
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
             menu::Command::SubmitPassword => self.submit_password(),
+            menu::Command::Authenticate => self.submit_authentication(),
             menu::Command::MoveToNextDisplay => self.move_selected_window(Toward::Next),
             menu::Command::MoveToPreviousDisplay => self.move_selected_window(Toward::Previous),
             menu::Command::Screenshot => self.screenshot_selected_window(from),
@@ -3567,8 +4147,12 @@ impl Shell {
                 self.quick.toggle_stream_mute(key);
                 self.sync_mixer();
             }
-            menu::Command::MuteOutput => {
-                self.quick.toggle_mute();
+            menu::Command::MuteShell => {
+                let sound = settings::sound();
+                settings::set_sound(system::Level {
+                    muted: !sound.muted,
+                    ..sound
+                });
                 self.sync_mixer();
             }
             // The panel is already on its way out — choosing a row hands the
@@ -3578,7 +4162,14 @@ impl Shell {
                 self.removal_plan = None;
                 self.deleting = None;
                 self.abandon_uninstall("cancelled");
+                // A question closed by anything other than one of its own rows
+                // is a question that was not answered, and an unanswered
+                // question is a no.
+                self.answer_share(None);
+                self.abandon_authentication("cancelled");
             }
+            menu::Command::ShareDisplay(row) => self.answer_share(Some(row)),
+            menu::Command::RefuseShare => self.answer_share(None),
             menu::Command::Placeholder(name) => tracing::info!(
                 command = name,
                 "context menu: nothing is wired to this entry yet"
@@ -3725,7 +4316,7 @@ impl Shell {
                     (Some(removal), uninstall::Authority::NeedsPassword) => {
                         state.stage = Stage::Asking {
                             removal,
-                            password: uninstall::Secret::default(),
+                            password: secret::Secret::default(),
                         };
                         Step::AskPassword { retry: false }
                     }
@@ -3755,7 +4346,7 @@ impl Shell {
                     }) => {
                         state.stage = Stage::Asking {
                             removal,
-                            password: uninstall::Secret::default(),
+                            password: secret::Secret::default(),
                         };
                         Step::AskPassword { retry: true }
                     }
@@ -4013,6 +4604,342 @@ impl Shell {
             .unwrap_or_else(|| self.dialog.buttons.anchor())
     }
 
+    // --- proving the user may do something ----------------------------------
+
+    /// Bring the session's polkit agent up to date with the screen: take away a
+    /// question that has been withdrawn, carry on the one that is up, and put
+    /// up the next one when there is room for it.
+    ///
+    /// Once a frame, like every other worker the shell listens to. Nothing here
+    /// is a Wayland event — `polkitd` asks on a thread of its own and the PAM
+    /// helper answers on another — so this is the frame they reach the screen
+    /// on.
+    fn sync_polkit(&mut self) {
+        let (withdrawn, asked) = match self.polkit.as_ref() {
+            Some(agent) => {
+                // A question is only *taken* when there is somewhere to put it.
+                // The shell asks one thing at a time — the panel holds every
+                // button while it is up — so a second authorisation waits in
+                // the agent's own queue rather than being refused. Nobody is
+                // kept waiting who was not already waiting on the panel in
+                // front of them.
+                let room = self.authenticating.is_none()
+                    && !self.dialog.is_on_screen()
+                    && !self.context_menu.is_on_screen();
+                (agent.withdrawn(), room.then(|| agent.asked()).flatten())
+            }
+            None => return,
+        };
+
+        // Whoever asked has given up, or somebody else answered it. The panel
+        // comes down without being answered, because there is no longer anybody
+        // to answer.
+        if withdrawn
+            .iter()
+            .any(|cookie| self.authenticating_about(cookie))
+        {
+            tracing::info!("the authentication on screen was withdrawn");
+            // Dropped rather than abandoned: `polkitd` has already closed the
+            // question, and answering a cookie it has forgotten is one D-Bus
+            // call that can only fail.
+            self.authenticating = None;
+            // The board came up with the field and goes away with it — on this
+            // route too, which is the one that reaches neither of the two
+            // answers. A keyboard left standing over the guide with nothing to
+            // type into is the shell asking for something nobody is waiting
+            // for.
+            self.dismiss_password_board();
+            self.close_dialog();
+            self.needs_redraw = true;
+        }
+
+        self.advance_authentication();
+
+        if let Some(request) = asked {
+            self.ask_to_authenticate(request);
+        }
+    }
+
+    /// Whether the panel on screen is about the question this cookie names.
+    fn authenticating_about(&self, cookie: &str) -> bool {
+        self.authenticating
+            .as_ref()
+            .is_some_and(|state| state.request.cookie == cookie)
+    }
+
+    /// Put a question from `polkitd` on screen and start the conversation with
+    /// polkit's helper.
+    ///
+    /// The guide is opened under it, exactly as a share question does and for
+    /// the same reason: an authorisation can be asked for while a game is
+    /// filling the screen, and a panel raised on the bar alone would be drawn
+    /// behind it.
+    fn ask_to_authenticate(&mut self, request: polkit::Request) {
+        tracing::info!(
+            action = %request.action_id,
+            user = %request.user,
+            "asking the user to authenticate"
+        );
+        let session = polkit::Session::start(&request.user, &request.cookie);
+        let note = waiting_note(&request);
+        self.authenticating = Some(Authenticating {
+            request,
+            session,
+            password: secret::Secret::default(),
+            note,
+            asked: false,
+            answered: false,
+        });
+
+        self.open_guide();
+        let from = self.dialog_origin();
+        let lines = match self.authenticating.as_ref() {
+            Some(state) => authentication_lines(&state.request.message, &state.note, 0),
+            None => return,
+        };
+        let raised = self.dialog.ask(
+            from,
+            Some(icons::AUTHENTICATE.to_string()),
+            lines,
+            vec![
+                menu::Entry::new(menu::Command::Authenticate, "Authenticate"),
+                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+            ],
+            // On Cancel. A panel that appears without being asked for must not
+            // have the answer that hands over authority sitting under the
+            // thumb of somebody pressing A at something else.
+            1,
+        );
+        if !raised {
+            self.abandon_authentication("the panel could not be raised");
+            return;
+        }
+        // Said once, as the question arrives, and only now that it is really on
+        // screen. Nothing else in the shell announces itself — every other
+        // sound answers a control the user pressed — and this one has to,
+        // because the panel appears over whatever they were doing without
+        // anybody having asked for it. See [`sound::AUTHENTICATE`].
+        self.sounds.authenticate();
+        // The board comes up with the field, for the reason the removal's does:
+        // on a console there is nothing else to type a password with.
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Carry the conversation with polkit's helper on to the screen.
+    fn advance_authentication(&mut self) {
+        let Some(state) = self.authenticating.as_mut() else {
+            return;
+        };
+        let said = state.session.said();
+        if said.is_empty() {
+            return;
+        }
+
+        // PAM's own words for what went wrong, when it has any. Worth more than
+        // the shell's standing line about a password not being accepted — "your
+        // account is locked" is not something to answer by trying again.
+        let mut complaint = None;
+        let mut ended = None;
+        for what in said {
+            match what {
+                // Whatever PAM wants typed goes in the field. An echoing prompt
+                // is drawn with marks like any other, which is the one place
+                // this shell does not do as it is told: the panel has a single
+                // field and it is built for a secret. Showing a one-time code
+                // in the clear on a screen a game was filling a moment ago is
+                // not an improvement, and the prompt above it says what to
+                // type.
+                polkit::Said::Asked { prompt, echo } => {
+                    tracing::debug!(prompt, echo, "the helper is asking");
+                    state.note = prompt_note(&prompt, &state.request);
+                    state.asked = true;
+                }
+                polkit::Said::Told(text) => state.note = text,
+                polkit::Said::Complained(text) => {
+                    tracing::info!(said = %text, "PAM complained");
+                    complaint = Some(text);
+                }
+                polkit::Said::Finished(proved) => {
+                    ended = Some(proved);
+                    break;
+                }
+            }
+        }
+
+        match ended {
+            None => {
+                if let Some(said) = complaint {
+                    state.note = said;
+                }
+                self.refresh_authentication_panel();
+            }
+            // The helper has already told `polkitd` the password was right, so
+            // there is nothing left to do but let the call return and take the
+            // panel away.
+            Some(true) => {
+                tracing::info!(action = %state.request.action_id, "authenticated");
+                self.finish_authentication(polkit::Answer::Proved);
+                self.close_dialog();
+                self.needs_redraw = true;
+            }
+            // A helper that failed *before* anything was typed did not refuse a
+            // password — it could not ask for one. Offering another try would
+            // loop for ever on a machine whose helper is missing or broken, so
+            // that one is said out loud and this one is offered again, exactly
+            // as a removal offers a refused `sudo` password again.
+            Some(false) if state.answered => {
+                let request = state.request.clone();
+                state.session = polkit::Session::start(&request.user, &request.cookie);
+                state.password = secret::Secret::default();
+                state.note = complaint
+                    .unwrap_or_else(|| "That password was not accepted. Try again.".to_string());
+                state.asked = false;
+                state.answered = false;
+                self.refresh_authentication_panel();
+                self.needs_redraw = true;
+            }
+            Some(false) => {
+                let said = complaint.clone();
+                tracing::warn!(?said, "the helper gave up before asking for anything");
+                self.finish_authentication(polkit::Answer::Declined);
+                self.say_authentication_failed(said);
+            }
+        }
+    }
+
+    /// Hand what has been typed to the helper.
+    fn submit_authentication(&mut self) {
+        let handed = {
+            let Some(state) = self.authenticating.as_mut() else {
+                return;
+            };
+            // Nothing typed is not an answer to send: PAM would be told the
+            // password was empty and would say it was wrong, which is not what
+            // happened. The field simply waits — and so does a field the helper
+            // has not asked anything of yet.
+            if !state.asked || state.password.is_empty() {
+                return;
+            }
+            // Taken out whole, so the password moves to the worker rather than
+            // being copied out of a field the panel is still drawing from.
+            state.session.answer(std::mem::take(&mut state.password));
+            state.asked = false;
+            state.answered = true;
+            state.note = "Checking…".to_string();
+            true
+        };
+        if handed {
+            self.refresh_authentication_panel();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Apply one keystroke to the password being typed into an authentication.
+    /// Returns whether it was this field's to take.
+    fn type_into_authentication(&mut self, stroke: keyboard::Stroke) -> bool {
+        let done = {
+            let Some(state) = self.authenticating.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    state.password.push(character);
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    state.password.pop();
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                keyboard::Stroke::ESCAPE => Some(false),
+                // Tab, the arrows, the function keys: a password field has no
+                // use for any of them, and passing them on to the bar
+                // underneath would move the selection this panel is drawn over.
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.submit_authentication(),
+            Some(false) => {
+                self.abandon_authentication("escaped");
+                self.close_dialog();
+                self.needs_redraw = true;
+            }
+            None => {
+                self.refresh_authentication_panel();
+                self.needs_redraw = true;
+            }
+        }
+        true
+    }
+
+    /// Rewrite the panel from what the authentication knows now — the prompt,
+    /// and how many characters have been typed into it.
+    fn refresh_authentication_panel(&mut self) {
+        let Some(state) = self.authenticating.as_ref() else {
+            return;
+        };
+        // Only into the panel that asked. One dismissed while the helper was
+        // still talking gets nothing written into it on the way out.
+        if !self.dialog.is_open() {
+            return;
+        }
+        let lines =
+            authentication_lines(&state.request.message, &state.note, state.password.typed());
+        self.dialog.say(lines);
+    }
+
+    /// Tell `polkitd` how it went and let go of the conversation.
+    fn finish_authentication(&mut self, answer: polkit::Answer) {
+        let Some(state) = self.authenticating.take() else {
+            return;
+        };
+        if let Some(agent) = self.polkit.as_ref() {
+            agent.answer(&state.request.cookie, answer);
+        }
+        // The board came up with the field and goes away with it.
+        self.dismiss_password_board();
+        // And here the helper is killed, if it is still going: dropping the
+        // session is what ends it.
+    }
+
+    /// Give up on the authentication on screen, because the user did.
+    fn abandon_authentication(&mut self, why: &'static str) {
+        if let Some(state) = self.authenticating.as_ref() {
+            tracing::info!(action = %state.request.action_id, why, "authentication declined");
+        }
+        self.finish_authentication(polkit::Answer::Declined);
+    }
+
+    /// Say that the machine could not be asked at all.
+    ///
+    /// The one failure worth a panel of its own. Everything else the user can
+    /// do something about — type it again, or press Cancel — but a helper that
+    /// is missing or refuses to run leaves an application saying it is not
+    /// authorised with nothing anywhere saying why.
+    fn say_authentication_failed(&mut self, said: Option<String>) {
+        let from = self.dialog_origin();
+        let mut lines = vec![
+            dialog::Line::Heading("Authentication failed".to_string()),
+            dialog::Line::Note("This machine could not be asked to check".to_string()),
+            dialog::Line::Note("your password.".to_string()),
+        ];
+        if let Some(said) = said {
+            lines.push(dialog::Line::Note(said));
+        }
+        lines.push(dialog::Line::Rule);
+        self.dialog.ask(
+            from,
+            Some(icons::AUTHENTICATE.to_string()),
+            lines,
+            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
     /// Look at what is installed again, after something has been removed.
     ///
     /// Every display's cursor is put back to the top with it. The columns have
@@ -4046,10 +4973,28 @@ impl Shell {
 
     /// Put the centred panel away, and stop waiting on anything it had asked
     /// for. Returns whether it was open.
+    /// Take the centred panel away, and let go of whatever it was standing in
+    /// for.
+    ///
+    /// The share question is the one that cannot simply be dropped: something
+    /// on the other side of the portal is *waiting* on it. A panel taken away
+    /// by the guide button, by Back, by a shoulder button — by anything that
+    /// is not one of its own rows — used to leave the question standing with
+    /// nobody left to answer it, and one unanswered question is enough to make
+    /// the whole session deaf: the shell refuses a second question while one
+    /// is up, so every later application asking to share was refused before it
+    /// could be shown to anybody. That is a portal that has stopped working
+    /// with nothing on screen to say so.
+    ///
+    /// An unanswered question is a no, which is the rule everywhere else here
+    /// too, and answering is idempotent — the row that dismisses the panel has
+    /// usually answered already.
     fn close_dialog(&mut self) -> bool {
         self.app_facts = None;
         self.removal_plan = None;
         self.abandon_uninstall("dismissed");
+        self.answer_share(None);
+        self.abandon_authentication("dismissed");
         self.dialog.close()
     }
 
@@ -4178,6 +5123,16 @@ impl Shell {
             // Disjoint fields: the catalogue is written while this display's
             // own state is read.
             let hung = apps::shelve_media(&mut self.xmb.categories, made);
+
+            // The rows that have just arrived carry the query the worker
+            // narrowed them by, which is the one it was told about — and by
+            // now the user may have typed two more letters. Putting the field
+            // back to what has actually been typed is what stops it flickering
+            // backwards a word at a time while somebody types quickly.
+            if let Some(searching) = self.searching.as_ref().filter(|open| open.kind == kind) {
+                let text = searching.text.clone();
+                apps::set_search_text(&mut self.xmb.categories, kind, &text);
+            }
             if let Some(at) = hung.column {
                 tracing::info!(
                     at,
@@ -4197,7 +5152,7 @@ impl Shell {
                     panel.cursor.category_added(at);
                 }
                 if to_top == Some(at_panel) {
-                    panel.cursor.rest_on_first_row();
+                    panel.cursor.rest_on_first_row(xmb);
                     continue;
                 }
                 if let Some(file) = was {
@@ -4207,6 +5162,40 @@ impl Shell {
             self.media.discard(hung.worn);
         }
         self.needs_redraw = true;
+    }
+
+    /// Ask the walk to look at the disk again when somebody opens a shelf.
+    ///
+    /// Stepping into Music, Video or Images is a person asking what they have,
+    /// and the honest answer is one that includes the film they recorded a
+    /// minute ago. The walk comes round on its own every few minutes, which is
+    /// the right interval for a collection nobody is looking at and far too
+    /// long for the one they have just opened.
+    ///
+    /// So the column is the question. Not the row above it — a cursor walking
+    /// down Multimedia passes Music and Video on its way to the players, and
+    /// asking on the way past would make idle scrolling walk the home
+    /// directory. Stepping *in* is deliberate, and it is also the only moment
+    /// where anything new could be seen.
+    ///
+    /// Cheap in the two ways that matter. It is a look at the first row of the
+    /// open column, which the bar is drawing anyway, and it fires on the frame
+    /// the column changes rather than on every frame the user is in it; and
+    /// what it asks for is bounded on the other side, where one walk answers
+    /// however many times it was asked — see [`media::Library::look_again`].
+    fn notice_open_shelves(&mut self) {
+        let xmb = &self.xmb;
+        let mut opened = false;
+        for panel in &mut self.panels {
+            let shelf = apps::shelf_shown(panel.cursor.current_entries(xmb));
+            // Only on the way in, and only into a different shelf: leaving one
+            // is not a question, and standing in one is not a new one.
+            opened |= shelf.is_some() && shelf != panel.shelf_open;
+            panel.shelf_open = shelf;
+        }
+        if opened {
+            self.media.look_again();
+        }
     }
 
     /// The application the bar's cursor is on, which is what a menu raised from
@@ -4237,7 +5226,7 @@ impl Shell {
         };
         if let Some(direction) = direction {
             if self.osk.board.move_selection(direction) {
-                self.needs_redraw = true;
+                self.stepped();
             }
             return;
         }
@@ -4269,8 +5258,15 @@ impl Shell {
         // keyboard — and everything after this arrives through `on_key`.
         if self.osk.types_here() {
             if let keyboard::Typed::Send(stroke) = typed {
-                self.type_into_password(stroke);
+                self.type_into_shell(stroke);
             }
+            // The board goes; the field it was raised over does not. Somebody
+            // who has just typed the first letter of a search on a real
+            // keyboard is going to type the second one on it too, and that
+            // letter arrives through `on_key` — which sends it here for as
+            // long as the cursor is standing in the field. A search that ended
+            // with the board would turn the rest of the word into button
+            // presses.
             if !matches!(typed, keyboard::Typed::Ignored) && self.osk.close() {
                 self.sync_surface_state();
                 self.needs_redraw = true;
@@ -4599,10 +5595,21 @@ impl Shell {
         moved
     }
 
-    /// The pointer resting on `spot`: select it where selecting is what
-    /// pointing at a thing means, and say so with the cursor either way.
-    fn hover(&mut self, qh: &QueueHandle<Self>, spot: Spot) {
-        self.point_at(spot);
+    /// The pointer resting at `(x, y)` on display `index`: select what is under
+    /// it where selecting is what pointing at a thing means, and say so with
+    /// the cursor either way.
+    ///
+    /// Only on the display being driven. A pointer swept across the other
+    /// screen changes nothing there, because moving the selection on a display
+    /// that has not got control would be a highlight nobody's buttons can act
+    /// on — and moving *control* with it is what this shell used to do and no
+    /// longer does. See [`Shell::press_on`]. The shape is still answered on
+    /// every display, since it is what says the click would be worth making.
+    fn hover(&mut self, qh: &QueueHandle<Self>, index: usize, x: f32, y: f32) {
+        let spot = self.spot_at(index, x, y);
+        if index == self.focused_panel {
+            self.point_at(spot);
+        }
         self.set_cursor_shape(
             qh,
             if spot.is_actionable() {
@@ -4611,6 +5618,21 @@ impl Shell {
                 shape::Shape::Default
             },
         );
+    }
+
+    /// A press made on display `index`, at `(x, y)` on it.
+    ///
+    /// The first press on a display that has not got control is spent taking
+    /// it: control moves there, the overlay travels with it, and nothing is
+    /// pressed. A shell that acted on that press as well would be acting on a
+    /// screen it was not drawing the selection on a frame earlier — and on the
+    /// guide, which was still over the other display when the button went
+    /// down. The next press lands on what the user can now see is selected.
+    fn press_on(&mut self, index: usize, x: f32, y: f32) -> Option<Spot> {
+        if self.focus_panel(index) {
+            return None;
+        }
+        Some(self.spot_at(index, x, y))
     }
 
     /// Press whatever is at `spot`: a click of the left button, or a tap.
@@ -4667,7 +5689,7 @@ impl Shell {
             .map(|entry| entry.command)
         {
             Some(menu::Command::MuteApplication(key)) => self.quick.set_stream(key, level),
-            Some(menu::Command::MuteOutput) => self.quick.set(Knob::Volume, level),
+            Some(menu::Command::MuteShell) => set_shell_sound(level),
             _ => false,
         }
     }
@@ -4683,7 +5705,10 @@ impl Shell {
             return;
         }
         if self.guide.select_window(card, count) {
-            self.needs_redraw = true;
+            // The deck's own move, in the overlay's voice — the same press on
+            // the bar is a step along it, and this is the same gesture over a
+            // screen that answers in a click of its own.
+            self.guide_stepped();
             return;
         }
         self.on_action(Action::Launch);
@@ -4691,6 +5716,7 @@ impl Shell {
 
     /// A press somewhere on the start screen.
     fn press_bar(&mut self, spot: ui::BarSpot) {
+        let before = self.column_depth();
         let Some(panel) = self.panels.get_mut(self.focused_panel) else {
             return;
         };
@@ -4716,19 +5742,9 @@ impl Shell {
             }
         };
         if moved {
-            self.needs_redraw = true;
+            self.finish_cursor_move(before);
             self.sync_setting_preview();
         }
-    }
-
-    /// One display's worth of pointer or finger, at `(x, y)` on it.
-    ///
-    /// Control follows the pointer between displays. A shell that kept the
-    /// keyboard on one screen while the mouse was being used on another would
-    /// be answering presses on a display it was not drawing the selection on.
-    fn point(&mut self, index: usize, x: f32, y: f32) -> Spot {
-        self.focus_panel(index);
-        self.spot_at(index, x, y)
     }
 
     /// Move the wheel, in the units `wl_pointer.axis` reports.
@@ -4760,6 +5776,13 @@ impl Shell {
 
     /// Send whatever the selected key types.
     fn press_key(&mut self) {
+        // Before the press is worked out, and without asking what the key was:
+        // a key going down is the thing being answered, and a board where
+        // Shift and the key that puts it away were the two silent ones would
+        // read as a board with two dead keys on it. This is the one place
+        // every press of it arrives — the stick and the D-pad through
+        // `on_keyboard_action`, a finger and a mouse through `press_at`.
+        self.sounds.key();
         // The protocol wants a millisecond timestamp that keeps going up, and
         // the shell already has one clock everything else is measured against.
         let at = self.start.elapsed().as_millis() as u32;
@@ -4770,7 +5793,7 @@ impl Shell {
         // it hands the keystroke back, and this is where it goes.
         if types_here {
             if let keyboard::Press::Type(stroke) = press {
-                self.type_into_password(stroke);
+                self.type_into_shell(stroke);
             }
         }
         if press == keyboard::Press::Close {
@@ -5062,6 +6085,17 @@ impl Shell {
         self.menu_frame_drawn = false;
     }
 
+    /// Drive the guide overlay: its entry column, its bars, its window cards
+    /// and the power dialog in front of them.
+    ///
+    /// Nothing in here sounds, alone among the places a direction moves
+    /// something — see [`Self::stepped`], which every one of those others goes
+    /// through. The overlay is a screen of its own rather than another column
+    /// of the bar, and it is to be given a voice of its own rather than lent
+    /// the bar's; until it has one it is quiet, which is a truer answer than
+    /// the wrong sound would be. The panels raised *out* of it are not covered
+    /// by this: a context menu is the same component wherever it was raised
+    /// from, and it cannot take the overlay's sound and the bar's at once.
     fn on_menu_action(&mut self, action: Action) {
         // The deck is every window plus the trailing start-screen card.
         let window_count = self
@@ -5078,11 +6112,16 @@ impl Shell {
                 Action::Up | Action::Down => {
                     let delta = if action == Action::Up { -1 } else { 1 };
                     if self.guide.move_power(delta) {
-                        self.needs_redraw = true;
+                        self.guide_stepped();
                     }
                 }
                 Action::Launch => {
                     if let Some(item) = self.guide.power_item() {
+                        // Answered before it is carried out, unlike everywhere
+                        // else: the answers here end the session or the
+                        // machine, and a sound queued behind one of them would
+                        // be a sound the user never hears.
+                        self.answer_choice(ChosenFeedback::Kept, Screen::Guide);
                         self.activate_power(item);
                     }
                 }
@@ -5107,7 +6146,7 @@ impl Shell {
                 };
                 let delta = if action == Action::Left { -1 } else { 1 };
                 if self.quick.nudge(knob(bar), delta) {
-                    self.needs_redraw = true;
+                    self.guide_stepped();
                 }
             }
             // The tiles share a line, so Left and Right walk along it first.
@@ -5122,7 +6161,7 @@ impl Shell {
             {
                 let delta = if action == Action::Left { -1 } else { 1 };
                 if self.guide.move_in_line(delta, closable) {
-                    self.needs_redraw = true;
+                    self.guide_stepped();
                 }
             }
             // Up/Down in the entry column scroll it; everything directional in
@@ -5131,7 +6170,7 @@ impl Shell {
             Action::Up | Action::Down if self.guide.pane() == guide::Pane::Menu => {
                 let delta = if action == Action::Up { -1 } else { 1 };
                 if self.guide.move_selection(delta, closable) {
-                    self.needs_redraw = true;
+                    self.guide_stepped();
                 }
             }
             Action::Up | Action::Down | Action::Left | Action::Right => {
@@ -5142,7 +6181,7 @@ impl Shell {
                     _ => guide::Move::Right,
                 };
                 if self.guide.move_focus(direction, window_count) {
-                    self.needs_redraw = true;
+                    self.guide_stepped();
                 }
             }
             Action::Launch => match self.guide.pane() {
@@ -5153,23 +6192,36 @@ impl Shell {
                         .get(self.focused_panel)
                         .and_then(|panel| panel.windows.get(index));
                     match card {
-                        Some(card) => self.activate_window(card.id),
+                        // A card is the window it is a picture of, so choosing
+                        // one is that application taking the screen back. In
+                        // the overlay's own voice, like every other press made
+                        // on it: nothing is being started here, and the sound
+                        // that says something is belongs to Start.
+                        Some(card) => {
+                            self.activate_window(card.id);
+                            self.answer_choice(ChosenFeedback::Kept, Screen::Guide);
+                        }
                         // Past the windows: the start-screen card. Home is
                         // the bar — over the running application when there
-                        // is one, plainly otherwise.
+                        // is one, plainly otherwise. Either way the shell
+                        // keeps the display.
                         None => {
                             if app_running {
                                 self.guide.show_bar_over_app();
                             } else {
                                 self.guide.close();
                             }
-                            self.needs_redraw = true;
+                            self.answer_choice(ChosenFeedback::Kept, Screen::Guide);
                         }
                     }
                 }
                 guide::Pane::Menu => {
                     if let Some(item) = self.guide.selected_item(closable) {
+                        // Read before the press, because the press is what
+                        // makes it untrue — see [`chosen_feedback`].
+                        let chosen = chosen_feedback(item, self.pointer_app().is_some());
                         self.activate(item);
+                        self.answer_choice(chosen, Screen::Guide);
                     }
                 }
             },
@@ -5507,6 +6559,174 @@ impl Shell {
         self.pending_capture = Some((from, app));
     }
 
+    /// Put a desktop portal's question on screen: may this application see a
+    /// display, and which one?
+    ///
+    /// The guide is opened under it. A question about the whole screen has to
+    /// be visible over whatever is filling that screen, and the guide is
+    /// already the shell's answer to being in front of an application — layer,
+    /// keyboard and all. A panel raised on the bar alone would be drawn behind
+    /// the game the user is being asked about.
+    fn ask_to_share(&mut self, id: u32, app_id: &str) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < SHARE_SHELL_VERSION {
+            return;
+        }
+        // One question at a time. The panel is modal and holds every button
+        // while it is up, so a second application asking now would be a
+        // question the user cannot see — and one that would inherit the press
+        // meant for the first. It is refused, and the application may ask
+        // again.
+        if self.sharing.is_some() {
+            tracing::info!(id, "refusing a second share question while one is up");
+            control.answer_share(id, None);
+            let _ = self.conn.flush();
+            return;
+        }
+
+        let application = match app_id.trim() {
+            "" => "An application".to_string(),
+            named => named.to_string(),
+        };
+        let mut rows = Vec::new();
+        let mut displays = Vec::new();
+        for panel in &self.panels {
+            rows.push(menu::Entry::new(
+                menu::Command::ShareDisplay(displays.len()),
+                &panel.name,
+            ));
+            displays.push(panel.output.clone());
+        }
+        if displays.is_empty() {
+            control.answer_share(id, None);
+            let _ = self.conn.flush();
+            return;
+        }
+        // In a band of its own, below the displays: it is the other kind of
+        // answer, not one more screen.
+        rows.push(menu::Entry::new(menu::Command::RefuseShare, "Don't allow").group(1));
+
+        let lines = vec![
+            dialog::Line::Heading(format!("{application} wants to share your screen")),
+            // Short on purpose: the panel gives a note one line, and cuts what
+            // runs past it. A warning the user cannot read to the end of is
+            // not a warning.
+            dialog::Line::Note("It will see everything on that screen.".to_string()),
+            dialog::Line::Rule,
+        ];
+
+        // Over whatever is in front, which is the whole point of asking.
+        self.open_guide();
+        let from = self.dialog_origin();
+        // The refusal is what the panel opens on: the safe answer is the one a
+        // press of A on a question nobody read lands on.
+        let refuse = rows.len() - 1;
+        if !self.dialog.ask(from, None, lines, rows, refuse) {
+            control.answer_share(id, None);
+            let _ = self.conn.flush();
+            return;
+        }
+        self.sharing = Some(ShareQuestion { id, displays });
+        self.needs_redraw = true;
+    }
+
+    /// Answer the question on screen, with a display or with nothing.
+    fn answer_share(&mut self, row: Option<usize>) {
+        let Some(question) = self.sharing.take() else {
+            return;
+        };
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        let chosen = row.and_then(|row| question.displays.get(row));
+        tracing::info!(
+            id = question.id,
+            allowed = chosen.is_some(),
+            "answering a share request"
+        );
+        control.answer_share(question.id, chosen);
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the answer");
+        }
+    }
+
+    /// Photograph the display the controller is driving, because the
+    /// screenshot chord was pressed on it.
+    ///
+    /// The keyboard's route into this comes the other way round: the
+    /// compositor holds that binding, works out which display the keyboard is
+    /// on, and forwards it as a `screenshot` event naming the display. A pad
+    /// is not the compositor's to read at all — it is opened here, straight
+    /// from `/dev/input` — so the display is this shell's own answer, and the
+    /// one it already uses for every other thing a controller does: the
+    /// display with control, which is the one the shoulder buttons move
+    /// between and the one the guide would open over.
+    fn screenshot_driven_display(&mut self) {
+        let Some(output) = self
+            .panels
+            .get(self.focused_panel)
+            .map(|panel| panel.output.clone())
+        else {
+            tracing::debug!("no display to photograph");
+            return;
+        };
+        self.screenshot_output(&output);
+    }
+
+    /// Photograph a whole display, because the screenshot key was pressed on
+    /// it.
+    ///
+    /// The same division of labour as the menu's row, and the same two halves:
+    /// the compositor has the pixels and this has the folder. What is
+    /// different is that nothing on screen asked for it, so nothing on screen
+    /// answers for it either — the display flashes, which is the compositor's
+    /// to draw, and the picture turns up in Images like any other photograph
+    /// in the user's pictures.
+    ///
+    /// A panel would be wrong here rather than merely unnecessary. The key is
+    /// pressed over whatever is in front, which is usually a game holding the
+    /// whole screen and the keyboard with it: a modal answer would either be
+    /// drawn behind it, where nobody would see it, or in front of it, where it
+    /// would take the keys off what the user was doing.
+    fn screenshot_output(&mut self, output: &wl_output::WlOutput) {
+        let name = self
+            .panels
+            .iter()
+            .find(|panel| panel.output == *output)
+            .map(|panel| panel.name.clone())
+            .unwrap_or_default();
+
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < SCREENSHOT_SHELL_VERSION {
+            // Unreachable in practice — the event only arrives from a
+            // compositor new enough to send it — but the version is what says
+            // the request exists, and a request sent to an object that does
+            // not have it is a protocol error that kills the session.
+            tracing::info!("this compositor cannot photograph a display");
+            return;
+        }
+        // The clock decides the name, so a screenshot taken on a machine whose
+        // clock cannot be read has no name to be filed under.
+        let Some(taken_at) = local_time() else {
+            tracing::warn!("cannot read the clock, so cannot name a screenshot");
+            return;
+        };
+        let Some(path) = screenshot::destination(&taken_at) else {
+            return;
+        };
+        let path = screenshot::unclaimed(path, &taken_at);
+
+        tracing::info!(display = %name, ?path, "photographing a display");
+        control.capture_output(output, path.to_string_lossy().into_owned());
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the screenshot request");
+        }
+    }
+
     /// Say what came of a screenshot: where it went, or that it did not happen.
     ///
     /// The centred panel rather than a line in the log, because a button that
@@ -5711,6 +6931,39 @@ impl Shell {
         }
     }
 
+    /// Hand the Settings column what the machine can play through and record
+    /// from, and rebuild it if that changed.
+    ///
+    /// The listing is only kept fresh while somebody is standing in the
+    /// Settings column, because reading it is three subprocesses and nothing
+    /// else in the shell is about it — see [`Quick::watch_devices`]. Any
+    /// display's column: each screen has an XMB of its own and a cursor of its
+    /// own, and the page can be open on the second one while the first shows
+    /// something else entirely.
+    ///
+    /// Only screens that are actually being drawn count. A display with an
+    /// application over the whole of it is a display whose bar is not on
+    /// screen, and a cursor left standing in Settings behind a fullscreen game
+    /// must not have the shell polling the sound server for the length of it.
+    fn sync_sound_devices(&mut self) {
+        let (id, ..) = apps::SHELL_SETTINGS;
+        let watching = (0..self.panels.len()).any(|index| {
+            self.panel_is_visible(index)
+                && self.panels[index]
+                    .cursor
+                    .current_category(&self.xmb)
+                    .is_some_and(|category| category.id == id)
+        });
+        self.quick.watch_devices(watching);
+        if !watching {
+            return;
+        }
+        if settings::note_devices(self.quick.devices()) {
+            settings::refresh(&mut self.xmb.categories);
+            self.needs_redraw = true;
+        }
+    }
+
     /// Hand the Settings column which way up each display is being drawn, and
     /// rebuild it if that changed.
     ///
@@ -5810,6 +7063,16 @@ impl Shell {
         // letters it types come straight back to it and are read as
         // navigation.
         let keyboard = self.keyboard_visible();
+        // Whether the keys belong to the shell rather than to whatever is in
+        // front. Asked of the *field* as well as of the board, because the two
+        // do not end together: dismissing the board sets `types_here` false at
+        // once and then takes a quarter of a second to fall off the bottom of
+        // the display, and the field it was raised over is still there and
+        // still being typed into throughout. A surface that handed the keys
+        // back for that quarter second would lose whatever was typed in it —
+        // which, since what dismissed the board was the user starting to type,
+        // is the very next letter of the word.
+        let typing_here = self.osk.types_here() || self.field_wanted();
         let states: Vec<((Layer, KeyboardInteractivity), Clickable)> = (0..self.panels.len())
             .map(|index| {
                 let state = self.guide.surface_state(
@@ -5818,6 +7081,7 @@ impl Shell {
                     self.keep_keyboard_grabbed,
                     self.launching_on(index),
                     keyboard,
+                    typing_here,
                     self.base_layer,
                 );
                 (state, self.clickable(index, state, keyboard))
@@ -6038,6 +7302,102 @@ fn information_lines(app: &apps::App, facts: Option<&appinfo::Facts>) -> Vec<dia
     lines
 }
 
+/// How wide a sentence on the panel is allowed to be, in characters, and how
+/// many lines of it are shown.
+///
+/// The panel gives a note one line and cuts what runs past it, and polkit's
+/// messages are written by whoever wrote the policy file — "Authentication is
+/// required to install untrusted software" is longer than any sentence the
+/// shell writes for itself. So it is broken between words here rather than
+/// being cut mid-word by the drawing. Three lines is the whole of every message
+/// polkit ships; a fourth would be a policy file being unreasonable, and it ends
+/// in an ellipsis so that the panel says it has been cut.
+const MESSAGE_WIDTH: usize = 46;
+const MESSAGE_LINES: usize = 3;
+
+/// What the panel says while an authentication is on screen.
+///
+/// One function for every pass — as it opens, as PAM asks for something, and
+/// after every keystroke — so the panel cannot change shape underneath the user
+/// as it is rewritten. It takes the three things that change rather than the
+/// whole authentication, and `typed` is a count: what the user actually typed
+/// is not something this needs, and a panel built from it would be a copy of a
+/// password living in the layout for as long as the panel was up.
+fn authentication_lines(message: &str, note: &str, typed: usize) -> Vec<dialog::Line> {
+    let mut lines = vec![dialog::Line::Heading("Authentication needed".to_string())];
+    for line in wrapped(message, MESSAGE_WIDTH, MESSAGE_LINES) {
+        lines.push(dialog::Line::Note(line));
+    }
+    lines.push(dialog::Line::Note(note.to_string()));
+    lines.push(dialog::Line::Secret { typed });
+    lines.push(dialog::Line::Rule);
+    lines
+}
+
+/// What the panel says before PAM has asked for anything.
+///
+/// It is up for the fraction of a second before the helper answers, and it says
+/// the same thing that helper is about to: something has to be typed, and whose
+/// it has to be.
+fn waiting_note(request: &polkit::Request) -> String {
+    if request.yourself {
+        "Enter your password to allow this.".to_string()
+    } else {
+        format!("Enter the password for {}.", request.user)
+    }
+}
+
+/// What the panel says when PAM has asked for something.
+///
+/// PAM's own prompt is used only when it is not the one every machine asks:
+/// "Password: " is a label for a field the panel has already drawn, and
+/// replacing a sentence that says whose password is wanted with one word would
+/// be losing the only part the user needs on a shell where several people's
+/// passwords could be the answer. Anything else — a one-time code, a token, a
+/// question a module invented — is shown as it came, because the shell has no
+/// idea what it is asking for and must not pretend to.
+fn prompt_note(prompt: &str, request: &polkit::Request) -> String {
+    let plain = prompt.trim().trim_end_matches(':').trim().to_lowercase();
+    let usual = plain.is_empty()
+        || plain == "password"
+        || plain.starts_with("password for ")
+        || plain.ends_with("'s password");
+    if usual {
+        waiting_note(request)
+    } else {
+        prompt.trim().to_string()
+    }
+}
+
+/// Break `text` between words into at most `lines` lines of about `width`
+/// characters, ending in an ellipsis if there was more of it.
+///
+/// A word longer than the width is left whole and allowed to be the whole line:
+/// breaking it would produce two halves of a word nobody can read, and the
+/// drawing cuts a line that overruns anyway.
+fn wrapped(text: &str, width: usize, lines: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match out.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => {
+                if out.len() == lines {
+                    // There is more, and no line left to put it on.
+                    if let Some(line) = out.last_mut() {
+                        line.push('…');
+                    }
+                    break;
+                }
+                out.push(word.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Whether the on-screen keyboard, or the corner hint that stands in for it,
 /// is on screen.
 ///
@@ -6111,6 +7471,96 @@ fn app_id_name(app_id: &str) -> Option<String> {
     let mut letters = name.chars();
     let first = letters.next()?;
     Some(format!("{}{}", first.to_uppercase(), letters.as_str()))
+}
+
+/// The audible part of one cursor move, which is decided by where it landed
+/// rather than by the control that made it.
+///
+/// Leaving a path is the one move that sounds different, because a category
+/// button, the Left direction and a row in the breadcrumb trail are three
+/// spellings of Back. The result is singular even when that click closes
+/// several levels.
+///
+/// Only reached for a move that landed: the call is under the test for it, so
+/// there is no silent case here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorFeedback {
+    Step,
+    Back,
+}
+
+fn cursor_feedback(before_depth: usize, after_depth: usize) -> CursorFeedback {
+    if after_depth < before_depth {
+        CursorFeedback::Back
+    } else {
+        CursorFeedback::Step
+    }
+}
+
+/// Which of the shell's own screens a press was made on.
+///
+/// Only the two that have a voice. A press inside a context menu, a dialog or
+/// the on-screen keyboard is that component's own and never reaches here —
+/// see [`Shell::guide_stepped`] for why a component keeps its sound wherever
+/// it is raised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Start,
+    Guide,
+}
+
+/// The audible part of one press on a screen of the shell's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChosenFeedback {
+    /// The press acted on nothing: an inert tile, a row that starts no
+    /// process. Nothing happened, so nothing says it did.
+    Silent,
+    /// The press was answered, in the voice of the screen it was made on.
+    Kept,
+}
+
+/// What pressing the guide's selected tile or row is about to do.
+///
+/// Read before the press is carried out, because carrying it out is what makes
+/// the answer untrue: Resume closes the overlay, and by the time it has, the
+/// application it handed the screen to is no longer behind anything.
+///
+/// Every press the guide answers at all it answers in its own voice, the
+/// applications included. `app-launch.ogg` belongs to Start, where a press
+/// *starts* something; the guide only ever goes back to what is already
+/// running, and a screen with a voice of its own does not borrow another's for
+/// half its rows. See [`Shell::answer_choice`].
+fn chosen_feedback(item: Item, pointer_target: bool) -> ChosenFeedback {
+    match item {
+        // Two controls that are drawn but inert when there is nothing for them
+        // to act on: the stick switch with no application to attach it to, and
+        // the brightness bar, which has no equivalent of silencing a session.
+        Item::Pointer if !pointer_target => ChosenFeedback::Silent,
+        Item::Brightness => ChosenFeedback::Silent,
+        _ => ChosenFeedback::Kept,
+    }
+}
+
+/// Whether the session belongs to Start closely enough to carry its background
+/// music.
+///
+/// One answer for the whole session rather than one per display, which is the
+/// point of it: the music is not a property of a screen but of what the user is
+/// doing, and somebody playing a game on one display and leaving Start up on
+/// the other is playing a game. So a single application open anywhere ends it,
+/// whichever display holds control and whatever is drawn on the rest. What is
+/// left is the session where every screen is the Start screen, which is the
+/// only one it belongs to.
+///
+/// A launch or a restore is the same answer arriving early: the display is
+/// already being handed over, and waiting for the compositor's foreground event
+/// would leave the music playing into the first second of the application.
+///
+/// The guide is not a screen that stops it: raised over an otherwise empty
+/// Start it keeps the same background, exactly as the bar it was raised from
+/// does. With no display there is no Start screen to hear.
+fn xmb_music_wanted(has_panel: bool, apps_open: bool, handing_over: bool) -> bool {
+    has_panel && !apps_open && !handing_over
 }
 
 /// Whether the right stick is aiming the pointer, as a rule on its own.
@@ -6276,6 +7726,10 @@ struct Touch {
     /// Whether it has since travelled far enough to be a drag rather than a
     /// tap, in which case letting go of it presses nothing.
     dragged: bool,
+    /// Whether putting it down was what moved control to this display, in
+    /// which case letting go of it presses nothing either: the tap is spent on
+    /// the move.
+    claimed: bool,
 }
 
 /// A key currently held down on the keyboard, and when it next acts.
@@ -6651,6 +8105,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "right" => Action::Right,
         "prev-screen" => Action::PrevScreen,
         "next-screen" => Action::NextScreen,
+        "screenshot" => Action::Screenshot,
         other => return Err(format!("unknown action {other:?}")),
     };
     Ok((at, action))
@@ -6710,6 +8165,39 @@ fn knob(bar: guide::Bar) -> Knob {
         guide::Bar::Volume => Knob::Volume,
         guide::Bar::Brightness => Knob::Brightness,
     }
+}
+
+/// How far one direction moves the mixer's System row.
+///
+/// The same step the machine's own controls take, deliberately: the row sits
+/// in a column with the applications' rows and under the sidebar's own bars,
+/// and a row that travelled at a different pace from the ones around it would
+/// be a different control that happened to look the same.
+const SHELL_SOUND_STEP: f32 = 0.05;
+
+/// Move the shell's own sound by one step. Reports whether it moved.
+///
+/// Turning it up is also how a silenced shell is brought back, which is what
+/// every volume control on the machine does — [`Quick::nudge`] included, and
+/// this row is the one beside those.
+fn nudge_shell_sound(delta: i32) -> bool {
+    let sound = settings::sound();
+    let value = (sound.value + delta as f32 * SHELL_SOUND_STEP).clamp(0.0, 1.0);
+    settings::set_sound(system::Level {
+        value,
+        muted: sound.muted && delta <= 0,
+    })
+}
+
+/// Put it exactly where the groove was clicked, on the same terms: dragging a
+/// silenced shell up brings it back, because it is the same gesture made with
+/// a different instrument.
+fn set_shell_sound(value: f32) -> bool {
+    let sound = settings::sound();
+    settings::set_sound(system::Level {
+        value,
+        muted: sound.muted && value <= sound.value,
+    })
 }
 
 /// Adapts the renderer's atlas lookup to what the layout code needs.
@@ -6922,8 +8410,7 @@ impl PointerHandler for Shell {
                     // here, however long ago that was.
                     self.pointer_enter = Some(serial);
                     self.pointer_shape = None;
-                    let spot = self.point(index, x, y);
-                    self.hover(qh, spot);
+                    self.hover(qh, index, x, y);
                 }
                 PointerEventKind::Leave { .. } => {
                     self.pointer_enter = None;
@@ -6933,14 +8420,15 @@ impl PointerHandler for Shell {
                     self.scrolled = (0.0, 0.0);
                 }
                 PointerEventKind::Motion { .. } => {
-                    let spot = self.point(index, x, y);
-                    self.hover(qh, spot);
+                    self.hover(qh, index, x, y);
                 }
                 // On the press rather than the release, because that is when a
                 // key on a keyboard fires, when a controller's `A` fires, and
                 // when every other button in this shell fires.
                 PointerEventKind::Press { button, .. } => {
-                    let spot = self.point(index, x, y);
+                    let Some(spot) = self.press_on(index, x, y) else {
+                        continue;
+                    };
                     match button {
                         BTN_LEFT => self.press_at(spot),
                         // The context menu is the pad's `Y`: the short list of
@@ -6960,7 +8448,10 @@ impl PointerHandler for Shell {
                 } => {
                     // Where the wheel was turned decides which display it turns
                     // rather than what on it: it moves the selection, and where
-                    // the selection is is not the pointer's business.
+                    // the selection is is not the pointer's business. Turning
+                    // it is an act on that display in the way that resting the
+                    // pointer over it is not, so it takes control exactly as a
+                    // click does — and then turns the display it has taken.
                     self.focus_panel(index);
                     self.scroll_by(&horizontal, &vertical);
                 }
@@ -6993,15 +8484,24 @@ impl TouchHandler for Shell {
             return;
         };
         let at = (position.0 as f32, position.1 as f32);
+        // A finger put down on a display that has not got control takes it, and
+        // that is the whole of what this touch does — the same rule a click
+        // follows, and for the same reason: what it would otherwise press was
+        // chosen on a screen that was not being driven when it was touched.
+        let claimed = self.focus_panel(index);
         self.touches.insert(
             id,
             Touch {
                 panel: index,
                 at,
                 dragged: false,
+                claimed,
             },
         );
-        let spot = self.point(index, at.0, at.1);
+        if claimed {
+            return;
+        }
+        let spot = self.spot_at(index, at.0, at.1);
         self.point_at(spot);
     }
 
@@ -7018,10 +8518,10 @@ impl TouchHandler for Shell {
         let Some(touch) = self.touches.remove(&id) else {
             return;
         };
-        if touch.dragged {
+        if touch.dragged || touch.claimed {
             return;
         }
-        let spot = self.point(touch.panel, touch.at.0, touch.at.1);
+        let spot = self.spot_at(touch.panel, touch.at.0, touch.at.1);
         self.press_at(spot);
     }
 
@@ -7293,9 +8793,54 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                     }
                 }
             }
+            lxb_shell_v1::Event::ShareRequest { id, app_id } => {
+                tracing::info!(id, %app_id, "the portal is asking about the screen");
+                state.ask_to_share(id, &app_id);
+            }
+            lxb_shell_v1::Event::Screenshot { output } => {
+                tracing::debug!("screenshot binding forwarded by the compositor");
+                state.screenshot_output(&output);
+            }
+            lxb_shell_v1::Event::OutputCaptured { output, path } => {
+                let name = state
+                    .panels
+                    .iter()
+                    .find(|panel| panel.output == output)
+                    .map(|panel| panel.name.clone())
+                    .unwrap_or_default();
+                // No panel either way. The picture itself is the answer the
+                // user gets — that, the flash the display gave when it was
+                // taken, and the shutter beside it — so these lines are for
+                // the session that has to be told why there is no picture.
+                match (!path.is_empty()).then(|| PathBuf::from(path)) {
+                    Some(saved) => {
+                        // Only on the answer, and only on a good one: the
+                        // compositor sends this once the file is written and
+                        // starts the flash in the same breath, so the sound
+                        // and the flash arrive together and both mean a
+                        // picture exists rather than that a chord was spelled.
+                        state.sounds.shutter();
+                        // And it is a picture in the user's pictures, so it
+                        // belongs on the shelf now rather than whenever the
+                        // walk next comes round. This is the file it just
+                        // named, so nothing has to be searched for.
+                        state.media.found(&saved);
+                        tracing::info!(display = %name, ?saved, "photographed a display")
+                    }
+                    None => {
+                        tracing::warn!(display = %name, "the display could not be photographed")
+                    }
+                }
+            }
             lxb_shell_v1::Event::WindowCaptured { id, path } => {
                 let saved = (!path.is_empty()).then(|| PathBuf::from(path));
                 tracing::info!(id, ?saved, "the compositor answered a screenshot");
+                // A photograph of one window is a photograph, and lands in the
+                // same folder as any other. On the shelf as it is taken, for
+                // the reason a whole display's is.
+                if let Some(saved) = saved.as_deref() {
+                    state.media.found(saved);
+                }
                 // Nothing pending means nothing asked: another shell's
                 // screenshot, or one this shell gave up on. Either way there is
                 // no control left for a panel to grow out of.
@@ -7921,11 +9466,95 @@ mod flight_tests {
         // was on screen after all.
         assert_eq!(home_flight_start(true, true), 0.0);
     }
+
+    /// The music belongs to a session with nothing running in it, not to
+    /// whichever screen happens to hold control.
+    ///
+    /// The bug it was reported as: an application on the first display and
+    /// Start on the second, and moving to the second started the music up
+    /// behind the application. Both screens are the user's, and one of them has
+    /// a program on it.
+    #[test]
+    fn music_belongs_to_a_session_with_nothing_open_in_it() {
+        // Every screen showing Start, and nothing being handed over: the one
+        // session the music is for. The guide raised over it is still that
+        // session — see [`xmb_music_wanted`].
+        assert!(xmb_music_wanted(true, false, false));
+
+        // One application open anywhere ends it, whichever display it is on and
+        // whatever the display holding control is showing.
+        assert!(!xmb_music_wanted(true, true, false));
+
+        // And a handoff wins even while the screen still contains Start's
+        // pixels: the launch splash and the window flying back are both the
+        // moment before an application has the display.
+        assert!(!xmb_music_wanted(true, false, true));
+
+        // No output means there is no Start screen to hear it. Hotplug makes
+        // this a false-to-true edge, so the track begins at sample zero.
+        assert!(!xmb_music_wanted(false, false, false));
+    }
 }
 
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    /// Left and Back reach the same path exit through different input routes,
+    /// while a pointer can cross several breadcrumb rows in one press. All of
+    /// them are one user action and therefore one back sound.
+    #[test]
+    fn leaving_a_path_has_one_distinct_piece_of_feedback() {
+        assert_eq!(cursor_feedback(1, 0), CursorFeedback::Back);
+        assert_eq!(cursor_feedback(3, 0), CursorFeedback::Back);
+
+        // Everything else that landed is the ordinary step, whether it was a
+        // direction along a column, a direction into one, or a click that put
+        // the selection on a row outright.
+        assert_eq!(cursor_feedback(1, 1), CursorFeedback::Step);
+        assert_eq!(cursor_feedback(1, 2), CursorFeedback::Step);
+        assert_eq!(cursor_feedback(0, 0), CursorFeedback::Step);
+    }
+
+    /// Every row of the guide that does anything answers in the guide's own
+    /// voice — the rows that hand an application the display included.
+    ///
+    /// Resume with something running behind the overlay is the row this is
+    /// about. It used to take `app-launch.ogg`, on the grounds that being
+    /// handed the screen is one event however it was asked for; the user's rule
+    /// is the other way round, and it is about the screens rather than about
+    /// the applications. That clip belongs to Start, where a press *starts*
+    /// something. The guide only ever goes back to what is already up.
+    #[test]
+    fn every_guide_row_that_acts_answers_in_the_guides_own_voice() {
+        for item in [
+            Item::Resume,
+            Item::Close,
+            Item::Mixer,
+            Item::Dashboard,
+            Item::Power,
+            Item::Volume,
+        ] {
+            assert_eq!(
+                chosen_feedback(item, true),
+                ChosenFeedback::Kept,
+                "{item:?} is answered by the screen it was pressed on"
+            );
+        }
+
+        // The stick switch with an application to attach itself to is a
+        // switch; with none it is drawn and inert, and a control that did
+        // nothing must not say it did. The brightness bar has no press at all.
+        assert_eq!(chosen_feedback(Item::Pointer, true), ChosenFeedback::Kept);
+        assert_eq!(
+            chosen_feedback(Item::Pointer, false),
+            ChosenFeedback::Silent
+        );
+        assert_eq!(
+            chosen_feedback(Item::Brightness, true),
+            ChosenFeedback::Silent
+        );
+    }
 
     /// A `tm` for a given local moment, so the header can be asserted on
     /// without waiting for the clock to say the right thing.
@@ -8338,5 +9967,143 @@ mod file_menu_tests {
                 .collect();
             assert_eq!(modified, [true, true]);
         }
+    }
+}
+
+#[cfg(test)]
+mod authentication_tests {
+    use super::*;
+
+    fn request(message: &str, yourself: bool) -> polkit::Request {
+        polkit::Request {
+            cookie: "1-cookie".to_string(),
+            message: message.to_string(),
+            action_id: "org.example.action".to_string(),
+            user: "root".to_string(),
+            yourself,
+        }
+    }
+
+    /// The one rule about this panel: what is typed into it never reaches the
+    /// layout. The field is a count of characters, and the password is not in
+    /// any line of it at any length.
+    #[test]
+    fn the_field_is_a_count_and_the_panel_never_holds_the_password() {
+        for typed in [0, 1, 8, 400] {
+            let lines = authentication_lines(
+                "Authentication is required to install software",
+                "Enter your password to allow this.",
+                typed,
+            );
+            let secrets: Vec<&dialog::Line> = lines
+                .iter()
+                .filter(|line| matches!(line, dialog::Line::Secret { .. }))
+                .collect();
+            assert_eq!(secrets.len(), 1, "one field, always");
+            assert_eq!(secrets[0], &dialog::Line::Secret { typed });
+
+            // Nothing else on the panel says anything about it — not even how
+            // long it is.
+            for line in &lines {
+                if let dialog::Line::Heading(text) | dialog::Line::Note(text) = line {
+                    assert!(
+                        !text.contains(&typed.to_string()) || typed == 0,
+                        "{text} is counting the password out loud"
+                    );
+                }
+            }
+        }
+    }
+
+    /// polkit's message is written by whoever wrote the policy file, and the
+    /// panel gives a note one line. It is broken between words rather than cut
+    /// mid-word by the drawing.
+    #[test]
+    fn a_long_message_is_broken_between_words_rather_than_cut() {
+        let message = "Authentication is required to install untrusted software \
+                       from a repository nobody has heard of";
+        let lines = authentication_lines(message, "Enter your password.", 0);
+        let notes: Vec<&str> = lines
+            .iter()
+            .filter_map(|line| match line {
+                dialog::Line::Note(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The message's lines, and the instruction under them.
+        assert!(notes.len() > 2, "{notes:?} did not wrap");
+        assert!(notes
+            .iter()
+            .all(|note| note.chars().count() <= MESSAGE_WIDTH + 1));
+        // Every word survives, in order, with nothing invented.
+        let rejoined = notes[..notes.len() - 1].join(" ");
+        let cut = rejoined.trim_end_matches('…');
+        assert!(
+            message
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .starts_with(cut),
+            "{rejoined} is not the message"
+        );
+        assert_eq!(notes[notes.len() - 1], "Enter your password.");
+    }
+
+    /// A message longer than the panel says so rather than stopping mid
+    /// sentence as though that were all of it.
+    #[test]
+    fn a_message_with_no_end_in_sight_ends_in_an_ellipsis() {
+        let long = "word ".repeat(200);
+        let cut = wrapped(&long, MESSAGE_WIDTH, MESSAGE_LINES);
+        assert_eq!(cut.len(), MESSAGE_LINES);
+        assert!(cut.last().is_some_and(|line| line.ends_with('…')));
+
+        // And one that fits does not: an ellipsis on a complete sentence would
+        // say something had been left out.
+        let short = wrapped("Authentication is required", MESSAGE_WIDTH, MESSAGE_LINES);
+        assert_eq!(short, vec!["Authentication is required"]);
+
+        // A single word too long to break is left whole rather than split into
+        // two halves of a word nobody can read.
+        let one = "supercalifragilisticexpialidocious-and-then-some-more-of-it";
+        assert_eq!(wrapped(one, MESSAGE_WIDTH, MESSAGE_LINES), vec![one]);
+    }
+
+    /// Whose password it is is the part the user needs, so PAM's "Password: "
+    /// — a label for a field the panel has already drawn — does not replace
+    /// the sentence that says it.
+    #[test]
+    fn the_usual_prompt_is_replaced_and_an_unusual_one_is_shown_as_it_came() {
+        let mine = request("...", true);
+        let theirs = request("...", false);
+        assert_eq!(waiting_note(&mine), "Enter your password to allow this.");
+        assert_eq!(waiting_note(&theirs), "Enter the password for root.");
+
+        for usual in [
+            "Password:",
+            "Password: ",
+            "password",
+            "",
+            "Password for root:",
+        ] {
+            assert_eq!(prompt_note(usual, &mine), waiting_note(&mine), "{usual:?}");
+            assert_eq!(
+                prompt_note(usual, &theirs),
+                waiting_note(&theirs),
+                "{usual:?}"
+            );
+        }
+
+        // Anything the shell does not recognise is shown as PAM wrote it: it
+        // has no idea what is being asked for and must not pretend to.
+        assert_eq!(
+            prompt_note("One-time code: ", &mine),
+            "One-time code:",
+            "a code the shell invented a sentence for is a code nobody can type"
+        );
+        assert_eq!(
+            prompt_note("Verification code", &theirs),
+            "Verification code"
+        );
     }
 }

@@ -1,0 +1,116 @@
+<!--
+  The panel that asks the user to prove they may do something: a padlock,
+  closed.
+
+  A padlock rather than a key or a shield. A key is the thing being asked for
+  and would read as "here is one"; a shield is what a security product puts on
+  its own box. A closed padlock is the state of the machine at the moment the
+  question is asked, which is the one thing the panel is about.
+
+  Drawn on the same terms as the rest of the set — see pointer-stick.svg for
+  what each gradient below is doing. Two departures, both forced by the object:
+
+  * The shackle is a *filled* ring rather than a stroked arc, because a stroke
+    takes one colour across its whole width and the whole point of this shape
+    is that the outer wall catches the lamp while the inner wall turns away
+    from it. Filled, the two walls can be lit against each other.
+  * The keyhole is the display glyph's recess and never black. The atlas
+    multiplies the quad's colour into the texel, so a near-black mark comes
+    back as a hole punched through the drawing rather than as a shadow in it.
+
+  The body is deliberately wide and the shackle short: at the 27px a menu row
+  gives a glyph, a correctly proportioned padlock is a tall thin thing with a
+  wire on top, and the wire is the first casualty of the rasteriser.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f7f7"/>
+      <stop offset="0.35" stop-color="#ebebeb"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dedede"/>
+      <stop offset="0.92" stop-color="#ededed"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The keyhole, sunk into the body: darkest under the near wall,
+         returning the lamp off the far one. -->
+    <radialGradient id="recess" cx="0.5" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#9a9a9a"/>
+      <stop offset="0.55" stop-color="#adadad"/>
+      <stop offset="1" stop-color="#dcdcdc"/>
+    </radialGradient>
+
+    <!-- The shackle, as a ring with the bore taken back out of it and the
+         bottom left open, so both of its walls are drawn. -->
+    <path id="shackle"
+          d="M16 2.6a7.1 7.1 0 0 1 7.1 7.1v5.1h-3.5V9.7a3.6 3.6 0 0 0-7.2 0v5.1H8.9V9.7
+             A7.1 7.1 0 0 1 16 2.6z"/>
+    <clipPath id="shackle-clip"><use href="#shackle"/></clipPath>
+
+    <path id="body"
+          d="M7.4 13.9h17.2a2.6 2.6 0 0 1 2.6 2.6v10.3a2.6 2.6 0 0 1-2.6 2.6H7.4
+             a2.6 2.6 0 0 1-2.6-2.6V16.5a2.6 2.6 0 0 1 2.6-2.6z"/>
+    <path id="body-gloss" d="M3 11h26v8.2C21.2 21.4 10.8 21.4 3 19.2z"/>
+    <clipPath id="body-clip"><use href="#body"/></clipPath>
+
+    <!-- A round bore with a tapered slot under it: the shape a key turns in,
+         and the one part of a padlock that says which way up it is. -->
+    <path id="keyhole"
+          d="M16 17.6a2.3 2.3 0 0 1 1.2 4.25l1 4.05h-4.4l1-4.05A2.3 2.3 0 0 1 16 17.6z"/>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- The shackle first, so the body stands in front of its feet rather
+         than being cut by them. -->
+    <use href="#shackle" fill="url(#face)"/>
+    <g clip-path="url(#shackle-clip)">
+      <!-- The inner wall, turned away from the lamp: a soft dark band down
+           the bore, which is what gives the ring a thickness. -->
+      <path d="M16 6.1a3.6 3.6 0 0 0-3.6 3.6v5.1h-1.1V9.7A4.7 4.7 0 0 1 16 5z"
+            fill="#000000" fill-opacity="0.14" filter="url(#polish)"/>
+      <path d="M16 3.6a6.1 6.1 0 0 0-6.1 6.1h1.2A4.9 4.9 0 0 1 16 4.8z"
+            fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#shackle" fill="url(#turn)"/>
+    <use href="#shackle" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+
+    <use href="#body" fill="url(#face)"/>
+    <g clip-path="url(#body-clip)">
+      <use href="#body-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#body" fill="url(#turn)"/>
+
+    <use href="#keyhole" fill="url(#recess)"/>
+    <use href="#keyhole" fill="none" stroke="#ffffff" stroke-opacity="0.5"
+         stroke-width="0.45"/>
+
+    <g clip-path="url(#body-clip)">
+      <use href="#body" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+  </g>
+</svg>

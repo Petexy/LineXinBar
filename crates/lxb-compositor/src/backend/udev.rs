@@ -173,6 +173,24 @@ impl UdevBackend {
             .map_err(|err| anyhow::anyhow!("no renderer to photograph the window with: {err}"))?;
         crate::capture::window(&mut renderer, window, scale)
     }
+
+    /// On the primary GPU, whichever one this display hangs off.
+    ///
+    /// The same choice [`Self::capture_window`] makes, and for the same reason:
+    /// the picture is read back into main memory, and the primary is where
+    /// every client's buffers are importable. A display driven by a second GPU
+    /// is composited here and copied, exactly as its own frames are.
+    pub fn capture_output(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &Output,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        let mut renderer = self
+            .gpus
+            .single_renderer(&self.primary_gpu)
+            .map_err(|err| anyhow::anyhow!("no renderer to photograph the display with: {err}"))?;
+        crate::capture::output(&mut renderer, lxb, output)
+    }
 }
 
 /// Bring up the compositor on real hardware.
@@ -775,6 +793,9 @@ fn remove_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         .remove_output(&mut state.lxb.space, &surface.output, &config);
     // What it was set to survives; what it can do does not, until it is back.
     state.lxb.hdr.disconnected(&surface.output);
+    // And nothing can be recorded off a connector that is no longer there, so
+    // whoever was waiting on a frame of it is told rather than left waiting.
+    state.lxb.screencopy.output_gone(&surface.output);
     // Nor can it be driven at anything, or turned, until then — which the
     // shell's pages have to hear about the same way they heard it arrive.
     state.refresh_modes();
@@ -1141,6 +1162,38 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
 
     let time = state.lxb.start_time.elapsed();
     post_repaint(&state.lxb, &output, time, None);
+    serve_screencopy(state, &output, time);
+}
+
+/// Answer whatever is recording this display, now that its frame has been
+/// drawn.
+///
+/// On the primary GPU, for the reason a screenshot is taken there: the picture
+/// is composited into a buffer of our own rather than scanned out, and the
+/// primary is where every client's own buffers are importable.
+fn serve_screencopy(state: &mut LxbState, output: &Output, time: Duration) {
+    if !state.lxb.screencopy.wanted(output) {
+        return;
+    }
+    let LxbState { backend, lxb } = state;
+    let super::Backend::Udev(udev) = backend else {
+        return;
+    };
+    let UdevBackend {
+        gpus,
+        cursor,
+        primary_gpu,
+        ..
+    } = &mut **udev;
+    let mut renderer = match gpus.single_renderer(primary_gpu) {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            tracing::warn!(?err, display = %output.name(), "no renderer to copy the screen with");
+            return;
+        }
+    };
+    let cursor = lxb.config.general.draw_cursor.then_some(cursor);
+    crate::screencopy::serve(&mut renderer, lxb, output, cursor, time);
 }
 
 /// Put a display's HDR settings into force, if it is waiting for any.

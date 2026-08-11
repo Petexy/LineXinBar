@@ -4,6 +4,7 @@ members = [
     "crates/lxb-compositor",
     "crates/lxb-protocol",
     "crates/lxb-desktop",
+    "crates/lxb-portal",
 ]
 
 [workspace.package]

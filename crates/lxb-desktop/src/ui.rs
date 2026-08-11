@@ -16,7 +16,7 @@
 //! the columns behind stay on screen showing only the row each was opened
 //! from — the trail that reads, left to right, as the path taken.
 
-use crate::apps::Entry;
+use crate::apps::{Entry, Role};
 use crate::dialog::{Dialog, Line};
 use crate::gpu::{Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
 use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
@@ -110,6 +110,19 @@ const CARD_CORNER: f32 = 0.09;
 /// a square this size with room to spare.
 const ITEM_DISC: f32 = std::f32::consts::SQRT_2 * 1.04;
 const CATEGORY_DISC: f32 = 1.30;
+/// What says where the next letter will land, in the one row of the bar that
+/// can be typed into.
+///
+/// A character on the end of the string rather than a quad drawn after it,
+/// because the text is shaped on the GPU and nothing on this side of the wire
+/// knows how wide a word comes out. A bar positioned from here would be near
+/// the end of the query rather than at it, and near is worse than nothing.
+///
+/// It does not blink. A blink is a redraw twice a second for as long as the
+/// board is up, on a shell that otherwise draws only when something has
+/// happened — and a caret that simply stays put is no harder to find, which is
+/// the only thing blinking was ever for.
+const CARET: char = '|';
 /// The selected category's name, and the air on either side of it.
 ///
 /// Not the same air above as below. A label belongs to the thing it names, and
@@ -699,16 +712,34 @@ impl Scene {
 
         // A display clips whatever runs past its edges — the category row
         // carries on off both sides — but a card has no edge to hide an
-        // overhang against, so what the display would cut is dropped here
-        // instead. Text keeps any run that shows at all: its box is a
-        // generous wrapping width rather than the ink, and a right-aligned
-        // clock reaches the edge without ever touching it.
-        self.quads
-            .retain(|q| q.x >= 0.0 && q.y >= 0.0 && q.x + q.w <= width && q.y + q.h <= height);
-        self.texts.retain(|t| {
-            t.x < width && t.y < height && t.x + t.max_width > 0.0 && t.y + t.size > 0.0
-        });
-        for quad in &mut self.quads {
+        // overhang against. So the display's own edges travel into the card
+        // with the scene: everything is cut to them first, and what the screen
+        // never showed is not shown in the miniature either.
+        //
+        // The category row is what this is about. Open a path and the row
+        // slides off the left edge with it, and every category's name is
+        // centred on a box wider than the button it sits under — so the name of
+        // the one the path hangs off reaches past the edge long before the
+        // button does, and on a display narrower than the reference one the
+        // button goes past it as well.
+        //
+        // Cut rather than dropped, which is the whole of the difference. A
+        // dropped icon is one that *vanishes* the moment the guide is pressed
+        // and reappears whole when it closes — the icon of the category a path
+        // was opened from, and the mark on the trail beside it, gone from a
+        // card that is meant to be a picture of the screen behind it. Cut, it
+        // is the same half of an icon in the card as it is on the display.
+        let screen = [0.0, 0.0, width, height];
+        self.quads.retain_mut(|quad| {
+            let clip = match quad.clip {
+                Some(clip) => intersection(clip, screen),
+                None => screen,
+            };
+            // Nothing of it was on the screen, so nothing of it is in the card.
+            let shown = intersection([quad.x, quad.y, quad.w, quad.h], clip);
+            if shown[2] <= 0.0 || shown[3] <= 0.0 {
+                return false;
+            }
             quad.x = x + quad.x * scale;
             quad.y = y + quad.y * scale;
             quad.w *= scale;
@@ -722,16 +753,39 @@ impl Scene {
             // scene this one is part of, at the same scale. A slab left at
             // full depth in a thumbnail would be a card-sized bevel.
             quad.thickness *= scale;
-        }
-        for text in &mut self.texts {
+            let [cx, cy, cw, ch] = clip;
+            quad.clip = Some([x + cx * scale, y + cy * scale, cw * scale, ch * scale]);
+            true
+        });
+        // Text keeps any run that shows at all: its box is a generous wrapping
+        // width rather than the ink, and a right-aligned clock reaches the edge
+        // without ever touching it.
+        self.texts.retain(|t| {
+            t.x < width && t.y < height && t.x + t.max_width > 0.0 && t.y + t.size > 0.0
+        });
+        // Kept is not the same as kept whole for a run either: one the display
+        // cuts in half has to be cut here too, or the half the screen never
+        // showed is drawn outside the card — the word "Multimedia" on the
+        // wallpaper beside the very miniature it is part of.
+        self.texts.retain_mut(|text| {
+            // Whatever was already standing over the run, cut down to the
+            // screen: both are rectangles in the display's own pixels, and
+            // both have to travel into the card.
+            let clip = match text.clip {
+                Some(clip) => intersection(clip, screen),
+                None => screen,
+            };
+            if clip[2] <= 0.0 || clip[3] <= 0.0 {
+                return false;
+            }
             text.x = x + text.x * scale;
             text.y = y + text.y * scale;
             text.size *= scale;
             text.max_width *= scale;
-            text.clip = text
-                .clip
-                .map(|[cx, cy, cw, ch]| [x + cx * scale, y + cy * scale, cw * scale, ch * scale]);
-        }
+            let [cx, cy, cw, ch] = clip;
+            text.clip = Some([x + cx * scale, y + cy * scale, cw * scale, ch * scale]);
+            true
+        });
     }
 
     /// Scale everything in this scene by `factor`, then shift it by `offset`.
@@ -750,6 +804,17 @@ impl Scene {
             quad.border *= factor;
             quad.notch *= factor;
             quad.thickness *= factor;
+            // Whatever is cutting the pane travels with it, for the same
+            // reason a run's does: this is the same scene arriving somewhere
+            // else, not a new one.
+            quad.clip = quad.clip.map(|[x, y, w, h]| {
+                [
+                    x * factor + offset[0],
+                    y * factor + offset[1],
+                    w * factor,
+                    h * factor,
+                ]
+            });
         }
         for text in &mut self.texts {
             text.x = text.x * factor + offset[0];
@@ -921,11 +986,20 @@ pub trait SlotLookup {
 /// A property of the *column* and not of what has loaded: the rows have to
 /// stand in the same places from the first frame, or arriving thumbnails would
 /// walk the list up and down under the cursor.
+///
+/// Asked of the first row that knows — which on a shelf is the search at the
+/// head of it, and that one knows without a single file under it. So a column
+/// searched down to nothing is still a column of photographs, and the rows do
+/// not change shape underneath the user as a match arrives.
 fn shows_pictures(entries: &[Entry]) -> bool {
     entries
-        .first()
-        .and_then(Entry::media)
-        .is_some_and(|file| file.kind.has_picture())
+        .iter()
+        .find_map(|entry| match entry {
+            Entry::Media(file) => Some(file.kind),
+            Entry::Search(search) => Some(search.kind),
+            _ => None,
+        })
+        .is_some_and(crate::media::Kind::has_picture)
 }
 
 /// Lay out one display's bar.
@@ -935,6 +1009,13 @@ fn shows_pictures(entries: &[Entry]) -> bool {
 /// they are pointing at, dimmed, rather than a copy of this one.
 ///
 /// `time` runs the selection pulse.
+///
+/// `typing` is whether the on-screen keyboard is typing into this display's
+/// bar, which happens in exactly one place: the search field at the head of a
+/// column of the user's own files. It is what puts the caret on that row, and
+/// it is a per-display answer rather than something the row itself carries —
+/// the board is up on one screen, and a caret blinking away on the other would
+/// be a field nobody is typing into.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     xmb: &Xmb,
@@ -945,6 +1026,7 @@ pub fn build(
     clock: Option<&str>,
     time: f32,
     slots: &impl SlotLookup,
+    typing: bool,
 ) -> Scene {
     let mut quads = Vec::new();
     let mut texts = Vec::new();
@@ -1355,6 +1437,15 @@ pub fn build(
                 ));
             }
 
+            // The row being typed into, if this is it. The open column only:
+            // the same field is drawn on the trail behind a step further in,
+            // and a caret back there would say the keyboard was going to that
+            // one.
+            let field = (typing && selected && column.standing == Standing::Open)
+                .then(|| entry.search())
+                .flatten()
+                .filter(|search| search.role == Role::Field);
+
             if selected {
                 let name_size = 30.0 * scale * near;
                 let comment = entry.comment();
@@ -1366,7 +1457,15 @@ pub fn build(
                     y - name_size * 0.62
                 };
                 texts.push(Text {
-                    content: entry.title().to_string(),
+                    // The query and the caret, rather than what the row is
+                    // called. They part company on an empty field: the row is
+                    // called "Search" while nobody is in it, and a field being
+                    // typed into that still said so would be a field with a
+                    // word already in it.
+                    content: match field {
+                        Some(search) => format!("{}{CARET}", search.query),
+                        None => entry.title().to_string(),
+                    },
                     x: text_x,
                     y: name_y,
                     size: name_size,
@@ -1414,6 +1513,17 @@ pub fn build(
     // It rides the same slide the columns do, so the category a path was
     // opened from stays directly above the head of that path.
     let inside = depth.clamp(0.0, 1.0);
+    // How much of the way out of the row the bar has come, for the purpose of
+    // taking the row's ink away: the ramp a column leaves on rather than the
+    // slide itself, and for exactly the reason [`departing`] exists.
+    //
+    // The row used to fade in step with the move, which put it at half
+    // strength across the middle of the step in — while the column being
+    // opened was at half strength coming up over it. That is two rows of
+    // things printed over one another, and a shelf is the worst case of it:
+    // the pictures are wide, they cross the whole row, and what they land on
+    // is a rank of half-lit icons rather than the wallpaper.
+    let stepped_in = 1.0 - departing(1.0 - inside);
     // The row stands a step behind the outermost column, which is a step
     // behind the one in front of that, and so on to the column the user is
     // in — so at two subcategories deep the row is three steps back. The extra
@@ -1445,7 +1555,9 @@ pub fn build(
         // Inside a subcategory it does fade, and to nothing: the map is not
         // where the user is standing, and the row's other columns are not
         // reachable from in there — Left comes back out first. What is left is
-        // the one category the path hangs off.
+        // the one category the path hangs off. It goes on the way *in*, not
+        // over the whole slide — see `stepped_in` — so the column opening has
+        // clear ground to arrive on.
         //
         // And it dissolves at the near edge as a deepening path carries it
         // off, for the same reason a column does — but only for that reason:
@@ -1459,7 +1571,7 @@ pub fn build(
         let gone = lerp(1.0, leaving(x, scale), inside);
         let alpha = (1.0 - distance * 0.10).clamp(CATEGORY_MIN_ALPHA, 1.0)
             * attention
-            * (1.0 - inside * (1.0 - handover))
+            * (1.0 - stepped_in * (1.0 - handover))
             * row_clarity
             * gone;
         let icon_size = lerp(CATEGORY_ICON, CATEGORY_ICON_FOCUSED, focus) * scale * row_near;
@@ -5367,7 +5479,7 @@ mod tests {
         focused: bool,
         slots: &impl SlotLookup,
     ) -> Scene {
-        build(xmb, cursor, width, height, focused, None, 0.0, slots)
+        build(xmb, cursor, width, height, focused, None, 0.0, slots, false)
     }
 
     fn settle(cursor: &mut Cursor) {
@@ -6496,6 +6608,110 @@ mod tests {
         build_with(xmb, &cursor, width, height, true, slots)
     }
 
+    /// A shelf as the worker hands it over: the field, whatever the search has
+    /// left, and the row that puts the rest back.
+    fn shelf(kind: crate::media::Kind, query: &str, paths: &[&str], found: usize) -> Xmb {
+        let listing = paths
+            .iter()
+            .map(|path| {
+                std::sync::Arc::new(crate::media::File::at(Path::new(path)).expect("a file"))
+            })
+            .collect();
+        Xmb::new(vec![Category {
+            id: "graphics",
+            title: "Graphics",
+            icon: "g",
+            entries: vec![folder(
+                "Images",
+                crate::apps::media_rows(listing, kind, query, found),
+            )],
+        }])
+    }
+
+    /// The field at the head of a shelf is an ordinary row until the board
+    /// comes up over it, and then it is a field: what it says is what has been
+    /// typed, with the caret on the end of it.
+    #[test]
+    fn only_the_field_being_typed_into_carries_the_caret() {
+        let xmb = shelf(
+            crate::media::Kind::Image,
+            "sun",
+            &["/home/x/Pictures/sunset.jpg"],
+            4,
+        );
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb));
+        // Stepping in lands on the pictures; the field is the row above them.
+        while cursor.navigate(Action::Up, &xmb) {}
+        settle(&mut cursor);
+        let says = |typing: bool| {
+            build(
+                &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, typing,
+            )
+            .texts
+            .into_iter()
+            .map(|text| text.content)
+            .collect::<Vec<String>>()
+        };
+
+        // Nobody typing: the row reads as what the column is filtered by.
+        let quiet = says(false);
+        assert!(quiet.iter().any(|said| said == "sun"), "{quiet:?}");
+        assert!(!quiet.iter().any(|said| said == "sun|"), "{quiet:?}");
+
+        // Typing: the caret is on the end of the query, and on nothing else.
+        // The row below offers to clear the search and is not a field, so a
+        // caret on it would be a second place the letters might be going.
+        let typed = says(true);
+        assert!(typed.iter().any(|said| said == "sun|"), "{typed:?}");
+        assert!(typed.iter().any(|said| said == "Clear search"), "{typed:?}");
+        assert!(
+            !typed
+                .iter()
+                .any(|said| said.ends_with("|") && said != "sun|"),
+            "{typed:?}"
+        );
+    }
+
+    /// An empty field being typed into is empty, rather than holding the word
+    /// that stands in for a field nobody is in.
+    #[test]
+    fn a_field_opened_on_nothing_holds_only_the_caret() {
+        let xmb = shelf(
+            crate::media::Kind::Image,
+            "",
+            &["/home/x/Pictures/sunset.jpg"],
+            1,
+        );
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb));
+        while cursor.navigate(Action::Up, &xmb) {}
+        settle(&mut cursor);
+        let said: Vec<String> = build(
+            &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, true,
+        )
+        .texts
+        .into_iter()
+        .map(|text| text.content)
+        .collect();
+        assert!(said.iter().any(|said| said == "|"), "{said:?}");
+        assert!(!said.iter().any(|said| said == "Search"), "{said:?}");
+    }
+
+    /// A column of photographs searched down to nothing is still a column of
+    /// photographs, so the rows do not change shape underneath the user as the
+    /// first match arrives.
+    #[test]
+    fn a_shelf_narrowed_to_nothing_still_knows_what_it_is_a_shelf_of() {
+        let pictures = crate::apps::media_rows(Vec::new(), crate::media::Kind::Image, "zzz", 12);
+        assert!(shows_pictures(&pictures));
+        let songs = crate::apps::media_rows(Vec::new(), crate::media::Kind::Audio, "zzz", 12);
+        assert!(
+            !shows_pictures(&songs),
+            "music has no picture in it to show"
+        );
+    }
+
     /// The picture is the row. It stands on the card at its own shape, fitted
     /// rather than filled, and the glyph the column is marked with is not
     /// drawn over it.
@@ -6966,7 +7182,9 @@ mod tests {
         let cursor = Cursor::new(1);
 
         let glow_alpha = |time: f32| {
-            let scene = build(&xmb, &cursor, 1920.0, 1080.0, true, None, time, &AllSlots);
+            let scene = build(
+                &xmb, &cursor, 1920.0, 1080.0, true, None, time, &AllSlots, false,
+            );
             scene
                 .quads
                 .iter()
@@ -7320,7 +7538,7 @@ mod tests {
             value: 0.5,
             muted: false,
         };
-        let entry = MenuEntry::new(crate::menu::Command::MuteOutput, "System")
+        let entry = MenuEntry::new(crate::menu::Command::MuteShell, "System")
             .icon("icon")
             .level(level);
 
@@ -8545,6 +8763,85 @@ mod tests {
         );
     }
 
+    /// The map gets out of the way of the column it opens.
+    ///
+    /// Stepping into a subcategory slides a new column up over the category
+    /// row. The row used to give up its ink at the pace of that slide, which
+    /// left it at a third of its strength while the column arriving over it
+    /// was at a third of its own — two things printed over one another across
+    /// the middle of the move, and neither of them readable while it lasted.
+    /// A shelf is the worst of it: the pictures are wide, they cross the whole
+    /// row, and what they landed on was a rank of half-lit icons.
+    #[test]
+    fn the_category_row_goes_before_the_column_it_opens_arrives() {
+        let xmb = Xmb::new(vec![
+            Category {
+                id: "media",
+                title: "Multimedia",
+                icon: "media",
+                entries: vec![folder("Video", vec![app("first"), app("second")])],
+            },
+            Category {
+                id: "apps",
+                title: "Apps",
+                icon: "apps",
+                entries: vec![app("Files")],
+            },
+        ]);
+        let (width, height) = (1920.0, 1080.0);
+        let cross_y = height * BAR_CROSS_Y;
+
+        // What is left of the categories the path did not open — the map,
+        // which is the part that has to go. The one it did open is the head of
+        // the trail and stays: its icon is the larger of the two on the row.
+        let map_ink = |scene: &Scene| {
+            let mut row: Vec<&Quad> = scene
+                .quads
+                .iter()
+                .filter(|quad| is_icon(quad) && ((quad.y + quad.h / 2.0) - cross_y).abs() < 1.0)
+                .collect();
+            row.sort_by(|a, b| b.w.total_cmp(&a.w));
+            row.iter().skip(1).map(|q| q.color[3]).fold(0.0, f32::max)
+        };
+        // And how far up the column that opened has come, read off the row it
+        // opened on.
+        let column_ink = |scene: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == "first")
+                .map_or(0.0, |text| text.color[3])
+        };
+
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        let mut halfway = None;
+        loop {
+            let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let (map, column) = (map_ink(&scene), column_ink(&scene));
+            let inside = cursor.depth_position();
+
+            // Gone outright, and with the slide still running: the same ramp a
+            // column being stepped past leaves on, and the same reason for it.
+            if inside >= 1.0 - COLUMN_GONE_BY {
+                assert_eq!(map, 0.0, "the row still has ink at {inside} of the way in");
+            }
+            // And gone by the time there is anything to read over it.
+            if column >= 0.5 && halfway.is_none() {
+                halfway = Some((inside, map));
+            }
+            if !cursor.animate(1.0 / 60.0) {
+                break;
+            }
+        }
+
+        let (inside, map) = halfway.expect("the column has to arrive");
+        assert!(
+            map < 0.1,
+            "the column was half up at {inside} in with {map} of the map still over it",
+        );
+    }
+
     /// The category row is cut from squircles.
     ///
     /// Two things make one, and a shape needs both: a radius that reaches the
@@ -8897,16 +9194,18 @@ mod tests {
         }]);
         let cursor = Cursor::new(1);
         let full = focused(&xmb, 1920.0, 1080.0, &AllSlots);
-        // What the display itself shows: the row of category icons runs off
-        // the screen, and those are the ones a card cannot keep.
+        // Everything the display puts a pixel of on screen — including the
+        // ones it only puts part of, which the card keeps that same part of.
         let on_screen: Vec<&Quad> = full
             .quads
             .iter()
-            .filter(|q| q.x >= 0.0 && q.y >= 0.0 && q.x + q.w <= 1920.0 && q.y + q.h <= 1080.0)
+            .filter(|q| q.x < 1920.0 && q.y < 1080.0 && q.x + q.w > 0.0 && q.y + q.h > 0.0)
             .collect();
         assert!(on_screen.len() > 1, "the bar should have icons to shrink");
 
-        let mut mini = build(&xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots);
+        let mut mini = build(
+            &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, false,
+        );
         // A card a quarter of the display's width, at its aspect ratio.
         let card = [1200.0, 300.0, 480.0, 270.0];
         mini.place_into(card, 1920.0, 1080.0);
@@ -8917,15 +9216,188 @@ mod tests {
             assert!((small.x - (1200.0 + large.x * 0.25)).abs() < 1e-3);
             assert!((small.y - (300.0 + large.y * 0.25)).abs() < 1e-3);
         }
-        // And all of it lands inside the card, so nothing pokes out past the
-        // frame drawn around it.
+        // And every pixel of it lands inside the card, so nothing pokes out
+        // past the frame drawn around it: a pane may reach beyond the card, as
+        // one reaching past the display's edge does, but only inside the cut it
+        // now carries.
         for quad in &mini.quads {
-            assert!(quad.x >= card[0] - 0.5 && quad.x + quad.w <= card[0] + card[2] + 0.5);
-            assert!(quad.y >= card[1] - 0.5 && quad.y + quad.h <= card[1] + card[3] + 0.5);
+            let ink = match quad.clip {
+                Some(clip) => intersection([quad.x, quad.y, quad.w, quad.h], clip),
+                None => [quad.x, quad.y, quad.w, quad.h],
+            };
+            assert!(ink[0] >= card[0] - 0.5 && ink[0] + ink[2] <= card[0] + card[2] + 0.5);
+            assert!(ink[1] >= card[1] - 0.5 && ink[1] + ink[3] <= card[1] + card[3] + 0.5);
         }
         for text in &mini.texts {
             assert!(text.x >= card[0] - 0.5 && text.y >= card[1] - 0.5);
         }
+    }
+
+    /// A miniature of a display shows what the display shows, and only that.
+    ///
+    /// The bar walks off its own left edge as a path opens: the category row
+    /// goes with the slide, and every category's name is centred on a box
+    /// wider than the button it sits under, so the name of the one the path
+    /// hangs off reaches past the edge before the button does. On a display
+    /// narrower than 16:9 the button goes past it too. The screen cuts all of
+    /// that at its edge and thinks no more about it; a card has no edge of its
+    /// own to cut against, and the run was drawn whole — the word "Multimedia"
+    /// printed on the wallpaper *beside* the guide's card, at the size and
+    /// place a screen a fifth off to the left would have put it.
+    #[test]
+    fn a_card_draws_nothing_the_display_it_pictures_would_have_cut() {
+        let xmb = Xmb::new(vec![
+            Category {
+                id: "media",
+                title: "Multimedia",
+                icon: "media",
+                entries: vec![folder("Video", vec![app("first"), app("second")])],
+            },
+            Category {
+                id: "apps",
+                title: "Apps",
+                icon: "apps",
+                entries: vec![app("Files")],
+            },
+        ]);
+        // Standing inside the subcategory, where the row has been carried off
+        // the edge — the state the guide is opened over.
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        settle(&mut cursor);
+
+        // Whether any of the screens tried actually cuts the run — a wide one
+        // has room for the whole box, and a test where nothing is cut proves
+        // nothing at all.
+        let mut cut = false;
+        for [width, height] in SCREENS {
+            let mut mini = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            // A card at the display's own shape, as the overview lays one out.
+            let card = [width * 0.5, height * 0.2, width * 0.4, height * 0.4];
+            mini.place_into(card, width, height);
+
+            let name = mini
+                .texts
+                .iter()
+                .find(|text| text.content == "Multimedia")
+                .expect("the head of the trail is named");
+            cut |= name.x < card[0];
+
+            for text in &mini.texts {
+                // Where the run may put pixels: its own box, cut down by
+                // whatever it is clipped to — the same pair the renderer hands
+                // glyphon, and the only thing that decides where ink lands.
+                let box_of = [text.x, text.y, text.max_width, text.size * 2.0];
+                let ink = match text.clip {
+                    Some(clip) => intersection(box_of, clip),
+                    None => box_of,
+                };
+                if ink[2] <= 0.0 || ink[3] <= 0.0 {
+                    continue;
+                }
+                assert!(
+                    ink[0] >= card[0] - 0.5
+                        && ink[1] >= card[1] - 0.5
+                        && ink[0] + ink[2] <= card[0] + card[2] + 0.5
+                        && ink[1] + ink[3] <= card[1] + card[3] + 0.5,
+                    "{width}x{height}: {:?} draws at {ink:?}, outside a card at {card:?}",
+                    text.content,
+                );
+            }
+        }
+        assert!(cut, "no screen here put a run past its own edge to cut");
+    }
+
+    /// And it draws everything the display *does* show, half an icon included.
+    ///
+    /// The other half of the same rule, and the bug the user reported: an icon
+    /// the path had carried partly off the left edge was thrown away outright
+    /// on the way into the card. Press the guide from inside a subcategory and
+    /// the category's own mark and the one on the trail beside it simply went
+    /// out — from a card that is supposed to be a picture of the screen it was
+    /// pressed on — and came back whole when the guide closed. Nothing in this
+    /// shell may vanish at the start of a transition and reappear at the end of
+    /// it. A pane that ran off the edge is cut to the edge, here as there.
+    #[test]
+    fn a_card_keeps_the_half_of_an_icon_the_display_still_shows() {
+        let xmb = Xmb::new(vec![
+            Category {
+                id: "media",
+                title: "Multimedia",
+                icon: "media",
+                entries: vec![folder("Video", vec![app("first"), app("second")])],
+            },
+            Category {
+                id: "apps",
+                title: "Apps",
+                icon: "apps",
+                entries: vec![app("Files")],
+            },
+        ]);
+        let mut cursor = Cursor::new(xmb.categories.len());
+        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        settle(&mut cursor);
+
+        let mut straddled = false;
+        for [width, height] in SCREENS {
+            let full = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            // The panes the display cuts rather than hides: part on the screen
+            // and part past its edge.
+            let hanging: Vec<&Quad> = full
+                .quads
+                .iter()
+                .filter(|q| {
+                    let ink = intersection([q.x, q.y, q.w, q.h], [0.0, 0.0, width, height]);
+                    let shown = ink[2] > 0.0 && ink[3] > 0.0;
+                    shown && (ink[2] < q.w - 0.5 || ink[3] < q.h - 0.5)
+                })
+                .collect();
+            if hanging.is_empty() {
+                continue;
+            }
+            straddled = true;
+
+            let mut mini = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let card = [width * 0.5, height * 0.2, width * 0.4, height * 0.4];
+            mini.place_into(card, width, height);
+            let scale = card[2] / width;
+
+            for hung in hanging {
+                let small = mini
+                    .quads
+                    .iter()
+                    .find(|q| {
+                        (q.x - (card[0] + hung.x * scale)).abs() < 0.5
+                            && (q.y - (card[1] + hung.y * scale)).abs() < 0.5
+                            && (q.w - hung.w * scale).abs() < 0.5
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{width}x{height}: a pane at {}x{} was dropped rather than cut",
+                            hung.x, hung.y
+                        )
+                    });
+                // Cut to where the display's own edge was, once that edge has
+                // travelled into the card with everything else.
+                let clip = small.clip.expect("a cut pane carries its cut");
+                let ink = intersection([small.x, small.y, small.w, small.h], clip);
+                assert!(
+                    ink[2] > 0.0 && ink[3] > 0.0,
+                    "{width}x{height}: the half of the pane the screen shows is cut away too",
+                );
+                assert!(
+                    ink[0] >= card[0] - 0.5
+                        && ink[1] >= card[1] - 0.5
+                        && ink[0] + ink[2] <= card[0] + card[2] + 0.5
+                        && ink[1] + ink[3] <= card[1] + card[3] + 0.5,
+                    "{width}x{height}: it draws at {ink:?}, outside a card at {card:?}",
+                );
+            }
+        }
+        assert!(
+            straddled,
+            "no screen here put a pane across its own edge to cut"
+        );
     }
 
     /// The bar the panels of two categories, for the depth tests: enough of a
@@ -9850,7 +10322,7 @@ mod tests {
                 MenuEntry::new(Command::MuteApplication(2), "A Browser")
                     .icon("browser")
                     .level(level(levels[1])),
-                MenuEntry::new(Command::MuteOutput, "System")
+                MenuEntry::new(Command::MuteShell, "System")
                     .icon(icons::CATEGORY_SYSTEM)
                     .level(level(levels[2]))
                     .group(1),
@@ -10116,7 +10588,7 @@ mod tests {
         assert!(menu.open_at(
             tile,
             None,
-            vec![MenuEntry::new(Command::MuteOutput, "System").level(Level {
+            vec![MenuEntry::new(Command::MuteShell, "System").level(Level {
                 value: 0.5,
                 muted: false,
             })],

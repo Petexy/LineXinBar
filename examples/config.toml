@@ -82,6 +82,10 @@ pointer_accel = 0.0
 # XF86HomePage and the rear side button of a mouse; this adds another chord
 # rather than moving any of them.
 "Super+G" = "guide"
+# Photographs the display the keyboard is on, into the folder the desktop
+# records for pictures. Ctrl+Shift+3 and Print already do this; unlike the
+# guide's chords, either can be given to something else instead.
+"Super+Shift+S" = "screenshot"
 "Super+Tab" = "cycle-window"
 "Super+Left" = "focus-prev-output"
 "Super+Right" = "focus-next-output"

@@ -6,7 +6,9 @@
 //! is the other half of that: a panel that has *taken over*, in the middle of
 //! the display, carrying enough of its subject inside it that the screen behind
 //! it no longer has to be readable. Information about an application is one;
-//! "do you want to uninstall this" is the other.
+//! "do you want to uninstall this" is another; and so are the two questions
+//! that arrive from outside the shell altogether — may this application see the
+//! screen, and prove that you may do this (see [`crate::polkit`]).
 //!
 //! It is a component on the same terms as the menu, and for the same reason —
 //! there will be more of these than there are today. Whoever raises one hands
@@ -60,7 +62,7 @@ pub enum Line {
     /// A count rather than the text, deliberately: the panel is drawn from
     /// whatever is in this list, so a `Line` that carried the password would be
     /// a copy of it living in the layout for as long as the panel was up. What
-    /// is actually typed stays in a [`crate::uninstall::Secret`], which is the
+    /// is actually typed stays in a [`crate::secret::Secret`], which is the
     /// only thing in the shell built to hold one.
     Secret { typed: usize },
     /// A hairline, where one band of the panel gives way to the next. Drawn

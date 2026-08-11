@@ -4,9 +4,11 @@
 //! given output, so it is built once here and is generic over the renderer.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
-use smithay::backend::renderer::element::AsRenderElements;
+use smithay::backend::renderer::element::{AsRenderElements, Kind};
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::{layer_map_for_output, Space, Window};
 use smithay::output::Output;
@@ -27,6 +29,9 @@ smithay::render_elements! {
     OverviewCard = RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     /// A CPU-side image: the themed cursor.
     Memory = MemoryRenderBufferRenderElement<R>,
+    /// One flat colour over the whole display: the flash a screenshot answers
+    /// with, and nothing else so far.
+    Solid = SolidColorRenderElement,
 }
 
 /// The windows the overview shows for `output`, topmost first — the same
@@ -64,6 +69,22 @@ where
     };
 
     let mut elements: Vec<LxbRenderElement<R>> = Vec::new();
+
+    // The flash before everything, cursor included: a camera's answer is over
+    // the whole screen or it is not an answer. It is never in the photograph —
+    // the picture is read back before the flash is started — and it is only
+    // ever here for the few frames after one was actually written.
+    if let Some((id, white)) = lxb.flashes.white(output, now) {
+        elements.push(LxbRenderElement::Solid(SolidColorRenderElement::new(
+            id,
+            Rectangle::from_size(output_geo.size.to_physical_precise_round(scale)),
+            CommitCounter::default(),
+            // Premultiplied, which is what the renderer draws: white at this
+            // alpha is that alpha in all four channels.
+            [white, white, white, white],
+            Kind::Unspecified,
+        )));
+    }
 
     // Cursor first: elements are drawn front to back — and only while there is
     // one to draw. A pointer nobody has moved is left off the screen entirely

@@ -383,6 +383,9 @@ struct QuadIn {
     @location(5) corner_power: f32,
     // A shallow optical bow across a large pane's reflective face.
     @location(6) face_curve: f32,
+    // The rectangle this pane is cut to, as its two corners in pixels. A pane
+    // nothing is cutting carries a box larger than any display.
+    @location(7) cut: vec4<f32>,
 };
 
 struct QuadOut {
@@ -397,6 +400,7 @@ struct QuadOut {
     @location(5) material: vec4<f32>,
     @location(6) corner_power: f32,
     @location(7) face_curve: f32,
+    @location(8) cut: vec4<f32>,
 };
 
 @vertex
@@ -424,6 +428,7 @@ fn vs_quad(@builtin(vertex_index) index: u32, quad: QuadIn) -> QuadOut {
     out.material = quad.material;
     out.corner_power = quad.corner_power;
     out.face_curve = quad.face_curve;
+    out.cut = quad.cut;
     return out;
 }
 
@@ -597,6 +602,15 @@ fn environment(mirrored: vec3<f32>, key_strength: f32) -> vec3<f32> {
 
 @fragment
 fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
+    // What something in front cut away, or what a display cut off its own
+    // edge. The shape is untouched — this pane is still the whole pane, lit
+    // and bevelled as one — and only the pixels outside the rectangle are
+    // dropped, which is exactly what an edge does to what runs past it.
+    if (in.clip.x < in.cut.x || in.clip.y < in.cut.y
+        || in.clip.x > in.cut.z || in.clip.y > in.cut.w) {
+        discard;
+    }
+
     let texel = textureSample(atlas_texture, atlas_sampler, in.uv);
     var color = texel * in.color;
 

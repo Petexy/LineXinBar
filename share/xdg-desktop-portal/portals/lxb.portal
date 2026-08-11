@@ -1,0 +1,9 @@
+# How xdg-desktop-portal finds LineXinBar's own backend.
+#
+# `UseIn` is matched against XDG_CURRENT_DESKTOP, which the session sets to
+# LineXinBar; `Interfaces` is the list this backend actually answers, and
+# anything not named here is left to whichever other backend the machine has.
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.lxb
+Interfaces=org.freedesktop.impl.portal.ScreenCast;
+UseIn=LineXinBar;

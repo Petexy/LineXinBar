@@ -17,8 +17,9 @@ usage() {
     cat <<'EOF'
 Usage: packaging/install.sh --destdir DIR [--prefix PREFIX] [--target-dir DIR]
 
-Stages lxb, lxb-desktop, the packaged session launcher, the Wayland session
-entry and the bundled cursor theme. PREFIX defaults to /usr.
+Stages lxb, lxb-desktop, lxb-portal, the packaged session launcher, the
+Wayland session entry, the desktop portal's own registration and the bundled
+cursor theme. PREFIX defaults to /usr.
 EOF
 }
 
@@ -58,7 +59,7 @@ prefix="${prefix%/}"
 [[ "$prefix" != "/" ]] || prefix=""
 install_root="${destdir}${prefix}"
 
-for binary in lxb lxb-desktop; do
+for binary in lxb lxb-desktop lxb-portal; do
     [[ -x "$target_dir/release/$binary" ]] \
         || package_die "missing release binary: $target_dir/release/$binary"
     install -Dm0755 "$target_dir/release/$binary" "$install_root/bin/$binary"
@@ -67,6 +68,19 @@ done
 install -Dm0755 "$PACKAGING_DIR/files/lxb-session" "$install_root/bin/lxb-session"
 install -Dm0644 "$PACKAGING_DIR/files/lxb.desktop" \
     "$install_root/share/wayland-sessions/lxb.desktop"
+
+# The desktop portal: how an application outside the session asks for a piece
+# of it. The `.portal` file is what xdg-desktop-portal reads to find this
+# backend at all, the `.conf` says which questions it answers for a LineXinBar
+# session, and the D-Bus service file lets it be started on demand by anything
+# that asks before the session has.
+install -Dm0644 "$PROJECT_ROOT/share/xdg-desktop-portal/portals/lxb.portal" \
+    "$install_root/share/xdg-desktop-portal/portals/lxb.portal"
+install -Dm0644 "$PROJECT_ROOT/share/xdg-desktop-portal/linexinbar-portals.conf" \
+    "$install_root/share/xdg-desktop-portal/linexinbar-portals.conf"
+install -Dm0644 \
+    "$PROJECT_ROOT/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service" \
+    "$install_root/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service"
 
 cursor_source="$PROJECT_ROOT/share/icons/Bibata-Modern-Classic"
 cursor_destination="$install_root/share/icons/Bibata-Modern-Classic"

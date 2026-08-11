@@ -16,17 +16,25 @@
 //! here, in [`apply`], which is also where it is written down so the next
 //! session comes up the way this one was left.
 //!
-//! Two kinds of setting live here, and they are not applied the same way. The
-//! accent is the shell's own and takes effect in the next frame it draws.
-//! Everything under Display belongs to the *compositor* — a colour pipeline on
-//! a CRTC and an infoframe on a connector, neither of which a client may touch
-//! — so what this module does with it is record it, and `main` sends it over
-//! `lxb_shell_v1` for the compositor to carry out.
+//! Three kinds of setting live here, and no two of them are applied the same
+//! way. The accent is the shell's own and takes effect in the next frame it
+//! draws. Everything under Display belongs to the *compositor* — a colour
+//! pipeline on a CRTC and an infoframe on a connector, neither of which a
+//! client may touch — so what this module does with it is record it, and `main`
+//! sends it over `lxb_shell_v1` for the compositor to carry out.
 //!
-//! Those settings are also *per display*, all the way down: one screen can be
-//! an HDR television and the next a laptop panel, and the two want different
-//! answers. So the tree names the screen before it offers a setting, and every
-//! [`Setting`] under Display carries which screen it belongs to.
+//! The Display settings are also *per display*, all the way down: one screen
+//! can be an HDR television and the next a laptop panel, and the two want
+//! different answers. So the tree names the screen before it offers a setting,
+//! and every [`Setting`] under Display carries which screen it belongs to.
+//!
+//! The third kind is the machine's own sound devices, under Sounds, and they
+//! are the outlier: they belong to the *sound server*, which is neither this
+//! shell nor the compositor, and which outlives both. So they are neither
+//! carried out nor written down here — `main` hands the choice to
+//! [`crate::system`], and the server remembers it for every application on the
+//! machine. What this module keeps of them is what it keeps of a display's
+//! modes: the last listing, so the page can be drawn.
 //!
 //! [`Cursor::choose`]: crate::model::Cursor::choose
 
@@ -36,6 +44,7 @@ use std::sync::Mutex;
 
 use crate::apps::{Category, Choice, Entry, Folder};
 use crate::icons;
+use crate::system::{Devices, Direction, Level};
 use crate::theme::{self, Color};
 
 /// What choosing a row does.
@@ -47,6 +56,27 @@ use crate::theme::{self, Color};
 pub enum Setting {
     /// Set the accent to the palette of this name — one of [`theme::ACCENTS`].
     Accent(&'static str),
+    /// Play the Start screen's background music, or leave that screen quiet.
+    ///
+    /// Carries no display, unlike everything under Display: the music belongs
+    /// to the session rather than to a screen — see [`crate::sound`] — so it is
+    /// on or off for the whole of it.
+    StartMusic(bool),
+    /// Send everything the machine plays to this device from now on, or take
+    /// everything it records from it.
+    ///
+    /// The one setting in this tree that is not the shell's own. The accent is
+    /// LineXinBar's, the Display settings are the session's compositor's, and this
+    /// is the *machine's* — every application on it, whether or not this shell
+    /// is running when they start. So it is also the one the shell does not
+    /// write down: see [`apply_with`], where it is applied by handing it to the
+    /// sound server, which is what remembers it.
+    SoundDevice {
+        direction: Direction,
+        /// The sound server's own name for the device — `alsa_output.…` —
+        /// interned for the reason a connector name is. See [`intern`].
+        id: &'static str,
+    },
     /// Change one display's picture. Carries the connector the change belongs
     /// to, because every one of these is a property of one screen.
     Display {
@@ -415,6 +445,98 @@ pub fn media_sort(kind: crate::media::Kind) -> Option<crate::media::Sort> {
     sort
 }
 
+/// How loud the shell's own effects and Start music are, and whether they are
+/// silenced.
+///
+/// The shell's own, and nothing else's. The volume bar in the guide's sidebar
+/// sets what the whole session comes out at — every application on the machine
+/// with it — and that bar is there whether or not the mixer beside it opens.
+/// This is the other thing a console has: how loudly the interface answers and
+/// its own background plays, which is a preference about the shell rather than
+/// about the machine, and which is why the mixer's own System row sets this and
+/// not that.
+///
+/// Held here for the reason [`MEDIA_SORT`] is: everything in the settings file
+/// is built out of the live values at the moment it is written, and a value
+/// the writer cannot see is one that gets dropped the next time anything else
+/// changes.
+static SOUND: Mutex<Level> = Mutex::new(Level {
+    value: 1.0,
+    muted: false,
+});
+
+/// Where the shell's effects and Start music stand.
+pub fn sound() -> Level {
+    *SOUND.lock().unwrap()
+}
+
+/// Whether the Start screen plays its background music at all.
+///
+/// Separate from [`SOUND`], and deliberately: that is *how loud* the shell is,
+/// and it is one answer for the whole of it — silencing the music with it would
+/// silence every click as well. This is the other question a console asks, which
+/// is whether the screen with nothing open on it plays anything, and it is
+/// answered without touching what the buttons sound like.
+///
+/// Kept here for the reason [`MEDIA_SORT`] and [`SOUND`] are: the settings file
+/// is built out of the live values at the moment it is written, so a value the
+/// writer cannot see is one the next change to anything else drops.
+static START_MUSIC: Mutex<bool> = Mutex::new(true);
+
+/// Whether the Start screen's background music plays.
+///
+/// On, until somebody says otherwise: it is what the shell has always come up
+/// doing, and a console that arrived silent would leave the user looking for the
+/// row that turned it off.
+pub fn start_music() -> bool {
+    *START_MUSIC.lock().unwrap()
+}
+
+/// What the machine can play through and record from, as the sound server last
+/// listed them, and which of them it is using.
+///
+/// Reported rather than remembered, exactly as [`SUPPORT`] and [`MODES`] are:
+/// it is a statement about hardware that is plugged in at this moment, made by
+/// something outside this module — [`crate::system`] there, the compositor
+/// here — and the page is rebuilt when it changes. Nothing of it goes into the
+/// settings file. See [`Setting::SoundDevice`].
+static DEVICES: Mutex<Devices> = Mutex::new(Devices::none());
+
+/// Record what the sound server said. `true` when it is a change, and so when
+/// the column has to be rebuilt to say so — as [`note_support`].
+pub fn note_devices(reported: Devices) -> bool {
+    let mut held = DEVICES.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
+/// Set them, and write it down. Reports whether anything moved.
+///
+/// Written on every step rather than when the user stops moving the row. A
+/// shell that waited would have to be woken to do the writing, and an idle bar
+/// blocks until something happens to it — so the level a user set and then
+/// walked away from would be the one level in the file that a machine switched
+/// off at the wall could lose. The file is small and replaced through a
+/// rename; a held direction is a second or two of that.
+pub fn set_sound(level: Level) -> bool {
+    let level = Level {
+        value: level.value.clamp(0.0, 1.0),
+        muted: level.muted,
+    };
+    {
+        let mut held = SOUND.lock().unwrap();
+        if *held == level {
+            return false;
+        }
+        *held = level;
+    }
+    save(&stored());
+    true
+}
+
 /// What the shell is asking the compositor for on one display.
 pub fn hdr_for(display: &str) -> Hdr {
     HDR.lock()
@@ -495,15 +617,18 @@ fn offered_by(display: &str) -> Vec<Offered> {
         .unwrap_or_default()
 }
 
-/// Connector names, kept alive for as long as the process is.
+/// Connector and sound-device names, kept alive for as long as the process is.
 ///
-/// A [`Setting`] has to name the display it belongs to and stay `Copy`: every
-/// row of the bar carries one by value, and the catalogue holding those rows is
-/// cloned, walked and compared all over the shell, so an owned `String` in
-/// there would ripple out through the model, the layout and the input path. A
-/// connector's name is fixed for as long as it exists, there are single digits
-/// of them, and they are already alive for the whole session — so they are
-/// interned once each and never freed.
+/// A [`Setting`] has to name the display or the device it belongs to and stay
+/// `Copy`: every row of the bar carries one by value, and the catalogue holding
+/// those rows is cloned, walked and compared all over the shell, so an owned
+/// `String` in there would ripple out through the model, the layout and the
+/// input path. Both kinds of name are fixed for as long as the thing they name
+/// exists, there are single digits of each, and they are already alive for the
+/// whole session — so they are interned once each and never freed. A headset
+/// plugged in and out all afternoon is one name, not one per plug: the sound
+/// server calls it the same thing every time, which is the same property that
+/// makes the name worth handing back to it.
 fn intern(name: &str) -> &'static str {
     static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap();
@@ -516,8 +641,12 @@ fn intern(name: &str) -> &'static str {
 }
 
 /// The rows of the Settings column, in the order they appear under it.
+///
+/// The picture before the sound, which is the order a console has always put
+/// them in and the order the two are noticed in. Appearance stands in front of
+/// both because it is the shell describing itself rather than the machine.
 pub fn column() -> Vec<Entry> {
-    vec![appearance(), display()]
+    vec![appearance(), display(), sounds()]
 }
 
 /// Replace the Settings column in a catalogue with a freshly built one.
@@ -1292,6 +1421,170 @@ const PEAK_BRIGHTNESS: &[(u16, &str)] = &[
     (4000, "A reference mastering monitor"),
 ];
 
+/// Sound: where the machine's goes and comes from, and what the shell itself
+/// plays.
+///
+/// Two kinds of thing under one row, and the comment has to own that. The
+/// devices are the *machine's* — every application on it plays through the one
+/// chosen here, and the choice outlives this shell — while the music is
+/// LineXinBar's own, as everything under Appearance is. They belong together all
+/// the same: a user who has come looking for anything about sound has come
+/// looking for this row, and a console that hid the output device somewhere
+/// else because of who owns it would be arranged around its own internals.
+///
+/// The devices come first because they are what a session is set up with, and
+/// because the output is the one row here somebody arrives at a new machine
+/// needing: nothing else on this page can be heard until the sound is coming
+/// out of the right place.
+///
+/// Not how loud any of it is. That is the mixer's System row in the guide, which
+/// is where a level belongs — beside the volume bar the user is already holding
+/// a direction on, and previewing itself at every step of it. A column of the
+/// bar cannot preview a level without becoming a volume bar with extra steps,
+/// and the shell already has one. What is left for this page is the questions a
+/// bar cannot answer: which device, and what plays at all.
+///
+/// The speaker is the volume bar's own glyph rather than a second drawing of one
+/// made for this row, and the output below it wears the same one again: the same
+/// object, drawn once, under the lamp every glyph in the shell is under.
+/// Settings > Display > HDR already does this with the brightness glyph on two
+/// of its rows, and with its own on the switch inside it. A second speaker drawn
+/// for this page could only be the same speaker again or a worse one, and the
+/// shell would then have two of them to keep in step through every retheme. The
+/// input is the row that cannot borrow — there is no microphone anywhere else in
+/// the shell, and a microphone drawn as a speaker would be saying the wrong
+/// thing rather than repeating a right one — so that one is drawn. See
+/// [`icons::SETTING_MICROPHONE`].
+fn sounds() -> Entry {
+    folder(
+        "Sounds",
+        "The machine's sound, and the shell's own",
+        icons::VOLUME,
+        vec![
+            device_page(Direction::Output),
+            device_page(Direction::Input),
+            start_music_switch(),
+        ],
+    )
+}
+
+/// Everything the machine can play through, or everything it can record from,
+/// with the one it is using marked.
+///
+/// One function for both directions, because they are one page asked twice:
+/// the same list, the same mark, the same sentence about what choosing does.
+/// Writing them separately would be writing the second one *nearly* the same,
+/// which is how the input page ends up explaining itself in different words
+/// from the output page above it.
+///
+/// The row above the list says which device is in force, the way the
+/// single-screen Resolution and HDR pages name the screen and what it is doing.
+/// It is the answer to the question the user came with — *what is it playing
+/// through?* — and having it there means the common case is answered without
+/// stepping in at all.
+fn device_page(direction: Direction) -> Entry {
+    let listed = DEVICES.lock().unwrap();
+    let devices = listed.of(direction);
+    let (title, icon) = match direction {
+        Direction::Output => ("Output device", icons::VOLUME),
+        Direction::Input => ("Input device", icons::SETTING_MICROPHONE),
+    };
+    let comment = match devices.iter().find(|device| device.default) {
+        Some(device) => match &device.profile {
+            Some(profile) => format!("{} — {profile}", device.title),
+            None => device.title.clone(),
+        },
+        // Either there is nothing to name, or the machine is using something
+        // this page does not list — a monitor of an output, say, chosen as the
+        // input somewhere else. Both are answered by what is inside rather than
+        // by a comment that would have to guess.
+        None => match direction {
+            Direction::Output => "Where everything on the machine plays".to_string(),
+            Direction::Input => "What everything on the machine records from".to_string(),
+        },
+    };
+    // Never an empty column: the bar refuses to step into one, so a machine
+    // with no devices would have a row that silently did nothing when pressed.
+    // What it has to say instead is *why* there is nothing to choose.
+    let rows = match devices {
+        [] => vec![nothing_to_choose(direction, listed.server)],
+        devices => devices
+            .iter()
+            .map(|device| {
+                value(
+                    &device.title,
+                    device.profile.as_deref(),
+                    device.default,
+                    Setting::SoundDevice {
+                        direction,
+                        id: intern(&device.id),
+                    },
+                )
+            })
+            .collect(),
+    };
+    folder(title, &comment, icon, rows)
+}
+
+/// The row that stands in for the device list when there is no device to list.
+///
+/// The two cases are not the same fact and must not read as one. A sound server
+/// that lists nothing is a machine with no sound card in it, or one whose card
+/// has no profile that can play; no sound server at all is a session where
+/// nothing is in charge of the question — every program opens ALSA and takes
+/// whatever the kernel gives it, and there is no *machine's* device for this
+/// page to set. The first is about the hardware, the second about the session,
+/// and a user is entitled to know which they are looking at.
+fn nothing_to_choose(direction: Direction, server: bool) -> Entry {
+    let thing = match direction {
+        Direction::Output => "output",
+        Direction::Input => "input",
+    };
+    if !server {
+        return reading(
+            "No sound server is running",
+            "Without PipeWire or PulseAudio nothing decides this for the \
+             machine; each program opens the sound card itself",
+        );
+    }
+    reading(
+        &format!("No {thing} device"),
+        &format!("The sound server lists no {thing} on this machine"),
+    )
+}
+
+/// The Start screen's background music, on or off.
+///
+/// Off and On in that order and marked the way every other switch in this tree
+/// is, because it is the same kind of question as the HDR one and a shell with
+/// two shapes of switch in it would be a shell where the second one has to be
+/// read before it can be used.
+///
+/// The music is a property of the *session* rather than of a screen — it plays
+/// while every display is showing Start and nothing at all is open — so unlike
+/// everything under Display this row names no screen and there is one of it.
+/// See [`crate::sound`], which turns this into silence in the same breath as a
+/// muted mixer: the stream is dropped rather than left advancing where nobody
+/// can hear it, and turning it back on begins the track again from its
+/// beginning.
+///
+/// The note is the Music shelf's glyph, the way the speaker above it is the
+/// volume bar's. It is read here inside Sounds, where there is no library beside
+/// it to be mistaken for: what a note means in a column of the user's own files
+/// is that column's contents, and what it means under a speaker is music.
+fn start_music_switch() -> Entry {
+    let on = start_music();
+    folder(
+        "Start music",
+        "The music the Start screen plays",
+        icons::CATEGORY_MUSIC,
+        vec![
+            value("Off", None, !on, Setting::StartMusic(false)),
+            value("On", None, on, Setting::StartMusic(true)),
+        ],
+    )
+}
+
 fn setting(display: &'static str, value: DisplayValue) -> Setting {
     Setting::Display { display, value }
 }
@@ -1380,6 +1673,20 @@ fn reading(title: &str, note: &str) -> Entry {
 /// time the cursor passed over it would be unusable. Walking down that list is
 /// an invitation to look at the *names*, and the value is not committed until
 /// it is chosen.
+///
+/// The Start music switch does not preview either, and it is the one row here
+/// that could have: turning music off is instant and costs nothing. What it
+/// cannot do is turn back on *usefully*. The track is rebuilt from sample zero
+/// every time it starts — see [`crate::sound`] — so a cursor walked from Off to
+/// On and back would answer with the same four hundred milliseconds of fade-in
+/// over and over, which is not what the setting sounds like. Choosing it is the
+/// decision, and then it is heard as it really is.
+///
+/// Nor do the device rows, and they are the ones where previewing would do real
+/// harm. Highlighting one would move every sound on the machine to it — the
+/// film somebody is watching, the call they are on — and walking down a list of
+/// four would do that four times. A user looking for the right output is
+/// looking at the *names* first; the sound follows when they choose.
 pub fn preview(setting: Option<Setting>) {
     match setting {
         Some(Setting::Accent(name)) => {
@@ -1387,10 +1694,11 @@ pub fn preview(setting: Option<Setting>) {
                 tracing::warn!(accent = name, "no accent by that name");
             }
         }
-        // Highlighting a value the compositor would have to act on changes
-        // nothing; the accent goes back to what is applied, as it does when
-        // the cursor leaves a list of values entirely.
-        Some(Setting::Display { .. }) | None => theme::restore_accent(),
+        // Highlighting a value the compositor or the sound server would have to
+        // act on changes nothing; the accent goes back to what is applied, as
+        // it does when the cursor leaves a list of values entirely.
+        Some(Setting::Display { .. } | Setting::StartMusic(_) | Setting::SoundDevice { .. })
+        | None => theme::restore_accent(),
     }
 }
 
@@ -1402,7 +1710,9 @@ pub fn preview(setting: Option<Setting>) {
 /// included. The Display settings do need telling, but not from here — the
 /// caller sends whatever [`hdr_for`] now returns over the session protocol,
 /// which keeps this module free of any Wayland connection and lets it be
-/// tested without one.
+/// tested without one. A sound device needs telling too, and for the same
+/// reason is told by the caller: it goes to the sound server, and a module that
+/// spawned `pactl` could not be tested on a machine that has none.
 pub fn apply(setting: Setting) -> bool {
     apply_with(setting, save)
 }
@@ -1460,6 +1770,30 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 return false;
             }
             tracing::info!(accent = name, "accent");
+        }
+        // Nothing to tell anybody either, for the opposite reason to the
+        // accent's: the shell asks this of itself once a frame — see
+        // [`crate::sound::Sounds::sync_music`] — so the answer is acted on by
+        // the loop that was about to draw the frame this row was chosen in.
+        Setting::StartMusic(playing) => {
+            *START_MUSIC.lock().unwrap() = playing;
+            tracing::info!(playing, "Start music");
+        }
+        // The one row here that is neither carried out nor written down by this
+        // module. It is passed to the sound server — the caller does that, the
+        // way it sends the Display settings to the compositor, which is what
+        // keeps this module free of both — and the server is also what
+        // remembers it. A shell that kept its own copy would be a second
+        // opinion about the machine's output device at every login, and the one
+        // that lost would be whichever the user set last: a device chosen in
+        // any other mixer would be quietly undone by this shell starting.
+        //
+        // So this returns without persisting. The mark on the row moves because
+        // the listing itself moves — see [`crate::system::Quick::use_device`] —
+        // rather than because anything here was recorded.
+        Setting::SoundDevice { direction, id } => {
+            tracing::info!(?direction, id, "sound device chosen");
+            return true;
         }
         // Bound as `screen`, not `display`: tracing's macros pull their own
         // `display` into scope, and a field whose value is named that resolves
@@ -1560,6 +1894,25 @@ pub fn load() {
 /// Split from [`load`] so the file format can be exercised without one.
 fn adopt(stored: Stored) {
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
+
+    // A hand-edited level outside the range the row can reach is clamped
+    // rather than refused, for the reason a mistyped mode is dropped rather
+    // than refused: this is a file the user is entitled to open, and one silly
+    // number in it must not take the accent down with it.
+    {
+        let mut sound = SOUND.lock().unwrap();
+        if let Some(value) = stored.sound_volume {
+            sound.value = value.clamp(0.0, 1.0);
+        }
+        if let Some(muted) = stored.sound_muted {
+            sound.muted = muted;
+        }
+    }
+    // A file that says nothing about it leaves the music where the session has
+    // it, which on the ordinary first run is playing.
+    if let Some(playing) = stored.start_music {
+        *START_MUSIC.lock().unwrap() = playing;
+    }
 
     // The flat keys a single-display version of this page wrote, which become
     // the starting point for every display the file says nothing about.
@@ -1671,6 +2024,17 @@ struct Stored {
     hdr_sdr_brightness: Option<u16>,
     hdr_srgb_intensity: Option<u8>,
     hdr_peak_brightness: Option<u16>,
+    /// How loud the shell's effects and Start music are, 0 to 1, and whether
+    /// they are silenced. The machine's volume is deliberately not here: the
+    /// sound server remembers that one, and a shell that wrote it down as well
+    /// would be a second opinion about it at every login.
+    sound_volume: Option<f32>,
+    sound_muted: Option<bool>,
+    /// Whether the Start screen plays its background music. Beside the two
+    /// above because it is the same part of the shell, and separate from them
+    /// because it is a different question: those say how loud everything the
+    /// shell plays is, and this says whether one of the things it plays exists.
+    start_music: Option<bool>,
     /// One section per display, by connector name. Sorted, so the file does
     /// not reshuffle itself every time it is written.
     display: BTreeMap<String, StoredDisplay>,
@@ -1774,8 +2138,14 @@ fn stored() -> Stored {
         display.entry(name.clone()).or_default().transform = Some(turn.key().to_string());
     }
 
+    let sound = *SOUND.lock().unwrap();
+    let playing = *START_MUSIC.lock().unwrap();
+
     Stored {
         accent: Some(theme::accent().name.to_string()),
+        sound_volume: Some(sound.value),
+        sound_muted: Some(sound.muted),
+        start_music: Some(playing),
         hdr: Some(inherited.enabled),
         hdr_sdr_brightness: Some(inherited.sdr_brightness),
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
@@ -1840,6 +2210,17 @@ const PREAMBLE: &str = "\
 # accent: the colour of being chosen. One of the names the shell offers under
 # Settings > Appearance > Accent color. An unknown name is ignored.
 #
+# sound-volume: how loud the shell's effects and Start music are, 0 to 1, and
+# sound-muted whether they are silenced. Both are the System row of the volume
+# mixer, in the guide overlay. These are the shell's own sounds and nothing
+# else's; what the whole machine comes out at belongs to the sound server, and
+# the volume bar in the same overlay sets it there.
+#
+# start-music: whether the Start screen plays its background music, which is
+# Settings > Sounds > Start music. It plays unless this says false. Turning it
+# off leaves every other sound the shell makes exactly as loud as it was; how
+# loud that is, the music included, is the two keys above.
+#
 # Everything under [display.NAME] is Settings > Display for the connector of
 # that name, and is carried out by the compositor rather than by the shell.
 # Connector names are the ones lxb logs at startup.
@@ -1900,6 +2281,8 @@ fn settings_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::system::Device;
 
     /// Made-up connector names, and a made-up peak.
     ///
@@ -1965,6 +2348,9 @@ mod tests {
         mode: BTreeMap<String, Mode>,
         reported_turns: Vec<(String, Orientation)>,
         turn: BTreeMap<String, Orientation>,
+        sound: Level,
+        start_music: bool,
+        devices: Devices,
     }
 
     fn take_settings() -> Saved {
@@ -1976,11 +2362,15 @@ mod tests {
             mode: MODE.lock().unwrap().clone(),
             reported_turns: turned(),
             turn: TURN.lock().unwrap().clone(),
+            sound: *SOUND.lock().unwrap(),
+            start_music: start_music(),
+            devices: DEVICES.lock().unwrap().clone(),
         };
         HDR.lock().unwrap().clear();
         MODE.lock().unwrap().clear();
         TURN.lock().unwrap().clear();
         note_turned(Vec::new());
+        note_devices(Devices::none());
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
     }
@@ -1990,9 +2380,60 @@ mod tests {
         *INHERITED.lock().unwrap() = saved.inherited;
         *MODE.lock().unwrap() = saved.mode;
         *TURN.lock().unwrap() = saved.turn;
+        *SOUND.lock().unwrap() = saved.sound;
+        *START_MUSIC.lock().unwrap() = saved.start_music;
         note_support(saved.support);
         note_modes(saved.offered);
         note_turned(saved.reported_turns);
+        note_devices(saved.devices);
+    }
+
+    /// Run `body` with the sound server reported as offering these devices, and
+    /// put back whatever the process had.
+    fn with_devices(reported: Devices, body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_devices(reported);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// A device, as a test names one. Invented hardware: nothing here may
+    /// depend on what is plugged into the machine this is built on.
+    fn device(id: &str, title: &str, profile: Option<&str>, default: bool) -> Device {
+        Device {
+            id: id.to_string(),
+            title: title.to_string(),
+            profile: profile.map(str::to_string),
+            default,
+        }
+    }
+
+    /// The rows under Settings > Sounds, owned — reading a title off a borrow
+    /// of a freshly built catalogue reads into a temporary.
+    fn sounds_page() -> Vec<Entry> {
+        column()
+            .iter()
+            .find(|entry| entry.title() == "Sounds")
+            .expect("Settings has a Sounds row")
+            .entries()
+            .expect("Sounds opens a column")
+            .to_vec()
+    }
+
+    /// One of the two device rows, and what it opens onto.
+    fn device_row(title: &str) -> Entry {
+        sounds_page()
+            .iter()
+            .find(|entry| entry.title() == title)
+            .unwrap_or_else(|| panic!("Sounds has no {title} row"))
+            .clone()
     }
 
     /// Run `body` with the display settings empty and `displays` reported, and
@@ -2633,6 +3074,340 @@ mod tests {
 
         // A file cut down to nothing still parses, and says nothing.
         assert_eq!(toml::from_str::<Stored>("").unwrap(), Stored::default());
+    }
+
+    /// How loud the shell's effects and Start music are survives a session,
+    /// and a hand-typed level outside the range the mixer row can reach is
+    /// brought inside it rather than refusing the file.
+    ///
+    /// Never through [`set_sound`], which writes to the config directory of
+    /// whoever is running the tests. What is exercised here is the pair that
+    /// decides what lands in the file and what comes back out of it.
+    #[test]
+    fn the_shell_s_own_volume_is_remembered() {
+        with_displays(&[], || {
+            adopt(Stored {
+                sound_volume: Some(0.35),
+                sound_muted: Some(true),
+                ..Stored::default()
+            });
+            assert_eq!(
+                sound(),
+                Level {
+                    value: 0.35,
+                    muted: true
+                }
+            );
+
+            let written = stored();
+            assert_eq!(written.sound_volume, Some(0.35));
+            assert_eq!(written.sound_muted, Some(true));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("sound-volume"), "{body}");
+            assert!(body.contains("sound-muted"), "{body}");
+
+            adopt(Stored {
+                sound_volume: Some(4.0),
+                ..Stored::default()
+            });
+            assert_eq!(sound().value, 1.0, "a level past the top of the row");
+
+            // A file that says nothing about the sound leaves it where the
+            // session already had it, rather than answering for the user.
+            adopt(Stored::default());
+            assert_eq!(sound().value, 1.0);
+        });
+    }
+
+    /// Settings > Sounds > Start music, walked the way the shell walks it: the
+    /// page opens marking what the session is doing, choosing the other row
+    /// turns the music over, and the page rebuilt afterwards says so.
+    ///
+    /// Never through [`apply`], for the reason the volume test gives: that one
+    /// writes to the config directory of whoever is running the tests.
+    #[test]
+    fn the_start_music_switch_turns_the_music_over() {
+        with_displays(&[], || {
+            *START_MUSIC.lock().unwrap() = true;
+
+            let page = start_music_page();
+            assert_eq!(
+                page.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Off", "On"],
+                "the switch every other switch in this tree is"
+            );
+            assert!(page[1].chosen(), "the page opens on what is playing");
+            assert!(!page[0].chosen());
+
+            // Walking onto the other row is an invitation to look, not a
+            // decision: the music the user is listening to keeps playing until
+            // they press something.
+            preview(page[0].setting());
+            assert!(start_music(), "highlighting Off is not choosing it");
+
+            let mut persisted = None;
+            assert!(apply_with(
+                page[0].setting().expect("Off sets something"),
+                |stored| persisted = stored.start_music
+            ));
+            assert!(!start_music());
+            assert_eq!(persisted, Some(false), "and it is written down");
+
+            let page = start_music_page();
+            assert!(page[0].chosen(), "the mark has moved with it");
+            assert!(!page[1].chosen());
+
+            assert!(apply_with(
+                page[1].setting().expect("On sets something"),
+                |_| {}
+            ));
+            assert!(start_music());
+        });
+    }
+
+    /// Whether the Start screen plays anything survives a session, and a file
+    /// that says nothing about it leaves the music where the shell has it —
+    /// which on the ordinary first run is playing.
+    #[test]
+    fn whether_the_start_music_plays_is_remembered() {
+        with_displays(&[], || {
+            *START_MUSIC.lock().unwrap() = true;
+
+            adopt(Stored {
+                start_music: Some(false),
+                ..Stored::default()
+            });
+            assert!(!start_music());
+
+            let written = stored();
+            assert_eq!(written.start_music, Some(false));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("start-music"), "{body}");
+
+            adopt(toml::from_str(&body).unwrap());
+            assert!(!start_music(), "and it comes back off");
+
+            adopt(Stored::default());
+            assert!(!start_music(), "a silent file answers nothing for the user");
+
+            // And it says nothing about how loud the rest of the shell is: two
+            // questions, two keys, and neither answers the other.
+            let level = Level {
+                value: 0.4,
+                muted: false,
+            };
+            *SOUND.lock().unwrap() = level;
+            adopt(Stored {
+                start_music: Some(true),
+                ..Stored::default()
+            });
+            assert!(start_music());
+            assert_eq!(sound(), level);
+        });
+    }
+
+    /// The two values under Settings > Sounds > Start music.
+    fn start_music_page() -> Vec<Entry> {
+        device_row("Start music")
+            .entries()
+            .expect("Start music opens onto its two values")
+            .to_vec()
+    }
+
+    /// Every device the machine has is a row, the one it is using is marked,
+    /// and the row above the list says which that is without stepping in.
+    #[test]
+    fn the_device_pages_list_the_machine_and_mark_what_it_is_using() {
+        let listing = Devices {
+            outputs: vec![
+                device(
+                    "test_output.speakers",
+                    "Test Audio Controller",
+                    Some("Digital Stereo (Test 1)"),
+                    false,
+                ),
+                device(
+                    "test_output.headset",
+                    "Test Wireless Headset",
+                    Some("Analog Stereo"),
+                    true,
+                ),
+            ],
+            inputs: vec![device(
+                "test_input.microphone",
+                "Test Microphone",
+                Some("Mono"),
+                true,
+            )],
+            server: true,
+        };
+        with_devices(listing, || {
+            // The devices first, and the shell's own sounds after them: a
+            // session is set up before it is decorated.
+            assert_eq!(
+                sounds_page().iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Output device", "Input device", "Start music"]
+            );
+
+            let outputs = device_row("Output device");
+            assert_eq!(
+                outputs.comment(),
+                Some("Test Wireless Headset — Analog Stereo"),
+                "the row above the list answers the question without opening it"
+            );
+            let page = outputs.entries().expect("it opens onto the devices");
+            assert_eq!(
+                page.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Test Audio Controller", "Test Wireless Headset"]
+            );
+            // The card on the line the eye lands on, how it is being driven
+            // under it.
+            assert_eq!(page[0].comment(), Some("Digital Stereo (Test 1)"));
+            assert!(!page[0].chosen());
+            assert!(page[1].chosen(), "the one the machine is using");
+
+            let inputs = device_row("Input device");
+            assert_eq!(inputs.comment(), Some("Test Microphone — Mono"));
+            assert_eq!(
+                inputs
+                    .entries()
+                    .expect("it opens onto the devices")
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                ["Test Microphone"]
+            );
+
+            // Highlighting a device is looking at its name. Moving every sound
+            // on the machine to it as the cursor passes over would be a preview
+            // of somebody's film arriving in the wrong room.
+            preview(page[0].setting());
+            assert!(
+                DEVICES.lock().unwrap().outputs[1].default,
+                "nothing moved for a highlight"
+            );
+        });
+    }
+
+    /// Choosing one is a message to the sound server and nothing else: the
+    /// shell does not write it down, because the server is what remembers it and
+    /// a second copy here would undo a device chosen in any other mixer at the
+    /// next login.
+    #[test]
+    fn choosing_a_device_is_told_to_the_server_and_written_nowhere() {
+        let listing = Devices {
+            outputs: vec![
+                device("test_output.speakers", "Test Speakers", None, true),
+                device("test_output.headset", "Test Headset", None, false),
+            ],
+            inputs: Vec::new(),
+            server: true,
+        };
+        with_devices(listing, || {
+            let page = device_row("Output device")
+                .entries()
+                .expect("it opens onto the devices")
+                .to_vec();
+            let chosen = page[1].setting().expect("a device row sets something");
+            assert_eq!(
+                chosen,
+                Setting::SoundDevice {
+                    direction: Direction::Output,
+                    id: "test_output.headset",
+                }
+            );
+
+            let mut written = false;
+            assert!(apply_with(chosen, |_| written = true));
+            assert!(!written, "nothing about a device belongs in the file");
+
+            // Nor does it appear in what the file would be if something else
+            // were written a moment later.
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(!body.contains("device"), "{body}");
+
+            // And the mark has not moved here: the listing is the sound
+            // server's answer, and this module does not edit it on the way
+            // past. What moves it is the press reaching
+            // `system::Quick::use_device`, which is where that is tested.
+            let page = device_row("Output device")
+                .entries()
+                .expect("it opens onto the devices")
+                .to_vec();
+            assert!(page[0].chosen());
+            assert!(!page[1].chosen());
+        });
+    }
+
+    /// A page with nothing on it is a row that does nothing when pressed, so
+    /// there is always something — and the two ways of having no device are not
+    /// the same fact.
+    #[test]
+    fn a_machine_with_no_devices_says_which_kind_of_nothing_it_has() {
+        with_devices(Devices::none(), || {
+            let page = device_row("Output device")
+                .entries()
+                .expect("it opens onto something")
+                .to_vec();
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].title(), "No sound server is running");
+            assert!(
+                page[0].setting().is_none(),
+                "an explanation is not a value to choose"
+            );
+            assert!(!page[0].chosen());
+            assert_eq!(
+                device_row("Output device").comment(),
+                Some("Where everything on the machine plays")
+            );
+        });
+
+        // A server that answers and lists nothing is a machine with no sound
+        // card, which is something else entirely.
+        with_devices(
+            Devices {
+                server: true,
+                ..Devices::none()
+            },
+            || {
+                let outputs = device_row("Output device");
+                let page = outputs.entries().expect("it opens onto something");
+                assert_eq!(page[0].title(), "No output device");
+                let inputs = device_row("Input device");
+                let page = inputs.entries().expect("it opens onto something");
+                assert_eq!(page[0].title(), "No input device");
+            },
+        );
+    }
+
+    /// The sound server names a device that is not one of the rows — an
+    /// output's monitor chosen as the input somewhere else, which the input
+    /// page deliberately does not list. Nothing is marked, and the row above
+    /// says what the page is for rather than inventing an answer.
+    #[test]
+    fn a_device_the_page_does_not_list_marks_nothing() {
+        with_devices(
+            Devices {
+                inputs: vec![device(
+                    "test_input.microphone",
+                    "Test Microphone",
+                    None,
+                    false,
+                )],
+                server: true,
+                ..Devices::none()
+            },
+            || {
+                let inputs = device_row("Input device");
+                assert_eq!(
+                    inputs.comment(),
+                    Some("What everything on the machine records from")
+                );
+                let page = inputs.entries().expect("it opens onto the devices");
+                assert_eq!(page.len(), 1);
+                assert!(!page[0].chosen());
+            },
+        );
     }
 
     /// A file written before this page had a screen list still says what its

@@ -25,9 +25,9 @@
 //! ## The password
 //!
 //! A password typed into a shell is worth being careful with, and the care is
-//! all in [`Secret`]: it never reaches a command line, an environment variable
-//! or the log, it is handed to `sudo` on a pipe, and the buffer holding it is
-//! overwritten when it is dropped.
+//! all in [`crate::secret::Secret`]: it never reaches a command line, an
+//! environment variable or the log, it is handed to `sudo` on a pipe, and the
+//! buffer holding it is overwritten when it is dropped.
 //!
 //! It is also used exactly once, for `sudo -v` and nothing else. That is what
 //! makes a wrong password unambiguous — `sudo -v` fails for essentially one
@@ -36,98 +36,12 @@
 //! cost is that the user's `sudo` is warmed for its usual few minutes
 //! afterwards, exactly as it would be had they typed `sudo` in a terminal.
 
-use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{compiler_fence, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::appinfo::{Manager, Origin, Scope};
-
-/// The longest password the field will take, in bytes.
-///
-/// Not a policy about passwords — it is what lets the buffer be allocated once
-/// and never grow. A `Vec` that reallocates leaves the old contents lying in
-/// the allocator, and there is no getting them back to overwrite.
-const SECRET_CAPACITY: usize = 256;
-
-/// A password, held for as long as it takes to hand to `sudo`.
-///
-/// Best effort, and worth saying which parts are which. What is guaranteed:
-/// the bytes live in one allocation that never moves, they are overwritten when
-/// this is dropped, and nothing prints them — the [`std::fmt::Debug`] below is
-/// there so that a stray `?secret` in a `tracing` call cannot leak one.
-/// What is not: the shell is not `mlock`ed, so a machine that swaps under
-/// memory pressure could write a page out, and the kernel could hold a copy of
-/// the pipe buffer. Fixing those means locking pages and is a change to how the
-/// whole process starts, not something this type can do on its own.
-pub struct Secret {
-    bytes: Vec<u8>,
-    /// How many characters have been typed, which is how many marks the field
-    /// draws. Counted rather than derived, because it is asked for every frame
-    /// and a UTF-8 walk per frame to draw dots would be silly.
-    typed: usize,
-}
-
-impl Default for Secret {
-    fn default() -> Self {
-        Self {
-            bytes: Vec::with_capacity(SECRET_CAPACITY),
-            typed: 0,
-        }
-    }
-}
-
-impl Secret {
-    /// Add a character. Refused, silently, once the buffer is full: growing it
-    /// would be the one thing this type exists to avoid.
-    pub fn push(&mut self, character: char) {
-        let mut encoded = [0u8; 4];
-        let encoded = character.encode_utf8(&mut encoded).as_bytes();
-        if self.bytes.len() + encoded.len() > SECRET_CAPACITY {
-            return;
-        }
-        self.bytes.extend_from_slice(encoded);
-        self.typed += 1;
-    }
-
-    /// Take the last character off, whatever it was made of.
-    pub fn pop(&mut self) {
-        // Back over the continuation bytes to the head of the last character.
-        while let Some(&last) = self.bytes.last() {
-            self.bytes.pop();
-            if last & 0b1100_0000 != 0b1000_0000 {
-                break;
-            }
-        }
-        self.typed = self.typed.saturating_sub(1);
-    }
-
-    /// How many characters are in it, for the marks the field draws.
-    pub fn typed(&self) -> usize {
-        self.typed
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
-impl Drop for Secret {
-    fn drop(&mut self) {
-        self.bytes.fill(0);
-        // The write above is dead as far as the optimiser is concerned — the
-        // buffer is about to be freed. This is the usual way of asking for it
-        // to happen anyway without reaching for `unsafe`.
-        compiler_fence(Ordering::SeqCst);
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Secret({} characters)", self.typed)
-    }
-}
+use crate::secret::Secret;
 
 /// What removing an application would actually run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,8 +396,7 @@ fn validate(password: Secret) -> Option<Outcome> {
         Err(err) => return Some(Outcome::Failed(err.to_string())),
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&password.bytes);
-        let _ = stdin.write_all(b"\n");
+        let _ = password.hand_to(&mut stdin);
         // Closed here rather than at the end of the function: sudo waits on
         // end-of-input before it gives up on a second attempt.
         drop(stdin);
@@ -682,57 +595,6 @@ mod tests {
             }
         }
         assert!(!installed("lxb-no-such-program-anywhere"));
-    }
-
-    /// The buffer is allocated once and never grows, so there is only ever one
-    /// copy of the password to overwrite.
-    #[test]
-    fn a_secret_never_reallocates_and_counts_characters_not_bytes() {
-        let mut secret = Secret::default();
-        assert!(secret.is_empty());
-        let start = secret.bytes.as_ptr();
-
-        for character in "pa55wörd🔑".chars() {
-            secret.push(character);
-        }
-        assert_eq!(secret.typed(), 9, "characters, not bytes");
-        assert!(secret.bytes.len() > 9, "and it really is multi-byte");
-        assert_eq!(secret.bytes.as_ptr(), start, "the buffer moved");
-
-        // Backspace takes a whole character off, however wide it was.
-        secret.pop();
-        assert_eq!(secret.typed(), 8);
-        assert_eq!(secret.bytes.len(), "pa55wörd".len());
-        assert_eq!(
-            std::str::from_utf8(&secret.bytes),
-            Ok("pa55wörd"),
-            "a partial character was left behind"
-        );
-    }
-
-    /// A full buffer stops taking characters rather than growing.
-    #[test]
-    fn a_secret_stops_rather_than_growing() {
-        let mut secret = Secret::default();
-        let start = secret.bytes.as_ptr();
-        for _ in 0..SECRET_CAPACITY * 2 {
-            secret.push('x');
-        }
-        assert_eq!(secret.bytes.len(), SECRET_CAPACITY);
-        assert_eq!(secret.bytes.as_ptr(), start);
-    }
-
-    /// It must not be printable, because the whole shell logs with `tracing`
-    /// and one `?password` would be enough.
-    #[test]
-    fn a_secret_does_not_print_itself() {
-        let mut secret = Secret::default();
-        for character in "hunter2".chars() {
-            secret.push(character);
-        }
-        let shown = format!("{secret:?}");
-        assert!(!shown.contains("hunter2"), "{shown}");
-        assert_eq!(shown, "Secret(7 characters)");
     }
 
     #[test]

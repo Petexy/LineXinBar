@@ -19,6 +19,7 @@
   xwayland,
   wireplumber,
   pulseaudio,
+  alsa-lib,
   alsa-utils,
   ddcutil,
   src ? ../..,
@@ -42,6 +43,7 @@ let
         || lib.hasPrefix "result-" relative);
   };
   runtimeLibraries = [
+    alsa-lib
     wayland
     libinput
     seatd
@@ -84,6 +86,7 @@ rustPlatform.buildRustPackage {
     addDriverRunpath
   ];
   buildInputs = [
+    alsa-lib
     wayland
     libinput
     seatd
@@ -97,6 +100,7 @@ rustPlatform.buildRustPackage {
     xorg.libXcursor
     xorg.libXi
     vulkan-loader
+    pipewire
   ];
 
   # cargoInstallHook knows buildRustPackage's target-triple output directory
@@ -105,6 +109,14 @@ rustPlatform.buildRustPackage {
     install -Dm0755 packaging/files/lxb-session "$out/bin/lxb-session"
     install -Dm0644 packaging/files/lxb.desktop \
       "$out/share/wayland-sessions/lxb.desktop"
+
+    install -Dm0644 share/xdg-desktop-portal/portals/lxb.portal \
+      "$out/share/xdg-desktop-portal/portals/lxb.portal"
+    install -Dm0644 share/xdg-desktop-portal/linexinbar-portals.conf \
+      "$out/share/xdg-desktop-portal/linexinbar-portals.conf"
+    install -Dm0644 \
+      share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service \
+      "$out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service"
 
     mkdir -p "$out/share/icons/Bibata-Modern-Classic"
     cp -a --no-preserve=ownership share/icons/Bibata-Modern-Classic/. \
@@ -127,7 +139,7 @@ rustPlatform.buildRustPackage {
   '';
 
   postFixup = ''
-    for program in lxb lxb-desktop; do
+    for program in lxb lxb-desktop lxb-portal; do
       addDriverRunpath "$out/bin/$program"
       patchelf --add-rpath "${lib.makeLibraryPath runtimeLibraries}" \
         "$out/bin/$program"

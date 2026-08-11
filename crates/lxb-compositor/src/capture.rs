@@ -1,15 +1,21 @@
-//! Photographing one window.
+//! Photographing one window, and photographing one display.
 //!
 //! The shell can draw anything it likes over an application, and it cannot see
 //! a single pixel of it: a Wayland client reads its own surfaces and nothing
 //! else, which is the point of Wayland. So a screenshot of the window a user is
 //! pointing at has to be taken here, where the buffers actually are.
 //!
-//! What comes out is the *window*, not the screen it is on: its own contents at
-//! its own size, with nothing in front of it, nothing behind it, and none of
-//! the shell's own glass over it. That is what the guide's menu offers — the
-//! entry says "the app" — and it is also the only version of the picture that
-//! is worth having, because the display it was on is mostly this window anyway.
+//! There are two pictures, and they answer different questions.
+//!
+//! [`window`] is *the application*: its own contents at its own size, with
+//! nothing in front of it, nothing behind it, and none of the shell's own glass
+//! over it. That is what the guide's menu offers — the entry says "the app".
+//!
+//! [`output`] is *the screen*: the same composite the display is showing, in
+//! the same order, wallpaper and windows and the shell's bar over them, at as
+//! many pixels as that display is driven at. That is what a screenshot key
+//! means everywhere else, and it is the only one of the two that can be taken
+//! of a display with nothing running on it.
 //!
 //! Rendering is done with the same element list the display uses, into an
 //! offscreen texture instead of a screen, and read back through [`ExportMem`].
@@ -23,13 +29,16 @@ use std::path::Path;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::AsRenderElements;
+use smithay::backend::renderer::element::{AsRenderElements, RenderElement};
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::backend::renderer::{ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
 use smithay::desktop::Window;
-use smithay::utils::{Buffer as BufferCoords, Point, Rectangle, Scale, Size, Transform};
+use smithay::output::Output;
+use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform};
 
-/// A captured window: its pixels, and how they are laid out.
+use crate::state::Lxb;
+
+/// A captured window or display: its pixels, and how they are laid out.
 ///
 /// Bytes are R, G, B, A in that order, top row first, which is what a PNG
 /// wants and what the renderer is asked for.
@@ -63,18 +72,6 @@ where
     if size.w <= 0 || size.h <= 0 {
         anyhow::bail!("the window has no size to photograph");
     }
-    // The same rectangle again in buffer coordinates, which is what a texture
-    // is measured in. One picture, two ways of saying how big it is: the
-    // renderer draws in physical pixels and the buffer holds them.
-    let buffer: Size<i32, BufferCoords> = Size::from((size.w, size.h));
-
-    let mut texture = renderer
-        .create_buffer(Fourcc::Abgr8888, buffer)
-        .map_err(|err| anyhow::anyhow!("no offscreen buffer to draw into: {err}"))?;
-    let mut framebuffer = renderer
-        .bind(&mut texture)
-        .map_err(|err| anyhow::anyhow!("could not draw into the offscreen buffer: {err}"))?;
-
     // Placed so that the corner of the geometry lands on the corner of the
     // picture: the surface starts a shadow's width before it, and that width is
     // exactly what falls off the edge of the buffer.
@@ -89,13 +86,101 @@ where
     // Transparent, not black. A window with rounded corners of its own has
     // nothing behind it here, and inventing a colour for that would be
     // inventing part of the picture.
-    OutputDamageTracker::new(size, scale, Transform::Normal)
-        .render_output(renderer, &mut framebuffer, 0, &elements, [0.0; 4])
-        .map_err(|err| anyhow::anyhow!("could not render the window: {err:?}"))?;
+    shoot(
+        renderer,
+        size,
+        &mut OutputDamageTracker::new(size, scale, Transform::Normal),
+        &elements,
+        [0.0; 4],
+    )
+}
+
+/// Render everything on `output` into an offscreen buffer and read it back.
+///
+/// The composite, not a list of windows: the element list is [`crate::render`]'s
+/// own, so what lands in the picture is what the display is drawing, in the
+/// order it draws it — which is the whole difference between this and
+/// [`window`].
+///
+/// The picture is the size the display *shows*, which for a screen standing on
+/// its side is not the size the connector scans out: a panel driven at
+/// 1920×1080 and turned a quarter turn shows a 1080×1920 picture, and that is
+/// the one somebody looking at it sees. So the buffer is that way round and the
+/// contents are drawn upright in it, rather than being the panel's own
+/// landscape frame with everything lying on its side inside it — which is what
+/// the display's own damage tracker would produce, because a scanout buffer is
+/// exactly what that one is for. See [`crate::screencopy`], which wants the
+/// same picture for the same reason.
+///
+/// The cursor is left out. It is not part of any surface — the compositor draws
+/// it — and it is not on screen at all while the session is being driven from a
+/// controller, so a picture with an arrow in it would be a picture of a moment
+/// that never happened on most of the screenshots this session takes.
+pub fn output<R>(renderer: &mut R, lxb: &Lxb, output: &Output) -> anyhow::Result<Shot>
+where
+    R: Renderer + ImportAll + ImportMem + ExportMem + Offscreen<GlesTexture>,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: Send + Sync + 'static,
+{
+    let size = crate::screencopy::picture_size(output)
+        .ok_or_else(|| anyhow::anyhow!("the display has no size to photograph"))?;
+
+    let elements = crate::render::output_elements(renderer, lxb, output, None);
+
+    // The session's own background behind it all, exactly as the backends clear
+    // to: the gap a display with nothing on it shows is part of the picture.
+    shoot(
+        renderer,
+        size,
+        &mut OutputDamageTracker::new(
+            size,
+            output.current_scale().fractional_scale(),
+            Transform::Normal,
+        ),
+        &elements,
+        lxb.config.general.background,
+    )
+}
+
+/// Draw `elements` into an offscreen buffer `size` pixels across and read the
+/// result back into main memory.
+///
+/// The half every picture shares — [`crate::screencopy`]'s frames as well as
+/// these two. `tracker` carries the scale and the orientation to draw at, and
+/// is always a fresh one: a picture has no previous frame to be a difference
+/// from, so every pixel of it is drawn.
+pub fn shoot<R, E>(
+    renderer: &mut R,
+    size: Size<i32, Physical>,
+    tracker: &mut OutputDamageTracker,
+    elements: &[E],
+    clear: [f32; 4],
+) -> anyhow::Result<Shot>
+where
+    R: Renderer + ImportMem + ExportMem + Offscreen<GlesTexture>,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: Send + Sync + 'static,
+    E: RenderElement<R>,
+{
+    // The same rectangle again in buffer coordinates, which is what a texture
+    // is measured in. One picture, two ways of saying how big it is: the
+    // renderer draws in physical pixels and the buffer holds them.
+    let buffer: Size<i32, BufferCoords> = Size::from((size.w, size.h));
+
+    let mut texture = renderer
+        .create_buffer(Fourcc::Abgr8888, buffer)
+        .map_err(|err| anyhow::anyhow!("no offscreen buffer to draw into: {err}"))?;
+    let mut framebuffer = renderer
+        .bind(&mut texture)
+        .map_err(|err| anyhow::anyhow!("could not draw into the offscreen buffer: {err}"))?;
+
+    tracker
+        .render_output(renderer, &mut framebuffer, 0, elements, clear)
+        .map_err(|err| anyhow::anyhow!("could not render the picture: {err:?}"))?;
 
     let mapping = renderer
         .copy_framebuffer(&framebuffer, Rectangle::from_size(buffer), Fourcc::Abgr8888)
-        .map_err(|err| anyhow::anyhow!("could not read the window back: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("could not read the picture back: {err}"))?;
     let bytes = renderer
         .map_texture(&mapping)
         .map_err(|err| anyhow::anyhow!("could not map the captured pixels: {err}"))?;
