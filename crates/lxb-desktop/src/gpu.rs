@@ -117,6 +117,16 @@ pub struct Quad {
     /// This is reflection geometry, not a painted gradient: the same lamp and
     /// environment still decide where the sheen falls.
     pub face_curve: f32,
+    /// How much of the colour is taken out of what this quad draws: 0 leaves
+    /// the picture as it was made, 1 is grey.
+    ///
+    /// The one thing in the shell it is used for is a game that is not on this
+    /// disk, whose cover is drawn colourless the way a shop draws stock it
+    /// does not have. It is here rather than in the picture because the answer
+    /// changes while the picture does not — a download finishing has to give a
+    /// cover its colour back without the atlas being touched — and because the
+    /// same cover is a single copy shared by every display.
+    pub drain: f32,
     /// The pane's own opacity, multiplied into everything above.
     ///
     /// Separate from the alpha in `color`, which on a glass pane means how
@@ -160,6 +170,7 @@ impl Default for Quad {
             frost: 0.0,
             gloss: 0.0,
             face_curve: 0.0,
+            drain: 0.0,
             // Written out because this is the one field whose zero is wrong:
             // every `..Quad::default()` in the shell would draw nothing.
             fade: 1.0,
@@ -334,9 +345,22 @@ const THUMB_CELLS: u32 = crate::thumbs::SIZE.div_ceil(CELL);
 ///
 /// Not a cache size: the shell asks for the rows around the cursor and drops
 /// the rest every frame, so this only has to cover what one screen can show
-/// with room to move. Two dozen is about four screensful, and costs six
-/// megabytes of the atlas.
-const THUMB_BLOCKS: u32 = 24;
+/// with room to move. Eight megabytes of the atlas.
+///
+/// Two kinds of picture share the band — a frame of one of the user's own
+/// films and a Steam cover — because they are the same thing to draw and the
+/// same thing to throw away. What sets the number is therefore what *both*
+/// cursors can be looking at: a handful of rows either side of each display's
+/// cursor, twice over, on a machine with two screens.
+const THUMB_BLOCKS: u32 = 32;
+
+/// How many pictures may stand behind a display at once.
+///
+/// Two per display — the one going and the one arriving — and every display
+/// has its own cursor and therefore its own game. Four covers the pair of
+/// screens most machines have; past that a display keeps the shell's own
+/// wallpaper, which is what every display had before this existed.
+const HERO_LAYERS: u32 = 4;
 
 /// The shell's typeface, carried in the binary rather than looked up.
 ///
@@ -390,6 +414,11 @@ impl TextKey {
 }
 
 /// A run of text to draw.
+///
+/// Cloneable because a run a panel stands across is drawn twice, once for the
+/// part either side of it — see [`crate::ui::Scene::hide_text_behind`]. The two
+/// share a shaping: it is keyed on everything but the clip.
+#[derive(Clone)]
 pub struct Text {
     pub content: String,
     pub x: f32,
@@ -432,6 +461,8 @@ struct Instance {
     /// Broad-face reflection curvature, separate so compact controls keep the
     /// perfectly level face they have always had.
     face_curve: f32,
+    /// How much of the colour is taken out of what is sampled.
+    drain: f32,
     /// The rectangle this pane is cut to, as its two corners rather than as a
     /// size: that is the comparison the shader makes against each pixel, and
     /// the conversion belongs here rather than once per fragment. A pane with
@@ -465,6 +496,9 @@ struct Globals {
     accent: [[f32; 4]; 3],
     glow: [f32; 4],
     covers: [[f32; 4]; MAX_COVERS],
+    /// The picture standing behind everything: the layer being left, the layer
+    /// being arrived at, and how much of each is showing. See [`Hero`].
+    hero: [f32; 4],
 }
 
 /// How many card corners one pass can cover. The column shows at most three
@@ -506,6 +540,44 @@ pub struct Backdrop {
     /// application the compositor has not finished shrinking. The corner
     /// covers are never faded: they are repairs to what is already on screen.
     pub fade: f32,
+}
+
+/// The picture standing behind the whole shell on one display, as it is this
+/// frame.
+///
+/// Steam's own picture of the game under the cursor, crossfading to the next
+/// one as the cursor moves. Two layers rather than one because a picture must
+/// not blink out to make room for its successor, and because a fade that went
+/// through the wallpaper on the way would announce the wallpaper rather than
+/// the game.
+///
+/// Deliberately *not* part of [`Backdrop`], which is one pass on one surface.
+/// This is what the wallpaper *is*, and the wallpaper is drawn in two places:
+/// the surface below the bar, and inside every pane of glass on the bar, which
+/// re-creates what is behind it rather than reading it. Both have to be told
+/// the same thing or a pane refracts a wallpaper nobody can see.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Hero {
+    /// The layer being faded out of, and how much of it is left showing.
+    pub from: Option<u32>,
+    pub leaving: f32,
+    /// The layer being faded into, and how much of it has arrived.
+    pub to: Option<u32>,
+    pub arriving: f32,
+}
+
+impl Hero {
+    /// The four numbers the shader reads. A layer that is not there is given
+    /// no strength, so the shader never has to ask whether one exists.
+    fn packed(&self) -> [f32; 4] {
+        let layer = |which: Option<u32>| which.unwrap_or(0) as f32;
+        [
+            layer(self.from),
+            layer(self.to),
+            self.from.map_or(0.0, |_| self.leaving.clamp(0.0, 1.0)),
+            self.to.map_or(0.0, |_| self.arriving.clamp(0.0, 1.0)),
+        ]
+    }
 }
 
 impl Default for Backdrop {
@@ -566,6 +638,17 @@ pub struct Gpu {
     /// from [`Self::slots`] because a thumbnail is not square: it uses only
     /// part of its block, and [`Self::uv_for`] has to be told which part.
     thumbs: HashMap<PathBuf, Thumb>,
+
+    /// The pictures that stand behind a display, one per layer of an array
+    /// texture, and which game each layer is holding. `None` is a free layer.
+    ///
+    /// A texture of its own rather than a corner of the atlas: this one is a
+    /// whole display's worth of picture with a chain of blurred copies under
+    /// it, and the atlas is a grid of 128-pixel cells with no mip levels at
+    /// all.
+    scenery_texture: wgpu::Texture,
+    scenery_bind_group: wgpu::BindGroup,
+    scenery_layers: Vec<Option<u32>>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -787,15 +870,80 @@ impl Gpu {
             ],
         });
 
+        // --- the pictures behind the shell --------------------------------
+        let scenery_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scenery layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let scenery_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("scenery"),
+            size: wgpu::Extent3d {
+                width: crate::art::HERO_WIDTH,
+                height: crate::art::HERO_HEIGHT,
+                depth_or_array_layers: HERO_LAYERS,
+            },
+            mip_level_count: crate::art::HERO_LEVELS,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let scenery_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scenery"),
+            layout: &scenery_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scenery_texture.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            label: Some("scenery"),
+                            dimension: Some(wgpu::TextureViewDimension::D2Array),
+                            ..Default::default()
+                        },
+                    )),
+                },
+                // The frame sampler, because it is the one that clamps at the
+                // edges and reads down the blur chain — which is exactly what
+                // a picture cropped to a display and softened behind the guide
+                // needs.
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&frame_sampler),
+                },
+            ],
+        });
+
         // --- pipelines ---------------------------------------------------
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xmb shaders"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
         });
 
+        // The wallpaper is one function, and it samples the picture behind the
+        // shell. Both passes that draw it therefore need the scenery bound at
+        // the same place; the two groups in between are the quad pass's own
+        // and are holes here.
         let background_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("background layout"),
-            bind_group_layouts: &[Some(&globals_layout)],
+            bind_group_layouts: &[Some(&globals_layout), None, None, Some(&scenery_layout)],
             immediate_size: 0,
         });
         let background_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -875,6 +1023,7 @@ impl Gpu {
                 Some(&globals_layout),
                 Some(&atlas_layout),
                 Some(&sample_layout),
+                Some(&scenery_layout),
             ],
             immediate_size: 0,
         });
@@ -895,7 +1044,8 @@ impl Gpu {
                         4 => Float32x4,
                         5 => Float32,
                         6 => Float32,
-                        7 => Float32x4,
+                        7 => Float32,
+                        8 => Float32x4,
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -964,6 +1114,9 @@ impl Gpu {
                 thumb_blocks: vec![None; atlas.thumb_blocks],
                 thumb_band: atlas.thumb_band,
                 thumbs: HashMap::new(),
+                scenery_texture,
+                scenery_bind_group,
+                scenery_layers: vec![None; HERO_LAYERS as usize],
                 atlas_texture: atlas.texture,
                 slots: atlas.slots,
                 font_system,
@@ -1126,6 +1279,81 @@ impl Gpu {
         self.thumbs.retain(|path, _| wanted.contains(path));
     }
 
+    /// The layer holding one game's picture, if it is resident.
+    pub fn scenery(&self, app_id: u32) -> Option<u32> {
+        self.scenery_layers
+            .iter()
+            .position(|held| *held == Some(app_id))
+            .map(|layer| layer as u32)
+    }
+
+    /// Put a game's picture into a free layer, with all of its halvings.
+    ///
+    /// Nothing is evicted to make room: a layer is only free once the shell
+    /// has said it no longer wants what is in it, and a picture arriving for a
+    /// display that has since moved on must not take the layer out from under
+    /// the picture somebody is looking at. Answers false when there is no room,
+    /// which leaves that display's wallpaper as it was.
+    pub fn put_scenery(&mut self, app_id: u32, scenery: &crate::art::Scenery) -> bool {
+        if self.scenery(app_id).is_some() {
+            return false;
+        }
+        let Some(layer) = self.scenery_layers.iter().position(Option::is_none) else {
+            tracing::debug!(
+                app_id,
+                "no free layer for that picture; the wallpaper stays"
+            );
+            return false;
+        };
+        for (level, pixels) in scenery.levels.iter().enumerate() {
+            let level = level as u32;
+            let (width, height) = crate::art::Scenery::size(level);
+            if pixels.len() != (width * height * 4) as usize {
+                tracing::warn!(app_id, level, "that rung is not the size it should be");
+                return false;
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.scenery_texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        self.scenery_layers[layer] = Some(app_id);
+        true
+    }
+
+    /// Give up every layer whose game no display is showing.
+    ///
+    /// The same policy as the thumbnails, and it has to be: what these hold is
+    /// what is on screen, and a picture the cursor has left is one nothing will
+    /// draw again until it is asked for. Getting it back costs a read of a file
+    /// that is on the disk by then.
+    pub fn retain_scenery(&mut self, wanted: &HashSet<u32>) {
+        for layer in &mut self.scenery_layers {
+            if layer.is_some_and(|app_id| !wanted.contains(&app_id)) {
+                *layer = None;
+            }
+        }
+    }
+
     /// The top-left cell of a thumbnail block.
     fn block_cell(&self, block: usize) -> (u32, u32) {
         let per_row = (self.atlas_cells_per_row / THUMB_CELLS).max(1);
@@ -1142,6 +1370,12 @@ impl Gpu {
     /// region of the surface it fills. `None` leaves the surface transparent
     /// wherever the scene does not paint — the overlay drawn over a running
     /// application, or a surface whose backdrop lives on another surface.
+    ///
+    /// `hero` is what the wallpaper currently *is* on this display, and it is
+    /// wanted whether or not this surface draws the backdrop pass: the panes
+    /// of glass in the scene re-create the wallpaper to refract it, so a
+    /// surface handed the wrong one shows a pane full of a picture that is not
+    /// behind it.
     pub fn render(
         &mut self,
         target: &mut Target,
@@ -1149,6 +1383,7 @@ impl Gpu {
         texts: &[Text],
         time: f32,
         backdrop: Option<Backdrop>,
+        hero: Hero,
     ) -> anyhow::Result<()> {
         let params = backdrop.unwrap_or_default();
         let theme = crate::theme::theme();
@@ -1180,6 +1415,7 @@ impl Gpu {
                 ],
                 glow: theme.glow.a(1.0),
                 covers: params.covers,
+                hero: hero.packed(),
             }),
         );
 
@@ -1193,6 +1429,7 @@ impl Gpu {
                 material: [q.thickness, q.behind, q.gloss, q.fade],
                 corner: q.corner,
                 face_curve: q.face_curve,
+                drain: q.drain,
                 cut: q.clip.map_or(UNCUT, |[x, y, w, h]| [x, y, x + w, y + h]),
             })
             .collect();
@@ -1284,6 +1521,7 @@ impl Gpu {
             if backdrop.is_some() {
                 pass.set_pipeline(&self.background_pipeline);
                 pass.set_bind_group(0, &target.globals_bind_group, &[]);
+                pass.set_bind_group(3, &self.scenery_bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
@@ -1302,6 +1540,7 @@ impl Gpu {
             pass.set_bind_group(0, &target.globals_bind_group, &[]);
             pass.set_bind_group(1, &self.atlas_bind_group, &[]);
             pass.set_bind_group(2, &off.backdrop_source, &[]);
+            pass.set_bind_group(3, &self.scenery_bind_group, &[]);
             // Sliced rather than drawn from an instance offset: a non-zero
             // first instance is an extension on some of the backends this
             // runs on, and rebinding the buffer costs nothing.
@@ -1592,6 +1831,7 @@ impl Target {
                 accent: [[0.0; 4]; 3],
                 glow: [0.0; 4],
                 covers: [[0.0; 4]; MAX_COVERS],
+                hero: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });

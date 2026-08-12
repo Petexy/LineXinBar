@@ -176,9 +176,14 @@ const SCREENSHOT_SINCE: u32 = 17;
 /// sharing a screen nobody agreed to.
 const SHARE_SINCE: u32 = 18;
 
+/// First version that can run an application without ever showing it. Below
+/// it, Valve's client puts its own windows over the shell's loading screen and
+/// there is nothing the shell can do about it.
+const OUT_OF_SIGHT_SINCE: u32 = 19;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = SHARE_SINCE;
+const CURRENT_VERSION: u32 = OUT_OF_SIGHT_SINCE;
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -806,6 +811,45 @@ impl LxbState {
         Some(path.to_string_lossy().into_owned())
     }
 
+    /// Run an application without ever showing it, or stop doing so.
+    ///
+    /// Everything that makes a window *noticed* asks
+    /// [`crate::state::Lxb::out_of_sight`] first, so this only has to record
+    /// the answer and then make the screen agree with it: the windows that
+    /// have just become invisible may be holding the keyboard, and the shell
+    /// has been told they are on a display they are about to leave.
+    pub fn keep_out_of_sight(&mut self, app_id: &str, hidden: bool) {
+        // Folded the same way the window's own name will be when it is asked
+        // about, which is the only reason the two ever meet. Naming nothing is
+        // refused here rather than stored: an empty name in the set would hide
+        // every window whose client never set an app_id, which on an X11-heavy
+        // session is a great many of them.
+        let Some(name) = crate::state::folded_app_id(app_id) else {
+            tracing::debug!("the shell asked to hide an application with no name");
+            return;
+        };
+
+        let changed = if hidden {
+            self.lxb.unseen.insert(name.clone())
+        } else {
+            self.lxb.unseen.remove(&name)
+        };
+        if !changed {
+            return;
+        }
+        tracing::info!(app_id = %name, hidden, "the shell changed what may be seen");
+
+        // A window that has just been hidden cannot keep the keyboard: the
+        // user would be typing into something they cannot see. Asking for the
+        // topmost one again settles both directions — it skips what is now
+        // hidden, and it picks up what has just been revealed.
+        self.focus_topmost_window();
+        // And the shell's own picture of what is running has to change with
+        // it, or the guide goes on offering to close a window nobody can see.
+        self.refresh_foreground();
+        self.queue_redraw();
+    }
+
     /// Publish the foreground application's title, if it changed — both for
     /// the session as a whole and for each display.
     ///
@@ -859,7 +903,7 @@ impl LxbState {
         let per_output_windows = outputs
             .into_iter()
             .map(|output| {
-                let windows = crate::render::overview_windows(&self.lxb.space, &output)
+                let windows = crate::render::overview_windows(&self.lxb, &output)
                     .into_iter()
                     .map(|window| {
                         let size = self
@@ -1208,6 +1252,7 @@ impl LxbState {
             .rev()
             .find(|window| {
                 window_accepts_keyboard_focus(window)
+                    && !self.lxb.out_of_sight(window)
                     && match output {
                         Some(output) => self.primary_output(window).as_ref() == Some(output),
                         None => true,
@@ -1293,7 +1338,7 @@ fn window_title(window: &Window) -> String {
 /// Empty when the client set neither. A setting cannot be filed under nothing,
 /// and the shell treats it as an application it is not allowed to remember
 /// anything about, which is better than everything nameless sharing one entry.
-fn window_app_id(window: &Window) -> String {
+pub(crate) fn window_app_id(window: &Window) -> String {
     if let Some(toplevel) = window.toplevel() {
         let app_id = with_states(toplevel.wl_surface(), |states| {
             states
@@ -1600,6 +1645,9 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     .lxb
                     .shell_control
                     .send_share_answer(id, chosen.as_ref());
+            }
+            lxb_shell_v1::Request::KeepOutOfSight { app_id, hidden } => {
+                state.keep_out_of_sight(&app_id, hidden == 1)
             }
             lxb_shell_v1::Request::HidePointer => state.pointer_put_down(),
             lxb_shell_v1::Request::KeyboardKey { key, state: down } => {

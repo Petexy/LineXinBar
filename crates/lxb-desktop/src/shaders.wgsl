@@ -26,9 +26,50 @@ struct Globals {
     // Rects whose square corners are painted over with the background that
     // sits behind them — the compositor's live window cards.
     covers: array<vec4<f32>, 6>,
+    // The picture standing behind the shell: the layer being left, the layer
+    // being arrived at, and how much of each is showing.
+    hero: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+
+// Steam's own pictures of the games under the cursors, one per layer, each
+// with a chain of ever-smaller copies for the blur. Bound to both passes that
+// draw the wallpaper, because the wallpaper is one function and it samples
+// this.
+@group(3) @binding(0) var scenery_texture: texture_2d_array<f32>;
+@group(3) @binding(1) var scenery_sampler: sampler;
+
+// The shape a picture is kept at — `art::HERO_WIDTH` over `art::HERO_HEIGHT` —
+// and the deepest rung of halvings it carries, one less than `HERO_LEVELS`.
+// Both have to agree with Rust: a wrong shape squeezes every game's artwork,
+// and a rung that was never uploaded samples whatever the layer held before.
+const SCENERY_SHAPE: f32 = 1920.0 / 620.0;
+const SCENERY_LEVELS: f32 = 4.0;
+
+// How much of a game's picture reaches the screen.
+//
+// Not much of it, and this is the number that matters most in this whole
+// feature. The shell's own wallpaper is deliberately dark: it is the ground
+// white labels, a purple selection light and a room full of glass are all read
+// against. Key art is the opposite — painted to be looked at on its own, at
+// full brightness, with nothing on top of it. Half a bright sky behind the bar
+// turns every pane of glass white and every label into grey text on cloud.
+//
+// Applied in linear light, so it is a gentler step than the number looks: a
+// third of the light is around six tenths of the way up the sRGB ramp, which
+// leaves a picture plainly legible as itself.
+const SCENERY_LIGHT: f32 = 0.26;
+
+// And how much further down the side of the screen the bar stands on.
+//
+// Every console that puts art behind a menu does this, because a picture is
+// not evenly interesting: the half with the subject in it can be left alone,
+// and the strip carrying the titles cannot. It eases out well before the
+// middle so there is no edge to see — what is left is a picture that happens
+// to be darker where the words are.
+const SCENERY_SHADE: f32 = 0.5;
+const SCENERY_SHADE_TO: f32 = 0.72;
 
 // The surface is an sRGB target, so fragment outputs are interpreted as linear
 // light. Theme colours have already been converted to linear light by Rust
@@ -120,6 +161,45 @@ fn ambient_field(p: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
     return exp(-dot(q, q) * 1.65);
 }
 
+// The picture behind the shell at `uv`, and how much of it there is.
+//
+// Cropped to fill rather than squeezed to fit: a hero is wider than any
+// display, and the shape it was painted in is the shape it has to keep. What
+// is cut is the sides, which is what Valve's own guidance is written for —
+// everything that shows one of these crops it.
+//
+// Two layers, because the picture changes as the cursor moves and one must not
+// blink out to make room for the next. They are added by weight and divided by
+// the weight they carry, so a crossfade never dips through the wallpaper
+// underneath on its way across.
+fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
+    let leaving = globals.hero.z;
+    let arriving = globals.hero.w;
+    let total = leaving + arriving;
+    if (total <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+
+    var window = vec2<f32>(1.0, 1.0);
+    if (aspect < SCENERY_SHAPE) {
+        window.x = aspect / SCENERY_SHAPE;
+    } else {
+        window.y = SCENERY_SHAPE / aspect;
+    }
+    let cropped = (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
+
+    var color = vec3<f32>(0.0);
+    if (leaving > 0.0) {
+        color += textureSampleLevel(
+            scenery_texture, scenery_sampler, cropped, i32(globals.hero.x), lod).rgb * leaving;
+    }
+    if (arriving > 0.0) {
+        color += textureSampleLevel(
+            scenery_texture, scenery_sampler, cropped, i32(globals.hero.y), lod).rgb * arriving;
+    }
+    return vec4<f32>(color / total, min(total, 1.0));
+}
+
 // The wallpaper, as a function of where you look rather than as a picture.
 //
 // Being analytic is what lets anything re-create it: the sliver outside a
@@ -127,7 +207,7 @@ fn ambient_field(p: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
 // their own edges. `soften` stands in for blur — the same scene drawn wide
 // and dim rather than pixels filtered, which lands the same impression for
 // free. Returns linear light, the space the palette arrives in.
-fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec3<f32> {
+fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32, lod: f32) -> vec3<f32> {
     // The mood drifts slowly between the theme's two gradients — indigo to
     // violet and back over a couple of minutes, like the original bar's
     // changing months.
@@ -287,6 +367,19 @@ fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec3<f32> {
         + globals.accent[0].rgb * lower_crest * 0.028)
         * lower_sheen * veil_strength;
 
+    // The game under the cursor, over everything the shell paints for itself.
+    //
+    // Over rather than through: the lights, the currents and the silk are the
+    // shell being interesting when there is nothing else to look at, and a
+    // purple ribbon crawling across somebody's key art is not the shell being
+    // interesting. What survives is what comes after this — the vignette and
+    // the softening — because those are about the *display*, not about the
+    // wallpaper, and a picture that skipped them would be the one thing on
+    // screen not behaving like everything else.
+    let picture = scenery(uv, aspect, lod);
+    let shade = mix(1.0 - SCENERY_SHADE, 1.0, smoothstep(0.0, SCENERY_SHADE_TO, uv.x));
+    color = mix(color, picture.rgb * SCENERY_LIGHT * shade, picture.a);
+
     // Vignette, so the edges do not compete with the content.
     let edge = distance(uv, vec2<f32>(0.5, 0.5));
     color *= 1.0 - smoothstep(0.55, 1.05, edge) * 0.55;
@@ -356,7 +449,10 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
     }
 
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
-    let color = wallpaper(uv, aspect, globals.time, soften);
+    // The analytic wallpaper answers `soften` by drawing itself wide and dim;
+    // a photograph can only answer it by being sampled off a smaller copy of
+    // itself, so the same ramp has to reach it as a rung of its blur chain.
+    let color = wallpaper(uv, aspect, globals.time, soften, soften * SCENERY_LEVELS);
 
     // Premultiplied, so the surface blends correctly where the background
     // does not reach.
@@ -383,9 +479,12 @@ struct QuadIn {
     @location(5) corner_power: f32,
     // A shallow optical bow across a large pane's reflective face.
     @location(6) face_curve: f32,
+    // How much of the colour is taken out of what is sampled: 0 the picture as
+    // it was made, 1 grey.
+    @location(7) drain: f32,
     // The rectangle this pane is cut to, as its two corners in pixels. A pane
     // nothing is cutting carries a box larger than any display.
-    @location(7) cut: vec4<f32>,
+    @location(8) cut: vec4<f32>,
 };
 
 struct QuadOut {
@@ -400,7 +499,8 @@ struct QuadOut {
     @location(5) material: vec4<f32>,
     @location(6) corner_power: f32,
     @location(7) face_curve: f32,
-    @location(8) cut: vec4<f32>,
+    @location(8) drain: f32,
+    @location(9) cut: vec4<f32>,
 };
 
 @vertex
@@ -428,6 +528,7 @@ fn vs_quad(@builtin(vertex_index) index: u32, quad: QuadIn) -> QuadOut {
     out.material = quad.material;
     out.corner_power = quad.corner_power;
     out.face_curve = quad.face_curve;
+    out.drain = quad.drain;
     out.cut = quad.cut;
     return out;
 }
@@ -568,7 +669,12 @@ fn behind_at(px: vec2<f32>, lod: f32, soften: f32) -> vec3<f32> {
     let uv = clamp(px / globals.resolution, vec2<f32>(0.0), vec2<f32>(1.0));
     let drawn = textureSampleLevel(backdrop_texture, backdrop_sampler, uv, lod);
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
-    let below = wallpaper(uv, aspect, globals.time, soften);
+    // Frost blurs what a pane transmits, and that has to include a picture:
+    // the analytic wallpaper is smooth enough that scattering it changes
+    // little, while a photograph seen sharp through deep frost is a pane with
+    // a hole in it. The deeper of the two — the frost's own rung and the
+    // softness the wallpaper is being drawn at — is what it is asked for.
+    let below = wallpaper(uv, aspect, globals.time, soften, max(lod, soften * SCENERY_LEVELS));
     return drawn.rgb + below * (1.0 - drawn.a);
 }
 
@@ -613,6 +719,16 @@ fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
 
     let texel = textureSample(atlas_texture, atlas_sampler, in.uv);
     var color = texel * in.color;
+
+    // The colour taken out of it, for a cover whose game is not on this disk.
+    // Rec.709 luminance in the linear light the atlas is sampled in, so what
+    // is left is how bright the picture actually is — a mean of three channels
+    // would darken every red and lighten every blue, which on a wall of covers
+    // reads as the pictures having been damaged rather than drained.
+    if (in.drain > 0.0) {
+        let lit = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        color = vec4<f32>(mix(color.rgb, vec3<f32>(lit), in.drain), color.a);
+    }
 
     // A radius of zero is the plain rectangle, deliberately without the edge
     // antialiasing below: hairline rules and icon quads must not be softened

@@ -1,0 +1,161 @@
+<!--
+  The Steam menu's Sign out row: a door, and an arrow leaving through it.
+
+  It used to wear the waste bin, which says the wrong thing twice over —
+  signing out removes nothing, and the account is still there to sign back into
+  afterwards. A door is what a desktop has meant by leaving for thirty years,
+  and the knob is what makes it a door rather than a panel: it is the one detail
+  here small enough to be worth keeping at 25 px, because it is the only round
+  thing in the drawing and needs no silhouette to be read.
+
+  The air between the two objects is the whole composition. Pushed together
+  they read as one bracket with a spike on it, and at the size a menu row gives
+  a glyph the reader has about a pixel and a half of that gap to go on — so it
+  is held wider than looks right at 32 px, and the arrow is short enough to
+  leave it.
+
+  The arrow is one closed outline rather than a bar with a triangle on the end.
+  Same reasoning as launch.svg: the lit rim has to run round the silhouette, and
+  two shapes stroked separately put a seam across the middle of an object that
+  has none. The five corners are rounded in the path itself, the two where the
+  head meets the shaft turning the other way from the three on the outside.
+
+  See pointer-stick.svg for the material. Both objects are painted the way
+  shutdown.svg's ring is — face, polish and turn laid across the cell and cut to
+  the object by a mask — and the arrow stands in front of the door on its own
+  small shadow, which is what puts it nearer the reader than the thing it is
+  leaving.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f7f7"/>
+      <stop offset="0.35" stop-color="#eaeaea"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#efefef"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.26" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.74" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.18"/>
+    </linearGradient>
+    <!-- The knob is the one round thing here, so it is shaded round: the lamp
+         off its upper left, the face falling away, and the floor of the door
+         coming back up at its foot. -->
+    <radialGradient id="bead" cx="0.36" cy="0.3" r="0.85">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f1f1f1"/>
+      <stop offset="0.78" stop-color="#cfcfcf"/>
+      <stop offset="1" stop-color="#e4e4e4"/>
+    </radialGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
+                    flood-color="#3a3a3a" flood-opacity="0.5"/>
+    </filter>
+    <filter id="lift" x="-45%" y="-45%" width="200%" height="210%">
+      <feDropShadow dx="0.3" dy="0.55" stdDeviation="0.24"
+                    flood-color="#2e2e2e" flood-opacity="0.46"/>
+    </filter>
+    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- A leaf rather than a slab: about twice as tall as it is wide, with the
+         corners barely taken off. Rounder than this and it stops being a door
+         at any size. -->
+    <rect id="door" x="3.2" y="4.2" width="10.6" height="23.6" rx="1.8"/>
+    <!-- The stile on the opening side is the wider of the two, which is where
+         the knob goes and is how a real leaf is built. -->
+    <g id="panels">
+      <rect x="4.8" y="6.4" width="6" height="8.2" rx="0.5"/>
+      <rect x="4.8" y="17" width="6" height="8.2" rx="0.5"/>
+    </g>
+    <!-- Tail cap on the left, head to the right of x = 23. The two corners at
+         that junction are concave and so sweep the other way; the tip is held
+         to a wider fillet than the head's back corners, because it is the
+         sharpest angle here and the one that would otherwise alias.
+
+         Heavy for its length, like the cycle in refresh.svg and for the same
+         reason: at the size a menu row draws it, a slender arrow beside a
+         solid door is a scratch. -->
+    <path id="bolt"
+          d="M18 14.4 L21.95 14.4a0.65 0.65 0 0 0 0.65-0.65L22.6 12.67
+             a1 1 0 0 1 1.62-0.78L28.12 14.98a1.3 1.3 0 0 1 0 2.04
+             L24.22 20.11a1 1 0 0 1-1.62-0.78L22.6 18.25
+             a0.65 0.65 0 0 0-0.65-0.65L18 17.6a1.6 1.6 0 0 1 0-3.2z"/>
+
+    <mask id="door-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+      <use href="#door" fill="#ffffff"/>
+    </mask>
+    <mask id="bolt-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+      <use href="#bolt" fill="#ffffff"/>
+    </mask>
+
+    <!-- One polish per object, each with its own curved lower edge: the door
+         is tall and takes the shine across its upper third, the arrow is a
+         thin bar and takes it across most of its height. -->
+    <path id="door-gloss" d="M2 2H15V12.2C12 14.4 5 14.4 2 12.2z"/>
+    <path id="bolt-gloss" d="M16 9H31V15.4C26 16.9 21 16.9 16 15.4z"/>
+  </defs>
+
+  <g filter="url(#drop)">
+    <g mask="url(#door-mask)">
+      <rect x="2" y="3" width="13" height="26" fill="url(#face)"/>
+      <use href="#door-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <rect x="2" y="3" width="13" height="26" fill="url(#turn)"/>
+    </g>
+    <use href="#door" fill="none" stroke="url(#edge)" stroke-width="1"/>
+
+    <!-- Two sunken panels, one above the other. They are what stops a leaf
+         this size from reading as a slab — or, worse, as a handset — and there
+         have to be two of them: one inset rectangle on a rounded upright is a
+         screen, and two are a door. Cut as shading rather than as seams, so
+         what survives at 25 px is a light and dark banding down the leaf and
+         never a pair of grey lines. -->
+    <g mask="url(#door-mask)">
+      <g fill="#000000" fill-opacity="0.05" stroke="#000000"
+         stroke-opacity="0.13" stroke-width="0.5">
+        <use href="#panels"/>
+      </g>
+      <g fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="0.45"
+         transform="translate(0 0.45)">
+        <use href="#panels"/>
+      </g>
+    </g>
+
+    <!-- The knob, standing proud of the leaf rather than sunk into it. A well
+         is the truer detail and it is the wrong one here: a dark dot on a lit
+         face is gone by the size this is drawn at, where a bead catches the
+         same lamp as everything else and stays the brightest thing on the
+         door. It sits on the opening edge at hand height, which is below the
+         middle. -->
+    <circle cx="12.3" cy="16.6" r="1.3" fill="url(#bead)"/>
+    <ellipse cx="12.1" cy="15.78" rx="0.72" ry="0.44" fill="#ffffff"
+             fill-opacity="0.85" filter="url(#polish)"/>
+    <circle cx="12.3" cy="16.6" r="1.3" fill="none" stroke="url(#edge)"
+            stroke-width="0.45"/>
+  </g>
+
+  <g filter="url(#lift)">
+    <g mask="url(#bolt-mask)">
+      <rect x="16" y="9" width="15" height="14" fill="url(#face)"/>
+      <use href="#bolt-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <rect x="16" y="9" width="15" height="14" fill="url(#turn)"/>
+    </g>
+    <use href="#bolt" fill="none" stroke="url(#edge)" stroke-width="0.9"/>
+  </g>
+</svg>

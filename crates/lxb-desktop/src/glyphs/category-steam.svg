@@ -1,0 +1,91 @@
+<!--
+The Steam column's glyph: Steam's mechanical linkage, built in the shell's
+own material.
+
+  The first version put an abstract valve into a second round plate. That
+  reversed the two joints and omitted the arm entering from the left, so the
+  result read as a generic pair of connected wheels. The category row already
+  gives every glyph a glass tile; another disc only hid the part that has to be
+  recognised.
+
+  Three relationships carry the Steam mark at a glance: a large ring and boss
+  at the upper right, a smaller open joint below and left, and two tangent arms
+  meeting at that joint. The broad left arm ends as a circle equal in radius
+  to the lower opening and shifted exactly along the arm's centre line. The
+  difference between those two circles is therefore a true, symmetric
+  crescent rather than a hand-shaped gap. These are freshly authored 32-unit
+  shapes rather than an icon-theme dependency, and the whole linkage still
+  shares the same lamp and material as its neighbours.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-35%" y="-35%" width="180%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+    <!-- SourceAlpha minus a copy moved down and right leaves one fine lit lip
+         on the upper-left edge. Applied to the finished silhouette, it does
+         not draw seams where the two arms meet either joint. -->
+    <filter id="lip" x="-20%" y="-20%" width="140%" height="140%">
+      <feOffset in="SourceAlpha" dx="0.32" dy="0.42" result="shift"/>
+      <feComposite in="SourceAlpha" in2="shift" operator="out" result="rim"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.72" result="light"/>
+      <feComposite in="light" in2="rim" operator="in"/>
+    </filter>
+
+    <!-- Build one silhouette, then cut the two mechanical openings into it.
+         White adds material; black removes it. The boss and the circular end
+         of the swept arm are restored last, inside their respective openings. -->
+    <mask id="mark-mask" maskUnits="userSpaceOnUse" x="-2" y="3" width="31" height="25">
+      <rect x="-2" y="3" width="31" height="25" fill="#000000"/>
+      <g fill="#ffffff">
+        <path d="M1.2 14.1 12.8 18.4c1.55.58 2.34 2.31 1.76 3.86-.59 1.56-2.32 2.34-3.87 1.76L1.2 20z"/>
+        <path d="M14.35 18.95 17.65 14.95" fill="none" stroke="#ffffff"
+              stroke-width="4.6" stroke-linecap="round"/>
+        <circle cx="12.25" cy="20.95" r="4.3"/>
+        <circle cx="20.65" cy="12.25" r="5.55"/>
+      </g>
+      <circle cx="20.65" cy="12.25" r="3.52" fill="#000000"/>
+      <circle cx="20.65" cy="12.25" r="2.25" fill="#ffffff"/>
+      <circle cx="12.25" cy="20.95" r="2.83" fill="#000000"/>
+      <circle cx="11.4" cy="20.65" r="2.83" fill="#ffffff"/>
+    </mask>
+
+    <path id="mark-gloss" d="M-1 3H29V14.8C23.4 17.05 6.4 17.05-1 14.8z"/>
+  </defs>
+
+  <g filter="url(#drop)">
+    <g mask="url(#mark-mask)">
+      <rect x="-2" y="3" width="31" height="25" fill="url(#face)"/>
+      <use href="#mark-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+      <rect x="-2" y="3" width="31" height="25" fill="url(#turn)"/>
+    </g>
+    <g filter="url(#lip)">
+      <g mask="url(#mark-mask)">
+        <rect x="-2" y="3" width="31" height="25" fill="#ffffff"/>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -191,6 +191,21 @@ pub struct Lxb {
     /// Surface the keyboard focus is pinned to by a layer surface requesting
     /// exclusive interactivity, if any.
     pub exclusive_keyboard_focus: Option<WlSurface>,
+    /// Applications the shell has asked to be run without ever being seen,
+    /// by the name each calls itself, folded to lower case.
+    ///
+    /// A program the shell *drives* rather than presents. Valve's Steam client
+    /// is the one that needs it: the shell signs it in, starts games through
+    /// it and reads its library, none of which anybody should have to watch —
+    /// but the client punctuates all of it with windows of its own, and each
+    /// one lands on top of whatever the shell was drawing. Rather than hope
+    /// every version of it can be talked out of them, the compositor simply
+    /// does not put them on the screen.
+    ///
+    /// Empty in a session that never asks, which is what keeps this free: the
+    /// question is only put to a window when there is something to compare it
+    /// against. See [`Lxb::out_of_sight`] and `lxb_shell_v1.keep_out_of_sight`.
+    pub unseen: std::collections::HashSet<String>,
 }
 
 impl LxbState {
@@ -352,6 +367,7 @@ impl LxbState {
                 pointer_visible: false,
                 keyboard_focus_enabled: true,
                 exclusive_keyboard_focus: None,
+                unseen: std::collections::HashSet::new(),
             },
         })
     }
@@ -663,7 +679,44 @@ impl LxbState {
     }
 }
 
+/// How a name is folded before the two sides of [`Lxb::out_of_sight`] are
+/// compared, or `None` for one that names nothing.
+///
+/// Both the name the shell asks about and the name a window calls itself go
+/// through this, and that is the whole point of its existing: an X11 class is
+/// conventionally capitalised where the same program's Wayland app id would
+/// not be, and a shell naming an application should not have to know which of
+/// the two it will turn out to be talking about.
+///
+/// Nothing is what an empty name matches. Folding it to a `None` here rather
+/// than to an empty string is what keeps it out of the set in the first place,
+/// so a request naming nothing cannot go on to hide every window whose client
+/// never set an app id.
+pub(crate) fn folded_app_id(name: &str) -> Option<String> {
+    let name = name.trim().to_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
 impl Lxb {
+    /// Whether this window belongs to an application the shell is keeping off
+    /// the screen.
+    ///
+    /// Asked wherever a window would otherwise be drawn, listed, focused or
+    /// clicked, so that one answer covers every way a window can be noticed.
+    /// It is deliberately read from the window's *current* `app_id` rather
+    /// than decided once when it maps: an X11 client sets its class before it
+    /// is mapped but a Wayland one may not, and a window that arrived nameless
+    /// has to start being hidden the moment it says what it is.
+    pub fn out_of_sight(&self, window: &Window) -> bool {
+        // The overwhelmingly common case, and the reason nothing else here
+        // has to be fast: no session with nothing to hide pays for any of it.
+        if self.unseen.is_empty() {
+            return false;
+        }
+        let app_id = crate::shell_control::window_app_id(window);
+        folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id))
+    }
+
     /// Tell the bus what this session is, so that everything it starts on
     /// demand is started *into* the session rather than beside it.
     ///
@@ -1004,7 +1057,36 @@ mod tests {
     use std::ffi::OsStr;
     use std::process::Command;
 
-    use super::{confine_to_session, shell_split};
+    use super::{confine_to_session, folded_app_id, shell_split};
+
+    /// The name the shell asks about and the name the window carries have to
+    /// meet, and this is the only place they are made to — so a client that
+    /// capitalises its X11 class, as the convention is, is still the
+    /// application the shell named in lower case.
+    #[test]
+    fn a_name_matches_however_the_client_capitalises_it() {
+        assert_eq!(folded_app_id("steam"), folded_app_id("Steam"));
+        assert_eq!(folded_app_id("Steam"), Some("steam".to_string()));
+        assert_eq!(folded_app_id(" steam\n"), Some("steam".to_string()));
+    }
+
+    /// A name that is nothing must not become the empty string in the set,
+    /// where it would match every window whose client never set an app id —
+    /// which on a session full of X11 clients is most of them.
+    #[test]
+    fn a_name_that_is_nothing_names_nothing() {
+        assert_eq!(folded_app_id(""), None);
+        assert_eq!(folded_app_id("   "), None);
+        assert_eq!(folded_app_id("\t\n"), None);
+    }
+
+    /// And it is a whole name, not a part of one: a shell hiding `steam` is
+    /// not asking for somebody's `steam-rom-manager` to go too.
+    #[test]
+    fn a_name_matches_whole_or_not_at_all() {
+        assert_ne!(folded_app_id("steam"), folded_app_id("steam-rom-manager"));
+        assert_ne!(folded_app_id("steam"), folded_app_id("steamwebhelper"));
+    }
 
     #[test]
     fn splits_plain_words() {

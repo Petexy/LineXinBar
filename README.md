@@ -90,6 +90,7 @@ one feature:
 | `pipewire`                                | The frames a shared screen is carried on | `lxb-portal` will not start, and screen sharing is unavailable |
 | `xdg-desktop-portal`                      | The front desk applications ask for a screen — [screen sharing](#screen-sharing) needs both this and `lxb-portal` | Applications find no portal and cannot share anything |
 | `polkit` (`polkitd`, and its agent helper) | [Authorisation prompts](#authorisation-prompts): mounting a disk, installing a package, managing a service | Every action whose policy needs a human is refused, with nothing on screen to allow it |
+| `steam` (native or Flatpak)               | Playing and installing anything in the Steam column | The account still signs in and the library is still listed, but nothing in it starts or downloads: every row says so rather than doing nothing |
 
 ### Permissions
 
@@ -536,6 +537,325 @@ palette flows into that value while the mark and saved setting stay where they
 were. Pressing accept moves the mark, applies the value and remembers it in
 `~/.config/lxb/shell.toml`. Stepping back or left without accepting flows
 back to the applied value instead.
+
+### Steam
+
+The Games column opens with one row of the shell's own: **Steam**. Signed out
+it offers to sign in; signed in it says whose library it leads to, and pressing
+it takes the bar to that library. Where the Steam client has a `.desktop` entry
+of its own, this row takes its place — two rows called Steam, one starting a
+program and one signing an account in, is something a user would have to press
+to tell apart. The client itself is still one press away, on the menu raised
+over that row.
+
+Signing in is a panel, and it offers both ways Steam has:
+
+- **Scan a code with your phone.** A QR code on screen, photographed in the
+  Steam app on a phone that is already signed in. Nothing is typed, which on a
+  machine driven with a thumbstick is the difference between signing in and not
+  bothering. Steam rotates the code every twenty seconds or so and the panel
+  follows it.
+- **Type an account name and password.** The name, then the password, then
+  whatever Steam Guard asks for — a code from an email, a code from the
+  authenticator, or a press on the phone, which needs no field at all and so
+  does not get one.
+
+The password is encrypted, in this process, under the RSA key Steam issues for
+that account name, and the plaintext never leaves the machine or reaches a
+`String`. What is kept afterwards is the refresh token Steam hands back, in
+`$XDG_DATA_HOME/lxb/steam.json`, readable by nobody else. The password is not
+stored, ever, and there is nowhere in the client it could be: signing in again
+after a reboot uses the token. This machine appears in the account's Steam
+Guard settings as **LineXinBar** and can be signed out from there, or from the
+menu on the Steam row.
+
+Approval is only the first half of sign-in. LineXinBar sends that refresh token
+in `CMsgClientLogon` to a quiet, persistent Steam Connection Manager session
+and calls the account signed in only after Steam accepts the CM logon. Steam's
+license push is then resolved through PICS into the catalogue. The token is not
+an `IPlayerService/GetOwnedGames` bearer, and a temporary CM, PICS or network
+failure keeps the account and last good library while LineXinBar retries or
+reconnects; it does not erase a valid authorisation.
+
+Once signed in, a **Steam** column appears immediately after Games — where
+somebody who has just looked at what is installed will step next — holding the
+whole library:
+
+- **Installed games first**, alphabetically, with what they take up on the disk
+  and how long the account has played them.
+- **Everything else underneath**, alphabetically. A game being downloaded is
+  not one that can be played, so it sits with these until it is.
+
+### Covers, and the picture behind them
+
+A library drawn as a column of identical Steam marks says only how many games
+somebody owns. So each row is Steam's own **cover** — Valve's portrait capsule,
+on a card of the same shape — and the game under the cursor puts its **hero**
+picture behind the whole display, crossfading to the next one as the cursor
+moves and back to the shell's own wallpaper on the way out of the library.
+
+The picture is the wallpaper while it is up, not a layer over it: it is drawn
+by the same function every pane of glass in the shell uses to work out what is
+behind it, so the bar's discs refract the game and the guide's blur softens it,
+exactly as they do the wallpaper it replaces. It is taken well down in
+brightness, and further down the side the bar stands on — key art is painted to
+be looked at on its own, and the labels have to stay readable over it.
+
+Nothing is fetched ahead of time. The covers around each cursor and the hero of
+the one row actually chosen are asked for, in that order:
+
+1. **Valve's own cache**, `appcache/librarycache`, which a machine with the
+   Steam client on it has already filled — no network, and it includes the
+   capsules Valve's client generates for games that never had one.
+2. **`$XDG_CACHE_HOME/linexinbar/steam-art`**, holding what had to be fetched.
+3. **Steam's content network**, once, for anything neither cache has.
+
+A game Steam has no picture of keeps the Steam mark on its row and leaves the
+wallpaper alone, and is never asked about again.
+
+The library is ordered installed-first, and the covers say which half a row is
+in: **a game that is not on this disk is drawn colourless**, at the picture's
+own brightness rather than a wash of it, so the games that can be played are the
+only ones in colour. A download finishing takes the colour back over a third of
+a second instead of between two frames — and the highlight stays on the game
+while it happens. The row moves halfway up a list of hundreds as the library
+re-sorts around it, so the cursor follows the game and the column is redrawn from
+the same place: somebody who waited at a game's own row watches it become
+playable there, rather than being left looking at whichever title closed the gap.
+
+### The client, kept out of sight
+
+Everything above this point happens without Valve's client: the account is
+signed in over `IAuthenticationService`, the library comes from a Connection
+Manager session and PICS, and what is on the disk is read from Steam's own
+`appmanifest_*.acf` files. Starting and installing a game are different, and
+this shell no longer pretends otherwise.
+
+Valve's client is what plays a Steam game. It brings the Steam Linux Runtime,
+the Proton the player chose, the prefix that game already has its saves in, the
+overlay, the anti-cheat, and the `steamclient.so` a game's own Steamworks talks
+to. There was a version of LineXinBar that did all of that itself. It worked
+for a single native binary and broke on everything else, and it is gone.
+
+What is left is the client, run as a **background process nobody sees**:
+
+- `-silent`, so it opens no window of its own.
+- `-nofriendsui`, so nothing appears when somebody comes online.
+- `-noverifyfiles`, because minutes of disk on a cold start is not why it is
+  being started.
+- `-nocrashdialog`, because a client that has fallen over must not put a dialog
+  in front of a game.
+
+It is started when there is Steam work to do and not before, and whether it is
+running is asked of the FIFO it holds open rather than of its pid file — that
+file looks like the obvious answer and is a trap, since every `steam`
+invocation overwrites it with its own pid, including the one-shot helpers this
+shell itself runs.
+
+Whether it is *signed in* is read from its connection log, and the same care is
+needed there. Every line it writes carries a state and an account, in that
+order, and only the first of them means anything:
+
+```text
+[12:41:24] [Logged Off, 4, 0] [U:1:82105993] LogOn() called; not connected yet
+[12:41:25] [Logged On, 4, 7]  [U:1:82105993] RecvMsgClientLogOnResponse() : processing complete
+```
+
+Reading the account stamp alone — which is what this did — makes a client two
+seconds into starting look signed in, because it has already written the account
+it is *about* to log on as. Every press then went to a client that could not
+answer it. The log is appended to across runs as well, so a client shut down an
+hour ago still has the last word in the file; only the current run counts, and
+`Client version:` is the line that starts one.
+
+### How it is signed in
+
+A client that has to ask who is signing in puts up its own login window, which
+is the one thing this must never do. So it is signed in before it is ever
+started, with the credential this session already holds.
+
+That credential is not borrowed from anywhere. LineXinBar asks Steam for a
+*Steam client* session, so what it gets is exactly the kind of token the client
+would have got for itself; the account sees one device, named LineXinBar, and
+revoking it there ends both halves at once.
+
+Valve's client is a web application — everything above `steamclient.so` is
+JavaScript in an embedded Chromium — and its login screen finishes the same
+authentication this shell runs by calling
+
+```js
+SteamClient.Auth.SetLoginToken(strRefreshToken, strAccountName)
+```
+
+so that is the call LineXinBar makes. From cold, the whole of it takes about
+four seconds and the client's own log says `RecvMsgClientLogOnResponse : 'OK'`.
+
+Reaching that interface needs the client to be told to expose it, which is one
+file in the Steam directory — `.cef-enable-remote-debugging`. The shell makes
+it, the first time it has a reason to sign the client in; there is nothing to
+type and nothing to set up. There is no command line switch that says the same
+thing, so the file is the whole of the mechanism.
+
+The client reads that file only as it starts, and everything else follows from
+that. **A client this session starts is started exposed**, whatever it was
+started for — the marker goes up, the client comes up against it, and the marker
+comes straight back down. So a Steam you start yourself next week comes up
+exposing nothing, and the port belongs to the client the shell is already
+driving and keeping out of sight.
+
+It used to be lazier than that, opening the interface only when something
+reached for it, and that is what broke installing. The first install of a
+session found a client that was already up and exposing nothing, and the only
+way to change that is to stop the client and start it again, because the marker
+is read once on the way up. Caught on a real machine: the client was asked to
+shut down, did not let go of its pipe within thirty seconds, and the press
+failed; pressing the row a second time worked, because by then the client was
+stopped and could be started fresh. One file that exists for a second is a
+better trade than stopping somebody's Steam to open a port.
+
+A client that was *already* running when the session found it is the one case
+still answered by a restart, and only when the interface is genuinely needed.
+
+While it is exposed the client listens on `127.0.0.1:8080`, and any program
+running as you can drive its interface through that port. Nothing is opened to
+the network.
+
+The obvious alternative was tried first. The client keeps its credential in
+`local.vdf` under `ConnectCache`, and on Linux the value there is the token in
+the clear — Valve's own strings give that away, since the client recognises a
+modern token by sniffing for the base64 of `{ "typ": "JWT",`. The key that
+entry is filed under is another matter: ten derivations were tried against a
+real token on a real client and every one produced the same line in its log,
+`cached creds not available`. Writing to an unpublished format is a guess that
+breaks when Valve changes it. Calling the method its own login screen calls is
+not.
+
+### Pressing a game
+
+**Pressing an installed game plays it.** The splash grows out of the tile that
+was pressed, exactly as it does for every other row on the bar, and stays until
+the game's window arrives underneath it. What happens in between is the shell's
+business and is not narrated: the client may have to be started and signed in,
+which from cold is most of a minute, and a loading screen that explained its own
+plumbing would draw attention to the thing it exists to hide.
+
+That splash follows three rules of its own. It waits **four minutes** rather
+than twenty seconds, because the client may update the game, build a Proton
+prefix on its first run, unpack a shader cache or show an anti-cheat installer
+first, and none of that is failure. It never concludes the game has died: the
+`steam steam://rungameid/…` that carries the request exits within milliseconds
+of being started, and the game is the client's child rather than this shell's,
+so only the window counts. A game that never appears is said so plainly rather
+than passed over — the splash has just spent four minutes promising that
+something was happening.
+
+And **it can take the hand-over back.** Handing the screen to the first new
+window is a bet, and the bet is sometimes lost: an X11 toolkit builds a window,
+throws it away and builds the one it meant; a game swaps its window for a
+fullscreen one. For the few seconds that takes, the display is the bare bar
+with nothing on it — a press that reads as a game which failed to start, to
+anybody who does not know to keep waiting. So the splash goes on watching after
+it has faded, drawing nothing, and comes back if what it handed over to turns
+out to have gone. Only for a display with nothing left on it: a game that
+merely changed which window it was showing has not gone anywhere.
+
+**A game the account owns and the machine has not got is fetched by pressing
+it.** The press offers rather than starts, because a press meaning "I want
+this" and a press meaning "and spend forty gigabytes on it now" are the same
+press and only one of them can be taken back.
+
+The client's own installer does it, driven through the same interface — and
+driven from the client's own events rather than by calling three methods and
+hoping. That flow is a state machine the client walks at its own pace, and five
+of its states are questions for the person rather than steps for the program;
+it sits in whichever one it reaches until somebody answers. So the shell
+subscribes to `RegisterForShowInstallWizard` and answers each state as it
+arrives: no shortcuts at `ShowConfig` (this shell *is* the menu, and the game
+is already a row on it), then continue, then wait to be told the download is
+queued. There is no wizard window, because with `-silent` there is no window
+for one to be drawn in.
+
+This is where installing was broken. The old version returned `{ result: 1 }`
+— a constant it wrote into its own answer, never read back from the client —
+so a flow that had stopped to ask a question came back looking exactly like one
+that had queued a download. The row said "Installing…" for the rest of the
+session with nothing coming down and nothing said.
+
+**And it waits, before it starts, for the client to know what the game is.** A
+client that has signed on does not yet know what the account owns: the two
+finish seconds apart, and in between, the wizard is asked to install a game it
+has never heard of. It walks two states and fails, with an empty `rgApps`, a
+required size of zero, and an error number that is different every time — 29
+once, 6 another. That was the first install of every session, which is why the
+same press worked the second time: by then the client knew. So the shell waits
+for `appStore.GetAppOverviewByAppID` to answer for the game before it opens the
+wizard at all. Measured from a stopped client on the machine this was found on:
+the wait was 1.3 seconds, and the press reached "fetching" 5.6 seconds after it
+was made. A question that cannot be asked counts as answered, so a renamed
+store costs the press nothing rather than twenty seconds.
+
+The wizard has its own reader for what it says, too. A call the client refuses
+answers with an `EResult`; the wizard is a state machine, and the number it
+carries when it fails is an `EAppUpdateError` and not an `EResult` at all.
+Running both through one function is how a failed download came to be reported
+on screen as *"Steam would not take the credential"* — a sentence about a
+password, printed over a game.
+
+Where the game goes is the client's default and deliberately not overridden: it
+is the folder the user chose in Steam, and a shell that put games somewhere
+else would be putting them somewhere nobody asked for. Which build comes down
+is the client's decision too — this system, this account's licences, the depots
+the game is actually made of. A shell that passed its own opinion in would be a
+second implementation of that decision, able only to be wrong in ways Steam's
+is not.
+
+**Two games in five stop the flow to ask something.** An agreement to accept,
+most often; a product key or a password otherwise. Of fifteen titles taken off
+one real account, six had one — Black Mesa among them, which used to sit in
+`ShowEULAs` with no window, no download and no error. Those are reported rather
+than answered: the panel says what the game is waiting for and offers **Install
+with Steam**, which hands the whole install to Steam's own window — the only
+place the question can be put, and not one this shell will click through on
+somebody's behalf. The other three in five never see Steam at all.
+
+How far it has got is read from the game's own `appmanifest_*.acf`, where the
+client writes `BytesDownloaded` and `BytesToDownload` as it goes — the same
+file every other fact about an installed game is already read from, so the row
+counts up without anything being asked of Steam. The client reports progress to
+nobody, so that file is the only account of it there is.
+
+**Removing a game is the shell's own press.** It is `OpenUninstallWizard` with
+the flag that means "already asked", so nothing of Steam's appears; the asking
+moves into the shell's own panel, which is where the size it frees is already
+written. It waits for the same thing an install waits for, and for the same
+reason: this press names a game, and the row it was made on was read off the
+disk, which is ready long before the client is. The `steam://uninstall/…` URL this used to hand over was the same
+removal with Steam's confirmation window over the top of the bar, which is the
+one thing the integration exists to avoid. Stopping a download is the same call
+— that is what makes the panel's promise that nothing is left behind true,
+where taking the app off the download list left a stopped 140 MB install as
+368 MB under `steamapps/downloading` and a row reading "Downloading" for ever.
+
+**Verifying** stays an explicit *with Steam* action on the game's menu, and is
+named for it because it does raise the client's own window: it runs for minutes
+and Steam's is the only account of how it is going. Every row over a game needs
+the client, so a machine without one offers none of them rather than rows that
+can only refuse.
+
+What is installed is read from the same files the client keeps —
+`steamapps/libraryfolders.vdf` and the `appmanifest_*.acf` beside each game, in
+every library on the machine — so the two agree by construction. A game
+installed in Steam an hour ago is already marked as installed the first time
+this shell is signed in, and one that finishes downloading moves to the top of
+the column within ten seconds. Steam's own runtimes are left out of it: Proton
+and the Linux runtimes declare themselves with a `toolmanifest.vdf`, and nobody
+has ever wanted to press one.
+
+Pass `--no-steam` to leave the whole of this out of a session: the Games column
+loses its row, no stored session is read, and nothing in the process talks to
+Steam. For a machine where somebody else's account is signed in, and for a
+session that should make no network connections at all — which, with this off,
+is every one of them.
 
 ### Appearance
 
@@ -2159,6 +2479,8 @@ crates/lxb-desktop/
   apps.rs         .desktop parsing and Plasma-style categorisation
   appinfo.rs      what installed an application, and what that says about it
   uninstall.rs    one Origin translated into one argv, and whether it may run
+  steam.rs        Steam as the shell holds it: one account, one sign-in
+                  panel, one column
   polkit.rs       the session's polkit agent: polkitd on one side, PAM's
                   helper on the other, and the panel in between
   secret.rs       a password, from the key that types it to the pipe that
@@ -2193,6 +2515,24 @@ crates/lxb-desktop/
   gpu.rs          wgpu renderer, one atlas and two pipelines
   shaders.wgsl    animated backdrop, instanced quads
   offscreen.wgsl  the blur the glass reads through, and the copy to the display
+
+crates/lxb-steam/
+  lib.rs          the worker thread, and the two channels the shell holds
+  auth.rs         signing in: IAuthenticationService, both ways round
+  library.rs      what the account owns, and what of it is on this disk
+  client.rs       Valve's client as a background process: where it is,
+                  whether it is up, whether it has signed in
+  webui.rs        the calls this shell makes into the client's own
+                  interface — signing it in, and moving a game on or off
+                  the disk — and why they are made there
+  session.rs      what survives a reboot, and what must never be written down
+  protobuf.rs     the wire format Steam's services speak, written out by hand
+  vdf.rs          Valve's key-values, which is what the disk answers in
+  rsa.rs          encrypting the password under the account's own key
+  password.rs     it, from the shell's field to that encryption
+  base64.rs       the two spellings Steam uses
+  web.rs          one HTTPS agent, and the two shapes of call made over it
+  qr.rs           the code on the screen, as squares for the shell to draw
 
 crates/lxb-portal/
   cast.rs         one display, going out as a PipeWire stream
@@ -2229,6 +2569,26 @@ Worth knowing before you rely on this:
   an sRGB buffer and is displayed as SDR content on an HDR signal.
 - **Variable refresh rate.** `adaptive_sync` is parsed from the config but not
   yet applied.
+- **Signing Valve's client out.** The shell signs it *in* by calling the method
+  the client's own login screen calls. There is no matching call for signing
+  out: the client's own is `SignOutAndRestart`, and the restart puts its login
+  window on the screen, which is the one thing this must never do. So signing
+  out of the shell stops the client and clears the two files that would sign it
+  back in, but leaves Valve's own cached credential alone — guessing at an
+  unpublished format is how somebody's Steam configuration gets corrupted.
+  Someone who then starts Steam **by hand** may find it still signed in, and
+  signs out from inside it as they always would.
+- **Playing without Valve's client.** There was a version of this that started
+  games itself, answered their Steamworks calls with its own library and fetched
+  content out of Valve's depots. It worked, and it broke on every game that did
+  anything unusual — a loader that opens `libsteam_api.so` by name, a Windows
+  game whose prefix Steam had already made, an anti-cheat that wants the real
+  client's pipe. It is gone. A machine with no Steam client can sign in and see
+  its library, and can start nothing in it.
+- **Cover art for Steam titles.** Every row in the Steam column wears the
+  column's own mark, as a track with no cover art does. The artwork is a JPEG
+  on Steam's content network, and fetching a thousand of them, caching them and
+  keeping that cache honest is a piece of work of its own.
 
 ## License
 

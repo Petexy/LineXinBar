@@ -386,7 +386,7 @@ impl XwmHandler for LxbState {
         };
         window.override_z_index(z as u8);
         remap_window_preserving_stack(&mut self.lxb.space, &window, geometry.loc);
-        if window_accepts_keyboard_focus(&window) {
+        if window_accepts_keyboard_focus(&window) && !self.lxb.out_of_sight(&window) {
             self.raise_window(&window, true);
             self.set_window_keyboard_focus(&window);
         }

@@ -311,7 +311,6 @@ impl Xmb {
         if let Some(file) = cursor.current_entry(self).and_then(Entry::media) {
             return self.open_media(&file.clone());
         }
-
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -344,6 +343,8 @@ impl Xmb {
         }
     }
 
+    /// Start one command line the shell built itself, under a name of its own.
+    ///
     /// Play one of the user's own files, in whatever they have chosen to open
     /// that kind of file with.
     ///
@@ -810,6 +811,65 @@ impl Cursor {
         self.shift_position(row as f32 - was as f32);
     }
 
+    /// Which game this cursor's row in the column at `at` is on, if it is on
+    /// one. The pair of [`Self::keep_on_game`], asked before the column is
+    /// rebuilt so there is something to keep it on afterwards.
+    ///
+    /// The column at `at` rather than the one the cursor is standing in: the
+    /// row a cursor is on in a category it is *not* in is remembered all the
+    /// same, and walking back to a library that re-sorted while the user was
+    /// elsewhere would land them on a different game for exactly the same
+    /// reason.
+    pub fn game_in_column(&self, xmb: &Xmb, at: usize) -> Option<u32> {
+        let row = *self.selected_items.get(at)?;
+        Some(xmb.categories.get(at)?.entries.get(row)?.game()?.app_id)
+    }
+
+    /// Keep the cursor on the game it was on, after the column at `at` has been
+    /// re-sorted under it.
+    ///
+    /// A game finishing its download moves from the half of the library that
+    /// cannot be played to the half that can, which is halfway up a list of
+    /// hundreds. Somebody watching that download finish is watching *that* row,
+    /// and a cursor that stayed on the row number would leave them looking at
+    /// whichever title closed the gap — with no way of knowing where the game
+    /// they were waiting for has gone.
+    ///
+    /// Nothing moves on screen. The column is redrawn from a row further up,
+    /// and the drawn position is moved by the same distance, so the same cover
+    /// is under the same highlight on the frame after as on the frame before —
+    /// the list has been re-sorted, which is not a journey the user made. This
+    /// is [`Self::keep_on_media`]'s rule, applied to a list that re-sorts
+    /// itself rather than one that grows.
+    pub fn keep_on_game(&mut self, xmb: &Xmb, at: usize, app_id: u32) {
+        let Some(was) = self.selected_items.get(at).copied() else {
+            return;
+        };
+        let Some(entries) = xmb.categories.get(at).map(|column| &column.entries) else {
+            return;
+        };
+        let Some(row) = entries
+            .iter()
+            .position(|entry| entry.game().is_some_and(|game| game.app_id == app_id))
+        else {
+            // The game has left the library altogether — a shared title whose
+            // lender took it back. The cursor keeps its row, which is now
+            // whichever game closed the gap, exactly as [`Self::keep_on_media`]
+            // leaves a deleted file's row alone.
+            return;
+        };
+        if row == was {
+            return;
+        }
+        self.selected_items[at] = row;
+        // Only the column that is on screen has a drawn position to move, and
+        // for a category it is always the outermost one: a game is the end of a
+        // path, so there is never a subcolumn open over the top of this.
+        if self.selected_category == at {
+            self.item_position += row as f32 - was as f32;
+        }
+    }
+
     /// Put the cursor on the head of the column it is standing in, with the
     /// column drawn there rather than travelling to it.
     ///
@@ -870,6 +930,66 @@ impl Cursor {
             self.selected_category += 1;
             self.category_position += 1.0;
         }
+    }
+
+    /// A column has gone from the bar at `at`. Keep this cursor somewhere that
+    /// still exists.
+    ///
+    /// The counterpart of [`Self::category_added`], and it happens for one
+    /// reason: signing out of Steam takes the column that account's library
+    /// was in off the bar, and a display may well be standing in it. Landing
+    /// on the column that closed the gap is what a paper list does when a line
+    /// is struck out of it — and it is the same answer this shell gives when a
+    /// file the cursor was on is deleted.
+    ///
+    /// The bar is *placed* rather than travelled, because there is no journey
+    /// to show: the column the cursor was in is not somewhere it could travel
+    /// from any more.
+    pub fn category_removed(&mut self, at: usize, xmb: &Xmb) {
+        if at >= self.selected_items.len() {
+            return;
+        }
+        self.selected_items.remove(at);
+
+        let last = xmb.categories.len().saturating_sub(1);
+        let was = self.selected_category;
+        self.selected_category = match was.cmp(&at) {
+            // In front of it: nothing moved.
+            std::cmp::Ordering::Less => was,
+            // Standing in it, or after it: one column nearer the front.
+            _ => was.saturating_sub(1).min(last),
+        };
+        self.selected_category = self.selected_category.min(last);
+        self.category_position = self.selected_category as f32;
+        self.category_speed = 0.0;
+        // Whatever column that turned out to be, the cursor is at the top of
+        // it rather than at a row number carried over from a column that has
+        // gone.
+        if was >= at {
+            self.leave_subcolumns();
+            self.rest_on_first_row(xmb);
+        }
+    }
+
+    /// Go to one column by name, from wherever the cursor is.
+    ///
+    /// Travelled rather than placed, unlike everything above: this is a move
+    /// the *user* asked for — pressing the Steam row to be taken to their
+    /// library — and the whole point of the bar sliding is that they can see
+    /// where they were taken.
+    pub fn select_category(&mut self, at: usize, xmb: &Xmb) {
+        if at >= xmb.categories.len() || at == self.selected_category {
+            return;
+        }
+        self.leave_subcolumns();
+        self.selected_category = at;
+        self.restore_column();
+    }
+
+    /// Come back out of every subcategory this cursor is standing in.
+    fn leave_subcolumns(&mut self) {
+        self.open = 0;
+        self.stack.clear();
     }
 
     /// Step into the subcategory under the cursor. `false` if the row is not
@@ -1789,6 +1909,134 @@ mod tests {
         assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
     }
 
+    /// A row in somebody's Steam library.
+    fn game(app_id: u32, name: &str, installed: bool) -> Entry {
+        Entry::Game(crate::apps::Game {
+            app_id,
+            name: name.into(),
+            note: String::new(),
+            installed,
+            updating: false,
+            steam_client: true,
+        })
+    }
+
+    /// A library with these games in it, in this order.
+    fn library(games: Vec<Entry>) -> Xmb {
+        Xmb::with_wayland_display(
+            vec![Category {
+                id: "steam",
+                title: "Steam",
+                icon: "steam",
+                entries: games,
+            }],
+            OsString::from("lxb-test"),
+        )
+    }
+
+    /// The bug this pins: waiting on a download at the game's own row, and
+    /// being left looking at a different game the moment it finished.
+    ///
+    /// The library is installed-first, so a game that lands on the disk moves
+    /// from the bottom half of the list to the top — halfway up a list of
+    /// hundreds. Nothing about that is a move the user made, so the cursor
+    /// follows the game and the column is drawn from the same place: the same
+    /// cover is under the same highlight on the frame after as on the frame
+    /// before.
+    #[test]
+    fn a_game_that_finishes_downloading_keeps_the_cursor_it_was_under() {
+        let xmb = library(vec![
+            game(1, "Aeonic", true),
+            game(2, "Zenith", true),
+            game(3, "Celeste", false),
+            game(4, "Downloading", false),
+        ]);
+        let mut cursor = cursor(&xmb);
+        for _ in 0..3 {
+            assert!(cursor.navigate(Action::Down, &xmb));
+        }
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(cursor.game_in_column(&xmb, 0), Some(4));
+        let settled = cursor.position_at(0);
+
+        // It lands, and the library comes back re-sorted around it.
+        let xmb = library(vec![
+            game(1, "Aeonic", true),
+            game(4, "Downloading", true),
+            game(2, "Zenith", true),
+            game(3, "Celeste", false),
+        ]);
+        cursor.keep_on_game(&xmb, 0, 4);
+
+        assert_eq!(cursor.selected_item(), 1, "two rows up the list");
+        assert_eq!(cursor.game_in_column(&xmb, 0), Some(4));
+        assert_eq!(
+            cursor.position_at(0),
+            settled - 2.0,
+            "and the column is drawn from two rows further up, so nothing moved"
+        );
+        assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// The same for a display that is somewhere else entirely. The row a
+    /// cursor is on in a category it is not standing in is remembered, and
+    /// walking back to a library that re-sorted in the meantime would land on
+    /// a different game for exactly the same reason.
+    #[test]
+    fn a_display_looking_elsewhere_comes_back_to_the_game_it_left() {
+        let games = |sorted: bool| {
+            let mut categories = vec![Category {
+                id: "applications",
+                title: "Applications",
+                icon: "applications",
+                entries: vec![entry("Audacity")],
+            }];
+            categories.push(Category {
+                id: "steam",
+                title: "Steam",
+                icon: "steam",
+                entries: if sorted {
+                    vec![game(9, "Fetched", true), game(1, "Aeonic", false)]
+                } else {
+                    vec![game(1, "Aeonic", false), game(9, "Fetched", false)]
+                },
+            });
+            Xmb::with_wayland_display(categories, OsString::from("lxb-test"))
+        };
+        let xmb = games(false);
+        let mut cursor = cursor(&xmb);
+        cursor.select_category(1, &xmb);
+        assert!(cursor.navigate(Action::Down, &xmb));
+        cursor.select_category(0, &xmb);
+        let elsewhere = cursor.position_at(0);
+
+        let xmb = games(true);
+        cursor.keep_on_game(&xmb, 1, 9);
+
+        cursor.select_category(1, &xmb);
+        assert_eq!(cursor.game_in_column(&xmb, 1), Some(9));
+        assert_eq!(
+            elsewhere,
+            cursor.position_at(0),
+            "and the column the display is actually in was not moved under it"
+        );
+    }
+
+    /// A game that has left the library altogether — a shared title whose
+    /// lender took it back — leaves the cursor where it is standing, the same
+    /// answer a deleted file gets.
+    #[test]
+    fn a_game_that_leaves_the_library_leaves_the_cursor_where_it_stands() {
+        let xmb = library(vec![game(1, "Aeonic", true), game(2, "Zenith", true)]);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.navigate(Action::Down, &xmb));
+
+        let xmb = library(vec![game(1, "Aeonic", true), game(3, "Celeste", true)]);
+        cursor.keep_on_game(&xmb, 0, 2);
+        assert_eq!(cursor.selected_item(), 1);
+        assert_eq!(cursor.game_in_column(&xmb, 0), Some(3));
+    }
+
     /// A file that has gone off the disk takes its row with it, and the cursor
     /// stays where it is standing rather than following the file into nothing.
     #[test]
@@ -2544,6 +2792,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn launched_apps_are_pinned_to_the_shell_wayland_socket() {
         let mut command = Command::new("true");

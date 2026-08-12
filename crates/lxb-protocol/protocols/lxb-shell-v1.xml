@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="18">
+  <interface name="lxb_shell_v1" version="19">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -607,6 +607,36 @@
       <arg name="id" type="uint" summary="the question, from share_request"/>
       <arg name="output" type="object" interface="wl_output" allow-null="true"
            summary="the display that may be shared, or nothing for a refusal"/>
+    </request>
+
+    <request name="keep_out_of_sight" since="19">
+      <description summary="run this application without ever showing it">
+        Names an application whose windows are never to reach the screen. They
+        are not drawn, they are not announced as windows on any display, they
+        are never given the keyboard, and the pointer passes through them. The
+        application itself is untouched: it is mapped, configured and drawing
+        exactly as it would be, and it is simply never looked at.
+
+        This is for a program the shell drives rather than presents. The Steam
+        client is the one that needs it — the shell signs it in, starts games
+        through it and reads its library, all of which it does perfectly well
+        with nobody watching, but which it punctuates with windows of its own:
+        a "starting game" dialog over the shell's own loading screen, and its
+        whole storefront raised on top of a game that is trying to start. From
+        the user's side those are the shell failing to hide its plumbing.
+
+        Hiding is the shell's to give back. A user who asks for Steam's own
+        window — to verify a game's files, or to see the client itself — is
+        asking for exactly the thing this suppresses, so the shell sends this
+        again with hidden set to zero before asking Steam for it.
+
+        Sending it for an application with windows already on screen takes
+        them off it, and giving sight back puts them where they were. An empty
+        app_id names nothing and is ignored, rather than hiding every window
+        that never set one.
+      </description>
+      <arg name="app_id" type="string" summary="what the application calls itself"/>
+      <arg name="hidden" type="uint" summary="1 to keep its windows off the screen, 0 to show them again"/>
     </request>
 
     <event name="guide">

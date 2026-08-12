@@ -94,6 +94,37 @@ pub const CATEGORY_MUSIC: &str = "lxb:category-music";
 pub const CATEGORY_VIDEO: &str = "lxb:category-video";
 pub const CATEGORY_IMAGES: &str = "lxb:category-images";
 
+/// The Steam column, and the mark every row that came from Steam wears.
+///
+/// Two drawings of one object rather than one drawing used twice, because the
+/// two are asked different questions — see the files themselves. Built in like
+/// the rest of the row: the column exists only while somebody is signed in,
+/// and a machine with no icon theme must still be able to draw the column that
+/// signing in produced.
+///
+/// Drawn here rather than taken from the Steam client's own icon for the
+/// reason every other column glyph is: a coloured application icon comes out
+/// muddy through an atlas that tints what it samples, and this shell's own
+/// hand is what makes eleven columns look like one row.
+pub const CATEGORY_STEAM: &str = "lxb:category-steam";
+pub const STEAM: &str = "lxb:steam";
+
+/// The two rows of the menu raised over the Steam entry itself, which are
+/// about the *account* rather than about anything in its library: asking for
+/// the library again, and leaving.
+///
+/// [`SIGN_OUT`] exists because the row wore [`UNINSTALL`] before it, and a
+/// waste bin over Sign out says the wrong thing twice — nothing is removed, and
+/// the account is still there to sign back into. [`REFRESH`] because the row
+/// had no mark at all, which left the only two rows on that panel unable to
+/// line up with one another.
+///
+/// Deliberately unlike [`SETTING_REFRESH`], the display's refresh rate: that is
+/// one ring redrawing itself inside a monitor, and this is two arrows chasing
+/// each other with no monitor anywhere near them.
+pub const REFRESH: &str = "lxb:refresh";
+pub const SIGN_OUT: &str = "lxb:sign-out";
+
 /// The shell's own rows in the Settings column, and the two marks a list of
 /// values is made of.
 ///
@@ -209,7 +240,7 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 50] = [
+pub const BUILTIN: [(&str, &str); 54] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -310,6 +341,11 @@ pub const BUILTIN: [(&str, &str); 50] = [
     (SEARCH, include_str!("glyphs/search.svg")),
     (SEARCH_CLEAR, include_str!("glyphs/search-clear.svg")),
     (AUTHENTICATE, include_str!("glyphs/authenticate.svg")),
+    // The Steam column, and the rows that came out of it.
+    (CATEGORY_STEAM, include_str!("glyphs/category-steam.svg")),
+    (STEAM, include_str!("glyphs/steam.svg")),
+    (REFRESH, include_str!("glyphs/refresh.svg")),
+    (SIGN_OUT, include_str!("glyphs/sign-out.svg")),
 ];
 
 /// A decoded icon, always square RGBA8.
@@ -952,7 +988,7 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            50,
+            54,
             "a speaker, a struck-out one, a sun, a stick pointer, a mixer, two \
              controller buttons, four arrows, a keyboard folding away, a power \
              symbol, one per column of the category row, the two subcategories \
@@ -960,8 +996,10 @@ mod tests {
              marks the Settings column is drawn from plus its four turns of a \
              monitor, the context menu's bin, play mark, ellipsis, sort bars \
              and camera, the magnifier at the head of a shelf with the \
-             struck-through one that empties it, and the padlock on the panel \
-             that asks for a password"
+             struck-through one that empties it, the padlock on the panel \
+             that asks for a password, and the Steam column with the mark every \
+             row that came out of it wears, the cycle that asks for the library \
+             again and the door its account is left by"
         );
 
         for (name, drawing) in BUILTIN {
@@ -1060,7 +1098,11 @@ mod tests {
                 SCREENSHOT,
                 SEARCH,
                 SEARCH_CLEAR,
-                AUTHENTICATE
+                AUTHENTICATE,
+                CATEGORY_STEAM,
+                STEAM,
+                REFRESH,
+                SIGN_OUT
             ]
         );
         let drawn: Vec<Vec<u8>> = BUILTIN

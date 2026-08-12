@@ -10,7 +10,8 @@ use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
-use smithay::desktop::{layer_map_for_output, Space, Window};
+use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
 use smithay::utils::{Logical, Rectangle, Scale};
 use smithay::wayland::shell::wlr_layer::Layer;
@@ -37,11 +38,16 @@ smithay::render_elements! {
 /// The windows the overview shows for `output`, topmost first — the same
 /// order they are announced to the shell in, so slot N here is the card the
 /// shell is framing as window N.
-pub fn overview_windows(space: &Space<Window>, output: &Output) -> Vec<Window> {
-    space
+///
+/// Whatever the shell is keeping out of sight is left out, which is what makes
+/// one filter enough for both halves of the guide: a window that is not in
+/// this list is not drawn a card, and is not announced as being on the display
+/// either, so there is nothing there to select or to offer to close.
+pub fn overview_windows(lxb: &Lxb, output: &Output) -> Vec<Window> {
+    lxb.space
         .elements_for_output(output)
         .rev()
-        .filter(|window| window_accepts_keyboard_focus(window))
+        .filter(|window| window_accepts_keyboard_focus(window) && !lxb.out_of_sight(window))
         .cloned()
         .collect()
 }
@@ -137,6 +143,12 @@ where
         for window in space.elements_for_output(output).rev() {
             // Already drawn, mid-flight, in front of the shell.
             if flying.contains(&crate::overview::window_id(window)) {
+                continue;
+            }
+            // An application the shell runs without showing. It is mapped,
+            // configured and drawing exactly as it would be; the pixels simply
+            // never leave it. See `lxb_shell_v1.keep_out_of_sight`.
+            if lxb.out_of_sight(window) {
                 continue;
             }
             let Some(location) = space.element_location(window) else {
@@ -264,7 +276,7 @@ fn push_overview_windows<R>(
         return;
     };
 
-    let windows = overview_windows(space, output);
+    let windows = overview_windows(lxb, output);
     // One extra card: the trailing start-screen card the shell appends. It
     // occupies a slot (so counting and scrolling agree with the shell) but
     // no window is drawn there — the shell paints it.
@@ -359,14 +371,31 @@ pub fn post_repaint(
     // one has flown home.
     let overview_up = lxb.overview.progress(output, std::time::Instant::now()) > 0.0;
     let front = (!overview_up)
-        .then(|| front_application(space, output))
+        .then(|| front_application(lxb, output))
         .flatten();
     let cover = front
         .as_ref()
         .and_then(|window| space.element_geometry(window));
 
+    // Whatever is answered here was never put on the screen, and its client has
+    // to be told so rather than left waiting: see [`answer_unshown`].
+    let mut unshown = OutputPresentationFeedback::new(output);
+
     let mut behind_front = false;
     for window in space.elements_for_output(output).rev() {
+        // An application the shell is driving rather than showing goes on
+        // drawing at its own pace, and is neither in front of anything nor
+        // covering it. Both halves matter. It is not on screen, but it is the
+        // thing the shell is waiting on — a client held in its own present
+        // never answers, and Valve's is asked to start the game from the same
+        // thread it draws on. And because it is never the front application,
+        // the game *behind* it goes on being sent frames rather than being
+        // treated as covered by a window nobody can see.
+        if lxb.out_of_sight(window) {
+            window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+            answer_unshown(window, &mut unshown, output);
+            continue;
+        }
         // Topmost first. Everything down to the application in front is on
         // screen, chrome stacked above it included; below it, only what that
         // application leaves uncovered.
@@ -376,6 +405,38 @@ pub fn post_repaint(
         behind_front |= Some(window) == front.as_ref();
         window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
     }
+
+    // And every window that is on no display at all.
+    //
+    // The loop above asks the space which of its windows belong to this output,
+    // and a window lying outside every one of them belongs to none — so without
+    // this it is never sent a frame by anybody, whichever display draws. That
+    // is not a corner case: Valve's client creates its notification toasts and
+    // its popups far off the screen (805240832, 805240832) and only moves them
+    // on when it wants them seen, which is a thing X11 clients do all the time.
+    //
+    // A client that is never told its frame went out stops drawing, and one
+    // whose frames go through Xwayland stops *presenting*, which blocks the
+    // thread that asked. Steam composites every one of its windows on a single
+    // thread, so one toast nobody can see is enough to stop the whole client —
+    // including the part of it that starts games, which is how this was found:
+    // a press handed to the client, a "Launching" window that never painted,
+    // and a game that never started.
+    //
+    // Done from every output's pass rather than one chosen one. A frame
+    // callback can only be answered once, so the second pass costs nothing,
+    // and choosing a display would mean choosing one that may be asleep.
+    for window in space.elements() {
+        if !space.outputs_for_element(window).is_empty() {
+            continue;
+        }
+        window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+        answer_unshown(window, &mut unshown, output);
+    }
+
+    // Nothing collected above was drawn, by definition. Saying so is what frees
+    // a client that is waiting to hear what happened to the frame it gave us.
+    unshown.discarded();
 
     // Layer surfaces always draw, covered or not, and the background ones
     // behind a fullscreen application are exactly the tempting case to get
@@ -392,6 +453,31 @@ pub fn post_repaint(
     }
 }
 
+/// Collect what one never-drawn window asked to be told about its frame.
+///
+/// A client may ask, through `wp_presentation`, when the frame it just gave the
+/// compositor reached the screen. The answer for these windows is that it never
+/// did and never will, and the caller says so by discarding what this collects.
+/// Left uncollected the request simply stays queued for ever — and a client that
+/// paces itself on the answer, as an accelerated Xwayland client does, waits
+/// with it.
+///
+/// The output is forced rather than read off the surface for the reason the
+/// frame callback beside it is: what smithay records there is where the surface
+/// was last *scanned out*, and a window that is never drawn has no such place.
+fn answer_unshown(window: &Window, unshown: &mut OutputPresentationFeedback, output: &Output) {
+    window.take_presentation_feedback(
+        unshown,
+        |_, _| Some(output.clone()),
+        |surface, _| {
+            smithay::desktop::utils::surface_presentation_feedback_flags_from_states(
+                surface,
+                &Default::default(),
+            )
+        },
+    );
+}
+
 /// The application in front on `output`: the topmost window that takes
 /// keyboard focus, which under LineXinBar's one-application-per-display layout
 /// is the one filling it.
@@ -400,11 +486,15 @@ pub fn post_repaint(
 /// [`crate::shell_control`] names the foreground the same way: while the
 /// shell's overlay is up it holds the keyboard itself, and the application it
 /// is drawn over has not gone anywhere.
-fn front_application(space: &Space<Window>, output: &Output) -> Option<Window> {
-    space
+///
+/// Whatever the shell is keeping out of sight is not in front of anything: it
+/// is not on the screen to be in front *of*, and calling it the front
+/// application would take the frames away from the one that is.
+fn front_application(lxb: &Lxb, output: &Output) -> Option<Window> {
+    lxb.space
         .elements_for_output(output)
         .rev()
-        .find(|window| window_accepts_keyboard_focus(window))
+        .find(|window| window_accepts_keyboard_focus(window) && !lxb.out_of_sight(window))
         .cloned()
 }
 

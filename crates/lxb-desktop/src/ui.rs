@@ -54,29 +54,20 @@ const ITEM_ICON_FOCUSED: f32 = 105.0;
 const CARD_HEIGHT: f32 = 96.0;
 const CARD_HEIGHT_FOCUSED: f32 = 176.0;
 
-/// The clear glass between the focused card and the unfocused one next to it.
-const CARD_AIR: f32 = 12.0;
-
-/// And how far apart such rows stand.
+/// The clear glass between one card and the next, as a share of how wide they
+/// are.
 ///
-/// Added up rather than chosen, for the reason [`ITEM_GAP_BELOW`] is: what has
-/// to fit between two centres is half of the focused card, half of the
-/// unfocused one beside it, and the air between them — three numbers that move.
+/// A share and not a distance, because a gap is only ever read against the
+/// thing either side of it. A film's frame is wide, and two of them a long way
+/// apart still read as one list; a cover is barely a third of that across, and
+/// the same absolute gap turns the same column into a stack of islands with
+/// wallpaper running between them. Measured against the width rather than the
+/// height for the same reason — the width is what the column *is*, and the
+/// height is what changes when a row is chosen.
 ///
-/// It is the focused card that sets this, not the unfocused ones the gap looks
-/// too big between: the pitch is uniform, so the only way to close up what is
-/// between two small cards is to make the big one smaller. Hand-picked at 224
-/// against cards of 112 and 196, the gap between two unfocused rows came out as
-/// tall as the cards themselves — a column half pictures and half wallpaper.
-///
-/// What settles the three sizes is where the row *after* the last one lands. A
-/// column is meant to dissolve at the foot of the display rather than stop, and
-/// the fade is 70 deep ending 48 up from the bottom, so the pitch wants to put
-/// a fourth row inside that band: it reads as a column that carries on, which
-/// is the truth of it. Merely closing the gaps left three rows at full strength
-/// and a hard-edged card with a third of the screen empty under it, which says
-/// the opposite about a folder holding twenty-five thousand pictures.
-const CARD_SPACING: f32 = (CARD_HEIGHT_FOCUSED + CARD_HEIGHT) / 2.0 + CARD_AIR;
+/// The number is what the film column already stood at, so that column has not
+/// moved: 0.30 of 171 is the 52 pixels its rows have always had between them.
+const CARD_AIR: f32 = 0.30;
 
 /// The shape of the card itself, whatever shape the picture in it is.
 ///
@@ -89,7 +80,20 @@ const CARD_SPACING: f32 = (CARD_HEIGHT_FOCUSED + CARD_HEIGHT) / 2.0 + CARD_AIR;
 /// tall one. Which is what a photograph on a light table looks like.
 const CARD_ASPECT: f32 = 16.0 / 9.0;
 
-/// How much of the card is border, as a fraction of its height.
+/// And the shape of a Steam cover, which is Valve's portrait capsule: 600 by
+/// 900, the one picture every game in a library has and the one a person
+/// recognises a game by.
+const COVER_ASPECT: f32 = 600.0 / 900.0;
+
+/// The border of glass a picture stands on, as a share of the picture's own
+/// shorter side.
+///
+/// An *even* border, the same number of pixels on all four sides, which is
+/// what a mount is and what makes one invisible: the eye is very good at
+/// seeing that the strip above a picture is half again the strip beside it,
+/// and reads the difference as the picture having slipped rather than as a
+/// frame. That is what makes the card's shape a consequence of this rather
+/// than a constant — see [`Cards::width`].
 const CARD_MOUNT: f32 = 0.05;
 
 /// The corner of a card, likewise.
@@ -138,17 +142,59 @@ const CATEGORY_LABEL_BELOW: f32 = 25.0;
 /// The category row sits in a gap in the item column: these are the distances
 /// from the row to the centre of the nearest item above and below it.
 const ITEM_GAP_ABOVE: f32 = 168.0;
-/// Below is larger because the selected category's label lives in that
-/// stretch, and it is added up rather than chosen so that it cannot stop
-/// being true. What has to fit is the category's own disc, the label clear of
-/// it, and air before the first item's disc begins — three sizes that have
-/// all changed at least once since this row was first laid out, each time
-/// leaving a hand-picked total quietly wrong.
-const ITEM_GAP_BELOW: f32 = CATEGORY_ICON_FOCUSED * CATEGORY_DISC / 2.0
-    + CATEGORY_LABEL_ABOVE
-    + CATEGORY_LABEL
-    + CATEGORY_LABEL_BELOW
-    + ITEM_ICON_FOCUSED * ITEM_DISC / 2.0;
+
+/// The category row's own half-height: the glass its icon stands on, which is
+/// the thing every row near it has to keep clear of.
+const CATEGORY_HALF: f32 = CATEGORY_ICON_FOCUSED * CATEGORY_DISC / 2.0;
+
+/// The clear air above the category row, between its glass and the bottom of
+/// the row standing over it.
+///
+/// Read out of [`ITEM_GAP_ABOVE`] rather than chosen, because that is the air
+/// the bar has always had there and none of this is meant to change a column
+/// of icons. What it is measured *to* is what changes: half an unfocused icon
+/// in a column of applications, half an unfocused card in a column of covers,
+/// which is two and a half times as much. Left as one distance to the row's
+/// centre, a library's first cover sat on the category's glass.
+const CATEGORY_AIR_ABOVE: f32 = ITEM_GAP_ABOVE - CATEGORY_HALF - ITEM_ICON / 2.0;
+
+/// Everything between the category row's centre and the bottom of its label:
+/// its own glass, and the label set under it.
+const CATEGORY_TO_LABEL: f32 = CATEGORY_HALF + CATEGORY_LABEL_ABOVE + CATEGORY_LABEL;
+
+/// And the air under that label, before the column begins.
+///
+/// More of it under a column of cards, which is not a decoration: what follows
+/// the label in a column of icons is a *disc*, at its nearest only directly
+/// under the middle of the word and falling away on both sides of it, so the
+/// eye reads the air as the diagonal. A card is a straight edge running the
+/// whole width of the column, and the same measured distance under one looks
+/// like half as much.
+const CATEGORY_LABEL_TO_ICONS: f32 = CATEGORY_LABEL_BELOW;
+const CATEGORY_LABEL_TO_CARDS: f32 = 50.0;
+
+/// How far the centre of the first row below the category row stands from it.
+///
+/// Added up rather than chosen, so that it cannot stop being true: the
+/// category's glass, its label, the air after the label, and half of whatever
+/// the first row of the column is — which is the *chosen* row, and therefore
+/// the biggest thing the column ever draws.
+const ITEM_GAP_BELOW: f32 =
+    CATEGORY_TO_LABEL + CATEGORY_LABEL_TO_ICONS + ITEM_ICON_FOCUSED * ITEM_DISC / 2.0;
+
+fn gap_below(cards: Option<Cards>) -> f32 {
+    CATEGORY_TO_LABEL
+        + match cards {
+            Some(cards) => CATEGORY_LABEL_TO_CARDS + cards.focused / 2.0,
+            None => CATEGORY_LABEL_TO_ICONS + ITEM_ICON_FOCUSED * ITEM_DISC / 2.0,
+        }
+}
+
+/// The same, for the row standing *above* the category row. See
+/// [`CATEGORY_AIR_ABOVE`].
+fn gap_above(cards: Option<Cards>) -> f32 {
+    CATEGORY_HALF + CATEGORY_AIR_ABOVE + cards.map_or(ITEM_ICON, |cards| cards.height) / 2.0
+}
 
 /// Where the cross's arms meet, as a share of the display. The focused entry
 /// sits here, so it is also where a launch opens from.
@@ -850,7 +896,7 @@ impl Scene {
         }
     }
 
-    /// Cut the text runs a panel covers back to the part of them it does not.
+    /// Cut the text runs a panel covers back to the parts of them it does not.
     ///
     /// Every quad in a scene is drawn before every text run, so a panel laid
     /// over a scene does not hide that scene's labels — they print straight
@@ -858,49 +904,28 @@ impl Scene {
     /// sidebar's words written across it. What the panel covers therefore has
     /// to be taken away here.
     ///
-    /// Only what it covers, though. A run is clipped at the panel's edge rather
-    /// than dropped whole, because these panels stand *beside* the control they
-    /// are about — the context menu grows out of a card and lands halfway
-    /// across the column of buttons — so the runs in their way are usually
-    /// half-covered ones. Dropping those emptied every button the panel so much
-    /// as touched, which reads as the sidebar losing its labels rather than as
+    /// Only what it covers, though. A run is cut at the panel's edges rather
+    /// than dropped whole, because these panels stand *over* things that are
+    /// wider than they are — the bar's own rows reach from the cross to the
+    /// far edge of the display — so the runs in their way are usually
+    /// half-covered ones. Dropping those emptied every label the panel so much
+    /// as touched, which reads as the bar losing its words rather than as
     /// something being in front of them.
     ///
-    /// A run the panel covers outright is still dropped: there is nothing left
-    /// of it to draw.
+    /// Both sides are kept, which is the whole of the fix here. This used to
+    /// keep whichever side had more *room* in the run's box, and that is not
+    /// the side the words are on: a bar label is laid out in a box running to
+    /// the edge of the display and printed at the left of it, so a panel in the
+    /// middle left more empty box on the right, and the label was cut down to a
+    /// stretch of it that had nothing in it. That is why every name behind the
+    /// install panel disappeared. A run has one shaping and two clips now, and
+    /// the words survive on whichever side they were actually on.
     pub fn hide_text_behind(&mut self, rect: [f32; 4]) {
-        let [x, _, w, _] = rect;
-        self.texts.retain_mut(|text| {
-            if !behind(text, rect) {
-                return true;
-            }
-            // Which side of the panel the run survives on. Its own box rather
-            // than its ink: the ink is only known once the run has been shaped,
-            // which happens two crates away, and clipping to a box that is too
-            // generous costs nothing — there are no pixels out there to cut.
-            let left = x - text.x;
-            let right = (text.x + text.max_width) - (x + w);
-            let (from, width) = if left >= right {
-                (text.x, left)
-            } else {
-                (x + w, right)
-            };
-            // Horizontal only. Vertically the run is one line inside its own
-            // box already, and a panel that overlaps it at all overlaps that
-            // whole line — a label cut through the middle by a panel edge would
-            // be worse than either answer here.
-            let survives = [from, text.y, width, text.size * 2.0];
-            let clipped = match text.clip {
-                Some(clip) => intersection(clip, survives),
-                None => survives,
-            };
-            text.clip = Some(clipped);
-            clipped[2] > 0.0 && clipped[3] > 0.0
-        });
+        self.cut_text_behind(rect, 1.0);
     }
 
-    /// The same, for a panel that is not opaque yet: the text it covers is
-    /// faded by `amount` rather than taken away, and only gone at 1.
+    /// The same, for a panel that is not opaque yet: the part of a run it
+    /// covers is faded by `amount` rather than taken away, and only gone at 1.
     ///
     /// Needed because these panels travel as one whole rectangle rather than
     /// growing into one — see [`dialog_bounds`] — so a panel one frame out of
@@ -910,13 +935,64 @@ impl Scene {
     /// anything is over them, which reads as the menu underneath losing its
     /// words rather than as a panel arriving on top of it.
     pub fn dim_text_behind(&mut self, rect: [f32; 4], amount: f32) {
-        let amount = amount.clamp(0.0, 1.0);
-        if amount >= 1.0 {
-            return self.hide_text_behind(rect);
+        self.cut_text_behind(rect, amount.clamp(0.0, 1.0));
+    }
+
+    /// One run in, up to three out: what is left of it on either side of the
+    /// panel, and — while the panel is still arriving — what is under it,
+    /// faded by how far arrived it is.
+    ///
+    /// Horizontal only. Vertically the run is one line inside its own box
+    /// already, and a panel that overlaps it at all overlaps that whole line —
+    /// a label cut through the middle by a panel edge would be worse than
+    /// either answer here.
+    ///
+    /// Cutting rather than re-laying out: the pieces keep the run's own `x`,
+    /// `max_width` and alignment, so every glyph stays exactly where it was and
+    /// only the scissor differs. See [`crate::gpu::Text::clip`].
+    fn cut_text_behind(&mut self, rect: [f32; 4], amount: f32) {
+        let [x, _, w, _] = rect;
+        if w <= 0.0 || amount <= 0.0 {
+            return;
         }
-        for text in self.texts.iter_mut().filter(|text| behind(text, rect)) {
-            text.color[3] *= 1.0 - amount;
+        let mut kept = Vec::with_capacity(self.texts.len());
+        for text in std::mem::take(&mut self.texts) {
+            if !behind(&text, rect) {
+                kept.push(text);
+                continue;
+            }
+            // A piece of the run, in its own box rather than in its ink: the
+            // ink is only known once the run has been shaped, which happens two
+            // crates away, and a scissor that is too generous costs nothing —
+            // there are no pixels out there to cut.
+            let piece = |from: f32, width: f32| {
+                let box_of_it = [from, text.y, width, text.size * 2.0];
+                let cut = match text.clip {
+                    Some(clip) => intersection(clip, box_of_it),
+                    None => box_of_it,
+                };
+                (cut[2] > 0.0 && cut[3] > 0.0).then_some(cut)
+            };
+            let ends = [
+                piece(text.x, x - text.x),
+                piece(x + w, text.x + text.max_width - (x + w)),
+            ];
+            for clip in ends.into_iter().flatten() {
+                kept.push(Text {
+                    clip: Some(clip),
+                    ..text.clone()
+                });
+            }
+            if amount < 1.0 {
+                if let Some(clip) = piece(x, w) {
+                    let mut under = text;
+                    under.color[3] *= 1.0 - amount;
+                    under.clip = Some(clip);
+                    kept.push(under);
+                }
+            }
         }
+        self.texts = kept;
     }
 
     /// Fade out text approaching `edge` from the left, over `feather` pixels.
@@ -979,27 +1055,165 @@ pub trait SlotLookup {
     fn thumbnail(&self, _path: &std::path::Path) -> Option<crate::gpu::Thumb> {
         None
     }
+
+    /// Steam's cover for one game, if it has been fetched and is still in the
+    /// atlas.
+    ///
+    /// By app id rather than by a path, because unlike a file of the user's
+    /// own, a game is not a thing on this disk: it may not be installed at
+    /// all, and where its picture ended up — Valve's cache or this shell's —
+    /// is [`crate::art`]'s business and nothing the layout should have an
+    /// opinion about.
+    ///
+    /// Answers `None` far more often than not, exactly as [`Self::thumbnail`]
+    /// does, and for the same reason: the row is drawn at the same size and in
+    /// the same place either way, so a cover fades into a card that was
+    /// already there.
+    fn cover(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
+        None
+    }
+
+    /// How much of the colour has drained out of that cover: 0 for a game that
+    /// is on this disk and can be started, 1 for one that is not.
+    ///
+    /// A game is not a thing the layout can look up — it is told whether this
+    /// one is installed, which is the whole of the question — so what the shell
+    /// adds on top is only *when* the answer arrives: a download finishing
+    /// gives a cover its colour back over a moment rather than between two
+    /// frames. Every other caller takes the plain answer from here.
+    fn drain(&self, _app_id: u32, installed: bool) -> f32 {
+        if installed {
+            0.0
+        } else {
+            1.0
+        }
+    }
 }
 
-/// Whether a column shows its rows as pictures rather than as icons.
+/// The cards a column of pictures is drawn on: their shape, and how tall they
+/// stand chosen and unchosen.
+///
+/// One description rather than three constants because two kinds of column
+/// show pictures now and they are not the same shape — a frame out of a film
+/// is wide, a Steam cover is tall — and everything that lays a column out has
+/// to be told which.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Cards {
+    /// Width over height — of the *picture*, not of the card. The card is that
+    /// plus its mount, which is a little squarer; see [`Cards::width`].
+    aspect: f32,
+    height: f32,
+    focused: f32,
+}
+
+impl Cards {
+    /// Cards of `aspect`, taking up the room a picture card takes.
+    ///
+    /// What is held constant across shapes is *area*, and that is the only
+    /// choice here that needed making. Holding the height would make covers
+    /// small — a portrait picture as tall as a landscape one is half the
+    /// picture — and holding the width would make them enormous, half a screen
+    /// each. Equal area is the two of them weighing the same on the glass,
+    /// which is what a column of rows is asking for.
+    fn of(aspect: f32) -> Cards {
+        let grow = (CARD_ASPECT / aspect).sqrt();
+        Cards {
+            aspect,
+            height: CARD_HEIGHT * grow,
+            focused: CARD_HEIGHT_FOCUSED * grow,
+        }
+    }
+
+    /// The mount round a card drawn `height` tall: the same width of glass on
+    /// all four sides. See [`CARD_MOUNT`].
+    ///
+    /// Solved rather than measured, because the border is a share of the
+    /// picture and the picture is what is left of the card once the border is
+    /// taken off it. With `c` the share and `s` the picture's shorter side as a
+    /// multiple of its height — 1 for anything wide, the aspect itself for
+    /// anything tall — the border `m` satisfies `m = c·s·(height − 2m)`, and
+    /// this is that rearranged.
+    fn mount(&self, height: f32) -> f32 {
+        let shorter = self.aspect.min(1.0);
+        CARD_MOUNT * shorter * height / (1.0 + 2.0 * CARD_MOUNT * shorter)
+    }
+
+    /// How wide a card drawn `height` tall is: its picture, plus that mount
+    /// either side of it.
+    ///
+    /// So the card is very slightly squarer than the picture it carries, and
+    /// deliberately: a mount of even width round a picture of a given shape
+    /// *is* a slightly different shape, and the alternative — a card at the
+    /// picture's own aspect — is what leaves the border wider on one pair of
+    /// sides than the other.
+    fn width(&self, height: f32) -> f32 {
+        let mount = self.mount(height);
+        (height - mount * 2.0) * self.aspect + mount * 2.0
+    }
+
+    /// The clear glass between two unchosen cards. See [`CARD_AIR`].
+    fn air(&self) -> f32 {
+        self.width(self.height) * CARD_AIR
+    }
+
+    /// How far apart two unchosen rows stand, centre to centre.
+    ///
+    /// Added up rather than chosen, for the reason [`ITEM_GAP_BELOW`] is: a
+    /// card, and the air after it.
+    ///
+    /// The chosen row is *not* in this: it is taller than the rest by
+    /// [`Self::swell`] and is pushed clear of its neighbours by half of that on
+    /// each side, so that the glass between any two rows is the same width
+    /// whichever of them is chosen. A single pitch covering both was the whole
+    /// of what was wrong with the column this replaced — sized so the chosen
+    /// card cleared its neighbours, it left the unchosen ones half a card
+    /// apart, and a library read as a stack of islands with wallpaper running
+    /// between them.
+    fn spacing(&self) -> f32 {
+        self.height + self.air()
+    }
+
+    /// How much taller the chosen card is than its neighbours — which is how
+    /// much a column has to push the rows either side of it away by.
+    fn swell(&self) -> f32 {
+        self.focused - self.height
+    }
+
+    /// The width of the chosen card, which is what the labels beside it and
+    /// the strip a click lands in are both measured from.
+    fn reach(&self) -> f32 {
+        self.width(self.focused)
+    }
+}
+
+/// The cards a column shows, or `None` for a column of icons.
 ///
 /// A property of the *column* and not of what has loaded: the rows have to
-/// stand in the same places from the first frame, or arriving thumbnails would
+/// stand in the same places from the first frame, or arriving pictures would
 /// walk the list up and down under the cursor.
 ///
 /// Asked of the first row that knows — which on a shelf is the search at the
 /// head of it, and that one knows without a single file under it. So a column
 /// searched down to nothing is still a column of photographs, and the rows do
-/// not change shape underneath the user as a match arrives.
-fn shows_pictures(entries: &[Entry]) -> bool {
-    entries
-        .iter()
-        .find_map(|entry| match entry {
-            Entry::Media(file) => Some(file.kind),
-            Entry::Search(search) => Some(search.kind),
-            _ => None,
-        })
-        .is_some_and(crate::media::Kind::has_picture)
+/// not change shape underneath the user as a match arrives. A Steam library
+/// answers the same way: the first game says the column is one of covers, and
+/// it says so before a single cover has been fetched.
+fn cards_in(entries: &[Entry]) -> Option<Cards> {
+    for entry in entries {
+        // Whichever way it answers, the first row that knows is the last one
+        // asked: a shelf of music says "no cards" on its first song rather
+        // than on its twenty-thousandth, and walking a whole library once per
+        // column per frame is exactly the cost this shell does not pay.
+        match entry {
+            Entry::Media(file) => return file.kind.has_picture().then(|| Cards::of(CARD_ASPECT)),
+            Entry::Search(search) => {
+                return search.kind.has_picture().then(|| Cards::of(CARD_ASPECT))
+            }
+            Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Lay out one display's bar.
@@ -1079,8 +1293,10 @@ pub fn build(
 
     let category_spacing = CATEGORY_SPACING * scale;
     let item_spacing = ITEM_SPACING * scale;
-    let gap_above = ITEM_GAP_ABOVE * scale;
-    let gap_below = ITEM_GAP_BELOW * scale;
+    // The note a column with nothing in it draws sits at the icon's distance,
+    // because a column with no rows has no cards in it either. Every column
+    // that does have rows takes its own; see [`gap_below`].
+    let empty_gap_below = ITEM_GAP_BELOW * scale;
 
     // While the row glides sideways the column belongs to nobody: fade it out
     // with the old category and back in with the new one, as the original bar
@@ -1106,7 +1322,7 @@ pub fn build(
             texts.push(Text {
                 content: category.empty_note().to_string(),
                 x: column_x(0) + ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0 + 12.0 * scale,
-                y: cross_y + gap_below - 14.0 * scale,
+                y: cross_y + empty_gap_below - 14.0 * scale,
                 size: 22.0 * scale,
                 color: theme.text_soft.a(0.7 * column_alpha),
                 bold: false,
@@ -1152,12 +1368,13 @@ pub fn build(
         // A column of pictures is measured differently from a column of
         // applications: taller rows, further apart, and a text column that
         // clears a card rather than a disc.
-        let pictures = shows_pictures(column.entries);
-        let item_spacing = if pictures {
-            CARD_SPACING * scale
-        } else {
-            item_spacing
+        let cards = cards_in(column.entries);
+        let item_spacing = match cards {
+            Some(cards) => cards.spacing() * scale,
+            None => item_spacing,
         };
+        let gap_above = gap_above(cards) * scale;
+        let gap_below = gap_below(cards) * scale;
         // Fixed text column: anchored to the focused entry's extent so labels
         // do not shuffle sideways as focus (and therefore icon size) moves
         // around.
@@ -1170,10 +1387,9 @@ pub fn build(
         // The whole column recedes about its own icons, this offset included:
         // a label that kept its distance from an icon half the size would read
         // as a name that had drifted off the row it belongs to.
-        let text_x = if pictures {
-            x + (CARD_HEIGHT_FOCUSED * CARD_ASPECT / 2.0 + 14.0) * scale * near
-        } else {
-            x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near
+        let text_x = match cards {
+            Some(cards) => x + (cards.reach() / 2.0 + 14.0) * scale * near,
+            None => x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near,
         };
         // A column gives up its half of the screen to the one opened in front
         // of it, over the same glide: a label that snapped to the shorter box
@@ -1203,14 +1419,21 @@ pub fn build(
             // its spacing untouched would be a stack of shrinking icons that
             // had all drifted apart from one another.
             let y = if level == 0 {
-                item_y(offset, cross_y, gap_above, gap_below, item_spacing * near)
+                item_y(
+                    offset,
+                    cross_y,
+                    gap_above,
+                    gap_below,
+                    item_spacing * near,
+                    row_swell(cards, scale) * near,
+                )
             } else {
                 nested_y(
                     offset,
                     cross_y,
                     gap_below,
                     item_spacing * near,
-                    row_swell(pictures, scale) * near,
+                    row_swell(cards, scale) * near,
                 )
             };
 
@@ -1257,10 +1480,9 @@ pub fn build(
             // which is both true and the plainest way of saying it. Stopping
             // short cost the best part of a row, in the column that has the
             // most rows to show.
-            let bottom_clearance = if pictures {
-                -CARD_HEIGHT / 2.0
-            } else {
-                ITEM_ICON / 2.0 + 16.0
+            let bottom_clearance = match cards {
+                Some(cards) => -cards.height / 2.0,
+                None => ITEM_ICON / 2.0 + 16.0,
             } * scale;
             alpha *= ((height - bottom_clearance - y) / fade_range).clamp(0.0, 1.0);
             if alpha <= 0.01 {
@@ -1275,9 +1497,10 @@ pub fn build(
             // The card a picture stands on, when this column is one of
             // pictures. It exists whether or not the picture has arrived, so
             // nothing moves when one does.
-            let card = pictures.then(|| {
-                let h = lerp(CARD_HEIGHT, CARD_HEIGHT_FOCUSED, focus) * scale * near;
-                [x - h * CARD_ASPECT / 2.0, y - h / 2.0, h * CARD_ASPECT, h]
+            let card = cards.map(|cards| {
+                let h = lerp(cards.height, cards.focused, focus) * scale * near;
+                let w = cards.width(h);
+                [x - w / 2.0, y - h / 2.0, w, h]
             });
 
             if distance < 0.5 && active > 0.01 {
@@ -1369,14 +1592,33 @@ pub fn build(
             // The picture itself, on the card, at its own shape. An unfocused
             // row gets one too — a column of pictures where only the chosen
             // one is a picture would be a column of empty cards.
-            let picture = card.zip(
-                entry
-                    .media()
-                    .and_then(|file| slots.thumbnail(&file.path))
-                    .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0),
-            );
+            let held = match entry {
+                // Steam's own cover, which is to a game exactly what a frame
+                // is to a film: the thing the row is, rather than a mark
+                // standing in for it.
+                Entry::Game(game) => slots.cover(game.app_id),
+                _ => entry.media().and_then(|file| slots.thumbnail(&file.path)),
+            };
+            // And whether that cover is drawn in colour. A game that is not on
+            // this disk is drawn colourless — the same picture, with nothing in
+            // it that says "now": the top half of the column, which is what can
+            // be played, is the only part of it in colour. Nothing else in the
+            // shell is drained; a photograph the user owns is not a photograph
+            // they are missing.
+            let colourless = match entry {
+                Entry::Game(game) => slots.drain(game.app_id, game.installed),
+                _ => 0.0,
+            };
+            let picture =
+                card.zip(held.filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0));
             if let Some(([cx, cy, cw, ch], thumb)) = picture {
-                let mount = ch * CARD_MOUNT;
+                // The same border on all four sides, which is what the card
+                // was sized around: a picture at the column's own shape fills
+                // the room exactly and the mount is even the whole way round.
+                // Anything else — a portrait photograph in a column of films —
+                // is fitted inside that room and centred, and shows more glass
+                // on the two sides it does not reach.
+                let mount = cards.map_or(0.0, |cards| cards.mount(ch));
                 let (room_w, room_h) = (cw - mount * 2.0, ch - mount * 2.0);
                 // Fitted rather than filled: a photograph cropped to the
                 // card's shape is a photograph with its subject cut off, and
@@ -1394,6 +1636,7 @@ pub fn build(
                     slot: thumb.slot,
                     color: [1.0, 1.0, 1.0, alpha],
                     radius: (ch * CARD_CORNER - mount).max(0.0),
+                    drain: colourless,
                     ..Quad::default()
                 });
             }
@@ -1716,25 +1959,26 @@ fn bar_category_x(offset: f32, depth: f32, width: f32, height: f32) -> f32 {
 ///
 /// `level` is how far along the path the column stands, and only the outermost
 /// — level 0 — is laid out around the category row. See [`nested_y`].
-fn bar_item_y(offset: f32, level: usize, near: f32, height: f32, pictures: bool) -> f32 {
+fn bar_item_y(offset: f32, level: usize, near: f32, height: f32, cards: Option<Cards>) -> f32 {
     let scale = guide_scale(height);
     let cross_y = height * BAR_CROSS_Y;
-    let spacing = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale * near;
+    let spacing = cards.map_or(ITEM_SPACING, |cards| cards.spacing()) * scale * near;
     if level == 0 {
         item_y(
             offset,
             cross_y,
-            ITEM_GAP_ABOVE * scale,
-            ITEM_GAP_BELOW * scale,
+            gap_above(cards) * scale,
+            gap_below(cards) * scale,
             spacing,
+            row_swell(cards, scale) * near,
         )
     } else {
         nested_y(
             offset,
             cross_y,
-            ITEM_GAP_BELOW * scale,
+            gap_below(cards) * scale,
             spacing,
-            row_swell(pictures, scale) * near,
+            row_swell(cards, scale) * near,
         )
     }
 }
@@ -1849,12 +2093,8 @@ fn column_hit(
         // name is as much the row as its icon is.
         // A column of pictures is wider and taller than one of applications,
         // and the hand has to land where the eye says the row is.
-        let pictures = shows_pictures(column.entries);
-        let reach = if pictures {
-            CARD_HEIGHT_FOCUSED * CARD_ASPECT
-        } else {
-            ITEM_ICON_FOCUSED * ITEM_DISC
-        };
+        let cards = cards_in(column.entries);
+        let reach = cards.map_or(ITEM_ICON_FOCUSED * ITEM_DISC, |cards| cards.reach());
         let left = bar_column_x(level as f32, depth, width, height) - reach * scale * near * 0.5;
         // The strip ends where the next column *the user can act on* begins, so
         // a column stepped out of does not go on holding back the one it came
@@ -1873,16 +2113,9 @@ fn column_hit(
             continue;
         }
 
-        let band = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale * near;
-        let row_at = |index: usize| {
-            bar_item_y(
-                index as f32 - column.position,
-                level,
-                near,
-                height,
-                pictures,
-            )
-        };
+        let band = cards.map_or(ITEM_SPACING, |cards| cards.spacing()) * scale * near;
+        let row_at =
+            |index: usize| bar_item_y(index as f32 - column.position, level, near, height, cards);
 
         // A column behind the open one shows one row and no more — the row it
         // was opened from — so that is the only thing in it a click can mean,
@@ -1961,9 +2194,28 @@ fn leaving(x: f32, scale: f32) -> f32 {
 /// offsets at or past −1 stack above it from `gap_above`. In between — an
 /// entry mid-scroll — the position blends linearly, so the entry glides
 /// through the row's gap instead of jumping over it.
-fn item_y(offset: f32, cross_y: f32, gap_above: f32, gap_below: f32, spacing: f32) -> f32 {
+///
+/// `swell` is how much taller the chosen row is drawn than the rest, and it
+/// pushes the row below it down by half of that — the same correction
+/// [`nested_y`] makes, and for the same reason: without it the chosen card
+/// nearly touches the row under it while every other pair stands well apart.
+///
+/// Only downwards, though, and that is the whole difference between the two.
+/// Here the row *above* the chosen one is on the other side of the category
+/// row, which is a hundred and fifty pixels of glass, a label and its air. It
+/// is not a neighbour of the chosen card in any sense the eye recognises, and
+/// pushing it further away would only take a row off the top of the screen.
+fn item_y(
+    offset: f32,
+    cross_y: f32,
+    gap_above: f32,
+    gap_below: f32,
+    spacing: f32,
+    swell: f32,
+) -> f32 {
+    let pushed = swell * 0.5 * offset.clamp(0.0, 1.0);
     if offset >= 0.0 {
-        cross_y + gap_below + offset * spacing
+        cross_y + gap_below + offset * spacing + pushed
     } else if offset <= -1.0 {
         cross_y - gap_above + (offset + 1.0) * spacing
     } else {
@@ -2029,12 +2281,8 @@ fn rows_in_view(position: f32, rows: usize, pitch: f32, height: f32) -> std::ops
 
 /// How much taller a column's chosen row is drawn than the rest — see
 /// [`nested_y`]. Only a column of pictures has any.
-fn row_swell(pictures: bool, scale: f32) -> f32 {
-    if pictures {
-        (CARD_HEIGHT_FOCUSED - CARD_HEIGHT) * scale
-    } else {
-        0.0
-    }
+fn row_swell(cards: Option<Cards>, scale: f32) -> f32 {
+    cards.map_or(0.0, |cards| cards.swell() * scale)
 }
 
 /// One card in the overview, as the shell needs it for drawing: the
@@ -3506,6 +3754,10 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         .highlight
         .or_else(|| context_menu_row_rect(width, height, menu, selected));
     if let Some([hx, hy, hw, hh]) = selected_rect {
+        // Warm rather than the accent's violet where the row cannot be taken
+        // back. This light is the whole of what says so — the labels are all
+        // one white — which is why it is the row's own colour and not a wash
+        // over the panel: what turns red is exactly what is about to be pressed.
         let tint = if entries.get(selected).is_some_and(|entry| entry.grave) {
             theme.danger
         } else {
@@ -3676,14 +3928,15 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         }
 
         let label_size = 23.0 * scale;
-        // Warm for a choice there is no coming back from, so the difference is
-        // visible before the label has been read. On the selected row the
-        // capsule under it is already carrying that warmth, and the label goes
-        // back to plain text so it stays legible on top of it.
-        let color = match (entry.enabled, entry.grave && !focused) {
-            (false, _) => theme.text_soft.a(0.38),
-            (_, true) => theme.danger.a(0.92),
-            _ => theme.text.a(if focused { 1.0 } else { 0.82 }),
+        // Every label is the same white, the grave rows included. What a row
+        // does is said by the light that lands on it — the warm capsule chosen
+        // above — and never by the colour of its letters: warm text on the
+        // panel's dark glass is a dim red on a dark ground, which makes the one
+        // row that most wants reading the hardest to read.
+        let color = if entry.enabled {
+            theme.text.a(if focused { 1.0 } else { 0.82 })
+        } else {
+            theme.text_soft.a(0.38)
         };
         inside.texts.push(Text {
             content: entry.label.clone(),
@@ -3775,6 +4028,34 @@ const DIALOG_RULE: f32 = 24.0;
 /// The mark one typed character is drawn as, and how far apart they sit.
 const SECRET_MARK: f32 = 10.0;
 const SECRET_MARK_GAP: f32 = 8.0;
+/// The band the sign-in code stands in, and how much of it is the quiet zone
+/// every reader needs around a code to find its edges.
+///
+/// Square, and as large as a 680-pixel panel can carry: a code is read by a
+/// phone camera held at arm's length in front of a television, and the one
+/// thing that decides whether that works is how many pixels a module gets.
+const DIALOG_QR: f32 = 360.0;
+const DIALOG_QR_QUIET: f32 = 4.0;
+/// The two colours the code is drawn in.
+///
+/// The one thing this shell draws that is not in its own palette, and it
+/// cannot be: what reads a QR code is a phone camera held at arm's length in
+/// front of a television, and every reader ever written looks for dark modules
+/// on a light field. A code drawn in glass over an accent would be a picture of
+/// a code. Not quite pure black on pure white — a white card at full intensity
+/// on an OLED beside a dark panel is a lamp pointed at the room — but far
+/// beyond the contrast any reader asks for.
+const QR_LIGHT: crate::theme::Color = crate::theme::Color(0xf4f6f8);
+const QR_DARK: crate::theme::Color = crate::theme::Color(0x0a0d12);
+/// The row of lights that stands where an answer will be. Three of them, on
+/// the height of a field so that a panel does not change size when the thing
+/// it was waiting for arrives.
+const DIALOG_WAITING: f32 = DIALOG_FIELD;
+const WAITING_LIGHTS: usize = 3;
+const WAITING_LIGHT: f32 = 12.0;
+const WAITING_LIGHT_GAP: f32 = 14.0;
+/// How long one full pass of that row takes, in seconds.
+const WAITING_CYCLE: f32 = 1.4;
 /// How far the rest of the display is dimmed behind it. Deeper than the context
 /// menu's: a menu is a note pinned to something the user can still see, and this
 /// has taken the screen.
@@ -3802,6 +4083,13 @@ fn dialog_line_height(line: &Line) -> f32 {
         Line::Note(_) => DIALOG_NOTE,
         Line::Field { .. } => DIALOG_FIELD,
         Line::Secret { .. } => DIALOG_SECRET,
+        // A field with its contents shown stands in the same well as one that
+        // hides them, and is therefore exactly as tall: the two are the same
+        // control, and a panel whose field changed height between asking for
+        // an account name and asking for its password would be two panels.
+        Line::Entry(_) => DIALOG_SECRET,
+        Line::Qr(_) => DIALOG_QR,
+        Line::Waiting => DIALOG_WAITING,
         Line::Rule => DIALOG_RULE,
     }
 }
@@ -4182,6 +4470,151 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     color: theme.text.a(0.35 + 0.45 * pulse),
                     ..Quad::default()
                 });
+            }
+            // A field whose contents are meant to be read: the same well the
+            // password stands in, because it is the same control, with the
+            // characters in it instead of one mark each.
+            Line::Entry(text) => {
+                let well_h = (DIALOG_SECRET - 24.0) * scale;
+                let well = [
+                    lx + label_padding,
+                    ly + (lh - well_h) * 0.5,
+                    (lw - label_padding * 2.0).max(0.0),
+                    well_h,
+                ];
+                inside.quads.push(Quad {
+                    x: well[0],
+                    y: well[1],
+                    w: well[2],
+                    h: well[3],
+                    slot: SOLID_SLOT,
+                    color: theme.glass.a(0.5),
+                    radius: well_h * 0.5,
+                    ..Quad::default()
+                });
+                inside.quads.push(Quad {
+                    x: well[0],
+                    y: well[1],
+                    w: well[2],
+                    h: well[3],
+                    slot: SOLID_SLOT,
+                    color: theme.accent_soft.a(0.3 + 0.12 * pulse),
+                    radius: well_h * 0.5,
+                    border: (1.5 * scale).max(1.0),
+                    ..Quad::default()
+                });
+
+                let size = 26.0 * scale;
+                let inset = well_h * 0.5;
+                inside.texts.push(Text {
+                    content: text.clone(),
+                    x: well[0] + inset,
+                    y: well[1] + (well[3] - size) * 0.5 - size * 0.12,
+                    size,
+                    color: theme.text.a(0.94),
+                    bold: false,
+                    max_width: (well[2] - inset * 2.0).max(0.0),
+                    align: TextAlign::Left,
+                    clip: None,
+                });
+
+                // The caret, after what has been typed. Placed from an
+                // estimate of the run's width for the reason the keyboard
+                // hint's chip is sized from one — the shell cannot measure a
+                // run before the GPU shapes it — and clamped inside the well,
+                // so an estimate that drifts on a long name puts the caret at
+                // the end of the field rather than outside it.
+                let run = text.chars().count() as f32 * size * HINT_ADVANCE;
+                let caret_h = well[3] * 0.46;
+                inside.quads.push(Quad {
+                    x: (well[0] + inset + run).min(well[0] + well[2] - inset),
+                    y: well[1] + (well[3] - caret_h) * 0.5,
+                    w: (2.0 * scale).max(1.0),
+                    h: caret_h,
+                    slot: SOLID_SLOT,
+                    color: theme.text.a(0.35 + 0.45 * pulse),
+                    ..Quad::default()
+                });
+            }
+            // The sign-in code, on a white card.
+            //
+            // The one thing this shell draws that is not in its own palette,
+            // and it cannot be: what reads a QR code is a phone camera held at
+            // arm's length in front of a television, and every reader ever
+            // written looks for dark modules on a light field. A code drawn in
+            // glass over an accent would be a picture of a code.
+            Line::Qr(code) => {
+                // A module is a whole number of pixels, which is the one thing
+                // that decides whether a camera can resolve the grid at all.
+                // Everything else about the size follows from it: the card is
+                // as many whole modules as the band can carry, and the leftover
+                // fraction of a pixel becomes margin rather than a row of
+                // modules a pixel wider than their neighbours.
+                let across = code.width as f32 + DIALOG_QR_QUIET * 2.0;
+                let module = (lw.min(*lh) / across).floor().max(1.0);
+                let card = module * across;
+                let ox = lx + (lw - card) * 0.5;
+                let oy = ly + (lh - card) * 0.5;
+
+                inside.quads.push(Quad {
+                    x: ox,
+                    y: oy,
+                    w: card,
+                    h: card,
+                    slot: SOLID_SLOT,
+                    color: QR_LIGHT.a(1.0),
+                    radius: module,
+                    ..Quad::default()
+                });
+
+                let quiet = DIALOG_QR_QUIET * module;
+                let dark = QR_DARK.a(1.0);
+                for row in 0..code.width {
+                    for column in 0..code.width {
+                        if !code.at(column, row) {
+                            continue;
+                        }
+                        inside.quads.push(Quad {
+                            x: ox + quiet + column as f32 * module,
+                            y: oy + quiet + row as f32 * module,
+                            w: module,
+                            h: module,
+                            slot: SOLID_SLOT,
+                            color: dark,
+                            ..Quad::default()
+                        });
+                    }
+                }
+            }
+            // Something is happening elsewhere: a row of lights, each coming up
+            // a little after the one before it.
+            //
+            // A row rather than a ring because it stands in a line of the panel
+            // — where the code will be, where the answer will be — and because
+            // three quads moving in sequence say "still going" without the
+            // shell having to draw a spinner it has nowhere else to use.
+            Line::Waiting => {
+                let light = WAITING_LIGHT * scale;
+                let pitch = light + WAITING_LIGHT_GAP * scale;
+                let run = WAITING_LIGHTS as f32 * pitch - WAITING_LIGHT_GAP * scale;
+                let start = lx + (lw - run) * 0.5;
+                for index in 0..WAITING_LIGHTS {
+                    // Each light is the same wave a third of a cycle behind its
+                    // neighbour, so the row reads as a travelling swell rather
+                    // than as three things blinking together.
+                    let phase = view.time / WAITING_CYCLE - index as f32 / WAITING_LIGHTS as f32;
+                    let lit = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
+                    inside.quads.push(Quad {
+                        x: start + index as f32 * pitch,
+                        y: ly + (lh - light) * 0.5,
+                        w: light,
+                        h: light,
+                        slot: SOLID_SLOT,
+                        color: theme.accent.a(0.25 + 0.55 * lit),
+                        radius: light * 0.5,
+                        ..Quad::default()
+                    });
+                }
             }
             // The same barely-there hairline the guide rules its bands with,
             // and the context menu its groups.
@@ -5182,6 +5615,7 @@ pub fn launch_origin(width: f32, height: f32) -> [f32; 4] {
         ITEM_GAP_ABOVE * scale,
         ITEM_GAP_BELOW * scale,
         ITEM_SPACING * scale,
+        0.0,
     );
     let size = ITEM_ICON_FOCUSED * scale * ITEM_DISC;
     [cross_x - size * 0.5, y - size * 0.5, size, size]
@@ -5438,9 +5872,71 @@ mod tests {
         }
     }
 
+    /// The same for a Steam library: every game has its cover, so what a row
+    /// draws can be told from what it would have drawn without one.
+    struct Covers;
+    impl SlotLookup for Covers {
+        fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
+            Some(7)
+        }
+        fn cover(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
+            Some(crate::gpu::Thumb {
+                slot: THUMB_SLOT,
+                aspect: COVER_ASPECT,
+                covers: [1.0, 1.0],
+            })
+        }
+    }
+
     /// A slot no icon uses, so a quad drawn with it is a thumbnail and nothing
     /// else.
     const THUMB_SLOT: u32 = 4242;
+
+    /// One title in a Steam library, as the shell's own Steam column holds it.
+    fn game(app_id: u32, name: &str) -> Entry {
+        owned(app_id, name, true)
+    }
+
+    /// The same, saying whether it is on this disk.
+    fn owned(app_id: u32, name: &str, installed: bool) -> Entry {
+        Entry::Game(crate::apps::Game {
+            app_id,
+            name: name.to_string(),
+            note: if installed {
+                "Installed"
+            } else {
+                "Not installed"
+            }
+            .to_string(),
+            installed,
+            updating: false,
+            steam_client: true,
+        })
+    }
+
+    /// A library on the bar, in the column of its own the shell hangs it in.
+    fn library(games: &[(u32, &str)]) -> Xmb {
+        shelved_games(games.iter().map(|(id, name)| game(*id, name)).collect())
+    }
+
+    /// The same, when the test cares which of them are on the disk.
+    fn part_owned(games: &[(u32, &str, bool)]) -> Xmb {
+        shelved_games(
+            games
+                .iter()
+                .map(|(id, name, installed)| owned(*id, name, *installed))
+                .collect(),
+        )
+    }
+
+    fn shelved_games(entries: Vec<Entry>) -> Xmb {
+        Xmb::new(vec![Category {
+            id: "graphics",
+            title: "Graphics",
+            icon: "g",
+            entries: vec![folder("Steam", entries)],
+        }])
+    }
 
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
@@ -6704,12 +7200,242 @@ mod tests {
     #[test]
     fn a_shelf_narrowed_to_nothing_still_knows_what_it_is_a_shelf_of() {
         let pictures = crate::apps::media_rows(Vec::new(), crate::media::Kind::Image, "zzz", 12);
-        assert!(shows_pictures(&pictures));
+        assert_eq!(cards_in(&pictures), Some(Cards::of(CARD_ASPECT)));
         let songs = crate::apps::media_rows(Vec::new(), crate::media::Kind::Audio, "zzz", 12);
+        assert_eq!(cards_in(&songs), None, "music has no picture in it to show");
+    }
+
+    /// A Steam library is a column of covers, and a cover is a different shape
+    /// from a film frame. What the two hold in common is how much of the glass
+    /// a row takes up — see [`Cards::of`] — because that is what makes a
+    /// column of either read as the same list.
+    #[test]
+    fn a_library_is_a_column_of_covers_weighing_what_a_picture_weighs() {
+        let games = vec![game(2835570, "Buckshot Roulette"), game(504230, "Celeste")];
+        let cards = cards_in(&games).expect("a column of covers");
+        let pictures = Cards::of(CARD_ASPECT);
+
         assert!(
-            !shows_pictures(&songs),
-            "music has no picture in it to show"
+            (cards.aspect - 600.0 / 900.0).abs() < 0.001,
+            "a cover is Valve's portrait capsule: {}",
+            cards.aspect
         );
+        assert!(cards.focused > pictures.focused, "taller than a film frame");
+        assert!(cards.reach() < pictures.reach(), "and narrower");
+        for (cover, picture) in [
+            (cards.height, pictures.height),
+            (cards.focused, pictures.focused),
+        ] {
+            let area = |height: f32, cards: Cards| height * height * cards.aspect;
+            let (cover, picture) = (area(cover, cards), area(picture, pictures));
+            assert!(
+                (cover / picture - 1.0).abs() < 0.001,
+                "a row of either takes the same room: {cover} against {picture}"
+            );
+        }
+    }
+
+    /// The cover is the row, exactly as a photograph is: it stands on the card
+    /// in the game's place, and the Steam mark that stood in for it goes.
+    #[test]
+    fn a_game_wears_its_cover_instead_of_the_steam_mark() {
+        let xmb = library(&[(2835570, "Buckshot Roulette"), (504230, "Celeste")]);
+        let marks = |scene: &Scene| scene.quads.iter().filter(|q| q.slot == 7).count();
+
+        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&xmb, 1920.0, 1080.0, &Covers);
+        assert!(
+            marks(&waiting) > 0,
+            "the Steam mark stands in until there is a cover"
+        );
+
+        let drawn: Vec<&Quad> = arrived
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .collect();
+        assert_eq!(drawn.len(), 2, "every row of it, not only the chosen one");
+        assert_eq!(
+            marks(&arrived),
+            marks(&waiting) - 2,
+            "and steps aside once each has one"
+        );
+
+        // Filling its card, with an even border round it: a capsule is the
+        // shape the card was built around, so what is left over is the mount
+        // and nothing else. Letterboxed, or wider on two sides than the other
+        // two, and it reads as the wrong picture rather than as a frame.
+        let cards = Cards::of(COVER_ASPECT);
+        let scale = guide_scale(1080.0);
+        let cover = drawn
+            .iter()
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("a cover");
+        let height = cards.focused * scale;
+        let mount = cards.mount(height);
+        assert!(
+            (cover.h - (height - mount * 2.0)).abs() < 0.5,
+            "inside the card's mount: {} of {height}",
+            cover.h
+        );
+        assert!(
+            (cover.w - (cards.width(height) - mount * 2.0)).abs() < 0.5,
+            "and across it: {}",
+            cover.w
+        );
+        assert!(
+            (cover.w / cover.h - COVER_ASPECT).abs() < 0.01,
+            "at its own shape: {}x{}",
+            cover.w,
+            cover.h
+        );
+    }
+
+    /// A game that is not on this disk wears the same cover with the colour
+    /// taken out of it.
+    ///
+    /// The library is installed-first, so this is what tells the two halves of
+    /// it apart at a glance and from across a room: the games that can be
+    /// played are the ones in colour. Nothing else in the shell is drained —
+    /// a photograph the user owns is not a photograph they are missing.
+    #[test]
+    fn a_game_that_is_not_here_wears_a_colourless_cover() {
+        let xmb = part_owned(&[(1, "Here", true), (2, "Not here", false)]);
+        let scene = opened(&xmb, 1920.0, 1080.0, &Covers);
+        let mut covers: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .collect();
+        assert_eq!(covers.len(), 2, "both rows wear one");
+        // Down the column, which is the order the library is in: the chosen
+        // row is the first of them and stands taller than the rest.
+        covers.sort_by(|a, b| a.y.total_cmp(&b.y));
+        assert_eq!(
+            covers[0].drain, 0.0,
+            "on the disk, so drawn as Steam made it"
+        );
+        assert_eq!(covers[1].drain, 1.0, "not on it, so drawn colourless");
+
+        let photographs = opened(
+            &shelf(crate::media::Kind::Image, "", &["/p/a.jpg", "/p/b.jpg"], 2),
+            1920.0,
+            1080.0,
+            &Pictures(3.0 / 2.0),
+        );
+        assert!(
+            photographs.quads.iter().all(|quad| quad.drain == 0.0),
+            "and nothing else in the shell is drained of anything"
+        );
+    }
+
+    /// A column of covers stands evenly apart and clear of the category row it
+    /// hangs under — and a column of icons is exactly where it always was.
+    ///
+    /// Three complaints in one, all of them the same mistake: a distance to a
+    /// row's *centre* that was measured when every row was an icon. A cover is
+    /// two and a half times as tall as that, so it reached up through the
+    /// category's name, sat on the glass of the row above, and left its
+    /// neighbours nearly touching it while the pairs further down the column
+    /// stood half a card apart.
+    #[test]
+    fn a_library_stands_evenly_apart_and_clear_of_the_category_row() {
+        let height = 1080.0;
+        let scale = guide_scale(height);
+        let cross_y = height * BAR_CROSS_Y;
+        let cards = Cards::of(COVER_ASPECT);
+        let y = |offset: f32| bar_item_y(offset, 0, 1.0, height, Some(cards));
+        let half = |offset: f32| {
+            let card = if offset == 0.0 {
+                cards.focused
+            } else {
+                cards.height
+            };
+            card * scale / 2.0
+        };
+
+        // The glass between the chosen card and the row under it is the same
+        // width as the glass between any other two.
+        let below_the_chosen = (y(1.0) - half(1.0)) - (y(0.0) + half(0.0));
+        let further_down = (y(2.0) - half(2.0)) - (y(1.0) + half(1.0));
+        assert!(
+            (below_the_chosen - further_down).abs() < 0.5,
+            "{below_the_chosen} under the chosen card and {further_down} between the rest"
+        );
+        assert!(
+            (further_down - cards.air() * scale).abs() < 0.5,
+            "and it is the air the cards were spaced by: {further_down}"
+        );
+
+        // Above the category row, the same air an icon column has always had.
+        let above = (cross_y - CATEGORY_HALF * scale) - (y(-1.0) + half(-1.0));
+        assert!(
+            (above - CATEGORY_AIR_ABOVE * scale).abs() < 0.5,
+            "{above} between the row above and the category's glass"
+        );
+
+        // And below its label, more of it — see `CATEGORY_LABEL_TO_CARDS`.
+        let under_the_label = (y(0.0) - half(0.0)) - (cross_y + CATEGORY_TO_LABEL * scale);
+        assert!(
+            (under_the_label - CATEGORY_LABEL_TO_CARDS * scale).abs() < 0.5,
+            "{under_the_label} between the category's name and the first cover"
+        );
+        assert!(
+            under_the_label > CATEGORY_LABEL_TO_ICONS * scale,
+            "which is more than an icon column asks for"
+        );
+
+        // None of which has moved a column of icons by a pixel.
+        let icons = |offset: f32| bar_item_y(offset, 0, 1.0, height, None);
+        assert!((icons(0.0) - (cross_y + ITEM_GAP_BELOW * scale)).abs() < 0.001);
+        assert!((icons(-1.0) - (cross_y - ITEM_GAP_ABOVE * scale)).abs() < 0.001);
+        assert!((icons(2.0) - icons(1.0) - ITEM_SPACING * scale).abs() < 0.001);
+    }
+
+    /// The glass round a picture is the same width on all four sides, whatever
+    /// shape the cards in that column are.
+    ///
+    /// The eye is very good at this: a border half again as wide above as
+    /// beside reads as a picture that has slipped in its frame. It was, on the
+    /// first pass at covers — the card was cut to the picture's own aspect and
+    /// then inset by a share of each side, which is a different number of
+    /// pixels on each.
+    #[test]
+    fn the_mount_is_the_same_width_all_the_way_round() {
+        /// The glass left showing beside the chosen row's picture, and above
+        /// it.
+        fn mount_of(xmb: &Xmb, slots: &impl SlotLookup) -> (f32, f32) {
+            let scene = opened(xmb, 1920.0, 1080.0, slots);
+            let card = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.thickness > 0.0 && quad.h > 0.0)
+                .max_by(|a, b| a.h.total_cmp(&b.h))
+                .expect("the chosen card");
+            let picture = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == THUMB_SLOT)
+                .max_by(|a, b| a.h.total_cmp(&b.h))
+                .expect("the picture on it");
+            ((card.w - picture.w) / 2.0, (card.h - picture.h) / 2.0)
+        }
+
+        let films = mount_of(
+            &album(&["/home/x/a.jpg", "/home/x/b.jpg"]),
+            &Pictures(CARD_ASPECT),
+        );
+        let covers = mount_of(
+            &library(&[(2835570, "Buckshot Roulette"), (504230, "Celeste")]),
+            &Covers,
+        );
+        for (beside, above) in [films, covers] {
+            assert!(
+                (beside - above).abs() < 0.5,
+                "{beside} beside the picture and {above} above it"
+            );
+            assert!(above > 1.0, "and there is a mount at all: {above}");
+        }
     }
 
     /// The picture is the row. It stands on the card at its own shape, fitted
@@ -6739,9 +7465,10 @@ mod tests {
             card.w,
             card.h
         );
-        let mount = CARD_HEIGHT_FOCUSED * scale * CARD_MOUNT;
+        let cards = Cards::of(CARD_ASPECT);
+        let height = CARD_HEIGHT_FOCUSED * scale;
         assert!(
-            (card.h - (CARD_HEIGHT_FOCUSED * scale - mount * 2.0)).abs() < 1.0,
+            (card.h - (height - cards.mount(height) * 2.0)).abs() < 0.5,
             "inside the card's mount: {}",
             card.h
         );
@@ -6885,8 +7612,15 @@ mod tests {
         // The library stands one column in, which is where the hand finds it.
         let depth = cursor.depth_position();
         let x = bar_column_x(1.0, depth, width, height);
-        let row_y =
-            |row: usize| bar_item_y(row as f32 - cursor.item_position, 1, 1.0, height, true);
+        let row_y = |row: usize| {
+            bar_item_y(
+                row as f32 - cursor.item_position,
+                1,
+                1.0,
+                height,
+                Some(Cards::of(CARD_ASPECT)),
+            )
+        };
         for row in 0..3 {
             assert_eq!(
                 bar_hit(&xmb, &cursor, x, row_y(row), width, height),
@@ -6946,8 +7680,14 @@ mod tests {
         let (height, rows) = (1080.0, 4_000);
         let scale = guide_scale(height);
 
-        for pictures in [false, true] {
-            let pitch = if pictures { CARD_SPACING } else { ITEM_SPACING } * scale;
+        // Every pitch the shell lays a column out at: icons, the wide cards a
+        // film stands on, and the tall ones a game's cover does.
+        for cards in [
+            None,
+            Some(Cards::of(CARD_ASPECT)),
+            Some(Cards::of(COVER_ASPECT)),
+        ] {
+            let pitch = cards.map_or(ITEM_SPACING, |cards| cards.spacing()) * scale;
             // The outermost column straddles the category row; every column
             // opened out of one is laid out about its own chosen row.
             for level in [0, 1] {
@@ -6959,7 +7699,7 @@ mod tests {
                         shown.len()
                     );
                     for index in 0..rows {
-                        let y = bar_item_y(index as f32 - position, level, 1.0, height, pictures);
+                        let y = bar_item_y(index as f32 - position, level, 1.0, height, cards);
                         // The same bound the callers cull against, one row
                         // either side of the display.
                         if y < -pitch || y > height + pitch {
@@ -6989,7 +7729,13 @@ mod tests {
         let x = bar_column_x(1.0, cursor.depth_position(), width, height);
         let position = cursor.columns(&xmb)[1].position;
         for row in 2_499..=2_501 {
-            let y = bar_item_y(row as f32 - position, 1, 1.0, height, true);
+            let y = bar_item_y(
+                row as f32 - position,
+                1,
+                1.0,
+                height,
+                Some(Cards::of(CARD_ASPECT)),
+            );
             assert_eq!(
                 bar_hit(&xmb, &cursor, x, y, width, height),
                 Some(BarSpot::Item(row)),
@@ -10050,8 +10796,19 @@ mod tests {
         );
         recede_behind_context_menu(&mut scene, width, height, &menu, 1.0);
 
+        // Every label is still here. Not one for one, because a run the panel
+        // crosses is now drawn as its two ends and arrives twice — what must
+        // not happen is a name going missing.
         let after: Vec<String> = scene.texts.iter().map(|t| t.content.clone()).collect();
-        assert_eq!(before, after, "a label vanished from under the panel");
+        for name in &before {
+            assert!(
+                after.contains(name),
+                "{name:?} vanished from under the panel"
+            );
+        }
+        for name in &after {
+            assert!(before.contains(name), "{name:?} was invented by the cut");
+        }
         let mut cut = 0;
         for text in &scene.texts {
             // A run the panel is nowhere near is left alone entirely — a clip
@@ -10640,6 +11397,74 @@ mod tests {
         assert_eq!(menu.selected(), 0);
     }
 
+    /// A row there is no coming back from says so with the light on it and
+    /// never with its letters.
+    ///
+    /// Both halves matter and they are the same fact from either end: the
+    /// label is the plain white every other row has, whether or not the
+    /// highlight is on it, and the capsule that arrives is warm rather than the
+    /// accent's. A red label on the panel's dark glass was the way this used to
+    /// be said, and it was the least readable text in the shell.
+    #[test]
+    fn a_grave_row_is_warned_of_by_its_light_and_not_by_its_label() {
+        let (width, height) = (1920.0, 1080.0);
+        let ordinary = MenuEntry::new(Command::Placeholder("keep"), "Keep");
+        let grave = MenuEntry::new(Command::Placeholder("remove"), "Uninstall").grave();
+        let label = |scene: &Scene, of: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == of)
+                .map(|text| text.color)
+                .expect("the row is drawn")
+        };
+        let lit = |scene: &Scene, row: [f32; 4]| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| {
+                    quad.slot == SOLID_SLOT
+                        && quad.thickness > 0.0
+                        && (quad.y - row[1]).abs() < 0.5
+                        && (quad.h - row[3]).abs() < 0.5
+                })
+                .map(|quad| quad.color)
+                .expect("the selected row is lit")
+        };
+
+        // On the ordinary row first, so the grave one is drawn unselected.
+        let mut menu = Menu::default();
+        menu.open_at([300.0, 300.0, 160.0, 160.0], None, vec![ordinary, grave], 8);
+        while menu.animate(0.05) < 1.0 {}
+        let resting = context_scene(&menu, width, height);
+        // The colour, not the strength: an unselected row of any kind is drawn
+        // a little softer than the one the highlight is on.
+        assert_eq!(
+            label(&resting, "Uninstall")[..3],
+            label(&resting, "Keep")[..3],
+            "the grave row is written in a colour of its own"
+        );
+
+        // And then on it.
+        assert!(menu.move_selection(1));
+        while menu.animate(0.05) < 1.0 {}
+        let selected = context_scene(&menu, width, height);
+        assert_eq!(
+            label(&selected, "Uninstall")[..3],
+            label(&resting, "Keep")[..3],
+            "selecting the grave row turned its label a colour of its own"
+        );
+
+        let row = context_menu_row_rect(width, height, &menu, 1).unwrap();
+        let theme = crate::theme::theme();
+        assert_eq!(
+            lit(&selected, row)[..3],
+            theme.danger.a(1.0)[..3],
+            "the light that reached the grave row is the ordinary accent"
+        );
+        assert_ne!(theme.danger.a(1.0)[..3], theme.accent.a(1.0)[..3]);
+    }
+
     /// The busiest screen a context menu can appear on still fits inside the
     /// renderer's snapshot budget.
     ///
@@ -10959,6 +11784,138 @@ mod tests {
         );
     }
 
+    /// The sign-in code: dark modules on a light card, every module a whole
+    /// number of pixels, and the whole thing inside the band it was given.
+    ///
+    /// Whole pixels are the only thing here that decides whether a phone
+    /// camera can read the code at all, and it is the one property of this
+    /// drawing that cannot be seen by looking at a screenshot — a grid whose
+    /// modules are 7.4 pixels wide looks fine and scans badly.
+    #[test]
+    fn the_sign_in_code_is_drawn_in_whole_pixels_on_a_light_card() {
+        let code =
+            lxb_steam::qr::encode("https://s.team/q/1/1234567890123456789").expect("a short URL");
+        let mut dialog = Dialog::default();
+        assert!(dialog.ask(
+            [200.0, 400.0, 380.0, 54.0],
+            None,
+            vec![
+                Line::Note("Scan this in the Steam app on your phone.".to_string()),
+                Line::Qr(code.clone()),
+            ],
+            vec![MenuEntry::new(Command::SteamCancel, "Cancel")],
+            0,
+        ));
+        while dialog.animate(0.05) < 1.0 {}
+
+        for [width, height] in SCREENS {
+            let scene = dialog_scene(&dialog, width, height);
+            // The card: the one opaque near-white quad on a panel drawn
+            // entirely in glass.
+            let cards: Vec<&Quad> = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.color[3] > 0.99 && quad.color[0] > 0.8)
+                .collect();
+            assert_eq!(cards.len(), 1, "{width}x{height}: not one card");
+            let card = cards[0];
+            assert!(
+                card.w >= 1.0 && (card.w - card.h).abs() < 0.01,
+                "not square"
+            );
+
+            // Every module is the same whole number of pixels, and there are
+            // as many dark ones as the code has.
+            let modules: Vec<&Quad> = scene
+                .quads
+                .iter()
+                .filter(|quad| {
+                    quad.border <= 0.0
+                        && quad.radius <= 0.0
+                        && quad.w > 0.0
+                        && (quad.w - quad.h).abs() < 0.01
+                        && quad.w < card.w
+                })
+                .collect();
+            let dark = code.dark.iter().filter(|dark| **dark).count();
+            assert_eq!(
+                modules.len(),
+                dark,
+                "{width}x{height}: not one quad per module"
+            );
+            let module = modules[0].w;
+            assert_eq!(module, module.floor(), "a module is {module} pixels wide");
+            for quad in &modules {
+                assert!(
+                    (quad.w - module).abs() < 0.001,
+                    "the modules are not one size"
+                );
+                // And every one of them is on the card rather than beside it.
+                assert!(
+                    quad.x >= card.x
+                        && quad.y >= card.y
+                        && quad.x + quad.w <= card.x + card.w + 0.01
+                        && quad.y + quad.h <= card.y + card.h + 0.01,
+                    "a module fell off the card"
+                );
+            }
+
+            // The card is lighter than every module on it, by a long way:
+            // a reader looks for dark on light and nothing else.
+            for quad in &modules {
+                assert!(
+                    card.color[0] - quad.color[0] > 0.5,
+                    "the code has no contrast to read"
+                );
+            }
+        }
+    }
+
+    /// A field whose contents are shown stands in the same well and on the
+    /// same line as one that hides them, so the panel does not change size
+    /// between asking for an account name and asking for its password.
+    #[test]
+    fn a_shown_field_is_the_same_control_as_a_hidden_one() {
+        assert_eq!(
+            dialog_line_height(&Line::Entry("someone".to_string())),
+            dialog_line_height(&Line::Secret { typed: 7 })
+        );
+
+        let (width, height) = (1920.0, 1080.0);
+        let panel = |line: Line| {
+            let mut dialog = Dialog::default();
+            assert!(dialog.ask(
+                [200.0, 400.0, 380.0, 54.0],
+                None,
+                vec![
+                    Line::Note("Enter your Steam account name.".to_string()),
+                    line
+                ],
+                vec![MenuEntry::new(Command::SteamSubmit, "Next")],
+                0,
+            ));
+            while dialog.animate(0.05) < 1.0 {}
+            dialog
+        };
+
+        let shown = panel(Line::Entry("someone".to_string()));
+        let hidden = panel(Line::Secret { typed: 7 });
+        assert_eq!(
+            dialog_rect(width, height, &shown),
+            dialog_rect(width, height, &hidden)
+        );
+
+        // Unlike the password, this one really does write what was typed:
+        // a code nobody can read back is a code nobody can check.
+        let scene = dialog_scene(&shown, width, height);
+        let said: Vec<&str> = scene
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(said.contains(&"someone"), "{said:?}");
+    }
+
     /// The password field, and the one rule that matters about it: what is
     /// typed is never on the panel. The line carries a count, the drawing turns
     /// that into marks, and no text run appears at all.
@@ -11188,5 +12145,68 @@ mod tests {
                 .all(|text| (text.color[3] - 1.0).abs() < 1e-6),
             "and none of them was dimmed either"
         );
+    }
+
+    /// The bug this replaced, reported off a photograph of a television: the
+    /// panel offering to install a game took every name on the bar with it,
+    /// leaving a screen of unlabelled icons behind a dialog.
+    ///
+    /// A bar label is laid out in a box that runs to the far edge of the
+    /// display and printed at the left of it, so a panel in the middle leaves
+    /// more *box* on its right than there is *label* on its left — and keeping
+    /// whichever end had more room kept the empty one. Both ends survive now,
+    /// so a label is cut where the panel actually is.
+    #[test]
+    fn a_label_the_panel_crosses_keeps_the_end_its_words_are_on() {
+        for [width, height] in SCREENS {
+            let xmb = cross();
+            let dialog = informed([width * 0.22, height * 0.5, 300.0, 120.0]);
+            let panel = dialog_rect(width, height, &dialog);
+
+            // The runs that reach clear across the panel, which are the ones
+            // the old rule got wrong: it is the far end of those that has the
+            // room and the near end that has the words.
+            let straddling: Vec<(String, f32)> = focused(&xmb, width, height, &AllSlots)
+                .texts
+                .iter()
+                .filter(|text| {
+                    behind(text, panel)
+                        && text.x < panel[0]
+                        && text.x + text.max_width > panel[0] + panel[2]
+                })
+                .map(|text| (text.content.clone(), text.x))
+                .collect();
+            assert!(
+                !straddling.is_empty(),
+                "{width}x{height}: no label of this bar reaches across the panel"
+            );
+
+            let mut scene = focused(&xmb, width, height, &AllSlots);
+            recede_behind_dialog(&mut scene, width, height, &dialog, 1.0);
+            for (name, from) in straddling {
+                assert!(
+                    scene.texts.iter().any(|text| {
+                        text.content == name
+                            && text
+                                .clip
+                                .is_some_and(|[x, _, w, _]| x <= from + 0.5 && x + w > from)
+                    }),
+                    "{width}x{height}: {name:?} lost the end its words are printed on"
+                );
+            }
+            // And nothing of the bar is still allowed to print through the
+            // panel, which is what the cutting was for in the first place.
+            for text in &scene.texts {
+                let Some([x, _, w, _]) = text.clip else {
+                    assert!(!behind(text, panel), "{:?} prints through", text.content);
+                    continue;
+                };
+                assert!(
+                    x + w <= panel[0] + 0.5 || x >= panel[0] + panel[2] - 0.5,
+                    "{:?} still draws under the panel",
+                    text.content
+                );
+            }
+        }
     }
 }

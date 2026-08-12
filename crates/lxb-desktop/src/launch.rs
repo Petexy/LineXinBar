@@ -32,6 +32,20 @@ const SETTLE: f32 = 0.12;
 /// How long the splash takes to fade off the application behind it.
 const HANDOVER: f32 = 0.3;
 
+/// How long the splash goes on watching after it has faded away.
+///
+/// It draws nothing in this stretch and costs nothing; what it is for is being
+/// able to come *back*. The hand-over is a bet that the window which just
+/// appeared is the application, and the bet is sometimes lost — a toolkit that
+/// discards its first window, a game that swaps one for a fullscreen one — at
+/// which point the display is the bar again with nothing on it. Without this
+/// there is nothing left to notice that with: the splash has already been
+/// dropped, and the press ends up looking like it failed.
+///
+/// Longer for a game, because the swap can happen well into loading.
+const WATCHING: f32 = 1.5;
+const STEAM_WATCHING: f32 = 8.0;
+
 /// How long to wait for a window before concluding that none is coming.
 ///
 /// Generous, because the alternative failure is worse: a splash torn away
@@ -39,6 +53,22 @@ const HANDOVER: f32 = 0.3;
 /// bar wondering whether their press did anything. A launch that dies is
 /// caught by its process exiting rather than by this.
 const PATIENCE: f32 = 20.0;
+
+/// And how long for a game started through Valve's client.
+///
+/// Minutes, not seconds, and for two reasons. There is no process to watch —
+/// the `steam steam://rungameid/…` that carries the request hands it over and
+/// exits within milliseconds, so the only sign a game is coming is its window
+/// arriving — and a great deal can happen first: the client checks the
+/// installation, applies an update it decided was due, unpacks a shader cache,
+/// builds a Proton prefix on the game's first run, and shows an anti-cheat
+/// installer. Twenty seconds of that is normal and none of it is failure.
+///
+/// The cost of being wrong in this direction is a loading screen somebody
+/// waits at for too long. The cost of being wrong in the other is the shell
+/// abandoning a game that then opens over the bar half a minute later, which
+/// is worse and is not recoverable.
+const STEAM_PATIENCE: f32 = 240.0;
 
 /// Why the splash stopped waiting — which decides nothing about the drawing,
 /// only what gets said in the log.
@@ -66,7 +96,26 @@ pub struct Launch {
     pub from: [f32; 4],
     /// Its process, so a launch that dies takes its splash with it.
     pub pid: Option<u32>,
+    /// Whether Valve's client is starting this rather than the shell.
+    ///
+    /// It changes two things and nothing else: how long to wait, and that
+    /// there is no process whose death means the launch failed. The `steam`
+    /// that carries the request exits at once and the game is a child of the
+    /// client, so liveness says nothing here and only the window counts.
+    through_steam: bool,
+    /// When the press was answered. The panel's own animation is measured from
+    /// this and nothing moves it, because it is the moment the user acted.
     started: Instant,
+    /// And when the wait for a window began, which is not the same moment.
+    ///
+    /// Two clocks because they answer two questions. A game going through
+    /// Valve's client cannot be asked for until the client is up, so the
+    /// patience for its window has to start when it was *asked for* rather
+    /// than when the button was pressed — otherwise most of a cold client's
+    /// minute is spent out of the splash's four. Measuring the animation from
+    /// the same clock is what made the panel grow out of its tile twice: the
+    /// press opened it, and the hand-over to Steam opened it again.
+    waiting_since: Instant,
     /// The windows already on that display when it started. Anything outside
     /// this set is the application arriving.
     known: Vec<u32>,
@@ -104,11 +153,47 @@ impl Launch {
             panel,
             from,
             pid,
+            through_steam: false,
             started: now,
+            waiting_since: now,
             known: before.windows.to_vec(),
             foreground: before.foreground.to_string(),
             arrived: None,
         }
+    }
+
+    /// Mark this as a game Valve's client is starting.
+    ///
+    /// The splash then waits [`STEAM_PATIENCE`] rather than [`PATIENCE`], and
+    /// stops treating "no process" as "it died" — there is no process of ours
+    /// to have died.
+    pub fn through_steam(mut self) -> Self {
+        self.through_steam = true;
+        self
+    }
+
+    /// The same, for a game Valve's client has just been asked to start.
+    ///
+    /// There is no pid: the game will be the client's child and this shell
+    /// never sees it. What matters is the clock — the time spent starting and
+    /// signing in the client is not the game failing to appear, and on a cold
+    /// client that is most of a minute of the patience already gone.
+    ///
+    /// Only the patience. The panel on screen is in the middle of its own
+    /// opening, or long finished with it, and is not disturbed: this happens
+    /// while the user is watching, and a splash that started growing out of its
+    /// tile for a second time would read as a second application opening.
+    pub fn now_starting_through_steam(&mut self, now: Instant) {
+        self.waiting_since = now;
+    }
+
+    /// Whether a game started through Valve's client never appeared.
+    ///
+    /// Only [`Arrival::GaveUp`] counts, and only for a Steam launch: a launch
+    /// of ours that dies is caught by its process going away, and this one has
+    /// no process of ours to watch.
+    pub fn steam_never_appeared(&self) -> bool {
+        self.through_steam && matches!(self.arrived, Some((_, Arrival::GaveUp)))
     }
 
     /// Bring the splash up to date with what is on its display. Called once a
@@ -121,17 +206,44 @@ impl Launch {
         foreground: &str,
         alive: bool,
     ) -> Option<Arrival> {
-        if self.arrived.is_some() {
+        if let Some((_, how)) = self.arrived {
+            // It handed over to something that is no longer there. A window
+            // that comes and goes again is not the application arriving: X11
+            // toolkits build one window, throw it away and build the one they
+            // meant, and Valve's client is full of windows that exist for a
+            // moment — so handing the screen over on the first of them and
+            // never looking again leaves the user on the bar, with no splash
+            // and no game, wondering whether their press did anything.
+            //
+            // Only for the two arrivals that are claims about what is on the
+            // screen. A launch that died or ran out of patience has ended and
+            // does not un-end.
+            let vanished = matches!(how, Arrival::Window | Arrival::Raised)
+                && foreground.is_empty()
+                && !windows.iter().any(|id| !self.known.contains(id));
+            if vanished {
+                tracing::debug!(app = %self.name, "what the splash handed over to has gone again");
+                self.arrived = None;
+            }
             return None;
         }
-        let waited = now.duration_since(self.started).as_secs_f32();
+        let waited = now.duration_since(self.waiting_since).as_secs_f32();
+        let patience = if self.through_steam {
+            STEAM_PATIENCE
+        } else {
+            PATIENCE
+        };
         let how = if windows.iter().any(|id| !self.known.contains(id)) {
             Arrival::Window
         } else if !foreground.is_empty() && foreground != self.foreground {
             Arrival::Raised
-        } else if !alive {
+        } else if !alive && !self.through_steam {
+            // Not for a Steam launch. The process that carried the request
+            // exits within milliseconds of being started — it has done its
+            // whole job by then — and reading that as the game dying would
+            // take the splash away before the game had begun to load.
             Arrival::Gone
-        } else if waited >= PATIENCE {
+        } else if waited >= patience {
             Arrival::GaveUp
         } else {
             return None;
@@ -167,9 +279,36 @@ impl Launch {
         self.arrived.is_none()
     }
 
-    /// Nothing left to draw.
+    /// Whether there is anything on the screen for this. False through the
+    /// stretch where it has faded out but is still watching, which is when the
+    /// display it is on has no reason to keep drawing for it.
+    pub fn drawing(&self, now: Instant) -> bool {
+        self.fade(now) > 0.0
+    }
+
+    /// Nothing left to draw, and nothing left to change its mind about.
+    ///
+    /// Faded out is not enough. For [`WATCHING`] afterwards this stays alive
+    /// with nothing on the screen, so that a hand-over to a window which then
+    /// goes away can be taken back — see [`Self::advance`].
     pub fn finished(&self, now: Instant) -> bool {
-        self.fade(now) <= 0.0
+        let Some((at, how)) = self.arrived else {
+            return false;
+        };
+        if self.fade(now) > 0.0 {
+            return false;
+        }
+        // A launch that ended because nothing was ever coming has nothing to
+        // watch for.
+        if matches!(how, Arrival::Gone | Arrival::GaveUp) {
+            return true;
+        }
+        let watching = if self.through_steam {
+            STEAM_WATCHING
+        } else {
+            WATCHING
+        };
+        now.duration_since(at).as_secs_f32() >= watching
     }
 }
 
@@ -233,7 +372,84 @@ mod tests {
         assert_eq!(splash.fade(at(t0, 1.0)), 1.0, "it holds first");
         let fading = splash.fade(at(t0, 1.0 + SETTLE + HANDOVER * 0.5));
         assert!(fading > 0.0 && fading < 1.0);
-        assert!(splash.finished(at(t0, 1.0 + SETTLE + HANDOVER)));
+
+        // Faded off, and so drawing nothing — but not done with: it goes on
+        // watching for a moment in case what it handed over to goes away.
+        let faded = at(t0, 1.0 + SETTLE + HANDOVER);
+        assert!(!splash.drawing(faded));
+        assert!(!splash.finished(faded));
+        assert!(splash.finished(at(t0, 1.0 + WATCHING + 1.0)));
+    }
+
+    /// The hand-over is a bet that the window which appeared is the
+    /// application, and it is sometimes lost: a toolkit throws its first
+    /// window away and builds the one it meant, a game swaps its window for a
+    /// fullscreen one. The display is the bare bar in between.
+    ///
+    /// So the splash comes back rather than leaving the user looking at it.
+    /// This is the whole reason it outlives its own fade.
+    #[test]
+    fn a_window_that_goes_away_again_brings_the_splash_back() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0);
+
+        assert_eq!(
+            splash.advance(at(t0, 1.0), &[7, 9], "", true),
+            Some(Arrival::Window)
+        );
+        let faded = at(t0, 1.0 + SETTLE + HANDOVER);
+        assert!(!splash.drawing(faded), "it has handed the screen over");
+
+        // And the display is empty again: the window it handed over to has
+        // gone and nothing took its place.
+        assert_eq!(splash.advance(faded, &[7], "", true), None);
+        assert!(splash.waiting(), "it is waiting for the application again");
+        assert_eq!(splash.fade(faded), 1.0, "and is back on the screen");
+        assert!(!splash.finished(faded));
+
+        // The real window, second time round, is an arrival like any other.
+        assert_eq!(
+            splash.advance(at(t0, 3.0), &[7, 11], "", true),
+            Some(Arrival::Window)
+        );
+    }
+
+    /// It only comes back for an empty display. A game that swaps which window
+    /// it is showing, or one whose foreground the compositor renames, has not
+    /// gone anywhere and must not be interrupted by a loading screen.
+    #[test]
+    fn a_display_that_still_has_something_on_it_keeps_the_screen() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0);
+        splash.advance(at(t0, 1.0), &[7, 9], "", true);
+        let faded = at(t0, 1.0 + SETTLE + HANDOVER);
+
+        // A different new window, but still a new window.
+        assert_eq!(splash.advance(faded, &[7, 11], "", true), None);
+        assert!(!splash.waiting(), "it has not gone back to waiting");
+
+        // Nothing new, but something named in front — an application that
+        // raised what it already had.
+        let mut splash = launch(t0);
+        splash.advance(at(t0, 1.0), &[7, 9], "", true);
+        assert_eq!(splash.advance(faded, &[7], "Celeste", true), None);
+        assert!(!splash.waiting());
+    }
+
+    /// A launch that ended because nothing was ever coming does not un-end.
+    /// There is no window to lose, and a splash that came back would be
+    /// waiting for something already known not to exist.
+    #[test]
+    fn a_launch_that_gave_up_stays_given_up() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0);
+        assert_eq!(
+            splash.advance(at(t0, PATIENCE + 1.0), &[7], "", true),
+            Some(Arrival::GaveUp)
+        );
+        assert_eq!(splash.advance(at(t0, PATIENCE + 1.1), &[7], "", true), None);
+        assert!(!splash.waiting(), "it is not waiting for anything now");
+        assert!(splash.finished(at(t0, PATIENCE + 1.0 + SETTLE + HANDOVER)));
     }
 
     /// An application that was already running opens no second window; it
@@ -260,6 +476,82 @@ mod tests {
             Some(Arrival::Gone)
         );
         assert!(splash.finished(at(t0, 0.5 + SETTLE + HANDOVER)));
+        assert!(!splash.steam_never_appeared());
+    }
+
+    /// A game started through Valve's client has no process of ours, and the
+    /// one that carried the request exits at once. Reading that as the game
+    /// dying would take the splash away before the game had begun to load.
+    #[test]
+    fn a_steam_launch_is_not_dead_merely_because_nothing_of_ours_is_running() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0).through_steam();
+
+        assert_eq!(splash.advance(at(t0, 0.5), &[7], "", false), None);
+        assert_eq!(splash.advance(at(t0, 30.0), &[7], "", false), None);
+        assert!(splash.waiting(), "the splash gave up on a live launch");
+
+        // And the window still hands the screen over, exactly as it would.
+        assert_eq!(
+            splash.advance(at(t0, 45.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+        assert!(!splash.steam_never_appeared());
+    }
+
+    /// It waits far longer than an ordinary launch: the client may update the
+    /// game, build a Proton prefix or unpack a shader cache first, and none of
+    /// that is failure. But it does not wait for ever.
+    #[test]
+    fn a_steam_launch_waits_minutes_and_then_says_so() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0).through_steam();
+
+        assert_eq!(
+            splash.advance(at(t0, PATIENCE + 1.0), &[7], "", true),
+            None,
+            "it gave up at an ordinary launch's patience"
+        );
+        assert_eq!(
+            splash.advance(at(t0, STEAM_PATIENCE), &[7], "", true),
+            Some(Arrival::GaveUp)
+        );
+        assert!(
+            splash.steam_never_appeared(),
+            "nothing will tell the user their press went nowhere"
+        );
+    }
+
+    /// The press opens the panel once, and only once. A game going through
+    /// Valve's client is asked for a second time — after the client is up —
+    /// and that has to move the patience without touching what is on screen.
+    /// Measuring both from one clock made the panel grow out of its tile
+    /// again, which reads as a second application opening.
+    #[test]
+    fn handing_the_game_over_does_not_open_the_panel_a_second_time() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0).through_steam();
+        assert_eq!(splash.open(at(t0, OPEN)), 1.0);
+
+        // Four seconds in, the client is up and the game is asked for.
+        splash.now_starting_through_steam(at(t0, 4.0));
+        assert_eq!(
+            splash.open(at(t0, 4.0)),
+            1.0,
+            "the panel grew out of its tile a second time"
+        );
+        assert_eq!(splash.open(at(t0, 4.0 + OPEN * 0.5)), 1.0);
+
+        // And the wait for the window now runs from when it was asked for,
+        // which is the whole reason there are two clocks.
+        assert_eq!(
+            splash.advance(at(t0, 4.0 + STEAM_PATIENCE - 1.0), &[7], "", true),
+            None
+        );
+        assert_eq!(
+            splash.advance(at(t0, 4.0 + STEAM_PATIENCE), &[7], "", true),
+            Some(Arrival::GaveUp)
+        );
     }
 
     /// And one that neither dies nor appears is eventually let go, rather than

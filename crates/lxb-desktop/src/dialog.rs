@@ -65,6 +65,32 @@ pub enum Line {
     /// is actually typed stays in a [`crate::secret::Secret`], which is the
     /// only thing in the shell built to hold one.
     Secret { typed: usize },
+    /// A field being typed into whose contents are *not* a secret — an account
+    /// name, a code from an email — drawn as the same well with the characters
+    /// in it.
+    ///
+    /// The text rather than a count, and that is the whole difference from
+    /// [`Line::Secret`]: a code that could not be read back is a code nobody
+    /// can check they typed correctly, and a person entering an account name
+    /// on a television with a thumbstick needs to see it more than anyone.
+    Entry(String),
+    /// The code the Steam app on a phone photographs, as the squares it is
+    /// made of.
+    ///
+    /// Carried as the grid rather than as a picture: the shell draws
+    /// everything as quads, so a module is a quad and nothing is rasterised,
+    /// scaled or uploaded for it. How large a module is drawn is the panel's
+    /// business — see [`crate::ui`] — because what makes a code readable to a
+    /// camera is the module being a whole number of pixels.
+    Qr(lxb_steam::qr::Code),
+    /// Something is happening elsewhere and there is nothing to show for it
+    /// yet: a row of lights, moving.
+    ///
+    /// A line rather than a spinner drawn over the panel, because it stands in
+    /// a place — where the code will be, where the answer will be — and a
+    /// panel that grew by the height of a QR code a moment after it opened
+    /// would be the shell moving the buttons out from under somebody's thumb.
+    Waiting,
     /// A hairline, where one band of the panel gives way to the next. Drawn
     /// rather than implied by a gap, because two of these panels are a list of
     /// facts and a list is easier to read against a rule than against air.

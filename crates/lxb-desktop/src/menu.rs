@@ -153,6 +153,90 @@ pub enum Command {
     Sort,
     /// List it in this one.
     SortBy(crate::media::Sort),
+    /// Raise the panel that signs somebody in to Steam, on its first question.
+    ///
+    /// Also what the Try again row of a failed sign-in is: starting over is
+    /// the same thing as starting, and a second name for it would be a second
+    /// place to keep the same list of ways in.
+    SteamSignIn,
+    /// Sign in by photographing a code, or by typing an account name and a
+    /// password. Two commands rather than one carrying a choice, for the
+    /// reason the two display rows are two commands: they are rows the user
+    /// picked by name, and they lead to different panels.
+    SteamWithQr,
+    SteamWithPassword,
+    /// Hand over whatever the sign-in panel is asking for — an account name, a
+    /// password, a Steam Guard code.
+    ///
+    /// One command for all three, unlike [`Command::SubmitPassword`] and
+    /// [`Command::Authenticate`], which are deliberately separate because they
+    /// hand what was typed to different programs. This one has a single
+    /// destination: the sign-in that raised the panel. Which question is being
+    /// answered is which stage that sign-in is on, and there is nowhere else
+    /// an answer could go — see [`crate::steam::Steam::submit`].
+    SteamSubmit,
+    /// Give up on a sign-in that is under way.
+    SteamCancel,
+    /// Give up the stored session, so this machine stops being signed in.
+    SteamSignOut,
+    /// Ask Steam for the library again, now.
+    SteamRefresh,
+    /// Ask what order the Steam column should be listed in, and list it in this
+    /// one.
+    ///
+    /// The pair [`Command::Sort`] and [`Command::SortBy`] are, doing the same
+    /// two things one column further along the bar — and deliberately not those
+    /// two commands with a wider argument. What is being ordered is a library
+    /// of games rather than a shelf of files: the orders are different orders,
+    /// they are written down under a different key, and the one thing the two
+    /// have in common is the word on the row. A single pair would have to ask,
+    /// at the moment it was carried out, which kind of column raised it — which
+    /// is the question having two names already answers.
+    SteamSort,
+    SteamSortBy(lxb_steam::library::Sort),
+    /// Fetch a game the account owns and this machine does not have.
+    ///
+    /// Carries the app rather than acting on whatever is selected, because the
+    /// answer arrives after a round trip and the selection may have moved by
+    /// then — and because the same command is offered from a dialog, where
+    /// there is no selection to speak of.
+    SteamInstall(u32),
+    /// Stop fetching one, and take away what had arrived. There is no
+    /// resuming, so pressing Install again starts over.
+    SteamStopInstalling(u32),
+    /// Hand one game's whole install to Steam's own window.
+    ///
+    /// Offered only after the silent install has come back saying the game
+    /// wants something from the person — an agreement to accept, most often —
+    /// which is the one thing this shell will not answer on anybody's behalf.
+    /// Carries the app because it is offered from a dialog that may be
+    /// answered long after the cursor has moved on.
+    SteamInstallWithSteam(u32),
+    /// Ask whether to take one game off the disk.
+    ///
+    /// Carries the app for the reason [`Command::SteamInstall`] does: it is
+    /// offered from a dialog as well as from the menu, and by the time it is
+    /// pressed there the selection is not what the answer is about.
+    SteamUninstall(u32),
+    /// Take it off, the question having been answered.
+    ///
+    /// Deliberately a second command rather than the same one twice. Nothing
+    /// past this point asks anything — Valve's client is told not to put its
+    /// own confirmation up, which is the whole point — so this is the press
+    /// that deletes a game, and it exists only on the panel that asked.
+    SteamUninstallNow(u32),
+    /// Do one thing to the Steam title the menu is about — check it, hand its
+    /// install over — or bring up the Steam client itself.
+    ///
+    /// One command carrying which, rather than one command each, because
+    /// unlike the display rows these are not three different journeys: every
+    /// one of them is the same `steam:` URL handed to the same client, ends in
+    /// a window of the client's own, and so needs sight given back first. What
+    /// the row says is the only thing that differs. The title itself is not in
+    /// the command, for the reason [`Command::Uninstall`] does not carry one:
+    /// the menu is about whatever was selected when it was raised, and the
+    /// shell can look that up again.
+    SteamDo(lxb_steam::Doing),
     /// Put the menu away and do nothing else. The row that says so out loud,
     /// for a user who has opened the menu and changed their mind; `B` does the
     /// same thing and is not discoverable.
@@ -205,8 +289,14 @@ pub struct Entry {
     /// use one: a control drawn as available that the selection then refuses to
     /// stop on is worse than either failure on its own.
     pub enabled: bool,
-    /// Whether there is no coming back from choosing it. Drawn warmer, so the
-    /// irreversible row is never picked by muscle memory alone.
+    /// Whether there is no coming back from choosing it, or from where it
+    /// leads. The light that arrives on it is warm instead of the accent's, so
+    /// the irreversible row is never picked by muscle memory alone.
+    ///
+    /// The light and nothing else: the label is the same white as every other
+    /// row's. A warm label was tried and is exactly wrong here — it is a dim
+    /// red laid on the panel's dark glass, so the row the user most needs to
+    /// read is the one they cannot.
     pub grave: bool,
     /// Whether it is the yes of a question that destroys something.
     ///

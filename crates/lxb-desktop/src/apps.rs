@@ -138,6 +138,65 @@ pub enum Entry {
     /// and it sits where anything standing over a list sits — at the top of it.
     /// Nothing new had to be learnt to find it.
     Search(Search),
+    /// Steam itself, at the head of the Games column: the way in to somebody's
+    /// library, and afterwards the way back out of it.
+    ///
+    /// Not an [`App`] wearing Steam's name, although a machine with Steam
+    /// installed does have a `.desktop` file for it. What that row would do is
+    /// start a program; what this one does is sign an *account* in, which is
+    /// something the shell holds and the desktop entry knows nothing about. So
+    /// the two are not the same row, and where both would exist this one takes
+    /// the other's place — see [`offer_steam`].
+    Steam(Service),
+    /// One title in somebody's Steam library.
+    ///
+    /// Its own kind of row for the reason a file of the user's own is: nothing
+    /// on this machine installed it, no `.desktop` file describes it, the
+    /// things that can be done to it are Steam's rather than the package
+    /// manager's, and half of them are not on the disk at all. What it shares
+    /// with an application is only that pressing it starts something.
+    Game(Game),
+}
+
+/// The Steam row, as the head of the Games column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Service {
+    /// The account that is signed in, if one is. What tells the press what to
+    /// do: sign in, or step over to the column that signing in built.
+    pub account: Option<String>,
+    /// The line under the name, which is the account or the offer.
+    comment: String,
+}
+
+impl Service {
+    fn new(account: Option<String>) -> Service {
+        Service {
+            comment: match account.as_deref() {
+                Some(account) => format!("Signed in as {account}"),
+                None => "Sign in to play your Steam library here".to_string(),
+            },
+            account,
+        }
+    }
+}
+
+/// One title in the Steam column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Game {
+    pub app_id: u32,
+    pub name: String,
+    /// What goes under the name: whether it is here, how big it is, how long
+    /// it has been played. Built where the library is, because that is where
+    /// the numbers are.
+    pub note: String,
+    /// Whether it is on the disk and can be started right now.
+    pub installed: bool,
+    /// Whether Steam is fetching it at this moment.
+    pub updating: bool,
+    /// Whether there is a Valve client on this machine to start it with.
+    /// Without one, nothing in the Steam column can be played or fetched, and
+    /// the row says so rather than doing nothing.
+    pub steam_client: bool,
 }
 
 /// The field at the head of a shelf, or the row beneath it that clears the
@@ -281,10 +340,14 @@ pub struct Category {
 pub const SHELL_SETTINGS: (&str, &str, &str) =
     ("settings", "Settings", crate::icons::CATEGORY_SETTINGS);
 
-/// The two columns that hold something the shell found rather than something
+/// The columns that hold something the shell found rather than something
 /// installed, and are therefore named in more than one place.
 const MULTIMEDIA: &str = "multimedia";
 const GRAPHICS: &str = "graphics";
+/// Games is here for a different reason from the other two: nothing is
+/// *found* for it, but the Steam row goes at its head whether or not a single
+/// game is installed, so the column has to be nameable from outside the table.
+const GAMES: &str = "games";
 
 /// Where installed applications go, in XMB order.
 ///
@@ -323,7 +386,7 @@ const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
         crate::icons::CATEGORY_OFFICE,
         &["Office"],
     ),
-    ("games", "Games", crate::icons::CATEGORY_GAMES, &["Game"]),
+    (GAMES, "Games", crate::icons::CATEGORY_GAMES, &["Game"]),
     (
         "development",
         "Development",
@@ -632,6 +695,136 @@ pub fn forget_media(categories: &mut [Category], path: &std::path::Path) -> bool
     false
 }
 
+/// The column somebody's Steam library hangs in.
+///
+/// Deliberately not part of [`CATEGORY_TABLE`], for the reason the shell's own
+/// Settings column is not: nothing on disk is classified into it. It is a
+/// consequence of an account being signed in, and it goes away again when that
+/// account does.
+const STEAM: (&str, &str, &str) = ("steam", "Steam", crate::icons::CATEGORY_STEAM);
+
+/// What that column is called on the bar, for the one thing outside this
+/// module that has to find it: pressing the Steam row takes the display to it.
+pub fn steam_column() -> &'static str {
+    STEAM.0
+}
+
+/// And what it is called on screen, for the panel that asks what order to list
+/// it in — the column and not the game the menu was raised over, because what
+/// is being ordered is the whole library.
+pub fn steam_title() -> &'static str {
+    STEAM.1
+}
+
+/// Put the Steam row at the head of the Games column, or take it away.
+///
+/// `account` is who is signed in, if anybody. Returns where a column had to be
+/// *made* — a machine with no game installed has no Games column, and the
+/// offer to sign in to Steam is enough to earn it one, because from that row
+/// the whole library is one press away.
+///
+/// Any `.desktop` entry for the Steam client itself is taken out of the column
+/// as this goes in. Two rows called Steam, one starting a program and one
+/// signing an account in, is the kind of thing a user has to press to tell
+/// apart; and of the two this is the one that leads somewhere, since the
+/// client is still one row of the menu raised on it away.
+pub fn offer_steam(categories: &mut Vec<Category>, account: Option<String>) -> Shifted {
+    let mut shifted = Shifted::default();
+
+    let at = match categories.iter().position(|column| column.id == GAMES) {
+        Some(at) => at,
+        None => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| *own == GAMES)
+                .expect("the Games column is in the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: Vec::new(),
+                },
+            );
+            shifted.added = Some(at);
+            at
+        }
+    };
+
+    let column = &mut categories[at];
+    column.entries.retain(|entry| {
+        // The client's own entry, and the row this is replacing, if it is
+        // already there — the row is rebuilt rather than edited, because what
+        // it says is built from the account and there is nothing else on it.
+        !matches!(entry, Entry::Steam(_))
+            && !entry.app().is_some_and(|app| app.owns_window("steam"))
+    });
+    // At the head of the column, above the applications: it is the way in to
+    // a whole other column, and a way in belongs where the eye lands.
+    column
+        .entries
+        .insert(0, Entry::Steam(Service::new(account)));
+    shifted
+}
+
+/// Hang somebody's Steam library in a column of its own, or take the column
+/// away when there is no longer one to hang.
+///
+/// The rows arrive already in the order they go in — installed first, each
+/// half alphabetical — because that ordering belongs to the library and not to
+/// the bar; see [`lxb_steam::library::sorted`].
+///
+/// Returns what this did to the shape of the bar, because every display's
+/// cursor is standing in it.
+pub fn shelve_steam(categories: &mut Vec<Category>, games: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let standing = categories.iter().position(|column| column.id == STEAM.0);
+
+    match (standing, games.is_empty()) {
+        // Nothing to show and no column showing it: the ordinary state of a
+        // machine nobody has signed in on.
+        (None, true) => {}
+        // Signed out, or a library that has become empty. The column goes with
+        // it rather than standing there empty — a column with nothing in it is
+        // dead space to scroll past, which is the same rule every scanned
+        // column is kept or dropped by.
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = games,
+        (None, false) => {
+            let (id, title, icon) = STEAM;
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: games,
+                },
+            );
+            shifted.added = Some(at);
+        }
+    }
+    shifted
+}
+
+/// What putting a column on the bar, or taking one off it, disturbed.
+///
+/// Never both at once: each of the two functions that returns one of these
+/// does one thing to the bar. Two fields rather than a signed number because
+/// the two are different events for a cursor — one is a column that has moved
+/// under it and one is a column that may have been *under* it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Shifted {
+    pub added: Option<usize>,
+    pub removed: Option<usize>,
+}
+
 /// What hanging a shelf on the bar disturbed.
 #[derive(Debug, Default)]
 pub struct Hung {
@@ -651,12 +844,28 @@ pub struct Hung {
 /// Settings column is not in the table and is therefore never landed in front
 /// of, which is the whole of what it needs from this.
 fn column_place(categories: &[Category], id: &str) -> usize {
-    let rank = |id: &str| CATEGORY_TABLE.iter().position(|(own, ..)| *own == id);
-    let mine = rank(id).unwrap_or_default();
+    let mine = rank(id);
     categories
         .iter()
-        .position(|column| rank(column.id).is_some_and(|other| other > mine))
+        .position(|column| rank(column.id).is_some_and(|other| other > mine.unwrap_or_default()))
         .unwrap_or(categories.len())
+}
+
+/// How far along the bar a column belongs, in half-steps.
+///
+/// The table's own order, doubled, so that a column which is not in the table
+/// can sit *between* two that are without either of them having to move.
+/// There is exactly one such column: Steam, which belongs immediately after
+/// Games because that is what it is a library of — a person who has just been
+/// looking at what is installed and steps right lands in what they own.
+fn rank(id: &str) -> Option<usize> {
+    if id == STEAM.0 {
+        return rank(GAMES).map(|games| games + 1);
+    }
+    CATEGORY_TABLE
+        .iter()
+        .position(|(own, ..)| *own == id)
+        .map(|place| place * 2)
 }
 
 impl App {
@@ -766,6 +975,8 @@ impl Entry {
             Entry::Folder(folder) => &folder.title,
             Entry::Choice(choice) => &choice.title,
             Entry::Search(search) => search.label(),
+            Entry::Steam(_) => "Steam",
+            Entry::Game(game) => &game.name,
         }
     }
 
@@ -779,6 +990,8 @@ impl Entry {
             Entry::Folder(folder) => folder.comment.as_deref(),
             Entry::Choice(choice) => choice.comment.as_deref(),
             Entry::Search(search) => Some(&search.note),
+            Entry::Steam(service) => Some(&service.comment),
+            Entry::Game(game) => Some(&game.note),
         }
     }
 
@@ -789,6 +1002,7 @@ impl Entry {
             Entry::Folder(folder) => folder.icon.as_deref(),
             Entry::Choice(choice) => choice.icon.as_deref(),
             Entry::Search(search) => Some(search.icon()),
+            Entry::Steam(_) | Entry::Game(_) => Some(crate::icons::STEAM),
         }
     }
 
@@ -826,6 +1040,23 @@ impl Entry {
         }
     }
 
+    /// The Steam title this row is, if it is one.
+    pub fn game(&self) -> Option<&Game> {
+        match self {
+            Entry::Game(game) => Some(game),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the Steam row itself, and what it knows about the
+    /// account.
+    pub fn service(&self) -> Option<&Service> {
+        match self {
+            Entry::Steam(service) => Some(service),
+            _ => None,
+        }
+    }
+
     /// The file this row stands for, if it stands for one of the user's own.
     pub fn media(&self) -> Option<&crate::media::File> {
         match self {
@@ -849,7 +1080,12 @@ impl Entry {
     /// for a file. A subcategory leads somewhere and a value means something;
     /// neither is a process.
     pub fn starts_something(&self) -> bool {
-        matches!(self, Entry::App(_) | Entry::Media(_))
+        // A game keeps the catalogue meaningful whichever half of the column
+        // it is in. A compatible installed one starts directly; another
+        // answers with its concrete compatibility/install limitation. The
+        // Steam service row itself only raises a panel, which is why the Games
+        // column is separately exempt from being dropped; see `offer_steam`.
+        matches!(self, Entry::App(_) | Entry::Media(_) | Entry::Game(_))
     }
 
     /// The colour this row stands for — see [`Choice::swatch`].
@@ -1145,6 +1381,220 @@ mod tests {
 
     fn parse(raw: &str) -> Option<App> {
         App::parse(raw, Path::new("/tmp/test.desktop"))
+    }
+
+    // --- Steam --------------------------------------------------------------
+
+    /// One made-up title, as the shell holds it.
+    fn game(app_id: u32, name: &str, installed: bool) -> Entry {
+        Entry::Game(Game {
+            app_id,
+            name: name.to_string(),
+            note: if installed {
+                "Installed"
+            } else {
+                "Not installed"
+            }
+            .to_string(),
+            installed,
+            updating: false,
+            steam_client: true,
+        })
+    }
+
+    /// A catalogue with one application in the Games column, and one in a
+    /// column after it, so that where things land can be seen.
+    fn catalogue() -> Vec<Category> {
+        assemble(vec![
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=A Puzzle\nExec=puzzle\nCategories=Game;\n",
+                Path::new("/usr/share/applications/puzzle.desktop"),
+            )
+            .expect("a well-formed entry"),
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=An Editor\nExec=edit\nCategories=Development;\n",
+                Path::new("/usr/share/applications/edit.desktop"),
+            )
+            .expect("a well-formed entry"),
+        ])
+    }
+
+    fn column<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category> {
+        categories.iter().find(|column| column.id == id)
+    }
+
+    /// The Steam row goes at the head of the Games column, and says which
+    /// account it is about.
+    #[test]
+    fn the_steam_row_stands_at_the_head_of_games() {
+        let mut categories = catalogue();
+        assert_eq!(offer_steam(&mut categories, None), Shifted::default());
+
+        let games = column(&categories, GAMES).expect("the Games column");
+        assert!(matches!(games.entries.first(), Some(Entry::Steam(_))));
+        assert_eq!(games.entries[0].title(), "Steam");
+        assert_eq!(
+            games.entries[0].comment(),
+            Some("Sign in to play your Steam library here")
+        );
+        assert_eq!(
+            games.entries[1].title(),
+            "A Puzzle",
+            "the row went in above"
+        );
+
+        // Signed in, the same row says whose library it leads to — and there
+        // is still only one of it.
+        offer_steam(&mut categories, Some("someone".to_string()));
+        let games = column(&categories, GAMES).expect("the Games column");
+        assert_eq!(games.entries[0].comment(), Some("Signed in as someone"));
+        assert_eq!(
+            games
+                .entries
+                .iter()
+                .filter(|row| row.service().is_some())
+                .count(),
+            1
+        );
+    }
+
+    /// A machine with no game installed has no Games column to put the row in,
+    /// and the offer to sign in is enough to earn it one: the whole library is
+    /// one press from that row.
+    #[test]
+    fn the_row_earns_games_a_column_on_a_machine_with_no_games() {
+        let mut categories = assemble(vec![App::parse(
+            "[Desktop Entry]\nType=Application\nName=An Editor\nExec=edit\nCategories=Development;\n",
+            Path::new("/usr/share/applications/edit.desktop"),
+        )
+        .expect("a well-formed entry")]);
+        assert!(column(&categories, GAMES).is_none(), "nothing to put in it");
+
+        let shifted = offer_steam(&mut categories, None);
+        let at = shifted.added.expect("a column was made");
+        assert_eq!(categories[at].id, GAMES);
+        assert!(
+            at < categories
+                .iter()
+                .position(|c| c.id == "development")
+                .unwrap(),
+            "the column landed out of the bar's order"
+        );
+    }
+
+    /// Where a `.desktop` entry for the Steam client exists, this row takes
+    /// its place. Two rows called Steam — one starting a program, one signing
+    /// an account in — is something a user would have to press to tell apart.
+    #[test]
+    fn the_row_replaces_the_steam_clients_own_entry() {
+        let mut categories = assemble(vec![
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=Steam\nExec=/usr/bin/steam %U\nCategories=Game;\n",
+                Path::new("/usr/share/applications/steam.desktop"),
+            )
+            .expect("a well-formed entry"),
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=Steam (Runtime)\nExec=steam-runtime\nCategories=Game;\n",
+                Path::new("/usr/share/applications/steam-runtime.desktop"),
+            )
+            .expect("a well-formed entry"),
+        ]);
+        offer_steam(&mut categories, None);
+
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(
+            rows,
+            vec!["Steam", "Steam (Runtime)"],
+            "there are two rows called Steam, or the wrong one went"
+        );
+        assert!(
+            games.entries[0].service().is_some(),
+            "the client's own entry is still on the bar beside this row"
+        );
+        assert!(
+            games.entries[1].app().is_some(),
+            "a different program that happens to start with Steam was taken out"
+        );
+    }
+
+    /// The library becomes a column of its own, immediately after Games —
+    /// which is where somebody who has just looked at what is installed will
+    /// step next.
+    #[test]
+    fn the_library_becomes_the_column_after_games() {
+        let mut categories = catalogue();
+        offer_steam(&mut categories, Some("someone".to_string()));
+
+        let shifted = shelve_steam(
+            &mut categories,
+            vec![game(1, "Installed", true), game(2, "Owned", false)],
+        );
+        let at = shifted.added.expect("a column was made");
+        assert_eq!(shifted.removed, None);
+        assert_eq!(categories[at].id, steam_column());
+        assert_eq!(categories[at].title, "Steam");
+        assert_eq!(categories[at - 1].id, GAMES, "it did not land after Games");
+        assert!(categories[at].has_launchable());
+
+        // A second delivery replaces the rows rather than making a second
+        // column.
+        let shifted = shelve_steam(&mut categories, vec![game(1, "Installed", true)]);
+        assert_eq!(shifted, Shifted::default());
+        assert_eq!(categories[at].entries.len(), 1);
+    }
+
+    /// Signing out takes the column away rather than leaving an empty one to
+    /// scroll past — the same rule every scanned column is kept or dropped by.
+    #[test]
+    fn an_empty_library_has_no_column() {
+        let mut categories = catalogue();
+        offer_steam(&mut categories, Some("someone".to_string()));
+        let at = shelve_steam(&mut categories, vec![game(1, "Installed", true)])
+            .added
+            .expect("a column was made");
+
+        let shifted = shelve_steam(&mut categories, Vec::new());
+        assert_eq!(shifted.removed, Some(at));
+        assert!(column(&categories, steam_column()).is_none());
+
+        // And doing it again is not news.
+        assert_eq!(
+            shelve_steam(&mut categories, Vec::new()),
+            Shifted::default()
+        );
+    }
+
+    /// Both Steam rows are drawn from the shell's own glyphs, so a machine
+    /// with no icon theme still has a column it can read.
+    #[test]
+    fn every_steam_row_wears_a_built_in_glyph() {
+        let mut categories = catalogue();
+        offer_steam(&mut categories, None);
+        shelve_steam(&mut categories, vec![game(1, "Installed", true)]);
+
+        let steam = column(&categories, steam_column()).expect("the Steam column");
+        assert_eq!(steam.icon, crate::icons::CATEGORY_STEAM);
+        assert_eq!(steam.entries[0].icon(), Some(crate::icons::STEAM));
+        let games = column(&categories, GAMES).expect("the Games column");
+        assert_eq!(games.entries[0].icon(), Some(crate::icons::STEAM));
+
+        let built_in: Vec<&str> = crate::icons::BUILTIN
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(built_in.contains(&crate::icons::CATEGORY_STEAM));
+        assert!(built_in.contains(&crate::icons::STEAM));
+    }
+
+    /// A title keeps the catalogue non-empty whichever half of its column it
+    /// is in, while the row that signs in does not pretend to be a title.
+    #[test]
+    fn a_title_starts_something_and_the_service_row_does_not() {
+        assert!(game(1, "Here", true).starts_something());
+        assert!(game(2, "Not here", false).starts_something());
+        assert!(!Entry::Steam(Service::new(None)).starts_something());
+        assert!(!Entry::Steam(Service::new(Some("someone".to_string()))).starts_something());
     }
 
     #[test]

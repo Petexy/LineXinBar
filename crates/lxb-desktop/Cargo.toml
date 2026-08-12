@@ -34,6 +34,10 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # Pinned to the version smithay-client-toolkit uses, so `Keysym` is one type.
 xkbcommon = "0.8"
 lxb-protocol = { path = "../lxb-protocol", features = ["client"] }
+# Signing in to Steam, reading somebody's library, and saying which of it is on
+# this disk. Everything network-facing in this shell is in there and on a
+# worker thread of its own; see `crates/lxb-steam`.
+lxb-steam = { path = "../lxb-steam" }
 
 # GPU rendering.
 # The session's polkit agent, which is the shell's only D-Bus: `polkitd` lives

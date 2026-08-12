@@ -1,0 +1,59 @@
+[package]
+name = "lxb-steam"
+description = "A minimal Steam client: one account, one library, and the games in it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+# A probe is worth having only if it can be made to say what it saw, so the
+# examples can turn the crate's own tracing on with RUST_LOG.
+tracing-subscriber.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+# JSON is the private session file; the middle of Steam's signed refresh token
+# is also decoded only far enough to recover its account id and expiry. The
+# HTTPS authentication messages remain the small hand-written protobuf subset
+# in `protobuf.rs`.
+serde_json = "1"
+
+# A signed-in Steam client is a persistent Connection Manager session, not a
+# sequence of Web API calls. This supplies the CM WebSocket, license list and
+# PICS catalogue protocol used by Steam itself, without starting Valve's GUI.
+steam-cm-protocol = "0.4.1"
+
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+shlex = "1"
+
+# HTTPS, with a TLS stack that needs no system library: this crate has to work
+# on a machine with nothing on it but a kernel and this session. Blocking on
+# purpose — every call it makes is made from the worker thread in `lib.rs`,
+# which has nothing else to do while Steam answers.
+ureq = "3"
+
+# Valve's client is signed in by calling the one method its own login screen
+# calls, which lives in the JavaScript half of it — and the only way in is
+# Chromium's debugger protocol, which is a WebSocket. Blocking, like `ureq`
+# above and for the same reason. No TLS: the only address this ever connects to
+# is the loopback interface of this machine.
+tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+
+# Whether Valve's client is running is asked of the FIFO it holds open, which
+# needs one flag the standard library does not name.
+libc = "0.2"
+
+# The password is encrypted with the account's own RSA key before it leaves the
+# machine, which is a modular exponentiation over a 2048-bit number and needs
+# an integer that wide. Only the public operation is done here; see `rsa.rs`.
+num-bigint = "0.4"
+rand = "0.9"
+
+# The sign-in code the phone photographs. Pure Rust, no image codec: the shell
+# draws the modules itself as quads, so nothing here rasterises anything.
+qrcode = { version = "0.14", default-features = false }
+

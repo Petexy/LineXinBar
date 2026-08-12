@@ -1133,8 +1133,16 @@ impl LxbState {
     }
 
     /// Whether any application window is mapped at all.
+    ///
+    /// One nobody can see does not count. This gates the events the shell
+    /// synthesizes on the seat, and a stick that started moving a pointer
+    /// because Valve's client was running underneath would be aiming at a
+    /// screen with nothing on it.
     fn has_application_window(&self) -> bool {
-        self.lxb.space.elements().any(window_accepts_keyboard_focus)
+        self.lxb
+            .space
+            .elements()
+            .any(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
     }
 
     /// Milliseconds since the compositor started, which is the clock every
@@ -1357,7 +1365,7 @@ impl LxbState {
             return Some(hit);
         }
 
-        if let Some((window, window_loc)) = self.lxb.space.element_under(location) {
+        if let Some((window, window_loc)) = self.window_under(location) {
             if let Some((s, p)) =
                 window.surface_under(location - window_loc.to_f64(), WindowSurfaceType::ALL)
             {
@@ -1366,6 +1374,42 @@ impl LxbState {
         }
 
         layer_hit([WlrLayer::Bottom, WlrLayer::Background])
+    }
+
+    /// The topmost window the pointer is actually over.
+    ///
+    /// `Space::element_under` with one thing taken out of it: a window the
+    /// shell is keeping out of sight is not there to be pointed at, and the
+    /// search carries on *underneath* it rather than stopping. Stopping would
+    /// be the visible difference — a game with one of Valve's invisible
+    /// dialogs over its middle would have a rectangle in it that swallowed
+    /// every click.
+    ///
+    /// The geometry is smithay's own: a window is mapped by the frame the user
+    /// thinks of as the window, and a client drawing its own decorations puts
+    /// that frame inside a larger surface, so the surface starts before the
+    /// mapped location does. That difference is what `render_location` is, and
+    /// input has to subtract it exactly as drawing does.
+    fn window_under(&self, location: Point<f64, Logical>) -> Option<(Window, Point<i32, Logical>)> {
+        use smithay::desktop::space::SpaceElement;
+
+        self.lxb
+            .space
+            .elements()
+            .rev()
+            .filter(|window| !self.lxb.out_of_sight(window))
+            .find_map(|window| {
+                let mapped = self.lxb.space.element_location(window)?;
+                let render_location = mapped - window.geometry().loc;
+                let mut bbox = window.bbox();
+                bbox.loc += render_location;
+                if !bbox.to_f64().contains(location) {
+                    return None;
+                }
+                window
+                    .is_in_input_region(&(location - render_location.to_f64()))
+                    .then(|| (window.clone(), render_location))
+            })
     }
 
     /// The window that currently owns keyboard focus.
@@ -1591,7 +1635,7 @@ impl LxbState {
             .space
             .elements()
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window))
+            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
             .cloned();
         if let Some(window) = topmost {
             self.raise_window(&window, true);
@@ -1617,7 +1661,7 @@ impl LxbState {
             .space
             .elements_for_output(output)
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window))
+            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
             .cloned();
         if let Some(window) = topmost {
             self.raise_window(&window, true);
@@ -1747,7 +1791,7 @@ impl LxbState {
             .space
             .elements_for_output(target)
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window))
+            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
             .cloned();
         if let Some(window) = window {
             self.raise_window(&window, true);
@@ -1790,7 +1834,9 @@ impl LxbState {
             .lxb
             .space
             .elements_for_output(&output)
-            .filter(|window| window_accepts_keyboard_focus(window))
+            .filter(|window| {
+                window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window)
+            })
             .cloned()
             .collect();
         if windows.len() < 2 {

@@ -445,6 +445,47 @@ pub fn media_sort(kind: crate::media::Kind) -> Option<crate::media::Sort> {
     sort
 }
 
+/// What order the Steam column is listed in, by the name the order goes under
+/// in the file.
+///
+/// One order rather than a map like [`MEDIA_SORT`], because there is one Steam
+/// column: a person has one library, and the question "which of these do I want
+/// to see first" is asked of the whole of it. Held here for the reason the
+/// shelves' orders are — the file is built out of the live values whenever
+/// anything is written, so a setting the writer cannot see is one the next
+/// change to anything else drops.
+///
+/// The key rather than the order itself, so that a file naming an order this
+/// shell does not have keeps naming it: a session that read a later version's
+/// setting, changed the accent and wrote the file back would otherwise silently
+/// throw the user's choice away.
+static STEAM_SORT: Mutex<Option<String>> = Mutex::new(None);
+
+/// Write down that the Steam column is listed in this order from now on.
+pub fn remember_steam_sort(sort: lxb_steam::library::Sort) {
+    *STEAM_SORT.lock().unwrap() = Some(sort.key().to_string());
+    save(&stored());
+}
+
+/// What the settings file says the Steam column is listed in, if it says
+/// anything.
+///
+/// Asked once, when the session's Steam is started. An order the shell does not
+/// have is nothing rather than an error — the column comes up installed-first,
+/// which is the answer it has always come up in.
+pub fn steam_sort() -> Option<lxb_steam::library::Sort> {
+    let held = STEAM_SORT.lock().unwrap();
+    let named = held.as_deref()?;
+    let sort = lxb_steam::library::Sort::from_key(named);
+    if sort.is_none() {
+        tracing::warn!(
+            order = named,
+            "the settings name a Steam order this shell does not have"
+        );
+    }
+    sort
+}
+
 /// How loud the shell's own effects and Start music are, and whether they are
 /// silenced.
 ///
@@ -1894,6 +1935,7 @@ pub fn load() {
 /// Split from [`load`] so the file format can be exercised without one.
 fn adopt(stored: Stored) {
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
+    *STEAM_SORT.lock().unwrap() = stored.steam_sort;
 
     // A hand-edited level outside the range the row can reach is clamped
     // rather than refused, for the reason a mistyped mode is dropped rather
@@ -2035,6 +2077,13 @@ struct Stored {
     /// because it is a different question: those say how loud everything the
     /// shell plays is, and this says whether one of the things it plays exists.
     start_music: Option<bool>,
+    /// What order the Steam column is listed in. One key rather than a table
+    /// like `media-sort`, because there is one library.
+    ///
+    /// Above the two maps, and it has to be: TOML puts everything after a table
+    /// header inside that table, so a bare key declared below them would be
+    /// written into `[media-sort]` and read back as a shelf.
+    steam_sort: Option<String>,
     /// One section per display, by connector name. Sorted, so the file does
     /// not reshuffle itself every time it is written.
     display: BTreeMap<String, StoredDisplay>,
@@ -2152,6 +2201,7 @@ fn stored() -> Stored {
         hdr_peak_brightness: Some(inherited.peak_brightness),
         display,
         media_sort: MEDIA_SORT.lock().unwrap().clone(),
+        steam_sort: STEAM_SORT.lock().unwrap().clone(),
     }
 }
 
@@ -2215,6 +2265,15 @@ const PREAMBLE: &str = "\
 # mixer, in the guide overlay. These are the shell's own sounds and nothing
 # else's; what the whole machine comes out at belongs to the sound server, and
 # the volume bar in the same overlay sets it there.
+#
+# steam-sort: what order the Steam column is listed in, chosen from the Sort
+# row of the context menu over any game in it. One key, because there is one
+# library. The orders are: installed-first, name, name-reversed, last-played,
+# play-time-most-first, play-time-least-first, size-largest-first,
+# size-smallest-first. Without it the column is listed installed first, each
+# half by name. An order Steam cannot answer for — sizes on a machine with
+# nothing installed, playtimes an account did not deliver — is greyed out in
+# the menu and ignored here.
 #
 # start-music: whether the Start screen plays its background music, which is
 # Settings > Sounds > Start music. It plays unless this says false. Turning it
@@ -3004,9 +3063,11 @@ mod tests {
                 ("Images".to_string(), "created-newest-first".to_string()),
                 ("Music".to_string(), "type".to_string()),
             ]),
+            steam_sort: Some("last-played".to_string()),
             ..Stored::default()
         };
-        let body = format!("{PREAMBLE}{}", toml::to_string_pretty(&written).unwrap());
+        let written_out = toml::to_string_pretty(&written).unwrap();
+        let body = format!("{PREAMBLE}{written_out}");
         assert_eq!(toml::from_str::<Stored>(&body).unwrap(), written);
         // One section per connector. The name goes in bare where TOML allows
         // it, so the quoting is not pinned here — only that the section is
@@ -3054,8 +3115,24 @@ mod tests {
                 Some(crate::media::Sort::NewestFirst)
             );
             assert_eq!(media_sort(crate::media::Kind::Video), None);
+            // And the one order the Steam column is listed in, which is a bare
+            // key rather than a shelf.
+            assert_eq!(
+                steam_sort(),
+                Some(lxb_steam::library::Sort::RecentlyPlayedFirst)
+            );
         });
         assert!(body.contains("[media-sort]"), "{body}");
+        // Written above both tables, because everything below a table header
+        // belongs to that table: a bare key written after them would come back
+        // as a shelf called `steam-sort`. Against the written file rather than
+        // the whole body, the preamble having a good deal to say about
+        // `[display.NAME]` before any of it is written.
+        let (top, tables) = written_out
+            .split_once("[display.")
+            .expect("the display table");
+        assert!(top.contains("steam-sort = \"last-played\""), "{body}");
+        assert!(!tables.contains("steam-sort"), "{body}");
 
         // An order this shell does not have is ignored rather than refused:
         // the file is one the user is entitled to open and edit.
@@ -3067,9 +3144,15 @@ mod tests {
         with_displays(&[], || {
             adopt(Stored {
                 media_sort: BTreeMap::from([("Music".to_string(), "by vibes".to_string())]),
+                steam_sort: Some("by vibes".to_string()),
                 ..Stored::default()
             });
             assert_eq!(media_sort(crate::media::Kind::Audio), None);
+            assert_eq!(steam_sort(), None);
+            // Ignored, but not thrown away: the next thing that writes the file
+            // must not quietly delete a choice made by a later version of the
+            // shell than this one.
+            assert_eq!(stored().steam_sort.as_deref(), Some("by vibes"));
         });
 
         // A file cut down to nothing still parses, and says nothing.

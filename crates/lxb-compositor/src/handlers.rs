@@ -460,7 +460,11 @@ impl LxbState {
             .map(|g| g.loc)
             .unwrap_or_default();
 
-        let accepts_focus = window_accepts_keyboard_focus(&window);
+        // A window nobody can see must not be given the keyboard, or the user
+        // is typing into something that is not on their screen. It is still
+        // mapped and still configured — it is simply never looked at.
+        let accepts_focus =
+            window_accepts_keyboard_focus(&window) && !self.lxb.out_of_sight(&window);
         if let Some(surface) = window.x11_surface() {
             remember_x11_client_geometry(&window, surface.geometry());
         }
@@ -842,7 +846,11 @@ impl XdgActivationHandler for LxbState {
         surface: WlSurface,
     ) {
         if let Some(window) = self.lxb.window_for_surface(&surface) {
-            if window_accepts_keyboard_focus(&window) {
+            // An application the shell keeps out of sight does not get to ask
+            // for the screen back. Valve's client asks — every time it starts
+            // a game — and granting it would raise the storefront over the
+            // game that was starting.
+            if window_accepts_keyboard_focus(&window) && !self.lxb.out_of_sight(&window) {
                 self.raise_window(&window, true);
                 self.set_window_keyboard_focus(&window);
             }
