@@ -424,6 +424,21 @@ fn logical_size(output: &Output) -> Size<i32, Logical> {
         .to_i32_ceil()
 }
 
+/// The inverse of [`parse_transform`], so an orientation chosen at runtime can
+/// be written back into the same file it would have been read from.
+pub fn transform_name(transform: Transform) -> &'static str {
+    match transform {
+        Transform::Normal => "normal",
+        Transform::_90 => "90",
+        Transform::_180 => "180",
+        Transform::_270 => "270",
+        Transform::Flipped => "flipped",
+        Transform::Flipped90 => "flipped-90",
+        Transform::Flipped180 => "flipped-180",
+        Transform::Flipped270 => "flipped-270",
+    }
+}
+
 fn parse_transform(raw: &str) -> Option<Transform> {
     Some(match raw.trim().to_ascii_lowercase().as_str() {
         "normal" | "0" => Transform::Normal,
@@ -436,6 +451,32 @@ fn parse_transform(raw: &str) -> Option<Transform> {
         "flipped-270" | "flipped270" => Transform::Flipped270,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod transform_names {
+    use super::*;
+
+    /// An orientation chosen at runtime is written back into the file the
+    /// config is read from, so every one of the eight has to come back as
+    /// itself. A name that does not parse is a display that comes up unrotated
+    /// and then turns, which is the modeset this was all meant to remove.
+    #[test]
+    fn every_orientation_survives_being_written_down() {
+        for turn in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let name = transform_name(turn);
+            assert_eq!(parse_transform(name), Some(turn), "{name}");
+        }
+    }
 }
 
 #[cfg(test)]

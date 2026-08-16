@@ -1,0 +1,21 @@
+Package: lxb-compositor
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Section: x11
+Priority: optional
+Depends: @SHLIB_DEPENDS@, dbus, libwayland-client0, libwayland-server0,
+ libwayland-egl1, libegl1, libx11-6, libx11-xcb1, libxcb1, libxcursor1,
+ libxi6, libxkbcommon-x11-0
+Recommends: seatd, xwayland, libgl1-mesa-dri
+Suggests: mesa-vulkan-drivers
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/Petexy/LineXinBar
+Description: Wayland compositor for LineXinBar, usable on its own
+ A small DRM/KMS Wayland compositor that manages every connected display as an
+ independent output, with per-output colour management, HDR and a night light.
+ .
+ This package is the compositor alone: it runs whatever client it is pointed
+ at and assumes nothing about LineXinBar's own shell. That is what lets a
+ display manager depend on it to put a login screen on the hardware without
+ installing a desktop. Install lxb-desktop for the desktop itself.

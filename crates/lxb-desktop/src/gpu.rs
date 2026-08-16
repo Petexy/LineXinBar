@@ -334,6 +334,20 @@ pub const GLOW_SLOT: u32 = 1;
 /// Atlas cells taken by the procedural sprites above; icons start after them.
 const RESERVED_SLOTS: u32 = 2;
 
+/// Cells kept back for icons that are not known until the session is running.
+///
+/// Everything else in the atlas is decided before the first frame: the shell's
+/// own glyphs, and one cell per icon named by anything in the launcher's
+/// catalogue. That covers every picture the shell draws *of its own accord*,
+/// and none of the ones a program hands it — an announcement carries whatever
+/// icon its sender chose, which may be a theme name no installed application
+/// uses, or a file somewhere on the disk.
+///
+/// Two dozen, which is far more than a corner of the screen ever shows at
+/// once and small enough to cost nothing: at a cell each that is under a
+/// megabyte and a half of a texture that already runs to tens.
+const LATE_CELLS: u32 = 24;
+
 /// How many cells a thumbnail spans, per side.
 ///
 /// [`crate::thumbs::SIZE`] over [`CELL`]: a thumbnail is a picture rather than
@@ -353,6 +367,25 @@ const THUMB_CELLS: u32 = crate::thumbs::SIZE.div_ceil(CELL);
 /// cursors can be looking at: a handful of rows either side of each display's
 /// cursor, twice over, on a machine with two screens.
 const THUMB_BLOCKS: u32 = 32;
+
+/// How many cells a game's logo spans, per side.
+///
+/// [`crate::art::LOGO_SIZE`] over [`CELL`], which is five — a band of its own
+/// rather than a corner of the thumbnails' because a logo is two and a half
+/// times the edge of one. It could not be squeezed into a thumbnail block
+/// without being scaled down first, and the whole reason it has a band is that
+/// it is the one picture in this shell drawn at a third of a display across:
+/// what a row's card can hide, a splash cannot.
+const LOGO_CELLS: u32 = crate::art::LOGO_SIZE.div_ceil(CELL);
+
+/// How many logos the atlas holds at once.
+///
+/// The same number as [`HERO_LAYERS`] and for the same reason: a logo is
+/// wanted exactly where a hero is — the game each display's cursor is standing
+/// on — so what has to fit is one per display with the pair most machines have
+/// and a little room over. Four blocks is six megabytes of a texture whose
+/// thumbnail band is already eight.
+const LOGO_BLOCKS: u32 = 4;
 
 /// How many pictures may stand behind a display at once.
 ///
@@ -398,6 +431,11 @@ struct TextKey {
     max_width: u32,
     bold: bool,
     align: TextAlign,
+    /// Part of the key because it changes the shaping: the same words in the
+    /// same box are one line with an ellipsis or three without, depending on
+    /// how many they are allowed. A row growing to be read would otherwise
+    /// keep the cut-off shaping it had while it was one of a column.
+    lines: u8,
 }
 
 impl TextKey {
@@ -409,8 +447,115 @@ impl TextKey {
             max_width: text.max_width.to_bits(),
             bold: text.bold,
             align: text.align,
+            lines: text.lines.max(1),
         }
     }
+}
+
+/// How far a halo reaches out from its letters, as a share of the run's size.
+///
+/// A share rather than a number of pixels because it has to hold at every
+/// scale the shell draws at: a ring a fixed two pixels wide is a heavy outline
+/// on a small label and invisible under a heading.
+///
+/// It was a tenth, on the reasoning that the ring is there to give the letters
+/// an edge to sit against and anything wider would read as a sticker. What that
+/// missed is that an edge is only enough when the thing behind it is *quiet*.
+/// Over the bar's white category icons, coming up through the glass, a stroke's
+/// width of shade is not a background — the letter still sits in a bright
+/// field, and it is the field that has to come down. A wider shadow is a
+/// darker patch of what the eye reads the word against.
+const HALO_RING: f32 = 0.24;
+
+/// How far apart the copies may fall along a ring, in pixels.
+///
+/// The number that makes a radius safe to raise. Copies are spread evenly
+/// round a circle, so the further out a ring is, the further apart they land at
+/// the same count — and once they are further apart than a letter's stroke is
+/// wide, they stop overlapping and the shadow stops being a shadow. It becomes
+/// a row of little copies of the word, which at a tenth of the size was too
+/// small to notice and at a quarter would not be.
+///
+/// So the count follows the radius instead of being fixed, and this is what it
+/// follows: a shade under a pixel and a half apart is one nobody can pick the
+/// dots out of.
+const HALO_SPACING: f32 = 1.3;
+
+/// The fewest copies a ring is ever made of, however tight it is.
+const HALO_MIN_STEPS: usize = 8;
+
+/// The rings, as (how far out, how dark each copy is) — from the one that does
+/// the work out to the faint one that takes the edge off.
+///
+/// More than one ring is the whole difference between a soft shadow and an
+/// outline. A single ring has a hard outer edge at exactly its radius, because
+/// every copy stops there together; the ones further out and fainter leave the
+/// darkness falling off instead of ending. Three now rather than two, because
+/// the gap between two rings is a share of the reach and the reach has more
+/// than doubled — the same two would leave a visible step in the falloff.
+///
+/// The copies overlap, and that is the point — near the letters many of them
+/// cover the same pixel and the shade builds up, further out only one or two
+/// do. What comes out is a gradient nobody had to draw.
+///
+/// The weights are per copy and lower than they were, because a wider ring is
+/// made of more of them: what darkens a pixel is how many copies land on it,
+/// so holding the per-copy figure while the count grows with the radius would
+/// have made the shadow blacker every time it was widened.
+///
+/// The innermost is cut the hardest of the three, and that is deliberate. What
+/// makes a shadow read as *hard* is not how far it reaches but how sharply it
+/// starts: a dark core hugging the letters is an outline with a blur around
+/// it, however soft the outside is. Taking the core down and leaving the
+/// spread nearly alone is what turns the same reach from a stamp into a
+/// shadow, and it costs almost nothing in legibility — the letter's own edge
+/// was never the part doing the work once the reach grew.
+const HALO_RINGS: [(f32, f32); 3] = [(0.34, 0.20), (0.67, 0.13), (1.0, 0.075)];
+
+/// Where the copies that make up a run's halo go, and how dark each one is:
+/// `(dx, dy, opacity)` in the run's own pixels.
+///
+/// The copies are of the run itself, drawn from the shaping it already has, so
+/// the shade is the shape of the letters and not of a box around them. Nothing
+/// here knows what the words are.
+///
+/// `halo` is the finished strength and the only thing that decides it. It used
+/// to be multiplied by the run's own opacity, on the reasoning that a bubble
+/// flying off the display should take its ring with it — true, but it made a
+/// run's ring weaker the softer the run's *colour* was, and a soft colour is
+/// the exact case that needs the most help reading. The second line of a
+/// notification is grey at seven tenths and was getting a seven-tenths ring
+/// where it wanted a stronger one than the white line above it.
+///
+/// So fading is the caller's to do, and a caller with something that fades has
+/// to fade this too. Nothing is drawn at zero, which is what makes that safe.
+fn halo_copies(size: f32, halo: f32) -> Vec<(f32, f32, f32)> {
+    if halo <= 0.0 {
+        return Vec::new();
+    }
+    let reach = size * HALO_RING;
+    let mut copies = Vec::new();
+    for (ring, (spread, weight)) in HALO_RINGS.iter().enumerate() {
+        let radius = reach * spread;
+        // As many as it takes to keep them HALO_SPACING apart at this radius,
+        // never fewer than HALO_MIN_STEPS. This is what lets the reach be
+        // raised without the shadow coming apart into dots.
+        let steps =
+            ((std::f32::consts::TAU * radius / HALO_SPACING).ceil() as usize).max(HALO_MIN_STEPS);
+        let turn = std::f32::consts::TAU / steps as f32;
+        // Each ring started part of a step round from the one inside it, so
+        // that copies at different radii do not line up into spokes.
+        let lead = turn * ring as f32 / HALO_RINGS.len() as f32;
+        for step in 0..steps {
+            let angle = turn * step as f32 + lead;
+            copies.push((
+                radius * angle.cos(),
+                radius * angle.sin(),
+                (halo * weight).clamp(0.0, 1.0),
+            ));
+        }
+    }
+    copies
 }
 
 /// A run of text to draw.
@@ -442,6 +587,53 @@ pub struct Text {
     /// See [`crate::ui::Scene::hide_text_behind`], which is where every one of
     /// these comes from.
     pub clip: Option<[f32; 4]>,
+    /// How strongly the letters are ringed in shade, as an opacity.
+    ///
+    /// Zero — no ring at all — for very nearly every run the shell draws, and
+    /// deliberately so: a label on a panel the shell chose the colour of has
+    /// its contrast decided already, and outlining it would only make it look
+    /// stamped on.
+    ///
+    /// It is for the runs standing on something nobody chose. A pane of glass
+    /// shows what is behind it, so writing on one is legible or not depending
+    /// on what happens to be underneath — over the bar's white category icons
+    /// a line of grey text has nothing to be grey *against*. The ring gives
+    /// each letter its own background, the exact shape of the letter, which is
+    /// the one way to buy contrast without taking a whole rectangle of the
+    /// screen darker.
+    ///
+    /// See [`HALO_RING`] for how it is drawn.
+    pub halo: f32,
+    /// How many lines this run may take before it is cut with an ellipsis.
+    ///
+    /// One for every run in the shell but the one that has grown to be read —
+    /// see [`crate::ui::context_row_growth`]. A label is a label: it names one
+    /// thing, it belongs on one line, and a column of labels that each wrapped
+    /// to their own height would be a list nobody can scan.
+    ///
+    /// The exception is a row somebody has *stopped on*. That row is no longer
+    /// one of a column being scanned, it is the one thing being read, and a
+    /// sentence cut off with an ellipsis is a sentence the user opened the
+    /// panel to see the end of.
+    pub lines: u8,
+}
+
+impl Default for Text {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            x: 0.0,
+            y: 0.0,
+            size: 16.0,
+            color: [1.0; 4],
+            bold: false,
+            max_width: f32::MAX,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+        }
+    }
 }
 
 #[repr(C)]
@@ -615,14 +807,32 @@ pub struct Gpu {
     /// The finished frame, from the texture it was built in onto the display.
     blit_pipeline: wgpu::RenderPipeline,
     globals_layout: wgpu::BindGroupLayout,
+    atlas_layout: wgpu::BindGroupLayout,
+    atlas_sampler: wgpu::Sampler,
     /// One texture and one sampler: what both offscreen passes read, and what
     /// binds the backdrop to the quad pipeline.
     sample_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     atlas_bind_group: wgpu::BindGroup,
 
-    /// Icon name to atlas slot.
+    /// Icon name to atlas slot, as decided before the first frame.
     slots: HashMap<String, u32>,
+    /// The same for icons that arrived with an announcement — see
+    /// [`LATE_CELLS`] — and which cell each is in, in band order.
+    ///
+    /// Two maps rather than one because they are emptied on different terms:
+    /// nothing ever leaves `slots`, and a late cell is taken back the moment
+    /// the band is full and something new is asked for. Keeping them apart is
+    /// what stops an eviction reaching an application's own icon.
+    late_slots: HashMap<String, u32>,
+    late_cells: Vec<Option<String>>,
+    late_first: u32,
+    /// Which cell the next eviction takes. Round the band in order, which for
+    /// this is as good as choosing the least recently used and needs nothing
+    /// remembered: the band is far larger than the handful of announcements
+    /// that can be on screen at once, so by the time it comes round again what
+    /// was in a cell is long gone.
+    late_next: usize,
     atlas_cells_per_row: u32,
     atlas_cells_per_col: u32,
     /// The atlas itself, kept because thumbnails are written into it while the
@@ -638,6 +848,12 @@ pub struct Gpu {
     /// from [`Self::slots`] because a thumbnail is not square: it uses only
     /// part of its block, and [`Self::uv_for`] has to be told which part.
     thumbs: HashMap<PathBuf, Thumb>,
+    /// The band under it, holding game logos, and which game each block is
+    /// holding. Filed by app id rather than by path: a logo is asked for by
+    /// the game it names, and nothing downstream ever sees the file.
+    logo_blocks: Vec<Option<u32>>,
+    logo_band: u32,
+    logos: HashMap<u32, Thumb>,
 
     /// The pictures that stand behind a display, one per layer of an array
     /// texture, and which game each layer is holding. `None` is a free layer.
@@ -714,12 +930,11 @@ impl Gpu {
     ///
     /// `display` and `surface` must be valid `wl_display` / `wl_surface`
     /// pointers that outlive the returned renderer.
-    pub unsafe fn new(
+    pub unsafe fn new_wallpaper(
         display: *mut std::ffi::c_void,
         surface: *mut std::ffi::c_void,
         width: u32,
         height: u32,
-        icons: Vec<(String, Icon)>,
     ) -> anyhow::Result<(Self, Target)> {
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_descriptor.backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
@@ -771,7 +986,7 @@ impl Gpu {
         surface.configure(&device, &config);
 
         // --- atlas -------------------------------------------------------
-        let atlas = build_atlas(&device, &queue, icons)?;
+        let atlas = build_wallpaper_atlas(&device, &queue);
         let atlas_view = atlas
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1106,6 +1321,8 @@ impl Gpu {
                 downsample_pipeline,
                 blit_pipeline,
                 globals_layout,
+                atlas_layout,
+                atlas_sampler: sampler,
                 sample_layout,
                 sampler: frame_sampler,
                 atlas_bind_group,
@@ -1114,11 +1331,18 @@ impl Gpu {
                 thumb_blocks: vec![None; atlas.thumb_blocks],
                 thumb_band: atlas.thumb_band,
                 thumbs: HashMap::new(),
+                logo_blocks: vec![None; atlas.logo_blocks],
+                logo_band: atlas.logo_band,
+                logos: HashMap::new(),
                 scenery_texture,
                 scenery_bind_group,
                 scenery_layers: vec![None; HERO_LAYERS as usize],
                 atlas_texture: atlas.texture,
                 slots: atlas.slots,
+                late_slots: HashMap::new(),
+                late_cells: vec![None; atlas.late_cells],
+                late_first: atlas.late_first,
+                late_next: 0,
                 font_system,
                 swash_cache,
                 text_atlas,
@@ -1179,53 +1403,111 @@ impl Gpu {
 
     /// Atlas slot for an icon name, if it was loaded.
     pub fn slot(&self, name: &str) -> Option<u32> {
-        self.slots.get(name).copied()
+        self.slots
+            .get(name)
+            .or_else(|| self.late_slots.get(name))
+            .copied()
     }
 
-    /// The thumbnail resident in the atlas for a file, if there is one.
-    pub fn thumbnail(&self, path: &Path) -> Option<Thumb> {
-        self.thumbs.get(path).copied()
-    }
-
-    /// Put a thumbnail into the atlas, taking a free block.
+    /// Replace the provisional procedural atlas with the completed catalogue.
     ///
-    /// The whole block is written, not just the part the picture covers: a
-    /// portrait photograph landing where a wide one was would otherwise leave
-    /// two strips of the old one showing beside it, and a full block is one
-    /// aligned write of a quarter of a megabyte rather than a special case.
-    pub fn put_thumbnail(&mut self, path: &Path, picture: &crate::thumbs::Picture) -> bool {
-        let edge = THUMB_CELLS * CELL;
-        if picture.width == 0 || picture.height == 0 {
-            return false;
+    /// This is deliberately allowed only while every runtime band is empty.
+    /// The caller holds the start screen at the back of its arrival and polls
+    /// no notification/artwork worker before calling it, and these checks keep
+    /// a future reorder from silently discarding one of those pictures.
+    pub fn replace_icons(&mut self, icons: Vec<(String, Icon)>) -> anyhow::Result<()> {
+        if !self.late_slots.is_empty()
+            || !self.thumbs.is_empty()
+            || !self.logos.is_empty()
+            || self.scenery_layers.iter().any(Option::is_some)
+        {
+            anyhow::bail!("cannot replace an atlas after runtime pictures were added");
         }
-        let Some(block) = self
-            .thumb_blocks
-            .iter()
-            .position(Option::is_none)
-            .or_else(|| {
-                // Only reachable if more rows were asked for than the atlas
-                // holds; the shell drops what the cursor has left behind
-                // before it asks for more.
-                tracing::debug!("no free thumbnail block; this one is not drawn");
-                None
-            })
-        else {
-            return false;
-        };
 
-        let width = picture.width.min(edge);
-        let height = picture.height.min(edge);
-        let mut cell = vec![0u8; (edge * edge * 4) as usize];
-        for y in 0..height {
-            let src = (y * picture.width * 4) as usize;
-            let dst = (y * edge * 4) as usize;
-            let len = (width * 4) as usize;
-            if src + len <= picture.rgba.len() && dst + len <= cell.len() {
-                cell[dst..dst + len].copy_from_slice(&picture.rgba[src..src + len]);
+        let atlas = build_atlas(&self.device, &self.queue, icons)?;
+        let view = atlas
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.atlas_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("atlas"),
+            layout: &self.atlas_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                },
+            ],
+        });
+        self.atlas_cells_per_row = atlas.cells_per_row;
+        self.atlas_cells_per_col = atlas.cells_per_col;
+        self.thumb_blocks = vec![None; atlas.thumb_blocks];
+        self.thumb_band = atlas.thumb_band;
+        self.thumbs.clear();
+        self.logo_blocks = vec![None; atlas.logo_blocks];
+        self.logo_band = atlas.logo_band;
+        self.logos.clear();
+        self.atlas_texture = atlas.texture;
+        self.slots = atlas.slots;
+        self.late_slots.clear();
+        self.late_cells = vec![None; atlas.late_cells];
+        self.late_first = atlas.late_first;
+        self.late_next = 0;
+        Ok(())
+    }
+
+    /// Put an icon the session was not started knowing about into the atlas,
+    /// and answer with the cell it went in.
+    ///
+    /// For the pictures programs choose for their own announcements: a theme
+    /// name no installed application uses, or a file on the disk. Everything
+    /// the shell draws of its own accord is in the atlas before the first
+    /// frame, and this is the one way in afterwards.
+    ///
+    /// Writing one cell straight into the texture, the way a thumbnail is
+    /// written — the difference is only that a thumbnail takes a whole block
+    /// and this takes a single cell, because an icon is square and no bigger
+    /// than one.
+    ///
+    /// Asking twice for the same name is free: the second call finds it and
+    /// hands back the cell it is already in.
+    pub fn put_icon(&mut self, name: &str, icon: &crate::icons::Icon) -> Option<u32> {
+        if name.is_empty() || self.late_cells.is_empty() {
+            return None;
+        }
+        if let Some(slot) = self.slot(name) {
+            return Some(slot);
+        }
+
+        let cell = self.late_next % self.late_cells.len();
+        self.late_next = self.late_next.wrapping_add(1);
+        // Whatever was there stops being findable before the pixels change,
+        // so a name can never point at another program's picture.
+        if let Some(evicted) = self.late_cells[cell].take() {
+            self.late_slots.remove(&evicted);
+        }
+
+        let slot = self.late_first + cell as u32;
+        let col = slot % self.atlas_cells_per_row;
+        let row = slot / self.atlas_cells_per_row;
+
+        // The whole cell every time, for the reason `put_thumbnail` writes a
+        // whole block: an icon smaller than the cell would otherwise leave a
+        // border of the last one showing round it.
+        let size = icon.size.min(CELL);
+        let mut pixels = vec![0u8; (CELL * CELL * 4) as usize];
+        for y in 0..size {
+            let src = (y * icon.size * 4) as usize;
+            let dst = (y * CELL * 4) as usize;
+            let len = (size * 4) as usize;
+            if src + len <= icon.rgba.len() && dst + len <= pixels.len() {
+                pixels[dst..dst + len].copy_from_slice(&icon.rgba[src..src + len]);
             }
         }
 
-        let (col, row) = self.block_cell(block);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas_texture,
@@ -1237,7 +1519,176 @@ impl Gpu {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            &cell,
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(CELL * 4),
+                rows_per_image: Some(CELL),
+            },
+            wgpu::Extent3d {
+                width: CELL,
+                height: CELL,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.late_cells[cell] = Some(name.to_string());
+        self.late_slots.insert(name.to_string(), slot);
+        Some(slot)
+    }
+
+    /// How many lines `content` would take, laid out `width` pixels wide, up
+    /// to `cap`.
+    ///
+    /// The one thing the layout cannot work out for itself. Everything in
+    /// `ui` is arithmetic on rectangles and has no font system in it — which
+    /// is what lets nearly all of it be tested without a GPU — so a row that
+    /// has to be as tall as its words are long has to ask the only thing that
+    /// knows how wide a word is.
+    ///
+    /// Asked when a panel is built rather than when it is drawn. A label does
+    /// not change between frames, and shaping one on every frame of every row
+    /// to discover a number that never moves would be paying a rendering cost
+    /// for a layout fact.
+    pub fn lines_needed(
+        &mut self,
+        content: &str,
+        size: f32,
+        bold: bool,
+        width: f32,
+        cap: usize,
+    ) -> usize {
+        if content.is_empty() || width <= 0.0 || size <= 0.0 || cap <= 1 {
+            return 1;
+        }
+        let mut buffer = TextBuffer::new(&mut self.font_system, Metrics::new(size, size * 1.25));
+        // Room for `cap` lines and no more: the shaping stops there, which is
+        // also the answer this is allowed to give.
+        buffer.set_size(Some(width), Some(size * 1.25 * cap as f32));
+        let attrs = Attrs::new().family(Family::Name(UI_FONT)).weight(if bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        });
+        buffer.set_text(content, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer.layout_runs().count().clamp(1, cap)
+    }
+
+    /// The thumbnail resident in the atlas for a file, if there is one.
+    pub fn thumbnail(&self, path: &Path) -> Option<Thumb> {
+        self.thumbs.get(path).copied()
+    }
+
+    /// Put a thumbnail into the atlas, taking a free block.
+    pub fn put_thumbnail(&mut self, path: &Path, picture: &crate::thumbs::Picture) -> bool {
+        let Some(block) = self.thumb_blocks.iter().position(Option::is_none) else {
+            // Only reachable if more rows were asked for than the atlas holds;
+            // the shell drops what the cursor has left behind before it asks
+            // for more.
+            tracing::debug!("no free thumbnail block; this one is not drawn");
+            return false;
+        };
+        let cell = Self::band_cell(
+            self.atlas_cells_per_row,
+            self.thumb_band,
+            THUMB_CELLS,
+            block,
+        );
+        let Some(thumb) = self.write_block(THUMB_CELLS, cell, picture) else {
+            return false;
+        };
+        self.thumb_blocks[block] = Some(path.to_path_buf());
+        self.thumbs.insert(path.to_path_buf(), thumb);
+        true
+    }
+
+    /// The logo resident in the atlas for a game, if there is one.
+    pub fn logo(&self, app_id: u32) -> Option<Thumb> {
+        self.logos.get(&app_id).copied()
+    }
+
+    /// Put a game's logo into the atlas, taking a free block of the band that
+    /// is big enough to hold one.
+    ///
+    /// Answers false when there is no room, which leaves the launch splash
+    /// showing the game's name — the same thing it shows for a game Valve has
+    /// no logo for.
+    pub fn put_logo(&mut self, app_id: u32, picture: &crate::thumbs::Picture) -> bool {
+        if self.logos.contains_key(&app_id) {
+            return false;
+        }
+        let Some(block) = self.logo_blocks.iter().position(Option::is_none) else {
+            tracing::debug!(app_id, "no free logo block; the splash uses the name");
+            return false;
+        };
+        let cell = Self::band_cell(self.atlas_cells_per_row, self.logo_band, LOGO_CELLS, block);
+        let Some(logo) = self.write_block(LOGO_CELLS, cell, picture) else {
+            return false;
+        };
+        self.logo_blocks[block] = Some(app_id);
+        self.logos.insert(app_id, logo);
+        true
+    }
+
+    /// Give up every logo block whose game is not in `wanted`.
+    ///
+    /// The thumbnails' policy again, and the scenery's: what these hold is
+    /// what is about to be drawn, and a logo the cursor has left is one
+    /// nothing will draw until it is asked for again.
+    pub fn retain_logos(&mut self, wanted: &HashSet<u32>) {
+        for block in &mut self.logo_blocks {
+            if block.is_some_and(|app_id| !wanted.contains(&app_id)) {
+                *block = None;
+            }
+        }
+        self.logos.retain(|app_id, _| wanted.contains(app_id));
+    }
+
+    /// Write one picture into a block of `cells` cells a side, whose top-left
+    /// cell is `(col, row)`, and say what landed there.
+    ///
+    /// The whole block is written, not just the part the picture covers: a
+    /// portrait photograph landing where a wide one was would otherwise leave
+    /// two strips of the old one showing beside it, and a full block is one
+    /// aligned write rather than a special case. It matters more for a logo
+    /// than for anything else here — a wordmark is transparent nearly
+    /// everywhere, so whatever was left behind would show *through* it.
+    fn write_block(
+        &mut self,
+        cells: u32,
+        (col, row): (u32, u32),
+        picture: &crate::thumbs::Picture,
+    ) -> Option<Thumb> {
+        let edge = cells * CELL;
+        if picture.width == 0 || picture.height == 0 {
+            return None;
+        }
+
+        let width = picture.width.min(edge);
+        let height = picture.height.min(edge);
+        let mut block = vec![0u8; (edge * edge * 4) as usize];
+        for y in 0..height {
+            let src = (y * picture.width * 4) as usize;
+            let dst = (y * edge * 4) as usize;
+            let len = (width * 4) as usize;
+            if src + len <= picture.rgba.len() && dst + len <= block.len() {
+                block[dst..dst + len].copy_from_slice(&picture.rgba[src..src + len]);
+            }
+        }
+
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: col * CELL,
+                    y: row * CELL,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &block,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(edge * 4),
@@ -1250,18 +1701,13 @@ impl Gpu {
             },
         );
 
-        self.thumb_blocks[block] = Some(path.to_path_buf());
-        self.thumbs.insert(
-            path.to_path_buf(),
-            Thumb {
-                slot: row * self.atlas_cells_per_row + col,
-                aspect: width as f32 / height as f32,
-                // What was written, not what would have been written by a
-                // picture that filled the block: see [`Thumb::covers`].
-                covers: Self::thumb_coverage(width, height),
-            },
-        );
-        true
+        Some(Thumb {
+            slot: row * self.atlas_cells_per_row + col,
+            aspect: width as f32 / height as f32,
+            // What was written, not what would have been written by a picture
+            // that filled the block: see [`Thumb::covers`].
+            covers: Self::block_coverage(width, height, cells),
+        })
     }
 
     /// Give up every thumbnail block whose file is not in `wanted`.
@@ -1354,14 +1800,17 @@ impl Gpu {
         }
     }
 
-    /// The top-left cell of a thumbnail block.
-    fn block_cell(&self, block: usize) -> (u32, u32) {
-        let per_row = (self.atlas_cells_per_row / THUMB_CELLS).max(1);
+    /// The top-left cell of one block of a band: which band it starts at, how
+    /// many cells a block of it is a side, and which block.
+    ///
+    /// An associated function taking the atlas width rather than a method, so
+    /// that a block can be worked out while the texture behind it is being
+    /// written to — and so the arithmetic that has to agree with [`Gpu::uv_for`]
+    /// can be checked without a GPU.
+    fn band_cell(cells_per_row: u32, band: u32, cells: u32, block: usize) -> (u32, u32) {
+        let per_row = (cells_per_row / cells).max(1);
         let block = block as u32;
-        (
-            (block % per_row) * THUMB_CELLS,
-            self.thumb_band + (block / per_row) * THUMB_CELLS,
-        )
+        ((block % per_row) * cells, band + (block / per_row) * cells)
     }
 
     /// Draw one frame.
@@ -1451,16 +1900,30 @@ impl Gpu {
 
         shape_texts(&mut self.font_system, &mut target.text_buffers, texts);
 
-        let areas: Vec<TextArea<'_>> = target
-            .text_buffers
-            .iter()
-            .zip(texts)
-            .map(|((_, buffer), text)| TextArea {
+        let mut areas: Vec<TextArea<'_>> = Vec::with_capacity(target.text_buffers.len());
+        for ((_, buffer), text) in target.text_buffers.iter().zip(texts) {
+            let bounds = text_bounds(text);
+            // The halo first, so the letters land on top of their own shade.
+            // Every copy is the same shaped buffer moved a little, which is
+            // why a ring costs no shaping and cannot drift out of step with
+            // the run it belongs to.
+            for (dx, dy, shade) in halo_copies(text.size, text.halo) {
+                areas.push(TextArea {
+                    buffer,
+                    left: text.x + dx,
+                    top: text.y + dy,
+                    scale: 1.0,
+                    bounds,
+                    default_color: TextColor::rgba(0, 0, 0, (shade * 255.0) as u8),
+                    custom_glyphs: &[],
+                });
+            }
+            areas.push(TextArea {
                 buffer,
                 left: text.x,
                 top: text.y,
                 scale: 1.0,
-                bounds: text_bounds(text),
+                bounds,
                 default_color: TextColor::rgba(
                     (text.color[0] * 255.0) as u8,
                     (text.color[1] * 255.0) as u8,
@@ -1468,8 +1931,8 @@ impl Gpu {
                     (text.color[3] * 255.0) as u8,
                 ),
                 custom_glyphs: &[],
-            })
-            .collect();
+            });
+        }
 
         target.text_renderer.prepare(
             &self.device,
@@ -1645,20 +2108,21 @@ impl Gpu {
             return [cx, cy, cx, cy];
         }
 
-        // A thumbnail covers only part of its block — a wide picture leaves
-        // the bottom of it empty, and one smaller than the block leaves the
-        // right of it empty too — so what is sampled is the picture, not the
-        // block. Taken from what was actually written, because how much of the
-        // block a picture covers does not follow from its shape: see
+        // A picture covers only part of its block — a wide one leaves the
+        // bottom of it empty, and one smaller than the block leaves the right
+        // of it empty too — so what is sampled is the picture, not the block.
+        // Taken from what was actually written, because how much of the block
+        // a picture covers does not follow from its shape: see
         // [`Thumb::covers`].
         let inset_x = step_x * (1.5 / CELL as f32);
         let inset_y = step_y * (1.5 / CELL as f32);
-        if let Some(thumb) = self.thumb_at(slot) {
-            return thumb_uv(
+        if let Some((picture, cells)) = self.picture_at(slot) {
+            return block_uv(
                 [col as f32 * step_x, row as f32 * step_y],
                 [step_x, step_y],
                 [inset_x, inset_y],
-                thumb.covers,
+                picture.covers,
+                cells,
             );
         }
 
@@ -1675,22 +2139,39 @@ impl Gpu {
         ]
     }
 
-    /// The part of a block a picture of `width` by `height` pixels covers,
-    /// along each axis. See [`Thumb::covers`].
-    fn thumb_coverage(width: u32, height: u32) -> [f32; 2] {
-        let edge = (THUMB_CELLS * CELL) as f32;
+    /// The part of a block `cells` cells a side a picture of `width` by
+    /// `height` pixels covers, along each axis. See [`Thumb::covers`].
+    fn block_coverage(width: u32, height: u32, cells: u32) -> [f32; 2] {
+        let edge = (cells * CELL) as f32;
         [width as f32 / edge, height as f32 / edge]
     }
 
-    /// The thumbnail occupying `slot`, if the slot is in the thumbnail band.
+    /// The picture occupying `slot` and how big its block is, if the slot is
+    /// in a band that holds pictures at all.
     ///
     /// Looked up by slot rather than kept beside it, because a [`Quad`] can
-    /// only carry a slot number and the band is small.
-    fn thumb_at(&self, slot: u32) -> Option<Thumb> {
-        if slot / self.atlas_cells_per_row.max(1) < self.thumb_band {
+    /// only carry a slot number and the bands are small. Which band decides
+    /// the block size, and getting that wrong samples the wrong rectangle of
+    /// the atlas — a logo drawn with a thumbnail's block would come out as its
+    /// top-left corner blown up over half the display.
+    fn picture_at(&self, slot: u32) -> Option<(Thumb, u32)> {
+        let row = slot / self.atlas_cells_per_row.max(1);
+        if row >= self.logo_band {
+            return self
+                .logos
+                .values()
+                .copied()
+                .find(|logo| logo.slot == slot)
+                .map(|logo| (logo, LOGO_CELLS));
+        }
+        if row < self.thumb_band {
             return None;
         }
-        self.thumbs.values().copied().find(|t| t.slot == slot)
+        self.thumbs
+            .values()
+            .copied()
+            .find(|thumb| thumb.slot == slot)
+            .map(|thumb| (thumb, THUMB_CELLS))
     }
 }
 
@@ -1926,11 +2407,23 @@ impl Target {
 /// against their own texture, so a label disappearing under a panel is cut at
 /// the panel's edge rather than at the last whole letter before it.
 fn text_bounds(text: &Text) -> TextBounds {
+    // The run's own box, opened out by however far its ring reaches. The ring
+    // is drawn by shifting the letters, so a box cut to where the letters
+    // *are* would shave the left and top of it off — and a ring missing two
+    // sides is a drop shadow nobody asked for.
+    let room = if text.halo > 0.0 {
+        (text.size * HALO_RING).ceil()
+    } else {
+        0.0
+    };
+    // Tall enough for every line the run is allowed, or a cut run would have
+    // its second line sliced off by the box drawn for a one-line label.
+    let depth = (text.size * 2.0).max(text.size * 1.25 * text.lines.max(1) as f32);
     let mut bounds = TextBounds {
-        left: text.x.floor() as i32,
-        top: text.y.floor() as i32,
-        right: (text.x + text.max_width).ceil() as i32,
-        bottom: (text.y + text.size * 2.0).ceil() as i32,
+        left: (text.x - room).floor() as i32,
+        top: (text.y - room).floor() as i32,
+        right: (text.x + text.max_width + room).ceil() as i32,
+        bottom: (text.y + depth + room).ceil() as i32,
     };
     if let Some([x, y, w, h]) = text.clip {
         bounds.left = bounds.left.max(x.floor() as i32);
@@ -1939,6 +2432,104 @@ fn text_bounds(text: &Text) -> TextBounds {
         bounds.bottom = bounds.bottom.min((y + h).ceil() as i32);
     }
     bounds
+}
+
+/// Lay `content` into `buffer` in this run's face, at its size, in its box.
+///
+/// `cap` is how many lines the layout may take before it puts an ellipsis on
+/// the last of them: the run's own allowance, or one where the breaks have
+/// already been written into the content and each line is a line of its own —
+/// see [`with_breaks_written_in`].
+///
+/// One line, and an ellipsis where the rest of it would have been.
+///
+/// Every run the shell draws is a label — a clock, a title, the name of
+/// something — and each is drawn against a box one line tall, which the bounds
+/// around it clip to. A run left to wrap therefore does not get a second line:
+/// it gets the *top half* of one, sliced through the letters, under a first
+/// line that gave no sign it was going to overflow. Window titles are exactly
+/// the text this happens to. They routinely carry a document, a page or a whole
+/// working directory, and none of them stop at the edge of the sidebar.
+///
+/// Shaping is what knows how wide the run really is, so the ellipsis is put in
+/// here rather than guessed at from a character count by the caller: the label
+/// is cut where the box ends and nowhere earlier.
+fn lay_out(
+    font_system: &mut FontSystem,
+    buffer: &mut TextBuffer,
+    text: &Text,
+    content: &str,
+    cap: u8,
+) {
+    buffer.set_ellipsize(glyphon::cosmic_text::Ellipsize::End(
+        glyphon::cosmic_text::EllipsizeHeightLimit::Lines(cap.max(1) as usize),
+    ));
+    let attrs = Attrs::new()
+        .family(Family::Name(UI_FONT))
+        .weight(if text.bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        });
+    buffer.set_text(content, &attrs, Shaping::Advanced, None);
+    let align = match text.align {
+        TextAlign::Left => None,
+        TextAlign::Center => Some(glyphon::cosmic_text::Align::Center),
+        TextAlign::Right => Some(glyphon::cosmic_text::Align::Right),
+    };
+    for line in buffer.lines.iter_mut() {
+        line.set_align(align);
+    }
+    buffer.shape_until_scroll(font_system, false);
+}
+
+/// `content` with the breaks a laid-out `buffer` chose written into it, or
+/// `None` where it is already laid out the way it should be drawn.
+///
+/// `None` for all but a handful of runs in a session: only one whose lines the
+/// layout began with a blank needs this, and only a run that wrapped at all can
+/// be one. It is also `None` for anything this cannot be sure of — a line the
+/// layout drew no glyphs on, or lines that do not run through the content from
+/// its start in order, which is what a run of mixed direction looks like from
+/// here. Leaving those exactly as they were is the whole point: this is a
+/// blemish being taken off a layout, not a second layout.
+fn with_breaks_written_in(buffer: &TextBuffer, content: &str) -> Option<String> {
+    let mut starts = Vec::new();
+    for run in buffer.layout_runs() {
+        // The logical start, not the leftmost: the glyphs of a line are in the
+        // order they are drawn in.
+        starts.push(run.glyphs.iter().map(|glyph| glyph.start).min()?);
+    }
+    if starts.first() != Some(&0) || starts.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return None;
+    }
+    let begins_blank = |at: &usize| {
+        content[*at..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    };
+    if !starts.iter().skip(1).any(begins_blank) {
+        return None;
+    }
+
+    let mut broken = String::with_capacity(content.len());
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(content.len());
+        // The blank a line was broken at belongs to neither side of the break,
+        // and a blank at the end of a line was never drawn in the first place.
+        // The first line keeps whatever it was given to begin with: leading
+        // space there is somebody's own.
+        let line = match index {
+            0 => content[*start..end].trim_end(),
+            _ => content[*start..end].trim(),
+        };
+        if index > 0 {
+            broken.push('\n');
+        }
+        broken.push_str(line);
+    }
+    Some(broken)
 }
 
 /// Bring a target's buffer pool in line with `texts`, re-shaping only the runs
@@ -1959,42 +2550,32 @@ fn shape_texts(
             }
         }
 
+        let lines = text.lines.max(1) as f32;
         let mut buffer = TextBuffer::new(font_system, Metrics::new(text.size, text.size * 1.25));
-        buffer.set_size(Some(text.max_width), Some(text.size * 2.0));
-        // One line, and an ellipsis where the rest of it would have been.
+        buffer.set_size(
+            Some(text.max_width),
+            Some((text.size * 2.0).max(text.size * 1.25 * lines)),
+        );
+        lay_out(font_system, &mut buffer, text, &text.content, text.lines);
+        // A wrapped line never begins with the space it was wrapped at.
         //
-        // Every run the shell draws is a label — a clock, a title, the name of
-        // something — and each is drawn against a box one line tall, which the
-        // bounds above clip to. A run left to wrap therefore does not get a
-        // second line: it gets the *top half* of one, sliced through the
-        // letters, under a first line that gave no sign it was going to
-        // overflow. Window titles are exactly the text this happens to. They
-        // routinely carry a document, a page or a whole working directory, and
-        // none of them stop at the edge of the sidebar.
+        // The layout puts the ellipsis on the last line the run is allowed, and
+        // it builds that line from the break *including* the blank the break
+        // fell on — so the run's last line starts a space in from every line
+        // above it, and a paragraph reads as though somebody had indented its
+        // final line by hand. It is the announcement panel this shows up on
+        // most, whose rows are three lines of somebody else's sentence.
         //
-        // Shaping is what knows how wide the run really is, so the ellipsis is
-        // put in here rather than guessed at from a character count by the
-        // caller: the label is cut where the box ends and nowhere earlier.
-        buffer.set_ellipsize(glyphon::cosmic_text::Ellipsize::End(
-            glyphon::cosmic_text::EllipsizeHeightLimit::Lines(1),
-        ));
-        let attrs = Attrs::new()
-            .family(Family::Name(UI_FONT))
-            .weight(if text.bold {
-                Weight::BOLD
-            } else {
-                Weight::NORMAL
-            });
-        buffer.set_text(&text.content, &attrs, Shaping::Advanced, None);
-        let align = match text.align {
-            TextAlign::Left => None,
-            TextAlign::Center => Some(glyphon::cosmic_text::Align::Center),
-            TextAlign::Right => Some(glyphon::cosmic_text::Align::Right),
-        };
-        for line in buffer.lines.iter_mut() {
-            line.set_align(align);
+        // The cure is to hand the layout the breaks it chose rather than argue
+        // with how it draws them: the run is laid out once to find out where
+        // the lines fall, and if any of them begins with a blank it is laid out
+        // again with those breaks written in and the blanks taken off the ends
+        // of the lines they belong to. Every line is then a line of its own —
+        // hence a run allowed exactly one apiece, which is also what keeps the
+        // last one ellipsized.
+        if let Some(broken) = with_breaks_written_in(&buffer, &text.content) {
+            lay_out(font_system, &mut buffer, text, &broken, 1);
         }
-        buffer.shape_until_scroll(font_system, false);
 
         match pool.get_mut(index) {
             Some(slot) => *slot = (key, buffer),
@@ -2051,53 +2632,76 @@ fn pick_alpha_mode(available: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlp
         .unwrap_or(wgpu::CompositeAlphaMode::Auto)
 }
 
-/// Pack every icon into one texture, sized to fit.
+/// Geometry of the atlas used while only the handed-off wallpaper is visible.
 ///
-/// Slot 0 is filled with opaque white so the same pipeline can draw untextured
-/// rectangles by tinting it, and slot 1 holds the procedural selection glow.
-fn build_atlas(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    icons: Vec<(String, Icon)>,
-) -> anyhow::Result<Atlas> {
-    let needed = icons.len() as u32 + RESERVED_SLOTS;
-    let mut cells_per_row = (needed as f64).sqrt().ceil() as u32;
-    cells_per_row = cells_per_row.max(2);
-    // Even, so the thumbnail band divides into whole blocks.
-    cells_per_row += cells_per_row % THUMB_CELLS;
+/// No runtime band is useful before the complete catalogue lands: the startup
+/// gate prevents anything from writing to one, and the background pass uses no
+/// atlas sample at all. The two procedural cells remain because the renderer's
+/// quad pipeline always has a valid binding and because they are the exact
+/// first two cells the settled atlas will carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallpaperAtlasGeometry {
+    cells_per_row: u32,
+    cells_per_col: u32,
+    late_first: u32,
+    late_cells: usize,
+    thumb_band: u32,
+    thumb_blocks: usize,
+    logo_band: u32,
+    logo_blocks: usize,
+}
 
-    let max_dim = device.limits().max_texture_dimension_2d;
-    let max_cells_per_row = (max_dim / CELL).max(1);
-    if cells_per_row > max_cells_per_row {
-        tracing::warn!(
-            icons = icons.len(),
-            "too many icons for one atlas; some will be drawn without one"
-        );
-        cells_per_row = max_cells_per_row;
+const fn wallpaper_atlas_geometry() -> WallpaperAtlasGeometry {
+    WallpaperAtlasGeometry {
+        cells_per_row: RESERVED_SLOTS,
+        cells_per_col: 1,
+        late_first: RESERVED_SLOTS,
+        late_cells: 0,
+        thumb_band: 1,
+        thumb_blocks: 0,
+        logo_band: 1,
+        logo_blocks: 0,
     }
+}
 
-    // The icons fill whole rows from the top; the thumbnails get a band of
-    // their own under them. A band rather than the leftovers of the icon rows,
-    // because a thumbnail is a block of cells and has to be aligned to one.
-    let icon_rows = needed.div_ceil(cells_per_row);
-    let blocks_per_row = (cells_per_row / THUMB_CELLS).max(1);
-    let mut band_rows = THUMB_BLOCKS.div_ceil(blocks_per_row) * THUMB_CELLS;
-    let max_rows = (max_dim / CELL).max(1);
-    if icon_rows + band_rows > max_rows {
-        band_rows = max_rows.saturating_sub(icon_rows) / THUMB_CELLS * THUMB_CELLS;
-        tracing::warn!(band_rows, "the atlas has little room left for thumbnails");
+/// Build only the valid texture binding needed for the wallpaper's first
+/// frames. [`build_atlas`] remains the sole builder of the settled atlas, so
+/// catalogue slot ordering and every runtime band retain their old layout.
+fn build_wallpaper_atlas(device: &wgpu::Device, queue: &wgpu::Queue) -> Atlas {
+    let geometry = wallpaper_atlas_geometry();
+    let width = geometry.cells_per_row * CELL;
+    let height = geometry.cells_per_col * CELL;
+    let pixels = procedural_atlas_pixels(geometry.cells_per_row, geometry.cells_per_col);
+    let texture = upload_atlas(device, queue, width, height, &pixels);
+    tracing::debug!(width, height, "built wallpaper atlas");
+
+    Atlas {
+        texture,
+        slots: HashMap::new(),
+        cells_per_row: geometry.cells_per_row,
+        cells_per_col: geometry.cells_per_col,
+        late_first: geometry.late_first,
+        late_cells: geometry.late_cells,
+        thumb_band: geometry.thumb_band,
+        thumb_blocks: geometry.thumb_blocks,
+        logo_band: geometry.logo_band,
+        logo_blocks: geometry.logo_blocks,
     }
-    let cells_per_col = icon_rows + band_rows;
+}
 
+/// Paint the two cells common to both atlas shapes and leave every other byte
+/// clear. Extracted from the settled builder without changing its arithmetic,
+/// so replacing the texture cannot also change the solid or glow sprites.
+fn procedural_atlas_pixels(cells_per_row: u32, cells_per_col: u32) -> Vec<u8> {
+    assert!(cells_per_row > 0 && cells_per_row * cells_per_col >= RESERVED_SLOTS);
     let width = cells_per_row * CELL;
     let height = cells_per_col * CELL;
-    let dimension = width;
     let mut pixels = vec![0u8; (width * height * 4) as usize];
 
     // Slot 0: opaque white.
     for y in 0..CELL {
         for x in 0..CELL {
-            let offset = ((y * dimension + x) * 4) as usize;
+            let offset = ((y * width + x) * 4) as usize;
             pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
         }
     }
@@ -2115,35 +2719,21 @@ fn build_atlas(
             let falloff = (-5.5 * r * r).exp();
             let edge = ((1.0 - r) / 0.12).clamp(0.0, 1.0);
             let alpha = (falloff * edge * 255.0).round() as u8;
-            let offset = (((glow_y + y) * dimension + glow_x + x) * 4) as usize;
+            let offset = (((glow_y + y) * width + glow_x + x) * 4) as usize;
             pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, alpha]);
         }
     }
 
-    let capacity = cells_per_row * icon_rows;
-    let mut slots = HashMap::new();
+    pixels
+}
 
-    for (index, (name, icon)) in icons.into_iter().enumerate() {
-        let slot = index as u32 + RESERVED_SLOTS;
-        if slot >= capacity {
-            break;
-        }
-        let cell_x = (slot % cells_per_row) * CELL;
-        let cell_y = (slot / cells_per_row) * CELL;
-
-        // Icons are decoded at CELL already, but guard against a short buffer.
-        let size = icon.size.min(CELL);
-        for y in 0..size {
-            let src = (y * icon.size * 4) as usize;
-            let dst = (((cell_y + y) * dimension + cell_x) * 4) as usize;
-            let len = (size * 4) as usize;
-            if src + len <= icon.rgba.len() && dst + len <= pixels.len() {
-                pixels[dst..dst + len].copy_from_slice(&icon.rgba[src..src + len]);
-            }
-        }
-        slots.insert(name, slot);
-    }
-
+fn upload_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("icon atlas"),
         size: wgpu::Extent3d {
@@ -2166,7 +2756,7 @@ fn build_atlas(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &pixels,
+        pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(width * 4),
@@ -2178,6 +2768,97 @@ fn build_atlas(
             depth_or_array_layers: 1,
         },
     );
+    texture
+}
+
+/// Pack every icon into one texture, sized to fit.
+///
+/// Slot 0 is filled with opaque white so the same pipeline can draw untextured
+/// rectangles by tinting it, and slot 1 holds the procedural selection glow.
+fn build_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    icons: Vec<(String, Icon)>,
+) -> anyhow::Result<Atlas> {
+    // The late band is counted in here and left empty, so that the rows are
+    // sized for it once rather than the atlas being rebuilt the first time a
+    // program sends an icon nobody had heard of.
+    let needed = icons.len() as u32 + RESERVED_SLOTS + LATE_CELLS;
+    let mut cells_per_row = (needed as f64).sqrt().ceil() as u32;
+    cells_per_row = cells_per_row.max(2);
+    // Even, so the thumbnail band divides into whole blocks.
+    cells_per_row += cells_per_row % THUMB_CELLS;
+
+    let max_dim = device.limits().max_texture_dimension_2d;
+    let max_cells_per_row = (max_dim / CELL).max(1);
+    if cells_per_row > max_cells_per_row {
+        tracing::warn!(
+            icons = icons.len(),
+            "too many icons for one atlas; some will be drawn without one"
+        );
+        cells_per_row = max_cells_per_row;
+    }
+
+    // The icons fill whole rows from the top; the thumbnails get a band of
+    // their own under them, and the logos a band under that. Bands rather than
+    // the leftovers of the icon rows, because both are blocks of cells and
+    // have to be aligned to one — and two bands rather than one because their
+    // blocks are different sizes and a block of either has to start on a
+    // multiple of its own edge.
+    let icon_rows = needed.div_ceil(cells_per_row);
+    let blocks_per_row = (cells_per_row / THUMB_CELLS).max(1);
+    let mut band_rows = THUMB_BLOCKS.div_ceil(blocks_per_row) * THUMB_CELLS;
+    let max_rows = (max_dim / CELL).max(1);
+    if icon_rows + band_rows > max_rows {
+        band_rows = max_rows.saturating_sub(icon_rows) / THUMB_CELLS * THUMB_CELLS;
+        tracing::warn!(band_rows, "the atlas has little room left for thumbnails");
+    }
+    let logos_per_row = (cells_per_row / LOGO_CELLS).max(1);
+    let mut logo_rows = LOGO_BLOCKS.div_ceil(logos_per_row) * LOGO_CELLS;
+    let taken_rows = icon_rows + band_rows;
+    if taken_rows + logo_rows > max_rows {
+        logo_rows = max_rows.saturating_sub(taken_rows) / LOGO_CELLS * LOGO_CELLS;
+        // Not a failure. A session whose atlas has no room left for these
+        // draws a launching game under its own name instead of under its
+        // artwork, which is what the splash falls back to for every game Valve
+        // has no logo for anyway.
+        tracing::warn!(logo_rows, "the atlas has little room left for game logos");
+    }
+    let logo_band = taken_rows;
+    let logos = (logos_per_row * (logo_rows / LOGO_CELLS)).min(LOGO_BLOCKS);
+    let cells_per_col = taken_rows + logo_rows;
+
+    let width = cells_per_row * CELL;
+    let height = cells_per_col * CELL;
+    let mut pixels = procedural_atlas_pixels(cells_per_row, cells_per_col);
+
+    let capacity = cells_per_row * icon_rows;
+    let mut slots = HashMap::new();
+    let mut taken = RESERVED_SLOTS;
+
+    for (index, (name, icon)) in icons.into_iter().enumerate() {
+        let slot = index as u32 + RESERVED_SLOTS;
+        if slot >= capacity {
+            break;
+        }
+        taken = slot + 1;
+        let cell_x = (slot % cells_per_row) * CELL;
+        let cell_y = (slot / cells_per_row) * CELL;
+
+        // Icons are decoded at CELL already, but guard against a short buffer.
+        let size = icon.size.min(CELL);
+        for y in 0..size {
+            let src = (y * icon.size * 4) as usize;
+            let dst = (((cell_y + y) * width + cell_x) * 4) as usize;
+            let len = (size * 4) as usize;
+            if src + len <= icon.rgba.len() && dst + len <= pixels.len() {
+                pixels[dst..dst + len].copy_from_slice(&icon.rgba[src..src + len]);
+            }
+        }
+        slots.insert(name, slot);
+    }
+
+    let texture = upload_atlas(device, queue, width, height, &pixels);
 
     let blocks = (blocks_per_row * (band_rows / THUMB_CELLS)).min(THUMB_BLOCKS);
     tracing::debug!(
@@ -2186,15 +2867,34 @@ fn build_atlas(
         cells_per_row,
         icons = slots.len(),
         thumbnails = blocks,
+        logos,
         "built icon atlas"
     );
+    // Whatever is left of the icon rows after the startup icons, capped at the
+    // band that was asked for. It is the leftovers rather than a fixed range
+    // because a machine with more applications than the atlas can hold has
+    // already lost cells to the `break` above, and a band pointing past the
+    // last row would be cells that are not there.
+    let late_first = taken;
+    let late_cells = capacity.saturating_sub(late_first).min(LATE_CELLS);
+    if late_cells < LATE_CELLS {
+        tracing::warn!(
+            late_cells,
+            "little room left for icons that arrive with an announcement"
+        );
+    }
+
     Ok(Atlas {
         texture,
         slots,
         cells_per_row,
         cells_per_col,
+        late_first,
+        late_cells: late_cells as usize,
         thumb_band: icon_rows,
         thumb_blocks: blocks as usize,
+        logo_band,
+        logo_blocks: logos as usize,
     })
 }
 
@@ -2204,26 +2904,40 @@ struct Atlas {
     slots: HashMap<String, u32>,
     cells_per_row: u32,
     cells_per_col: u32,
+    /// First cell of the band held for icons that arrive with an announcement,
+    /// and how many of them there are — see [`LATE_CELLS`].
+    late_first: u32,
+    late_cells: usize,
     /// First cell row of the thumbnail band.
     thumb_band: u32,
     /// How many thumbnails fit in it.
     thumb_blocks: usize,
+    /// And the same for the band of game logos under it.
+    logo_band: u32,
+    logo_blocks: usize,
 }
 
-/// The texture rectangle of a thumbnail inside its block.
+/// The texture rectangle of a picture inside its block.
 ///
 /// `origin` and `step` are the block's top-left corner and one cell, both in
 /// texture coordinates; `inset` keeps the sample footprint off the border so
-/// bilinear filtering cannot reach into the next cell.
+/// bilinear filtering cannot reach into the next cell; `cells` is how many
+/// cells a block of this band is a side.
 ///
 /// Split out of [`Gpu::uv_for`] so the arithmetic can be checked without a
 /// GPU. It is worth checking on its own: getting it wrong draws the picture
 /// into a corner of its card and leaves the rest empty, which no other test the
 /// shell has can see, and which looks enough like a deliberate mount that it
 /// went unnoticed.
-fn thumb_uv(origin: [f32; 2], step: [f32; 2], inset: [f32; 2], covers: [f32; 2]) -> [f32; 4] {
-    let width = step[0] * THUMB_CELLS as f32 * covers[0];
-    let height = step[1] * THUMB_CELLS as f32 * covers[1];
+fn block_uv(
+    origin: [f32; 2],
+    step: [f32; 2],
+    inset: [f32; 2],
+    covers: [f32; 2],
+    cells: u32,
+) -> [f32; 4] {
+    let width = step[0] * cells as f32 * covers[0];
+    let height = step[1] * cells as f32 * covers[1];
     [
         origin[0] + inset[0],
         origin[1] + inset[1],
@@ -2232,7 +2946,8 @@ fn thumb_uv(origin: [f32; 2], step: [f32; 2], inset: [f32; 2], covers: [f32; 2])
     ]
 }
 
-/// A thumbnail resident in the atlas.
+/// A picture resident in one of the atlas's blocked bands: a thumbnail of one
+/// of the user's own files, a Steam cover, or a game's logo.
 #[derive(Debug, Clone, Copy)]
 pub struct Thumb {
     /// The cell its block starts at, which is what a [`Quad`] carries.
@@ -2260,6 +2975,33 @@ pub struct Thumb {
 mod tests {
     use super::*;
 
+    /// The transition atlas is a valid binding and nothing more: exactly the
+    /// two procedural cells in one row, with no storage reserved for pictures
+    /// the startup gate cannot yet admit.
+    #[test]
+    fn the_wallpaper_atlas_has_only_its_two_procedural_cells() {
+        let geometry = wallpaper_atlas_geometry();
+        assert_eq!(geometry.cells_per_row, RESERVED_SLOTS);
+        assert_eq!(geometry.cells_per_col, 1);
+        assert_eq!(geometry.late_cells, 0);
+        assert_eq!(geometry.thumb_blocks, 0);
+        assert_eq!(geometry.logo_blocks, 0);
+
+        let bytes = procedural_atlas_pixels(geometry.cells_per_row, geometry.cells_per_col);
+        assert_eq!(bytes.len(), (RESERVED_SLOTS * CELL * CELL * 4) as usize);
+        let width = geometry.cells_per_row * CELL;
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * width + x) * 4) as usize;
+            &bytes[at..at + 4]
+        };
+        for y in 0..CELL {
+            for x in 0..CELL {
+                assert_eq!(pixel(x, y), [255, 255, 255, 255]);
+            }
+        }
+        assert!(pixel(CELL + CELL / 2, CELL / 2)[3] > 0);
+    }
+
     /// What is sampled has to be what was written, whatever size the picture
     /// turned out to be.
     ///
@@ -2278,7 +3020,13 @@ mod tests {
         let step = [1.0 / 32.0, 1.0 / 32.0];
         let block = [step[0] * THUMB_CELLS as f32, step[1] * THUMB_CELLS as f32];
         let sampled = |w: u32, h: u32| {
-            let uv = thumb_uv([0.0, 0.0], step, [0.0, 0.0], Gpu::thumb_coverage(w, h));
+            let uv = block_uv(
+                [0.0, 0.0],
+                step,
+                [0.0, 0.0],
+                Gpu::block_coverage(w, h, THUMB_CELLS),
+                THUMB_CELLS,
+            );
             [uv[2] / block[0], uv[3] / block[1]]
         };
 
@@ -2304,6 +3052,56 @@ mod tests {
         let tall = sampled(91, 160);
         assert!((tall[0] - 91.0 / edge).abs() < 1e-5, "{tall:?}");
         assert!((tall[1] - 160.0 / edge).abs() < 1e-5, "{tall:?}");
+    }
+
+    /// The atlas now has two sizes of block in it, and which one a slot
+    /// belongs to is the whole of what the sampling depends on.
+    ///
+    /// Reading a logo with a thumbnail's block would take the top 256 pixels
+    /// of a 640-pixel wordmark and stretch them across a third of the display;
+    /// reading a thumbnail with a logo's would draw a photograph into the
+    /// corner of its card. Neither is a crash and neither is visible in any
+    /// number the layout can be asked for, so it is pinned here.
+    #[test]
+    fn a_block_is_sampled_at_the_size_of_the_band_it_is_in() {
+        let step = [1.0 / 32.0, 1.0 / 32.0];
+        // A logo at Valve's ceiling fills its block exactly, so it is sampled
+        // to the edge of it.
+        let covers = Gpu::block_coverage(crate::art::LOGO_SIZE, 360, LOGO_CELLS);
+        assert!((covers[0] - 1.0).abs() < 1e-6, "{covers:?}");
+        let uv = |cells| block_uv([0.0, 0.0], step, [0.0, 0.0], covers, cells)[2];
+        assert!(
+            (uv(LOGO_CELLS) - step[0] * LOGO_CELLS as f32).abs() < 1e-6,
+            "a logo must be sampled to the edge of its own block"
+        );
+        // The very same coverage read as a thumbnail's block is two fifths of
+        // the texture, which is what the block size travelling with the
+        // picture is there to prevent.
+        assert!(uv(LOGO_CELLS) > uv(THUMB_CELLS));
+    }
+
+    /// Blocks of a band tile it left to right and then downwards, from the row
+    /// the band starts at — and never overlap, whatever size they are.
+    #[test]
+    fn the_blocks_of_a_band_are_laid_out_inside_it() {
+        let cells_per_row = 16;
+        let band = 7;
+        for cells in [THUMB_CELLS, LOGO_CELLS] {
+            let per_row = cells_per_row / cells;
+            let mut seen: Vec<(u32, u32)> = Vec::new();
+            for block in 0..(per_row as usize * 3) {
+                let (col, row) = Gpu::band_cell(cells_per_row, band, cells, block);
+                assert!(row >= band, "a block above its own band");
+                assert!(col + cells <= cells_per_row, "a block off the right edge");
+                assert_eq!(col % cells, 0, "a block not aligned to its own edge");
+                assert_eq!((row - band) % cells, 0);
+                assert!(
+                    !seen.iter().any(|&(c, r)| c == col && r == row),
+                    "two blocks in one place"
+                );
+                seen.push((col, row));
+            }
+        }
     }
 
     /// A pane of glass, `size` across, at `x`.
@@ -2448,7 +3246,130 @@ mod tests {
             max_width,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         }
+    }
+
+    /// A halo is a ring and not a drop shadow: it goes the whole way round the
+    /// letters, evenly, and no copy of the run stands where the run itself
+    /// does.
+    #[test]
+    fn a_halo_rings_the_letters_rather_than_falling_to_one_side() {
+        let size = 20.0;
+        let copies = halo_copies(size, 1.0);
+
+        let reach = size * HALO_RING;
+        for (dx, dy, shade) in &copies {
+            let out = (dx * dx + dy * dy).sqrt();
+            assert!(out > 0.0, "a copy on top of the run shades nothing");
+            assert!(out <= reach + 1e-4, "{out} is further out than {reach}");
+            assert!(
+                *shade > 0.0 && *shade < 1.0,
+                "shade, not a blackout: {shade}"
+            );
+        }
+
+        // Evenly round, which is what "ring" means. A shadow that leaned would
+        // show up here as a centre of gravity away from the letters.
+        let (sum_x, sum_y) = copies
+            .iter()
+            .fold((0.0, 0.0), |(x, y), (dx, dy, _)| (x + dx, y + dy));
+        assert!(sum_x.abs() < 1e-3 && sum_y.abs() < 1e-3, "{sum_x}, {sum_y}");
+
+        // And close enough together, at every radius and every size the shell
+        // draws at, to still be a shadow. This is the one that guards the
+        // reach: widen a ring without letting its count follow and the copies
+        // pull apart into a row of little words.
+        for size in [14.0, 20.0, 23.0, 48.0] {
+            let copies = halo_copies(size, 1.0);
+            let mut around: std::collections::BTreeMap<i64, Vec<(f32, f32)>> = Default::default();
+            for (dx, dy, _) in &copies {
+                let radius = (dx * dx + dy * dy).sqrt();
+                // Bucketed coarsely: a copy's distance is rebuilt from a sine
+                // and a cosine, so one ring's copies do not all come back at
+                // bit-identical radii. The true radius is kept and the bucket
+                // is only how they are grouped.
+                around
+                    .entry((radius * 10.0).round() as i64)
+                    .or_default()
+                    .push((radius, dy.atan2(*dx)));
+            }
+            assert_eq!(around.len(), HALO_RINGS.len(), "one radius per ring");
+            for (_, mut ring) in around {
+                let radius = ring.iter().map(|(r, _)| *r).fold(0.0f32, f32::max);
+                ring.sort_by(|a, b| a.1.total_cmp(&b.1));
+                let angles: Vec<f32> = ring.iter().map(|(_, angle)| *angle).collect();
+                let widest = angles
+                    .windows(2)
+                    .map(|pair| pair[1] - pair[0])
+                    // Round the circle, from the last back to the first.
+                    .chain(std::iter::once(
+                        std::f32::consts::TAU - (angles[angles.len() - 1] - angles[0]),
+                    ))
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    widest * radius <= HALO_SPACING + 1e-3,
+                    "at size {size} the ring at {radius} leaves a gap of {}",
+                    widest * radius
+                );
+            }
+        }
+    }
+
+    /// A halo is asked for at a strength and drawn at it. Nothing else scales
+    /// it — in particular not the run's own colour, which is what a caller uses
+    /// to say a line is *quieter*, never that it should be harder to read.
+    #[test]
+    fn a_halo_is_drawn_at_the_strength_it_was_asked_for() {
+        assert!(
+            halo_copies(20.0, 0.0).is_empty(),
+            "a run that asked for none"
+        );
+        assert!(halo_copies(20.0, -1.0).is_empty());
+
+        let full = halo_copies(20.0, 1.0);
+        let half = halo_copies(20.0, 0.5);
+        assert_eq!(full.len(), half.len(), "it thins rather than shrinking");
+        for (whole, part) in full.iter().zip(&half) {
+            assert!((part.2 - whole.2 * 0.5).abs() < 1e-6);
+            assert_eq!((whole.0, whole.1), (part.0, part.1));
+        }
+
+        // Asked for more than the rings can carry, every copy stops at solid
+        // rather than running past it.
+        for (_, _, shade) in halo_copies(20.0, 40.0) {
+            assert_eq!(shade, 1.0);
+        }
+    }
+
+    /// The box a haloed run is cut to has to make room for the ring — and stop
+    /// making it where something is standing in front of the run.
+    #[test]
+    fn a_halo_gets_its_room_from_the_box_but_never_from_the_clip() {
+        let plain = label("Download finished", 300.0);
+        let ringed = Text {
+            halo: 1.0,
+            lines: 1,
+            ..plain.clone()
+        };
+        let bare = text_bounds(&plain);
+        let round = text_bounds(&ringed);
+        assert!(
+            round.left < bare.left && round.top < bare.top,
+            "room above and to the left"
+        );
+        assert!(round.right > bare.right && round.bottom > bare.bottom);
+
+        // A panel in front of the run cuts the ring exactly where it cuts the
+        // letters. A halo that leaked out from under something standing over
+        // it would be the outline of a word that is not there.
+        let covered = Text {
+            clip: Some([40.0, 4.0, 100.0, 20.0]),
+            ..ringed
+        };
+        let cut = text_bounds(&covered);
+        assert_eq!((cut.left, cut.top, cut.right, cut.bottom), (40, 4, 140, 24));
     }
 
     /// A run wider than its box is cut where the box ends, on the one line the
@@ -2477,6 +3398,67 @@ mod tests {
             reached.is_some_and(|reached| reached < title.len()),
             "the whole title was drawn after all"
         );
+    }
+
+    /// No line of a wrapped run begins with the space it was wrapped at.
+    ///
+    /// The layout builds the last line a run is allowed from the break the
+    /// ellipsis is measured against, and that break includes the blank the line
+    /// was broken at — so the closing line of a three-line announcement sat a
+    /// space in from the two above it, and read as though it had been indented
+    /// by hand.
+    #[test]
+    fn a_wrapped_line_does_not_begin_with_the_space_it_was_wrapped_at() {
+        let mut font_system = shell_fonts();
+        // Three lines exactly, which is what puts the third of them on the
+        // layout's ellipsis path, and a body cut short, which is the other.
+        for (content, size, bold, width, lines) in [
+            (
+                "File Downloaded. Actually not. I'm just testing a long title.",
+                23.0,
+                true,
+                280.0,
+                3,
+            ),
+            (
+                "now  ·  report.pdf has been saved. I'm testing how long can the \
+                 notification be in this shell in order to be readable.",
+                20.0,
+                false,
+                340.0,
+                3,
+            ),
+        ] {
+            let mut pool = Vec::new();
+            let mut run = label(content, width);
+            run.size = size;
+            run.bold = bold;
+            run.lines = lines;
+            shape_texts(&mut font_system, &mut pool, &[run]);
+
+            let (_, buffer) = &pool[0];
+            let runs: Vec<_> = buffer.layout_runs().collect();
+            assert_eq!(runs.len(), lines as usize, "{content:?} at {width}");
+            for line in &runs {
+                let first = line.glyphs.first().expect("a line with letters on it");
+                assert!(
+                    !content[first.start..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_whitespace),
+                    "line {:?} of {content:?} begins with a space",
+                    &content[first.start..line.glyphs.last().unwrap().end]
+                );
+                // And every line starts where the one above it does, which is
+                // what the reader actually sees.
+                assert!(
+                    first.x.abs() < 0.01,
+                    "line {:?} is indented by {}",
+                    &content[first.start..line.glyphs.last().unwrap().end],
+                    first.x
+                );
+            }
+        }
     }
 
     /// And a label that fits is left alone: nothing is trimmed from a run

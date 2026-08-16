@@ -30,10 +30,17 @@
 //! ## Knowing what it is doing
 //!
 //! There is no API to ask. What there is, is the pipe the client listens on and
-//! the log it keeps of its own connection — and between them they answer the
-//! only two questions the shell has: is it up, and is it signed in. See
+//! the log it keeps of its own connection — and between them they answer two of
+//! the three questions the shell has: is it up, and is it signed in. See
 //! [`State`], which is read from the disk in about a millisecond and is
 //! therefore something the worker can poll.
+//!
+//! The third is **whose it is**, and neither of those can answer it. There is
+//! one pipe in one home directory and every session on the machine shares it,
+//! so a client belonging to a desktop the user left running answers exactly as
+//! this session's own would — and then starts its games on that desktop. It is
+//! read out of the client's own environment instead; see [`in_this_session`],
+//! which is asked once per [`wake`] rather than polled.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -369,9 +376,24 @@ pub enum Need {
 /// The whole of what "Steam is available in the background" means, in one call:
 /// start it if it is not running, wait for it to sign in, and — if it cannot do
 /// that on its own — give it this session's credential through
-/// [`crate::webui`]. A client that is already up and meets `need` returns at
-/// once, so this is what every Steam-backed press asks for and only the first
-/// one pays for.
+/// [`crate::webui`]. A client of this session's that is already up and meets
+/// `need` returns at once, so this is what every Steam-backed press asks for
+/// and only the first one pays for.
+///
+/// ## Whose client it is
+///
+/// Every other question here is about what the client is *doing*; this one is
+/// about which session it belongs to, and it is asked first because a client
+/// on another display passes every other test there is. It is up, it is signed
+/// in, it takes the URL and it starts the game — onto the desktop the user
+/// left running behind this one. See [`in_this_session`].
+///
+/// A client that is not this session's is stopped and started again here, which
+/// is the only thing that moves it: where it draws is fixed when it starts.
+/// That is somebody's Steam being taken away, so it happens on evidence and
+/// never on a guess — and it is the answer the alternative deserves, which is
+/// a shell that says a game did not start while the game is running on a screen
+/// nobody is looking at.
 ///
 /// ## What this exposes, and when
 ///
@@ -408,30 +430,56 @@ pub fn wake(
     refresh_token: &str,
     need: Need,
 ) -> Result<(), String> {
-    if met(need, client, options) {
+    // Asked before anything else is, because it is the one thing a client can
+    // be wrong about while looking perfectly right: up, signed in, meeting
+    // every `need` there is, and attached to somebody else's display. See
+    // `in_this_session`.
+    let elsewhere = state(Some(client), options).running() && !in_this_session(options);
+
+    if !elsewhere && met(need, client, options) {
         return Ok(());
     }
 
     let mut ours = false;
     let mut fresh = false;
-    if !state(Some(client), options).running() {
+    // Kept rather than returned on, so that a start which fails still reaches
+    // the withdrawal below. Restarting a client that will not let go of its
+    // pipe is the likeliest way for this to fail and it fails *after* the
+    // marker is up, which without this would leave the next Steam somebody
+    // starts for themselves exposing a debugging port nobody asked for.
+    let mut up = Ok(());
+    if elsewhere {
+        // Started again rather than left alone, because there is nothing else
+        // that would work: where a client draws is fixed when it starts, and
+        // no URL handed to it afterwards can move it. The cost is real and
+        // falls on the other session — its Steam goes, and any download with
+        // it — and it is still the better half of the trade, because the other
+        // half is a shell whose games silently open on a screen the person
+        // pressing the button is not looking at.
+        tracing::info!("Valve's client belongs to another session; starting it again in this one");
+        ours = expose(options)?;
+        fresh = true;
+        up = restart(client, options);
+    } else if !state(Some(client), options).running() {
         // Before it is started, not after: the client tests for this file as
         // it comes up and never looks again, so the order here is the whole of
         // why it works.
         ours = expose(options)?;
         fresh = true;
-        start(client, options).map_err(|error| format!("Steam would not start: {error}"))?;
+        up = start(client, options).map_err(|error| format!("Steam would not start: {error}"));
     }
 
-    let woken = bring_up(
-        client,
-        options,
-        account,
-        refresh_token,
-        need,
-        fresh,
-        &mut ours,
-    );
+    let woken = up.and_then(|()| {
+        bring_up(
+            client,
+            options,
+            account,
+            refresh_token,
+            need,
+            fresh,
+            &mut ours,
+        )
+    });
 
     // Whatever happened, the marker is spent: it is read as the client starts
     // and never again, so by now it has either done its work or is not going
@@ -626,6 +674,146 @@ fn running(home: &Path) -> bool {
         .custom_flags(libc::O_NONBLOCK)
         .open(home.join("steam.pipe"))
         .is_ok()
+}
+
+/// What decides which session a process draws into.
+///
+/// Both, and not either on its own. Valve's client reaches the screen through
+/// Xwayland and its games may reach it either way — a Proton title uses Wine's
+/// X11 driver, a native one is as likely to be Wayland — so a client that
+/// matched on one of these and not the other would be a client whose games can
+/// still come up somewhere nobody is looking.
+///
+/// They are also the only two variables read out of another process here. The
+/// environment of Valve's client holds rather more than this, none of which is
+/// any of the shell's business, so [`displays_in`] keeps these and drops the
+/// rest as it parses rather than copying a stranger's environment about.
+const DRAWS_INTO: [&str; 2] = ["WAYLAND_DISPLAY", "DISPLAY"];
+
+/// Whether the client that is running belongs to *this* session.
+///
+/// The question exists because `~/.steam/steam.pipe` is one path in one home
+/// directory and every session on the machine shares it. [`running`] is
+/// therefore true of a client on any of them, and a shell that stopped there
+/// hands `steam://rungameid/…` to whichever client happens to be listening. It
+/// is not refused and nothing fails: Steam starts the game perfectly, onto the
+/// display *that* client is attached to, and this session waits out its
+/// patience for a window that was never coming here.
+///
+/// Which is the one failure in this module that leaves no trace anywhere. The
+/// game's own logs show a clean launch, Steam's show a clean handover, and the
+/// only thing that is wrong is the screen it went to — so it reads to the user
+/// as a game that did not start, and to anybody reading the logs afterwards as
+/// a game that did.
+///
+/// **Unsure counts as ours.** Every `None` here means the shell could not find
+/// out — no process holding the pipe, an environment it may not read — and the
+/// two ways of being wrong are not equal. Treating a client of ours as foreign
+/// stops somebody's Steam and takes their download with it; treating a foreign
+/// one as ours costs a loading screen. So the destructive answer is only ever
+/// given on evidence.
+///
+/// Public because it is the one thing about a misdelivered launch that can be
+/// checked from outside — `probe-client` reports it — and because there is no
+/// other way to find out afterwards: everything either side of it looks right.
+pub fn in_this_session(options: &Options) -> bool {
+    let Some(pid) = holder_of(&options.home.join("steam.pipe")) else {
+        return true;
+    };
+    let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
+        return true;
+    };
+    let theirs = displays_in(&environ);
+    let ours: Vec<Option<String>> = DRAWS_INTO
+        .iter()
+        .map(|name| std::env::var(name).ok())
+        .collect();
+    if theirs == ours {
+        return true;
+    }
+    tracing::info!(
+        pid,
+        ?theirs,
+        ?ours,
+        "Valve's client is drawing into another session"
+    );
+    false
+}
+
+/// The process listening on that pipe, if it can be found.
+///
+/// Found by walking `/proc` rather than by reading the pid file, for the reason
+/// [`running`] gives: the pid file names whichever `steam` ran last, which is
+/// routinely one of this module's own one-shot helpers.
+///
+/// Only a process holding it **open for reading** counts, which is what makes
+/// this the client and not a passer-by. A FIFO has writers as well, and this
+/// module produces them — [`running`] opens it for writing on every poll, and
+/// so does every `steam steam://…` that hands a URL over — so a scan that took
+/// the first process it found holding the pipe would sooner or later find one
+/// of ours, read our own environment out of it, and conclude that whatever is
+/// running is ours by definition.
+fn holder_of(pipe: &Path) -> Option<u32> {
+    let pipe = std::fs::canonicalize(pipe).ok()?;
+    for process in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // Not readable for a process belonging to another user, which is a
+        // process this shell has no business asking about anyway.
+        let Ok(open) = std::fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for handle in open.flatten() {
+            // A descriptor can close between the two calls, so neither the
+            // link nor the flags being unreadable means anything but "not this
+            // one".
+            if std::fs::read_link(handle.path()).is_ok_and(|target| target == pipe)
+                && opened_for_reading(&process.path(), &handle.file_name())
+            {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+/// Whether one open descriptor of one process was opened for reading.
+///
+/// `/proc/<pid>/fdinfo/<fd>` carries the flags the descriptor was opened with,
+/// in octal, which is the only place the read/write half of it is written down
+/// — the symbolic link in `fd/` names the file and says nothing about how it
+/// is held.
+fn opened_for_reading(process: &Path, handle: &std::ffi::OsStr) -> bool {
+    let Ok(info) = std::fs::read_to_string(process.join("fdinfo").join(handle)) else {
+        return false;
+    };
+    info.lines()
+        .filter_map(|line| line.strip_prefix("flags:"))
+        .filter_map(|flags| u32::from_str_radix(flags.trim(), 8).ok())
+        .any(|flags| flags & (libc::O_ACCMODE as u32) == (libc::O_RDONLY as u32))
+}
+
+/// [`DRAWS_INTO`], read out of the `NUL`-separated block `/proc/<pid>/environ`
+/// is, in that order, and nothing else out of it.
+///
+/// An absent variable stays absent rather than becoming empty: a session with
+/// no Xwayland sets no `DISPLAY` at all, and it must not compare equal to one
+/// whose `DISPLAY` is the empty string.
+fn displays_in(environ: &[u8]) -> Vec<Option<String>> {
+    let named = |wanted: &str| {
+        environ
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| std::str::from_utf8(entry).ok())
+            .filter_map(|entry| entry.split_once('='))
+            .find(|(name, _)| *name == wanted)
+            .map(|(_, value)| value.to_string())
+    };
+    DRAWS_INTO.iter().map(|name| named(name)).collect()
 }
 
 /// The account the client is signed in as, if it is signed in.
@@ -984,5 +1172,60 @@ mod tests {
         // is a game started against a client that is not there.
         let client = Where::Native(PathBuf::from("/usr/bin/steam"));
         assert_eq!(state(Some(&client), &nowhere), State::Stopped);
+    }
+
+    /// The comparison that decides whether the running client is this
+    /// session's, on the environment blocks that produced the bug.
+    ///
+    /// The first is a client Plasma started, read out of `/proc` on the machine
+    /// where a game was pressed in the shell, launched perfectly, and opened on
+    /// the other desktop. The second is what the compositor gives everything it
+    /// starts. Nothing else about them differs enough to matter and no log
+    /// anywhere records the difference, which is why it is checked here.
+    #[test]
+    fn a_client_on_another_display_is_not_this_sessions() {
+        let plasma =
+            b"LANG=en_GB.UTF-8\0WAYLAND_DISPLAY=wayland-0\0DISPLAY=:1\0XDG_CURRENT_DESKTOP=KDE\0";
+        let shell = b"LANG=en_GB.UTF-8\0WAYLAND_DISPLAY=lxb-0\0DISPLAY=:2\0XDG_CURRENT_DESKTOP=LineXinBar\0";
+
+        assert_ne!(displays_in(plasma), displays_in(shell));
+        assert_eq!(displays_in(shell), displays_in(shell));
+
+        // Only the two that decide where a window goes are read out at all;
+        // the rest of a stranger's environment is nobody's business here.
+        assert_eq!(
+            displays_in(plasma),
+            vec![Some("wayland-0".to_string()), Some(":1".to_string())]
+        );
+    }
+
+    /// A session with no Xwayland sets no `DISPLAY`, and that is not the same
+    /// thing as one whose `DISPLAY` is empty — the direction that matters,
+    /// because treating them as equal adopts a client drawing elsewhere and
+    /// treating an absent one as empty stops a Steam that was fine.
+    #[test]
+    fn an_absent_display_is_not_an_empty_one() {
+        assert_eq!(
+            displays_in(b"WAYLAND_DISPLAY=lxb-0\0"),
+            vec![Some("lxb-0".to_string()), None]
+        );
+        assert_ne!(
+            displays_in(b"WAYLAND_DISPLAY=lxb-0\0"),
+            displays_in(b"WAYLAND_DISPLAY=lxb-0\0DISPLAY=\0")
+        );
+    }
+
+    /// Nothing running holds the pipe of a home directory that does not exist,
+    /// so there is nobody to be foreign — and the shell says so rather than
+    /// guessing, because the guess in the other direction stops somebody's
+    /// Steam.
+    #[test]
+    fn an_unfindable_client_is_left_alone() {
+        let nowhere = Options {
+            root: PathBuf::from("/nonexistent"),
+            home: PathBuf::from("/nonexistent"),
+        };
+        assert_eq!(holder_of(&nowhere.home.join("steam.pipe")), None);
+        assert!(in_this_session(&nowhere));
     }
 }

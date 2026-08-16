@@ -128,6 +128,23 @@ const LEFT_STICK_Y: usize = 12;
 const RIGHT_STICK_X: usize = 14;
 const RIGHT_STICK_Y: usize = 16;
 
+/// Four separate pairs, in order, inside the report — checked while the crate
+/// is compiled rather than while it is tested.
+///
+/// These are four numbers taken off a capture, and the way they go wrong is
+/// somebody editing one of them: two axes that overlap read the same bytes, so
+/// a stick pushed sideways moves diagonally, and a pair past the end of the
+/// report panics on the first frame the pad sends. Neither is anything the
+/// hardware could tell us — the offsets are constants, so the answer is known
+/// before the program runs, and a build is a far better place to learn it than
+/// a hand on a stick.
+const _: () = {
+    assert!(LEFT_STICK_Y >= LEFT_STICK_X + 2);
+    assert!(RIGHT_STICK_X >= LEFT_STICK_Y + 2);
+    assert!(RIGHT_STICK_Y >= RIGHT_STICK_X + 2);
+    assert!(RIGHT_STICK_Y + 2 <= REPORT_LEN);
+};
+
 /// Whether the report's vertical axes count upwards.
 ///
 /// The shell's convention is positive-up, as every gamepad API normalises it,
@@ -494,8 +511,12 @@ mod tests {
         assert_eq!(decode_stick(&rest, LEFT_STICK_X, LEFT_STICK_Y), (0.0, 0.0));
     }
 
-    /// The offsets the capture found, and the fact that the four axes are four
-    /// distinct 16-bit fields rather than overlapping ones.
+    /// The offsets the capture found: each axis reads its own two bytes and
+    /// leaves the next axis alone.
+    ///
+    /// That the four fields do not overlap at all is not asserted here — it is
+    /// arithmetic on constants, and it is checked where they are declared, on
+    /// every build rather than on every test run.
     #[test]
     fn the_sticks_are_four_separate_little_endian_pairs() {
         for (x_at, y_at) in [(LEFT_STICK_X, LEFT_STICK_Y), (RIGHT_STICK_X, RIGHT_STICK_Y)] {
@@ -506,12 +527,6 @@ mod tests {
             assert!((x - 1.0).abs() < 1e-3, "x reached full travel: {x}");
             assert_eq!(y, 0.0, "the other axis did not move");
         }
-
-        // And the two sticks do not share a byte.
-        assert!(LEFT_STICK_Y >= LEFT_STICK_X + 2);
-        assert!(RIGHT_STICK_X >= LEFT_STICK_Y + 2);
-        assert!(RIGHT_STICK_Y >= RIGHT_STICK_X + 2);
-        assert!(RIGHT_STICK_Y + 2 <= REPORT_LEN);
     }
 
     #[test]

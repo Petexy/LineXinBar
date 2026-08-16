@@ -104,6 +104,11 @@ where
         elements.extend(cursor.render(renderer, position, scale, lxb.start_time.elapsed()));
     }
 
+    // Everything from here on is the session itself. A frame that adds nothing
+    // past this mark is a frame with no session in it yet, which is what the
+    // startup wallpaper at the bottom of this function answers.
+    let session_content_starts_at = elements.len();
+
     let layer_map = layer_map_for_output(output);
 
     let push_layer = |elements: &mut Vec<LxbRenderElement<R>>, layer: Layer, renderer: &mut R| {
@@ -177,6 +182,32 @@ where
 
     push_layer(&mut elements, Layer::Bottom, renderer);
     push_layer(&mut elements, Layer::Background, renderer);
+
+    // Behind everything, and only while there is no everything: the wallpaper
+    // the session draws for itself, so the displays are never handed over to a
+    // black screen — in either direction. See `crate::backdrop`.
+    //
+    // Decided from the frame rather than from the session's state, because
+    // this is the question the frame is actually asking. A shell that has
+    // started, been configured and not yet attached a buffer contributes no
+    // element here; so does a shell that has exited and taken its surfaces
+    // with it. Both are frames with no session in them, and both used to be
+    // the clear colour.
+    //
+    // Asking for the element is also what keeps the wallpaper being painted:
+    // this is the only place that knows it is on screen.
+    if let Some(backdrop) = (elements.len() == session_content_starts_at)
+        .then_some(lxb.backdrop.as_ref())
+        .flatten()
+    {
+        match backdrop.element(renderer, output_geo.size) {
+            Ok(element) => elements.push(LxbRenderElement::Memory(element)),
+            // Nothing else in the frame depends on it, and the clear colour is
+            // still underneath. A session that comes up is worth more than one
+            // that refused to over its own wallpaper.
+            Err(err) => tracing::warn!(?err, "could not upload the startup wallpaper"),
+        }
+    }
 
     elements
 }

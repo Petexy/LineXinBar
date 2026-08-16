@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="19">
+  <interface name="lxb_shell_v1" version="20">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -639,6 +639,51 @@
       <arg name="hidden" type="uint" summary="1 to keep its windows off the screen, 0 to show them again"/>
     </request>
 
+    <request name="set_output_night_light" since="20">
+      <description summary="warm one display's picture, or stop">
+        Puts a night light — a blue light filter — on one display: everything
+        it shows is tinted towards the given colour temperature, so a screen
+        looked at in the evening is not a daylight-white one.
+
+        It is the CRTC's gamma ramp, which is why it is the compositor's to
+        carry out for the reason HDR is: the ramp is a KMS property on a
+        pipe only a modesetting client may commit to, it acts on everything
+        scanned out rather than on anything a client drew, and it has to
+        survive the shell being restarted.
+
+        temperature is in kelvin, and lower is warmer: 6500 K is ordinary
+        daylight white and is what an untinted display already shows, 4000 K
+        is an evening setting, and 2000 K is candlelight. It is clamped into
+        the range this compositor can encode rather than refused, because a
+        display left at some other temperature is a worse way to report a
+        number out of range than the nearest one that means something.
+
+        The two values go together because they are one ramp and are applied
+        as one commit, which is also what makes this idempotent: an unchanged
+        pair is recognised and costs nothing.
+
+        *When* the light is on is the shell's, not the compositor's. A
+        schedule is a clock and a time zone, and both belong to the session
+        that has a Settings page to set them on — so the shell sends enabled
+        = 1 when its own schedule says the light should be burning now, and
+        0 when it should not.
+
+        This composes with set_output_hdr rather than competing with it. On a
+        display being driven in HDR the tint is folded into the same ramp
+        that does the PQ encoding, so both are in force at once and neither
+        undoes the other.
+
+        Ignored, with the setting remembered, when the display has no gamma
+        ramp to warm: see the output_night_light event, which is how a shell
+        knows whether to offer this at all. Silently ignored when the output
+        is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to warm"/>
+      <arg name="enabled" type="uint" summary="1 to warm the picture now, 0 to leave it alone"/>
+      <arg name="temperature" type="uint"
+           summary="colour temperature in kelvin; lower is warmer, 6500 is daylight"/>
+    </request>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -843,6 +888,35 @@
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
       <arg name="controls" type="uint" enum="hdr_control"
            summary="the settings this display can honour"/>
+    </event>
+
+    <event name="output_night_light" since="20">
+      <description summary="whether one display can be warmed, and whether it is">
+        Says whether a display's picture can be tinted towards a warmer colour
+        temperature, and whether it currently is.
+
+        supported is 1 when this display has a gamma ramp the compositor can
+        commit to. It is a much lower bar than HDR — no EDID claim is needed
+        and nothing is asked of the link — so almost every real connector
+        clears it. What does not is a session running nested inside another
+        compositor, which owns no CRTC and therefore no ramp; there the
+        setting can be remembered but never carried out, and a page that went
+        on offering it would be describing a display that does not exist.
+
+        active is what the compositor is actually doing, not what it was last
+        asked for. The two differ exactly when a request could not be carried
+        out, which is the case a shell must not present as success.
+
+        Nothing here says *why* the light is on: whether that is a schedule or
+        a switch is the shell's own business, since the schedule never left
+        it. See set_output_night_light.
+
+        Sent once per display when a version 20 object is bound, and again
+        whenever either value changes.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="supported" type="uint" summary="1 when this display's picture can be warmed"/>
+      <arg name="active" type="uint" summary="1 when it currently is"/>
     </event>
 
     <enum name="mode_flag" bitfield="true" since="11">

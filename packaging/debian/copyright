@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: LineXinBar
-Source: https://github.com/petexy/project-linexinbar
+Source: https://github.com/Petexy/LineXinBar
 
 Files: *
 Copyright: 2026 Piotr Lewandowski and contributors

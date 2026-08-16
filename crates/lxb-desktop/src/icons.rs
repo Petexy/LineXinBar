@@ -17,10 +17,12 @@ const MAX_THEME_DEPTH: usize = 8;
 pub const VOLUME: &str = "lxb:volume";
 pub const VOLUME_MUTED: &str = "lxb:volume-muted";
 pub const BRIGHTNESS: &str = "lxb:brightness";
-/// The two tiles above the quick-settings bars: driving the pointer from the
-/// right stick, and the per-application volume mixer.
+/// The four tiles above the quick-settings bars: driving the pointer from the
+/// right stick, the per-application volume mixer, whether anything is allowed
+/// to interrupt, and what has been announced to the session while the user was
+/// elsewhere.
 ///
-/// Every glyph in the guide is lit by the same lamp above it, but these two
+/// Every glyph in the guide is lit by the same lamp above it, but these four
 /// carry the most of that modelling: a gloss boundary that curves with the
 /// object, shadow cast from one part onto the next, and controls sunk into
 /// wells. They can afford it because they are the largest of the set — a tile
@@ -28,8 +30,15 @@ pub const BRIGHTNESS: &str = "lxb:brightness";
 /// hint 27, and a seam or a well drawn at 27 px is three grey pixels of
 /// smudge. How much of the modelling each glyph keeps is a question of the
 /// size it is drawn at and not of style; see brightness.svg for the reduction.
+///
+/// [`DO_NOT_DISTURB`] is the one mark in the shell that is knowingly a second
+/// drawing of an object already in the set — [`SETTING_NIGHT_LIGHT`] is a moon
+/// too. See do-not-disturb.svg for what keeps the two apart and why the rule
+/// was bent for this one.
 pub const POINTER_STICK: &str = "lxb:pointer-stick";
 pub const VOLUME_MIXER: &str = "lxb:volume-mixer";
+pub const DO_NOT_DISTURB: &str = "lxb:do-not-disturb";
+pub const NOTIFICATIONS: &str = "lxb:notifications";
 /// The two controller buttons the keyboard hint names. Drawn by position
 /// rather than by letter, because A/B/X/Y are swapped between Xbox and
 /// Nintendo pads and mean nothing at all on a PlayStation one, and Select is
@@ -141,6 +150,22 @@ pub const SETTING_RESOLUTION: &str = "lxb:setting-resolution";
 pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
 pub const SETTING_ORIENTATION: &str = "lxb:setting-orientation";
 pub const SETTING_HDR: &str = "lxb:setting-hdr";
+
+/// Settings > Display > Night light: the blue light filter, and the hours it
+/// keeps.
+///
+/// [`SETTING_NIGHT_LIGHT`] is a crescent moon, drawn against [`BRIGHTNESS`]'s
+/// sun on purpose — the same ball with the light taken off most of it. It goes
+/// on the Night light folder and on the switch inside it, and nowhere else, the
+/// way [`SETTING_HDR`] is kept to HDR.
+///
+/// [`SETTING_SCHEDULE`] is a clock face, worn by both hour rows: they are two
+/// ends of one thing and the shell has one picture of a time. It is not the
+/// moon, because the row above them already says which setting these hours
+/// belong to and repeating it there would leave three identical marks down one
+/// column.
+pub const SETTING_NIGHT_LIGHT: &str = "lxb:setting-night-light";
+pub const SETTING_SCHEDULE: &str = "lxb:setting-schedule";
 /// The device everything on the machine records from, under Settings > Sounds.
 ///
 /// The one row of that page with a drawing of its own rather than a borrowed
@@ -240,12 +265,14 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 54] = [
+pub const BUILTIN: [(&str, &str); 58] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
     (POINTER_STICK, include_str!("glyphs/pointer-stick.svg")),
     (VOLUME_MIXER, include_str!("glyphs/volume-mixer.svg")),
+    (DO_NOT_DISTURB, include_str!("glyphs/do-not-disturb.svg")),
+    (NOTIFICATIONS, include_str!("glyphs/notifications.svg")),
     (PAD_SELECT, include_str!("glyphs/pad-select.svg")),
     (PAD_WEST, include_str!("glyphs/pad-west.svg")),
     (ARROW_LEFT, include_str!("glyphs/arrow-left.svg")),
@@ -323,6 +350,14 @@ pub const BUILTIN: [(&str, &str); 54] = [
         SETTING_ROTATION_270,
         include_str!("glyphs/setting-rotation-270.svg"),
     ),
+    (
+        SETTING_NIGHT_LIGHT,
+        include_str!("glyphs/setting-night-light.svg"),
+    ),
+    (
+        SETTING_SCHEDULE,
+        include_str!("glyphs/setting-schedule.svg"),
+    ),
     (SETTING_HDR, include_str!("glyphs/setting-hdr.svg")),
     (
         SETTING_MICROPHONE,
@@ -366,6 +401,62 @@ impl Icon {
         Some(Icon {
             size,
             rgba: rasterise_svg(svg.as_bytes(), None, size)?,
+        })
+    }
+
+    /// Build one out of pixels somebody handed over rather than out of a file.
+    ///
+    /// For the announcement that carries its picture as raw bytes — album art,
+    /// a correspondent's face — which arrives as a block of samples and a
+    /// description of how to read it, and never as anything nameable.
+    ///
+    /// `stride` is the distance from one row of that block to the next, which
+    /// is not always the width: a sender is free to pad its rows, and reading
+    /// the block as though it were tight is what turns a padded picture into a
+    /// diagonal smear. `channels` is three or four, and three means every
+    /// pixel is opaque.
+    ///
+    /// Scaled to `size` the same way a file is, so a picture of any shape ends
+    /// up square without being stretched into one.
+    pub fn from_pixels(
+        width: u32,
+        height: u32,
+        stride: u32,
+        channels: u32,
+        data: &[u8],
+        size: u32,
+    ) -> Option<Self> {
+        if width == 0 || height == 0 || size == 0 || !(3..=4).contains(&channels) {
+            return None;
+        }
+        let row = width.checked_mul(channels)?;
+        if stride < row {
+            return None;
+        }
+        // The last row need only be as long as the picture is wide: a sender
+        // that padded every row *between* its rows has no reason to pad past
+        // the end, and refusing that would be refusing a valid picture.
+        let needed = stride
+            .checked_mul(height.checked_sub(1)?)?
+            .checked_add(row)?;
+        if data.len() < needed as usize {
+            return None;
+        }
+
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            let start = (y * stride) as usize;
+            for x in 0..width {
+                let pixel = start + (x * channels) as usize;
+                rgba.extend_from_slice(&data[pixel..pixel + 3]);
+                rgba.push(if channels == 4 { data[pixel + 3] } else { 255 });
+            }
+        }
+
+        let buffer = image::RgbaImage::from_raw(width, height, rgba)?;
+        Some(Icon {
+            size,
+            rgba: fit_raster(image::DynamicImage::ImageRgba8(buffer), size),
         })
     }
 }
@@ -704,30 +795,152 @@ fn current_theme() -> String {
         }
     }
     // KDE records it here; GTK has its own file. Reading them is cheap.
-    if let Some(theme) = read_kde_theme() {
+    //
+    // Both, now. This said the same and read only KDE's, which meant a machine
+    // configured through GTK alone — GNOME, XFCE, or a bare session where the
+    // user has set a theme and nothing else — fell all the way back to
+    // hicolor. That is survivable for application icons, because a program
+    // installs its own into hicolor, and it is not survivable for the standard
+    // names: `software-update-available` and its like come *from* a theme, and
+    // hicolor is exactly the theme that does not carry them. An announcement
+    // naming one got the bell.
+    if let Some(theme) = read_kde_theme().or_else(read_gtk_theme) {
+        return theme;
+    }
+    // And when neither desktop is here to have left a file — which is the
+    // machine this shell is *for*, a console with no desktop on it at all —
+    // the shell picks one itself rather than falling to hicolor.
+    //
+    // Falling to hicolor is not a neutral default, it is a broken one. hicolor
+    // is the place a program installs its *own* icon, so an application still
+    // has a picture there; what it has never carried is the standard names —
+    // `software-update-available`, `dialog-warning`, `network-wireless` — and
+    // those are exactly what a program names when it announces something. A
+    // session with no desktop would have had a bell on every announcement,
+    // with a perfectly good theme sitting installed on the disk unread.
+    //
+    // Only when nothing has been configured, so a user who has said what they
+    // want is never second-guessed, and it costs nothing on a machine that has
+    // said: this does not run at all until both files have come back empty.
+    if let Some(theme) = any_installed_theme(&icon_roots()) {
+        tracing::info!(theme, "no desktop has named an icon theme; using this one");
         return theme;
     }
     "hicolor".to_string()
 }
 
+/// The themes most likely to be both installed and complete, in the order they
+/// are worth trying.
+///
+/// The two that ship with the two toolkits: a machine with any GTK application
+/// on it usually has Adwaita, and one with any Qt application usually has
+/// Breeze. Papirus after them because it is the one people install on purpose.
+///
+/// A list of names is a blunt instrument and it is the honest one here. The
+/// alternative is to rank what is installed by how many icons it carries,
+/// which means walking every theme on the disk to answer a question asked once
+/// per session, and still gets it wrong — the biggest theme is not the most
+/// complete one, it is the one with the most sizes.
+const LIKELY_THEMES: [&str; 3] = ["Adwaita", "breeze", "Papirus"];
+
+/// A theme that is actually on this machine, when nothing has said which to
+/// use.
+///
+/// Anything with an `index.theme` that lists directories. That last part is
+/// what keeps cursor themes out: a cursor theme is an icon theme by file
+/// layout — same place on disk, same index file — and carries no icons at all,
+/// so a session that picked one would be back to having none.
+fn any_installed_theme(roots: &[PathBuf]) -> Option<String> {
+    let mut found: Vec<String> = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if name == "hicolor" || found.contains(&name) {
+                continue;
+            }
+            if read_ini_key(
+                &entry.path().join("index.theme"),
+                Some("[Icon Theme]"),
+                "Directories",
+            )
+            .is_some()
+            {
+                found.push(name);
+            }
+        }
+    }
+
+    LIKELY_THEMES
+        .into_iter()
+        .find(|likely| found.iter().any(|name| name == likely))
+        .map(str::to_string)
+        // Failing all of those, whatever is here — sorted, so that two
+        // sessions on one machine make the same choice and the shell does not
+        // change its look because a directory was read back in another order.
+        .or_else(|| {
+            found.sort();
+            found.into_iter().next()
+        })
+}
+
 fn read_kde_theme() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".config/kdeglobals");
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    read_ini_key(&home.join(".config/kdeglobals"), Some("[Icons]"), "Theme")
+}
+
+/// GTK 4 first and then GTK 3, so a machine that has moved on is read as it is
+/// now rather than as it was.
+fn read_gtk_theme() -> Option<String> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    ["gtk-4.0", "gtk-3.0"].into_iter().find_map(|version| {
+        read_ini_key(
+            &home.join(format!(".config/{version}/settings.ini")),
+            Some("[Settings]"),
+            "gtk-icon-theme-name",
+        )
+    })
+}
+
+/// One `Key=Value` out of a desktop-style ini file.
+///
+/// `section` is the header the key has to be under, or `None` for a file with
+/// no sections. GTK's own `settings.ini` is supposed to have a `[Settings]`
+/// header and is routinely written without one, so a file whose first line is
+/// already a key is read as though the header it was missing had been there —
+/// anything else would be refusing to read a file the toolkit that owns it
+/// reads happily.
+///
+/// Takes the file rather than finding it, so that what it does can be tested
+/// without a test setting `HOME` — an environment variable is one per process,
+/// and tests here run beside each other.
+fn read_ini_key(path: &Path, section: Option<&str>, key: &str) -> Option<String> {
     let raw = std::fs::read_to_string(path).ok()?;
 
-    let mut in_icons = false;
+    let mut inside = section.is_none();
+    let mut seen_any_section = false;
     for line in raw.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_icons = line == "[Icons]";
+            seen_any_section = true;
+            inside = section.is_none_or(|wanted| line == wanted);
             continue;
         }
-        if in_icons {
-            if let Some(value) = line.strip_prefix("Theme=") {
-                let value = value.trim();
-                if !value.is_empty() {
-                    return Some(value.to_string());
-                }
+        if !inside && seen_any_section {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix(key).and_then(|rest| {
+            // The key and nothing longer that starts with it, and the equals
+            // sign may have spaces round it as GTK writes them.
+            rest.trim_start().strip_prefix('=')
+        }) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
             }
         }
     }
@@ -817,6 +1030,146 @@ mod tests {
                 .collect(),
             cache: HashMap::new(),
         }
+    }
+
+    /// The icon theme is read from whichever file the machine happens to keep
+    /// it in, and read the way the toolkits that own those files write them.
+    ///
+    /// This decides whether a *name* resolves to anything at all. Only KDE's
+    /// file was read, so a machine configured through GTK alone fell back to
+    /// hicolor — survivable for application icons, which programs install into
+    /// hicolor themselves, and not survivable for the standard names an
+    /// announcement gives, which come from a theme and are the one thing
+    /// hicolor does not carry.
+    #[test]
+    fn the_icon_theme_is_read_from_either_desktops_file() {
+        let tree = TestTree::new("theme");
+
+        let kde = tree.join("kdeglobals");
+        write(
+            &kde,
+            "[General]\nTheme=NotThisOne\n\n[Icons]\nTheme=Tela-dark\n",
+        );
+        assert_eq!(
+            read_ini_key(&kde, Some("[Icons]"), "Theme").as_deref(),
+            Some("Tela-dark"),
+            "the key under the section that was asked for, not the first that matches"
+        );
+
+        // GTK writes spaces round the equals and does not always write the
+        // header at all.
+        let gtk = tree.join("settings.ini");
+        write(&gtk, "[Settings]\ngtk-icon-theme-name = Papirus\n");
+        assert_eq!(
+            read_ini_key(&gtk, Some("[Settings]"), "gtk-icon-theme-name").as_deref(),
+            Some("Papirus")
+        );
+        write(&gtk, "gtk-icon-theme-name=Papirus\n");
+        assert_eq!(
+            read_ini_key(&gtk, Some("[Settings]"), "gtk-icon-theme-name").as_deref(),
+            Some("Papirus"),
+            "a headerless file is read the way GTK itself reads it"
+        );
+
+        // A key that merely starts with the one wanted is a different key.
+        write(&gtk, "[Settings]\ngtk-icon-theme-name-fallback=Wrong\n");
+        assert_eq!(
+            read_ini_key(&gtk, Some("[Settings]"), "gtk-icon-theme-name"),
+            None
+        );
+
+        // And nothing is not something: an empty value leaves the search where
+        // it was rather than naming a theme called "".
+        write(&gtk, "[Settings]\ngtk-icon-theme-name=\n");
+        assert_eq!(
+            read_ini_key(&gtk, Some("[Settings]"), "gtk-icon-theme-name"),
+            None
+        );
+        assert_eq!(
+            read_ini_key(&tree.join("absent.ini"), None, "anything"),
+            None
+        );
+    }
+
+    /// Pixels handed over rather than read off the disk: padded rows are
+    /// stepped over, three channels means opaque, and a header that does not
+    /// describe the buffer behind it is refused.
+    ///
+    /// The padding is the part worth a test. A sender is free to pad each row
+    /// out to a convenient boundary, and reading the block as though it were
+    /// tight does not fail — it draws the picture sheared into a diagonal
+    /// smear, one row further wrong than the last.
+    #[test]
+    fn pixels_handed_over_are_read_the_way_they_were_described() {
+        // Two red pixels a row, two rows, with four bytes of padding after
+        // each. Anything reading it tightly picks the padding up as colour.
+        let red = [255u8, 0, 0, 255];
+        let padding = [9u8; 4];
+        let mut padded = Vec::new();
+        for _ in 0..2 {
+            padded.extend_from_slice(&red);
+            padded.extend_from_slice(&red);
+            padded.extend_from_slice(&padding);
+        }
+
+        let icon = Icon::from_pixels(2, 2, 12, 4, &padded, 2).expect("a described picture");
+        assert_eq!(icon.size, 2);
+        assert_eq!(icon.rgba.len(), 2 * 2 * 4);
+        assert!(
+            icon.rgba.chunks_exact(4).all(|pixel| pixel == red),
+            "every pixel is the colour that was sent, not the padding: {:?}",
+            icon.rgba
+        );
+
+        // Three channels is a picture with nothing transparent in it, and the
+        // alpha it does not carry is supplied rather than left at zero — an
+        // icon that came out fully transparent would draw as nothing at all.
+        let opaque = Icon::from_pixels(1, 1, 3, 3, &[12, 34, 56], 1).expect("three channels");
+        assert_eq!(opaque.rgba, vec![12, 34, 56, 255]);
+
+        // A stride shorter than a row, and a buffer shorter than the picture
+        // it claims: both describe a walk off the end of what was sent.
+        assert!(Icon::from_pixels(2, 2, 4, 4, &padded, 2).is_none());
+        assert!(Icon::from_pixels(2, 2, 8, 4, &red, 2).is_none());
+        assert!(Icon::from_pixels(0, 2, 8, 4, &padded, 2).is_none());
+        assert!(Icon::from_pixels(2, 2, 8, 2, &padded, 2).is_none());
+    }
+
+    /// A machine with no desktop on it still gets a theme, because hicolor is
+    /// not a working default — it is where a program puts its own icon, and it
+    /// has never carried the standard names an announcement asks for.
+    #[test]
+    fn a_session_with_no_desktop_picks_a_theme_that_is_installed() {
+        let tree = TestTree::new("themes");
+        let root = tree.join("icons");
+        let theme = |name: &str, body: &str| {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            write(&root.join(name).join("index.theme"), body);
+        };
+
+        // Nothing installed but hicolor is nothing to choose.
+        theme("hicolor", "[Icon Theme]\nDirectories=48x48/apps\n");
+        assert_eq!(any_installed_theme(std::slice::from_ref(&root)), None);
+
+        // A cursor theme is an icon theme by file layout and carries no icons,
+        // so picking one would be the same as picking nothing.
+        theme("Bibata", "[Icon Theme]\nName=Bibata\n");
+        assert_eq!(any_installed_theme(std::slice::from_ref(&root)), None);
+
+        // Anything real will do when there is only one.
+        theme("Zafiro", "[Icon Theme]\nDirectories=48x48/apps\n");
+        assert_eq!(
+            any_installed_theme(std::slice::from_ref(&root)).as_deref(),
+            Some("Zafiro")
+        );
+
+        // And with a choice, the one most likely to be complete wins over the
+        // one that happens to sort first.
+        theme("Adwaita", "[Icon Theme]\nDirectories=48x48/apps\n");
+        assert_eq!(
+            any_installed_theme(std::slice::from_ref(&root)).as_deref(),
+            Some("Adwaita")
+        );
     }
 
     #[test]
@@ -988,13 +1341,15 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            54,
-            "a speaker, a struck-out one, a sun, a stick pointer, a mixer, two \
+            58,
+            "a speaker, a struck-out one, a sun, a stick pointer, a mixer, a \
+             moon, a \
+             bell, two \
              controller buttons, four arrows, a keyboard folding away, a power \
              symbol, one per column of the category row, the two subcategories \
-             Multimedia is divided into and the one under Graphics, the eleven \
-             marks the Settings column is drawn from plus its four turns of a \
-             monitor, the context menu's bin, play mark, ellipsis, sort bars \
+             Multimedia is divided into and the one under Graphics, the \
+             thirteen marks the Settings column is drawn from plus its four \
+             turns of a monitor, the context menu's bin, play mark, ellipsis, sort bars \
              and camera, the magnifier at the head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
              that asks for a password, and the Steam column with the mark every \
@@ -1054,6 +1409,8 @@ mod tests {
                 BRIGHTNESS,
                 POINTER_STICK,
                 VOLUME_MIXER,
+                DO_NOT_DISTURB,
+                NOTIFICATIONS,
                 PAD_SELECT,
                 PAD_WEST,
                 ARROW_LEFT,
@@ -1086,6 +1443,8 @@ mod tests {
                 SETTING_ROTATION_90,
                 SETTING_ROTATION_180,
                 SETTING_ROTATION_270,
+                SETTING_NIGHT_LIGHT,
+                SETTING_SCHEDULE,
                 SETTING_HDR,
                 SETTING_MICROPHONE,
                 SETTING_INFO,

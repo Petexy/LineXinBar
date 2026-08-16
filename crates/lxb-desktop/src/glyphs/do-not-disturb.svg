@@ -1,0 +1,145 @@
+<!--
+  The do-not-disturb tile's glyph: a crescent moon.
+
+  A moon rather than a struck-out bell, and the choice was the user's. The bell
+  beside it is the tile this one silences, and two bells side by side — one
+  plain, one with a stroke laid across it — is a pair that has to be *read*
+  before it can be told apart, which is the one thing a control on a console
+  cannot ask for. A moon is a different object at a glance from the far side of
+  a room, and it is what every machine anybody owns already draws for this.
+
+  It is the second moon in the shell, and that is deliberate rather than
+  overlooked: Settings > Display > Night light wears one too — see
+  setting-night-light.svg — and the rule that a mark belongs to one meaning is
+  bent here on purpose, because the alternative was a mark nobody recognises.
+  What keeps them apart is that they are not the same drawing of the same
+  object. That one is a thin crescent tilted along the up-right diagonal with a
+  star in its hollow, drawn against brightness.svg's sun as the same ball with
+  the light taken off it; this one is a fat crescent stood nearly upright, with
+  no star and with craters, drawn as a body with a surface. They never appear on
+  one screen.
+
+  White and greys for the reason the other built-ins are, lit by the same lamp,
+  and carrying the tile row's modelling rather than the reduced version the
+  quick-settings bars get — it is drawn at a tile's 42 px beside the stick
+  pointer, the mixer and the bell, and has to read as a fifth object moulded
+  from that one material. The drop shadow is theirs exactly, so all four tiles
+  float at the same height above the sidebar.
+
+  The craters do the work the night light's star does, and are the reason there
+  is no star here. A bare crescent at this size is a shape the letter C also
+  has, and something has to settle which of the two is meant. A star settles it
+  by putting a second object in the frame, which is what a 33 px row glyph can
+  afford; a tile can afford the better answer, which is to make the crescent
+  itself unmistakably a body — a surface with pits in it is not a letter. They
+  are wells and not spots: lit from the far side of the lamp, dark where the
+  rim overhangs and bright across the floor, exactly as the stick pointer's
+  controls are sunk into theirs.
+
+  The crescent is one path, not a disc with a disc punched out of it. Two
+  circles of radius 11.2 and 10.0, their centres 6.723 apart, meet at exactly
+  two points; the outline runs the long way round the first and the short way
+  back along the second, so the horns come to real points rather than to the
+  flat ends a stroked arc would give. The band is 7.92 units at its widest,
+  against a 22.4 diameter — a third of the body, which is a moon a few nights
+  from half rather than the sliver a thin crescent gives, and the thickness the
+  craters need to sit inside without touching the rim.
+
+  The body is centred at x=17.3 rather than at 16. The drawing is a crescent,
+  so its ink is all on one side of its own circle, and a moon centred on the
+  cell hangs visibly to the left of a tile the layout has centred it in. What is
+  centred here is the shape, which is what the eye measures.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The body, shaded from where the lamp is. A sphere and not a shell: a
+         hard gloss boundary across a curved band turns it into two crescents
+         of different greys. -->
+    <radialGradient id="body" gradientUnits="userSpaceOnUse"
+                    cx="12" cy="9" r="20.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.38" stop-color="#f2f2f2"/>
+      <stop offset="0.74" stop-color="#d6d6d6"/>
+      <stop offset="1" stop-color="#c0c0c0"/>
+    </radialGradient>
+
+    <!-- The polish over the lit limb, laid on as its own shape so that both
+         its edges can curve. A straight cut-off across a round body is the
+         single fastest way to make a moulded object look like a sticker. -->
+    <linearGradient id="gloss" gradientUnits="userSpaceOnUse"
+                    x1="8" y1="5" x2="14" y2="22">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.92"/>
+      <stop offset="0.62" stop-color="#ffffff" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- The rim where the body turns over: lit along the top, lit again off
+         the bounce underneath, nothing down the sides. -->
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="5" x2="0" y2="27">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.26" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.82" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
+    </linearGradient>
+
+    <!-- A pit, not a spot. Dark under the rim the lamp is behind, and lit
+         across the floor where the light reaches it — the reverse of the
+         sphere above, which is what says *sunk* rather than *painted on*. -->
+    <radialGradient id="pit" cx="0.34" cy="0.28" r="0.82">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.21"/>
+      <stop offset="0.52" stop-color="#000000" stop-opacity="0.08"/>
+      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.1"/>
+    </radialGradient>
+
+    <!-- Matched to the stick pointer's, the mixer's and the bell's, so the
+         four tiles of one row stand at one height. -->
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur stdDeviation="0.18"/>
+    </filter>
+    <!-- The craters are shading and not marks, so their edges are soft; a
+         crisp circle on a curved body reads as a hole through it. -->
+    <filter id="soften" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="0.22"/>
+    </filter>
+
+    <!-- Outer circle: centre (17.3,16), r 11.2. Biting circle: centre
+         (23.5,13.4), r 10. They cross at (18.32,4.847) and (25.97,23.09),
+         which are the two horns. -->
+    <path id="moon"
+          d="M18.32 4.847
+             A11.2 11.2 0 1 0 25.97 23.09
+             A10 10 0 0 1 18.32 4.847 Z"/>
+    <clipPath id="moon-clip"><use href="#moon"/></clipPath>
+
+    <!-- The polish, following the moon's own outer curve from the upper horn
+         down the lit limb: a band 1.9 wide between the rim and a circle of
+         9.3 about the same centre. -->
+    <path id="limb"
+          d="M18.32 4.847
+             A11.2 11.2 0 0 0 7.6 21.6
+             L9.246 20.65
+             A9.3 9.3 0 0 1 18.147 6.739 Z"/>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#moon" fill="url(#body)"/>
+    <g clip-path="url(#moon-clip)">
+      <use href="#limb" fill="url(#gloss)" filter="url(#polish)"/>
+      <!-- Two, and both on the wide belly: a crater on the horns would be a
+           notch out of the one line the crescent is recognised by. Sized
+           apart, because two of a size read as a pair of holes drilled rather
+           than as ground somebody has walked over. -->
+      <g filter="url(#soften)">
+        <circle cx="10.3" cy="19.4" r="2.15" fill="url(#pit)"/>
+        <circle cx="14.6" cy="24.1" r="1.4" fill="url(#pit)"/>
+      </g>
+      <use href="#moon" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+    </g>
+  </g>
+</svg>

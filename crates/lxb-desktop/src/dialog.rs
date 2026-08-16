@@ -23,11 +23,12 @@
 //!         Line::Rule,
 //!     ],
 //!     vec![
-//!         Entry::new(Command::ConfirmUninstall, "Yes").destructive(),
 //!         Entry::new(Command::Dismiss, "No"),
+//!         Entry::new(Command::ConfirmUninstall, "Yes").grave(),
 //!     ],
-//!     // Opens on No, because this one destroys something.
-//!     1,
+//!     // Opens on No, which is also the answer drawn first, because this one
+//!     // destroys something.
+//!     0,
 //! );
 //! ```
 //!
@@ -272,8 +273,8 @@ mod tests {
 
     fn answers() -> Vec<Entry> {
         vec![
-            Entry::new(Command::ConfirmUninstall, "Yes").destructive(),
             Entry::new(Command::Dismiss, "No"),
+            Entry::new(Command::ConfirmUninstall, "Yes").grave(),
         ]
     }
 
@@ -284,23 +285,27 @@ mod tests {
             None,
             vec![Line::Note("Do you want to uninstall Example?".into())],
             answers(),
-            1,
+            0,
         ));
         dialog
     }
 
-    /// The whole point of the `start` argument: the destructive answer is
-    /// first, and the highlight is not on it.
+    /// The answer that declines is the one drawn first and the one the panel
+    /// opens standing on. Both halves are asserted, because either alone lets
+    /// the other drift: a question could open on its first answer and have the
+    /// destroying one there, or put the harmless one first and start the
+    /// highlight below it.
     #[test]
     fn a_question_opens_on_the_answer_that_declines_it() {
         let dialog = asked();
         assert!(dialog.is_open());
-        assert_eq!(dialog.buttons.selected(), 1);
+        assert_eq!(dialog.buttons.selected(), 0);
         assert_eq!(
             dialog.buttons.entries()[dialog.buttons.selected()].label,
             "No"
         );
-        assert!(dialog.buttons.entries()[0].destructive);
+        assert!(dialog.buttons.entries()[1].grave);
+        assert!(!dialog.buttons.entries()[0].grave);
     }
 
     /// Choosing hands the keys back at once and the panel stays on screen,

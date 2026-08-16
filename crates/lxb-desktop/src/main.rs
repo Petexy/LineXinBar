@@ -17,6 +17,7 @@ mod launch;
 mod media;
 mod menu;
 mod model;
+mod notify;
 mod pointer;
 mod polkit;
 mod screenshot;
@@ -25,12 +26,14 @@ mod settings;
 mod sound;
 mod steam;
 mod steam_hid;
+mod sun;
 mod system;
 mod theme;
 mod thumbs;
 mod trash;
 mod ui;
 mod uninstall;
+mod wallpaper_clock;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -174,14 +177,23 @@ const SCREENSHOT_SHELL_VERSION: u32 = 17;
 /// is what carries the question between them.
 const SHARE_SHELL_VERSION: u32 = 18;
 
-/// First version that will run an application without ever showing it. The
-/// highest this shell asks for.
+/// First version that will run an application without ever showing it.
 ///
 /// Below it Valve's client cannot be driven out of sight, and the session is
 /// honest about that rather than half-hiding it: the client is left to put its
 /// own windows wherever it likes, which is what every version of this shell
 /// did until now.
 const OUT_OF_SIGHT_SHELL_VERSION: u32 = 19;
+
+/// First version that will warm a display's picture, and that says which
+/// displays have a colour ramp to warm. The highest this shell asks for.
+///
+/// Below it Settings > Display > Night light still draws its page and still
+/// remembers what it was set to — the file it is written to is read by
+/// whichever compositor comes next — but nothing is sent and no display reports
+/// being able to do it, so the page says there is nothing here to warm. Which
+/// is the truth on a compositor that cannot be asked.
+const NIGHT_LIGHT_SHELL_VERSION: u32 = 20;
 
 /// First version that names the application behind every window rather than
 /// only the one in front.
@@ -408,6 +420,13 @@ fn parse_debug_display(raw: &str) -> Result<(String, settings::Support), String>
             active: false,
             peak: peak.min(u16::MAX as u32) as u16,
             gamut: gamut != 0,
+            // Always, and not a field of its own: an invented display is here
+            // so that a page which needs a connector this session has not got
+            // can be looked at, and the Night light page needs one exactly as
+            // the HDR page does. Nothing is sent for these either, so no
+            // picture anywhere is warmed by saying so.
+            night_light: true,
+            warming: false,
         },
     ))
 }
@@ -502,6 +521,7 @@ fn main() -> anyhow::Result<()> {
     // so the shell has to know what it is set to before it builds the rows
     // that say so — and before the first frame is drawn in a colour.
     settings::load();
+    let wallpaper_handoff = wallpaper_clock::WallpaperClock::from_environment(theme::accent().name);
 
     let mut categories = apps::scan();
     if !cli.no_steam {
@@ -552,8 +572,13 @@ fn main() -> anyhow::Result<()> {
     // what decides whether their artwork may be fetched. See `art::Art`.
     let steam_is_real = steam.driving();
 
-    // Decode every icon once, up front, so the atlas can be built in one go.
-    let icons = load_icons(&categories);
+    // The wallpaper is the first visible part of a handed-off session, and it
+    // needs no icon at all. Build its provisional atlas from the two procedural
+    // cells (solid white and the selection glow), then find and decode the full
+    // catalogue on a worker while the GPU is already presenting that same
+    // moving wallpaper. The bar's normal arrival waits for the worker, so the
+    // empty atlas is never visible as an incomplete row.
+    let startup = StartupIcons::start(categories.clone());
 
     let conn = Connection::connect_to_env()
         .map_err(|e| anyhow::anyhow!("could not connect to a Wayland compositor: {e}"))?;
@@ -571,7 +596,7 @@ fn main() -> anyhow::Result<()> {
     // shell simply falls back to what it can do as an ordinary client.
     let shell_control = match globals.bind::<LxbShellV1, _, _>(
         &qh,
-        1..=OUT_OF_SIGHT_SHELL_VERSION,
+        1..=NIGHT_LIGHT_SHELL_VERSION,
         (),
     ) {
         Ok(control) => Some(control),
@@ -607,8 +632,12 @@ fn main() -> anyhow::Result<()> {
         dialog: dialog::Dialog::default(),
         app_facts: None,
         polkit: polkit::Agent::start(),
+        notifier: notify::Service::start(),
+        notifications: notify::Center::new(settings::do_not_disturb()),
+        icon_theme: IconLoader::new(),
         authenticating: None,
         sharing: None,
+        pending_share: None,
         pending_capture: None,
         removal_plan: None,
         uninstalling: None,
@@ -625,6 +654,8 @@ fn main() -> anyhow::Result<()> {
         menu_frame_drawn: false,
         overview_started_at: None,
         launching: None,
+        steam_windows: HashSet::new(),
+        ended_by_the_shell: HashSet::new(),
         awaiting_steam: None,
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
@@ -649,7 +680,7 @@ fn main() -> anyhow::Result<()> {
         stick_buttons: Vec::new(),
         stick_keys: Vec::new(),
         gpu: None,
-        pending_icons: Some(icons),
+        startup,
         xmb: Xmb::with_session_displays(categories, child_wayland_display, child_xwayland_display),
         media,
         // Only a real library has real artwork. An invented one — see
@@ -662,6 +693,7 @@ fn main() -> anyhow::Result<()> {
         exit: false,
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
+        wallpaper_clock: wallpaper_handoff.unwrap_or_else(wallpaper_clock::WallpaperClock::local),
         start: Instant::now(),
         last_frame: Instant::now(),
         frames: 0,
@@ -721,16 +753,22 @@ fn main() -> anyhow::Result<()> {
         shell.xmb.reap_children();
 
         let now = Instant::now();
+        // The full atlas lands before any worker is polled below, since those
+        // workers may write notifications, thumbnails, covers or logos into
+        // it. Until it lands, only the separately rendered backdrop is shown.
+        shell.finish_startup_icons();
+        shell.present_deferred_share();
         shell.poll_controller(now);
         // And the keyboard on the same clock: a held arrow is as much an
         // input still happening as a held D-pad is, and neither of them is a
         // Wayland event that would have woken this loop by itself.
         shell.repeat_held_key(now);
         // Scheduled actions, for capturing the menu's transitions.
-        while action_schedule
-            .last()
-            .is_some_and(|(at, _)| shell.start.elapsed().as_secs_f32() >= *at)
-        {
+        while debug_action_is_due(
+            shell.startup.ready,
+            shell.start.elapsed().as_secs_f32(),
+            action_schedule.last().map(|(at, _)| *at),
+        ) {
             if let Some((_, action)) = action_schedule.pop() {
                 tracing::debug!(?action, "scheduled debug action");
                 shell.on_action(action);
@@ -748,23 +786,33 @@ fn main() -> anyhow::Result<()> {
         // A package manager answering is not a Wayland event and cannot wake
         // this loop, but the loop wakes anyway to poll the controller — which
         // is the only reason a worker can hand its answer to a frame at all.
-        shell.sync_app_facts();
+        if shell.startup.ready {
+            shell.sync_app_facts();
+        }
         // The same again for the walk over the user's home directory: a song
         // found on a worker thread is not a Wayland event either, and this is
         // the frame it reaches the bar on.
-        shell.sync_media();
+        if shell.startup.ready {
+            shell.sync_media();
+        }
         // And for Steam, which is the same shape again: a library read over a
         // network on a worker thread, arriving on whichever frame it is ready.
-        shell.sync_steam();
+        if shell.startup.ready {
+            shell.sync_steam();
+        }
         // The other way round as well: a column stepped into is a question
         // about the disk, asked here because every way of stepping into one —
         // a stick, a key, a click, a finger — has by now settled into the same
         // cursor.
-        shell.notice_open_shelves();
+        if shell.startup.ready {
+            shell.notice_open_shelves();
+        }
         // And the pictures of what it found, which are made on two more
         // workers and land in the atlas here — for the rows the cursor is
         // near, and nowhere else.
-        shell.sync_thumbnails();
+        if shell.startup.ready {
+            shell.sync_thumbnails();
+        }
         // And likewise for a removal: neither the survey nor the removal itself
         // is a Wayland event, so the frame this loop was going to draw anyway is
         // what carries their answers on to the screen.
@@ -772,7 +820,15 @@ fn main() -> anyhow::Result<()> {
         // The same again for an authorisation this session has been asked to
         // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
         // answers on another.
-        shell.sync_polkit();
+        if shell.startup.ready {
+            shell.sync_polkit();
+        }
+        // And for what the rest of the machine has announced: the bus answers
+        // on its own thread, so this is the frame its news reaches the screen
+        // on, and the frame the programs that sent it hear back on.
+        if shell.startup.ready {
+            shell.sync_notifications();
+        }
         // Applies whatever the last events settled on: an application exiting
         // changes what the surface should be doing just as much as a keypress.
         shell.sync_surface_state();
@@ -794,6 +850,10 @@ fn main() -> anyhow::Result<()> {
         // mid-session has to be told what the session is set to, and the only
         // thing that knows it has not been told is the diff inside these.
         shell.sync_hdr();
+        // And the one of the four that changes with nothing pressed: the
+        // night light's schedule is kept here, so the hour turning is noticed
+        // on the pass of this loop it turns on.
+        shell.sync_night_light();
         shell.sync_mode();
         shell.sync_turn();
         if now >= shell.next_frame_deadline {
@@ -875,21 +935,39 @@ fn wait_for_wayland(event_queue: &mut EventQueue<Shell>, timeout: Duration) -> a
     Ok(())
 }
 
-/// Decode the icons for every category and application.
-fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
-    let mut loader = IconLoader::new();
-    let mut out = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+/// Whether a scheduled development action may be taken from the queue.
+/// Startup time still counts towards its deadline, but the action is retained
+/// until the controls it addresses have actually arrived.
+fn debug_action_is_due(ready: bool, elapsed: f32, deadline: Option<f32>) -> bool {
+    ready && deadline.is_some_and(|deadline| elapsed >= deadline)
+}
 
-    // The shell's own glyphs first, so a session with no icon theme installed
-    // at all still has a speaker and a sun on its quick-settings bars.
+/// Decode the shell's own marks at the front of the completed atlas.
+///
+/// They are compiled into the binary and do not touch the icon theme. The
+/// provisional wallpaper-only atlas needs neither these nor catalogue icons;
+/// keeping them here preserves the settled atlas's slot ordering.
+fn load_builtin_icons() -> Vec<(String, icons::Icon)> {
+    let mut out = Vec::new();
     for (name, drawing) in icons::BUILTIN {
         match icons::Icon::builtin(drawing, ICON_SIZE) {
             Some(icon) => out.push((name.to_string(), icon)),
             None => tracing::warn!(glyph = name, "could not rasterise a built-in glyph"),
         }
-        seen.insert(name.to_string());
     }
+    out
+}
+
+/// Decode every icon the catalogue names, with the built-ins first so their
+/// slots and fallbacks retain the exact ordering the settled atlas had before
+/// startup was split over two threads.
+fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
+    let mut out = load_builtin_icons();
+    let mut loader = IconLoader::new();
+    let mut seen: HashSet<String> = icons::BUILTIN
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
 
     // Every row of every column, subcategories included: what a column holds
     // is a tree, and an icon missed here is one the atlas has no slot for.
@@ -917,6 +995,58 @@ fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
 
     tracing::info!(loaded = out.len(), "decoded icons");
     out
+}
+
+/// Full catalogue atlas being prepared off the rendering thread.
+struct StartupIcons {
+    answer: std::sync::mpsc::Receiver<Vec<(String, icons::Icon)>>,
+    pending: Option<Vec<(String, icons::Icon)>>,
+    ready: bool,
+}
+
+impl StartupIcons {
+    fn start(categories: Vec<apps::Category>) -> Self {
+        let (tx, answer) = std::sync::mpsc::channel();
+        let worker_categories = categories.clone();
+        let pending = match std::thread::Builder::new()
+            .name("lxb-startup-icons".to_string())
+            .spawn(move || {
+                let _ = tx.send(load_icons(&worker_categories));
+            }) {
+            Ok(_) => None,
+            Err(err) => {
+                // Thread creation can fail under a tight process limit. Keep
+                // the session complete in that exceptional case, even though
+                // it means doing the old synchronous work before the first
+                // wallpaper frame.
+                tracing::warn!(?err, "could not start the icon decoder");
+                Some(load_icons(&categories))
+            }
+        };
+        Self {
+            answer,
+            pending,
+            ready: false,
+        }
+    }
+
+    fn take(&mut self) -> Option<Vec<(String, icons::Icon)>> {
+        if self.ready {
+            return None;
+        }
+        match self.answer.try_recv() {
+            Ok(icons) => Some(icons),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The worker owns no fallible operation that can unwind under
+                // normal input, but if it does, let the procedural atlas become
+                // the settled one rather than holding the session in depth.
+                tracing::warn!("startup icon worker stopped before answering");
+                self.ready = true;
+                None
+            }
+        }
+    }
 }
 
 /// An application the user has agreed to remove, and how far that has got.
@@ -1070,6 +1200,14 @@ struct Panel {
     /// The HDR settings this display was last told to use, so an unchanged
     /// choice is not resent every frame.
     applied_hdr: Option<settings::Hdr>,
+    /// What this display was last told about its night light: whether the
+    /// filter should be burning at that moment and how warm.
+    ///
+    /// The answer rather than the setting, because the schedule is resolved
+    /// here — see `Shell::sync_night_light`. That is what makes nine in the
+    /// evening arriving a change this diff notices, without anything having
+    /// been pressed.
+    applied_night_light: Option<(bool, u16)>,
     /// What this display can be driven at, as the compositor lists it. Empty
     /// where there is nothing to choose: a nested session, or a compositor too
     /// old to be asked.
@@ -1130,6 +1268,48 @@ struct Panel {
     /// a state, it reverses from wherever it is when a panel is dismissed
     /// before it finished arriving.
     depth_linear: f32,
+    /// How far this display's start screen has come forward out of the depth
+    /// the shell starts it in: 0 far back and unlit, 1 arrived — see
+    /// [`ui::arrive_from_depth`]. Linear, as the ramps above are; `ui::ease`
+    /// shapes it.
+    ///
+    /// Per display because a bar is: every screen the shell is given draws its
+    /// own, so every screen watches its own arrive. That covers the display
+    /// plugged in halfway through a session as well as the ones the shell came
+    /// up on, and it is the same event either way — a start screen appearing
+    /// where there was none.
+    ///
+    /// Run again whenever the start screen is handed a display it did not
+    /// have; see [`Panel::arrive_out_of_black`] and
+    /// [`Shell::an_application_ended_by_itself`].
+    arrival_linear: f32,
+    /// Whether this display has drawn a frame the current arrival can start
+    /// from.
+    ///
+    /// What holds the screen at the back of its depth until there is one. The
+    /// shell does a great deal before its first frame — binding the
+    /// compositor's globals, reading the catalogue, decoding every icon in it,
+    /// building the atlas — and that first frame's `dt` is all of that time.
+    /// Charged to the arrival it would spend most of the animation before a
+    /// single pixel had been shown, and what the user would see is the tail of
+    /// a move that started while the screen was still black.
+    ///
+    /// The same trap waits at the other end of an application. A display behind
+    /// a fullscreen window draws nothing at all, and with every display covered
+    /// the shell idles on `HIDDEN_POLL` — so the first frame after the
+    /// application goes away carries half a second of `dt` and would spend the
+    /// whole arrival at once. Hence a flag rather than a one-off: an arrival
+    /// begins from a frame, whichever arrival it is.
+    arrival_has_a_frame: bool,
+    /// How much black is still lying over this display: 1 the frame an
+    /// application walked out of it, 0 once the screen is clear — see
+    /// [`ui::cover_with_black`]. Linear, like the ramps above it.
+    ///
+    /// Only ever set by a handover. The shell's own first frames need nothing
+    /// of the sort: there is no last frame of anybody else's to cover, and a
+    /// session that began by fading up from black would be inventing a join
+    /// where there is none.
+    from_black_linear: f32,
     /// The start card's rectangle as of the last frame with the menu open —
     /// the end the start screen flies to, and flies back from once the menu
     /// has closed and the cards are gone.
@@ -1311,6 +1491,29 @@ impl Panel {
     fn owns(&self, surface: &wl_surface::WlSurface) -> bool {
         self.layer.wl_surface() == surface
     }
+
+    /// Hand this display to the start screen: black over whatever was there,
+    /// and the bar back at the far end of its arrival to come forward out of it
+    /// — see [`ui::cover_with_black`] and [`ui::arrive_from_depth`].
+    ///
+    /// For a display the start screen is being *given* rather than one it has
+    /// held all along. Coming up on a fresh session is one of those; an
+    /// application ending and leaving the screen to the bar is the other, and
+    /// from the bar's side they are the same event — something that was not on
+    /// this display is now the whole of it, and it says so the same way both
+    /// times rather than blinking into place because this time nobody rebooted.
+    ///
+    /// Only the second gets the black. A session's first frame has no last
+    /// frame of anybody else's to cover.
+    ///
+    /// The frame flag goes with the ramps, and it is the half that matters: they
+    /// are fed the interval between frames, and there is no such interval yet on
+    /// the frame a handover starts.
+    fn arrive_out_of_black(&mut self) {
+        self.arrival_linear = 0.0;
+        self.arrival_has_a_frame = false;
+        self.from_black_linear = 1.0;
+    }
 }
 
 /// A window flying back out of the tile that asked for it.
@@ -1426,6 +1629,33 @@ struct Shell {
     /// [`polkit`], and note that the shell asks nothing of it: an agent that
     /// never registered simply never has a question waiting.
     polkit: Option<polkit::Agent>,
+    /// This session's notification daemon: `org.freedesktop.Notifications` on
+    /// the session bus, which is how everything else on the machine announces
+    /// that something has happened.
+    ///
+    /// `None` on a session that cannot have one — no session bus, or a
+    /// LineXinBar started inside a desktop whose own daemon holds the name.
+    /// Exactly as with the polkit agent, the shell asks nothing of it in that
+    /// case: a daemon that never took the name simply never has anything
+    /// waiting. See [`notify`].
+    notifier: Option<notify::Service>,
+    /// What has been announced, and what is still being shown in the corner of
+    /// the screen. Kept whether or not the daemon started, so every path that
+    /// draws or navigates it has one answer rather than two.
+    notifications: notify::Center,
+    /// The icon theme, kept open for the pictures announcements bring with
+    /// them.
+    ///
+    /// Every other icon in this shell is found and decoded before the first
+    /// frame, by a loader that is dropped when that is done — the catalogue is
+    /// known by then and nothing adds to it. An announcement is the one thing
+    /// that names a picture while the session is running, so this is a second
+    /// loader with a much longer life and almost nothing to do. It is kept
+    /// rather than built per announcement because what it caches is the theme
+    /// index itself: reading and parsing every `index.theme` on the machine to
+    /// find one icon, and then throwing that away, would be the expensive half
+    /// done over and over.
+    icon_theme: IconLoader,
     /// The authentication on screen now, if any: what was asked, the
     /// conversation with polkit's PAM helper, and what has been typed into the
     /// field so far.
@@ -1437,6 +1667,10 @@ struct Shell {
     /// because a second application asking while the first question is up must
     /// not quietly replace it — see [`Shell::ask_to_share`].
     sharing: Option<ShareQuestion>,
+    /// A portal question that arrived while only the startup wallpaper was on
+    /// screen. Held rather than refused: icon decode is bounded local work,
+    /// and the application has already chosen to wait for the user's answer.
+    pending_share: Option<(u32, String)>,
     /// A screenshot the compositor is taking: the menu row it was asked for on,
     /// and the name of the application it is of.
     ///
@@ -1521,6 +1755,37 @@ struct Shell {
     /// The application the shell has started and is waiting for, if any: what
     /// answers the press while the process gets itself on screen.
     launching: Option<launch::Launch>,
+    /// The windows a game started through Valve's client turned out to be.
+    ///
+    /// Written down at the one moment it can be known — the launch splash
+    /// handing the screen over — because nothing about a window says who
+    /// started it afterwards. A game out of the library announces whatever
+    /// class its binary happens to have, which for a Proton title is routinely
+    /// the architecture it was built for, so the shell cannot tell one of
+    /// these from any other unnamed window by looking at it.
+    ///
+    /// What it is for is naming: see [`Self::window_app_name`]. Ids rather than
+    /// classes, because the class is exactly the part that is not to be
+    /// trusted — half the Proton library calls itself `x86_64`, and a session
+    /// that tagged the *class* would be claiming every later window of that
+    /// name was a game somebody launched here.
+    steam_windows: HashSet<u32>,
+    /// Windows the shell itself has just done away with: killed from the
+    /// guide's Close, or sent to another display.
+    ///
+    /// What tells the difference between an application the user ended and one
+    /// that ended on its own — see [`Self::an_application_ended_by_itself`],
+    /// which is the whole reason the difference is worth keeping. Both leave
+    /// the same hole in the window list, and only one of them is a surprise.
+    ///
+    /// An id is spent the moment the window it names goes, so a window that
+    /// moves to another display costs nothing afterwards: it leaves this
+    /// display's list, the id is used up there, and its arrival on the other
+    /// display is an ordinary window appearing. What is left behind is the case
+    /// of a kill that did not take — the id sits here until that window
+    /// eventually does go, and the shell treats that as its own doing. Which it
+    /// arguably was.
+    ended_by_the_shell: HashSet<u32>,
     /// A game that has been pressed and cannot be started yet, because Steam
     /// has not said whether this account owns it. Its splash is already up.
     awaiting_steam: Option<AwaitingSteam>,
@@ -1600,8 +1865,11 @@ struct Shell {
     stick_keys: Vec<u32>,
 
     gpu: Option<gpu::Gpu>,
-    /// Icons waiting for the device to exist; taken on the first configure.
-    pending_icons: Option<Vec<(String, icons::Icon)>>,
+    /// Catalogue atlas being decoded while the first wallpaper frames move.
+    /// No runtime picture is written until this has replaced the provisional
+    /// procedural atlas, so replacement can never discard a notification,
+    /// thumbnail, cover or logo that arrived during startup.
+    startup: StartupIcons,
 
     xmb: Xmb,
     /// The user's own music, films and photographs, and the walk over their
@@ -1630,6 +1898,7 @@ struct Shell {
     exit: bool,
     needs_redraw: bool,
     next_frame_deadline: Instant,
+    wallpaper_clock: wallpaper_clock::WallpaperClock,
     start: Instant,
     last_frame: Instant,
     frames: u32,
@@ -1638,6 +1907,47 @@ struct Shell {
 }
 
 impl Shell {
+    /// Install the complete atlas and release every display into its existing
+    /// arrival. Until this succeeds the backdrop is fully live, while the main
+    /// scene remains at arrival zero and therefore contributes no visible ink.
+    fn finish_startup_icons(&mut self) {
+        if self.startup.ready {
+            return;
+        }
+        let icons = self.startup.pending.take().or_else(|| self.startup.take());
+        let Some(icons) = icons else {
+            // A disconnected worker marks itself ready and leaves the procedural
+            // atlas in place. It remains a usable wallpaper; the bar begins
+            // with missing-icon fallbacks instead of trapping the session.
+            if self.startup.ready {
+                self.needs_redraw = true;
+            }
+            return;
+        };
+        let Some(gpu) = self.gpu.as_mut() else {
+            // The device has not been created yet. Keep the answer until its
+            // first configure has created the provisional atlas.
+            self.startup.pending = Some(icons);
+            return;
+        };
+        match gpu.replace_icons(icons) {
+            Ok(()) => {
+                self.startup.ready = true;
+                tracing::info!("startup icons ready; beginning the bar arrival");
+                self.needs_redraw = true;
+                self.last_frame = Instant::now();
+            }
+            Err(err) => {
+                // Do not take down a session whose wallpaper is already on
+                // screen. The invariant failure is logged loudly; the
+                // procedural atlas itself remains valid.
+                tracing::error!(?err, "could not install the completed icon atlas");
+                self.startup.ready = true;
+                self.needs_redraw = true;
+            }
+        }
+    }
+
     /// Put the bar on a display.
     fn add_panel(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if self.panels.iter().any(|panel| panel.output == output) {
@@ -1692,6 +2002,7 @@ impl Shell {
             app_id: None,
             hdr: settings::Support::default(),
             applied_hdr: None,
+            applied_night_light: None,
             modes: Vec::new(),
             pending_modes: Vec::new(),
             applied_mode: None,
@@ -1709,6 +2020,9 @@ impl Shell {
             was_visible: true,
             blur_linear: 0.0,
             depth_linear: 0.0,
+            arrival_linear: 0.0,
+            arrival_has_a_frame: false,
+            from_black_linear: 0.0,
             home_rect: [0.0; 4],
             shelf_open: None,
             scenery: Scenery::default(),
@@ -1761,6 +2075,25 @@ impl Shell {
         }
         self.focused_panel = next;
         tracing::debug!(display = %self.panels[next].name, "control moved to a display");
+        // The menu does not travel onto a launch, and this is the whole of
+        // that rule: control moves, the menu does not come with it.
+        //
+        // Being covered is not the same as being closed, which is what made
+        // this worth a rule of its own. The splash is drawn last and takes the
+        // whole display, so a menu that arrived under it was invisible — but
+        // the pad is read straight from the device rather than through the
+        // surface, so it went on driving: directions moving a selection nobody
+        // could see, and `A` landing on whichever row it had stopped at, up to
+        // and including the power dialog. A control the user cannot see is one
+        // they cannot be pressing on purpose.
+        //
+        // Only the arrival is refused; the *move* is not. Control crosses to
+        // the loading screen exactly as asked, and what the user finds there
+        // is the thing that display is actually doing.
+        if self.guide.is_menu() && self.launching_on(next) {
+            tracing::debug!("control arrived at a launch, so the menu did not come with it");
+            self.guide.dismiss(self.app_running());
+        }
         // The layer surfaces have to change too: only the focused one takes
         // keyboard input, which is also how the compositor knows where to put
         // an application launched from here.
@@ -1839,7 +2172,7 @@ impl Shell {
         let focused_panel = self.focused_panel;
         let app_label = self.app_label().map(str::to_string);
         let screen_label = self.screen_label();
-        let time = self.start.elapsed().as_secs_f32();
+        let time = self.wallpaper_clock.elapsed_secs();
         let clock = wall_clock();
         let clock_face = wall_clock_face();
         // The cards keep the compositor's time, not the menu's.
@@ -1856,6 +2189,12 @@ impl Shell {
                 .map(|panel| panel.name.as_str()),
             show_menu,
         );
+        // And which application it is in front of, whether or not the mixer is
+        // open: the row the mixer keeps for that application is how a silence
+        // set on it — here, or in another desktop before this session — is
+        // undone, and a change made to that row is waited on afterwards with
+        // nothing on screen at all.
+        self.quick.watch_front(self.in_front());
         let volume = self.quick.level(Knob::Volume);
         let brightness = self.quick.level(Knob::Brightness);
         // What the machine is playing changes without anybody pressing
@@ -2054,12 +2393,7 @@ impl Shell {
                 // moment the menu was raised.
                 self.context_menu
                     .set_window(ui::menu_rows_that_fit(&self.context_menu, height));
-                let row = ui::context_menu_row_rect(
-                    width,
-                    height,
-                    &self.context_menu,
-                    self.context_menu.selected(),
-                )?;
+                let row = ui::context_menu_highlight_rect(width, height, &self.context_menu)?;
                 Some(self.context_menu.animate_highlight(row, dt))
             })
             .flatten();
@@ -2166,6 +2500,19 @@ impl Shell {
             let depth_target = if panel_over_bar { 1.0 } else { 0.0 };
             panel.depth_linear = approach(panel.depth_linear, depth_target, dt / menu::FLIGHT);
 
+            // And the one journey down that axis that is made only once: the
+            // start screen coming forward out of the depth it was started in.
+            // It runs from the frame after this display's first, so the time
+            // the shell spent getting to that frame is not charged to it — see
+            // `Panel::arrival_has_a_frame`.
+            if startup_arrival_can_advance(self.startup.ready, panel.arrival_has_a_frame) {
+                panel.arrival_linear = approach(panel.arrival_linear, 1.0, dt / ui::ARRIVAL);
+                // And the black the handover laid over the display, which comes
+                // off in a third of the time the bar takes to arrive through it.
+                panel.from_black_linear =
+                    approach(panel.from_black_linear, 0.0, dt / ui::BLACK_HANDOVER);
+            }
+
             // And the picture behind this display, which is the game under its
             // own cursor. The crossfade waits for the picture it is going *to*
             // — a fade started before there is anything to fade into would put
@@ -2190,6 +2537,8 @@ impl Shell {
             let settling = panel.home_linear != home_target
                 || panel.blur_linear != home_target
                 || panel.depth_linear != depth_target
+                || panel.arrival_linear < 1.0
+                || panel.from_black_linear > 0.0
                 || (arriving && panel.scenery.moving())
                 || covers_settling
                 || cursor_moving[index]
@@ -2265,6 +2614,9 @@ impl Shell {
                 continue;
             }
             drew = true;
+            // From here on this display has shown something, so its arrival has
+            // a frame to start from.
+            panel.arrival_has_a_frame = self.startup.ready;
 
             // Whether the only reason this display is drawing at all is the
             // keyboard, or the hint standing in for it.
@@ -2314,6 +2666,17 @@ impl Shell {
                     focused && self.searching.is_some(),
                 )
             };
+            // Before anything else is done to it: the arrival is where the
+            // screen *is* on the shell's first frames, and everything below is
+            // about what is standing over it or what has taken the display from
+            // it. On a session that has been up for a second this does nothing
+            // at all.
+            ui::arrive_from_depth(
+                &mut scene,
+                width as f32,
+                height as f32,
+                panel.arrival_linear,
+            );
             // The start screen steps back from whatever the shell has raised
             // over it — the context menu, and the centred panel one of its
             // commands opens — before it is dimmed and before it is shrunk
@@ -2330,6 +2693,17 @@ impl Shell {
                     scene.fade(ui::card_fade(card_age));
                 }
             }
+            // And after all of those, the black an application walking out left
+            // over the display. It is a sheet over the *screen* rather than
+            // part of the scene: one laid on earlier would have been shrunk by
+            // the arrival and by the card flight, and a curtain the size of the
+            // start screen is a curtain with the display showing round it.
+            ui::cover_with_black(
+                &mut scene,
+                width as f32,
+                height as f32,
+                ui::ease(panel.from_black_linear),
+            );
             if menu_here {
                 // The guide is drawn over it, so anything of the bar still
                 // crossing the sidebar has to give way to the panel.
@@ -2356,6 +2730,8 @@ impl Shell {
                         volume,
                         brightness,
                         stick_pointer,
+                        do_not_disturb: self.notifications.quiet(),
+                        unread: self.notifications.badge(),
                         app: app_label.as_deref(),
                         close_target: close_target.as_deref(),
                         screen: screen_label.as_deref(),
@@ -2505,15 +2881,21 @@ impl Shell {
             if let Some(splash) = self.launching.as_ref().filter(|s| s.panel == index) {
                 let open = splash.open(now);
                 let grown = ui::ease(open);
-                let (panel_rect, _) =
-                    ui::launch_panel(splash.from, width as f32, height as f32, open);
                 let zoom = 1.0 + LAUNCH_PUSH * grown;
                 let [cx, cy] = [
                     splash.from[0] + splash.from[2] * 0.5,
                     splash.from[1] + splash.from[3] * 0.5,
                 ];
                 scene.scale_by(zoom, [cx - cx * zoom, cy - cy * zoom]);
-                scene.hide_text_behind(panel_rect);
+                // Only where there is a panel to be behind. A game is answered
+                // on its own picture with nothing drawn over the display, so
+                // there is nothing for a label to be hidden by — and the bar's
+                // own fade below takes every one of them anyway.
+                if splash.game().is_none() {
+                    let (panel_rect, _) =
+                        ui::launch_panel(splash.from, width as f32, height as f32, open);
+                    scene.hide_text_behind(panel_rect);
+                }
                 scene.fade(1.0 - grown);
 
                 let icon = splash
@@ -2524,6 +2906,10 @@ impl Shell {
                     ui::LaunchView {
                         name: &splash.name,
                         icon,
+                        game: splash.game().is_some(),
+                        logo: splash.game().and_then(|app_id| gpu.logo(app_id)),
+                        doing: splash.doing(),
+                        blackout: splash.blackout(now),
                         from: splash.from,
                         open,
                         fade: splash.fade(now),
@@ -2533,6 +2919,64 @@ impl Shell {
                     width as f32,
                     height as f32,
                 );
+                scene.quads.extend(over.quads);
+                scene.texts.extend(over.texts);
+            }
+
+            // The corner of the screen, last of all and over everything: the
+            // bar, the guide, a panel raised from it, the on-screen keyboard,
+            // a launch splash. An announcement arriving while any of those is
+            // up is still an announcement, and there is nothing in this shell
+            // it should be behind.
+            //
+            // On the display being driven and no other, which is the same rule
+            // the guide follows — and the same answer `sync_surface_state`
+            // gives when it decides which surface has to rise to the overlay
+            // layer for this, so the two cannot disagree about where the
+            // bubbles are.
+            if index == self.focused_panel && !self.notifications.toasts().is_empty() {
+                let cards: Vec<ui::ToastCard> = self
+                    .notifications
+                    .toasts()
+                    .iter()
+                    .map(|toast| ui::ToastCard {
+                        title: toast.about.title(),
+                        body: &toast.about.body,
+                        // The program's own picture, and the bell behind it.
+                        // A bubble with a hole where its icon should be is
+                        // worse than one wearing the shell's own mark: the
+                        // mark is at least true — this *is* an announcement —
+                        // where the hole says only that something failed to
+                        // load. It catches both ways of having no picture: a
+                        // program that named none, and one whose name this
+                        // machine's icon theme has never heard of.
+                        // `glyph` rather than `slot_for`, which is the whole
+                        // of what makes the sentence above true: `slot_for`
+                        // stands the generic application icon in for anything
+                        // it cannot find, so the fallback below could never
+                        // have been reached and a name this machine has not
+                        // got came out as a blank executable rather than as
+                        // the bell.
+                        icon: toast
+                            .about
+                            .icon_name()
+                            .and_then(|name| Slots { gpu, art, drained }.glyph(name))
+                            .or_else(|| Slots { gpu, art, drained }.glyph(icons::NOTIFICATIONS)),
+                        stage: toast.stage(),
+                        progress: toast.progress(),
+                    })
+                    .collect();
+                // The same blur every other pane in the shell bends: a bubble
+                // is glass laid over whatever is behind it, and glass showing
+                // a sharp copy of that is a window, not a pane.
+                let over = ui::build_toasts(&cards, width as f32, height as f32, backdrop_blur);
+                // Every quad is drawn before every text run, so the glass
+                // would otherwise sit behind the labels of whatever it has
+                // landed on. The bubbles cut them instead, which is what
+                // something in front of them does.
+                for card in ui::toast_rects(&cards, width as f32, height as f32) {
+                    scene.hide_text_behind(card);
+                }
                 scene.quads.extend(over.quads);
                 scene.texts.extend(over.texts);
             }
@@ -2563,6 +3007,29 @@ impl Shell {
             // over an application, its card while the menu is open, and the
             // growing rectangle in between.
             let corner_radius = ui::CARD_RADIUS * (height as f32 / 1080.0).clamp(0.6, 2.5);
+
+            // A game opening holds the display with this surface, so this
+            // surface has to carry the picture too.
+            //
+            // The hero normally lives on the backdrop surface, which is on the
+            // background layer — under every application window. That is right
+            // for a wallpaper and wrong for a loading screen: the instant the
+            // game's own window maps, the picture the splash was standing on
+            // is behind it, and what is left is a title floating over a game
+            // the shell has not revealed yet. So while a game is opening, the
+            // surface that *is* over the window paints the picture as well.
+            //
+            // It stops at the black, not at the window. Once the screen has
+            // gone fully black the picture under it is the game's own, and
+            // painting a hero over that would spend the whole way up revealing
+            // the library the user just left instead of the game they asked
+            // for — see [`launch::Launch::uncovering`].
+            let game_opening = self
+                .launching
+                .as_ref()
+                .filter(|splash| splash.panel == index && splash.game().is_some())
+                .is_some_and(|splash| splash.drawing(now) && !splash.uncovering(now));
+
             let main_backdrop = if home > 0.0 {
                 Some(gpu::Backdrop {
                     blur: 0.0,
@@ -2581,7 +3048,7 @@ impl Shell {
                         1.0
                     },
                 })
-            } else if focused && self.guide.is_over_app() {
+            } else if game_opening || (focused && self.guide.is_over_app()) {
                 Some(gpu::Backdrop::default())
             } else {
                 None
@@ -2670,8 +3137,9 @@ impl Shell {
             let created = match self.gpu.as_mut() {
                 Some(gpu) => unsafe { gpu.add_target(display_ptr, surface_ptr, width, height) },
                 None => {
-                    let icons = self.pending_icons.take().unwrap_or_default();
-                    match unsafe { gpu::Gpu::new(display_ptr, surface_ptr, width, height, icons) } {
+                    match unsafe {
+                        gpu::Gpu::new_wallpaper(display_ptr, surface_ptr, width, height)
+                    } {
                         Ok((gpu, target)) => {
                             self.gpu = Some(gpu);
                             Ok(target)
@@ -2743,11 +3211,12 @@ impl Shell {
         // deliberately left the Wayland keyboard with the application it is
         // typing into. Reading focus alone here threw away every direction and
         // every press the moment the board appeared.
-        let active = controller_is_driving(
-            self.keep_keyboard_grabbed,
-            self.focused_surface.is_some(),
-            self.osk.is_open(),
-        );
+        let active = self.startup.ready
+            && controller_is_driving(
+                self.keep_keyboard_grabbed,
+                self.focused_surface.is_some(),
+                self.osk.is_open(),
+            );
         let poll = self.controller.poll(now.duration_since(self.start), active);
         // The pointer first. An action can close the menu or start an
         // application, either of which changes whether the stick should be
@@ -2963,6 +3432,73 @@ impl Shell {
             .filter(|app_id| !app_id.is_empty())
     }
 
+    /// The same application, as the volume mixer has to list it: whether or not
+    /// it is making a sound right now.
+    ///
+    /// The mixer is otherwise a list of what the server is playing, and an
+    /// application that is silent at this moment is not on it — including one
+    /// silent *because* it was muted, here or in whatever desktop the user was
+    /// in yesterday. That mute is remembered by the sound server per
+    /// application and comes back with the application, so without a row for it
+    /// there is nothing left to undo it with. Hence this row, for the one
+    /// application the user can be assumed to be asking about.
+    ///
+    /// The names are every spelling its sounds might be listed under, best
+    /// first, because the two sides name one application differently and only
+    /// this side has anything to look it up in: what the window calls itself,
+    /// what the desktop entry that installed it declares and runs, what the
+    /// Steam library calls a game whose window is a numbered `steam_app_…`,
+    /// and — last, because a title describes the *contents* of a window — what
+    /// the window is titled, which for a game under Proton is usually the only
+    /// thing it and its sound have in common.
+    fn in_front(&self) -> Option<system::InFront> {
+        let id = self.pointer_app()?.to_string();
+        let installed = self.xmb.app_for_window(&id);
+        let game = id
+            .strip_prefix("steam_app_")
+            .and_then(|app_id| app_id.parse().ok())
+            .and_then(|app_id| self.steam.game(app_id))
+            .map(|game| game.name.clone());
+        let titled = self.app_label().map(str::to_string);
+
+        let mut names: Vec<String> = Vec::new();
+        let mut add = |name: Option<String>| {
+            let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+                return;
+            };
+            if !names.iter().any(|held| held.eq_ignore_ascii_case(&name)) {
+                names.push(name);
+            }
+        };
+        add(Some(id.clone()));
+        // `org.mozilla.firefox` is the window of a program called `firefox`,
+        // and the sound is the program's.
+        add(id.rsplit('.').next().map(str::to_string));
+        if let Some(app) = installed {
+            for name in app.window_names() {
+                add(Some(name));
+            }
+            add(Some(app.name.clone()));
+        }
+        add(game.clone());
+        add(titled.clone());
+
+        Some(system::InFront {
+            // Named the way every other thing in this shell that stands for an
+            // application is named — see [`Self::window_app_name`] — except
+            // that a game out of the library beats the window's own name,
+            // which for a Steam game is a number nobody could read.
+            title: installed
+                .map(|app| app.name.clone())
+                .or(game)
+                .or_else(|| app_id_name(&id))
+                .or(titled)
+                .unwrap_or_else(|| id.clone()),
+            id,
+            names,
+        })
+    }
+
     /// Whether this session can move a pointer at all.
     fn pointer_control(&self) -> bool {
         self.shell_control
@@ -3154,11 +3690,45 @@ impl Shell {
     /// only name left. A title is the last resort rather than the first
     /// because it describes the *contents* of a window: closing a browser is
     /// not closing the video that is playing in it.
+    ///
+    /// A game Valve's client started is the exception, and takes its title
+    /// first. The reasoning above rests on a class being a name somebody
+    /// chose, and for these it is not: a Proton title announces whatever its
+    /// binary was called, which is routinely `x86_64`, so the shell offered to
+    /// "Close X86_64" while the card directly beside that button said Celeste.
+    /// A game has no document open in it either — the objection to titles does
+    /// not arise — and the title is what its own card is captioned with, so
+    /// this is the two of them agreeing rather than a second opinion.
+    ///
+    /// Only these, which is why they are written down when they arrive rather
+    /// than recognised by their class: see [`Self::steam_windows`]. Anything
+    /// the shell is not certain about keeps the old order, so a browser is
+    /// still closed by name and not by the tab it is showing.
     fn window_app_name(&self, window: &WindowCard) -> String {
-        if let Some(app) = self.xmb.app_for_window(&window.app_id) {
-            return app.name.clone();
+        window_name(
+            window,
+            self.xmb
+                .app_for_window(&window.app_id)
+                .map(|app| app.name.as_str()),
+            self.steam_windows.contains(&window.id),
+        )
+    }
+
+    /// Forget the games whose windows have gone.
+    ///
+    /// Not tidiness: a compositor hands out window ids and is free to use one
+    /// again once the window it named is gone, so an id kept past its window
+    /// is a claim waiting to be made about somebody else's.
+    fn forget_closed_windows(&mut self) {
+        if self.steam_windows.is_empty() {
+            return;
         }
-        app_id_name(&window.app_id).unwrap_or_else(|| window.title.clone())
+        let open: HashSet<u32> = self
+            .panels
+            .iter()
+            .flat_map(|panel| panel.windows.iter().map(|window| window.id))
+            .collect();
+        self.steam_windows.retain(|id| open.contains(id));
     }
 
     /// Name of the display being driven, when naming it tells the user
@@ -3173,6 +3743,12 @@ impl Shell {
     }
 
     fn on_action(&mut self, action: Action) {
+        // Before the catalogue lands there is deliberately no visible control
+        // to act on. A button pressed over the handoff wallpaper must not
+        // launch whichever invisible row happened to start selected.
+        if !self.startup.ready {
+            return;
+        }
         self.handle_action(action);
         self.sync_setting_preview();
     }
@@ -3231,6 +3807,53 @@ impl Shell {
     /// still the one move out. This is one call per input action, so that jump
     /// is answered by one back sound rather than one for every column it
     /// crossed.
+    /// Move the value the cursor is standing on, when what it is standing on
+    /// is a bar. `true` when this press was the bar's, so the cursor never
+    /// hears it.
+    ///
+    /// Up and Down only. Left is how every column in the tree is left and must
+    /// go on meaning that here; Right has nowhere further to go, since a bar
+    /// opens onto nothing.
+    ///
+    /// The step is applied like any other setting — the row carries what
+    /// pressing it would do, rebuilt from the live value every time the column
+    /// is — so nothing about sliding is special except which button did it.
+    /// The column is then rebuilt, because the bar's own row *is* the value:
+    /// its number, its fill and its colour all move together, and none of them
+    /// is a mark that could be moved in place.
+    fn step_bar(&mut self, action: Action) -> bool {
+        if !matches!(action, Action::Up | Action::Down) {
+            return false;
+        }
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        let Some(bar) = panel
+            .cursor
+            .current_entry(&self.xmb)
+            .and_then(apps::Entry::bar)
+        else {
+            return false;
+        };
+        let step = match action {
+            Action::Up => bar.up,
+            _ => bar.down,
+        };
+        // The end of the range. The press was still the bar's — a cursor that
+        // took it would walk out of a column the user is trying to hold a
+        // direction in — but nothing moved, so nothing is said about it.
+        let Some(step) = step else {
+            return true;
+        };
+        settings::apply(step);
+        settings::refresh(&mut self.xmb.categories);
+        self.sync_night_light();
+        // The same click a row moving under the cursor makes, because that is
+        // what happened: this column's one row now reads differently.
+        self.stepped();
+        true
+    }
+
     fn finish_cursor_move(&mut self, before_depth: usize) {
         match cursor_feedback(before_depth, self.column_depth()) {
             CursorFeedback::Step => self.stepped(),
@@ -3286,15 +3909,16 @@ impl Shell {
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::Guide => {
+                // A launch is not something the menu opens over. See
+                // [`guide_answers`]: the press is spent here and nothing is
+                // said about it, because nothing happened.
+                if !self.guide_answers_the_press() {
+                    return;
+                }
                 // Read before the mode flips: `is_over_app` is true of the
                 // menu too, and what matters is whether the bar was the thing
                 // on screen before this press.
                 let bar_on_top = self.guide.is_over_app();
-                // The way out of a launch that is taking too long, or that the
-                // user has changed their mind about. The application still
-                // starts — the splash was only ever the shell's answer to the
-                // press, and the user has stopped waiting for it.
-                self.launching = None;
                 // The menu takes the keyboard outright, so a board left up
                 // under it could not type: it would be sending its letters to
                 // the shell's own overlay. Without the slide down, because the
@@ -3397,17 +4021,53 @@ impl Shell {
                     if let settings::Setting::SoundDevice { direction, id } = setting {
                         self.quick.use_device(direction, id);
                     }
+                    // The night light is the one page in this tree whose
+                    // *shape* depends on what was just chosen: asking it to
+                    // keep hours puts two rows on the page that were not there
+                    // a moment ago, and taking the hours away takes them off
+                    // again. Nothing else would rebuild that — the compositor
+                    // has no event for a schedule it never sees — so the
+                    // column is rebuilt here, by the same call every other
+                    // change to its contents goes through.
+                    //
+                    // Every one of the five, not only the ones that add a row:
+                    // all five write the comment on the row above them, and a
+                    // page left standing says the wrong hours until something
+                    // else happens to rebuild it.
+                    if matches!(
+                        setting,
+                        settings::Setting::Display {
+                            value: settings::DisplayValue::NightLight(_)
+                                | settings::DisplayValue::NightLightTemperature(_)
+                                | settings::DisplayValue::NightLightSchedule(_)
+                                | settings::DisplayValue::NightLightFrom(_)
+                                | settings::DisplayValue::NightLightUntil(_),
+                            ..
+                        }
+                    ) {
+                        settings::refresh(&mut self.xmb.categories);
+                    }
                     // The accent needs nobody told; a display setting does,
                     // and straight away rather than on the next loop pass —
                     // the user has just pressed a button and is waiting to see
                     // whether the screen changed.
                     self.sync_hdr();
+                    self.sync_night_light();
                     self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                     return;
                 }
                 self.start_selection();
             }
             _ => {
+                // A value on a bar answers Up and Down itself. It is the one
+                // row of its column, so there is nowhere for the cursor to
+                // move — and moving the *value* is what those two mean once
+                // the column under them is a scale rather than a list. Left is
+                // untouched and still leaves, which is the whole reason a bar
+                // can live in a column at all.
+                if self.step_bar(action) {
+                    return;
+                }
                 // How deep in the path the cursor was, so a Left that came
                 // back out of a subcategory can be told from one that walked
                 // along the category row. They are one call and one answer —
@@ -3500,11 +4160,30 @@ impl Shell {
                     .is_some_and(|panel| panel.cursor.leave());
                 if left {
                     self.stepped_back();
-                } else {
+                } else if self.guide_answers_the_press() {
+                    // The other door into the same menu, and it is held shut
+                    // by the same rule. A launch left this one open would make
+                    // "the menu does not come up during a launch" false, and
+                    // in the worst way: the bar the step is out of is under
+                    // the splash, so the menu would be raised unseen and be
+                    // there when the application arrived.
                     self.open_guide();
                 }
             }
         }
+    }
+
+    /// Whether a press of the user's may raise the menu at all.
+    ///
+    /// The rule is [`guide_answers`]; this reads the two facts it needs off
+    /// the shell. Both of the places the user can open the menu from ask —
+    /// the Home button and a step back from the top of the bar — and nothing
+    /// else does, which is the point: a portal's question and an
+    /// authorisation raise the menu through [`Self::open_guide`] without
+    /// coming past here, because those are not the user asking and they need
+    /// an answer whatever else is going on.
+    fn guide_answers_the_press(&self) -> bool {
+        guide_answers(self.launching_on(self.focused_panel), self.guide.is_menu())
     }
 
     /// Show or hide the on-screen keyboard.
@@ -3687,7 +4366,10 @@ impl Shell {
         // menu keeps it because where a long list is scrolled to is state, and
         // everything else about its size is worked out afresh every frame.
         let rows = ui::context_menu_rows_that_fit(height);
-        if self.context_menu.open_at(anchor, title, entries, rows) {
+        if self
+            .context_menu
+            .open_at(anchor, title.map(menu::Title::new), entries, rows)
+        {
             self.needs_redraw = true;
         }
     }
@@ -4176,11 +4858,12 @@ impl Shell {
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::ConfirmDelete, "Yes").destructive(),
                 menu::Entry::new(menu::Command::Dismiss, "No"),
+                menu::Entry::new(menu::Command::ConfirmDelete, "Yes").grave(),
             ],
-            // On No, for the reason the uninstall question opens on No.
-            1,
+            // On No, which is the row it is standing on as well as the row it
+            // is drawn first — see the uninstall question, which this follows.
+            0,
         );
     }
 
@@ -4231,8 +4914,9 @@ impl Shell {
 
     // --- the volume mixer --------------------------------------------------
 
-    /// Raise the mixer out of the tile in the guide's column: every application
-    /// making a noise, and the session's own output under them.
+    /// Raise the mixer out of the tile in the guide's column: the application
+    /// in front, every application making a noise, and the session's own output
+    /// under them.
     ///
     /// The same panel every other context menu uses, because it is the same
     /// kind of object — a short list about one control, grown out of that
@@ -4264,8 +4948,14 @@ impl Shell {
         }
     }
 
-    /// The mixer's rows, newest sound first, with the shell's own audio at the
-    /// foot of the list.
+    /// The mixer's rows: the application in front, then the sounds the server
+    /// is playing, with the shell's own audio at the foot of the list.
+    ///
+    /// The application in front is first and is there whether or not it is
+    /// making a sound — see [`system::InFront`], which is where its row comes
+    /// from and why it has to exist at all. It leads because it is the one the
+    /// user is looking at and so the one they opened this about, which also
+    /// puts the highlight on it the moment the panel appears.
     ///
     /// The shell is last and in a band of its own because it is not one of the
     /// applications: it is the thing the panel is being drawn *by*, and it is
@@ -4320,6 +5010,387 @@ impl Shell {
                 .group(1),
         );
         entries
+    }
+
+    // --- what the machine has announced --------------------------------------
+
+    /// Take what the bus has said, move the bubbles on, and answer the programs
+    /// that are owed an answer.
+    ///
+    /// Once a frame, like every other worker the shell listens to, and for the
+    /// same reason: nothing here is a Wayland event. The three steps are in
+    /// this order on purpose — what has just arrived is filed before the corner
+    /// is advanced, so a bubble is never a frame late, and the programs are
+    /// answered last so that one pass tells them about everything this frame
+    /// did, including the announcements it has only just taken.
+    fn sync_notifications(&mut self) {
+        let Some(service) = self.notifier.as_ref() else {
+            return;
+        };
+        let standing = !self.notifications.toasts().is_empty();
+        let arrived = self.notifications.collect(service);
+        // Once for the frame, however many came in on it, and only for one
+        // that put something in the corner — see `sound::Sounds::notified`.
+        if arrived.raised {
+            self.sounds.notified();
+        }
+        let moving = self.notifications.animate();
+        self.notifications.answer(service);
+        // The first bubble lifts this display's surface to the overlay layer
+        // and the last one lets it back down — see `Guide::surface_state`. Only
+        // when that changes: the state is applied by comparison, but working
+        // it out costs a pass over every display, and the corner is empty for
+        // almost the whole of a session.
+        if standing != !self.notifications.toasts().is_empty() {
+            self.sync_surface_state();
+        }
+        if arrived.changed {
+            // Whatever picture the new ones asked for, before anything tries
+            // to draw them.
+            self.load_notification_icons();
+            // The open panel is a list of the very things that have just
+            // changed, so it is brought up to date rather than left showing
+            // what was true when it opened — the same bargain the mixer
+            // strikes with the sound server.
+            self.sync_notification_panel();
+        }
+        if arrived.changed || moving {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Find and decode the pictures the announcements on hand asked for, and
+    /// put them in the atlas.
+    ///
+    /// The one place in the shell that adds an icon after the first frame, and
+    /// it has to be: everything else draws icons the launcher's catalogue
+    /// named, which is settled before the session starts, while an
+    /// announcement carries whatever its sender chose. Usually that is
+    /// something already in the atlas — the sender's own application icon —
+    /// and this does nothing at all. It is `--icon=software-update-available`,
+    /// or a path into a package's own share directory, that has nowhere to be
+    /// drawn from until this runs.
+    ///
+    /// Done here, on the frame the announcement arrives, rather than where the
+    /// row is drawn: drawing happens once per display per frame and must not
+    /// be reading files, and the atlas needs `&mut` in any case.
+    ///
+    /// Synchronously, which is worth being deliberate about. Finding an icon
+    /// means stat-ing a handful of theme directories and decoding one picture,
+    /// and the shell already does exactly that a few hundred times before it
+    /// draws anything. Doing one more on the frame an announcement lands is
+    /// well inside a frame's budget, and the alternative — handing it to a
+    /// worker — would mean a bubble that appears without its picture and
+    /// gains it a moment later, which is worse than the cost it saves.
+    fn load_notification_icons(&mut self) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        // Only what could be drawn: the list behind the bell is every
+        // announcement there is, so it covers the corner as well.
+        let wanted: Vec<usize> = self
+            .notifications
+            .list()
+            .iter()
+            .enumerate()
+            // Already in the atlas, from the catalogue or from an earlier
+            // announcement. Asked before any file is touched, because the
+            // common case is a program whose icon the launcher already knows
+            // and the right amount of work for that is none at all.
+            .filter(|(_, held)| {
+                held.icon_name()
+                    .is_some_and(|name| gpu.slot(name).is_none())
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        for index in wanted {
+            // The name, and the picture decoded from the pixels if that is
+            // what was sent. Taken together in one look so that the borrow of
+            // the list ends before the loader and the atlas are reached, both
+            // of which are other fields of this shell.
+            let Some((name, decoded, carried_pixels)) =
+                self.notifications.list().get(index).map(|held| {
+                    (
+                        held.icon_name().unwrap_or_default().to_string(),
+                        // A picture that came as bytes is decoded from them.
+                        // There is nothing to look up: the name it is filed
+                        // under was made *out of* those pixels, precisely
+                        // because a picture sent this way has none of its own.
+                        held.image().and_then(|image| {
+                            icons::Icon::from_pixels(
+                                image.width,
+                                image.height,
+                                image.stride,
+                                image.channels,
+                                &image.data,
+                                ICON_SIZE,
+                            )
+                        }),
+                        held.image().is_some(),
+                    )
+                })
+            else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+
+            let icon = match decoded {
+                Some(icon) => Some(icon),
+                // Nothing to search the theme for. A picture that arrived as
+                // bytes and would not decode is not going to be found filed
+                // under its own hash.
+                None if carried_pixels => {
+                    tracing::debug!(
+                        icon = name,
+                        "an announcement sent a picture that could not be read"
+                    );
+                    None
+                }
+                None => self.icon_theme.load(&name, ICON_SIZE),
+            };
+            let Some(icon) = icon else {
+                // Not a failure worth telling the user about: a program is
+                // free to name an icon this machine has not got, and what is
+                // drawn instead is the shell's own bell, which is true — this
+                // *is* an announcement.
+                tracing::debug!(
+                    icon = name,
+                    "an announcement named an icon this machine has not got"
+                );
+                continue;
+            };
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.put_icon(&name, &icon);
+            }
+        }
+    }
+
+    /// Raise the notification list out of its tile in the guide's column.
+    ///
+    /// The same panel the mixer is drawn in, because it is the same kind of
+    /// object: a short list about one thing, grown out of the control that is
+    /// about it. What makes it a notification list rather than a mixer is the
+    /// entries and nothing else.
+    fn open_notifications(&mut self) {
+        let Some((width, height)) = self.focused_size() else {
+            return;
+        };
+        let items = self.guide.items(self.closable());
+        let Some(index) = items.iter().position(|item| *item == Item::Notifications) else {
+            return;
+        };
+        let anchor = ui::menu_item_rect(&items, index, width, height);
+        let entries = self.notification_entries();
+        // A title, unlike the mixer's. The mixer is a column of applications
+        // each carrying its own name and picture, so a header would be telling
+        // the user what they can already see; this list can be *empty*, and a
+        // panel with one row in it saying "Nothing to read" needs to say what
+        // it is a panel of before that row means anything.
+        // Opened on the announcement under Clear All, never on Clear All
+        // itself. The first row of this panel is the one row that throws
+        // everything away, and a panel that opens with it already highlighted
+        // would hand that to anyone who opens the list and presses accept the
+        // way they press accept everywhere else. It is a press of Up from
+        // where the highlight starts, which is near enough to reach and far
+        // enough not to be walked into — the same bargain a confirmation
+        // makes by opening on No.
+        if self.context_menu.open_selecting(
+            anchor,
+            Some(menu::Title::new("Notifications")),
+            entries,
+            ui::mixer_rows_that_fit(height),
+            1,
+        ) {
+            // Wider than every other panel in the shell — see
+            // [`ui::NOTIFICATION_EXTRA_WIDTH`]. This is the one list whose rows
+            // carry somebody else's sentences and a button of their own, and it
+            // stays wide for the announcement stepped into from it.
+            self.context_menu.widen(ui::NOTIFICATION_EXTRA_WIDTH);
+            // The list being on screen is what *read* means, so the mark on the
+            // bell starts going out as the panel it points at grows. Only on
+            // the panel actually opening: a press that raised nothing has shown
+            // the user nothing.
+            self.notifications.mark_seen();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The list's rows — see [`notification_rows`], which is where they are
+    /// built — with each told how many lines its writing needs.
+    fn notification_entries(&mut self) -> Vec<menu::Entry> {
+        let mut entries = notification_rows(self.notifications.list());
+        let height = self.focused_size().map_or(1080.0, |(_, height)| height);
+        self.measure_rows(&mut entries, height);
+        entries
+    }
+
+    /// Ask the renderer how many lines each row's writing takes, so the rows
+    /// that carry more than one can open out to hold it — see
+    /// [`ui::context_row_growth`].
+    ///
+    /// The counting cannot happen where the rows are built, and that is the
+    /// whole reason this exists: how wide a word is is known only to the thing
+    /// that shapes text, so the rows are built without a care for it and then
+    /// measured here, where the renderer is in reach. Once per panel and not
+    /// once per frame — a label does not change width between frames, and
+    /// shaping every row of every frame to rediscover a number that never moves
+    /// would be paying a rendering cost for a fact about the layout.
+    ///
+    /// Only the announcement panels are measured, of all the shell's menus.
+    /// Every other row in the shell is named by the shell, in words chosen to
+    /// fit; these carry a sentence written by whatever program sent it.
+    fn measure_rows(&mut self, entries: &mut [menu::Entry], height: f32) {
+        // A row that is there to be read is capped by the display rather than
+        // by the three lines a row in a list gets: it is the reason its panel
+        // was raised, so the only thing entitled to cut it short is the edge of
+        // the screen.
+        let read = ui::context_read_lines(height) as usize;
+        let listed = ui::CONTEXT_MAX_LINES as usize;
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        for entry in entries {
+            let (width, size) = ui::context_label_box(entry, ui::NOTIFICATION_EXTRA_WIDTH);
+            let cap = if entry.reading { read } else { listed };
+            // Measured bold, which is how a row's label is drawn once the
+            // highlight is on it — and a row that opens out under the highlight
+            // only ever does so there. Measuring the lighter weight would be
+            // measuring a width the label never has at the moment it matters.
+            // A row that cannot be chosen is drawn in the lighter weight and
+            // always will be, so it is measured that way.
+            entry.lines = gpu.lines_needed(&entry.label, size, entry.enabled, width, cap) as u8;
+            // And the line under it, which is the longer of the two on an
+            // announcement: the summary is a headline and the body is the
+            // sentence. Never bold — the second line stays quiet under the
+            // highlight, which is how the row says which of the two is the
+            // heading.
+            let Some(detail) = entry.detail.as_deref() else {
+                continue;
+            };
+            let (width, size) = ui::context_detail_box(entry, ui::NOTIFICATION_EXTRA_WIDTH);
+            entry.detail_lines = gpu.lines_needed(detail, size, false, width, cap) as u8;
+        }
+    }
+
+    /// One announcement opened: what it said in full, the buttons the program
+    /// offered with it, and a way to put it away.
+    ///
+    /// The body is a row that cannot be chosen rather than a title, because a
+    /// title is one line and a body is a paragraph — and because what the
+    /// panel is about is already on the header. A row the highlight steps over
+    /// is how this shell draws something that is there to be read.
+    ///
+    /// Which is why these rows are measured too. A row that cannot be chosen
+    /// never comes under the highlight, so it would never open out under one;
+    /// it is drawn at its full height from the moment the panel arrives, and a
+    /// panel whose whole purpose is the paragraph on it would otherwise show
+    /// one line of it and an ellipsis.
+    fn notification_actions(&mut self, id: u32) -> Vec<menu::Entry> {
+        let Some(held) = self.notifications.list().iter().find(|held| held.id == id) else {
+            return Vec::new();
+        };
+        let mut entries = Vec::with_capacity(held.actions.len() + 2);
+        if !held.body.trim().is_empty() {
+            entries.push(
+                menu::Entry::new(menu::Command::DismissNotification(id), held.body.clone())
+                    .reading(),
+            );
+        }
+        entries.extend(
+            held.actions
+                .iter()
+                .enumerate()
+                .map(|(index, (key, label))| {
+                    // The program's own word for the button, and never the shell's:
+                    // whatever it wrote there is what its user was told to expect.
+                    // Falling back to the key is not a nicety either — a program that
+                    // sent an empty label has still offered a button, and one drawn
+                    // with nothing on it is one nobody can press on purpose.
+                    let label = if label.trim().is_empty() {
+                        key.as_str()
+                    } else {
+                        label.as_str()
+                    };
+                    menu::Entry::new(menu::Command::InvokeNotification(id, index), label)
+                        .glyph(icons::LAUNCH)
+                }),
+        );
+        entries.push(
+            menu::Entry::new(menu::Command::DismissNotification(id), "Dismiss")
+                .glyph(icons::UNINSTALL)
+                .group(1),
+        );
+        let height = self.focused_size().map_or(1080.0, |(_, height)| height);
+        self.measure_rows(&mut entries, height);
+        entries
+    }
+
+    /// The header that panel is raised under: what the announcement is called,
+    /// and how many lines saying it takes.
+    ///
+    /// Measured for the same reason its rows are — see [`Self::measure_rows`]
+    /// — and it is the one header in the shell that needs measuring. Every
+    /// other panel is titled with a name the shell chose, and chose to fit;
+    /// this one is titled with a sentence whatever program sent the
+    /// announcement wrote, and a heading cut with an ellipsis on the panel
+    /// raised to read the thing in full is the shell hiding the very line the
+    /// user pressed the row to see.
+    fn announcement_title(&mut self, id: u32) -> Option<menu::Title> {
+        let text = self
+            .notifications
+            .list()
+            .iter()
+            .find(|held| held.id == id)?
+            .title()
+            .to_string();
+        let height = self.focused_size().map_or(1080.0, |(_, height)| height);
+        let (width, size) = ui::context_title_box(ui::NOTIFICATION_EXTRA_WIDTH);
+        let cap = ui::context_title_lines(height) as usize;
+        // Bold, because that is the weight a header is set in — and a heading
+        // measured light is a heading measured at a width it never has.
+        let lines = match self.gpu.as_mut() {
+            Some(gpu) => gpu.lines_needed(&text, size, true, width, cap) as u8,
+            None => 1,
+        };
+        Some(menu::Title::new(text).lines(lines))
+    }
+
+    /// Whether the panel that is up is the notification list.
+    ///
+    /// See also [`age_of`], which is how each of its rows says when.
+    ///
+    /// Asked of the rows rather than remembered as a flag, exactly as the mixer
+    /// is: a second place saying which panel is up is a second place to get it
+    /// wrong when the menu is dismissed by one of the several things that
+    /// dismiss it.
+    fn notification_panel_is_up(&self) -> bool {
+        self.context_menu.is_open()
+            && self.context_menu.entries().iter().any(|entry| {
+                matches!(
+                    entry.command,
+                    menu::Command::DismissNotification(_) | menu::Command::DismissNotifications
+                )
+            })
+    }
+
+    /// Keep the open list showing what has actually been announced.
+    fn sync_notification_panel(&mut self) {
+        if !self.notification_panel_is_up() {
+            return;
+        }
+        // Something that arrives into an open list has been read on the way in:
+        // the row appears in front of somebody who is looking at the list. A
+        // mark left lit for it would be the bell telling the user to go and
+        // read what they had just watched arrive, and it would still be there
+        // when they closed the panel.
+        self.notifications.mark_seen();
+        let entries = self.notification_entries();
+        if self.context_menu.refresh(entries) {
+            self.needs_redraw = true;
+        }
     }
 
     /// Whether the panel that is up is the mixer.
@@ -4468,11 +5539,16 @@ impl Shell {
 
     /// Drive the menu: Up and Down move the highlight, Accept chooses.
     ///
-    /// Left and Right do nothing on a column of commands, on purpose: the menu
-    /// is one column, and Back is the way out of it — a sideways press that
-    /// also dismissed it would make a mistimed direction close the thing the
-    /// user was reading. On a row that carries a track they move that track,
-    /// which is the same thing they do to the bars in the sidebar behind it.
+    /// Left and Right do nothing on a column of plain commands, on purpose: the
+    /// menu is one column, and Back is the way out of it — a sideways press
+    /// that also dismissed it would make a mistimed direction close the thing
+    /// the user was reading. On a row that carries a track they move that
+    /// track, which is the same thing they do to the bars in the sidebar
+    /// behind it, and on a row with a button on its end they step onto that
+    /// button and back off it.
+    ///
+    /// The three cannot collide: a track fills its row and a row with a track
+    /// has no button, so at most one of them has anything to say.
     fn on_context_menu_action(&mut self, action: Action) {
         match action {
             Action::Up | Action::Down => {
@@ -4483,7 +5559,9 @@ impl Shell {
             }
             Action::Left | Action::Right => {
                 let delta = if action == Action::Left { -1 } else { 1 };
-                if self.nudge_mixer(delta) {
+                if self.context_menu.move_aside(delta) {
+                    self.stepped();
+                } else if self.nudge_mixer(delta) {
                     self.sync_mixer();
                     self.stepped();
                 }
@@ -4581,12 +5659,14 @@ impl Shell {
             menu::Command::OpenWith => {
                 let entries = self.open_with_entries();
                 let title = self.selected_media().map(|file| file.title.clone());
-                self.context_menu.descend(title, entries);
+                self.context_menu
+                    .descend(title.map(menu::Title::new), entries);
             }
             menu::Command::Sort => {
                 let entries = self.sort_entries();
                 let title = self.selected_column_title();
-                self.context_menu.descend(title, entries);
+                self.context_menu
+                    .descend(title.map(menu::Title::new), entries);
             }
             menu::Command::OpenWithHandler(index) => self.choose_default_handler(index),
             menu::Command::SortBy(sort) => self.sort_selected_shelf(sort),
@@ -4605,6 +5685,50 @@ impl Shell {
             menu::Command::MuteApplication(key) => {
                 self.quick.toggle_stream_mute(key);
                 self.sync_mixer();
+            }
+            // And the same bargain again for the notification list: the row
+            // going *is* the answer, so the panel stays and is brought up to
+            // date under the highlight.
+            menu::Command::DismissNotification(id) => {
+                self.notifications.dismiss(id);
+                // Only the list is worth keeping up to date. A press inside an
+                // opened announcement dismissed the very thing that list was
+                // about, so the panel is on its way out anyway — and refreshing
+                // it would put the outer list's rows under a highlight that is
+                // still standing in the inner one.
+                self.sync_notification_panel();
+            }
+            menu::Command::ShowNotification(id) => {
+                let entries = self.notification_actions(id);
+                let title = self.announcement_title(id);
+                self.context_menu.descend(title, entries);
+            }
+            menu::Command::InvokeNotification(id, action) => {
+                // Looked up now rather than carried in the command, because a
+                // command is `Copy` and a key is a `String` — and because the
+                // announcement may have been replaced under the open panel by
+                // the program that sent it, in which case the button pressed
+                // is the one on the list as it stands.
+                let key = self
+                    .notifications
+                    .list()
+                    .iter()
+                    .find(|held| held.id == id)
+                    .and_then(|held| held.actions.get(action))
+                    .map(|(key, _)| key.clone());
+                match key {
+                    Some(key) => {
+                        self.notifications.invoke(id, &key);
+                    }
+                    // The announcement went while the panel was open. Nothing
+                    // to press, and nothing to say about it: the row is gone
+                    // from the list behind this one already.
+                    None => tracing::debug!(id, action, "no such notification action"),
+                }
+            }
+            menu::Command::DismissNotifications => {
+                self.notifications.dismiss_all();
+                self.sync_notification_panel();
             }
             menu::Command::MuteShell => {
                 let sound = settings::sound();
@@ -4656,7 +5780,7 @@ impl Shell {
             // `Menu::descend`.
             menu::Command::SteamSort => {
                 let entries = steam_sort_rows(self.steam.sort(), self.steam.orders());
-                let title = Some(apps::steam_title().to_string());
+                let title = Some(menu::Title::new(apps::steam_title()));
                 self.context_menu.descend(title, entries);
             }
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
@@ -4729,12 +5853,18 @@ impl Shell {
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::ConfirmUninstall, "Yes").destructive(),
                 menu::Entry::new(menu::Command::Dismiss, "No"),
+                menu::Entry::new(menu::Command::ConfirmUninstall, "Yes").grave(),
             ],
-            // On No. A confirmation whose default answer destroys something is
-            // not a confirmation.
-            1,
+            // On No, and No is drawn first. A confirmation whose default answer
+            // destroys something is not a confirmation — and one that puts that
+            // answer where the harmless one stands in every other question is
+            // barely better, because the hand goes where it went last time.
+            //
+            // The Steam question this matches is `Shell::offer_to_uninstall`;
+            // the two are the same panel asked about different things and used
+            // to disagree about both the order and the colour.
+            0,
         );
     }
 
@@ -5005,12 +6135,15 @@ impl Shell {
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::SubmitPassword, "Uninstall").destructive(),
                 menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(menu::Command::SubmitPassword, "Uninstall").grave(),
             ],
-            // On Cancel, exactly as the question was: the button that destroys
-            // something is never the one already under the user's thumb.
-            1,
+            // Cancel first and standing on it, exactly as the question was:
+            // the button that destroys something is never the one already
+            // under the user's thumb. Typing the password and pressing Return
+            // submits it without going near either button — see
+            // `Shell::type_into_password`.
+            0,
         );
         // The board comes up with the field, because on a console there is
         // nothing else to type with. It types *here* rather than through the
@@ -5573,6 +6706,31 @@ impl Shell {
                 self.art.want(*app_id, art::Piece::Hero);
             }
         }
+        // And that game's logo, which is what a launch splash puts in the
+        // middle of the picture. Asked for while the cursor is merely standing
+        // on the row, well before anything has been pressed, and that is the
+        // point: a logo asked for at the moment of the press would arrive
+        // somewhere into an animation that has already begun, so the title
+        // would appear as a name and then turn into artwork. It is a tenth of
+        // what a hero costs and it is wanted in exactly the same places.
+        let logos: HashSet<u32> = scenery
+            .iter()
+            .copied()
+            // The game being started as well, in case its row is somehow no
+            // longer the one the cursor is on: the splash is on screen for
+            // minutes, and a logo dropped out of the atlas underneath it would
+            // take the title off it.
+            .chain(self.launching.as_ref().and_then(launch::Launch::game))
+            .collect();
+        for app_id in &logos {
+            if self
+                .gpu
+                .as_ref()
+                .is_some_and(|gpu| gpu.logo(*app_id).is_none())
+            {
+                self.art.want(*app_id, art::Piece::Logo);
+            }
+        }
 
         let made = self.thumbs.take();
         // Taken before the keys are worked out, not after: a cover arriving is
@@ -5592,6 +6750,7 @@ impl Shell {
         };
         gpu.retain_thumbnails(&wanted);
         gpu.retain_scenery(&scenery);
+        gpu.retain_logos(&logos);
         for (path, picture) in made {
             if !wanted.contains(&path) || gpu.thumbnail(&path).is_some() {
                 continue;
@@ -5611,6 +6770,9 @@ impl Shell {
                     app_id,
                     scenery: picture,
                 } if scenery.contains(app_id) => gpu.put_scenery(*app_id, picture),
+                art::Made::Logo { app_id, picture } if logos.contains(app_id) => {
+                    gpu.put_logo(*app_id, picture)
+                }
                 // A picture for a row or a display that has moved on. Dropped
                 // here rather than uploaded; it is in the cache on the disk by
                 // now, so having it back costs a read.
@@ -5936,7 +7098,7 @@ impl Shell {
                 foreground: &foreground,
             },
         )
-        .through_steam();
+        .through_steam(game.app_id);
         self.launching = Some(splash);
         // The screen is changing hands, which is what this sound is about, and
         // it has changed hands whether or not the client comes up.
@@ -5962,11 +7124,16 @@ impl Shell {
     /// waiting on it.
     fn steam_client_said(&mut self, report: lxb_steam::ClientReport) {
         match report {
-            // Nothing to do but keep the splash up, which is already up. The
-            // shell says nothing here on purpose: "starting Steam" is the
-            // shell's business and not something the user asked about, and a
-            // loading screen that narrates its own plumbing is one that draws
-            // attention to the thing it exists to hide.
+            // Nothing to do but keep the splash up, which is already up — and
+            // is already saying so: the splash goes up on [`launch::Doing::Steam`]
+            // and moves to the game in `start_the_waiting_game` below.
+            //
+            // It used to say nothing here, on the reasoning that "starting
+            // Steam" is the shell's own plumbing and not something the user
+            // asked about. That is right for a wait somebody does not notice
+            // and wrong for this one: a cold client is most of a minute before
+            // the game is so much as asked for, and a picture with a spinner on
+            // it for that long does not read as working, it reads as stuck.
             lxb_steam::ClientReport::Waking => {}
             lxb_steam::ClientReport::Ready => self.start_the_waiting_game(),
             lxb_steam::ClientReport::Unavailable(why) => {
@@ -6914,6 +8081,10 @@ impl Shell {
             return self.guide_spot_at(index, x, y, width, height);
         }
 
+        // Measured against the bar where it settles, so a click that lands
+        // while the screen is still arriving is carried back through the move
+        // the drawing was carried forward through first.
+        let (x, y) = ui::arrival_point(x, y, width, height, panel.arrival_linear);
         match ui::bar_hit(&self.xmb, &panel.cursor, x, y, width, height) {
             Some(spot) => Spot::Bar(spot),
             None => Spot::Nothing,
@@ -6948,7 +8119,12 @@ impl Shell {
                 .and_then(|((entry, level), slots)| {
                     ui::mixer_level_at(rect, entry, level, height, slots, x)
                 });
-            return Spot::MenuRow { row, level };
+            // The button on the end of the row is inside the row's own
+            // rectangle, so it is asked about first: a click there is the
+            // row's other command, not the row.
+            let aside = ui::context_menu_aside_rect(width, height, &self.context_menu, row)
+                .is_some_and(|rect| within(rect, x, y));
+            return Spot::MenuRow { row, level, aside };
         }
         // Outside the panel altogether. A menu is a note attached to something
         // on the screen behind it, and pressing that screen is how every menu
@@ -7022,6 +8198,9 @@ impl Shell {
     /// at all. A press acts on nothing when this says no, which is what keeps a
     /// click on a disabled tile from pressing the row that was selected before.
     fn point_at(&mut self, spot: Spot) -> bool {
+        if !self.startup.ready {
+            return false;
+        }
         let closable = self.closable();
         let (moved, landed) = match spot {
             Spot::Key(row, column) => {
@@ -7032,9 +8211,15 @@ impl Shell {
                 self.dialog.buttons.select(button),
                 self.dialog.buttons.selected() == button,
             ),
+            Spot::MenuRow {
+                row, aside: true, ..
+            } => (
+                self.context_menu.select_aside(row),
+                self.context_menu.selected() == row && self.context_menu.on_aside(),
+            ),
             Spot::MenuRow { row, .. } => (
                 self.context_menu.select(row),
-                self.context_menu.selected() == row,
+                self.context_menu.selected() == row && !self.context_menu.on_aside(),
             ),
             Spot::PowerRow(row) => (
                 self.guide.select_power(row),
@@ -7061,6 +8246,9 @@ impl Shell {
     /// one raised over the row that happened to be selected already would be a
     /// list of things to do to an application the user is not pointing at.
     fn aim_at(&mut self, spot: Spot) -> bool {
+        if !self.startup.ready {
+            return false;
+        }
         let moved = match spot {
             Spot::Card(card) => {
                 let count = self
@@ -7110,6 +8298,10 @@ impl Shell {
     /// every display, since it is what says the click would be worth making.
     fn hover(&mut self, qh: &QueueHandle<Self>, index: usize, x: f32, y: f32) {
         let spot = self.spot_at(index, x, y);
+        if !self.startup.ready {
+            self.set_cursor_shape(qh, shape::Shape::Default);
+            return;
+        }
         if index == self.focused_panel {
             self.point_at(spot);
         }
@@ -7132,6 +8324,9 @@ impl Shell {
     /// guide, which was still over the other display when the button went
     /// down. The next press lands on what the user can now see is selected.
     fn press_on(&mut self, index: usize, x: f32, y: f32) -> Option<Spot> {
+        if !self.startup.ready {
+            return None;
+        }
         if self.focus_panel(index) {
             return None;
         }
@@ -7146,6 +8341,9 @@ impl Shell {
     /// another way — a value set by *where* it was clicked, a screen dismissed
     /// by pressing past it, and the two kinds that take a click to select.
     fn press_at(&mut self, spot: Spot) {
+        if !self.startup.ready {
+            return;
+        }
         let landed = self.point_at(spot);
         match spot {
             Spot::Key(..) if landed => self.press_key(),
@@ -7367,8 +8565,16 @@ impl Shell {
 
         let mut finished = false;
         let mut drawing = false;
+        // The windows this launch turned out to be, if it was a game's. Taken
+        // here and applied below rather than written straight down, because
+        // this is the one place in the shell that knows it — see
+        // [`Self::steam_windows`].
+        let mut game_windows: Vec<u32> = Vec::new();
         if let Some(splash) = self.launching.as_mut() {
             if let Some(arrival) = splash.advance(now, &known, &foreground, alive) {
+                if arrival == launch::Arrival::Window && splash.game().is_some() {
+                    game_windows.extend(splash.newcomers(&known));
+                }
                 // At `info`, because this is the one line that says why a
                 // loading screen went away, and a launch that hands over to
                 // the wrong window is invisible without it — the default
@@ -7385,6 +8591,13 @@ impl Shell {
             }
             finished = splash.finished(now);
             drawing = splash.drawing(now);
+        }
+        if !game_windows.is_empty() {
+            tracing::debug!(
+                windows = ?game_windows,
+                "these windows are a game Valve's client started"
+            );
+            self.steam_windows.extend(game_windows);
         }
         if finished {
             let never_appeared = self
@@ -7534,6 +8747,91 @@ impl Shell {
             .is_some_and(|splash| splash.panel == index)
     }
 
+    /// An application on `index` has ended without the shell being the one to
+    /// end it: hand the display to the start screen, and let it arrive.
+    ///
+    /// Two things happen here, and they are one answer to the same question —
+    /// what should a display show when the thing that was filling it walks out?
+    ///
+    /// The start screen, first of all, and *whatever else is running*. A
+    /// display uncovering itself down to the next application is the machine
+    /// answering a question nobody asked: the user quit a game, and what they
+    /// get is somebody else's window — the browser left open an hour ago, the
+    /// installer that never got closed — with no more explanation than that it
+    /// happened to be underneath. The shell is what the machine goes back to,
+    /// so it takes the screen the same way the guide's own Dashboard row takes
+    /// it, and everything still running stays running, one press of the guide
+    /// button away.
+    ///
+    /// And it arrives rather than appearing, on the arrival the shell comes up
+    /// on. From the bar's side the two are the same event — a display that was
+    /// not showing the start screen is now showing nothing else — and an
+    /// animation the user has already been taught to read as *here is the start
+    /// screen* is the one worth reusing. It is also the honest way to fill the
+    /// moment: the application's last frame and the bar's first are otherwise
+    /// consecutive, which reads as a stutter rather than as a handover.
+    ///
+    /// Out of black, and that part is a join rather than an effect. The
+    /// application's last frame goes back to the compositor on the compositor's
+    /// own schedule, and what stands behind it — the next window down, the
+    /// wallpaper coming back — arrives on its. A tenth of a second of black
+    /// covers the seam between them; see [`ui::BLACK_HANDOVER`].
+    ///
+    /// What this is *not* is the guide's Close. That press is the user putting
+    /// an application away deliberately, from a menu they opened, and they are
+    /// still standing in that menu when it goes — with the deck closing up
+    /// around the card that left, which is the animation that belongs to it.
+    /// Nothing here fires for it; see [`Self::ended_by_the_shell`].
+    fn an_application_ended_by_itself(&mut self, index: usize) {
+        // Not over the menu. The user is standing in it, the card that left has
+        // already gone from the deck, and dismissing the menu will put the bar
+        // wherever the display then needs it — see `Guide::dismiss`.
+        if self.guide.is_menu() {
+            return;
+        }
+        // Nor over a launch or a window still flying home. Both own the display
+        // for as long as they last and both end by handing it over themselves;
+        // a start screen arriving through either would be two answers at once.
+        if self.launching_on(index) || self.restoring_on(index) {
+            return;
+        }
+        let covered = self
+            .panels
+            .get(index)
+            .is_some_and(|panel| bar_is_covered(panel.width, panel.height, &panel.windows));
+        if covered {
+            // Something else is still in front. Only the display being driven
+            // can be raised over it — an overlay belongs to the screen holding
+            // control, and putting one on a display nobody is looking at would
+            // be the shell taking a screen it was not given. The others keep
+            // what the compositor leaves them.
+            if index != self.focused_panel {
+                return;
+            }
+            self.guide.show_bar_over_app();
+            // The loop syncs after every round of events anyway — an
+            // application exiting is one of the things that call says it is
+            // for. This is the same call, made where the decision is: a
+            // function that moves the surface and leaves the commit to a
+            // caller three files away is one edit from not moving it at all.
+            // It is idempotent, and an unchanged state is not resent.
+            self.sync_surface_state();
+        }
+        tracing::info!(
+            display = self
+                .panels
+                .get(index)
+                .map(|panel| panel.name.as_str())
+                .unwrap_or("?"),
+            over_an_application = covered,
+            "an application ended by itself; the start screen is coming back"
+        );
+        if let Some(panel) = self.panels.get_mut(index) {
+            panel.arrive_out_of_black();
+        }
+        self.needs_redraw = true;
+    }
+
     /// Whether anything this display draws can still be seen.
     ///
     /// Behind a fullscreen application none of it can, and an animated
@@ -7556,6 +8854,14 @@ impl Shell {
         // application on purpose, so a display that has stopped drawing
         // because something covered its bar has to start again for them.
         if index == self.focused_panel && self.keyboard_visible() {
+            return true;
+        }
+        // And so is the corner of the screen. This is the one case where the
+        // shell has something to draw over an application that nobody asked
+        // for, so it is the one this optimisation would silently swallow: a
+        // display that had stopped drawing because a game covered its bar
+        // would go on not drawing while a notification came and went.
+        if index == self.focused_panel && !self.notifications.toasts().is_empty() {
             return true;
         }
         !bar_is_covered(panel.width, panel.height, &panel.windows)
@@ -7733,11 +9039,7 @@ impl Shell {
                         // is one, plainly otherwise. Either way the shell
                         // keeps the display.
                         None => {
-                            if app_running {
-                                self.guide.show_bar_over_app();
-                            } else {
-                                self.guide.close();
-                            }
+                            self.guide.dismiss(app_running);
                             self.answer_choice(ChosenFeedback::Kept, Screen::Guide);
                         }
                     }
@@ -7926,6 +9228,27 @@ impl Shell {
                 self.guide.press(item);
                 self.open_mixer();
             }
+            // The other switch, and the one that is about the session rather
+            // than about whatever is in front of it — so unlike the pointer
+            // tile it always has something to act on, and it is written down
+            // where the shell's own settings live rather than against an
+            // application's name.
+            //
+            // The centre is told rather than asked: it is what decides whether
+            // an announcement reaches the corner and whether it makes a noise,
+            // and those are one answer given in one place.
+            Item::DoNotDisturb => {
+                self.guide.press(item);
+                let quiet = settings::set_do_not_disturb(!settings::do_not_disturb());
+                self.notifications.set_quiet(quiet);
+            }
+            // The same again: a tile that raises a panel rather than turning
+            // something over, and the press plays for the same reason — the
+            // tile going down is the first frame of the panel arriving.
+            Item::Notifications => {
+                self.guide.press(item);
+                self.open_notifications();
+            }
             // A on the volume bar silences the session, the way the key marked
             // with a crossed-out speaker does. There is no equivalent for a
             // screen, so A on the brightness bar does nothing rather than
@@ -7950,9 +9273,20 @@ impl Shell {
             }
             guide::PowerItem::Shutdown => {
                 self.guide.close();
+                // Before the machine goes, because what comes back is a login
+                // screen and this is the last moment anything can tell it how
+                // loud the machine was and which speakers it was coming out of.
+                // Suspend is deliberately not one of these: it comes back to
+                // this same session, with the same volume, and nothing in
+                // between has looked at it.
+                settings::tell_the_login_screen_before_leaving();
                 run_detached("systemctl poweroff", ["systemctl", "poweroff"]);
             }
             guide::PowerItem::Exit => {
+                // The login screen is a second away, and the sound server that
+                // knows where this session was playing goes down with the
+                // session. See `settings::tell_the_login_screen_before_leaving`.
+                settings::tell_the_login_screen_before_leaving();
                 if let Some(control) = &self.shell_control {
                     control.quit();
                     let _ = self.conn.flush();
@@ -7976,6 +9310,10 @@ impl Shell {
         let Some(id) = self.close_target().map(|window| window.id) else {
             return;
         };
+        // Written down before it is asked for, so that the hole this leaves in
+        // the window list is read as the shell's own doing rather than as an
+        // application walking out — see [`Self::an_application_ended_by_itself`].
+        self.ended_by_the_shell.insert(id);
         let Some(control) = self.shell_control.clone() else {
             // Standalone: our own children are all we can reach.
             self.xmb.terminate_launched_apps();
@@ -8035,6 +9373,11 @@ impl Shell {
         };
 
         tracing::info!(display = %target.name, id, "moving a window to another display");
+        // A window leaving this display's list because it was sent to the next
+        // one is not an application ending, and the display it left has not
+        // been handed anything: it has been left with whatever was already
+        // behind. Same note as the kill above.
+        self.ended_by_the_shell.insert(id);
         control.move_window_to_output(id, &target.output);
         if let Err(err) = self.conn.flush() {
             tracing::warn!(?err, "could not send the move request");
@@ -8157,6 +9500,19 @@ impl Shell {
         }
         self.sharing = Some(ShareQuestion { id, displays });
         self.needs_redraw = true;
+    }
+
+    /// Raise the portal question that arrived before the complete shell did.
+    /// One is all the protocol can sensibly queue here: further questions are
+    /// refused at their event boundary just as they are while a modal share
+    /// question is already visible.
+    fn present_deferred_share(&mut self) {
+        if !self.startup.ready || self.sharing.is_some() {
+            return;
+        }
+        if let Some((id, app_id)) = self.pending_share.take() {
+            self.ask_to_share(id, &app_id);
+        }
     }
 
     /// Answer the question on screen, with a display or with nothing.
@@ -8366,6 +9722,53 @@ impl Shell {
         if sent {
             if let Err(err) = self.conn.flush() {
                 tracing::warn!(?err, "could not send the display settings");
+            }
+        }
+    }
+
+    /// Tell every display whether its night light should be burning at this
+    /// moment, and how warm.
+    ///
+    /// The one setting in this shell that changes without anybody touching it.
+    /// A schedule is a clock and a time zone, and neither is anything the
+    /// compositor should own — so what is sent is the *answer*, worked out here
+    /// against the machine's own local time, and the compositor is left with a
+    /// switch and a temperature. Nine in the evening arriving is then an
+    /// ordinary change to the value being diffed, carried out by the same path
+    /// that carries out a press.
+    ///
+    /// Which is why this is safe to call every loop iteration and has to be:
+    /// the loop wakes thirty times a second whether or not anything is being
+    /// drawn — it has a controller to poll — and this is the only thing
+    /// watching for the hour to turn. Reading the clock is cheap and cached;
+    /// see [`settings::local_time`].
+    fn sync_night_light(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < NIGHT_LIGHT_SHELL_VERSION {
+            return;
+        }
+        let mut sent = false;
+        for panel in &mut self.panels {
+            let wanted = settings::night_light_now(&panel.name);
+            if panel.applied_night_light == Some(wanted) {
+                continue;
+            }
+            let (burning, kelvin) = wanted;
+            control.set_output_night_light(&panel.output, burning as u32, kelvin as u32);
+            panel.applied_night_light = Some(wanted);
+            sent = true;
+            tracing::debug!(
+                display = %panel.name,
+                burning,
+                kelvin,
+                "asked for this night light"
+            );
+        }
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not send the night light");
             }
         }
     }
@@ -8609,6 +10012,13 @@ impl Shell {
                     self.launching_on(index),
                     keyboard,
                     typing_here,
+                    // Only the display being driven. A bubble is the shell
+                    // asking for a moment of the user's attention, and it asks
+                    // on the screen they are looking at — the same rule the
+                    // guide follows, and for the same reason: two corners
+                    // announcing the same thing is one of them talking to
+                    // nobody.
+                    index == self.focused_panel && !self.notifications.toasts().is_empty(),
                     self.base_layer,
                 );
                 (state, self.clickable(index, state, keyboard))
@@ -9229,6 +10639,24 @@ fn draws_only_the_keyboard(
     focused && keyboard_overlay && !menu_here && !typing_here
 }
 
+/// The rule behind [`Shell::window_app_name`], with everything it needs handed
+/// to it: what the catalogue calls this window's class, if anything, and
+/// whether the window is a game Valve's client started.
+///
+/// Free-standing because the shell it is a method on cannot be built without a
+/// compositor, and this is the one piece of it worth checking on its own — it
+/// decides what a button that *kills something* is called, and every way of
+/// getting it wrong names one thing while ending another.
+fn window_name(window: &WindowCard, installed: Option<&str>, from_steam: bool) -> String {
+    if from_steam && !window.title.trim().is_empty() {
+        return window.title.clone();
+    }
+    if let Some(name) = installed {
+        return name.to_string();
+    }
+    app_id_name(&window.app_id).unwrap_or_else(|| window.title.clone())
+}
+
 /// The name an application gives itself, made presentable.
 ///
 /// An `app_id` is written for a machine to match on, so the parts of it that
@@ -9339,6 +10767,38 @@ fn xmb_music_wanted(has_panel: bool, apps_open: bool, handing_over: bool) -> boo
     has_panel && !apps_open && !handing_over
 }
 
+/// Whether a press of the user's opens the menu, as a rule on its own.
+///
+/// It does, except over a launch. The splash is the shell's answer to the last
+/// press — it says the button was heard and the application is on its way — and
+/// a menu raised on top of that would be a second screen about the same moment,
+/// with nothing on it that could act. Every row it offers is about something
+/// that is already running: Resume goes back to the screen the splash is
+/// covering, Close is about a window that does not exist yet. The press is
+/// spent and nothing is said about it, which is the shell's ordinary answer to
+/// a move that landed on nothing.
+///
+/// It is a bounded silence, and that is what makes it bearable. A splash gives
+/// up on its own — twenty seconds for an application the shell forked, a minute
+/// for a game handed to Valve's client, and at once if a process the shell is
+/// watching dies — so the button is never dead for longer than the wait it
+/// belongs to, and a launch that fails ends in a panel saying so rather than in
+/// a screen nobody can leave.
+///
+/// `launching_here` is this display's launch and not the session's: a game
+/// coming up on one screen is not a reason the other screen's menu should stop
+/// working, and the splash is only ever on the display it was started from.
+///
+/// `showing` is the way out, and the reason this is not simply `!launching`. A
+/// portal's question and an authorisation both raise the menu without asking
+/// this, because they are the system asking rather than the user, and either
+/// can arrive mid-launch. Refusing the press with the menu already up would
+/// turn the button that gets the user out of everything into the one that
+/// trapped them there.
+fn guide_answers(launching_here: bool, showing: bool) -> bool {
+    showing || !launching_here
+}
+
 /// Whether the right stick is aiming the pointer, as a rule on its own.
 ///
 /// `turned_on` is the switch: an application is in front, it said what it is,
@@ -9413,7 +10873,13 @@ enum Spot {
     /// A row of the context menu. `level` is where along a mixer row's groove
     /// the point fell, and `None` for every row that has no groove — the
     /// speaker at its head included, which is a button rather than a value.
-    MenuRow { row: usize, level: Option<f32> },
+    /// `aside` is whether the point fell on the button at the row's right-hand
+    /// end rather than on the row, which is the row's other command.
+    MenuRow {
+        row: usize,
+        level: Option<f32>,
+        aside: bool,
+    },
     /// The screen around the context menu, which is a way out of it.
     OutsideMenu,
     /// A choice in the power dialog.
@@ -9565,6 +11031,133 @@ fn key_repeats(keysym: Keysym, typing: bool) -> bool {
     )
 }
 
+/// The notification panel's rows: a way to clear the lot, and under it one per
+/// announcement, newest first.
+///
+/// Newest first because that is the order they are kept in — see
+/// [`notify::Center`] — and not because anything sorts them here. The one place
+/// that decides the order is the place that holds them.
+///
+/// Clearing sits at the *top*, above the separator. It used to sit under the
+/// list, where it is the last thing read and therefore, on the face of it,
+/// where a summary belongs. But a list of announcements is a list that scrolls,
+/// and the bottom of one is somewhere the user has to travel to: the row was
+/// off the panel the moment there were more announcements than rows, and
+/// reaching it meant either the whole journey down or an Up that wraps the
+/// highlight round and drags the window to the end of the list with it. At the
+/// top it is on the panel from the moment the panel opens, and one press of Up
+/// from where the highlight starts.
+///
+/// A free function, and not a method, for the same reason
+/// [`steam_game_menu_rows`] is one: the order of these rows is the whole of
+/// what this decides, and a list that can be built without a running shell is
+/// one a test can read back.
+fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
+    if list.is_empty() {
+        // A panel refuses to open with nothing choosable on it, and this one
+        // has to open: the tile's whole question is *did I miss anything*, and
+        // "no" is an answer the user is entitled to get rather than a button
+        // that appears not to work. So the empty list is a row — one that says
+        // so, and that puts the panel away when it is pressed, which is what
+        // every other way out of this panel does too.
+        //
+        // Alone, with no Clear All over it. A row that throws away nothing is
+        // furniture, and the one thing this panel has to say when it is empty
+        // is that it is empty.
+        return vec![
+            menu::Entry::new(menu::Command::Dismiss, "Nothing to read").glyph(icons::NOTIFICATIONS)
+        ];
+    }
+
+    let mut entries = vec![
+        menu::Entry::new(menu::Command::DismissNotifications, "Clear All")
+            .glyph(icons::UNINSTALL)
+            .holds(),
+    ];
+    entries.extend(list.iter().map(|held| {
+        // A press opens it where there is something to open, and puts it away
+        // where there is not. An announcement with no buttons has nothing
+        // behind it but a list of one, and making somebody step into that to
+        // get back out again would be the panel wasting their time; one with
+        // buttons must not be dismissed by the press that was reaching for
+        // them.
+        let command = if held.actions.is_empty() {
+            menu::Command::DismissNotification(held.id)
+        } else {
+            menu::Command::ShowNotification(held.id)
+        };
+        let entry = menu::Entry::new(command, held.title())
+            // When it arrived, on a line of its own above the summary, and
+            // whatever the program went on to say below it.
+            //
+            // The two shared a line until the user asked for this, separated by
+            // a dot: "now · Would you like to install updates now?". It was one
+            // line shorter, and it read as one sentence that began with a time
+            // — the reader had to find the separator before either half meant
+            // anything. Split, each run is one thing: a time, a summary, and
+            // what was said. The cost is a third line, and therefore fewer
+            // announcements on a panel; the user has seen both and chosen.
+            .stamp(age_of(held.arrived))
+            // An empty body leaves the row two lines rather than putting an
+            // empty one under the summary: `detail` takes nothing as nothing.
+            .detail(held.body.trim())
+            // What the launcher's catalogue draws for the program that sent it,
+            // wherever it knows the program — so the row in this panel wears
+            // the same picture as the tile on the start screen. Anything it
+            // cannot answer for falls back to the generic application icon,
+            // which is the honest picture of a program the machine knows
+            // nothing else about. The bell for a program that named no icon at
+            // all, for the same reason the bubble in the corner wears one: the
+            // shell's own mark is true — this is an announcement — where an
+            // empty column is a row that looks like it is still loading.
+            .icon(held.icon_name().unwrap_or(icons::NOTIFICATIONS))
+            // And a button of its own on the end of the row, for the one thing
+            // an announcement is nearly always wanted for. Reading it and
+            // throwing it away is the whole of what this list is for, and
+            // without this the throwing away is a step into the row and a
+            // Dismiss at the bottom of what is behind it.
+            .aside(
+                menu::Command::DismissNotification(held.id),
+                icons::UNINSTALL,
+            )
+            // Below the separator that Clear All sits above. A group of its own
+            // is what draws the line between the one row that acts on the whole
+            // list and the list itself.
+            .group(1);
+        // The panel stays up for a row that dismisses. The answer to pressing
+        // one is the row going, and a panel that folded away would take the
+        // answer with it before it could be seen — the same reason a mixer's
+        // tracks hold it. A row that *opens* does not need telling: stepping
+        // into a list keeps the panel by definition.
+        if held.actions.is_empty() {
+            entry.holds()
+        } else {
+            entry
+        }
+    }));
+    entries
+}
+
+/// How long ago something arrived, as a row says it.
+///
+/// Rounded down and coarse on purpose, and never a clock time. What the row is
+/// answering is *did I miss this, or has it only just happened* — and to that
+/// question "3m" and "3:07" are the same answer, except that one of them makes
+/// the reader do the arithmetic. Anything inside a minute is "now": a list
+/// somebody has just opened should not be counting seconds at them.
+///
+/// Days rather than dates at the far end, because a notification a week old is
+/// a list nobody has cleared rather than a record anyone is consulting.
+fn age_of(arrived: Instant) -> String {
+    let seconds = arrived.elapsed().as_secs();
+    match seconds {
+        0..60 => "now".to_string(),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86_400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 /// What of one of the shell's surfaces accepts the pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Clickable {
@@ -9615,6 +11208,38 @@ fn should_draw(visible: bool, settling: bool, was_visible: bool) -> bool {
 /// on screen — rather than assuming that anything running must be fullscreen.
 /// A windowed application leaves the bar visible around it, and a bar that
 /// froze there would look broken rather than thrifty.
+/// Whether the windows a display has just lost amount to an application
+/// walking out of it — which is the shell's cue to take the screen back and
+/// come forward on to it; see [`Shell::an_application_ended_by_itself`].
+///
+/// Two conditions, and the second is as important as the first. It has to be
+/// something the shell did not end: a card closed from the guide leaves the
+/// same hole in the window list, and the user who closed it is standing in the
+/// menu watching the deck close up, which is that press's own answer. And it
+/// has to have been *filling the display*, because that is what makes this the
+/// bar being handed a screen. A dialog closing over a start screen that was on
+/// show throughout hands it nothing, and a dialog closing over a game that is
+/// still running hands it nothing either.
+///
+/// `ended_by_the_shell` is spent as it is read: an id names one window, and a
+/// claim left lying about would be spent on some later window that happened to
+/// be given the same number. Every departing window is asked about for that
+/// reason, rather than the list being searched for the first that answers.
+fn walked_out(
+    gone: &[WindowCard],
+    width: u32,
+    height: u32,
+    ended_by_the_shell: &mut HashSet<u32>,
+) -> bool {
+    let mut by_itself = false;
+    for window in gone {
+        if !ended_by_the_shell.remove(&window.id) {
+            by_itself = true;
+        }
+    }
+    by_itself && bar_is_covered(width, height, gone)
+}
+
 fn bar_is_covered(width: u32, height: u32, windows: &[WindowCard]) -> bool {
     width > 0
         && height > 0
@@ -9707,6 +11332,12 @@ fn approach(current: f32, target: f32, step: f32) -> f32 {
     } else {
         (current - step).max(target)
     }
+}
+
+/// The catalogue has to be complete *and* the held wallpaper frame has to
+/// have been presented before the bar's ordinary arrival clock may move.
+fn startup_arrival_can_advance(icons_ready: bool, has_frame: bool) -> bool {
+    icons_ready && has_frame
 }
 
 /// Smooth acceleration in and out over 0..1 — the shape the *compositor*
@@ -10234,17 +11865,21 @@ impl PointerHandler for Shell {
                         _ => {}
                     }
                 }
+                // Where the wheel was turned decides which display it turns
+                // rather than what on it: it moves the selection, and where
+                // the selection is is not the pointer's business. Turning it
+                // is an act on that display in the way that resting the
+                // pointer over it is not, so it takes control exactly as a
+                // click does — and then turns the display it has taken.
+                //
+                // Not while only the startup wallpaper is up: there is no bar
+                // to scroll yet, and a wheel turned during those first frames
+                // would move a selection the user cannot see.
                 PointerEventKind::Axis {
                     horizontal,
                     vertical,
                     ..
-                } => {
-                    // Where the wheel was turned decides which display it turns
-                    // rather than what on it: it moves the selection, and where
-                    // the selection is is not the pointer's business. Turning
-                    // it is an act on that display in the way that resting the
-                    // pointer over it is not, so it takes control exactly as a
-                    // click does — and then turns the display it has taken.
+                } if self.startup.ready => {
                     self.focus_panel(index);
                     self.scroll_by(&horizontal, &vertical);
                 }
@@ -10273,6 +11908,9 @@ impl TouchHandler for Shell {
         id: i32,
         position: (f64, f64),
     ) {
+        if !self.startup.ready {
+            return;
+        }
         let Some(index) = self.panels.iter().position(|p| p.owns(&surface)) else {
             return;
         };
@@ -10408,6 +12046,12 @@ impl KeyboardHandler for Shell {
         _serial: u32,
         event: KeyEvent,
     ) {
+        if !self.startup.ready {
+            // Do not remember it for repeat either: a key pressed over the
+            // wallpaper must be pressed again once controls exist.
+            self.held_key = None;
+            return;
+        }
         // Taken before the key is acted on, so that whatever the press opens
         // is already the screen the repeat will be walking through.
         self.held_key = Some(HeldKey::pressed(event.keysym, Instant::now()));
@@ -10588,7 +12232,19 @@ impl Dispatch<LxbShellV1, ()> for Shell {
             }
             lxb_shell_v1::Event::ShareRequest { id, app_id } => {
                 tracing::info!(id, %app_id, "the portal is asking about the screen");
-                state.ask_to_share(id, &app_id);
+                if state.startup.ready {
+                    state.ask_to_share(id, &app_id);
+                } else if state.pending_share.is_none() {
+                    state.pending_share = Some((id, app_id));
+                } else if let Some(control) = state.shell_control.as_ref() {
+                    // The first question is already waiting for controls it
+                    // can be shown on. A second cannot inherit its eventual
+                    // answer, so it is explicitly refused on the same terms as
+                    // a second question arriving while the panel is visible.
+                    tracing::info!(id, "refusing a second share question during startup");
+                    control.answer_share(id, None);
+                    let _ = state.conn.flush();
+                }
             }
             lxb_shell_v1::Event::Screenshot { output } => {
                 tracing::debug!("screenshot binding forwarded by the compositor");
@@ -10658,6 +12314,14 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                         // which is what a shell talking to a compositor too
                         // old to say otherwise has to assume anyway.
                         gamut: panel.hdr.gamut,
+                        // Not carried by this event either, and not implied by
+                        // it in either direction: an SDR laptop panel can be
+                        // warmed and a nested session cannot be, whatever
+                        // either of them says about HDR. It arrives in
+                        // output_night_light and is left exactly as it was
+                        // until it does.
+                        night_light: panel.hdr.night_light,
+                        warming: panel.hdr.warming,
                     };
                     if panel.hdr != reported {
                         tracing::info!(
@@ -10684,6 +12348,27 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                             "which HDR settings this display can honour"
                         );
                         panel.hdr.gamut = gamut;
+                        state.refresh_hdr_support();
+                    }
+                }
+            }
+            lxb_shell_v1::Event::OutputNightLight {
+                output,
+                supported,
+                active,
+            } => {
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    let can = supported != 0;
+                    let warm = active != 0;
+                    if panel.hdr.night_light != can || panel.hdr.warming != warm {
+                        tracing::info!(
+                            display = %panel.name,
+                            supported = can,
+                            warming = warm,
+                            "the night light on a display"
+                        );
+                        panel.hdr.night_light = can;
+                        panel.hdr.warming = warm;
                         state.refresh_hdr_support();
                     }
                 }
@@ -10777,18 +12462,37 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                 }
             }
             lxb_shell_v1::Event::OutputWindowsDone { output } => {
-                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
-                    let windows = std::mem::take(&mut panel.pending_windows);
-                    if panel.windows != windows {
-                        tracing::debug!(
-                            display = %panel.name,
-                            count = windows.len(),
-                            "window list changed on a display"
-                        );
-                        panel.windows = windows;
-                        state.needs_redraw = true;
-                    }
+                let Some(index) = state.panels.iter().position(|p| p.output == output) else {
+                    return;
+                };
+                let panel = &mut state.panels[index];
+                let windows = std::mem::take(&mut panel.pending_windows);
+                if panel.windows == windows {
+                    return;
                 }
+                tracing::debug!(
+                    display = %panel.name,
+                    count = windows.len(),
+                    "window list changed on a display"
+                );
+                // Which windows this display has lost, read before the new list
+                // replaces the old one. This event is the only thing that says a
+                // window has gone: there is no "closed" of its own, and the
+                // compositor is free to hand the id out again afterwards.
+                let gone: Vec<WindowCard> = panel
+                    .windows
+                    .iter()
+                    .filter(|window| !windows.iter().any(|now| now.id == window.id))
+                    .cloned()
+                    .collect();
+                let (width, height) = (panel.width, panel.height);
+                panel.windows = windows;
+                // What is being let go of here is a claim about an id.
+                state.forget_closed_windows();
+                if walked_out(&gone, width, height, &mut state.ended_by_the_shell) {
+                    state.an_application_ended_by_itself(index);
+                }
+                state.needs_redraw = true;
             }
             _ => {}
         }
@@ -10975,6 +12679,28 @@ mod scenery_tests {
 #[cfg(test)]
 mod flight_tests {
     use super::*;
+
+    /// A debug script's deadline can pass while the wallpaper is all that is
+    /// visible, but its action stays in the queue and runs as soon as the bar
+    /// has arrived far enough to own controls.
+    #[test]
+    fn a_scheduled_action_is_retained_until_startup_is_ready() {
+        assert!(!debug_action_is_due(false, 4.0, Some(1.0)));
+        assert!(debug_action_is_due(true, 4.0, Some(1.0)));
+        assert!(!debug_action_is_due(true, 0.5, Some(1.0)));
+        assert!(!debug_action_is_due(true, 4.0, None));
+    }
+
+    /// Icon discovery may finish on either side of the first presented
+    /// wallpaper frame. Neither ordering is allowed to charge hidden startup
+    /// time to the bar's arrival: it starts only after both have happened.
+    #[test]
+    fn the_startup_arrival_waits_for_icons_and_a_presented_frame() {
+        assert!(!startup_arrival_can_advance(false, false));
+        assert!(!startup_arrival_can_advance(true, false));
+        assert!(!startup_arrival_can_advance(false, true));
+        assert!(startup_arrival_can_advance(true, true));
+    }
 
     /// The bug: the start screen's card appearing on top of the application
     /// the user is leaving, because the shell decorated the overview on its
@@ -11325,6 +13051,47 @@ mod flight_tests {
         }
     }
 
+    /// A launch is the shell already answering the last press, and the menu
+    /// does not open over its own answer.
+    #[test]
+    fn the_menu_does_not_come_up_over_a_launch() {
+        const NO: bool = false;
+        const YES: bool = true;
+
+        // The ordinary case, both ways round: nothing on its way, the press
+        // opens the menu and the next one closes it again.
+        assert!(guide_answers(NO, NO));
+        assert!(guide_answers(NO, YES));
+
+        // Something on its way on this display: the press is spent.
+        assert!(!guide_answers(YES, NO));
+    }
+
+    /// The button that gets the user out of everything must not be the one
+    /// that leaves them somewhere.
+    ///
+    /// Nothing the user does can raise the menu over a launch, but a portal's
+    /// question and an authorisation both can — they are the system asking,
+    /// they can arrive at any moment, and they go up through `open_guide`
+    /// without passing the rule. If the same rule then refused the press that
+    /// closes the menu, the user would be shut in with it.
+    #[test]
+    fn a_menu_raised_over_a_launch_can_still_be_closed() {
+        assert!(guide_answers(true, true));
+    }
+
+    /// One display's launch is not the other display's business.
+    ///
+    /// The splash is drawn on the display the application was started from and
+    /// nowhere else, so that is the only screen with the shell's answer
+    /// already on it. Asking the session-wide question here would leave a
+    /// second screen's menu dead for a minute over a game that is not coming
+    /// up on it.
+    #[test]
+    fn a_launch_next_door_does_not_hold_this_screens_menu_shut() {
+        assert!(guide_answers(false, false));
+    }
+
     /// The cursor goes away when the user picks the pad up, and the pad is
     /// picked up in more ways than the shell itself hears about.
     #[test]
@@ -11424,6 +13191,75 @@ mod flight_tests {
         assert!(!bar_is_covered(0, 0, &[window(1920, 1080)]));
     }
 
+    /// An application that ends on its own hands the display back to the start
+    /// screen, and the shell says so by coming forward on to it.
+    #[test]
+    fn an_application_that_quits_by_itself_hands_the_display_back() {
+        let mut shells = HashSet::new();
+        let game = WindowCard {
+            id: 7,
+            ..window(1920, 1080)
+        };
+        assert!(walked_out(&[game], 1920, 1080, &mut shells));
+    }
+
+    /// But the guide's own Close does not. The user put that application away
+    /// deliberately, from a menu they are still standing in, and the deck
+    /// closing up around the card that left is that press's answer.
+    #[test]
+    fn a_card_closed_from_the_guide_is_not_an_application_walking_out() {
+        let mut shells = HashSet::from([7]);
+        let killed = WindowCard {
+            id: 7,
+            ..window(1920, 1080)
+        };
+        assert!(!walked_out(
+            std::slice::from_ref(&killed),
+            1920,
+            1080,
+            &mut shells
+        ));
+        assert!(
+            shells.is_empty(),
+            "the claim is spent on the window it named"
+        );
+
+        // And spent is spent: the same application quitting on its own later —
+        // a compositor is free to hand the number out again — is a surprise
+        // like any other.
+        assert!(walked_out(&[killed], 1920, 1080, &mut shells));
+    }
+
+    /// A window that was not filling the display hands the bar nothing: it was
+    /// already on screen behind it, or a game still running is.
+    #[test]
+    fn a_small_window_closing_is_not_a_display_being_handed_over() {
+        let mut shells = HashSet::new();
+        let dialog = WindowCard {
+            id: 3,
+            ..window(600, 400)
+        };
+        assert!(!walked_out(&[dialog], 1920, 1080, &mut shells));
+    }
+
+    /// Several windows can go at once — an application that ends takes its
+    /// dialogs with it, and killing one window of a process can end the rest.
+    /// One of them being the shell's doing does not make the others its doing.
+    #[test]
+    fn one_shell_kill_does_not_account_for_every_window_that_went_with_it() {
+        let mut shells = HashSet::from([7]);
+        let killed = WindowCard {
+            id: 7,
+            ..window(600, 400)
+        };
+        let went_with_it = WindowCard {
+            id: 8,
+            ..window(1920, 1080)
+        };
+        assert!(walked_out(&[killed, went_with_it], 1920, 1080, &mut shells));
+        assert!(shells.is_empty());
+    }
+
     /// The bug this rule exists for: opening the menu over an application
     /// must not fly the whole bar across it on the way to its card.
     #[test]
@@ -11501,6 +13337,8 @@ mod input_tests {
             Item::Resume,
             Item::Close,
             Item::Mixer,
+            Item::DoNotDisturb,
+            Item::Notifications,
             Item::Dashboard,
             Item::Power,
             Item::Volume,
@@ -11593,6 +13431,62 @@ mod input_tests {
         // caller falls back to the only other thing it knows.
         assert_eq!(app_id_name(""), None);
         assert_eq!(app_id_name("  "), None);
+    }
+
+    fn window(id: u32, app_id: &str, title: &str) -> WindowCard {
+        WindowCard {
+            id,
+            title: title.to_string(),
+            app_id: app_id.to_string(),
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    /// A game Valve's client started is named by its own window, and nothing
+    /// else is.
+    ///
+    /// The class is the part that cannot be trusted here: a Proton title
+    /// announces whatever its binary was called, so the shell was offering to
+    /// "Close X86_64" beside a card captioned Celeste. That reasoning applies
+    /// to these windows and to no others — a browser's title is the page it is
+    /// showing, and a button that ends Firefox must not be named after a video.
+    #[test]
+    fn a_game_started_through_steam_is_named_by_its_window() {
+        let game = window(7, "x86_64", "Celeste");
+        assert_eq!(window_name(&game, None, true), "Celeste");
+        // The same window, if the shell had not seen it start: back to the
+        // class, which is the answer that made this worth changing.
+        assert_eq!(window_name(&game, None, false), "X86_64");
+
+        // Nothing else takes its title, however uninformative the class is.
+        let browser = window(9, "firefox", "(7) Something on the internet — YouTube");
+        assert_eq!(window_name(&browser, Some("Firefox"), false), "Firefox");
+        assert_eq!(
+            window_name(&browser, None, false),
+            "Firefox",
+            "an unknown class is still a name somebody chose"
+        );
+
+        // An installed name is the better answer for anything that is not one
+        // of these, and it still wins.
+        let native = window(11, "org.example.Game", "Level 3 — 60fps");
+        assert_eq!(
+            window_name(&native, Some("Example Game"), false),
+            "Example Game"
+        );
+        assert_eq!(
+            window_name(&native, None, false),
+            "Game",
+            "the tail of a reverse-DNS class, not the level it is on"
+        );
+
+        // And a game whose window says nothing keeps the old chain rather than
+        // being called the empty string.
+        let unnamed = window(13, "x86_64", "   ");
+        assert_eq!(window_name(&unnamed, None, true), "X86_64");
+        let nameless = window(15, "", "");
+        assert_eq!(window_name(&nameless, None, true), "");
     }
 
     #[test]
@@ -11775,6 +13669,115 @@ mod input_tests {
 /// The menu over one of the user's own files: which rows it has, in what order,
 /// and which of them can be pressed from where.
 ///
+/// How a row says when something arrived.
+///
+/// The question a reader is asking of that line is *did I miss this, or has it
+/// only just happened*, and the answer is coarse on purpose: every step here is
+/// one where the extra precision would tell them nothing they would act on.
+#[cfg(test)]
+mod notification_age_tests {
+    use super::*;
+
+    fn ago(seconds: u64) -> String {
+        age_of(
+            Instant::now()
+                .checked_sub(Duration::from_secs(seconds))
+                .expect("the clock has run for a minute"),
+        )
+    }
+
+    #[test]
+    fn an_age_is_as_coarse_as_the_question_it_answers() {
+        // Anything inside a minute is "now". A list somebody has just opened
+        // must not count seconds at them.
+        assert_eq!(ago(0), "now");
+        assert_eq!(ago(59), "now");
+
+        assert_eq!(ago(60), "1m");
+        assert_eq!(ago(59 * 60 + 59), "59m");
+        assert_eq!(ago(60 * 60), "1h");
+        assert_eq!(ago(23 * 3600 + 3599), "23h");
+        assert_eq!(ago(24 * 3600), "1d");
+
+        // A week-old announcement is a list nobody has cleared rather than a
+        // record anyone is consulting, so it never becomes a date.
+        assert_eq!(ago(9 * 24 * 3600), "9d");
+    }
+
+    /// When it arrived, what it is called and what it said are three runs, and
+    /// never one sentence with a time on the front of it.
+    ///
+    /// They shared a line until the user asked for this — `now  ·  Would you
+    /// like to install updates now?` — where the reader had to find the
+    /// separator before either half meant anything.
+    #[test]
+    fn a_row_says_when_above_what_rather_than_beside_it() {
+        let mut held = notify::Notification::heard(1, "System Update Available");
+        held.body = "Version 3.1 is waiting to be installed".to_string();
+        let rows = notification_rows(std::slice::from_ref(&held));
+        let row = &rows[1];
+
+        assert_eq!(row.stamp.as_deref(), Some("now"));
+        assert_eq!(row.label, "System Update Available");
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("Version 3.1 is waiting to be installed")
+        );
+        // Nothing is run together with anything else. The separator that used
+        // to join the first two is what this is watching for.
+        for run in [
+            row.stamp.as_deref(),
+            Some(row.label.as_str()),
+            row.detail.as_deref(),
+        ] {
+            let run = run.unwrap();
+            assert!(!run.contains('·'), "{run:?} carries a separator");
+        }
+
+        // An announcement with nothing more to say is two runs and not a third
+        // empty one — the time and the summary, which is the whole of what
+        // arrived.
+        let bare = notification_rows(&[notify::Notification::heard(2, "Disk ejected")]);
+        assert_eq!(bare[1].stamp.as_deref(), Some("now"));
+        assert_eq!(bare[1].detail, None);
+    }
+
+    /// Clearing the list is the panel's first row, and the announcements come
+    /// under it. It is where the highlight can reach in one press of Up from
+    /// where it starts, and — unlike the bottom of a list that scrolls — it is
+    /// on the panel the moment the panel opens.
+    #[test]
+    fn clearing_the_list_is_the_row_above_it() {
+        let held = [
+            notify::Notification::heard(3, "Newest"),
+            notify::Notification::heard(2, "Older"),
+            notify::Notification::heard(1, "Oldest"),
+        ];
+        let rows = notification_rows(&held);
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(labels, ["Clear All", "Newest", "Older", "Oldest"]);
+        assert_eq!(rows[0].command, menu::Command::DismissNotifications);
+
+        // On the other side of a separator from the list, because it is the one
+        // row that is not about a single announcement.
+        assert_eq!(rows[0].group, 0);
+        assert!(rows[1..].iter().all(|row| row.group == 1));
+
+        // And it holds the panel up. The answer to pressing it is an empty
+        // list, which a panel that folded away would take with it.
+        assert!(rows[0].holds);
+    }
+
+    /// With nothing to read there is nothing to clear, and the panel says the
+    /// one thing it has to say.
+    #[test]
+    fn an_empty_list_offers_no_way_to_empty_it() {
+        let rows = notification_rows(&[]);
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(labels, ["Nothing to read"]);
+    }
+}
+
 /// The rows are the whole of what this menu *is*, and they are the part a later
 /// change is most likely to disturb without meaning to — so they are asserted
 /// against by name rather than left to be noticed on screen.
@@ -11815,11 +13818,9 @@ mod file_menu_tests {
         assert!(rows.iter().all(|row| row.enabled));
         // Delete is the one row here the highlight arrives on warm: it asks
         // rather than deletes, but it is the way to losing the file, and the
-        // other four are not. None of them is the destructive answer itself —
-        // that is the Yes of the question Delete opens.
+        // other four are not.
         let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
         assert_eq!(grave, [false, false, true, false, false]);
-        assert!(rows.iter().all(|row| !row.destructive));
     }
 
     /// The two rows that can be unavailable are drawn greyed rather than left

@@ -41,6 +41,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::apps::{Category, Choice, Entry, Folder};
 use crate::icons;
@@ -104,6 +105,72 @@ pub enum DisplayValue {
     /// Peak luminance declared to the display, in cd/m². 0 asks for whatever
     /// the display says about itself.
     PeakBrightness(u16),
+    /// Run the night light on this display, or stop.
+    NightLight(bool),
+    /// How warm the night light makes the picture, in kelvin. Lower is warmer.
+    ///
+    /// The one setting in this tree that is not chosen off a list: it is set on
+    /// a bar, so what arrives here is one step along it. See [`Entry::Bar`].
+    ///
+    /// [`Entry::Bar`]: crate::apps::Entry::Bar
+    NightLightTemperature(u16),
+    /// Which hours the light keeps: none, the sun's, or the two below.
+    NightLightSchedule(Schedule),
+    /// The hour of local time it comes on at, 0 to 23.
+    NightLightFrom(u8),
+    /// The hour of local time it goes off again, 0 to 23.
+    NightLightUntil(u8),
+}
+
+/// When a night light burns.
+///
+/// Three answers rather than a switch and a pair of hours, because they are
+/// three different things to want and the user has to be able to say which
+/// without setting up the other two. A schedule kept while another one is in
+/// force is not thrown away: choosing Hours again gives back the evening that
+/// was there, and choosing the sun's again gives back the sun's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Schedule {
+    /// On for as long as the switch is, which is what somebody who wants it on
+    /// while they work wants.
+    AllDay,
+    /// From sunset to sunrise where this machine is. The times come from the
+    /// time zone's own coordinates — see [`crate::sun`] — and change every day
+    /// without anybody setting anything.
+    SunsetToSunrise,
+    /// Between two hours of local time the user chose.
+    Hours,
+}
+
+impl Schedule {
+    /// How the settings file spells it.
+    fn key(self) -> &'static str {
+        match self {
+            Schedule::AllDay => "all-day",
+            Schedule::SunsetToSunrise => "sunset-to-sunrise",
+            Schedule::Hours => "hours",
+        }
+    }
+
+    /// The same, read back. `None` for a word this shell does not have, which
+    /// a hand-edited file may hold and a later version may write.
+    fn from_key(raw: &str) -> Option<Self> {
+        Some(match raw.trim().to_ascii_lowercase().as_str() {
+            "all-day" | "always" => Schedule::AllDay,
+            "sunset-to-sunrise" | "sun" => Schedule::SunsetToSunrise,
+            "hours" | "custom" => Schedule::Hours,
+            _ => return None,
+        })
+    }
+
+    /// What the row is titled with.
+    fn title(self) -> &'static str {
+        match self {
+            Schedule::AllDay => "All day",
+            Schedule::SunsetToSunrise => "Sunset to sunrise",
+            Schedule::Hours => "Custom hours",
+        }
+    }
 }
 
 /// How many pixels a display is scanned out at: what a Resolution row sets.
@@ -330,6 +397,172 @@ impl Default for Hdr {
     }
 }
 
+/// The whole of one display's night light: whether it runs, how warm it makes
+/// the picture, and between which hours.
+///
+/// One value rather than four settings for the reason [`Hdr`] is one: the shell
+/// has to answer "is the light on *now*" out of all of it at once, and a
+/// temperature held apart from the schedule that decides whether it is showing
+/// would be two halves of an answer that nothing owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightLight {
+    /// The switch. Off means the display is never warmed, whatever the hours
+    /// below say.
+    pub enabled: bool,
+    /// How warm the picture is made while it is on, in kelvin. Lower is
+    /// warmer; [`NEUTRAL_KELVIN`] is ordinary daylight and no filter at all.
+    pub temperature: u16,
+    /// Which hours it keeps.
+    pub schedule: Schedule,
+    /// The hour of local time it comes on at, 0 to 23. Kept whatever the
+    /// schedule says, so an evening set and then set aside comes back intact.
+    pub from: u8,
+    /// The hour it goes off again. Wrapping past midnight is the ordinary
+    /// case, not the exception: an evening ends the next morning.
+    pub until: u8,
+}
+
+impl Default for NightLight {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            // Warm enough to be worth switching on and mild enough that a
+            // photograph is still recognisably the colour it was. Restated
+            // from the compositor's own default so a shell that has read its
+            // settings before the compositor has said anything is not asking
+            // for something different from what is in force.
+            temperature: 4000,
+            // An evening, ready-made. A blue light filter is a thing people
+            // want at night and not at eleven in the morning, so the switch
+            // does what its name says the first time it is turned on and
+            // nobody has to set two hours before it is worth having.
+            //
+            // It is the one default here that can look like nothing happening:
+            // switched on in daylight it warms nothing until ten. That is what
+            // the row's own comment is for — it reads "On at 22:00" rather than
+            // "On", so the switch says which of the two it is doing.
+            schedule: Schedule::Hours,
+            from: 22,
+            until: 6,
+        }
+    }
+}
+
+/// Ordinary daylight white: the temperature at which the filter is doing
+/// nothing. The compositor treats it as exactly the identity, so it is the top
+/// of the range this page offers rather than a row in it.
+pub const NEUTRAL_KELVIN: u16 = 6500;
+
+/// The warmest that can be asked for. Below it there is no blue left to take.
+pub const WARMEST_KELVIN: u16 = 1000;
+
+impl NightLight {
+    /// Whether the light should be burning at this minute of local time, given
+    /// what the sun is doing today.
+    ///
+    /// The whole of the schedule, and deliberately free of any clock and of any
+    /// almanac: what time it is comes from [`local_time`] and what the sun does
+    /// from [`crate::sun`], so everything that decides what to do about them
+    /// can be asked a question and answered without either.
+    ///
+    /// Minutes rather than hours because the sun does not keep hours. A window
+    /// the user typed is still whole hours — those are what the page offers —
+    /// and it is turned into minutes on the way in.
+    pub fn burning_at(self, minute: u16, sun: Option<crate::sun::Sun>) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.schedule {
+            Schedule::AllDay => true,
+            Schedule::Hours => Self::within(
+                self.from as u16 * 60,
+                self.until as u16 * 60,
+                minute.min(MINUTES_IN_DAY - 1),
+            ),
+            Schedule::SunsetToSunrise => match sun {
+                Some(crate::sun::Sun::Daily { sunrise, sunset }) => {
+                    Self::within(sunset, sunrise, minute)
+                }
+                // A day the sun does not come up is a day that is night, and
+                // one it does not go down is a day that is not. Both are the
+                // truthful reading of "from sunset to sunrise" at a latitude
+                // where neither happens.
+                Some(crate::sun::Sun::NeverRises) => true,
+                Some(crate::sun::Sun::NeverSets) => false,
+                // Nothing knows where this machine is. The page does not offer
+                // the sun where that is so, and a file that names it anyway is
+                // put back to All day on the way in — so this is the belt to
+                // that brace, and it errs towards the light being on, which is
+                // what the switch above it says.
+                None => true,
+            },
+        }
+    }
+
+    /// Whether `minute` falls in the window from `from` until `until`, both
+    /// minutes of a day that wraps.
+    ///
+    /// The end is exclusive: a light set to go off at 07:00 is off at seven,
+    /// not a minute past. The two being equal is an empty window rather than a
+    /// full one — it cannot be chosen, because the Until page leaves the
+    /// starting hour out, and a file hand-edited into it is dropped on the way
+    /// in. See [`adopt`].
+    fn within(from: u16, until: u16, minute: u16) -> bool {
+        use std::cmp::Ordering;
+        match from.cmp(&until) {
+            // An ordinary daytime window: 07:00 to 21:00.
+            Ordering::Less => (from..until).contains(&minute),
+            // One that wraps past midnight, which is what an evening is — and
+            // what sunset to sunrise always is.
+            Ordering::Greater => minute >= from || minute < until,
+            // Equal is the empty window, and has to be its own arm: the
+            // wrapping test above would read it as every minute instead, which
+            // is the one answer nobody asked for.
+            Ordering::Equal => false,
+        }
+    }
+
+    /// The next minute of the day at which this schedule changes its mind, if
+    /// it changes it at all today.
+    ///
+    /// What the row above the page says out loud: *On until 07:00*, *On at
+    /// 21:00*. Which end that is depends on which side of it the clock is, and
+    /// the caller already knows that — this only has to say where the other
+    /// side begins.
+    ///
+    /// `None` for a schedule with no edges: on all day, or a day at a latitude
+    /// where the sun does not cross the horizon.
+    fn next_edge(self, minute: u16, sun: Option<crate::sun::Sun>) -> Option<u16> {
+        let (from, until) = match self.schedule {
+            Schedule::AllDay => return None,
+            Schedule::Hours => (self.from as u16 * 60, self.until as u16 * 60),
+            Schedule::SunsetToSunrise => match sun? {
+                crate::sun::Sun::Daily { sunrise, sunset } => (sunset, sunrise),
+                crate::sun::Sun::NeverRises | crate::sun::Sun::NeverSets => return None,
+            },
+        };
+        if from == until {
+            return None;
+        }
+        match Self::within(from, until, minute) {
+            true => Some(until),
+            false => Some(from),
+        }
+    }
+
+    /// The setting as the compositor is asked for it: what it should be doing
+    /// now, and how warm.
+    fn wanted_at(self, minute: u16, sun: Option<crate::sun::Sun>) -> (bool, u16) {
+        (
+            self.burning_at(minute, sun),
+            self.temperature.clamp(WARMEST_KELVIN, NEUTRAL_KELVIN),
+        )
+    }
+}
+
+/// How many minutes a day has, which both ends of every window are counted in.
+const MINUTES_IN_DAY: u16 = 24 * 60;
+
 /// What one display turns out to be able to do, as reported by the compositor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Support {
@@ -343,6 +576,15 @@ pub struct Support {
     /// CRTC's colour matrix, which needs a linear stage in front of it, and
     /// not every display engine has one.
     pub gamut: bool,
+    /// This display's picture can be warmed: there is a gamma ramp behind it.
+    ///
+    /// A much shorter question than [`Self::available`], and asked separately
+    /// for that reason — an ordinary SDR panel that will never do HDR can be
+    /// warmed, so a Night light page built from the HDR list would leave the
+    /// filter off exactly the displays that most want it.
+    pub night_light: bool,
+    /// Its picture is being warmed right now.
+    pub warming: bool,
 }
 
 /// HDR settings by connector name, for every display the shell has been asked
@@ -388,6 +630,16 @@ static TURNED: Mutex<Vec<(String, Orientation)>> = Mutex::new(Vec::new());
 /// compositor brought it up, which is its own config's answer and not the
 /// shell's to overrule.
 static TURN: Mutex<BTreeMap<String, Orientation>> = Mutex::new(BTreeMap::new());
+
+/// Each display's night light, for the displays one has been set on.
+///
+/// Filed on its own, like [`MODE`] and [`TURN`], and with nothing inherited
+/// standing behind it — unlike the HDR settings, which have the flat keys an
+/// older version of this file wrote. There is no older file to read here, and
+/// a display nobody has warmed coming up unwarmed is never the wrong answer:
+/// the setting's own default is to do nothing, so there is nothing for a
+/// newly plugged screen to be missing.
+static NIGHT: Mutex<BTreeMap<String, NightLight>> = Mutex::new(BTreeMap::new());
 
 /// What was read out of the settings file for displays it says nothing about.
 ///
@@ -533,6 +785,42 @@ pub fn start_music() -> bool {
     *START_MUSIC.lock().unwrap()
 }
 
+/// Whether anything is allowed to interrupt: the guide's do-not-disturb tile.
+///
+/// Here rather than in [`crate::pointer::Prefs`], which is the other file the
+/// guide writes, because that one is keyed by application and this is a
+/// statement about the session — a user who does not want to be interrupted
+/// does not want it in the browser either.
+///
+/// Remembered across a session for the same reason the Start music is: it is a
+/// switch somebody threw on purpose, and a console that had quietly turned it
+/// back off overnight would deliver a night's announcements at breakfast.
+static DO_NOT_DISTURB: Mutex<bool> = Mutex::new(false);
+
+/// Whether announcements are being kept out of the corner of the screen.
+///
+/// Off until somebody says otherwise: a shell that came up refusing to show
+/// what the machine had to say would look like one whose notifications are
+/// broken.
+pub fn do_not_disturb() -> bool {
+    *DO_NOT_DISTURB.lock().unwrap()
+}
+
+/// Turn it over, and write it down. Reports where it ended up, which is what
+/// the tile draws and what the notification centre is told.
+pub fn set_do_not_disturb(on: bool) -> bool {
+    {
+        let mut held = DO_NOT_DISTURB.lock().unwrap();
+        if *held == on {
+            return on;
+        }
+        *held = on;
+    }
+    tracing::info!(on, "do not disturb");
+    save(&stored());
+    on
+}
+
 /// What the machine can play through and record from, as the sound server last
 /// listed them, and which of them it is using.
 ///
@@ -647,6 +935,41 @@ pub fn turn_for(display: &str) -> Option<Orientation> {
     TURN.lock().unwrap().get(display).copied()
 }
 
+/// What one display's night light is set to. A display nobody has set one on
+/// is not warmed, which is what [`NightLight::default`] says.
+pub fn night_light_for(display: &str) -> NightLight {
+    NIGHT
+        .lock()
+        .unwrap()
+        .get(display)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// What the compositor should be asked for on one display *now*: whether the
+/// light should be burning at this moment, and how warm.
+///
+/// The schedule is resolved here rather than sent, because a schedule is a
+/// clock and a time zone and the compositor has no business owning either —
+/// see the `set_output_night_light` request, which takes only the answer.
+///
+/// A session whose local time cannot be read at all — which would be a C
+/// library that has lost `/etc/localtime` — is treated as having no schedule
+/// rather than as having an unsatisfied one: the switch then means what it
+/// says, which is far better than a light that never comes on and a page that
+/// cannot explain why.
+pub fn night_light_now(display: &str) -> (bool, u16) {
+    let setting = night_light_for(display);
+    match local_time() {
+        Some(now) => setting.wanted_at(now.minute_of_day(), sun_today()),
+        None => NightLight {
+            schedule: Schedule::AllDay,
+            ..setting
+        }
+        .wanted_at(0, None),
+    }
+}
+
 /// The modes one display offers, as the compositor last listed them.
 fn offered_by(display: &str) -> Vec<Offered> {
     MODES
@@ -679,6 +1002,134 @@ fn intern(name: &str) -> &'static str {
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
     names.push(leaked);
     leaked
+}
+
+/// What the clock on the wall says, and which clock that is.
+///
+/// The night light is the one setting in this tree that is about a *time*, so
+/// it is the one that has to ask. Everything it needs is here and nothing more:
+/// the hour the schedule is compared against, and enough about the zone to put
+/// on the page, because a user whose light did not come on at nine is owed the
+/// answer that their machine thinks it is somewhere else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTime {
+    /// 0 to 23.
+    pub hour: u8,
+    /// 0 to 59.
+    pub minute: u8,
+    /// Days since the first of January, counted from zero — which is what the
+    /// solar equations take.
+    pub yday: u16,
+    /// The year, for the one thing it decides: whether this one has 366 days
+    /// in it.
+    pub year: i32,
+    /// Seconds east of UTC. Summer time is part of it, because it is part of
+    /// what the clock in the room says — and because the sun is worked out
+    /// against the clock in the room.
+    pub offset: i32,
+}
+
+impl LocalTime {
+    /// Minutes since midnight, which is what a schedule is compared against.
+    pub fn minute_of_day(&self) -> u16 {
+        self.hour as u16 * 60 + self.minute as u16
+    }
+}
+
+/// A minute of the day, as a row says it. The twenty-four hour clock, whatever
+/// the machine's own locale would print: it is the one form in which "21:00"
+/// cannot be the wrong one of two, and a schedule is exactly where that matters.
+fn clock_title(minute: u16) -> String {
+    let minute = minute.min(MINUTES_IN_DAY - 1);
+    format!("{:02}:{:02}", minute / 60, minute % 60)
+}
+
+/// The last reading, and when it was taken.
+///
+/// The hot path asks what hour it is on every pass of the shell's loop, which
+/// is thirty times a second whether or not anything is being drawn, and the
+/// answer changes once an hour. So it is read a few times a minute instead:
+/// far too often to make the page stale, far too rarely to be worth a thought.
+static CLOCK: Mutex<Option<(Instant, LocalTime)>> = Mutex::new(None);
+
+/// How long a reading stands for. Short enough that the minute on the page is
+/// never visibly wrong, long enough that the loop is not calling into the C
+/// library on every frame.
+const CLOCK_TTL: Duration = Duration::from_secs(5);
+
+/// What time it is here, as the machine's own C library reads it.
+///
+/// Through `localtime_r` rather than any arithmetic of this shell's own,
+/// because a time zone is not arithmetic: it is a database of political
+/// decisions, kept up to date by the distribution, and the one thing the
+/// machine already has a correct answer from. Nothing here parses
+/// `/etc/localtime` or reads `TZ` — `tzset` does that, including for a session
+/// whose zone was changed underneath it.
+///
+/// `None` when the library cannot answer, which is a machine with no time zone
+/// data at all. The caller treats that as "no schedule" rather than as an
+/// unsatisfied one; see [`night_light_now`].
+pub fn local_time() -> Option<LocalTime> {
+    let mut held = CLOCK.lock().unwrap();
+    if let Some((taken, reading)) = held.as_ref() {
+        if taken.elapsed() < CLOCK_TTL {
+            return Some(reading.clone());
+        }
+    }
+    let reading = read_local_time()?;
+    *held = Some((Instant::now(), reading.clone()));
+    Some(reading)
+}
+
+/// The reading itself, uncached.
+fn read_local_time() -> Option<LocalTime> {
+    // SAFETY: `time` with a null pointer returns the value rather than storing
+    // it, which is what the null is for.
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    if now == -1 {
+        return None;
+    }
+    // glibc's `localtime_r` establishes the zone on its first call and then
+    // never looks again, so a session whose machine had its time zone changed
+    // underneath it would keep the old one until it was restarted. `tzset` is
+    // what re-reads it, and it is declared here because the `libc` crate only
+    // binds it on Windows. It is thread-safe and cheap; the library does the
+    // caching.
+    extern "C" {
+        fn tzset();
+    }
+    // SAFETY: no arguments, no return value, and nothing of ours is borrowed
+    // across it.
+    unsafe { tzset() };
+
+    let mut broken: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `now` is a valid `time_t` and `broken` is a live, owned `tm`
+    // this call is the only writer of.
+    let filled = unsafe { libc::localtime_r(&now, &mut broken) };
+    if filled.is_null() {
+        return None;
+    }
+
+    Some(LocalTime {
+        // A leap second is `tm_sec == 60` and never an hour of 24, but the
+        // clamps cost nothing and this is the one value a schedule is compared
+        // against.
+        hour: broken.tm_hour.clamp(0, 23) as u8,
+        minute: broken.tm_min.clamp(0, 59) as u8,
+        yday: broken.tm_yday.clamp(0, 365) as u16,
+        // `tm_year` counts from 1900, which is the one thing about `struct tm`
+        // everybody knows and everybody forgets.
+        year: broken.tm_year + 1900,
+        offset: broken.tm_gmtoff.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+    })
+}
+
+/// What the sun is doing here today, if anything on this machine says where
+/// here is. `None` is a machine with no zone coordinates — see [`crate::sun`].
+pub fn sun_today() -> Option<crate::sun::Sun> {
+    let now = local_time()?;
+    let at = crate::sun::location()?;
+    Some(crate::sun::sun(now.yday, now.year, &at, now.offset))
 }
 
 /// The rows of the Settings column, in the order they appear under it.
@@ -754,7 +1205,9 @@ fn accent_colour() -> Entry {
 /// The mode comes first, in its two halves, because it is the plainest thing
 /// about a display and the one a user is most likely to have come here for;
 /// the orientation is the other thing about the picture's shape, and stands
-/// with them. Everything under HDR describes the picture those carry.
+/// with them. The last two describe the picture those carry, and in that order:
+/// the night light is the one every display can do and the one somebody comes
+/// looking for at ten in the evening, HDR is the one only some hardware has.
 fn display() -> Entry {
     folder(
         "Display",
@@ -764,6 +1217,7 @@ fn display() -> Entry {
             resolution(),
             refresh_rate(),
             orientation(),
+            night_light(),
             high_dynamic_range(),
         ],
     )
@@ -1213,6 +1667,424 @@ fn hertz(refresh: u32) -> Option<String> {
     let rate = format!("{:.2}", refresh as f64 / 1000.0);
     let rate = rate.trim_end_matches('0').trim_end_matches('.');
     Some(format!("{rate} Hz"))
+}
+
+/// Night light: one subcategory per screen whose picture can be warmed —
+/// unless there is only one, in which case its settings stand here directly.
+///
+/// The same three shapes as [`high_dynamic_range`] and for the same reasons,
+/// but a much longer list of screens: warming a picture is a scaled gamma ramp
+/// and nothing else, so every display driving a real connector can do it. What
+/// drops off is a session running nested inside another compositor, which owns
+/// no ramp — and there the row says so rather than opening onto a page whose
+/// every control would be inert.
+///
+/// Per screen, like everything else under Display, and the schedule with it. A
+/// television across a lit room and a laptop panel a foot from the eye are not
+/// the same question, and this page holds to the rule the rest of the tree does
+/// rather than making one exception for the one setting that mentions a clock.
+fn night_light() -> Entry {
+    let capable: Vec<(String, Support)> = support()
+        .into_iter()
+        .filter(|(_, support)| support.night_light)
+        .collect();
+
+    match capable.as_slice() {
+        [] => folder(
+            "Night light",
+            "Blue light filter",
+            icons::SETTING_NIGHT_LIGHT,
+            vec![nothing_can_be_warmed()],
+        ),
+        [(name, support)] => folder(
+            "Night light",
+            &format!("{name} — {}", warmth_of(name, *support)),
+            icons::SETTING_NIGHT_LIGHT,
+            night_light_controls(name),
+        ),
+        _ => folder(
+            "Night light",
+            "Blue light filter",
+            icons::SETTING_NIGHT_LIGHT,
+            capable
+                .iter()
+                .map(|(name, support)| {
+                    folder(
+                        name,
+                        &warmth_of(name, *support),
+                        icons::SETTING_DISPLAY,
+                        night_light_controls(name),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The controls, for one screen.
+///
+/// Shared by the screen list and by the session that has only one screen, the
+/// way [`controls`] is: the page is the same page either way, and only the
+/// level above it differs.
+///
+/// The switch, then how warm, then when — which is the order the questions are
+/// asked in and the order they stop mattering in.
+///
+/// Three rows or five. The two hours are not the schedule's detail so much as
+/// *one* schedule's, and on either of the other two they are worse than
+/// useless: a page that follows the sun and still shows "From 22:00" is a page
+/// making a claim about tonight that is not true, and no wording in the row
+/// undoes the two hours sitting there in plain sight. So they are not there —
+/// which is also why the column has to be rebuilt when this row is answered.
+fn night_light_controls(name: &str) -> Vec<Entry> {
+    let display = intern(name);
+    let night = night_light_for(display);
+    let mut rows = vec![
+        night_light_switch(display, night),
+        night_light_temperature(display, night),
+        night_light_schedule(display, night),
+    ];
+    if night.schedule == Schedule::Hours {
+        rows.push(night_light_from(display, night));
+        rows.push(night_light_until(display, night));
+    }
+    rows
+}
+
+/// What a screen's night light is doing, in the few words a row's comment has.
+///
+/// It has to say two things at once — whether the picture is warm *now* and
+/// what will change that — because "on" is not the answer for a light that is
+/// switched on and waiting for the evening. So the moment it next turns on or
+/// off is what stands beside the state, which is exactly what a user standing
+/// at this row at half past eight wants to know.
+fn warmth_of(display: &str, support: Support) -> String {
+    let night = night_light_for(display);
+    if !night.enabled {
+        return "Off".to_string();
+    }
+    let kelvin = format!("{} K", night.temperature);
+    let Some(now) = local_time() else {
+        // No clock is no schedule being kept — see `night_light_now` — so
+        // saying when it turns on would be saying something untrue.
+        return format!("On, {kelvin}");
+    };
+    let sun = sun_today();
+    let burning = night.burning_at(now.minute_of_day(), sun);
+    // The compositor's word for whether the picture is actually warm. Its hour
+    // having come and the picture not being warm is a request that has not
+    // landed yet, or could not, and must not read as success.
+    if burning && !support.warming {
+        return format!("{}, {kelvin}", schedule_of(night, sun));
+    }
+    match (burning, night.next_edge(now.minute_of_day(), sun)) {
+        (true, Some(off)) => format!("On until {}, {kelvin}", clock_title(off)),
+        (true, None) => format!("On, {kelvin}"),
+        (false, Some(on)) => format!("On at {}, {kelvin}", clock_title(on)),
+        // Switched on, not burning, and nothing will change that today: the
+        // midnight sun, which is the one case with an answer of its own.
+        (false, None) => format!("Off while the sun is up, {kelvin}"),
+    }
+}
+
+/// The hours a schedule keeps, said without any claim about now.
+fn schedule_of(night: NightLight, sun: Option<crate::sun::Sun>) -> String {
+    match night.schedule {
+        Schedule::AllDay => "On".to_string(),
+        Schedule::Hours => format!("{} to {}", hour_title(night.from), hour_title(night.until)),
+        Schedule::SunsetToSunrise => match sun {
+            Some(crate::sun::Sun::Daily { sunrise, sunset }) => {
+                format!("{} to {}", clock_title(sunset), clock_title(sunrise))
+            }
+            Some(crate::sun::Sun::NeverRises) => "The sun does not rise today".to_string(),
+            Some(crate::sun::Sun::NeverSets) => "The sun does not set today".to_string(),
+            None => "No location to work the sun out from".to_string(),
+        },
+    }
+}
+
+/// The row that stands in for the screen list when no picture can be warmed.
+fn nothing_can_be_warmed() -> Entry {
+    reading(
+        "No display can be warmed",
+        "Nothing here owns a colour ramp: the session is running inside \
+         another compositor, which owns what its window is tinted with",
+    )
+}
+
+/// The switch itself, on or off — and off is the whole of off: a display whose
+/// switch is here is never warmed, whatever the schedule below says.
+fn night_light_switch(display: &'static str, night: NightLight) -> Entry {
+    let on = night.enabled;
+    folder(
+        "Night light",
+        "Take the blue out of the picture",
+        icons::SETTING_NIGHT_LIGHT,
+        vec![
+            value(
+                "Off",
+                None,
+                !on,
+                setting(display, DisplayValue::NightLight(false)),
+            ),
+            value(
+                "On",
+                None,
+                on,
+                setting(display, DisplayValue::NightLight(true)),
+            ),
+        ],
+    )
+}
+
+/// How far the picture is warmed — a bar rather than a list, because it is the
+/// one setting in this tree whose answers are a *scale*.
+///
+/// Every hundred kelvin between candlelight and daylight is a sensible answer.
+/// As rows that is forty-five of them, which is a column nobody can scan and a
+/// list standing for a quantity that has no steps in it to begin with; the
+/// short list it replaces was eight arbitrary points, and a user who wanted the
+/// one between two of them could not have it. On a bar the whole range is under
+/// the cursor at once, Up and Down mean what they mean in every other column,
+/// and Left still leaves — so nothing new has to be learnt to use it or to get
+/// back out of it.
+///
+/// The filled part is drawn in the colour of the light it stands for, which is
+/// the one thing neither the number nor the words can be: a picture of what the
+/// screen is about to look like. Higher up the track is more kelvin, which is
+/// cooler and less filter, so a full white bar reads as what it is — no warming
+/// at all — and a short orange one as candlelight.
+fn night_light_temperature(display: &'static str, night: NightLight) -> Entry {
+    let kelvin = night.temperature.clamp(WARMEST_ON_THE_BAR, NEUTRAL_KELVIN);
+    let step = |to: u16| {
+        (WARMEST_ON_THE_BAR..=NEUTRAL_KELVIN)
+            .contains(&to)
+            .then(|| setting(display, DisplayValue::NightLightTemperature(to)))
+    };
+    let span = (NEUTRAL_KELVIN - WARMEST_ON_THE_BAR) as f32;
+    folder(
+        "Color temperature",
+        &format!("{kelvin} K — {}", warmth_note(kelvin).to_lowercase()),
+        icons::SETTING_APPEARANCE,
+        vec![Entry::Bar(crate::apps::Bar {
+            title: format!("{kelvin} K"),
+            comment: Some(warmth_note(kelvin).to_string()),
+            fill: (kelvin - WARMEST_ON_THE_BAR) as f32 / span,
+            swatch: Some(tint_of(kelvin)),
+            up: step(kelvin.saturating_add(TEMPERATURE_STEP)),
+            down: step(kelvin.saturating_sub(TEMPERATURE_STEP)),
+        })],
+    )
+}
+
+/// How far one press moves the bar.
+///
+/// A hundred kelvin is about the smallest step that is visible on a screen at
+/// all, so it is the finest one worth being able to ask for — and it puts the
+/// whole range twenty-two presses from end to end, which a held direction
+/// crosses in a moment.
+const TEMPERATURE_STEP: u16 = 100;
+
+/// The warm end of the bar.
+///
+/// Not [`WARMEST_KELVIN`], which is as far as the compositor will encode.
+/// Below roughly 1900 K a black body has no blue in it at all, so the ramp
+/// takes that channel to zero — and a screen with no blue channel does not
+/// show a blue-on-white page as warm, it shows it as blank. What the bar
+/// offers is every temperature that is still a picture.
+pub const WARMEST_ON_THE_BAR: u16 = 2000;
+
+/// What a temperature means, in the words a number cannot carry.
+///
+/// Bands rather than a word per step, because a hundred kelvin is not a
+/// difference anybody has a separate name for — and warmer strictly down the
+/// list, so a bar walked in one direction never reads as turning back.
+///
+/// The top band is the head of the track alone. 6500 K is the only temperature
+/// at which this filter does nothing whatever, and one step below it is a
+/// picture that has been changed, however slightly: a row that said "no warming
+/// at all" there would be saying the setting had not taken.
+fn warmth_note(kelvin: u16) -> &'static str {
+    match kelvin {
+        0..=2200 => "Candlelight, and as far as this goes",
+        2201..=2900 => "A filament bulb",
+        2901..=3600 => "Distinctly warm, like a lamp",
+        3601..=4400 => "An ordinary evening",
+        4401..=5200 => "Warm, and still easy to read by",
+        5201..=6000 => "A little off daylight",
+        6001..=6499 => "Barely warm: the gentlest this goes",
+        _ => "Daylight: no warming at all",
+    }
+}
+
+/// The colour a screen shows at `kelvin`, for the filled part of the bar.
+///
+/// The same closed-form fit to the Planckian locus the compositor builds its
+/// ramp from, and deliberately so: this is a *picture* of what that ramp is
+/// about to do, and a picture drawn from different arithmetic would be a
+/// preview of something else. The compositor remains the authority — it is
+/// what clamps, normalises and commits — and nothing here reaches the screen.
+fn tint_of(kelvin: u16) -> Color {
+    let temperature = kelvin.clamp(1000, 40_000) as f32 / 100.0;
+    let red = match temperature <= 66.0 {
+        true => 255.0,
+        false => 329.698_73 * (temperature - 60.0).powf(-0.133_204_76),
+    };
+    let green = match temperature <= 66.0 {
+        true => 99.470_8 * temperature.ln() - 161.119_57,
+        false => 288.122_16 * (temperature - 60.0).powf(-0.075_514_85),
+    };
+    let blue = if temperature >= 66.0 {
+        255.0
+    } else if temperature <= 19.0 {
+        0.0
+    } else {
+        138.517_73 * (temperature - 10.0).ln() - 305.044_8
+    };
+    let byte = |value: f32| value.clamp(0.0, 255.0).round() as u32;
+    Color(byte(red) << 16 | byte(green) << 8 | byte(blue))
+}
+
+/// When the light burns: never on a schedule, on the sun's, or between two
+/// hours the user chose.
+///
+/// One row with three answers rather than a switch and a pair of hours,
+/// because they are three different things to want and a user has to be able
+/// to say which without first setting up the other two.
+///
+/// The sun is only offered where there is a sun to follow. It needs a latitude
+/// and a longitude — see [`crate::sun`] — and on a machine that publishes
+/// neither the row is replaced by the reason there is no row, which is what
+/// [`srgb_intensity`] does on a display that cannot honour it. Offering a
+/// schedule that could never come on would be worse than not offering one.
+fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
+    let at = crate::sun::location();
+    let sun = sun_today();
+    let mut values = vec![
+        value(
+            Schedule::AllDay.title(),
+            Some("On for as long as the switch above is"),
+            night.schedule == Schedule::AllDay,
+            setting(display, DisplayValue::NightLightSchedule(Schedule::AllDay)),
+        ),
+        value(
+            Schedule::Hours.title(),
+            Some("Between two hours of your own, set on the page behind this one"),
+            night.schedule == Schedule::Hours,
+            setting(display, DisplayValue::NightLightSchedule(Schedule::Hours)),
+        ),
+    ];
+    // Second in the list, between the two: it is the middle answer — a
+    // schedule, but not one anybody has to set.
+    let sun_row = match &at {
+        Some(at) => value(
+            Schedule::SunsetToSunrise.title(),
+            Some(&match sun {
+                Some(crate::sun::Sun::Daily { sunrise, sunset }) => format!(
+                    "{} to {} today, at {}",
+                    clock_title(sunset),
+                    clock_title(sunrise),
+                    at.name
+                ),
+                Some(crate::sun::Sun::NeverRises) => {
+                    format!("The sun does not rise at {} today", at.name)
+                }
+                Some(crate::sun::Sun::NeverSets) => {
+                    format!("The sun does not set at {} today", at.name)
+                }
+                None => format!("Worked out for {}", at.name),
+            }),
+            night.schedule == Schedule::SunsetToSunrise,
+            setting(
+                display,
+                DisplayValue::NightLightSchedule(Schedule::SunsetToSunrise),
+            ),
+        ),
+        None => reading(
+            Schedule::SunsetToSunrise.title(),
+            "This machine's time zone names no place, so there is no sunset here to follow",
+        ),
+    };
+    values.insert(1, sun_row);
+
+    folder(
+        "Schedule",
+        &schedule_of(night, sun),
+        icons::SETTING_SCHEDULE,
+        values,
+    )
+}
+
+/// The hour it comes on at.
+///
+/// Twenty-four rows and no more: whether hours are kept at all is the row
+/// above, so this one has only to say which. It is only built where they are
+/// being kept — see [`night_light_controls`].
+fn night_light_from(display: &'static str, night: NightLight) -> Entry {
+    folder(
+        "From",
+        &format!("Comes on at {}", hour_title(night.from)),
+        icons::SETTING_SCHEDULE,
+        HOURS
+            .iter()
+            .map(|hour| {
+                value(
+                    &hour_title(*hour),
+                    None,
+                    night.from == *hour,
+                    setting(display, DisplayValue::NightLightFrom(*hour)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The hour it goes off again.
+///
+/// Twenty-three rows, not twenty-four: the hour it starts at is not one of
+/// them, because a window that ends where it begins is either a whole day or
+/// none of one and there is no way to look at the row and tell which.
+fn night_light_until(display: &'static str, night: NightLight) -> Entry {
+    folder(
+        "Until",
+        &format!("Goes off at {}", hour_title(night.until)),
+        icons::SETTING_SCHEDULE,
+        HOURS
+            .iter()
+            .filter(|hour| **hour != night.from)
+            .map(|hour| {
+                value(
+                    &hour_title(*hour),
+                    Some(&window_length(night.from, *hour)),
+                    night.until == *hour,
+                    setting(display, DisplayValue::NightLightUntil(*hour)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The hours of a day, which both schedule rows are lists of.
+const HOURS: [u8; 24] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
+
+/// An hour as a row is titled with it.
+fn hour_title(hour: u8) -> String {
+    clock_title(hour.min(23) as u16 * 60)
+}
+
+/// How long a window lasts, for the line under an ending hour.
+///
+/// The one thing the two hours do not say between them, because the arithmetic
+/// wraps: 21:00 to 07:00 is ten hours and 07:00 to 21:00 is fourteen, and the
+/// pair of numbers looks much the same either way round.
+fn window_length(from: u8, until: u8) -> String {
+    let hours = (24 + until as i16 - from as i16) % 24;
+    match hours {
+        1 => "One hour of night light".to_string(),
+        hours => format!("{hours} hours of night light"),
+    }
 }
 
 /// High dynamic range: one subcategory per screen that can do it — unless
@@ -1832,8 +2704,17 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // So this returns without persisting. The mark on the row moves because
         // the listing itself moves — see [`crate::system::Quick::use_device`] —
         // rather than because anything here was recorded.
+        //
+        // The login screen is still told, though, and this is the one row where
+        // that has to be said out loud rather than falling out of the file
+        // being written: nothing is written, so the ordinary route — [`save`],
+        // which ends in [`published`] — never runs. A login screen has to come
+        // out of the same speakers as the session, and it has no sound server
+        // of its own to ask which those are, so the only way it can know is if
+        // somebody who does know says so at the moment it changes.
         Setting::SoundDevice { direction, id } => {
             tracing::info!(?direction, id, "sound device chosen");
+            tell_the_login_screen(&LOGIN_SCREENS);
             return true;
         }
         // Bound as `screen`, not `display`: tracing's macros pull their own
@@ -1863,6 +2744,58 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 DisplayValue::Orientation(turn) => {
                     TURN.lock().unwrap().insert(screen.to_string(), turn);
                 }
+                // And the night light on its own again, for the third time and
+                // the same reason: a screen somebody warmed has not thereby
+                // been given a mode, a turn or a colour pipeline.
+                //
+                // All five rows write to one entry, because the page asks five
+                // questions about one filter and the answer to "is it on now"
+                // is made of all of them.
+                DisplayValue::NightLight(_)
+                | DisplayValue::NightLightTemperature(_)
+                | DisplayValue::NightLightSchedule(_)
+                | DisplayValue::NightLightFrom(_)
+                | DisplayValue::NightLightUntil(_) => {
+                    let mut held = NIGHT.lock().unwrap();
+                    let night = held.entry(screen.to_string()).or_default();
+                    match value {
+                        DisplayValue::NightLight(on) => night.enabled = on,
+                        // Clamped rather than refused, as the white level is:
+                        // the nearest temperature that means something is a
+                        // far better way to report a number out of range than
+                        // a display left at some unrelated colour. To the
+                        // *bar's* range, not the compositor's — a press cannot
+                        // ask for a temperature the bar has no room for.
+                        DisplayValue::NightLightTemperature(kelvin) => {
+                            night.temperature = kelvin.clamp(WARMEST_ON_THE_BAR, NEUTRAL_KELVIN)
+                        }
+                        // The hours are kept across a change of schedule, so
+                        // asking for them again gives back the evening that was
+                        // there rather than one this shell invented.
+                        DisplayValue::NightLightSchedule(schedule) => night.schedule = schedule,
+                        DisplayValue::NightLightFrom(hour) => {
+                            night.from = hour.min(23);
+                            // The two may not meet: a window that ends where
+                            // it begins is neither a whole day nor none of
+                            // one. The Until page leaves the starting hour
+                            // out, so this can only be reached by choosing a
+                            // From that lands on the existing Until — and the
+                            // answer to that is to move the other end, not to
+                            // refuse the press.
+                            if night.until == night.from {
+                                night.until = (night.from + 1) % 24;
+                            }
+                        }
+                        DisplayValue::NightLightUntil(hour) => {
+                            let hour = hour.min(23);
+                            if hour != night.from {
+                                night.until = hour;
+                            }
+                        }
+                        // Taken by the arms around this one.
+                        _ => {}
+                    }
+                }
                 _ => {
                     let mut held = HDR.lock().unwrap();
                     let inherited = *INHERITED.lock().unwrap();
@@ -1880,7 +2813,12 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         // Taken by the arms above; the compiler cannot see it.
                         DisplayValue::Resolution(_)
                         | DisplayValue::RefreshRate(_)
-                        | DisplayValue::Orientation(_) => {}
+                        | DisplayValue::Orientation(_)
+                        | DisplayValue::NightLight(_)
+                        | DisplayValue::NightLightTemperature(_)
+                        | DisplayValue::NightLightSchedule(_)
+                        | DisplayValue::NightLightFrom(_)
+                        | DisplayValue::NightLightUntil(_) => {}
                     }
                 }
             }
@@ -1937,6 +2875,33 @@ fn adopt(stored: Stored) {
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
 
+    // Before any display's section is read: a night light following the sun is
+    // only kept where there is a sun to follow, and this is what decides that.
+    // Half a coordinate is not a place, and one off the earth is not one
+    // either — both are dropped with a word rather than believed.
+    let written = stored
+        .night_light_latitude
+        .zip(stored.night_light_longitude);
+    match written.map(|(latitude, longitude)| {
+        (
+            crate::sun::Location::exact(latitude, longitude),
+            latitude,
+            longitude,
+        )
+    }) {
+        Some((Some(at), ..)) => crate::sun::set_location(Some(at)),
+        Some((None, latitude, longitude)) => {
+            tracing::warn!(latitude, longitude, "ignoring a location that is not one");
+            crate::sun::set_location(None);
+        }
+        None => {
+            if stored.night_light_latitude.is_some() || stored.night_light_longitude.is_some() {
+                tracing::warn!("a location needs both a latitude and a longitude");
+            }
+            crate::sun::set_location(None);
+        }
+    }
+
     // A hand-edited level outside the range the row can reach is clamped
     // rather than refused, for the reason a mistyped mode is dropped rather
     // than refused: this is a file the user is entitled to open, and one silly
@@ -1954,6 +2919,10 @@ fn adopt(stored: Stored) {
     // it, which on the ordinary first run is playing.
     if let Some(playing) = stored.start_music {
         *START_MUSIC.lock().unwrap() = playing;
+    }
+    // And the same for the switch that decides whether anything may interrupt.
+    if let Some(quiet) = stored.do_not_disturb {
+        *DO_NOT_DISTURB.lock().unwrap() = quiet;
     }
 
     // The flat keys a single-display version of this page wrote, which become
@@ -1978,9 +2947,11 @@ fn adopt(stored: Stored) {
     let mut held = HDR.lock().unwrap();
     let mut modes = MODE.lock().unwrap();
     let mut turns = TURN.lock().unwrap();
+    let mut nights = NIGHT.lock().unwrap();
     held.clear();
     modes.clear();
     turns.clear();
+    nights.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
         // than refusing the file: this is a text file the user is entitled to
@@ -2014,6 +2985,85 @@ fn adopt(stored: Stored) {
                 "ignoring an orientation this shell does not have"
             ),
             None => {}
+        }
+        // And the night light, which is filed on its own again. A section
+        // saying nothing about it leaves that display unwarmed rather than
+        // pinned to a copy of the default, so a screen carrying only a mode
+        // does not acquire a filter it never asked for.
+        if display.night_light.is_some()
+            || display.night_light_temperature.is_some()
+            || display.night_light_schedule.is_some()
+            || display.night_light_from.is_some()
+            || display.night_light_until.is_some()
+        {
+            let fallback = NightLight::default();
+            let hour = |written: Option<u8>, default: u8| match written {
+                // Clamped rather than dropped, for the reason a hand-edited
+                // level is: this is a file the user is entitled to open, and
+                // one silly number in it must not take the rest down with it.
+                Some(hour) => hour.min(23),
+                None => default,
+            };
+            let from = hour(display.night_light_from, fallback.from);
+            let until = hour(display.night_light_until, fallback.until);
+            // A word this shell does not have is dropped the way an unknown
+            // orientation is: the light keeps whatever the switch says, and
+            // the file keeps its word for whoever wrote it.
+            let written = display.night_light_schedule.clone();
+            let schedule = match written.as_deref().map(Schedule::from_key) {
+                Some(Some(schedule)) => schedule,
+                Some(None) => {
+                    tracing::warn!(
+                        screen = %name,
+                        schedule = written.unwrap_or_default(),
+                        "ignoring a night light schedule this shell does not have"
+                    );
+                    fallback.schedule
+                }
+                None => fallback.schedule,
+            };
+            // Two hours that meet are neither a whole day nor none of one, and
+            // there is no honest guess between them — so the window is dropped
+            // with a word about it. The sun's own hours cannot collide, so this
+            // is only ever about the two the file names.
+            let schedule = match schedule == Schedule::Hours && from == until {
+                true => {
+                    tracing::warn!(
+                        screen = %name,
+                        hour = from,
+                        "ignoring a night light window that ends where it begins"
+                    );
+                    Schedule::AllDay
+                }
+                false => schedule,
+            };
+            // And a machine that cannot say where it is cannot follow the sun.
+            // Left as All day rather than as a schedule that would never come
+            // on — which is also why the page does not offer it there.
+            let schedule =
+                match schedule == Schedule::SunsetToSunrise && crate::sun::location().is_none() {
+                    true => {
+                        tracing::warn!(
+                            screen = %name,
+                            "this machine names no place, so the night light cannot follow the sun"
+                        );
+                        Schedule::AllDay
+                    }
+                    false => schedule,
+                };
+            nights.insert(
+                name.clone(),
+                NightLight {
+                    enabled: display.night_light.unwrap_or(fallback.enabled),
+                    temperature: display
+                        .night_light_temperature
+                        .unwrap_or(fallback.temperature)
+                        .clamp(WARMEST_ON_THE_BAR, NEUTRAL_KELVIN),
+                    schedule,
+                    from,
+                    until,
+                },
+            );
         }
         // A section that says nothing about HDR leaves that display on the
         // inherited settings rather than being pinned to a copy of them —
@@ -2077,6 +3127,10 @@ struct Stored {
     /// because it is a different question: those say how loud everything the
     /// shell plays is, and this says whether one of the things it plays exists.
     start_music: Option<bool>,
+    /// Whether the guide's do-not-disturb tile is on: announcements filed
+    /// without a bubble and without a chime. Session-wide, like the three keys
+    /// above it and unlike anything in `apps.toml`.
+    do_not_disturb: Option<bool>,
     /// What order the Steam column is listed in. One key rather than a table
     /// like `media-sort`, because there is one library.
     ///
@@ -2084,6 +3138,18 @@ struct Stored {
     /// header inside that table, so a bare key declared below them would be
     /// written into `[media-sort]` and read back as a shelf.
     steam_sort: Option<String>,
+    /// Where this machine is, for the night light's sunset-to-sunrise
+    /// schedule. Both or neither; degrees, north and east positive.
+    ///
+    /// Session-wide rather than per display, because a location is: the two
+    /// screens on a desk are in the same place. Nothing in the shell writes
+    /// these — there is no page for them, because a page asking for a latitude
+    /// would be asking the user to go and look one up — and the ordinary answer
+    /// comes from the time zone's own coordinates. They are here for the one
+    /// case that cannot: somebody a long way from the middle of a large zone.
+    /// See [`crate::sun`].
+    night_light_latitude: Option<f64>,
+    night_light_longitude: Option<f64>,
     /// One section per display, by connector name. Sorted, so the file does
     /// not reshuffle itself every time it is written.
     display: BTreeMap<String, StoredDisplay>,
@@ -2118,6 +3184,25 @@ struct StoredDisplay {
     hdr_sdr_brightness: Option<u16>,
     hdr_srgb_intensity: Option<u8>,
     hdr_peak_brightness: Option<u16>,
+    /// Warm this display's picture, and how far — in kelvin, lower being
+    /// warmer.
+    ///
+    /// No top-level default stands behind these, unlike the four HDR keys. A
+    /// display nobody has warmed comes up unwarmed, which is what the setting's
+    /// own default is and is never the wrong answer for a screen this file has
+    /// never heard of.
+    night_light: Option<bool>,
+    night_light_temperature: Option<u16>,
+    /// Which hours it keeps: `all-day`, `sunset-to-sunrise`, or `hours`.
+    ///
+    /// Separate from the two hours rather than folded into their absence, so a
+    /// window survives being set aside: a user who follows the sun for a week
+    /// gets their own evening back, not one this shell made up.
+    night_light_schedule: Option<String>,
+    /// The hours of local time it comes on and goes off at, 0 to 23. Equal
+    /// hours are neither a whole day nor none of one, and are dropped.
+    night_light_from: Option<u8>,
+    night_light_until: Option<u8>,
 }
 
 impl Mode {
@@ -2172,6 +3257,7 @@ fn stored() -> Stored {
     let hdr = HDR.lock().unwrap();
     let modes = MODE.lock().unwrap();
     let turns = TURN.lock().unwrap();
+    let nights = NIGHT.lock().unwrap();
 
     // A screen may have been given one of these and not the others, so the
     // sections are the union rather than any one list: writing only the screens
@@ -2186,6 +3272,9 @@ fn stored() -> Stored {
     for (name, turn) in turns.iter() {
         display.entry(name.clone()).or_default().transform = Some(turn.key().to_string());
     }
+    for (name, night) in nights.iter() {
+        display.entry(name.clone()).or_default().night_from(*night);
+    }
 
     let sound = *SOUND.lock().unwrap();
     let playing = *START_MUSIC.lock().unwrap();
@@ -2195,6 +3284,7 @@ fn stored() -> Stored {
         sound_volume: Some(sound.value),
         sound_muted: Some(sound.muted),
         start_music: Some(playing),
+        do_not_disturb: Some(do_not_disturb()),
         hdr: Some(inherited.enabled),
         hdr_sdr_brightness: Some(inherited.sdr_brightness),
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
@@ -2202,6 +3292,11 @@ fn stored() -> Stored {
         display,
         media_sort: MEDIA_SORT.lock().unwrap().clone(),
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
+        // Written back out so that a file which named a place goes on naming
+        // it: everything here is built from the live values, and a key the
+        // writer could not see is one the next change to anything else drops.
+        night_light_latitude: crate::sun::written_location().map(|at| at.latitude),
+        night_light_longitude: crate::sun::written_location().map(|at| at.longitude),
     }
 }
 
@@ -2211,6 +3306,17 @@ impl StoredDisplay {
         self.hdr_sdr_brightness = Some(hdr.sdr_brightness);
         self.hdr_srgb_intensity = Some(hdr.srgb_intensity);
         self.hdr_peak_brightness = Some(hdr.peak_brightness);
+    }
+
+    /// All five keys, always — the hours included while the light is on all
+    /// day, so that a schedule set and then set aside is still there when it
+    /// is asked for again.
+    fn night_from(&mut self, night: NightLight) {
+        self.night_light = Some(night.enabled);
+        self.night_light_temperature = Some(night.temperature);
+        self.night_light_schedule = Some(night.schedule.key().to_string());
+        self.night_light_from = Some(night.from);
+        self.night_light_until = Some(night.until);
     }
 }
 
@@ -2246,7 +3352,200 @@ fn save(stored: &Stored) {
     if let Err(err) = std::fs::rename(&temporary, &path) {
         tracing::warn!(%err, path = %path.display(), "could not replace the shell settings");
         let _ = std::fs::remove_file(&temporary);
+        return;
     }
+    published(stored);
+}
+
+/// The half of these settings a login screen shows, as it was last told.
+///
+/// Kept so that it can be told when that half changes and left alone when it
+/// does not. Most of what this file holds is none of a login screen's business
+/// — how loud the shell's own sounds are, what order a shelf is listed in — and
+/// [`set_sound`] deliberately writes the file on every step of a held volume
+/// direction, which is a second or two of writes for one press.
+type Shown = (
+    Option<String>,
+    Option<bool>,
+    Option<u16>,
+    Option<u8>,
+    Option<u16>,
+    BTreeMap<String, StoredDisplay>,
+);
+
+static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
+
+/// Tell the login screen that these settings have changed.
+///
+/// A display manager runs as an account of its own and cannot read a home
+/// directory, so the only thing it can know about this account is what has been
+/// published for it — an avatar, by `accounts-daemon`, and the accent and the
+/// display settings by this. Left untold, the copy it reads is the one written
+/// when this session started: change the accent to red at lunchtime, sign out
+/// in the evening, and the login screen that comes up is still the purple it
+/// was that morning.
+///
+/// Told from here rather than watched for from the other side, because this is
+/// the moment it becomes true. Something watching the file has to decide when a
+/// rewrite has finished and then race the logout that may follow it — and the
+/// one person it would get wrong is somebody who changes a setting and signs
+/// straight out, which is exactly the person looking at the login screen next.
+///
+/// Console Experience Desktop Manager is the display manager that understands
+/// this, and it is not required to be installed: on a machine with another
+/// login screen none of [`LOGIN_SCREENS`] is found and nothing happens. Nothing
+/// is passed to it — it reads the file that has just been written, as the
+/// account that wrote it — and nothing it says is waited for, because no
+/// decision here rests on the answer.
+fn published(stored: &Stored) {
+    if !news_for_the_login_screen(stored) {
+        return;
+    }
+    tell_the_login_screen(&LOGIN_SCREENS);
+}
+
+/// What that display manager is called, newest name first.
+///
+/// `cedm` is what it installs as. The long name is what the same program was
+/// called before that project shortened its package, its binary, its unit and
+/// its configuration directory to the word everybody used for it anyway, and is
+/// kept behind it so that a machine still carrying the older greeter is told as
+/// well.
+///
+/// Getting this wrong is silent in both directions, which is why there are two
+/// of them: a name nothing on the machine answers to is indistinguishable here
+/// from a machine running somebody else's login screen, and the failure it
+/// produces is the exact one this whole path exists to prevent — a login screen
+/// showing the accent from the *previous* session, because the only copy it
+/// ever got was the one `cedm-session` published at sign-in.
+///
+/// Looked up on `PATH` rather than under a fixed directory: this shell does not
+/// know where that package was installed, and a distribution is free to put it
+/// somewhere other than `/usr/bin`.
+const LOGIN_SCREENS: [&str; 2] = ["cedm", "console-experience-desktop-manager"];
+
+/// Tell the login screen, and wait for it, because this session is ending.
+///
+/// The ordinary route does not wait — nothing on screen depends on the answer,
+/// and the shell has a frame to draw. On the way out there is no frame to draw
+/// and waiting is the whole point: a session that exits takes its children with
+/// it, so a copy that had not finished being written is a copy that never gets
+/// written.
+///
+/// It is spent here because of the one thing in that copy which cannot be
+/// caught any other way. The accent and the displays are written down, so a
+/// change to either passes through [`save`] and is published as it happens. How
+/// loud the machine is and which device it plays through are the sound server's,
+/// not this shell's, and the shell is deliberately not a second opinion about
+/// either — so nothing marks the moment they change, and the volume the login
+/// screen should answer at is simply whatever it happens to be when the user
+/// leaves. This is that moment.
+pub fn tell_the_login_screen_before_leaving() {
+    /// Long enough for a small program to read two files and write one, and
+    /// short enough that nobody watches a screen for it. A login screen that
+    /// takes longer than this to answer is one this session will leave behind.
+    const AT_MOST: Duration = Duration::from_millis(1500);
+
+    let Some((_, mut child)) = start_the_login_screen(&LOGIN_SCREENS) else {
+        return;
+    };
+    let deadline = Instant::now() + AT_MOST;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Left running rather than killed. It writes through a temporary
+            // and a rename, so the worst a slow one can do is finish after this
+            // shell has gone — which is exactly what was wanted anyway.
+            Ok(None) => {
+                tracing::debug!("the login screen is still being told; leaving it to finish");
+                return;
+            }
+            Err(err) => {
+                tracing::debug!(%err, "could not wait for the login screen");
+                return;
+            }
+        }
+    }
+}
+
+/// Start the first of `programs` this machine has, and say which it was.
+///
+/// Every name is tried, because "not found" is what a machine with a different
+/// login screen and a machine with an older one both look like from here. Only
+/// the first that starts is run: they are names for one program, not several.
+fn tell_the_login_screen(programs: &[&str]) -> Option<String> {
+    let (program, mut child) = start_the_login_screen(programs)?;
+    // Reaped rather than left a zombie: the shell outlives every one of these,
+    // and there is one per settings change.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Some(program)
+}
+
+/// Start the first of `programs` this machine has, and hand back the process
+/// itself along with the name that worked.
+///
+/// Whether to wait for it is the caller's: an ordinary settings change does not,
+/// and a session on its way out does. See
+/// [`tell_the_login_screen_before_leaving`].
+fn start_the_login_screen(programs: &[&str]) -> Option<(String, std::process::Child)> {
+    for program in programs {
+        let mut command = std::process::Command::new(program);
+        command
+            .arg("--publish-look")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match command.spawn() {
+            Ok(child) => return Some(((*program).to_string(), child)),
+            // Not this name. The next one, and if there is no next one there is
+            // nobody to tell, which is not a fault.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                tracing::debug!(
+                    %err,
+                    program,
+                    "could not tell the login screen about the new settings"
+                );
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Whether the half of these settings a login screen shows has changed since it
+/// was last told, and remember the answer.
+///
+/// A login screen shows an accent and brings displays up; nothing else in this
+/// file is any of its business. The distinction matters because the file is
+/// written far more often than that half of it changes — [`set_sound`] writes on
+/// every step of a held volume direction, deliberately, and one press of that is
+/// a second or two of writes. Telling the login screen each time would be a
+/// process started for each one.
+///
+/// The first save of a session is always news, whatever it says. Nothing has
+/// been told yet, and a session whose sign-in could not publish gets a second
+/// chance the first time anybody changes anything.
+fn news_for_the_login_screen(stored: &Stored) -> bool {
+    let shown: Shown = (
+        stored.accent.clone(),
+        stored.hdr,
+        stored.hdr_sdr_brightness,
+        stored.hdr_srgb_intensity,
+        stored.hdr_peak_brightness,
+        stored.display.clone(),
+    );
+    let mut last = SHOWN.lock().unwrap();
+    if last.as_ref() == Some(&shown) {
+        return false;
+    }
+    *last = Some(shown);
+    true
 }
 
 /// What the file says about itself, since it is written by the shell but sits
@@ -2279,6 +3578,14 @@ const PREAMBLE: &str = "\
 # Settings > Sounds > Start music. It plays unless this says false. Turning it
 # off leaves every other sound the shell makes exactly as loud as it was; how
 # loud that is, the music included, is the two keys above.
+#
+# do-not-disturb: whether anything may interrupt, which is the moon tile at the
+# head of the guide overlay's column rather than a row of the Settings column.
+# On, an announcement is filed without a bubble in the corner and without a
+# chime; nothing is discarded, and the tile beside that one lists what arrived.
+# Written down because it is a switch somebody threw on purpose: a console that
+# had quietly turned it off overnight would deliver a night of announcements at
+# breakfast.
 #
 # Everything under [display.NAME] is Settings > Display for the connector of
 # that name, and is carried out by the compositor rather than by the shell.
@@ -2314,6 +3621,35 @@ const PREAMBLE: &str = "\
 #                       compositor says so and this has no effect.
 # hdr-peak-brightness:  the peak declared to the display, in cd/m².
 #                       0 means whatever the display says about itself.
+#
+# The five night-light keys are Settings > Display > Night light, the blue
+# light filter. They have no top-level default: a display this file has never
+# heard of comes up unwarmed, which is what the setting does when nobody has
+# asked for it.
+#
+# night-light:            warm this display's picture. Off is off whatever the
+#                         schedule below says.
+# night-light-temperature how warm, in kelvin — lower is warmer. 6500 is
+#                         daylight and no filter at all, 4000 an ordinary
+#                         evening, 2000 candlelight. Anything outside
+#                         2000..6500 is brought to the nearest end.
+# night-light-schedule:   when it burns. One of: all-day, for as long as
+#                         night-light is on; sunset-to-sunrise, which follows
+#                         the sun where this machine is; or hours, which keeps
+#                         the two below.
+# night-light-from:       the hour of local time it comes on at, 0 to 23.
+# night-light-until:      the hour it goes off at, exclusive, wrapping past
+#                         midnight — 22 and 6, which is what the switch starts
+#                         on, is an evening. The two may not be the same hour;
+#                         a file that says they are keeps no hours at all.
+#
+# night-light-latitude and night-light-longitude, at the top level, are where
+# this machine is, in degrees — north and east positive. They are what
+# sunset-to-sunrise is worked out from, and they are only needed when the
+# ordinary answer is not good enough: without them the coordinates come from
+# the time zone's own entry in the system's zone table, which is the city the
+# zone is named for. Set them for somewhere a long way from that city. Both or
+# neither; a pair that is not a place on the earth is ignored.
 #
 # [media-sort] is what order the rows of the user's own files are listed in,
 # one key per shelf — Music, Video, Images — chosen from the Sort row of the
@@ -2365,6 +3701,18 @@ mod tests {
             active: false,
             peak,
             gamut: true,
+            night_light: true,
+            warming: false,
+        }
+    }
+
+    /// A display that has a colour ramp and nothing else — an ordinary SDR
+    /// panel, which is what most screens are and what the Night light page has
+    /// to work on while the HDR page beside it lists nothing.
+    fn warmable() -> Support {
+        Support {
+            night_light: true,
+            ..Support::default()
         }
     }
 
@@ -2407,8 +3755,10 @@ mod tests {
         mode: BTreeMap<String, Mode>,
         reported_turns: Vec<(String, Orientation)>,
         turn: BTreeMap<String, Orientation>,
+        night: BTreeMap<String, NightLight>,
         sound: Level,
         start_music: bool,
+        do_not_disturb: bool,
         devices: Devices,
     }
 
@@ -2421,13 +3771,16 @@ mod tests {
             mode: MODE.lock().unwrap().clone(),
             reported_turns: turned(),
             turn: TURN.lock().unwrap().clone(),
+            night: NIGHT.lock().unwrap().clone(),
             sound: *SOUND.lock().unwrap(),
             start_music: start_music(),
+            do_not_disturb: do_not_disturb(),
             devices: DEVICES.lock().unwrap().clone(),
         };
         HDR.lock().unwrap().clear();
         MODE.lock().unwrap().clear();
         TURN.lock().unwrap().clear();
+        NIGHT.lock().unwrap().clear();
         note_turned(Vec::new());
         note_devices(Devices::none());
         *INHERITED.lock().unwrap() = Hdr::default();
@@ -2439,8 +3792,10 @@ mod tests {
         *INHERITED.lock().unwrap() = saved.inherited;
         *MODE.lock().unwrap() = saved.mode;
         *TURN.lock().unwrap() = saved.turn;
+        *NIGHT.lock().unwrap() = saved.night;
         *SOUND.lock().unwrap() = saved.sound;
         *START_MUSIC.lock().unwrap() = saved.start_music;
+        *DO_NOT_DISTURB.lock().unwrap() = saved.do_not_disturb;
         note_support(saved.support);
         note_modes(saved.offered);
         note_turned(saved.reported_turns);
@@ -2908,7 +4263,12 @@ mod tests {
                             // nor the turn is one of them.
                             DisplayValue::Resolution(_)
                             | DisplayValue::RefreshRate(_)
-                            | DisplayValue::Orientation(_) => {
+                            | DisplayValue::Orientation(_)
+                            | DisplayValue::NightLight(_)
+                            | DisplayValue::NightLightTemperature(_)
+                            | DisplayValue::NightLightSchedule(_)
+                            | DisplayValue::NightLightFrom(_)
+                            | DisplayValue::NightLightUntil(_) => {
                                 unreachable!()
                             }
                         }
@@ -3057,6 +4417,11 @@ mod tests {
                     hdr_sdr_brightness: Some(250),
                     hdr_srgb_intensity: Some(50),
                     hdr_peak_brightness: Some(1000),
+                    night_light: Some(true),
+                    night_light_temperature: Some(3400),
+                    night_light_schedule: Some("hours".to_string()),
+                    night_light_from: Some(21),
+                    night_light_until: Some(7),
                 },
             )]),
             media_sort: BTreeMap::from([
@@ -3245,6 +4610,53 @@ mod tests {
                 |_| {}
             ));
             assert!(start_music());
+        });
+    }
+
+    /// Do not disturb survives a session, and a file that says nothing about
+    /// it leaves the switch where the shell has it — which on the ordinary
+    /// first run is off.
+    ///
+    /// It is remembered at all because it is a switch somebody threw on
+    /// purpose: a console that quietly turned it back off overnight would
+    /// deliver a night of announcements at breakfast, which is the one thing
+    /// the switch was thrown to prevent.
+    ///
+    /// Never through [`set_do_not_disturb`], which writes to the config
+    /// directory of whoever is running the tests — the same reason
+    /// [`the_shell_s_own_volume_is_remembered`] goes through this pair.
+    #[test]
+    fn whether_anything_may_interrupt_is_remembered() {
+        with_displays(&[], || {
+            *DO_NOT_DISTURB.lock().unwrap() = false;
+
+            adopt(Stored {
+                do_not_disturb: Some(true),
+                ..Stored::default()
+            });
+            assert!(do_not_disturb());
+
+            let written = stored();
+            assert_eq!(written.do_not_disturb, Some(true));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("do-not-disturb"), "{body}");
+
+            adopt(toml::from_str(&body).unwrap());
+            assert!(do_not_disturb(), "and it comes back on");
+
+            adopt(Stored::default());
+            assert!(
+                do_not_disturb(),
+                "a silent file answers nothing for the user"
+            );
+
+            // A machine that has never had one written comes up able to be
+            // interrupted: a shell that arrived refusing to show what the
+            // machine had to say would look like one whose notifications are
+            // broken.
+            *DO_NOT_DISTURB.lock().unwrap() = false;
+            assert!(!do_not_disturb());
+            assert_eq!(Stored::default().do_not_disturb, None);
         });
     }
 
@@ -3648,7 +5060,13 @@ hdr-peak-brightness = 600
                 let display = column[1].entries().expect("Display opens a column");
                 assert_eq!(
                     display.iter().map(Entry::title).collect::<Vec<_>>(),
-                    ["Resolution", "Refresh rate", "Orientation", "HDR"],
+                    [
+                        "Resolution",
+                        "Refresh rate",
+                        "Orientation",
+                        "Night light",
+                        "HDR"
+                    ],
                     "the shape of the picture comes before what it carries"
                 );
 
@@ -4508,5 +5926,1089 @@ hdr = true
         assert_eq!(hertz(143_856).as_deref(), Some("143.86 Hz"));
         // Not a rate of zero: a display that reports none is not reporting one.
         assert_eq!(hertz(0), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // night light
+    // -----------------------------------------------------------------------
+
+    /// The controls of one screen's Night light page, however the page reaches
+    /// them.
+    ///
+    /// The screen level collapses when only one display can be warmed, exactly
+    /// as it does on the HDR page, so a test that wants the controls has to be
+    /// able to find them either way.
+    fn night_controls_for(name: &str) -> Vec<Entry> {
+        let page = page("Night light");
+        let warmable = support()
+            .into_iter()
+            .filter(|(_, support)| support.night_light)
+            .count();
+        if warmable == 1 {
+            return page;
+        }
+        page.iter()
+            .find(|entry| entry.title() == name)
+            .unwrap_or_else(|| panic!("{name} is not in the Night light screen list"))
+            .entries()
+            .expect("a screen opens its night light")
+            .to_vec()
+    }
+
+    /// One named row of that page.
+    fn night_row(name: &str, title: &str) -> Entry {
+        night_row_if_any(name, title)
+            .unwrap_or_else(|| panic!("the night light page has no {title} row"))
+    }
+
+    /// The same, where the page not having the row at all is one of the
+    /// answers being asked about.
+    fn night_row_if_any(name: &str, title: &str) -> Option<Entry> {
+        night_controls_for(name)
+            .into_iter()
+            .find(|entry| entry.title() == title)
+    }
+
+    /// The bar inside the Color temperature row.
+    fn temperature_bar(name: &str) -> crate::apps::Bar {
+        let row = night_row(name, "Color temperature");
+        let inside = row.entries().expect("the row opens onto its bar");
+        assert_eq!(inside.len(), 1, "a bar is the whole of its column");
+        inside[0]
+            .bar()
+            .expect("and that one row is the bar")
+            .clone()
+    }
+
+    /// An evening: the light on, between two hours the user chose.
+    fn evening() -> NightLight {
+        NightLight {
+            enabled: true,
+            schedule: Schedule::Hours,
+            from: 21,
+            until: 7,
+            ..NightLight::default()
+        }
+    }
+
+    /// Minutes since midnight, as the schedule counts them.
+    fn at(hour: u8, minute: u8) -> u16 {
+        hour as u16 * 60 + minute as u16
+    }
+
+    /// The whole of the schedule, which is the one piece of this that has to be
+    /// right without a display or a clock anywhere near it.
+    ///
+    /// Written against minutes rather than against the time of day on purpose:
+    /// a suite that read the machine's own clock would pass or fail depending
+    /// on when it was run, which is the one property a test may not have.
+    #[test]
+    fn the_hours_of_a_schedule_wrap_past_midnight() {
+        // On at nine, off at seven, and the small hours are inside it. This is
+        // the case the page is mostly for and the one a window that could not
+        // wrap would get exactly backwards.
+        let evening = evening();
+        for hour in [21, 22, 23, 0, 3, 6] {
+            assert!(evening.burning_at(at(hour, 0), None), "not on at {hour}:00");
+            assert!(
+                evening.burning_at(at(hour, 30), None),
+                "not on at {hour}:30"
+            );
+        }
+        for hour in [7, 8, 12, 17, 20] {
+            assert!(!evening.burning_at(at(hour, 0), None), "on at {hour}:00");
+        }
+
+        // An ordinary daytime window, which must not be read as its own
+        // complement.
+        let daytime = NightLight {
+            from: 7,
+            until: 21,
+            ..evening
+        };
+        for hour in [7, 12, 20] {
+            assert!(daytime.burning_at(at(hour, 0), None), "not on at {hour}:00");
+        }
+        for hour in [21, 23, 0, 6] {
+            assert!(!daytime.burning_at(at(hour, 0), None), "on at {hour}:00");
+        }
+
+        // The end is exclusive at both, to the minute: a light that goes off at
+        // seven is off at seven, and on at one minute to.
+        assert!(evening.burning_at(at(6, 59), None));
+        assert!(!evening.burning_at(at(7, 0), None));
+        assert!(!daytime.burning_at(at(21, 0), None));
+
+        // All day is every minute, and the switch is above all of it.
+        let all_day = NightLight {
+            schedule: Schedule::AllDay,
+            ..evening
+        };
+        let switched_off = NightLight {
+            enabled: false,
+            ..evening
+        };
+        for minute in (0..MINUTES_IN_DAY).step_by(37) {
+            assert!(all_day.burning_at(minute, None), "all day, not at {minute}");
+            assert!(
+                !switched_off.burning_at(minute, None),
+                "off, on at {minute}"
+            );
+        }
+    }
+
+    /// The sun's own hours, which are the same window with both ends moved by
+    /// the almanac rather than by the user.
+    #[test]
+    fn the_sun_keeps_the_hours_between_its_setting_and_its_rising() {
+        use crate::sun::Sun;
+        let follows = NightLight {
+            enabled: true,
+            schedule: Schedule::SunsetToSunrise,
+            // Deliberately unlike the sun's, so a schedule reading the wrong
+            // pair of hours could not accidentally agree with it.
+            from: 9,
+            until: 10,
+            ..NightLight::default()
+        };
+        let summer = Some(Sun::Daily {
+            sunrise: at(5, 15),
+            sunset: at(20, 12),
+        });
+        for (hour, minute) in [(20, 12), (21, 0), (23, 59), (0, 0), (5, 14)] {
+            assert!(
+                follows.burning_at(at(hour, minute), summer),
+                "not on at {hour}:{minute:02}"
+            );
+        }
+        for (hour, minute) in [(5, 15), (6, 0), (12, 0), (20, 11)] {
+            assert!(
+                !follows.burning_at(at(hour, minute), summer),
+                "on at {hour}:{minute:02}"
+            );
+        }
+
+        // A day the sun does not come up is a day that is night, and one it
+        // does not go down is a day that is not. Both are the truthful reading
+        // of "sunset to sunrise" where neither happens.
+        for minute in (0..MINUTES_IN_DAY).step_by(97) {
+            assert!(
+                follows.burning_at(minute, Some(Sun::NeverRises)),
+                "{minute}"
+            );
+            assert!(
+                !follows.burning_at(minute, Some(Sun::NeverSets)),
+                "{minute}"
+            );
+        }
+
+        // And the two hours it is not using are left exactly where they were,
+        // so going back to them gives back the evening that was set.
+        assert_eq!((follows.from, follows.until), (9, 10));
+    }
+
+    /// What the row above the page says out loud: which end of the window is
+    /// next, and how long there is until it.
+    #[test]
+    fn a_schedule_says_when_it_will_next_change_its_mind() {
+        use crate::sun::Sun;
+        let evening = evening();
+        // Inside the window, the next edge is the end of it.
+        assert_eq!(evening.next_edge(at(23, 0), None), Some(at(7, 0)));
+        // Outside it, the next edge is the start.
+        assert_eq!(evening.next_edge(at(12, 0), None), Some(at(21, 0)));
+
+        // The sun's edges are the sun's, to the minute.
+        let follows = NightLight {
+            schedule: Schedule::SunsetToSunrise,
+            ..evening
+        };
+        let today = Some(Sun::Daily {
+            sunrise: at(5, 15),
+            sunset: at(20, 12),
+        });
+        assert_eq!(follows.next_edge(at(12, 0), today), Some(at(20, 12)));
+        assert_eq!(follows.next_edge(at(22, 0), today), Some(at(5, 15)));
+
+        // A schedule with no edges says so rather than naming one: on all day,
+        // and a day at a latitude where the sun does not cross the horizon.
+        let all_day = NightLight {
+            schedule: Schedule::AllDay,
+            ..evening
+        };
+        assert_eq!(all_day.next_edge(at(12, 0), None), None);
+        assert_eq!(follows.next_edge(at(12, 0), Some(Sun::NeverSets)), None);
+        assert_eq!(follows.next_edge(at(12, 0), None), None);
+    }
+
+    /// A window that ends where it begins is neither a whole day nor none of
+    /// one, so it is empty and the page cannot offer it.
+    #[test]
+    fn a_window_that_ends_where_it_begins_holds_no_hours() {
+        let empty = NightLight {
+            until: 21,
+            ..evening()
+        };
+        for minute in (0..MINUTES_IN_DAY).step_by(53) {
+            assert!(!empty.burning_at(minute, None), "burning at {minute}");
+        }
+
+        // Which is why the Until page leaves the starting hour out: twenty-three
+        // rows, and none of them the one that would mean nothing.
+        with_displays(&[(FIRST, warmable())], || {
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::Hours)),
+                |_| {},
+            );
+            apply_with(setting(FIRST, DisplayValue::NightLightFrom(21)), |_| {});
+            let hours: Vec<String> = night_row(FIRST, "Until")
+                .entries()
+                .expect("a schedule opens its hours")
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert_eq!(hours.len(), 23);
+            assert!(!hours.contains(&"21:00".to_string()));
+            assert!(hours.contains(&"07:00".to_string()));
+        });
+    }
+
+    /// The same three shapes the HDR page has, and the same rule about which
+    /// screens are in them — but a different list of screens, which is the
+    /// whole reason it is asked separately.
+    #[test]
+    fn the_night_light_lists_the_screens_that_can_be_warmed() {
+        // An ordinary SDR panel beside an HDR television. Both can be warmed;
+        // only one of them is on the HDR page.
+        with_displays(&[(FIRST, warmable()), (SECOND, capable(PEAK))], || {
+            let listed: Vec<String> = page("Night light")
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert_eq!(listed, [FIRST, SECOND], "both screens have a ramp");
+
+            let hdr: Vec<String> = hdr_page()
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert!(
+                !hdr.contains(&FIRST.to_string()),
+                "an SDR panel is not on the HDR page: {hdr:?}"
+            );
+        });
+
+        // One screen, so there is no screen to choose between and the controls
+        // stand in its place — with the row above them saying whose they are.
+        with_displays(&[(AWKWARD, warmable())], || {
+            let row = display_row("Night light");
+            assert!(
+                row.comment().unwrap_or_default().starts_with(AWKWARD),
+                "the one screen is named: {:?}",
+                row.comment()
+            );
+            assert_eq!(
+                night_controls_for(AWKWARD)
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                [
+                    "Night light",
+                    "Color temperature",
+                    "Schedule",
+                    "From",
+                    "Until"
+                ],
+                "and the time zone row is gone: it set nothing"
+            );
+        });
+
+        // And none at all — a nested session, which owns no ramp. The row still
+        // opens, because a row the bar refuses to step into is one that does
+        // nothing when pressed, and what it says is why.
+        with_displays(&[], || {
+            let inside = page("Night light");
+            assert_eq!(inside.len(), 1);
+            assert!(inside[0].setting().is_none(), "an explanation sets nothing");
+            assert_eq!(inside[0].title(), "No display can be warmed");
+        });
+    }
+
+    /// The temperature is a bar, and the bar is the whole of its column: one
+    /// row, no glyph, a number that reads as the value and the two steps either
+    /// side of it.
+    #[test]
+    fn the_temperature_is_set_on_a_bar_rather_than_picked_off_a_list() {
+        with_displays(&[(FIRST, warmable())], || {
+            let bar = temperature_bar(FIRST);
+            let started = night_light_for(FIRST).temperature;
+            assert_eq!(bar.title, format!("{started} K"), "the number is the row");
+            assert!(bar.comment.is_some(), "and it says what that means");
+            assert!(bar.swatch.is_some(), "drawn in the light it stands for");
+
+            // Where the handle stands is where the value stands in the range.
+            let span = (NEUTRAL_KELVIN - WARMEST_ON_THE_BAR) as f32;
+            let expected = (started - WARMEST_ON_THE_BAR) as f32 / span;
+            assert!((bar.fill - expected).abs() < 1e-6, "{}", bar.fill);
+
+            // One press moves it one step, and the row that comes back says so.
+            let Some(up) = bar.up else {
+                panic!("there is room above the default")
+            };
+            assert!(apply_with(up, |_| {}));
+            assert_eq!(
+                night_light_for(FIRST).temperature,
+                started + TEMPERATURE_STEP
+            );
+            assert_eq!(
+                temperature_bar(FIRST).title,
+                format!("{} K", started + TEMPERATURE_STEP)
+            );
+
+            let Some(down) = temperature_bar(FIRST).down else {
+                panic!("and room below it")
+            };
+            assert!(apply_with(down, |_| {}));
+            assert_eq!(night_light_for(FIRST).temperature, started);
+        });
+    }
+
+    /// The bar stops at both ends rather than wrapping round or running past
+    /// them: at the top there is no step up, at the bottom no step down.
+    #[test]
+    fn the_bar_stops_at_the_ends_of_its_range() {
+        with_displays(&[(FIRST, warmable())], || {
+            let set = |kelvin| {
+                apply_with(
+                    setting(FIRST, DisplayValue::NightLightTemperature(kelvin)),
+                    |_| {},
+                );
+            };
+
+            set(NEUTRAL_KELVIN);
+            let top = temperature_bar(FIRST);
+            assert_eq!(top.up, None, "nothing above daylight");
+            assert!(top.down.is_some());
+            assert!((top.fill - 1.0).abs() < 1e-6, "a full track");
+
+            set(WARMEST_ON_THE_BAR);
+            let bottom = temperature_bar(FIRST);
+            assert_eq!(bottom.down, None, "nothing below candlelight");
+            assert!(bottom.up.is_some());
+            assert!(bottom.fill.abs() < 1e-6, "an empty one");
+
+            // A value out of the bar's range is brought into it rather than
+            // refused — and the bar is then somewhere on its own track.
+            set(u16::MAX);
+            assert_eq!(night_light_for(FIRST).temperature, NEUTRAL_KELVIN);
+            set(1);
+            assert_eq!(night_light_for(FIRST).temperature, WARMEST_ON_THE_BAR);
+            assert!((0.0..=1.0).contains(&temperature_bar(FIRST).fill));
+        });
+    }
+
+    /// Every row of every list sets the thing it names, on the screen it
+    /// belongs to, and the mark moves to it.
+    #[test]
+    fn choosing_a_night_light_value_sets_that_value() {
+        // Two screens, so the values are reached the long way and each carries
+        // the name of the screen whose page it was found on.
+        with_displays(&[(FIRST, warmable()), (SECOND, warmable())], || {
+            for screen in [FIRST, SECOND] {
+                for title in ["Night light", "Schedule"] {
+                    let values = night_row(screen, title)
+                        .entries()
+                        .expect("a control opens its values")
+                        .to_vec();
+                    for entry in &values {
+                        // The sun's row is a reading where this machine says no
+                        // place, and a reading sets nothing on purpose.
+                        let Some(chosen @ Setting::Display { display, value }) = entry.setting()
+                        else {
+                            assert_eq!(entry.title(), Schedule::SunsetToSunrise.title());
+                            continue;
+                        };
+                        assert_eq!(display, screen);
+                        assert!(apply_with(chosen, |_| {}));
+
+                        let live = night_light_for(screen);
+                        match value {
+                            DisplayValue::NightLight(on) => assert_eq!(live.enabled, on),
+                            DisplayValue::NightLightSchedule(schedule) => {
+                                assert_eq!(live.schedule, schedule)
+                            }
+                            other => panic!("{other:?} is not on this page"),
+                        }
+
+                        // And the row that is marked afterwards is this one.
+                        let marked = night_row(screen, title)
+                            .entries()
+                            .expect("a control opens its values")
+                            .iter()
+                            .find(|entry| entry.chosen())
+                            .map(|entry| entry.title().to_string());
+                        assert_eq!(marked.as_deref(), Some(entry.title()));
+                    }
+                }
+
+                // The hours are walked on their own, because their lists only
+                // exist while there is a window to keep.
+                apply_with(
+                    setting(screen, DisplayValue::NightLightSchedule(Schedule::Hours)),
+                    |_| {},
+                );
+                for (title, expected) in [("From", 0u8), ("Until", 0)] {
+                    let _ = expected;
+                    for entry in night_row(screen, title)
+                        .entries()
+                        .expect("a window opens its hours")
+                    {
+                        let Some(chosen @ Setting::Display { value, .. }) = entry.setting() else {
+                            panic!("{} sets nothing", entry.title());
+                        };
+                        assert!(apply_with(chosen, |_| {}));
+                        let live = night_light_for(screen);
+                        match value {
+                            DisplayValue::NightLightFrom(hour) => assert_eq!(live.from, hour),
+                            DisplayValue::NightLightUntil(hour) => assert_eq!(live.until, hour),
+                            other => panic!("{other:?} is not on the {title} page"),
+                        }
+                    }
+                }
+            }
+
+            // One screen's page is one screen's. Both have been walked down the
+            // same lists and so stand at the same values; what says they are
+            // separate is that moving one now leaves the other where it is.
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightTemperature(5500)),
+                |_| {},
+            );
+            apply_with(
+                setting(SECOND, DisplayValue::NightLightSchedule(Schedule::AllDay)),
+                |_| {},
+            );
+            assert_eq!(night_light_for(FIRST).temperature, 5500);
+            assert_ne!(night_light_for(SECOND).temperature, 5500);
+            assert_eq!(night_light_for(SECOND).schedule, Schedule::AllDay);
+            assert_eq!(night_light_for(FIRST).schedule, Schedule::Hours);
+        });
+    }
+
+    /// Changing the schedule keeps the hours it is not using, so asking for
+    /// them again gives back the evening that was set rather than one the shell
+    /// invented — while the two rows themselves come and go with the schedule
+    /// that reads them.
+    #[test]
+    fn the_hours_survive_being_set_aside() {
+        with_displays(&[(FIRST, warmable())], || {
+            // Hours are what the switch starts on, so both rows are there and
+            // both are lists of hours rather than anything to read.
+            for title in ["From", "Until"] {
+                let row = night_row(FIRST, title);
+                let inside = row.entries().expect("the row opens");
+                assert!(inside.len() >= 23, "{title} opens onto the hours");
+                assert!(
+                    inside.iter().all(|hour| hour.setting().is_some()),
+                    "every hour on the {title} page can be chosen"
+                );
+            }
+
+            apply_with(setting(FIRST, DisplayValue::NightLightFrom(22)), |_| {});
+            apply_with(setting(FIRST, DisplayValue::NightLightUntil(6)), |_| {});
+            let set = night_light_for(FIRST);
+            assert_eq!((set.from, set.until), (22, 6));
+
+            // Set aside, and the rows go with the schedule that was reading
+            // them: two hours left on a page that is following the sun would be
+            // saying something about tonight that is not true.
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::AllDay)),
+                |_| {},
+            );
+            let put_aside = night_light_for(FIRST);
+            assert_eq!(put_aside.schedule, Schedule::AllDay);
+            assert_eq!(
+                (put_aside.from, put_aside.until),
+                (22, 6),
+                "the hours are remembered while they are not being kept"
+            );
+            for title in ["From", "Until"] {
+                assert!(
+                    night_row_if_any(FIRST, title).is_none(),
+                    "{title} is not on a page that keeps no hours"
+                );
+            }
+
+            // And asked for again, it is the same evening, on rows that are
+            // back where they were.
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::Hours)),
+                |_| {},
+            );
+            assert_eq!(night_light_for(FIRST).until, 6);
+            assert!(night_row_if_any(FIRST, "From").is_some());
+            assert!(night_row_if_any(FIRST, "Until").is_some());
+        });
+    }
+
+    /// The two hours are only ever on the page that reads them.
+    ///
+    /// Which is the whole of why they are hidden rather than explained: on the
+    /// sun's schedule a row reading "From 22:00" is a claim about tonight, and
+    /// no wording inside the row undoes two hours sitting in plain sight on the
+    /// page. A schedule with no hours has three rows, not five.
+    #[test]
+    fn the_hours_are_only_shown_where_something_reads_them() {
+        with_displays(&[(FIRST, warmable())], || {
+            for (schedule, hours) in [
+                (Schedule::AllDay, false),
+                (Schedule::Hours, true),
+                (Schedule::SunsetToSunrise, false),
+            ] {
+                apply_with(
+                    setting(FIRST, DisplayValue::NightLightSchedule(schedule)),
+                    |_| {},
+                );
+                let page = night_controls_for(FIRST);
+                assert_eq!(
+                    page.len(),
+                    if hours { 5 } else { 3 },
+                    "{} has the wrong number of rows",
+                    schedule.title()
+                );
+                for title in ["From", "Until"] {
+                    assert_eq!(
+                        night_row_if_any(FIRST, title).is_some(),
+                        hours,
+                        "{title} under {}",
+                        schedule.title()
+                    );
+                }
+                // And the three that are always there are always there.
+                for title in ["Night light", "Color temperature", "Schedule"] {
+                    assert!(
+                        night_row_if_any(FIRST, title).is_some(),
+                        "{title} under {}",
+                        schedule.title()
+                    );
+                }
+            }
+        });
+    }
+
+    /// The two hours may never be the same, whichever end is moved onto the
+    /// other — a press has to do something, and refusing it silently would be a
+    /// row that looks broken.
+    #[test]
+    fn the_two_ends_of_a_window_never_meet() {
+        with_displays(&[(FIRST, warmable())], || {
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::Hours)),
+                |_| {},
+            );
+            apply_with(setting(FIRST, DisplayValue::NightLightFrom(21)), |_| {});
+            apply_with(setting(FIRST, DisplayValue::NightLightUntil(7)), |_| {});
+
+            // Moving the start onto the end pushes the end along rather than
+            // leaving a window that holds no hours.
+            apply_with(setting(FIRST, DisplayValue::NightLightFrom(7)), |_| {});
+            let moved = night_light_for(FIRST);
+            assert_eq!(moved.from, 7);
+            assert_ne!(moved.until, 7);
+
+            // And the end can never be put onto the start, because the page
+            // does not offer it; a value that arrived anyway is ignored.
+            apply_with(setting(FIRST, DisplayValue::NightLightUntil(7)), |_| {});
+            assert_ne!(night_light_for(FIRST).until, 7);
+        });
+    }
+
+    /// What the compositor is asked for is an answer, not a schedule: whether
+    /// the light should be burning at this moment, and how warm.
+    #[test]
+    fn what_is_sent_is_the_answer_rather_than_the_schedule() {
+        with_displays(&[(FIRST, warmable())], || {
+            // Off is off, and the temperature still travels — the compositor
+            // clamps and encodes it, and a shell that sent nothing would have
+            // to be told twice when it came on.
+            apply_with(setting(FIRST, DisplayValue::NightLight(false)), |_| {});
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightTemperature(2700)),
+                |_| {},
+            );
+            assert_eq!(night_light_now(FIRST), (false, 2700));
+
+            // On with no schedule is on, whatever hour it happens to be while
+            // this runs. That is the one answer a test may assert without
+            // reading the clock — and the schedule has to be *said*, which is
+            // what this was missing. It asserted the same thing having set
+            // nothing, on the assumption that a fresh entry has no schedule;
+            // [`NightLight::default`] is an evening, ready-made, so what the
+            // assertion really tested was that the machine running it was
+            // between ten at night and six in the morning. It passed for
+            // whoever wrote it and failed every day after breakfast.
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::AllDay)),
+                |_| {},
+            );
+            apply_with(setting(FIRST, DisplayValue::NightLight(true)), |_| {});
+            assert_eq!(night_light_now(FIRST), (true, 2700));
+
+            // And with a schedule, the answer is the schedule's — asserted
+            // against the time the machine says it is rather than against one
+            // written here, which is the only way this can be right on a
+            // machine in any time zone.
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightTemperature(4000)),
+                |_| {},
+            );
+            apply_with(
+                setting(FIRST, DisplayValue::NightLightSchedule(Schedule::Hours)),
+                |_| {},
+            );
+            apply_with(setting(FIRST, DisplayValue::NightLightFrom(21)), |_| {});
+            apply_with(setting(FIRST, DisplayValue::NightLightUntil(7)), |_| {});
+            let expected = match local_time() {
+                Some(now) => night_light_for(FIRST).burning_at(now.minute_of_day(), sun_today()),
+                // No clock is no schedule, so the switch means what it says.
+                None => true,
+            };
+            assert_eq!(night_light_now(FIRST), (expected, 4000));
+        });
+    }
+
+    /// Walking down the values changes nothing. Every row here reconfigures a
+    /// connector, and a filter that came on as the cursor passed over it would
+    /// be a page that could not be read.
+    #[test]
+    fn walking_over_a_night_light_value_changes_nothing() {
+        with_displays(&[(FIRST, warmable())], || {
+            for title in [
+                "Night light",
+                "Color temperature",
+                "Schedule",
+                "From",
+                "Until",
+            ] {
+                for entry in night_row(FIRST, title).entries().unwrap() {
+                    preview(entry.setting());
+                }
+            }
+            assert_eq!(night_light_for(FIRST), NightLight::default());
+        });
+    }
+
+    /// The moon is kept to the night light, as the HDR badge is kept to HDR,
+    /// and the clock to the rows that are about a time.
+    ///
+    /// The badge test next door exists because a read-only explanation once
+    /// borrowed the HDR glyph and made unrelated pages look like HDR at a
+    /// glance. This is the same rule for the same reason.
+    #[test]
+    fn the_night_light_glyphs_stay_on_their_own_rows() {
+        with_displays(&[(FIRST, warmable())], || {
+            let row = display_row("Night light");
+            assert_eq!(row.icon(), Some(icons::SETTING_NIGHT_LIGHT));
+
+            let worn = |title: &str| night_row(FIRST, title).icon().map(str::to_string);
+            assert_eq!(
+                worn("Night light").as_deref(),
+                Some(icons::SETTING_NIGHT_LIGHT),
+                "the switch wears the setting's own mark"
+            );
+            for hours in ["Schedule", "From", "Until"] {
+                assert_eq!(
+                    worn(hours).as_deref(),
+                    Some(icons::SETTING_SCHEDULE),
+                    "{hours} is about a time, not a moon"
+                );
+            }
+            // The bar wears nothing at all: the track is the drawing, and the
+            // name of the setting is on the row it was opened from.
+            let bar = night_row(FIRST, "Color temperature");
+            assert_eq!(bar.entries().unwrap()[0].icon(), None);
+            // And nothing here borrows the HDR badge.
+            for title in [
+                "Night light",
+                "Color temperature",
+                "Schedule",
+                "From",
+                "Until",
+            ] {
+                assert_ne!(worn(title).as_deref(), Some(icons::SETTING_HDR));
+            }
+        });
+    }
+
+    /// What is written is what is read, and a schedule that means nothing is
+    /// dropped with the rest of the file intact.
+    #[test]
+    fn the_night_light_survives_the_file() {
+        let held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+
+        let written = NightLight {
+            enabled: true,
+            temperature: 2700,
+            schedule: Schedule::Hours,
+            from: 22,
+            until: 6,
+        };
+        NIGHT.lock().unwrap().insert(FIRST.to_string(), written);
+        let body = toml::to_string_pretty(&stored()).unwrap();
+        // The keys the preamble documents, spelled the way it spells them.
+        for key in [
+            "night-light",
+            "night-light-temperature",
+            "night-light-schedule",
+            "night-light-from",
+            "night-light-until",
+        ] {
+            assert!(body.contains(key), "{key} is not in the file:\n{body}");
+        }
+
+        NIGHT.lock().unwrap().clear();
+        adopt(toml::from_str(&body).unwrap());
+        assert_eq!(night_light_for(FIRST), written);
+        // A screen the file says nothing about is unwarmed, not a copy of one
+        // that is: there is nothing inherited behind this setting.
+        assert_eq!(night_light_for(SECOND), NightLight::default());
+
+        // A hand-edited window that ends where it begins keeps no hours at all,
+        // rather than keeping ones nothing can satisfy — and the rest of that
+        // display's settings survive it.
+        adopt(
+            toml::from_str(
+                r#"
+                [display."TEST-OUT-1"]
+                night-light = true
+                night-light-temperature = 3400
+                night-light-schedule = "hours"
+                night-light-from = 9
+                night-light-until = 9
+                "#,
+            )
+            .unwrap(),
+        );
+        let read = night_light_for(FIRST);
+        assert!(read.enabled);
+        assert_eq!(read.temperature, 3400);
+        assert_eq!(
+            read.schedule,
+            Schedule::AllDay,
+            "an empty window is no window"
+        );
+
+        // A word this shell does not have is dropped, and what is left is the
+        // schedule a display that had never been set would have: there is no
+        // way to guess what was meant, and the shell's own answer is a better
+        // one than any of the three picked at random.
+        adopt(
+            toml::from_str(
+                r#"
+                [display."TEST-OUT-1"]
+                night-light = true
+                night-light-schedule = "whenever-it-feels-like-it"
+                "#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            night_light_for(FIRST).schedule,
+            NightLight::default().schedule
+        );
+
+        // And an hour or a temperature out of range is brought into it rather
+        // than taking the file down.
+        adopt(
+            toml::from_str(
+                r#"
+                [display."TEST-OUT-1"]
+                night-light = true
+                night-light-temperature = 60000
+                night-light-from = 99
+                "#,
+            )
+            .unwrap(),
+        );
+        let read = night_light_for(FIRST);
+        assert_eq!(read.temperature, NEUTRAL_KELVIN);
+        assert_eq!(read.from, 23);
+
+        put_back(saved);
+        drop(held);
+    }
+
+    /// A location written into the settings file is what the sun is worked out
+    /// for, and it survives the file being written back.
+    #[test]
+    fn a_location_in_the_file_is_where_the_sun_is_worked_out_for() {
+        let held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        let was = crate::sun::written_location();
+
+        // A place nobody's machine is set to.
+        adopt(
+            toml::from_str(
+                r#"
+                night-light-latitude = -33.87
+                night-light-longitude = 151.21
+                "#,
+            )
+            .unwrap(),
+        );
+        let at = crate::sun::location().expect("a written location is a location");
+        assert!((at.latitude + 33.87).abs() < 1e-9);
+        assert!((at.longitude - 151.21).abs() < 1e-9);
+        // And it goes back into the file, or the next change to anything else
+        // would drop it.
+        let body = toml::to_string_pretty(&stored()).unwrap();
+        assert!(body.contains("night-light-latitude"), "{body}");
+
+        // Half a coordinate is not a place, and neither is one off the earth.
+        adopt(toml::from_str("night-light-latitude = 52.25").unwrap());
+        assert_eq!(crate::sun::written_location(), None);
+        adopt(
+            toml::from_str(
+                r#"
+                night-light-latitude = 999.0
+                night-light-longitude = 0.0
+                "#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(crate::sun::written_location(), None);
+
+        crate::sun::set_location(was);
+        put_back(saved);
+        drop(held);
+    }
+
+    /// The clock is the machine's own, read through the C library, and nothing
+    /// here may depend on which machine that is.
+    ///
+    /// So what is asserted is only what is true wherever it is run: that the
+    /// reading is a time of day on a date, and that the offset is one the world
+    /// has. A suite that checked the hour would be one that passed until it was
+    /// run somewhere else.
+    #[test]
+    fn the_clock_is_a_time_of_day_wherever_it_is_read() {
+        let Some(now) = local_time() else {
+            // A machine with no time zone data at all. Legal, and the shell has
+            // an answer for it; there is nothing further to check.
+            return;
+        };
+        assert!(now.hour <= 23);
+        assert!(now.minute <= 59);
+        assert!(now.yday <= 365);
+        assert!(now.year > 1970, "{}", now.year);
+        // The widest any zone has ever been from UTC is fourteen hours.
+        assert!(now.offset.abs() <= 14 * 3600, "{}", now.offset);
+        assert_eq!(
+            now.minute_of_day(),
+            now.hour as u16 * 60 + now.minute as u16
+        );
+        assert!(now.minute_of_day() < MINUTES_IN_DAY);
+    }
+
+    /// How a time and a window are said, which is the same twenty-four hour
+    /// clock everywhere: a light set for 9 is otherwise set for nine in the
+    /// morning half the time.
+    #[test]
+    fn a_window_says_how_long_it_lasts() {
+        assert_eq!(window_length(21, 7), "10 hours of night light");
+        assert_eq!(window_length(7, 21), "14 hours of night light");
+        assert_eq!(window_length(23, 0), "One hour of night light");
+        assert_eq!(window_length(0, 23), "23 hours of night light");
+
+        assert_eq!(hour_title(0), "00:00");
+        assert_eq!(hour_title(9), "09:00");
+        assert_eq!(hour_title(21), "21:00");
+        // The sun does not keep hours, so its times carry minutes.
+        assert_eq!(clock_title(at(20, 12)), "20:12");
+        assert_eq!(clock_title(at(5, 5)), "05:05");
+        assert_eq!(clock_title(0), "00:00");
+        assert_eq!(clock_title(MINUTES_IN_DAY), "23:59", "clamped into the day");
+    }
+
+    /// Every temperature the bar can be set to has a word for what it is, and
+    /// a colour that is warmer the further down the track it stands.
+    #[test]
+    fn every_temperature_on_the_bar_has_a_colour_and_a_word() {
+        let mut previous: Option<Color> = None;
+        let mut kelvin = NEUTRAL_KELVIN;
+        while kelvin >= WARMEST_ON_THE_BAR {
+            assert!(!warmth_note(kelvin).is_empty(), "{kelvin} K says nothing");
+            let tint = tint_of(kelvin);
+            let [red, green, blue] = [tint.0 >> 16 & 0xff, tint.0 >> 8 & 0xff, tint.0 & 0xff];
+            assert_eq!(red, 255, "{kelvin} K moves red");
+            assert!(blue <= green, "{kelvin} K is not warm: {tint:?}");
+            if let Some(cooler) = previous {
+                assert!(
+                    tint.0 & 0xff <= cooler.0 & 0xff,
+                    "{kelvin} K is bluer than the step above it"
+                );
+            }
+            previous = Some(tint);
+            kelvin -= TEMPERATURE_STEP;
+        }
+        // Daylight is white, which is what "no filter" has to look like.
+        assert_eq!(tint_of(NEUTRAL_KELVIN).0 >> 16 & 0xff, 255);
+
+        // Only the head of the track claims to do nothing. One step below it
+        // the picture *has* been changed, and a row saying otherwise there
+        // would be saying the setting had not taken.
+        let none_at_all = warmth_note(NEUTRAL_KELVIN);
+        assert_ne!(
+            warmth_note(NEUTRAL_KELVIN - TEMPERATURE_STEP),
+            none_at_all,
+            "one step off daylight is not daylight"
+        );
+        for step in 1..=44u16 {
+            let kelvin = NEUTRAL_KELVIN - step * TEMPERATURE_STEP;
+            assert_ne!(
+                warmth_note(kelvin),
+                none_at_all,
+                "{kelvin} K warms nothing?"
+            );
+        }
+
+        // And the words only ever get warmer: walking the bar one way never
+        // reads as turning back.
+        let mut bands: Vec<&str> = Vec::new();
+        let mut kelvin = NEUTRAL_KELVIN;
+        while kelvin >= WARMEST_ON_THE_BAR {
+            if bands.last() != Some(&warmth_note(kelvin)) {
+                assert!(
+                    !bands.contains(&warmth_note(kelvin)),
+                    "{kelvin} K goes back to a band the bar has already left"
+                );
+                bands.push(warmth_note(kelvin));
+            }
+            kelvin -= TEMPERATURE_STEP;
+        }
+        assert!(
+            bands.len() >= 5,
+            "the range is described, not labelled once"
+        );
+    }
+
+    /// The login screen is told when its half of these settings changes, and
+    /// left alone when the rest of them do.
+    ///
+    /// Both halves of that matter. A user who changes their accent and signs
+    /// straight out has to meet the colour they chose, which is why this is
+    /// said here rather than watched for from outside; and a user holding the
+    /// volume down has to not start a process per step, which is why it is not
+    /// said every time the file is written.
+    #[test]
+    fn the_login_screen_hears_about_colours_and_screens_and_nothing_else() {
+        let _guard = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        *SHOWN.lock().unwrap() = None;
+
+        let mut stored = Stored {
+            accent: Some("Purple".to_string()),
+            ..Stored::default()
+        };
+        // Nothing has been told yet, so the first save is news whatever it says.
+        assert!(news_for_the_login_screen(&stored));
+        assert!(!news_for_the_login_screen(&stored));
+
+        stored.accent = Some("Red".to_string());
+        assert!(news_for_the_login_screen(&stored));
+        assert!(!news_for_the_login_screen(&stored));
+
+        // The volume, on every step of a held direction, which is what this
+        // guard exists for.
+        for step in 0..10 {
+            stored.sound_volume = Some(step as f32 / 10.0);
+            assert!(
+                !news_for_the_login_screen(&stored),
+                "the login screen was told about the volume"
+            );
+        }
+        stored.do_not_disturb = Some(true);
+        stored.media_sort.insert("Music".into(), "name".into());
+        stored.steam_sort = Some("name".into());
+        assert!(!news_for_the_login_screen(&stored));
+
+        // A screen turned to HDR is news, and so is one plugged in for the
+        // first time: the login screen brings both of them up.
+        stored.display.insert(
+            "TEST-OUT-1".to_string(),
+            StoredDisplay {
+                hdr: Some(true),
+                ..StoredDisplay::default()
+            },
+        );
+        assert!(news_for_the_login_screen(&stored));
+        assert!(!news_for_the_login_screen(&stored));
+
+        stored
+            .display
+            .get_mut("TEST-OUT-1")
+            .expect("the display just added")
+            .hdr_sdr_brightness = Some(250);
+        assert!(news_for_the_login_screen(&stored));
+
+        // And what every display with no section of its own comes up in.
+        stored.hdr = Some(true);
+        assert!(news_for_the_login_screen(&stored));
+        assert!(!news_for_the_login_screen(&stored));
+
+        *SHOWN.lock().unwrap() = None;
+    }
+
+    /// A machine with no such login screen is not kept waiting on its way out.
+    ///
+    /// The publish spent at Exit and Shut down waits for its child, which every
+    /// other one deliberately does not: a session that exits takes its children
+    /// with it, so not waiting would mean the news never arrives. That wait must
+    /// cost nothing at all where there is nobody to tell — this shell does not
+    /// require that display manager to be installed, and a second and a half
+    /// added to every logout on every machine that runs something else would be
+    /// a poor way to find that out.
+    #[test]
+    fn a_machine_with_another_login_screen_is_not_kept_waiting_to_leave() {
+        let started = Instant::now();
+        assert!(start_the_login_screen(&["lxb-no-such-login-screen"]).is_none());
+        // Whatever the far end is, the *absence* of one is answered by two
+        // failed lookups and nothing else.
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a machine with no login screen of ours paid for the wait anyway"
+        );
+    }
+
+    /// A name this machine does not have is the next name, not the end of the
+    /// list.
+    ///
+    /// The login screen was renamed, and this shell went on asking for the name
+    /// it used to install under. Nothing said so — a name nothing answers to is
+    /// what a machine with somebody else's login screen looks like from here —
+    /// and the accent quietly stopped reaching it: the only copy the greeter
+    /// ever saw was the one published at sign-in, so a colour chosen and then
+    /// signed out of took a whole second session to appear.
+    ///
+    /// `true` stands in for the greeter here. What is being checked is the walk
+    /// down the list, which is the part that has to survive the next rename;
+    /// whether the real name is spelled right is a question about another
+    /// project's packaging and no test here can answer it.
+    #[test]
+    fn a_login_screen_under_an_older_name_is_still_told() {
+        assert_eq!(
+            tell_the_login_screen(&["lxb-no-such-login-screen", "true"]).as_deref(),
+            Some("true"),
+            "a name this machine does not have ended the search"
+        );
+        assert_eq!(
+            tell_the_login_screen(&["lxb-no-such-login-screen"]),
+            None,
+            "something was started for a machine with no login screen of ours"
+        );
+        // The newest name is asked for first, so a machine with both installed
+        // runs the one that is current rather than one left behind by an
+        // upgrade.
+        assert_eq!(LOGIN_SCREENS.first(), Some(&"cedm"));
     }
 }

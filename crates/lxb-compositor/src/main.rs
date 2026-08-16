@@ -1,5 +1,6 @@
 //! LineXinBar — a micro Wayland compositor with multi-display support.
 
+mod backdrop;
 mod backend;
 mod capture;
 mod config;
@@ -7,10 +8,12 @@ mod cursor;
 mod flash;
 mod focus;
 mod handlers;
+mod handover;
 mod hdr;
 mod input;
 mod outputs;
 mod overview;
+mod remembered;
 mod render;
 mod restore;
 mod screencopy;
@@ -77,6 +80,7 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let background_handoff = state::take_background_handoff();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -90,6 +94,10 @@ fn main() -> anyhow::Result<()> {
         .or_else(Config::default_path)
         .ok_or_else(|| anyhow::anyhow!("could not determine a config path"))?;
     let mut config = Config::load(&config_path)?;
+    // Before anything opens a device: what the displays were last set to has to
+    // be in hand by the time the first connector is lit, or the session pays a
+    // modeset — a black screen — for each setting it learns afterwards.
+    config.remember_displays(remembered::load());
 
     if !cli.command.is_empty() {
         config.general.autostart = vec![cli.command.join(" ")];
@@ -105,13 +113,23 @@ fn main() -> anyhow::Result<()> {
     let backend = resolve_backend(cli.backend);
     tracing::info!(?backend, "starting lxb");
 
+    // Settled before the backend, because the DRM backend needs it before it
+    // lights a connector: the commit that establishes a display's mode is a
+    // frame on that display, and it used to be a black one. See
+    // [`crate::backdrop::Opening`].
+    let opening = backdrop::Opening::of_a_session(cli.shell, background_handoff.as_deref());
+
     let mut event_loop: EventLoop<'static, LxbState> = EventLoop::try_new()?;
     let display: Display<LxbState> = Display::new()?;
 
     let mut state = match backend {
-        BackendChoice::Udev => {
-            backend::udev::init(&mut event_loop, display, config, cli.socket.clone())?
-        }
+        BackendChoice::Udev => backend::udev::init(
+            &mut event_loop,
+            display,
+            config,
+            cli.socket.clone(),
+            opening,
+        )?,
         BackendChoice::X11 => backend::x11::init(
             &mut event_loop,
             display,
@@ -128,7 +146,7 @@ fn main() -> anyhow::Result<()> {
 
     let autostart = state.lxb.config.general.autostart.clone();
     let shell = cli.shell.then(|| state.lxb.config.general.shell.clone());
-    state.start_xwayland(autostart, shell);
+    state.start_xwayland(autostart, shell, background_handoff);
 
     let result = event_loop.run(std::time::Duration::from_millis(16), &mut state, |state| {
         if !state.lxb.running {
@@ -153,7 +171,19 @@ fn main() -> anyhow::Result<()> {
     // for it, and what the user gets back is a console encoded for a transfer
     // function it knows nothing about. The session ending badly is exactly when
     // they are least able to put it right by hand.
-    backend::udev::restore_displays(&mut state);
+    //
+    // Unless the displays are not being given back at all. Handing them to
+    // another compositor is the one case where undoing this session's colour is
+    // the wrong thing to do: the compositor that follows sets its own within a
+    // frame of taking over, and turning HDR off in between makes the panel
+    // re-sync — a black screen of the display's own making, arriving at exactly
+    // the moment the rest of this is spent removing one. The night light is
+    // kept across this boundary for the same reason and has been since it was
+    // measured; this is that decision applied to the rest of the pipeline.
+    let holding = handover::wanted();
+    if !holding {
+        backend::udev::restore_displays(&mut state);
+    }
     // And for the same reason, on the same terms: what this session started on
     // the user's bus must not be inherited by the one they log into next.
     state.release_session_services();
@@ -164,6 +194,20 @@ fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("shutting down");
+
+    if holding {
+        let displays = backend::udev::hold_displays(&state);
+        tracing::info!(
+            displays,
+            "holding the picture for the compositor that follows"
+        );
+        // Deliberately not returning. Unwinding out of `main` drops this
+        // process's DRM state, and destroying a framebuffer that a plane is
+        // still scanning out is itself what takes the picture off the display
+        // — the keeper just forked is holding the descriptor open precisely so
+        // that never happens. See `handover`.
+        std::process::exit(0);
+    }
     Ok(())
 }
 

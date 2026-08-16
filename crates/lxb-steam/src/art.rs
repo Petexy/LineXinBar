@@ -10,20 +10,22 @@
 //!
 //! ## What the pieces are
 //!
-//! Valve's store artwork has a dozen shapes. Two of them matter to a shell
+//! Valve's store artwork has a dozen shapes. Three of them matter to a shell
 //! built like a cross media bar:
 //!
 //! * the **cover** — `library_600x900`, the portrait capsule, which is the
 //!   picture a person recognises a game by and the only one drawn at the size
-//!   of a row; and
+//!   of a row;
 //! * the **hero** — `library_hero`, the wide picture Steam puts behind a
 //!   game's own page, which is the one thing in the catalogue big enough to
-//!   stand behind a whole display.
+//!   stand behind a whole display; and
+//! * the **logo** — `logo.png`, the game's title drawn as its own artwork on
+//!   a transparent ground, which is what a game is called when the calling is
+//!   the only thing on the screen.
 //!
-//! Nothing else is fetched. A logo, a header and a blurred hero are all in the
-//! same cache and none of them is drawn by this shell, and a picture that is
-//! never drawn is half a megabyte of somebody's disk and a request to Valve
-//! for nothing.
+//! Nothing else is fetched. A header and a blurred hero are in the same cache
+//! and neither is drawn by this shell, and a picture that is never drawn is
+//! half a megabyte of somebody's disk and a request to Valve for nothing.
 //!
 //! ## Why a missing picture is not a failure
 //!
@@ -57,6 +59,12 @@ pub enum Piece {
     Cover,
     /// The wide picture from the game's own page, 1920 × 620.
     Hero,
+    /// The game's title as artwork, on a transparent ground.
+    ///
+    /// No fixed size, unlike the two above: Valve stores whatever shape the
+    /// wordmark is, up to 640 across. A title set in one line comes back a
+    /// tenth as tall as a stacked one, so nothing may assume a shape for it.
+    Logo,
 }
 
 impl Piece {
@@ -67,6 +75,7 @@ impl Piece {
         match self {
             Piece::Cover => "library_600x900.jpg",
             Piece::Hero => "library_hero.jpg",
+            Piece::Logo => "logo.png",
         }
     }
 }
@@ -190,6 +199,7 @@ mod tests {
     fn the_pieces_are_named_as_steam_names_them() {
         assert_eq!(Piece::Cover.file_name(), "library_600x900.jpg");
         assert_eq!(Piece::Hero.file_name(), "library_hero.jpg");
+        assert_eq!(Piece::Logo.file_name(), "logo.png");
     }
 
     /// The two kinds of absence are not the same thing to do about, which is

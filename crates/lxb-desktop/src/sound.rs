@@ -96,10 +96,11 @@ enum Effect {
     Shutter,
     Authenticate,
     GuideOpen,
+    Notify,
 }
 
 impl Effect {
-    const ALL: [Effect; 10] = [
+    const ALL: [Effect; 11] = [
         Effect::Step,
         Effect::Back,
         Effect::Select,
@@ -110,6 +111,7 @@ impl Effect {
         Effect::Shutter,
         Effect::Authenticate,
         Effect::GuideOpen,
+        Effect::Notify,
     ];
 
     /// The recording it plays.
@@ -125,6 +127,7 @@ impl Effect {
             Effect::Shutter => SHUTTER,
             Effect::Authenticate => AUTHENTICATE,
             Effect::GuideOpen => GUIDE_OPEN,
+            Effect::Notify => NOTIFY,
         }
     }
 
@@ -141,6 +144,7 @@ impl Effect {
             Effect::Shutter => "screenshot.ogg",
             Effect::Authenticate => "polkit.ogg",
             Effect::GuideOpen => "guide-open.ogg",
+            Effect::Notify => "notification.ogg",
         }
     }
 }
@@ -234,6 +238,30 @@ const AUTHENTICATE: &[u8] = include_bytes!("sounds/polkit.ogg");
 /// the overlay leaving is the screen behind it coming back, which is its own
 /// answer.
 const GUIDE_OPEN: &[u8] = include_bytes!("sounds/guide-open.ogg");
+
+/// Something announced to the session, arriving in the corner of the screen.
+///
+/// The third clip that answers something which *happened* rather than something
+/// the user pressed, and it belongs to that group for the same reason
+/// [`AUTHENTICATE`] does: a bubble is raised over whatever was in front of
+/// somebody because a program somewhere had news. It is the half of the arrival
+/// that reaches a person looking at the other screen, or at the room, or at the
+/// game they are playing rather than at its top-right corner.
+///
+/// Only when a bubble is raised, and not when an announcement is merely filed.
+/// A program that marked something *low* has said it is not worth interrupting
+/// anyone over — see [`crate::notify::Urgency`] — and a shell that made a noise
+/// for it anyway would be overruling the one hint this daemon takes at its word.
+/// Nor once per bubble in a burst that arrives together: see
+/// [`Sounds::notified`].
+///
+/// **This recording is a placeholder.** It is two struck bells a fifth apart,
+/// rising, synthesised rather than recorded — the shape is right and the
+/// character is not, and it is here so that the path is wired and audible while
+/// a real one is found. Everything about it is disposable except its shape:
+/// about a second, decaying to true silence so it never cuts off, and quiet
+/// enough to sit under whatever is already playing.
+const NOTIFY: &[u8] = include_bytes!("sounds/notification.ogg");
 
 /// The Start screen's background music.
 const MUSIC: &[u8] = include_bytes!("sounds/start-bg-music.ogg");
@@ -453,6 +481,19 @@ impl Sounds {
     /// that arrive from outside it — neither of which sounds this.
     pub fn guide_open(&mut self) {
         self.play(Effect::GuideOpen);
+    }
+
+    /// Something announced to the session, and a bubble raised for it — see
+    /// [`NOTIFY`] and [`crate::notify::Center`].
+    ///
+    /// Once for the frame, however many arrived on it. Three programs that all
+    /// have something to say at the moment a session comes back from suspend
+    /// are three bubbles and one sound: the noise says *there is something in
+    /// the corner*, which is as true of three as of one, and saying it three
+    /// times over would be the shell shouting about the very thing it has just
+    /// decided is not worth interrupting anyone for.
+    pub fn notified(&mut self) {
+        self.play(Effect::Notify);
     }
 
     /// Reconcile the Start screen's one looping stream with what has focus.

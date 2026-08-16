@@ -1,12 +1,22 @@
 # Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
 
-pkgname=linexinbar
+pkgbase=linexinbar
+# The compositor is a package of its own so that a display manager can depend
+# on a Wayland session running on this hardware without pulling in this
+# project's shell, its portal and its Steam client along with it. Console
+# Experience Desktop Manager is the one that does; anybody wanting the desktop
+# installs `lxb-desktop`, which depends on the compositor and cannot run without
+# it.
+pkgname=('lxb-compositor' 'lxb-desktop')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Multi-display Wayland desktop with an XMB-style shell'
 arch=('x86_64' 'aarch64')
-url='https://github.com/petexy/project-linexinbar'
+url='https://github.com/Petexy/LineXinBar'
 license=('GPL-3.0-only' 'Apache-2.0')
+# The union of both packages' runtime needs. Split packages take their own
+# `depends` from the `package_*` functions below; this one is what makepkg
+# resolves before building, and every entry is needed to build either half.
 depends=(
     'alsa-lib'
     'dbus'
@@ -32,63 +42,132 @@ depends=(
 # clang is bindgen's, which the PipeWire bindings the portal is built on run
 # at compile time.
 makedepends=('cargo' 'clang' 'gcc' 'pkgconf')
-optdepends=(
-    'xorg-xwayland: X11 application support'
-    'xdg-desktop-portal: screen sharing, through lxb-portal'
-    'pipewire: the frames a shared screen is carried on'
-    'vulkan-icd-loader: Vulkan renderer backend'
-    'wireplumber: volume control through wpctl'
-    'libpulse: volume control through pactl'
-    'alsa-utils: volume control through amixer'
-    'ddcutil: external-monitor brightness control'
-    'hicolor-icon-theme: fallback application icons'
-    'sudo: application removal from the shell'
-)
-source=("$pkgname-$pkgver.tar.gz")
+# makepkg.conf ships `lto` in OPTIONS, which appends -flto=auto to CFLAGS and
+# LDFLAGS. Those are read by the `cc` crate, so the C and assembly that ring
+# and libspa-sys compile in their build scripts become LTO bitcode rather than
+# machine code. Cargo bundles those objects into the rlib, rustc links with
+# rust-lld and no LTO plugin, and every symbol in them comes back undefined —
+# `ring_core_0_17_14__x25519_sc_reduce`, `spa_format_video_raw_parse_libspa_rs`
+# and a hundred others. Rust's own LTO is unaffected: `[profile.release]`
+# already asks for `lto = "thin"`, and it is Cargo, not makepkg, that delivers
+# it.
+options=(!lto)
+source=("$pkgbase-$pkgver.tar.gz")
 sha256sums=('@SOURCE_SHA256@')
 _linexinbar_rustflags="${RUSTFLAGS:-}"
 
+# `$pkgname` is an array here and expands to its first element, so everything
+# outside a `package_*` function names the source directory with `$pkgbase`.
 prepare() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgbase-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     _cargo_target="$(rustc -vV | sed -n 's/^host: //p')"
     cargo fetch --locked --target "$_cargo_target"
 }
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgbase-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgbase"
     cargo build --frozen --release --workspace --bins
 }
 
 check() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgbase-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     # `cargo test` already builds in the dev profile. Nothing here may pin an
     # optimisation level: RUSTFLAGS is appended after the profile's own flags
     # and wins, so a level named here would silently override the workspace's
     # `profile.dev.package."*"` and compile every dependency unoptimised.
-    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+    export RUSTFLAGS="$_linexinbar_rustflags --remap-path-prefix=$srcdir=/usr/src/debug/$pkgbase"
     cargo test --frozen --workspace --lib --bins
 }
 
-package() {
-    cd "$pkgname-$pkgver"
+# Both packages carry the licences: they are installed and used independently,
+# and a compositor on a machine with no shell still ships the terms it is
+# under. The configuration reference goes with the compositor, which is what
+# reads `config.toml`.
+_linexinbar_licenses() {
+    install -Dm0644 LICENSE \
+        "$pkgdir/usr/share/licenses/$1/GPL-3.0-only.txt"
+    install -Dm0644 font/Roboto/LICENSE.txt \
+        "$pkgdir/usr/share/licenses/$1/Roboto-Apache-2.0.txt"
+}
+
+package_lxb-compositor() {
+    pkgdesc='Wayland compositor for LineXinBar, usable on its own'
+    depends=(
+        'dbus'
+        'glibc'
+        'libgcc'
+        'libdrm'
+        'libglvnd'
+        'libinput'
+        'libx11'
+        'libxcb'
+        'libxcursor'
+        'libxi'
+        'libxkbcommon'
+        'libxkbcommon-x11'
+        'mesa'
+        'seatd'
+        'systemd-libs'
+        'wayland'
+    )
+    optdepends=(
+        'xorg-xwayland: X11 application support'
+        'vulkan-icd-loader: Vulkan renderer backend'
+    )
+
+    cd "$pkgbase-$pkgver"
     ./packaging/install.sh \
         --destdir "$pkgdir" \
         --prefix /usr \
-        --target-dir target
+        --target-dir target \
+        --component compositor
 
-    install -Dm0644 LICENSE \
-        "$pkgdir/usr/share/licenses/$pkgname/GPL-3.0-only.txt"
-    install -Dm0644 font/Roboto/LICENSE.txt \
-        "$pkgdir/usr/share/licenses/$pkgname/Roboto-Apache-2.0.txt"
-    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    _linexinbar_licenses "$pkgname"
     install -Dm0644 docs/configuration.md \
         "$pkgdir/usr/share/doc/$pkgname/configuration.md"
     install -Dm0644 examples/config.toml \
         "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
+}
+
+package_lxb-desktop() {
+    pkgdesc='Multi-display Wayland desktop with an XMB-style shell'
+    depends=(
+        "lxb-compositor=$pkgver-$pkgrel"
+        'alsa-lib'
+        'dbus'
+        'glibc'
+        'libgcc'
+        'libglvnd'
+        'libpipewire'
+        'libxkbcommon'
+        'mesa'
+        'systemd-libs'
+        'wayland'
+    )
+    optdepends=(
+        'xdg-desktop-portal: screen sharing, through lxb-portal'
+        'pipewire: the frames a shared screen is carried on'
+        'wireplumber: volume control through wpctl'
+        'libpulse: volume control through pactl'
+        'alsa-utils: volume control through amixer'
+        'ddcutil: external-monitor brightness control'
+        'hicolor-icon-theme: fallback application icons'
+        'sudo: application removal from the shell'
+    )
+
+    cd "$pkgbase-$pkgver"
+    ./packaging/install.sh \
+        --destdir "$pkgdir" \
+        --prefix /usr \
+        --target-dir target \
+        --component desktop
+
+    _linexinbar_licenses "$pkgname"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

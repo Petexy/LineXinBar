@@ -11,7 +11,7 @@ if [[ "$output" != /* ]]; then
     output="$PWD/$output"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/linexinbar-source.XXXXXX")"
+work="$(package_work_dir linexinbar-source)"
 cleanup() {
     if [[ -n "${work:-}" && "$work" == */linexinbar-source.* && -d "$work" ]]; then
         rm -rf -- "$work"

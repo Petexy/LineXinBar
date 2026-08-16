@@ -1,0 +1,119 @@
+<!--
+  The glyph the night light's two hour rows wear: a clock face.
+
+  One drawing for both of them, From and Until, because they are two ends of
+  one thing and the shell has exactly one picture of a time. Deliberately not
+  the moon those rows sit under — that says *what* the setting is, and it is
+  already on the row above them; this says what is being chosen, which is an
+  hour.
+
+  Also deliberately unlike setting-refresh.svg, the display's refresh rate,
+  which is the other round mark in this column: that one is a cycle arrow
+  inside a monitor bezel, and this is a ring with two hands and no monitor
+  anywhere near it.
+
+  Three o'clock, because it is the reading with the greatest angle between the
+  hands: at 33 px on an ordinary display a clock set to ten past ten is two
+  strokes that nearly touch, and what survives the reduction is the right
+  angle. The hands differ in both length and weight so the short one is not
+  read as a tick.
+
+  The face is left open, as the panes of the Resolution and Refresh rate
+  glyphs are: the wallpaper behind supplies the dark, and every mark authored
+  here stays neutral enough for the atlas to tint.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f8f8"/>
+      <stop offset="0.3" stop-color="#eeeeee"/>
+      <stop offset="0.56" stop-color="#d4d4d4"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="1" stop-color="#fafafa"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.82"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.62"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.11"/>
+      <stop offset="0.2" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.8" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.15"/>
+    </linearGradient>
+
+    <!-- The hands are lit in *user* space, and have to be. A hand is a
+         straight line, so its bounding box is flat: an object-space gradient
+         has nothing to run across and the stroke comes out unpainted — a ring
+         with a pin in the middle and no hands at all, which is exactly what
+         the first version of this drew. The dial is what these span, so both
+         hands are lit by the same lamp as the ring around them. -->
+    <linearGradient id="hand" gradientUnits="userSpaceOnUse" x1="0" y1="7.4" x2="0" y2="24.6">
+      <stop offset="0" stop-color="#fbfbfb"/>
+      <stop offset="0.5" stop-color="#dcdcdc"/>
+      <stop offset="1" stop-color="#f4f4f4"/>
+    </linearGradient>
+    <linearGradient id="hand-edge" gradientUnits="userSpaceOnUse" x1="0" y1="7.4" x2="0" y2="24.6">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.5"/>
+    </linearGradient>
+    <filter id="drop" x="-25%" y="-25%" width="160%" height="160%">
+      <feDropShadow dx="0.35" dy="0.75" stdDeviation="0.35"
+                    flood-color="#303030" flood-opacity="0.44"/>
+    </filter>
+    <filter id="lift" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.22" dy="0.42" stdDeviation="0.18"
+                    flood-color="#252525" flood-opacity="0.46"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.15"/>
+    </filter>
+
+    <!-- The band: outer radius 10.6, inner 8.2, so 2.4 units throughout —
+         the same weight the neighbouring glyphs give their bezels. -->
+    <path id="ring" fill-rule="evenodd" clip-rule="evenodd"
+          d="M5.4 16a10.6 10.6 0 1 0 21.2 0a10.6 10.6 0 1 0 -21.2 0Z
+             M7.8 16a8.2 8.2 0 1 1 16.4 0a8.2 8.2 0 1 1 -16.4 0Z"/>
+    <path id="ring-outline"
+          d="M5.4 16a10.6 10.6 0 1 0 21.2 0a10.6 10.6 0 1 0 -21.2 0Z"/>
+    <clipPath id="ring-clip"><use href="#ring"/></clipPath>
+    <path id="ring-gloss" d="M2 2h28v11.4c-6.8 2.6-21.2 2.6-28 0z"/>
+    <!-- The hands never reach the band: this is the last guard for the soft
+         lift shadow under them, which must not wash over the rim. -->
+    <clipPath id="dial-clip"><circle cx="16" cy="16" r="7.7"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#ring" fill="url(#face)"/>
+    <g clip-path="url(#ring-clip)">
+      <use href="#ring-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#ring" fill="url(#turn)"/>
+    <use href="#ring-outline" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
+  </g>
+
+  <g clip-path="url(#dial-clip)">
+    <g filter="url(#lift)">
+      <!-- The minute hand: long, light, straight up to twelve. -->
+      <path d="M16 16V9.6" fill="none" stroke="url(#hand)" stroke-width="1.8"
+            stroke-linecap="round"/>
+      <path d="M16 16V9.6" fill="none" stroke="url(#hand-edge)" stroke-width="0.45"
+            stroke-linecap="round"/>
+      <!-- The hour hand: short, heavy, out to three. -->
+      <path d="M16 16h4.6" fill="none" stroke="url(#hand)" stroke-width="2.2"
+            stroke-linecap="round"/>
+      <path d="M16 16h4.6" fill="none" stroke="url(#hand-edge)" stroke-width="0.45"
+            stroke-linecap="round"/>
+      <circle cx="16" cy="16" r="1.2" fill="url(#hand)"
+              stroke="url(#hand-edge)" stroke-width="0.45"/>
+    </g>
+  </g>
+</svg>

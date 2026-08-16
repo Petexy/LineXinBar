@@ -52,6 +52,13 @@ use crate::xwayland::X11FocusProbe;
 
 const XWAYLAND_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Public, bounded visual state handed over by the display manager.
+///
+/// Keep the spelling in sync with `lxb-desktop::wallpaper_clock`. The crates
+/// deliberately do not depend on one another: the compositor only transports
+/// this opaque value, while the shell owns all validation and semantics.
+const BACKGROUND_HANDOFF_ENV: &str = "LXB_BACKGROUND_HANDOFF";
+
 /// How often to ask XWayland where its pointer is.
 ///
 /// Fast enough that a cursor following synthetic X11 input does not visibly
@@ -62,9 +69,18 @@ const XWAYLAND_POINTER_INTERVAL: Duration = Duration::from_millis(8);
 /// How often the session shell is checked for having exited.
 ///
 /// A child cannot wake calloop by itself, so this is a poll. It only runs in
-/// `--shell` mode, and a fifth of a second is far below the threshold at which
-/// a logout feels unresponsive.
-const SESSION_SHELL_POLL: Duration = Duration::from_millis(200);
+/// `--shell` mode.
+///
+/// One frame, because this interval is *on screen*. The shell's surfaces go
+/// away with the process that owned them, and every frame between that and
+/// this timer noticing is a frame the compositor draws with no session in it —
+/// [`crate::backdrop`] is what stands in it now, and a fifth of a second of a
+/// still wallpaper is long enough to read as the session having stopped rather
+/// than ended. It also delays the whole logout by that much: what greetd is
+/// waiting for, on the way back to the login screen, is this compositor's own
+/// exit. A `waitpid` that returns immediately, sixty times a second, is not a
+/// cost worth weighing against either.
+const SESSION_SHELL_POLL: Duration = Duration::from_millis(16);
 
 /// Top level state handed to every calloop callback and protocol dispatch.
 pub struct LxbState {
@@ -93,6 +109,24 @@ pub struct Lxb {
     /// autostart list. The compositor's lifetime is tied to it: when it exits,
     /// the session ends.
     pub pending_shell: Option<String>,
+    /// One-shot wallpaper state captured before the compositor creates any
+    /// child. It is injected into the session shell alone, never XWayland,
+    /// autostarts, the portal, or applications launched later.
+    pub pending_shell_handoff: Option<std::ffi::OsString>,
+    /// Whether the autostart list, the session shell and the portal have been
+    /// started. They are started once, as early as a Wayland frame can be
+    /// drawn, and every later XWayland outcome finds this already true.
+    pub session_launched: bool,
+    /// The wallpaper drawn whenever the session has nothing on screen, so the
+    /// displays are never shown a black screen between the login screen and
+    /// the shell's first frame — or between the shell's last frame and the
+    /// login screen coming back. Kept for the session's whole life; see
+    /// [`crate::backdrop`].
+    pub backdrop: Option<crate::backdrop::Backdrop>,
+    /// The same wallpaper before it has been drawn, for the first display this
+    /// compositor lights to draw it from. Taken once: one picture serves every
+    /// display. See [`crate::backdrop::Opening`].
+    pub opening: Option<crate::backdrop::Opening>,
     /// That shell's process, once it is running. Applications are its
     /// children, which is what makes it the boundary Close walks up to: the
     /// last process before the shell is the launch, and the launch is the
@@ -323,6 +357,10 @@ impl LxbState {
                 xwayland_startup_timeout: None,
                 pending_autostart: Vec::new(),
                 pending_shell: None,
+                pending_shell_handoff: None,
+                session_launched: false,
+                backdrop: None,
+                opening: None,
                 session_shell_pid: None,
                 fatal_error: None,
                 running: true,
@@ -372,15 +410,52 @@ impl LxbState {
         })
     }
 
-    /// Start LineXinBar's private XWayland server, then launch the desktop once
-    /// both the X server and its window manager are ready. Wayland-only
-    /// startup remains available when XWayland is missing or fails.
+    /// Start LineXinBar's private XWayland server and the session beside it.
+    ///
+    /// The two are deliberately not in sequence. XWayland's handshake — fork,
+    /// exec, the server's own initialisation, then the window manager's
+    /// connection — is several hundred milliseconds during which the session
+    /// shell does not exist and nothing is on screen. Waiting for it was the
+    /// single longest black interval in a login, and nothing in it is needed
+    /// to draw a Wayland frame.
+    ///
+    /// What a client actually needs is the display *name*, and that is settled
+    /// by [`XWayland::spawn`]: it creates and binds the X11 sockets before
+    /// returning, so `:N` is connectable from that moment on. An X11 program
+    /// started in the next few milliseconds blocks on the socket until the
+    /// server answers, which is the ordinary behaviour of every X client on
+    /// every machine, rather than failing to find a display.
     ///
     /// `shell`, when set, is the session shell: it is started with the
     /// autostart list but supervised, so that quitting it ends the session.
-    pub fn start_xwayland(&mut self, commands: Vec<String>, shell: Option<String>) {
+    pub fn start_xwayland(
+        &mut self,
+        commands: Vec<String>,
+        shell: Option<String>,
+        background_handoff: Option<std::ffi::OsString>,
+    ) {
         self.lxb.pending_autostart = commands;
         self.lxb.pending_shell = shell;
+
+        // Before the session exists, so the very first frame the compositor
+        // presents is already the wallpaper. Reading the record does not
+        // consume it: `pending_shell_handoff` still carries it, unaltered, to
+        // the one child entitled to it.
+        //
+        // Only where a display has not already drawn it. On the DRM backend
+        // the first frame on a connector is committed while that connector is
+        // being lit, which is long before this and is where the wallpaper is
+        // actually needed; the nested backends draw nothing until the event
+        // loop runs, so this is their first frame. See
+        // [`crate::backdrop::Opening`].
+        if self.lxb.pending_shell.is_some() && self.lxb.backdrop.is_none() {
+            if let Some(opening) =
+                crate::backdrop::Opening::of_a_session(true, background_handoff.as_deref())
+            {
+                self.lxb.backdrop = Some(opening.start(self.primary_aspect()));
+            }
+        }
+        self.lxb.pending_shell_handoff = background_handoff;
 
         let (xwayland, client) = match XWayland::spawn(
             &self.lxb.display_handle,
@@ -401,6 +476,9 @@ impl LxbState {
 
         let x11_display_name = format!(":{}", xwayland.display_number());
         tracing::info!(x11_display = %x11_display_name, "starting private XWayland server");
+        // Published now rather than on `Ready`, so the session started below
+        // hands its own children a working `DISPLAY` from its first moment.
+        self.lxb.xwayland_display = Some(x11_display_name);
 
         let handle = self.lxb.loop_handle.clone();
         let insert = handle.insert_source(xwayland, move |event, _, state| match event {
@@ -440,8 +518,7 @@ impl LxbState {
                     state.cancel_xwayland_timeout_later();
                     state.lxb.xwm = None;
                     state.lxb.x11_focus_probe = None;
-                    state.lxb.xwayland_display = None;
-                    state.lxb.xwayland_ready = false;
+                    state.forget_xwayland_display();
                     state.discard_xwayland_source_later();
                     state.launch_pending_autostart();
                 }
@@ -451,8 +528,7 @@ impl LxbState {
                 state.cancel_xwayland_timeout_later();
                 state.lxb.xwm = None;
                 state.lxb.x11_focus_probe = None;
-                state.lxb.xwayland_display = None;
-                state.lxb.xwayland_ready = false;
+                state.forget_xwayland_display();
                 state.discard_xwayland_source_later();
                 state.launch_pending_autostart();
             }
@@ -488,7 +564,7 @@ impl LxbState {
                         );
                         state.lxb.xwm = None;
                         state.lxb.x11_focus_probe = None;
-                        state.lxb.xwayland_display = None;
+                        state.forget_xwayland_display();
                         state.launch_pending_autostart();
                     }
                 }
@@ -505,8 +581,42 @@ impl LxbState {
                 self.lxb.x11_focus_probe = None;
                 self.lxb.xwayland_display = None;
                 self.lxb.xwayland_ready = false;
-                self.launch_pending_autostart();
             }
+        }
+
+        // Beside XWayland, not behind it. Every path above that gave up on an
+        // X server has already cleared the display name, so a Wayland-only
+        // session starts here with the same single call.
+        self.launch_pending_autostart();
+    }
+
+    /// The shape of the display the session is coming up on.
+    ///
+    /// One number for the whole seat. A second display of another shape gets
+    /// the same bridge frame stretched to fit, which for the fraction of a
+    /// second before the shell draws its own wallpaper on both is a better
+    /// answer than rendering two images or showing one of them black.
+    fn primary_aspect(&self) -> f32 {
+        self.lxb
+            .space
+            .outputs()
+            .find_map(|output| {
+                let size = self.lxb.space.output_geometry(output)?.size;
+                (size.w > 0 && size.h > 0).then(|| size.w as f32 / size.h as f32)
+            })
+            .unwrap_or(16.0 / 9.0)
+    }
+
+    /// Stop advertising an X display that will never answer.
+    ///
+    /// Only meaningful once the session exists: before that, clearing the
+    /// field is enough, because nothing has read it yet.
+    fn forget_xwayland_display(&mut self) {
+        self.lxb.xwayland_display = None;
+        self.lxb.xwayland_ready = false;
+        if self.lxb.session_launched {
+            let owns_seat = self.owns_the_seat();
+            self.lxb.update_dbus_activation_environment(owns_seat);
         }
     }
 
@@ -556,6 +666,14 @@ impl LxbState {
     }
 
     fn launch_pending_autostart(&mut self) {
+        // Exactly once. XWayland reaching the end of its handshake — or giving
+        // up on it — no longer decides when the session starts, but those paths
+        // still call this, and starting the portal twice or stopping the one
+        // this session just started would be worse than either.
+        if self.lxb.session_launched {
+            return;
+        }
+        self.lxb.session_launched = true;
         let owns_seat = self.owns_the_seat();
         self.lxb.update_dbus_activation_environment(owns_seat);
         // Before anything in this session can ask for a portal, and for a
@@ -616,16 +734,20 @@ impl LxbState {
     /// session, and a bare compositor with no shell is a black screen the user
     /// cannot get out of.
     fn start_session_shell(&mut self, command: &str) {
+        let background_handoff = self.lxb.pending_shell_handoff.take();
         let mut child = match self.lxb.command_for(command) {
-            Some(mut cmd) => match cmd.spawn() {
-                Ok(child) => child,
-                Err(err) => {
-                    self.fail_session(format!(
-                        "could not start the session shell {command:?}: {err}"
-                    ));
-                    return;
+            Some(mut cmd) => {
+                inject_background_handoff(&mut cmd, background_handoff);
+                match cmd.spawn() {
+                    Ok(child) => child,
+                    Err(err) => {
+                        self.fail_session(format!(
+                            "could not start the session shell {command:?}: {err}"
+                        ));
+                        return;
+                    }
                 }
-            },
+            }
             None => {
                 self.fail_session(format!(
                     "could not parse the session shell command {command:?}"
@@ -966,6 +1088,9 @@ fn confine_to_session(
         .env("XDG_CURRENT_DESKTOP", "LineXinBar")
         .env("XDG_SESSION_DESKTOP", "LineXinBar")
         .env("DESKTOP_SESSION", "lxb")
+        // The display-manager record is for the desktop shell only. Removing
+        // it here also overrides an accidental configured environment entry.
+        .env_remove(BACKGROUND_HANDOFF_ENV)
         // Activation tokens belong to the compositor that issued them; an
         // inherited host token is invalid in this session.
         .env_remove("XDG_ACTIVATION_TOKEN")
@@ -980,6 +1105,27 @@ fn confine_to_session(
             .env_remove("DISPLAY")
             .env_remove("LXB_XWAYLAND_DISPLAY");
     }
+}
+
+/// Add the captured record at the final shell-only launch boundary.
+fn inject_background_handoff(
+    command: &mut std::process::Command,
+    handoff: Option<std::ffi::OsString>,
+) {
+    if let Some(handoff) = handoff {
+        command.env(BACKGROUND_HANDOFF_ENV, handoff);
+    }
+}
+
+/// Remove the one-shot record from the compositor before any child or worker
+/// can inherit it. The shell receives the owned value later through
+/// [`inject_background_handoff`].
+pub(crate) fn take_background_handoff() -> Option<std::ffi::OsString> {
+    let handoff = std::env::var_os(BACKGROUND_HANDOFF_ENV);
+    // SAFETY: called at the start of `main`, before the compositor creates any
+    // worker thread. No concurrent environment access exists at this point.
+    unsafe { std::env::remove_var(BACKGROUND_HANDOFF_ENV) };
+    handoff
 }
 
 /// Minimal POSIX-ish word splitter: whitespace separated, with `'` and `"` quoting.
@@ -1057,7 +1203,10 @@ mod tests {
     use std::ffi::OsStr;
     use std::process::Command;
 
-    use super::{confine_to_session, folded_app_id, shell_split};
+    use super::{
+        confine_to_session, folded_app_id, inject_background_handoff, shell_split,
+        BACKGROUND_HANDOFF_ENV,
+    };
 
     /// The name the shell asks about and the name the window carries have to
     /// meet, and this is the only place they are made to — so a client that
@@ -1152,6 +1301,22 @@ mod tests {
             Some(Some(OsStr::new("LineXinBar")))
         );
         assert_eq!(get("XDG_ACTIVATION_TOKEN"), Some(None));
+        assert_eq!(get(BACKGROUND_HANDOFF_ENV), Some(None));
+    }
+
+    #[test]
+    fn background_handoff_is_injected_only_at_the_shell_boundary() {
+        let mut command = Command::new("true");
+        command.env(BACKGROUND_HANDOFF_ENV, "stale");
+
+        confine_to_session(&mut command, "lxb-test", None);
+        inject_background_handoff(&mut command, Some("canonical-record".into()));
+
+        let value = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(BACKGROUND_HANDOFF_ENV))
+            .and_then(|(_, value)| value);
+        assert_eq!(value, Some(OsStr::new("canonical-record")));
     }
 
     #[test]

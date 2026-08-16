@@ -51,18 +51,30 @@ workspace_version="$(awk '
 # pattern spelling out the version would agree with a stale spec forever, and
 # the mismatch would only surface as rpmbuild failing to find its Source0.
 grep -Eq "^Version:[[:space:]]+${PACKAGE_VERSION//./\\.}\$" \
-    "$PACKAGING_DIR/fedora/linexinbar.spec" \
-    || package_die "fedora/linexinbar.spec does not declare version $PACKAGE_VERSION"
+    "$PACKAGING_DIR/fedora/lxb-desktop.spec" \
+    || package_die "fedora/lxb-desktop.spec does not declare version $PACKAGE_VERSION"
 # The rest take the version from VERSION, so check that they still do.
 grep -Fqx 'pkgver=@VERSION@' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer reads its version from packaging/VERSION"
 grep -Fq 'builtins.readFile ../VERSION' "$PACKAGING_DIR/nix/package.nix" \
     || package_die "nix/package.nix no longer reads its version from packaging/VERSION"
-grep -Fq 'Version: @VERSION@-1' "$PACKAGING_DIR/debian/control.in" \
-    || package_die "debian/control.in no longer reads its version from packaging/VERSION"
+for control in control.in control-compositor.in; do
+    grep -Fq 'Version: @VERSION@-1' "$PACKAGING_DIR/debian/$control" \
+        || package_die "debian/$control no longer reads its version from packaging/VERSION"
+done
+# The desktop is useless without the compositor, and says so with a version
+# lock rather than a bare name: two halves of one build that drift apart are a
+# shell talking to a compositor it was never tested against.
+grep -Fq 'lxb-compositor (= @VERSION@-1)' "$PACKAGING_DIR/debian/control.in" \
+    || package_die "debian/control.in no longer depends on the matching lxb-compositor"
+grep -Fq '"lxb-compositor=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
+    || package_die "arch/PKGBUILD.in no longer depends on the matching lxb-compositor"
+grep -Fq 'Requires:       lxb-compositor%{?_isa} = %{version}-%{release}' \
+    "$PACKAGING_DIR/fedora/lxb-desktop.spec" \
+    || package_die "fedora/lxb-desktop.spec no longer depends on the matching compositor subpackage"
 
 if command -v rpmspec >/dev/null 2>&1; then
-    rpmspec --parse "$PACKAGING_DIR/fedora/linexinbar.spec" >/dev/null
+    rpmspec --parse "$PACKAGING_DIR/fedora/lxb-desktop.spec" >/dev/null
 fi
 if command -v nix-instantiate >/dev/null 2>&1; then
     nix-instantiate --parse "$PROJECT_ROOT/flake.nix" >/dev/null
@@ -78,7 +90,7 @@ if [[ "$build" == true ]]; then
         --release --locked --workspace --bins
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/linexinbar-check.XXXXXX")"
+work="$(package_work_dir linexinbar-check)"
 cleanup() {
     if [[ -n "${work:-}" && "$work" == */linexinbar-check.* && -d "$work" ]]; then
         rm -rf -- "$work"
@@ -90,10 +102,52 @@ stage="$work/stage"
 # No --target-dir: install.sh already follows CARGO_TARGET_DIR, which is where
 # the build above put the binaries.
 "$PACKAGING_DIR/install.sh" --destdir "$stage"
+"$PACKAGING_DIR/install.sh" --destdir "$work/compositor" --component compositor
+"$PACKAGING_DIR/install.sh" --destdir "$work/desktop" --component desktop
 
 package_note "checking the staged desktop and session payload"
 for binary in lxb lxb-desktop lxb-session; do
     [[ -x "$stage/usr/bin/$binary" ]] || package_die "staged binary is missing: $binary"
+done
+
+package_note "checking the two components partition the payload"
+# The compositor is a package of its own so a display manager can depend on a
+# Wayland session without pulling in this project's shell. That only holds
+# while the split stays a partition: anything installed by neither component
+# is a file that quietly stops shipping, and anything installed by both is a
+# file two packages will fight over at install time.
+staged_paths() {
+    (cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | sort)
+}
+staged_paths "$stage" > "$work/all.list"
+staged_paths "$work/compositor" > "$work/compositor.list"
+staged_paths "$work/desktop" > "$work/desktop.list"
+
+comm -12 "$work/compositor.list" "$work/desktop.list" > "$work/both.list"
+if [[ -s "$work/both.list" ]]; then
+    package_die "both components install: $(tr '\n' ' ' < "$work/both.list")"
+fi
+sort -u "$work/compositor.list" "$work/desktop.list" > "$work/union.list"
+if ! diff -q "$work/all.list" "$work/union.list" >/dev/null; then
+    package_die "--component all differs from compositor plus desktop: $(
+        diff "$work/all.list" "$work/union.list" | tr '\n' ' ')"
+fi
+
+# And the halves have to be the right halves. A shell binary in the compositor
+# package would defeat the point of splitting them.
+[[ -x "$work/compositor/usr/bin/lxb" ]] \
+    || package_die "the compositor component does not stage lxb"
+[[ -d "$work/compositor/usr/share/icons/Bibata-Modern-Classic/cursors" ]] \
+    || package_die "the compositor component does not stage the cursor theme it draws with"
+for intruder in lxb-desktop lxb-portal lxb-session; do
+    [[ ! -e "$work/compositor/usr/bin/$intruder" ]] \
+        || package_die "the compositor component stages $intruder, which belongs to the desktop"
+done
+[[ ! -e "$work/desktop/usr/bin/lxb" ]] \
+    || package_die "the desktop component stages the compositor it is supposed to depend on"
+for expected in lxb-desktop lxb-portal lxb-session; do
+    [[ -x "$work/desktop/usr/bin/$expected" ]] \
+        || package_die "the desktop component does not stage $expected"
 done
 session="$stage/usr/share/wayland-sessions/lxb.desktop"
 [[ -f "$session" ]] || package_die "Wayland session entry was not staged"

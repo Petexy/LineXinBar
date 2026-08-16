@@ -129,6 +129,21 @@ pub enum Entry {
     Media(crate::media::Shelved),
     Folder(Folder),
     Choice(Choice),
+    /// A value set by sliding rather than by picking: the one row of the
+    /// column it is in, with the whole range under the cursor at once.
+    ///
+    /// For a setting whose answers are a *scale* rather than a set. A colour
+    /// temperature is the one this exists for: every hundred kelvin between
+    /// candlelight and daylight is a sensible answer, and a column offering
+    /// them as rows would be forty-five of them — a list nobody can scan,
+    /// standing for a quantity that has no steps in it to begin with.
+    ///
+    /// The same object as the guide's quick-settings bars, stood on end. There
+    /// it lies along a row in a sidebar and is set by dragging; here it fills
+    /// a column of the bar and is set by Up and Down, which is what those two
+    /// mean everywhere else in a column. Left still leaves, because Left is
+    /// how every column is left.
+    Bar(Bar),
     /// The field at the head of a shelf of the user's own files, and the row
     /// that empties it.
     ///
@@ -319,6 +334,33 @@ pub struct Choice {
     /// not change, which stays inert rather than taking the mark off a row
     /// that describes something true.
     pub setting: Option<crate::settings::Setting>,
+}
+
+/// A value on a scale, and the two steps either side of where it stands.
+///
+/// Rebuilt from the live setting every time the column is, so the row on screen
+/// always carries what pressing Up and Down would do *from here*. That is what
+/// keeps the sliding out of the model entirely: the bar holds no state of its
+/// own, and a press is the same "apply this setting" every other row in the
+/// tree performs.
+#[derive(Debug, Clone)]
+pub struct Bar {
+    /// What the value reads as — `4000 K`. The title, because on a bar the
+    /// number *is* the row: the name of the setting is on the row this column
+    /// was opened from, one step to the left and still on screen.
+    pub title: String,
+    /// What that value means, in the words a number cannot carry.
+    pub comment: Option<String>,
+    /// Where the handle stands, 0 at the foot of the track and 1 at its head.
+    pub fill: f32,
+    /// The colour the filled part is drawn in, when the value has one of its
+    /// own. A colour temperature does: the bar is then a picture of what the
+    /// screen is about to look like, which no number and no word can be.
+    pub swatch: Option<Color>,
+    /// What one step up the track applies, and one step down. `None` at either
+    /// end of the range, which is what makes the bar stop there.
+    pub up: Option<crate::settings::Setting>,
+    pub down: Option<crate::settings::Setting>,
 }
 
 /// A top-level XMB column.
@@ -974,6 +1016,7 @@ impl Entry {
             Entry::Media(file) => &file.title,
             Entry::Folder(folder) => &folder.title,
             Entry::Choice(choice) => &choice.title,
+            Entry::Bar(bar) => &bar.title,
             Entry::Search(search) => search.label(),
             Entry::Steam(_) => "Steam",
             Entry::Game(game) => &game.name,
@@ -989,6 +1032,7 @@ impl Entry {
             Entry::Media(file) => Some(&file.folder),
             Entry::Folder(folder) => folder.comment.as_deref(),
             Entry::Choice(choice) => choice.comment.as_deref(),
+            Entry::Bar(bar) => bar.comment.as_deref(),
             Entry::Search(search) => Some(&search.note),
             Entry::Steam(service) => Some(&service.comment),
             Entry::Game(game) => Some(&game.note),
@@ -1001,6 +1045,10 @@ impl Entry {
             Entry::Media(file) => Some(file.kind.glyph()),
             Entry::Folder(folder) => folder.icon.as_deref(),
             Entry::Choice(choice) => choice.icon.as_deref(),
+            // The track is the drawing. A glyph beside it would be the name of
+            // the setting again, which is on the row this column was opened
+            // from and has not gone anywhere.
+            Entry::Bar(_) => None,
             Entry::Search(search) => Some(search.icon()),
             Entry::Steam(_) | Entry::Game(_) => Some(crate::icons::STEAM),
         }
@@ -1092,6 +1140,15 @@ impl Entry {
     pub fn swatch(&self) -> Option<Color> {
         match self {
             Entry::Choice(choice) => choice.swatch,
+            Entry::Bar(bar) => bar.swatch,
+            _ => None,
+        }
+    }
+
+    /// The bar this row is, if it is one.
+    pub fn bar(&self) -> Option<&Bar> {
+        match self {
+            Entry::Bar(bar) => Some(bar),
             _ => None,
         }
     }

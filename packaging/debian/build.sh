@@ -55,7 +55,7 @@ RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PROJECT_ROOT=/usr/src/linexinbar-
     cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" \
     --release --locked --workspace --bins
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/linexinbar-debian.XXXXXX")"
+work="$(package_work_dir linexinbar-debian)"
 cleanup() {
     if [[ -n "${work:-}" && "$work" == */linexinbar-debian.* && -d "$work" ]]; then
         rm -rf -- "$work"
@@ -63,59 +63,102 @@ cleanup() {
 }
 trap cleanup EXIT
 
-package_root="$work/root"
-"$PACKAGING_DIR/install.sh" --destdir "$package_root" --target-dir "$target_dir"
-
-install -Dm0644 "$script_dir/copyright" "$package_root/usr/share/doc/linexinbar/copyright"
-install -Dm0644 "$PROJECT_ROOT/README.md" "$package_root/usr/share/doc/linexinbar/README.md"
-install -Dm0644 "$PROJECT_ROOT/docs/configuration.md" \
-    "$package_root/usr/share/doc/linexinbar/configuration.md"
-install -Dm0644 "$PROJECT_ROOT/examples/config.toml" \
-    "$package_root/usr/share/doc/linexinbar/config.example.toml"
-# No /usr/share/licenses here: that is the RPM and Arch convention. On Debian
-# the copyright file above is the licence record, and it points at the GPL-3
-# and Apache-2.0 texts every Debian system already carries in
-# /usr/share/common-licenses.
-
-if command -v strip >/dev/null 2>&1; then
-    strip --strip-unneeded "$package_root/usr/bin/lxb" "$package_root/usr/bin/lxb-desktop"
-fi
-
+architecture="$(dpkg --print-architecture)"
+mkdir -p "$output_dir"
 mkdir -p "$work/shlibs/debian"
 install -m0644 "$script_dir/source-control" "$work/shlibs/debian/control"
-shlib_output="$({
-    cd "$work/shlibs"
-    dpkg-shlibdeps -O \
-        -e"$package_root/usr/bin/lxb" \
-        -e"$package_root/usr/bin/lxb-desktop"
-})"
-[[ "$shlib_output" == shlibs:Depends=* ]] \
-    || package_die "could not determine Debian shared-library dependencies"
-shlib_depends="${shlib_output#shlibs:Depends=}"
 
-architecture="$(dpkg --print-architecture)"
-installed_size="$(du -sk "$package_root" | awk '{print $1}')"
-mkdir -p "$package_root/DEBIAN"
-awk \
-    -v version="$PACKAGE_VERSION" \
-    -v architecture="$architecture" \
-    -v dependencies="$shlib_depends" \
-    -v installed_size="$installed_size" \
-    '{
-        gsub(/@VERSION@/, version)
-        gsub(/@ARCH@/, architecture)
-        gsub(/@SHLIB_DEPENDS@/, dependencies)
-        gsub(/@INSTALLED_SIZE@/, installed_size)
-        print
-    }' "$script_dir/control.in" > "$package_root/DEBIAN/control"
+# Build one binary package from one component of the staged tree.
+#
+#   build_deb COMPONENT NAME CONTROL BINARY...
+#
+# The binaries named are the ones stripped and handed to dpkg-shlibdeps, which
+# is how each package ends up declaring only the libraries its own contents
+# actually link against — the whole reason the compositor can be installed
+# without the shell's audio and PipeWire stack.
+build_deb() {
+    local component="$1" name="$2" control="$3"
+    shift 3
+    local binaries=("$@")
 
-(
-    cd "$package_root"
-    find usr -type f -print0 | sort -z | xargs -0 md5sum
-) > "$package_root/DEBIAN/md5sums"
+    local package_root="$work/$name"
+    "$PACKAGING_DIR/install.sh" \
+        --destdir "$package_root" \
+        --target-dir "$target_dir" \
+        --component "$component"
 
-mkdir -p "$output_dir"
-artifact="$output_dir/linexinbar_${PACKAGE_VERSION}-1_${architecture}.deb"
-dpkg-deb --root-owner-group -Zxz --build "$package_root" "$artifact"
-dpkg-deb --info "$artifact" >/dev/null
-package_note "created $artifact"
+    # No /usr/share/licenses here: that is the RPM and Arch convention. On
+    # Debian the copyright file is the licence record, and it points at the
+    # GPL-3 and Apache-2.0 texts every Debian system already carries in
+    # /usr/share/common-licenses.
+    install -Dm0644 "$script_dir/copyright" "$package_root/usr/share/doc/$name/copyright"
+
+    # Staged before the package is built, so it is weighed by Installed-Size
+    # and listed in md5sums. The configuration reference goes with the
+    # compositor, which is what reads `config.toml`.
+    case "$component" in
+        compositor)
+            install -Dm0644 "$PROJECT_ROOT/docs/configuration.md" \
+                "$package_root/usr/share/doc/$name/configuration.md"
+            install -Dm0644 "$PROJECT_ROOT/examples/config.toml" \
+                "$package_root/usr/share/doc/$name/config.example.toml"
+            ;;
+        desktop)
+            install -Dm0644 "$PROJECT_ROOT/README.md" \
+                "$package_root/usr/share/doc/$name/README.md"
+            ;;
+    esac
+
+    local binary
+    for binary in "${binaries[@]}"; do
+        [[ -f "$package_root/usr/bin/$binary" ]] \
+            || package_die "$name does not contain usr/bin/$binary"
+        if command -v strip >/dev/null 2>&1; then
+            strip --strip-unneeded "$package_root/usr/bin/$binary"
+        fi
+    done
+
+    local shlib_arguments=()
+    for binary in "${binaries[@]}"; do
+        shlib_arguments+=("-e$package_root/usr/bin/$binary")
+    done
+    local shlib_output
+    shlib_output="$({
+        cd "$work/shlibs"
+        dpkg-shlibdeps -O "${shlib_arguments[@]}"
+    })"
+    [[ "$shlib_output" == shlibs:Depends=* ]] \
+        || package_die "could not determine Debian shared-library dependencies for $name"
+    local shlib_depends="${shlib_output#shlibs:Depends=}"
+
+    local installed_size
+    installed_size="$(du -sk "$package_root" | awk '{print $1}')"
+    mkdir -p "$package_root/DEBIAN"
+    awk \
+        -v version="$PACKAGE_VERSION" \
+        -v architecture="$architecture" \
+        -v dependencies="$shlib_depends" \
+        -v installed_size="$installed_size" \
+        '{
+            gsub(/@VERSION@/, version)
+            gsub(/@ARCH@/, architecture)
+            gsub(/@SHLIB_DEPENDS@/, dependencies)
+            gsub(/@INSTALLED_SIZE@/, installed_size)
+            print
+        }' "$script_dir/$control" > "$package_root/DEBIAN/control"
+
+    (
+        cd "$package_root"
+        find usr -type f -print0 | sort -z | xargs -0 md5sum
+    ) > "$package_root/DEBIAN/md5sums"
+
+    local artifact="$output_dir/${name}_${PACKAGE_VERSION}-1_${architecture}.deb"
+    dpkg-deb --root-owner-group -Zxz --build "$package_root" "$artifact"
+    dpkg-deb --info "$artifact" >/dev/null
+    package_note "created $artifact"
+}
+
+# The compositor first: the desktop package declares a versioned dependency on
+# it, and it is the half a display manager installs on its own.
+build_deb compositor lxb-compositor control-compositor.in lxb
+build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal

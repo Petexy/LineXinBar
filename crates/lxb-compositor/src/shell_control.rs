@@ -181,9 +181,22 @@ const SHARE_SINCE: u32 = 18;
 /// there is nothing the shell can do about it.
 const OUT_OF_SIGHT_SINCE: u32 = 19;
 
+/// First version that can warm a display's picture, and that says which
+/// displays have a gamma ramp to warm. Below it the shell's Night light page
+/// still remembers what it was set to — the file is read by whichever
+/// compositor comes next — but nothing is sent and no display reports being
+/// able to do it.
+const NIGHT_LIGHT_SINCE: u32 = 20;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = OUT_OF_SIGHT_SINCE;
+const CURRENT_VERSION: u32 = NIGHT_LIGHT_SINCE;
+
+/// Each constant above names the one feature that arrived in its version, and
+/// the numbers only ever go up by one. Said here so that two branches each
+/// claiming "the next version" cannot both be merged — the easy mistake, and
+/// one that otherwise shows up as a shell silently not being sent an event.
+const _: () = assert!(NIGHT_LIGHT_SINCE == OUT_OF_SIGHT_SINCE + 1);
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -412,7 +425,12 @@ impl ShellControlState {
         self.output_windows = current;
     }
 
-    /// Publish what each display can do in HDR and what it is doing.
+    /// Publish what each display's colour pipeline can do and is doing.
+    ///
+    /// One list and one diff for two events, because it is one answer: HDR and
+    /// the night light are the same stages on the same CRTC — see
+    /// [`crate::hdr`] — and they are reported in the same breath the backend
+    /// commits them in.
     fn broadcast_output_hdr(&mut self, current: Vec<(Output, crate::hdr::Status)>) {
         for (output, status) in &current {
             let known = self
@@ -424,6 +442,7 @@ impl ShellControlState {
             }
             for instance in &self.instances {
                 send_output_hdr(instance, output, status);
+                send_output_night_light(instance, output, status);
             }
         }
         self.output_hdr = current;
@@ -489,6 +508,7 @@ impl ShellControlState {
         }
         for (output, status) in &self.output_hdr {
             sent |= send_output_hdr(shell, output, status);
+            sent |= send_output_night_light(shell, output, status);
         }
         for (output, modes) in &self.output_modes {
             sent |= send_output_modes(shell, output, modes);
@@ -576,6 +596,33 @@ fn send_output_hdr(shell: &LxbShellV1, output: &Output, status: &crate::hdr::Sta
             controls.set(lxb_shell_v1::HdrControl::Gamut, status.gamut);
             shell.output_hdr_controls(&wl_output, controls);
         }
+        sent = true;
+    }
+    sent
+}
+
+/// Send one display's night light capability and state, out of the same status
+/// the HDR event above is built from.
+///
+/// A separate event rather than two more arguments on that one, because the two
+/// are separate answers: a laptop panel that will never do HDR can be warmed,
+/// and a shell that read one for the other would leave the filter off exactly
+/// the displays it is most wanted on. They travel together only because they
+/// are committed together.
+fn send_output_night_light(
+    shell: &LxbShellV1,
+    output: &Output,
+    status: &crate::hdr::Status,
+) -> bool {
+    if shell.version() < NIGHT_LIGHT_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_night_light(&wl_output, status.night_light as u32, status.warming as u32);
         sent = true;
     }
     sent
@@ -1567,6 +1614,18 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                                 .then(|| peak_brightness.min(u16::MAX as u32) as u16),
                         };
                         if state.lxb.hdr.request(&output, settings) {
+                            // Only once it has actually changed something, so a
+                            // shell that re-sends what a display is already in
+                            // does not rewrite the file every time it connects.
+                            crate::remembered::remember(&output.name(), |entry| {
+                                entry.hdr = Some(settings.enabled);
+                                entry.hdr_sdr_brightness = Some(settings.sdr_brightness);
+                                entry.hdr_srgb_intensity = Some(settings.srgb_intensity);
+                                // `None` is "whatever the display says about
+                                // itself", and has to be written down as the
+                                // absence of the key rather than as a zero.
+                                entry.hdr_peak_brightness = settings.peak_brightness;
+                            });
                             // The commit happens on this display's next frame,
                             // which on an idle session is up to a retrace away
                             // and on a covered one may never come.
@@ -1574,6 +1633,52 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                         }
                     }
                     None => tracing::debug!("HDR requested for a display that is gone"),
+                }
+            }
+            lxb_shell_v1::Request::SetOutputNightLight {
+                output,
+                enabled,
+                temperature,
+            } => {
+                match Output::from_resource(&output) {
+                    Some(output) => {
+                        let night = crate::hdr::NightLight {
+                            enabled: enabled != 0,
+                            // Clamped rather than rejected, for the reason the
+                            // white level above is: a shell asking for a
+                            // temperature this cannot encode has a bug, and a
+                            // display left at some unrelated colour is a worse
+                            // way to report it than the nearest one that means
+                            // something.
+                            temperature: temperature.clamp(
+                                crate::hdr::WARMEST_KELVIN as u32,
+                                crate::hdr::NEUTRAL_KELVIN as u32,
+                            ) as u16,
+                        };
+                        if state.lxb.hdr.request_night_light(&output, night) {
+                            // What the shell sends here is the schedule already
+                            // worked out — whether the light should be burning
+                            // now, not whether it is switched on — because the
+                            // compositor owns no clock. Remembering the answer
+                            // is still right: what the next compositor wants is
+                            // the picture that is on the screen at the moment it
+                            // takes over, and the shell corrects a stale one
+                            // within the second at the cost of a gamma ramp,
+                            // which is not a modeset and so is not a black
+                            // screen.
+                            crate::remembered::remember(&output.name(), |entry| {
+                                entry.night_light = Some(night.enabled);
+                                entry.night_light_temperature = Some(night.temperature);
+                            });
+                            // As the HDR request: the ramp is committed on
+                            // this display's next frame, which on an idle
+                            // session is a retrace away.
+                            state.queue_redraw();
+                        }
+                    }
+                    None => {
+                        tracing::debug!("a night light was requested for a display that is gone")
+                    }
                 }
             }
             lxb_shell_v1::Request::SetOutputMode {
@@ -1595,7 +1700,11 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                             // shell asking only about the resolution sends.
                             refresh: (refresh != 0).then(|| refresh.min(i32::MAX as u32) as i32),
                         };
-                        state.set_output_mode(&output, want);
+                        if state.set_output_mode(&output, want) {
+                            crate::remembered::remember(&output.name(), |entry| {
+                                entry.mode = Some(want.as_config_string());
+                            });
+                        }
                     }
                     None => tracing::debug!("a mode was requested for a display that is gone"),
                 }
@@ -1605,6 +1714,10 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                 match (Output::from_resource(&output), turn) {
                     (Some(output), Some(turn)) => {
                         if state.set_output_transform(&output, turn) {
+                            crate::remembered::remember(&output.name(), |entry| {
+                                entry.transform =
+                                    Some(crate::outputs::transform_name(turn).to_owned());
+                            });
                             // What the display is now drawing, for the page
                             // that asked — and for the page on every other
                             // display, which lists this one too.

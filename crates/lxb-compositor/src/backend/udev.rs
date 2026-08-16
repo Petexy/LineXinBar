@@ -11,6 +11,7 @@
 //! connector, so a display plugged into a secondary card still works.
 
 use std::collections::HashMap;
+use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::path::Path;
 use std::time::Duration;
 
@@ -199,6 +200,7 @@ pub fn init(
     display: Display<LxbState>,
     config: Config,
     socket_name: Option<String>,
+    opening: Option<crate::backdrop::Opening>,
 ) -> anyhow::Result<LxbState> {
     let (session, session_notifier) = LibSeatSession::new()
         .map_err(|e| anyhow::anyhow!("could not open a libseat session: {e}"))?;
@@ -309,6 +311,12 @@ pub fn init(
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to insert session source: {e}"))?;
+
+    // Before a single connector is lit, because lighting one commits a frame
+    // and that frame is on screen: it is the first thing this session puts on a
+    // display the login screen was drawing on a moment ago. See
+    // [`crate::backdrop::Opening`].
+    state.lxb.opening = opening;
 
     // Enumerate GPUs that are already present, then watch for hotplug.
     let udev_backend = udev::UdevBackend::new(&seat_name)?;
@@ -486,7 +494,23 @@ fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Res
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
-    let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
+    // Resetting the device to a known state means disabling every connector and
+    // clearing every plane, which is a black screen for as long as it takes this
+    // compositor to reach its first frame — about a fifth of a second on the
+    // machine this was measured on, and it lands on top of whatever the last
+    // compositor was still showing. Smithay is plain about the alternative:
+    // leaving the state alone "will also prevent flickering of already turned on
+    // connectors (assuming you won't change the resolution)". That is exactly
+    // what a login is. The scanner then recovers the connector-to-CRTC mapping
+    // the previous compositor left behind, so this one lands on the same CRTC
+    // with the same mode, and its first commit is a plane update rather than a
+    // modeset.
+    //
+    // Only where a display manager has said a hand-over is happening, though.
+    // A compositor coming up on a bare TTY has no idea what left the device in
+    // the state it is in, and there the known state is worth the flicker.
+    let inheriting = crate::handover::wanted();
+    let (drm, drm_notifier) = DrmDevice::new(fd.clone(), !inheriting)?;
     let gbm = GbmDevice::new(fd)?;
 
     // The render node may differ from the primary node (e.g. split render/display).
@@ -548,6 +572,64 @@ fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Res
 
 /// Rescan a device's connectors. Called on hotplug and after adding a device.
 fn device_changed(state: &mut LxbState, node: DrmNode) {
+    apply_scan(state, node);
+
+    // Inheriting the previous compositor's configuration is what makes a login
+    // seamless (see `device_added`), and it is also the one way this can be
+    // handed a device it cannot use: a connector still bound to a CRTC that
+    // this compositor wants for a different one fails the commit, and the
+    // display is left dark. A device that came out of the scan with no surfaces
+    // at all while something is plugged into it is that case, and a dark screen
+    // is far worse than the flicker the inheriting was meant to avoid. Put the
+    // device into the known state it would have been opened in and scan again —
+    // with a fresh scanner, because the one above has already recorded these
+    // connectors as seen and would report nothing the second time.
+    if !inherited_an_unusable_device(state, node) {
+        return;
+    }
+    {
+        let super::Backend::Udev(udev) = &mut state.backend else {
+            return;
+        };
+        let Some(device) = udev.devices.get_mut(&node) else {
+            return;
+        };
+        if let Err(err) = device.drm_output_manager.device_mut().reset_state() {
+            tracing::warn!(?node, ?err, "could not reset an inherited device");
+            return;
+        }
+        device.scanner = DrmScanner::new();
+    }
+    tracing::info!(
+        ?node,
+        "inherited a display configuration this compositor cannot use; reset it and scanned again"
+    );
+    apply_scan(state, node);
+}
+
+/// Whether a device was handed over in a state that produced no usable output.
+///
+/// Only ever true on the hand-over path: a compositor that reset the device on
+/// open has nothing to blame an empty scan on, and resetting it a second time
+/// would not change the answer.
+fn inherited_an_unusable_device(state: &LxbState, node: DrmNode) -> bool {
+    let super::Backend::Udev(udev) = &state.backend else {
+        return false;
+    };
+    let Some(device) = udev.devices.get(&node) else {
+        return false;
+    };
+    crate::handover::wanted()
+        && device.surfaces.is_empty()
+        && device
+            .scanner
+            .connectors()
+            .values()
+            .any(|connector| connector.state() == connector::State::Connected)
+}
+
+/// Scan a device's connectors once and act on what changed.
+fn apply_scan(state: &mut LxbState, node: DrmNode) {
     let scan = {
         let super::Backend::Udev(udev) = &mut state.backend else {
             return;
@@ -659,6 +741,19 @@ fn connector_connected(
     output.change_current_state(Some(output_mode), None, None, None);
     OutputManager::apply_output_config(&output, &state.lxb.config);
 
+    // The wallpaper, drawn now if this is the first display to be lit, because
+    // the commit below is what establishes the mode and it goes to the screen.
+    // Left to itself that commit is a frame with nothing in it, cleared to
+    // black, and it is on screen until the event loop draws — a fifth of a
+    // second of black laid over a login screen that was mid-animation. This
+    // display's own shape, since it is the one asking. See
+    // [`crate::backdrop::Opening`].
+    if state.lxb.backdrop.is_none() {
+        if let Some(opening) = state.lxb.opening.take() {
+            state.lxb.backdrop = Some(opening.start(w as f32 / h.max(1) as f32));
+        }
+    }
+
     let super::Backend::Udev(udev) = &mut state.backend else {
         return;
     };
@@ -675,6 +770,31 @@ fn connector_connected(
         }
     };
 
+    // Failing to build it is not a reason to refuse the display: the commit
+    // then carries what it always carried, which is the clear colour.
+    let mut opening_frame = DrmOutputRenderElements::default();
+    let mut opens_on_wallpaper = false;
+    if let Some(backdrop) = state.lxb.backdrop.as_ref() {
+        let scale = output.current_scale().fractional_scale();
+        let logical = smithay::utils::Size::<i32, smithay::utils::Logical>::from((
+            (w as f64 / scale).round() as i32,
+            (h as f64 / scale).round() as i32,
+        ));
+        match backdrop.element(&mut renderer, logical) {
+            Ok(element) => {
+                opening_frame.add_output(
+                    &crtc,
+                    state.lxb.config.general.background.into(),
+                    [LxbRenderElement::Memory(element)],
+                );
+                opens_on_wallpaper = true;
+            }
+            Err(err) => {
+                tracing::warn!(?err, output = %name, "could not draw the wallpaper this display comes up in")
+            }
+        }
+    }
+
     let drm_output = match device
         .drm_output_manager
         .initialize_output::<_, LxbRenderElement<UdevRenderer<'_>>>(
@@ -684,7 +804,7 @@ fn connector_connected(
             &output,
             None,
             &mut renderer,
-            &DrmOutputRenderElements::default(),
+            &opening_frame,
         ) {
         Ok(drm_output) => drm_output,
         Err(err) => {
@@ -707,6 +827,11 @@ fn connector_connected(
         enabled: false,
         max_luminance: hdr_display.max_luminance.unwrap_or(0),
         gamut: hdr.converts_gamut(),
+        // A much shorter question than the one above it: a gamma ramp and an
+        // atomic commit, with nothing asked of the display or the link. See
+        // `Pipeline::warms`.
+        night_light: hdr.warms(),
+        warming: false,
     };
 
     device.surfaces.insert(
@@ -730,10 +855,12 @@ fn connector_connected(
         .add_output(&mut state.lxb.space, &output, &config);
     // Registering marks it pending, so whatever the config asks for is applied
     // on this display's first frame without a separate startup path.
-    state
-        .lxb
-        .hdr
-        .register(&output, config.hdr_for(&name), hdr_status);
+    state.lxb.hdr.register(
+        &output,
+        config.hdr_for(&name),
+        config.night_light_for(&name),
+        hdr_status,
+    );
 
     tracing::info!(
         output = %name,
@@ -743,6 +870,14 @@ fn connector_connected(
         modes = connector.modes().len(),
         hdr = hdr_status.supported,
         peak_nits = hdr_status.max_luminance,
+        night_light = hdr_status.night_light,
+        // What the commit above put on this display — which is what the user
+        // is looking at until the event loop draws. See `crate::backdrop`.
+        opened_on = if opens_on_wallpaper {
+            "the wallpaper"
+        } else {
+            "the clear colour"
+        },
         "display connected"
     );
 
@@ -1196,7 +1331,8 @@ fn serve_screencopy(state: &mut LxbState, output: &Output, time: Duration) {
     crate::screencopy::serve(&mut renderer, lxb, output, cursor, time);
 }
 
-/// Put a display's HDR settings into force, if it is waiting for any.
+/// Put a display's colour pipeline into force, if it is waiting for any of it:
+/// its HDR settings and its night light, which are one commit.
 ///
 /// The connector's own properties are set out of band rather than folded into
 /// the frame smithay is about to queue: none of the five is part of the atomic
@@ -1213,7 +1349,7 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
     let output = surface.output.clone();
-    let Some(settings) = state.lxb.hdr.take_pending(&output) else {
+    let Some((settings, night)) = state.lxb.hdr.take_pending(&output) else {
         return;
     };
 
@@ -1223,6 +1359,7 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         crtc,
         &surface.hdr_display,
         &settings,
+        &night,
     );
     let enabled = applied.enabled;
 
@@ -1251,7 +1388,8 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     }
 
     let pipeline = surface.hdr.describe();
-    let was_on = state.lxb.hdr.status(&output).enabled;
+    let before = state.lxb.hdr.status(&output);
+    let was_on = before.enabled;
 
     // Said on every applied change rather than only on the ones that flip the
     // switch: turning the white level up is as visible as turning HDR on, and
@@ -1275,9 +1413,29 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         tracing::info!(output = %output.name(), "this display is back in SDR");
     }
 
+    // The night light on its own line, and only when it moves: it is a
+    // separate decision from HDR, it is the one of the two that changes itself
+    // twice a day on a schedule, and a session whose evening never arrived
+    // needs that in the log without a colour pipeline dump around it.
+    if applied.warming != before.warming {
+        match applied.warming {
+            true => tracing::info!(
+                output = %output.name(),
+                kelvin = night.temperature,
+                "warming this display's picture"
+            ),
+            false => tracing::info!(output = %output.name(), "this display is back to daylight"),
+        }
+    } else if night.tints() && !applied.warming && applied.committed {
+        tracing::warn!(
+            output = %output.name(),
+            "this display has no gamma ramp to warm; its picture is unfiltered"
+        );
+    }
+
     // The shell showed the setting as taking effect; tell it what actually
     // did. Nothing else notices a status change.
-    if state.lxb.hdr.applied(&output, enabled) {
+    if state.lxb.hdr.applied(&output, applied) {
         state.refresh_hdr();
     }
 }
@@ -1398,15 +1556,56 @@ pub fn restore_displays(state: &mut LxbState) {
     let super::Backend::Udev(udev) = &mut state.backend else {
         return;
     };
+    // Read before the loop below borrows the backend: the warmth each display
+    // is under is kept across the hand-over, and it lives in the state the
+    // loop cannot reach from inside.
+    let warmth: Vec<(crtc::Handle, crate::hdr::NightLight)> = udev
+        .devices
+        .values()
+        .flat_map(|device| device.surfaces.iter())
+        .map(|(crtc, surface)| (*crtc, state.lxb.hdr.night_light_of(&surface.output)))
+        .collect();
     for device in udev.devices.values_mut() {
         // Split so the device is not borrowed twice: the surfaces are what
         // hold the pipelines, and the manager underneath them is the DRM
         // device every commit goes to.
         let drm = device.drm_output_manager.device();
         for (crtc, surface) in device.surfaces.iter_mut() {
-            surface.hdr.reset(drm, surface.connector, *crtc);
+            let night = warmth
+                .iter()
+                .find(|(warmed, _)| warmed == crtc)
+                .map(|(_, night)| *night)
+                .unwrap_or_default();
+            surface.hdr.reset(drm, surface.connector, *crtc, &night);
         }
     }
+}
+
+/// Leave the picture on every display for the compositor that follows.
+///
+/// The counterpart to [`restore_displays`], and called instead of it: rather
+/// than putting the displays back the way a console would want them, this hands
+/// them on exactly as they are and forks a keeper to stop the kernel taking
+/// them down behind us. Answers how many displays that keeper is watching.
+///
+/// See [`crate::handover`] for what the kernel does otherwise, and why the
+/// answer is a file descriptor rather than anything either compositor commits.
+pub fn hold_displays(state: &LxbState) -> usize {
+    let super::Backend::Udev(udev) = &state.backend else {
+        return 0;
+    };
+    let displays: Vec<(RawFd, u32)> = udev
+        .devices
+        .values()
+        .flat_map(|device| {
+            let fd = device.drm_output_manager.device().as_fd().as_raw_fd();
+            device
+                .surfaces
+                .keys()
+                .map(move |crtc| (fd, u32::from(*crtc)))
+        })
+        .collect();
+    crate::handover::hold(&displays)
 }
 
 /// Ask every output to draw again. Called when compositor state changes.

@@ -53,10 +53,24 @@ fn main() {
     let state = client::state(found.as_ref(), &options);
     println!("state: {state:?}");
 
-    // What this shell calls into the client are Valve's own internals, not a
-    // promised interface, so a client update can take one away — and the shape
-    // of that failure is a press that silently does nothing.
+    // Both of these are only answerable about a client that is up, and both are
+    // ways a press can fail while looking like it worked.
     if state.running() {
+        // The first leaves no other trace at all. A client on another session
+        // takes the URL, starts the game and opens it over there — so the
+        // game's log says it launched, Steam's says it handed over, and the
+        // only thing that says otherwise is this line.
+        if client::in_this_session(&options) {
+            println!("session: the running client is this session's");
+        } else {
+            println!(
+                "session: the running client belongs to ANOTHER session — its games open there"
+            );
+        }
+
+        // And what this shell calls into the client are Valve's own internals,
+        // not a promised interface, so a client update can take one away — the
+        // shape of *that* failure is a press that silently does nothing.
         match lxb_steam::webui::missing_methods() {
             Ok(missing) if missing.is_empty() => {
                 println!("interface: every method this shell calls is there")

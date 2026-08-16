@@ -101,10 +101,26 @@ pub enum Item {
     Pointer,
     /// Opens the per-application volume mixer: a panel out of this tile with
     /// every application making a noise on it, and the shell's own audio
-    /// under them. A tile like the switch beside it, and the only one that
-    /// opens something rather than turning something over — see
+    /// under them. A tile like the switches beside it — see
     /// [`Item::is_tile`].
     Mixer,
+    /// Whether anything is allowed to interrupt. On, an announcement is filed
+    /// without a bubble and without a chime — it is still delivered, and the
+    /// tile beside this one is where it is read. A switch like the pointer
+    /// tile, and unlike it a switch about the session rather than about the
+    /// application in front, so it is never inert.
+    ///
+    /// Beside the bell rather than anywhere else because the two are one
+    /// question asked twice: this one says whether announcements may speak,
+    /// and that one says what they said. Before it, because it is the setting
+    /// and the list is its consequence.
+    DoNotDisturb,
+    /// Opens the notification list: everything that has been announced to the
+    /// session, newest first, in the same panel the mixer is drawn in. A tile
+    /// for the same reason the mixer is one — see [`Item::is_tile`] — and
+    /// beside it because the two are the same kind of control: a glyph that
+    /// raises a panel about one thing the session is doing.
+    Notifications,
     /// How loud the session is. A bar, not a button.
     Volume,
     /// How bright the display the menu is on is.
@@ -153,14 +169,18 @@ impl Item {
     /// Whether this entry is one of the square tiles at the top of the column
     /// rather than a row spanning it.
     ///
-    /// The two of them share one line, which is the only place the column is
-    /// not one entry per row. They are tiles because of the switch: a switch is
-    /// a thing with two states, and a full-width chip that changed only in tint
+    /// They share one line, which is the only place the column is not one
+    /// entry per row. They are tiles because of the switches: a switch is a
+    /// thing with two states, and a full-width chip that changed only in tint
     /// would read as a row that had been selected rather than as a control that
-    /// is on. The mixer is a tile because it stands beside one — a glyph in the
-    /// same square, opening the panel that the sound belongs in.
+    /// is on. The other two are tiles because they stand beside one — a glyph
+    /// in the same square, opening the panel the sound or the announcements
+    /// belong in.
     pub fn is_tile(self) -> bool {
-        matches!(self, Item::Pointer | Item::Mixer)
+        matches!(
+            self,
+            Item::Pointer | Item::Mixer | Item::DoNotDisturb | Item::Notifications
+        )
     }
 
     /// The glyph drawn on a tile.
@@ -168,6 +188,8 @@ impl Item {
         match self {
             Item::Pointer => Some(crate::icons::POINTER_STICK),
             Item::Mixer => Some(crate::icons::VOLUME_MIXER),
+            Item::DoNotDisturb => Some(crate::icons::DO_NOT_DISTURB),
+            Item::Notifications => Some(crate::icons::NOTIFICATIONS),
             _ => None,
         }
     }
@@ -196,9 +218,13 @@ impl Item {
             },
             Item::Dashboard => "Dashboard".to_string(),
             // Drawn as a glyph or as a track, so there is nothing to write.
-            Item::Power | Item::Volume | Item::Brightness | Item::Pointer | Item::Mixer => {
-                String::new()
-            }
+            Item::Power
+            | Item::Volume
+            | Item::Brightness
+            | Item::Pointer
+            | Item::Mixer
+            | Item::DoNotDisturb
+            | Item::Notifications => String::new(),
         }
     }
 
@@ -217,7 +243,12 @@ impl Item {
 
     fn band(self) -> Band {
         match self {
-            Item::Pointer | Item::Mixer | Item::Volume | Item::Brightness => Band::Quick,
+            Item::Pointer
+            | Item::Mixer
+            | Item::DoNotDisturb
+            | Item::Notifications
+            | Item::Volume
+            | Item::Brightness => Band::Quick,
             Item::Resume | Item::Close => Band::Window,
             Item::Dashboard | Item::Power => Band::Session,
         }
@@ -506,9 +537,11 @@ impl Guide {
     /// would be a control that does nothing when used exactly as intended,
     /// which is worse than one the highlight visibly refuses to stop on.
     ///
-    /// The mixer is never in that position, whatever is running: the panel it
-    /// opens always has the session's own output in it, so there is always
-    /// something on the other side of the press.
+    /// The three tiles beside it are never in that position, whatever is
+    /// running: the mixer always has the session's own output in it, the
+    /// notification list answers *nothing arrived* as readily as it lists what
+    /// did, and whether the session may be interrupted is a question about the
+    /// session — so there is always something on the other side of the press.
     ///
     /// Everything else in the column always does something.
     pub fn is_enabled(&self, item: Item) -> bool {
@@ -582,6 +615,18 @@ impl Guide {
             items.push(Item::Pointer);
         }
         items.push(Item::Mixer);
+        // Before the bell, because it is the setting and the list is what the
+        // setting produced. Always, and never dimmed: whether the session may
+        // be interrupted is a question that has an answer with nothing running
+        // and nothing announced, and it is the one switch here that is worth
+        // throwing *before* anything has arrived.
+        items.push(Item::DoNotDisturb);
+        // Always, and never dimmed: an empty list is an answer to the question
+        // the tile asks — *did I miss anything* — and one the user is entitled
+        // to get. A tile that could only be pressed once something had arrived
+        // would be a control that appears the moment it is too late to have
+        // learned where it was.
+        items.push(Item::Notifications);
         if self.bars.volume {
             items.push(Item::Volume);
         }
@@ -849,6 +894,24 @@ impl Guide {
         self.mode = Some(Mode::BarOverApp);
     }
 
+    /// Put the menu away, leaving the bar where what is on the display
+    /// underneath needs it to be.
+    ///
+    /// The two are not interchangeable and picking the wrong one is visible
+    /// straight away: [`Self::close`] alone drops the shell below an
+    /// application still in front of it, and [`Self::show_bar_over_app`] alone
+    /// leaves it holding the overlay and the keyboard over an empty display.
+    /// So every dismissal that is *not* the user choosing a row asks this
+    /// instead of choosing for itself.
+    pub fn dismiss(&mut self, app_running: bool) {
+        if app_running {
+            self.show_bar_over_app();
+        } else {
+            self.close();
+        }
+        self.power = None;
+    }
+
     /// Where one display's surface must sit, and whether it takes the keyboard.
     ///
     /// Derived rather than set at each transition, so the bar and the overlay
@@ -870,6 +933,7 @@ impl Guide {
         launching: bool,
         keyboard: bool,
         typing_here: bool,
+        toasting: bool,
         base: Layer,
     ) -> (Layer, KeyboardInteractivity) {
         // A launch splash is over the application it is waiting for — that is
@@ -929,12 +993,35 @@ impl Guide {
         // front, take focus outright: some compositors never pick an OnDemand
         // background layer for initial focus, which would leave the launcher
         // unusable at startup.
-        let interactivity = if app_running && !keep_grabbed {
-            KeyboardInteractivity::OnDemand
-        } else {
-            KeyboardInteractivity::Exclusive
-        };
-        (base, interactivity)
+        if app_running && !keep_grabbed {
+            // Unless something has been announced. A bubble in the corner is
+            // the one thing this shell draws over an application that the user
+            // did not ask for, so it has to reach the overlay layer — a
+            // notification the game is covering is a notification that did not
+            // happen.
+            //
+            // Exactly the launch splash's state, and for the same reason: the
+            // shell is putting something in front of an application somebody is
+            // still using, so it declines the keyboard, and `passes_pointer_through`
+            // reads that pair and hands the clicks back too. The alternative —
+            // an overlay that kept `OnDemand` — would be a transparent sheet
+            // over the whole display swallowing every press for four seconds.
+            //
+            // Only this branch is lifted. The two states above it are already
+            // over the application; the two the condition excludes are the
+            // shell holding the keyboard on purpose — a dialog, or a start
+            // screen with nothing in front — and a bubble must not take the
+            // keys off either of those. Neither needs the lift anyway: with
+            // nothing running there is nothing for the corner to be behind.
+            let layer = if toasting { Layer::Overlay } else { base };
+            let interactivity = if toasting {
+                KeyboardInteractivity::None
+            } else {
+                KeyboardInteractivity::OnDemand
+            };
+            return (layer, interactivity);
+        }
+        (base, KeyboardInteractivity::Exclusive)
     }
 
     /// What the guide button does, from wherever the shell currently is.
@@ -982,14 +1069,22 @@ mod tests {
     const START_CARD: bool = false;
 
     /// A guide with nothing this machine can do: no bars, no pointer control.
-    /// The mixer tile is there whatever the session is, because it is the
-    /// shell's own doing rather than something it has to ask for.
+    /// The three tiles left are there whatever the session is, because all
+    /// three are the shell's own doing rather than something it has to ask
+    /// for — and the switch among them is about the session rather than about
+    /// an application, so it does not come and go with one either.
     #[test]
-    fn the_column_carries_the_mixer_tile_on_any_session() {
+    fn the_column_carries_the_panel_tiles_on_any_session() {
         let guide = Guide::default();
         assert_eq!(
             guide.items(START_CARD),
-            vec![Item::Mixer, Item::Resume, Item::Power]
+            vec![
+                Item::Mixer,
+                Item::DoNotDisturb,
+                Item::Notifications,
+                Item::Resume,
+                Item::Power
+            ]
         );
     }
 
@@ -1100,7 +1195,7 @@ mod tests {
         // Sitting on the power button when the application exits must not
         // index past the shorter column, nor land on something else.
         assert_eq!(guide.selected_item(START_CARD), Some(Item::Power));
-        assert_eq!(guide.selected_index(START_CARD), 2);
+        assert_eq!(guide.selected_index(START_CARD), 4);
 
         // And on round to the top of the column rather than stopping there,
         // which is the tile line: the mixer is on it and is always a stop.
@@ -1122,8 +1217,8 @@ mod tests {
 
         // Power survives the column halving; the row it sits on does not.
         assert_eq!(guide.selected_item(START_CARD), Some(Item::Power));
-        assert_eq!(guide.selected_index(WINDOW), 4);
-        assert_eq!(guide.selected_index(START_CARD), 2);
+        assert_eq!(guide.selected_index(WINDOW), 6);
+        assert_eq!(guide.selected_index(START_CARD), 4);
     }
 
     /// Losing the selected entry must not silently select a destructive one.
@@ -1314,7 +1409,7 @@ mod tests {
             volume: true,
             brightness: false,
         });
-        assert_eq!(guide.items(WINDOW).get(1), Some(&Item::Volume));
+        assert_eq!(guide.items(WINDOW).get(3), Some(&Item::Volume));
         assert!(!guide.items(WINDOW).contains(&Item::Brightness));
 
         guide.set_bars(BOTH_BARS);
@@ -1324,6 +1419,8 @@ mod tests {
             vec![
                 Item::Pointer,
                 Item::Mixer,
+                Item::DoNotDisturb,
+                Item::Notifications,
                 Item::Volume,
                 Item::Brightness,
                 Item::Resume,
@@ -1338,6 +1435,8 @@ mod tests {
             vec![
                 Item::Pointer,
                 Item::Mixer,
+                Item::DoNotDisturb,
+                Item::Notifications,
                 Item::Volume,
                 Item::Brightness,
                 Item::Resume,
@@ -1370,17 +1469,17 @@ mod tests {
         guide.set_bars(BOTH_BARS);
         guide.set_pointer_control(true);
         // Tiles, bars | Resume, Close | Dashboard
-        assert_eq!(separator_rows(&guide.items(WINDOW)), vec![4, 6]);
+        assert_eq!(separator_rows(&guide.items(WINDOW)), vec![6, 8]);
         // The same, with the window's own two entries gone.
-        assert_eq!(separator_rows(&guide.items(START_CARD)), vec![4]);
+        assert_eq!(separator_rows(&guide.items(START_CARD)), vec![6]);
 
         // No rule between the tiles and the bars: they are the same band —
         // what the session sounds and looks and behaves like. With neither bar
-        // the mixer tile is that whole band on its own, and the rule under it
-        // is the one that was there before the tiles were.
+        // the three panel tiles are that whole band on their own, and the rule
+        // under them is the one that was there before the tiles were.
         let plain = Guide::default();
-        assert_eq!(separator_rows(&plain.items(WINDOW)), vec![1, 3]);
-        assert_eq!(separator_rows(&plain.items(START_CARD)), vec![1]);
+        assert_eq!(separator_rows(&plain.items(WINDOW)), vec![3, 5]);
+        assert_eq!(separator_rows(&plain.items(START_CARD)), vec![3]);
     }
 
     /// A bar is slid rather than pressed, and the two are told apart by the
@@ -1401,7 +1500,7 @@ mod tests {
 
         // The tiles are switches: a glyph, no track, no label, and neither of
         // them is a bar that Left and Right would slide.
-        for tile in [Item::Pointer, Item::Mixer] {
+        for tile in [Item::Pointer, Item::Mixer, Item::Notifications] {
             assert!(tile.is_tile(), "{tile:?}");
             assert_eq!(tile.bar(), None, "{tile:?}");
             assert!(tile.label(Some("Celeste")).is_empty(), "{tile:?}");
@@ -1410,7 +1509,7 @@ mod tests {
         assert!(Item::Volume.glyph().is_none());
     }
 
-    /// The two tiles share one line, and everything else has one to itself.
+    /// The tiles share one line, and everything else has one to itself.
     /// Both the navigation and the layout are written against this, which is
     /// why there is one answer rather than two.
     #[test]
@@ -1421,13 +1520,14 @@ mod tests {
         let items = guide.items(WINDOW);
         assert_eq!(
             lines(&items),
-            vec![(0, 2), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1)]
+            vec![(0, 4), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1), (9, 1)]
         );
 
-        // One tile on its own is still just a line with one entry on it.
+        // A session with no stick pointer leaves three on the line rather than
+        // breaking it up.
         guide.set_pointer_control(false);
         let items = guide.items(START_CARD);
-        assert_eq!(lines(&items), vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
+        assert_eq!(lines(&items), vec![(0, 3), (3, 1), (4, 1), (5, 1), (6, 1)]);
     }
 
     /// Up and Down move by *line*, so the tile row is one stop rather than
@@ -1518,20 +1618,28 @@ mod tests {
         guide.move_selection(-1, WINDOW);
         assert_eq!(guide.selected_item(WINDOW), Some(Item::Pointer));
 
-        // With an application in front both tiles can be thrown, so the line
-        // is two stops and Right is the other one.
+        // With an application in front every tile can be reached, so the line
+        // is four stops and Right walks them.
         assert!(guide.can_move_in_line(1, WINDOW));
         assert!(guide.move_in_line(1, WINDOW));
         assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+        assert!(guide.move_in_line(1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::DoNotDisturb));
+        assert!(guide.move_in_line(1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Notifications));
+        // Off the last one is where the caller learns to cross to the cards.
+        assert!(!guide.can_move_in_line(1, WINDOW));
 
-        // Without one the switch is not a stop, so from the mixer Left leaves
-        // the column rather than landing on a control that does nothing.
+        // Without an application the switch is not a stop, so Left from the
+        // mixer steps over it and leaves the column rather than landing on a
+        // control that does nothing.
+        guide.move_in_line(-1, WINDOW);
+        guide.move_in_line(-1, WINDOW);
         guide.set_pointer_target(false);
         assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
         assert!(!guide.can_move_in_line(-1, WINDOW));
         assert!(!guide.move_in_line(-1, WINDOW));
         assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
-        assert!(!guide.can_move_in_line(1, WINDOW));
 
         // And a line with one entry on it never moves sideways at all.
         guide.move_selection(1, WINDOW);
@@ -1550,15 +1658,20 @@ mod tests {
 
         // The switch is about an application, so with none it cannot be
         // thrown. The mixer is about the sound the machine is making, which
-        // it is making whether or not anything is running.
+        // it is making whether or not anything is running, and the switch
+        // beside it is about whether the session may be interrupted, which is
+        // a question with an answer on an empty machine.
         assert!(!guide.is_enabled(Item::Pointer));
         assert!(guide.is_enabled(Item::Mixer));
+        assert!(guide.is_enabled(Item::DoNotDisturb));
         guide.set_pointer_target(true);
         assert!(guide.is_enabled(Item::Pointer));
         assert!(guide.is_enabled(Item::Mixer));
+        assert!(guide.is_enabled(Item::DoNotDisturb));
 
         // Everything else in the column always does something.
         for item in [
+            Item::Notifications,
             Item::Volume,
             Item::Brightness,
             Item::Resume,
@@ -1632,7 +1745,7 @@ mod tests {
             brightness: false,
         });
         assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
-        assert_eq!(guide.selected_index(WINDOW), 2);
+        assert_eq!(guide.selected_index(WINDOW), 4);
     }
 
     #[test]
@@ -1673,6 +1786,52 @@ mod tests {
     /// The regression that made the menu appear on every screen at once: an
     /// open guide raised *all* the layer surfaces, not just the one being
     /// driven.
+    /// A menu put away without the user choosing a row still has to leave the
+    /// bar in the right place, and the two answers are not interchangeable.
+    ///
+    /// Getting it backwards is visible immediately: the bar dropped below an
+    /// application that is still in front of it, or the bar holding the
+    /// overlay and the keyboard over a display with nothing on it.
+    #[test]
+    fn putting_the_menu_away_leaves_the_bar_where_the_display_needs_it() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert!(guide.is_menu());
+
+        // Nothing running there: the bar comes back plainly, and stops being
+        // drawn over anything.
+        guide.dismiss(false);
+        assert_eq!(guide.mode(), Mode::Bar);
+        assert!(!guide.is_over_app());
+
+        // Something running there: the bar stays over it.
+        guide.open();
+        guide.dismiss(true);
+        assert_eq!(guide.mode(), Mode::BarOverApp);
+        assert!(guide.is_over_app());
+    }
+
+    /// The power dialog is part of the menu and goes away with it.
+    ///
+    /// It is drawn above everything else in the guide, so a dialog that
+    /// outlived the dismissal would be the one thing left on screen — and it
+    /// is the one panel in the shell where a stray `A` turns the machine off.
+    #[test]
+    fn putting_the_menu_away_takes_its_power_dialog_with_it() {
+        for app_running in [false, true] {
+            let mut guide = Guide::default();
+            guide.open();
+            guide.open_power();
+            assert!(guide.power_open());
+
+            guide.dismiss(app_running);
+            assert!(
+                !guide.power_open(),
+                "the dialog survived being dismissed with app_running={app_running}"
+            );
+        }
+    }
+
     /// A launch splash has to be *above* the window it is waiting for — that
     /// is the whole trick, the application maps underneath and is revealed
     /// rather than appearing on top of the shell. And it must not hold the
@@ -1682,14 +1841,32 @@ mod tests {
         let guide = Guide::default();
         for driven in [true, false] {
             assert_eq!(
-                guide.surface_state(driven, true, false, true, false, false, Layer::Background),
+                guide.surface_state(
+                    driven,
+                    true,
+                    false,
+                    true,
+                    false,
+                    false,
+                    false,
+                    Layer::Background
+                ),
                 (Layer::Overlay, KeyboardInteractivity::None),
                 "the splash is on the display it was started from, driven or not"
             );
         }
         // And the display goes straight back to where it was afterwards.
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
     }
@@ -1700,7 +1877,16 @@ mod tests {
         guide.open();
 
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
         );
         for mode in [Mode::Menu, Mode::BarOverApp] {
@@ -1708,7 +1894,16 @@ mod tests {
                 guide.show_bar_over_app();
             }
             assert_eq!(
-                guide.surface_state(false, true, false, false, false, false, Layer::Background),
+                guide.surface_state(
+                    false,
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    Layer::Background
+                ),
                 (Layer::Background, KeyboardInteractivity::None),
                 "{mode:?} must leave the displays nobody is driving alone"
             );
@@ -1736,6 +1931,7 @@ mod tests {
                         false,
                         false,
                         false,
+                        false,
                         Layer::Background,
                     );
                     assert_eq!(
@@ -1757,18 +1953,45 @@ mod tests {
     fn the_on_screen_keyboard_rises_above_the_application_without_taking_its_keys() {
         let guide = Guide::default();
         assert_eq!(
-            guide.surface_state(true, true, false, false, true, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Overlay, KeyboardInteractivity::None)
         );
         // Even when the shell was told to hold the keyboard regardless: the
         // debugging flag cannot be allowed to make the keyboard useless.
         assert_eq!(
-            guide.surface_state(true, true, true, false, true, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                true,
+                false,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Overlay, KeyboardInteractivity::None)
         );
         // Not on displays nobody is driving.
         assert_eq!(
-            guide.surface_state(false, true, false, false, true, false, Layer::Background),
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::None)
         );
         // And the menu wins if both somehow claim the display, because the
@@ -1776,8 +1999,138 @@ mod tests {
         let mut guide = Guide::default();
         guide.open();
         assert_eq!(
-            guide.surface_state(true, true, false, false, true, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+    }
+
+    /// A bubble in the corner is the one thing the shell draws over an
+    /// application without being asked, so it has to reach the overlay layer —
+    /// and, reaching it, has to hand back both the keys and the clicks, or a
+    /// four-second announcement makes the game under it unplayable.
+    ///
+    /// It is exactly the launch splash's state, which is what
+    /// `passes_pointer_through` in the shell reads to make the surface
+    /// click-through. Any other pair here would be a transparent sheet over
+    /// the whole display swallowing every press.
+    #[test]
+    fn a_bubble_lifts_the_shell_over_the_application_and_keeps_its_hands_off_it() {
+        let guide = Guide::default();
+        const TOASTING: bool = true;
+
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::OnDemand),
+            "with nothing announced the bar stays where it was"
+        );
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                TOASTING,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::None),
+            "and rises for one, taking neither the keys nor the pointer"
+        );
+    }
+
+    /// The three states a bubble must *not* change, each for its own reason:
+    /// two of them are already over the application, and the third is the
+    /// shell holding the keyboard because it is what the user is using.
+    #[test]
+    fn a_bubble_never_takes_the_keyboard_off_something_that_needs_it() {
+        // Nothing running: this is the start screen, and the shell holds the
+        // keys outright. An announcement arriving must not take them — the
+        // corner is drawn on the shell's own surface, which is already the
+        // topmost thing on the display.
+        let guide = Guide::default();
+        assert_eq!(
+            guide.surface_state(
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::Exclusive)
+        );
+
+        // The shell deliberately holding the keyboard over an application — a
+        // dialog, a question from outside the session. A bubble must not
+        // quietly answer it by taking the keys away.
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+                true,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::Exclusive)
+        );
+
+        // The guide, which is over the application already and needs the keys
+        // for its own column.
+        let mut open = Guide::default();
+        open.open();
+        assert_eq!(
+            open.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+
+        // And a display nobody is driving stays put whatever the corner of the
+        // driven one is doing. The shell only ever passes `toasting` for the
+        // focused display, but the answer must not depend on it remembering.
+        assert_eq!(
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::None)
         );
     }
 
@@ -1800,6 +2153,7 @@ mod tests {
                     false,
                     true,
                     true,
+                    false,
                     Layer::Background
                 ),
                 (Layer::Overlay, KeyboardInteractivity::Exclusive),
@@ -1810,11 +2164,29 @@ mod tests {
         // while a launch is on screen: neither of those is about where the
         // letters are going.
         assert_eq!(
-            guide.surface_state(false, true, false, false, true, true, Layer::Background),
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::None)
         );
         assert_eq!(
-            guide.surface_state(true, true, false, true, true, true, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                true,
+                true,
+                true,
+                false,
+                Layer::Background
+            ),
             (Layer::Overlay, KeyboardInteractivity::None)
         );
     }
@@ -1823,16 +2195,43 @@ mod tests {
     fn the_bar_yields_the_keyboard_to_a_running_application() {
         let guide = Guide::default();
         assert_eq!(
-            guide.surface_state(true, false, false, false, false, false, Layer::Background),
+            guide.surface_state(
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
         assert_eq!(
-            guide.surface_state(true, true, false, false, false, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::OnDemand)
         );
         // Unless it was told not to.
         assert_eq!(
-            guide.surface_state(true, true, true, false, false, false, Layer::Background),
+            guide.surface_state(
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
         );
     }

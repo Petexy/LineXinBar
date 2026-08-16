@@ -1,21 +1,40 @@
 # LineXinBar packaging
 
-These definitions build one early-development package named `linexinbar`. The
-package version is **0.1.0**, which is the workspace's own version: what a
+These definitions build two early-development packages from one source tree:
+
+* **`lxb-compositor`** — the compositor and the cursor theme it draws the
+  pointer from. A Wayland session on DRM/KMS, with nothing in it that assumes
+  this project's shell is the one running. This is what a display manager
+  depends on to put a login screen on the hardware without installing a
+  desktop, and Console Experience Desktop Manager is the one that does.
+* **`lxb-desktop`** — the shell, the portal and the Wayland session entry. It
+  depends on the exact `lxb-compositor` built beside it, version and release
+  both: two halves of one build that drift apart are a shell talking to a
+  compositor it was never tested against.
+
+The split is a partition, and `packaging/build.sh check` enforces that — a file
+installed by neither package is one that has quietly stopped shipping, and a
+file installed by both is one two packages will fight over at install time.
+
+The package version is **0.1.0**, which is the workspace's own version: what a
 package claims and what `lxb --version` reports are the same number, and
 `packaging/build.sh check` refuses to let the two drift apart. Bumping a
 release means editing both `packaging/VERSION` and `[workspace.package]` in
 `Cargo.toml`.
 
-Every package installs the coupled compositor and shell, a complete bundled
-cursor theme, and a native Wayland session:
+Between them the two packages install the compositor and shell, a complete
+bundled cursor theme, and a native Wayland session:
 
 ```text
-bin/lxb
-bin/lxb-desktop
-bin/lxb-session
-share/wayland-sessions/lxb.desktop
-share/icons/Bibata-Modern-Classic/**
+lxb-compositor   bin/lxb
+                 share/icons/Bibata-Modern-Classic/**
+
+lxb-desktop      bin/lxb-desktop
+                 bin/lxb-portal
+                 bin/lxb-session
+                 share/wayland-sessions/lxb.desktop
+                 share/xdg-desktop-portal/**
+                 share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
 ```
 
 `lxb-session` clears display variables inherited from a greeter, creates a
@@ -24,6 +43,39 @@ display manager one foreground process whose lifetime is tied to the desktop
 shell. The original application sources and `share/wayland-sessions/lxb.desktop`
 are not modified; packages stage the production session files from
 `packaging/files/`.
+
+## Where the build happens, and why not /tmp
+
+Every builder works under `packaging/out/build/`, on whatever filesystem the
+checkout is on. Not `${TMPDIR:-/tmp}`, which is the obvious choice and the wrong
+one: on a systemd machine /tmp is a tmpfs sized at a fraction of RAM, so
+building there means building in memory. This dependency graph — smithay, wgpu,
+naga, winit, pipewire — writes about 1.7 GiB compiling in the release profile,
+and the `cargo test` that makepkg's `check()` and rpmbuild's `%check` run builds
+the whole of it again in the dev profile for roughly 5 GiB more. That is 6.7 GiB
+of writes into a filesystem sized as a fraction of RAM, and a tmpfs that is
+already carrying anything else runs out partway through. It reports that as `No
+space left on device` — or, where the tmpfs carries quotas, as `Disk quota
+exceeded (os error 122)`.
+
+Send it elsewhere with `--work-dir DIR` on the Arch and Fedora builders, or
+`LXB_WORK_DIR` for all of them:
+
+```sh
+./packaging/build.sh arch --work-dir /var/tmp/linexinbar
+LXB_WORK_DIR=/var/tmp/linexinbar ./packaging/build.sh fedora
+```
+
+A work directory inside the checkout is refused unless it is under
+`packaging/out`, because `snapshot_source` picks up untracked files and a build
+tree anywhere else would end up inside the source archive built from it.
+
+The builders check free space before extracting anything, so a machine without
+the room is told immediately rather than forty minutes in. That check reads
+`df`, which cannot see a quota — the default location is what actually solves
+the quota case. One thing it cannot route around either: `makepkg.conf` wins
+over the environment, so a machine that sets `BUILDDIR` builds there whatever
+`--work-dir` said. The Arch builder notices and says so.
 
 ## Validate the shared payload
 
@@ -62,7 +114,7 @@ on Debian.
 ## Fedora
 
 Build on Fedora after installing RPM build tooling and the `BuildRequires`
-listed in `packaging/fedora/linexinbar.spec`:
+listed in `packaging/fedora/lxb-desktop.spec`:
 
 ```sh
 ./packaging/build.sh fedora
@@ -103,9 +155,18 @@ expression:
 
 ```sh
 ./packaging/build.sh nix
-nix build path:.#linexinbar
+nix build path:.#linexinbar          # the whole desktop, as one derivation
+nix build path:.#lxb-compositor      # the compositor alone
 nix-build packaging/nix
 ```
+
+Nix splits differently from the distro packages, and deliberately. Those split
+to keep a dependency graph and a file list apart on an installed system, which
+are problems Nix does not have; here `linexinbar` stays one self-contained
+derivation and `lxb-compositor` is a second, smaller one for a consumer that
+needs a Wayland session and not a shell. There is no shell-only derivation,
+because one that had to find `lxb` in another store path would be strictly
+worse than one that carries it.
 
 The package adds runpaths for host GPU drivers and dynamically loaded
 Wayland/EGL/Vulkan/X11 libraries, and carries its external session utilities

@@ -14,6 +14,11 @@
 //! the animation is not decoration, it is the acknowledgement, and the loading
 //! happens inside it.
 //!
+//! A game out of the Steam library is answered differently — its own picture
+//! is already behind the display and stays there, and what grows is the title
+//! rather than a panel — but the *timing* is the same one, which is the whole
+//! reason there is one of these rather than two.
+//!
 //! This module owns *when*: how far out of its tile the splash is, whether the
 //! application has arrived, and when there is nothing left to draw. Where and
 //! what it looks like belongs to [`crate::ui`].
@@ -31,6 +36,33 @@ const SETTLE: f32 = 0.12;
 
 /// How long the splash takes to fade off the application behind it.
 const HANDOVER: f32 = 0.3;
+
+/// A game does not fade off its window; it dips through black. How long the
+/// screen takes to go black, how long it stays there, and how long the game
+/// takes to come up out of it.
+///
+/// Three reasons, and only the last is about how it looks.
+///
+/// The picture a game's splash stands on is drawn on the *background* layer,
+/// under every application window, so the instant the game's own window maps
+/// that picture is gone — and a cross-fade would spend its whole length
+/// showing a title floating over a game nobody has been shown yet. Black is
+/// the one thing the shell can hold over the window while that happens.
+///
+/// It also buys the game the moment [`SETTLE`] buys an application, and buys
+/// it far more cheaply. A window is mapped when its first buffer is committed
+/// and a game's first buffer is a long way from its first frame — a black
+/// screen, a splash image, an anti-cheat notice — and none of that is worth
+/// cutting to. Behind black it costs nothing to wait through.
+///
+/// And it is what every console does, because it is what film does: two
+/// pictures that have nothing to do with each other are not cut between, they
+/// are dipped between. The hold is what makes it a dip rather than a flicker,
+/// and the way up is slower than the way down because that is the half the
+/// eye is actually reading.
+const BLACK_IN: f32 = 0.26;
+const BLACK_HOLD: f32 = 0.34;
+const BLACK_OUT: f32 = 0.42;
 
 /// How long the splash goes on watching after it has faded away.
 ///
@@ -56,19 +88,27 @@ const PATIENCE: f32 = 20.0;
 
 /// And how long for a game started through Valve's client.
 ///
-/// Minutes, not seconds, and for two reasons. There is no process to watch —
-/// the `steam steam://rungameid/…` that carries the request hands it over and
+/// Longer than [`PATIENCE`], because there is no process to watch — the
+/// `steam steam://rungameid/…` that carries the request hands it over and
 /// exits within milliseconds, so the only sign a game is coming is its window
-/// arriving — and a great deal can happen first: the client checks the
+/// arriving — and because a great deal can happen first: the client checks the
 /// installation, applies an update it decided was due, unpacks a shader cache,
 /// builds a Proton prefix on the game's first run, and shows an anti-cheat
 /// installer. Twenty seconds of that is normal and none of it is failure.
 ///
-/// The cost of being wrong in this direction is a loading screen somebody
-/// waits at for too long. The cost of being wrong in the other is the shell
-/// abandoning a game that then opens over the bar half a minute later, which
-/// is worse and is not recoverable.
-const STEAM_PATIENCE: f32 = 240.0;
+/// A minute is the cap, and it is a minute of the *game* rather than of the
+/// press: [`Launch::now_starting_through_steam`] restarts the clock at the
+/// moment the client is actually asked, so waking and signing in a cold client
+/// — most of a minute on its own — is not spent out of this.
+///
+/// It is a deliberate trade rather than a safe upper bound. The cost of being
+/// wrong in this direction is a loading screen somebody waits at for too long;
+/// the cost of being wrong in the other is the shell giving up on a game that
+/// then opens over the bar anyway, having already said it did not start. A
+/// first-run Proton prefix or a large shader cache can outlast this, and when
+/// it does the user is told the game did not open and the game opens — which
+/// is the failure this number buys, knowingly.
+const STEAM_PATIENCE: f32 = 60.0;
 
 /// Why the splash stopped waiting — which decides nothing about the drawing,
 /// only what gets said in the log.
@@ -83,6 +123,22 @@ pub enum Arrival {
     Gone,
     /// Long enough.
     GaveUp,
+}
+
+/// What a game's splash is waiting on, in the only two steps the shell can
+/// actually tell apart.
+///
+/// Two rather than one because they fail differently and take wildly different
+/// amounts of time, and because only the second is about the game. A cold
+/// client is the better part of a minute of the wait, and it is a minute spent
+/// on something the user never asked for and cannot see — so it is the half
+/// most worth naming, not the least.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doing {
+    /// Valve's client is being started and signed in.
+    Steam,
+    /// It is up, and it has been asked for the game.
+    Game,
 }
 
 /// An application that has been started and has not appeared yet.
@@ -103,6 +159,17 @@ pub struct Launch {
     /// that carries the request exits at once and the game is a child of the
     /// client, so liveness says nothing here and only the window counts.
     through_steam: bool,
+    /// Which game, for a launch out of the Steam library.
+    ///
+    /// The one thing the splash needs that is not about waiting: a game opens
+    /// under its own artwork on its own picture, and both are asked for by app
+    /// id — see [`crate::ui::build_launch`]. `None` for everything else, which
+    /// is what puts an ordinary application back on the panel it always had.
+    game: Option<u32>,
+    /// And which step of starting it the shell is on, for the line under the
+    /// indicator. Set with the game and moved on once Valve's client is up;
+    /// `None` for an ordinary application, whose panel says its name already.
+    doing: Option<Doing>,
     /// When the press was answered. The panel's own animation is measured from
     /// this and nothing moves it, because it is the moment the user acted.
     started: Instant,
@@ -154,6 +221,8 @@ impl Launch {
             from,
             pid,
             through_steam: false,
+            game: None,
+            doing: None,
             started: now,
             waiting_since: now,
             known: before.windows.to_vec(),
@@ -162,14 +231,42 @@ impl Launch {
         }
     }
 
-    /// Mark this as a game Valve's client is starting.
+    /// Mark this as a game Valve's client is starting, and say which game.
     ///
     /// The splash then waits [`STEAM_PATIENCE`] rather than [`PATIENCE`], and
     /// stops treating "no process" as "it died" — there is no process of ours
-    /// to have died.
-    pub fn through_steam(mut self) -> Self {
+    /// to have died. The app id comes with it because the two are the same
+    /// fact: every launch that goes through the client is a title out of the
+    /// library, and there is no such thing as one without an id.
+    pub fn through_steam(mut self, game: u32) -> Self {
         self.through_steam = true;
+        self.game = Some(game);
+        self.doing = Some(Doing::Steam);
         self
+    }
+
+    /// The game this is opening, if it is a game at all.
+    pub fn game(&self) -> Option<u32> {
+        self.game
+    }
+
+    /// Which step of starting it the splash should say it is on.
+    pub fn doing(&self) -> Option<Doing> {
+        self.doing
+    }
+
+    /// The windows on that display which were not there when this began.
+    ///
+    /// The same difference [`Self::advance`] decides an arrival by, handed out
+    /// so the caller can keep it. It is the one moment anything knows which
+    /// window a launch turned into: a window carries the class its binary
+    /// announces and nothing that says who started it, so a shell that did not
+    /// write it down here cannot work it out afterwards.
+    pub fn newcomers<'a>(&'a self, windows: &'a [u32]) -> impl Iterator<Item = u32> + 'a {
+        windows
+            .iter()
+            .copied()
+            .filter(|id| !self.known.contains(id))
     }
 
     /// The same, for a game Valve's client has just been asked to start.
@@ -179,12 +276,19 @@ impl Launch {
     /// signing in the client is not the game failing to appear, and on a cold
     /// client that is most of a minute of the patience already gone.
     ///
-    /// Only the patience. The panel on screen is in the middle of its own
-    /// opening, or long finished with it, and is not disturbed: this happens
-    /// while the user is watching, and a splash that started growing out of its
-    /// tile for a second time would read as a second application opening.
+    /// Only the patience, and the line under the indicator. The panel on
+    /// screen is in the middle of its own opening, or long finished with it,
+    /// and is not disturbed: this happens while the user is watching, and a
+    /// splash that started growing out of its tile for a second time would
+    /// read as a second application opening.
+    ///
+    /// The line changes because this is the moment it stops being true. Up to
+    /// here the wait was Valve's client coming up; from here it is the game,
+    /// and a loading screen still saying "Steam" a minute into a shader cache
+    /// is a loading screen lying about what it is waiting for.
     pub fn now_starting_through_steam(&mut self, now: Instant) {
         self.waiting_since = now;
+        self.doing = Some(Doing::Game);
     }
 
     /// Whether a game started through Valve's client never appeared.
@@ -263,14 +367,72 @@ impl Launch {
         (now.duration_since(self.started).as_secs_f32() / OPEN).clamp(0.0, 1.0)
     }
 
+    /// How long ago a game began dipping through black, if that is what is
+    /// happening.
+    ///
+    /// Only a game, and only an arrival that is a claim about something being
+    /// on the screen. A launch that died or ran out of patience has nothing to
+    /// reveal at the other end of a dip — what is behind it is the bar — so it
+    /// fades off the way an application's does and the user is told what went
+    /// wrong.
+    fn dipping(&self, now: Instant) -> Option<f32> {
+        match self.arrived {
+            Some((at, Arrival::Window | Arrival::Raised)) if self.game.is_some() => {
+                Some(now.duration_since(at).as_secs_f32())
+            }
+            _ => None,
+        }
+    }
+
     /// How much of the splash is left: 1 while it is waiting, falling to 0 as
     /// the application takes the screen.
+    ///
+    /// A game's goes with the black rather than with the window — it is gone
+    /// by the time the screen is, so nothing of the shell's is still being
+    /// drawn over a picture that is already black.
     pub fn fade(&self, now: Instant) -> f32 {
+        if let Some(since) = self.dipping(now) {
+            return 1.0 - (since / BLACK_IN).clamp(0.0, 1.0);
+        }
         let Some((at, _)) = self.arrived else {
             return 1.0;
         };
         let since = now.duration_since(at).as_secs_f32();
         1.0 - ((since - SETTLE) / HANDOVER).clamp(0.0, 1.0)
+    }
+
+    /// How black the display is: 0 while the shell's own picture is showing, 1
+    /// while nothing but black is, and back to 0 as the game comes up out of
+    /// it. Unshaped — the drawing eases it.
+    ///
+    /// Always 0 for anything that is not a game reaching its window.
+    pub fn blackout(&self, now: Instant) -> f32 {
+        let Some(since) = self.dipping(now) else {
+            return 0.0;
+        };
+        if since < BLACK_IN {
+            return (since / BLACK_IN).clamp(0.0, 1.0);
+        }
+        let up = since - BLACK_IN - BLACK_HOLD;
+        if up <= 0.0 {
+            return 1.0;
+        }
+        1.0 - (up / BLACK_OUT).clamp(0.0, 1.0)
+    }
+
+    /// Whether the black is coming *off* the game rather than going on over
+    /// the shell's own picture.
+    ///
+    /// The two halves of a dip look the same from outside — one number going
+    /// up and then down — but the shell has to do opposite things behind
+    /// them. On the way down the picture under the black is the game's hero,
+    /// which the shell is drawing and must keep drawing. On the way up it is
+    /// the game's own window, which it must not draw over: repainting the
+    /// hero there would reveal the picture the user came from instead of the
+    /// game they asked for.
+    pub fn uncovering(&self, now: Instant) -> bool {
+        self.dipping(now)
+            .is_some_and(|since| since >= BLACK_IN + BLACK_HOLD)
     }
 
     /// Whether it is still waiting for the application, as against handing the
@@ -282,8 +444,13 @@ impl Launch {
     /// Whether there is anything on the screen for this. False through the
     /// stretch where it has faded out but is still watching, which is when the
     /// display it is on has no reason to keep drawing for it.
+    ///
+    /// The black counts. A game whose splash has dissolved is still holding
+    /// the display — with nothing of its own on it, but holding it — and a
+    /// display that stopped drawing there would freeze the screen black over
+    /// the game it was about to reveal.
     pub fn drawing(&self, now: Instant) -> bool {
-        self.fade(now) > 0.0
+        self.fade(now) > 0.0 || self.blackout(now) > 0.0
     }
 
     /// Nothing left to draw, and nothing left to change its mind about.
@@ -295,7 +462,7 @@ impl Launch {
         let Some((at, how)) = self.arrived else {
             return false;
         };
-        if self.fade(now) > 0.0 {
+        if self.drawing(now) {
             return false;
         }
         // A launch that ended because nothing was ever coming has nothing to
@@ -330,6 +497,11 @@ mod tests {
                 foreground: "",
             },
         )
+    }
+
+    /// The same press, on a title out of the Steam library.
+    fn game(now: Instant) -> Launch {
+        launch(now).through_steam(504230)
     }
 
     fn at(t0: Instant, seconds: f32) -> Instant {
@@ -379,6 +551,127 @@ mod tests {
         assert!(!splash.drawing(faded));
         assert!(!splash.finished(faded));
         assert!(splash.finished(at(t0, 1.0 + WATCHING + 1.0)));
+        // An application dissolves off its window; it does not dip.
+        assert_eq!(splash.blackout(at(t0, 1.0 + SETTLE)), 0.0);
+        assert!(!splash.uncovering(at(t0, 1.0 + SETTLE)));
+    }
+
+    /// A game does not dissolve off its window — it dips through black, and
+    /// the picture behind it has to hold the whole way down.
+    ///
+    /// Not decoration. The hero a game's splash stands on is drawn on the
+    /// background layer, under every window, so the instant the game maps its
+    /// own the picture is gone; a cross-fade would spend its whole length
+    /// showing a title floating over an unrevealed game. Black is the only
+    /// thing the shell can hold over the window while that happens.
+    #[test]
+    fn a_game_hands_the_screen_over_through_black() {
+        let t0 = Instant::now();
+        let mut splash = game(t0);
+        assert_eq!(
+            splash.advance(at(t0, 1.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+
+        // Down: the splash goes as the black comes, and is gone by the time
+        // the screen is — nothing of the shell's is drawn on a black screen.
+        let half = at(t0, 1.0 + BLACK_IN * 0.5);
+        assert!(splash.fade(half) > 0.0 && splash.fade(half) < 1.0);
+        assert!(splash.blackout(half) > 0.0 && splash.blackout(half) < 1.0);
+        assert!(!splash.uncovering(half), "it is still on its own picture");
+
+        // Black, and held there: a mapped window is a long way from a drawn
+        // one, and this is the stretch that costs nothing to wait through.
+        for held in [0.0, BLACK_HOLD * 0.5] {
+            let now = at(t0, 1.0 + BLACK_IN + held);
+            assert_eq!(splash.blackout(now), 1.0, "held {held}");
+            assert_eq!(splash.fade(now), 0.0);
+            assert!(splash.drawing(now), "the display stopped drawing on black");
+            assert!(!splash.finished(now));
+        }
+
+        // The way up is the half that shows the game, so the shell must stop
+        // painting the picture it came from — and the screen has to be solid
+        // black at the moment it does, or dropping the picture is a flash of
+        // the game a frame before the reveal.
+        let turn = at(t0, 1.0 + BLACK_IN + BLACK_HOLD);
+        assert!(splash.uncovering(turn));
+        assert!(splash.blackout(turn) > 0.999, "{}", splash.blackout(turn));
+        let up = at(t0, 1.0 + BLACK_IN + BLACK_HOLD + BLACK_OUT * 0.5);
+        let showing = splash.blackout(up);
+        assert!(showing > 0.0 && showing < 1.0, "{showing}");
+        assert!(splash.drawing(up));
+
+        // And then it is off the game entirely.
+        let done = at(t0, 1.0 + BLACK_IN + BLACK_HOLD + BLACK_OUT);
+        assert_eq!(splash.blackout(done), 0.0);
+        assert!(!splash.drawing(done));
+        assert!(!splash.finished(done), "it is still watching");
+        assert!(splash.finished(at(t0, 1.0 + STEAM_WATCHING + 1.0)));
+    }
+
+    /// Which window a game turned out to be is knowable at exactly one moment
+    /// — this one — and nothing can work it out afterwards: a window carries
+    /// the class its binary announces and nothing that says who started it.
+    /// It is what lets the guide offer to close a game by its own name rather
+    /// than by whatever a Proton binary happens to be called.
+    #[test]
+    fn a_launch_says_which_windows_it_turned_out_to_be() {
+        let t0 = Instant::now();
+        let mut splash = game(t0);
+
+        // Nothing new yet, so nothing to claim.
+        assert_eq!(
+            splash.newcomers(&[7]).collect::<Vec<u32>>(),
+            Vec::<u32>::new()
+        );
+
+        assert_eq!(
+            splash.advance(at(t0, 1.0), &[7, 9, 11], "", false),
+            Some(Arrival::Window)
+        );
+        // The two that were not there, and not the one that was — a window
+        // somebody else already had is not this launch's to name.
+        assert_eq!(
+            splash.newcomers(&[7, 9, 11]).collect::<Vec<_>>(),
+            vec![9, 11]
+        );
+    }
+
+    /// A game that never appeared has nothing at the other end of a dip — what
+    /// is behind the splash is the bar the press came from. So it fades off
+    /// the way an application's does, and the user is told what went wrong
+    /// rather than being shown a second of black for no reason.
+    #[test]
+    fn a_game_that_never_arrives_does_not_dip() {
+        let t0 = Instant::now();
+        let mut splash = game(t0);
+        assert_eq!(
+            splash.advance(at(t0, STEAM_PATIENCE), &[7], "", true),
+            Some(Arrival::GaveUp)
+        );
+        for after in [0.0, BLACK_IN, BLACK_IN + BLACK_HOLD] {
+            assert_eq!(splash.blackout(at(t0, STEAM_PATIENCE + after)), 0.0);
+            assert!(!splash.uncovering(at(t0, STEAM_PATIENCE + after)));
+        }
+        assert!(splash.steam_never_appeared());
+        assert!(splash.finished(at(t0, STEAM_PATIENCE + SETTLE + HANDOVER + 0.01)));
+    }
+
+    /// What the line beside the indicator says follows what is actually being
+    /// waited for, and the moment it stops being Valve's client is the moment
+    /// the game is asked for.
+    #[test]
+    fn the_splash_says_which_step_of_starting_a_game_it_is_on() {
+        let t0 = Instant::now();
+        // An ordinary application has nothing to say: its panel carries its
+        // name and its icon already.
+        assert_eq!(launch(t0).doing(), None);
+
+        let mut splash = game(t0);
+        assert_eq!(splash.doing(), Some(Doing::Steam));
+        splash.now_starting_through_steam(at(t0, 4.0));
+        assert_eq!(splash.doing(), Some(Doing::Game));
     }
 
     /// The hand-over is a bet that the window which appeared is the
@@ -485,7 +778,7 @@ mod tests {
     #[test]
     fn a_steam_launch_is_not_dead_merely_because_nothing_of_ours_is_running() {
         let t0 = Instant::now();
-        let mut splash = launch(t0).through_steam();
+        let mut splash = launch(t0).through_steam(504230);
 
         assert_eq!(splash.advance(at(t0, 0.5), &[7], "", false), None);
         assert_eq!(splash.advance(at(t0, 30.0), &[7], "", false), None);
@@ -505,7 +798,7 @@ mod tests {
     #[test]
     fn a_steam_launch_waits_minutes_and_then_says_so() {
         let t0 = Instant::now();
-        let mut splash = launch(t0).through_steam();
+        let mut splash = launch(t0).through_steam(504230);
 
         assert_eq!(
             splash.advance(at(t0, PATIENCE + 1.0), &[7], "", true),
@@ -530,7 +823,7 @@ mod tests {
     #[test]
     fn handing_the_game_over_does_not_open_the_panel_a_second_time() {
         let t0 = Instant::now();
-        let mut splash = launch(t0).through_steam();
+        let mut splash = launch(t0).through_steam(504230);
         assert_eq!(splash.open(at(t0, OPEN)), 1.0);
 
         // Four seconds in, the client is up and the game is asked for.

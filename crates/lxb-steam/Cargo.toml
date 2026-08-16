@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dev-dependencies]
 # A probe is worth having only if it can be made to say what it saw, so the

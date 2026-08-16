@@ -13,9 +13,16 @@
         let
           pkgs = import nixpkgs { inherit system; };
           linexinbar = pkgs.callPackage ./packaging/nix/package.nix { src = ./.; };
+          # The compositor on its own, for anything that needs a Wayland
+          # session on the hardware but not this project's shell — a display
+          # manager, most of all. See `component` in package.nix.
+          lxb-compositor = pkgs.callPackage ./packaging/nix/package.nix {
+            src = ./.;
+            component = "compositor";
+          };
         in
         {
-          inherit linexinbar;
+          inherit linexinbar lxb-compositor;
           default = linexinbar;
         });
 

@@ -56,14 +56,78 @@ pub struct Stream {
     /// application is making any noise at all.
     pub key: u32,
     /// The sounds it has open, as the mixer numbers them.
+    ///
+    /// Empty for the one row the mixer keeps whether or not the server has
+    /// anything of the application's in it — see [`InFront`]. Every other row
+    /// stands for at least one sound, because every other row is one the server
+    /// listed.
     pub inputs: Vec<u32>,
     /// What the application calls itself, for a row that has no better name.
     pub name: String,
     /// The program behind it, which is what the installed catalogue is searched
-    /// with for the icon and the name a user actually reads.
+    /// with for the icon and the name a user actually reads. For the row kept
+    /// for the application in front it is the name that application's *window*
+    /// goes by, which is the same question the catalogue answers and the only
+    /// name there is when the server has never listed the application at all.
     pub binary: Option<String>,
     /// The loudest of its sounds, which is what the user is hearing.
     pub level: Level,
+}
+
+/// The application in front of the user, which the mixer lists whether or not
+/// it is making a sound.
+///
+/// A mixer built only out of what the server is playing is a mixer an
+/// application can hide from. Silence one and let it stop playing — here, or in
+/// whatever desktop the user was in before this one — and the row goes with the
+/// sound, taking the only control that could bring it back; the *setting*
+/// stays, because the sound server writes it down per application and hands it
+/// straight back the next time that application plays. So the row has to
+/// outlive the sound, and this is the application it outlives it for.
+///
+/// Only the one in front, deliberately. Every application that has ever played
+/// on the machine is a list of hundreds, most of them not running, and the one
+/// the user is looking at is the one they opened the mixer about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InFront {
+    /// What its window calls itself. The application's identity here — a change
+    /// waiting for its sounds is held against this, and a title that changes
+    /// with the tab in front is not a different application — rather than one
+    /// of the names its sounds are found by.
+    pub id: String,
+    /// What to call its row where the catalogue cannot name it.
+    pub title: String,
+    /// Every name its sounds might be listed under, best first. Worked out by
+    /// the shell, because that is where the catalogue of installed applications
+    /// and the Steam library are — see `Shell::in_front`.
+    pub names: Vec<String>,
+}
+
+impl InFront {
+    /// Whether one row of the listing is this application's.
+    ///
+    /// Matched on letters and digits alone, because the two sides spell one
+    /// application differently and none of the difference is meaningful: the
+    /// window of a game says `TEKKEN 8` where its sound says `TEKKEN™8`, and a
+    /// trademark sign is not another application.
+    fn owns(&self, stream: &Stream) -> bool {
+        let said = [stream.binary.as_deref(), Some(stream.name.as_str())];
+        self.names.iter().any(|name| {
+            let name = plain(name);
+            !name.is_empty() && said.iter().flatten().any(|said| plain(said) == name)
+        })
+    }
+
+    /// The row it gets while the server has nothing of its own to say about it.
+    fn silent(&self, level: Level) -> Stream {
+        Stream {
+            key: key_of(&self.id),
+            inputs: Vec::new(),
+            name: self.title.clone(),
+            binary: Some(self.id.clone()),
+            level,
+        }
+    }
 }
 
 /// Which way sound is going.
@@ -213,6 +277,22 @@ struct State {
     streams: Vec<Stream>,
     stream_asks: Vec<StreamAsk>,
     streams_epoch: u64,
+    /// The application the user is looking at, which has a row in the mixer
+    /// whether or not it is playing anything.
+    front: Option<InFront>,
+    /// What has been asked of that row while the application had nothing
+    /// playing, waiting for it to open a sound to be given to.
+    ///
+    /// It has to wait: a level is a thing the server holds *per sound*, and an
+    /// application with none open is one there is nothing to set. Nor can the
+    /// server's own memory of the application be written instead — see
+    /// [`remembered`]. So the shell holds the change until the application
+    /// plays and hands it over then, which is the moment it starts to matter: a
+    /// mute nobody could hear is no different from one nobody has made. The
+    /// server writes it down itself from there, exactly as it does for a level
+    /// set from any other mixer, and that is what carries it past the next
+    /// login.
+    front_wanted: Option<Level>,
     /// What the machine can play through and record from, and what the user
     /// has asked it to use since.
     ///
@@ -304,6 +384,19 @@ impl State {
         self.streams_epoch += 1;
         self.dirty = true;
     }
+
+    /// Note what has been asked of the application in front while it had
+    /// nothing playing, replacing anything already waiting for it.
+    ///
+    /// Replaced rather than folded together, unlike an ask about real sounds:
+    /// this is a whole position for a row rather than a pair of separate
+    /// instructions, and the last thing the user did to that row is what they
+    /// want the application to come back at.
+    fn ask_front(&mut self, level: Level) {
+        self.front_wanted = Some(level);
+        self.streams_epoch += 1;
+        self.dirty = true;
+    }
 }
 
 impl Quick {
@@ -370,6 +463,36 @@ impl Quick {
             state.dirty = true;
             self.shared.signal.notify_one();
         }
+    }
+
+    /// Say which application the user is in front of, so the mixer has a row
+    /// for it whether or not it is making a sound.
+    ///
+    /// `None` on a screen with nothing running on it, and on one whose
+    /// application says nothing about what it is: a row that could not be tied
+    /// to an application now is a row whose setting could not be tied back to
+    /// it the next time it plays, which is the whole of what the row is for.
+    pub fn watch_front(&self, front: Option<InFront>) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.front == front {
+            return;
+        }
+        // A change waiting for an application the user has left goes with them.
+        // It was asked for about the application in front of them, the shell
+        // stops watching for that one's sounds here, and the row is still there
+        // to ask again from when they come back to it. Compared by identity
+        // rather than by the whole of it: a window that has changed its title
+        // is the same application, still waiting for the same thing.
+        if state.front.as_ref().map(|front| &front.id) != front.as_ref().map(|front| &front.id) {
+            state.front_wanted = None;
+        }
+        state.front = front;
+        // The listing on its way back was taken about the application the user
+        // was in front of a moment ago, and carries its row. Discarded the way
+        // a press discards one.
+        state.streams_epoch += 1;
+        state.dirty = true;
+        self.shared.signal.notify_one();
     }
 
     /// Move a bar by one step, and tell the worker to make it so.
@@ -457,12 +580,17 @@ impl Quick {
         if value == level.value && !unmute {
             return false;
         }
-        stream.level = Level {
+        let moved = Level {
             value,
             muted: level.muted && !unmute,
         };
+        stream.level = moved;
         let inputs = stream.inputs.clone();
-        state.ask_stream(inputs, Some(value), unmute.then_some(false));
+        if inputs.is_empty() {
+            state.ask_front(moved);
+        } else {
+            state.ask_stream(inputs, Some(value), unmute.then_some(false));
+        }
         self.shared.signal.notify_one();
         true
     }
@@ -475,6 +603,9 @@ impl Quick {
     /// left at different volumes are levelled by the first press, which is the
     /// price of the row being about the application rather than about whichever
     /// of its sounds the server listed first.
+    ///
+    /// A row with nothing playing behind it moves the same way. What it moves
+    /// is where the application will come back — see [`State::front_wanted`].
     pub fn nudge_stream(&self, key: u32, delta: i32) -> bool {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(stream) = state.streams.iter_mut().find(|stream| stream.key == key) else {
@@ -486,30 +617,46 @@ impl Quick {
         if value == level.value && !unmute {
             return false;
         }
-        stream.level = Level {
+        let moved = Level {
             value,
             muted: level.muted && !unmute,
         };
+        stream.level = moved;
         let inputs = stream.inputs.clone();
-        state.ask_stream(inputs, Some(value), unmute.then_some(false));
+        if inputs.is_empty() {
+            state.ask_front(moved);
+        } else {
+            state.ask_stream(inputs, Some(value), unmute.then_some(false));
+        }
         self.shared.signal.notify_one();
         true
     }
 
     /// Silence one application, or bring it back. Reports whether there was a
     /// row to do it to.
+    ///
+    /// Including an application that is not playing anything, which is the one
+    /// this can be *most* worth doing to: silencing something that will start
+    /// making a noise later, and undoing a silence made before it fell quiet —
+    /// or in another desktop entirely, which is where a mute the user cannot
+    /// find the control for usually comes from.
     pub fn toggle_stream_mute(&self, key: u32) -> bool {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(stream) = state.streams.iter_mut().find(|stream| stream.key == key) else {
             return false;
         };
         let muted = !stream.level.muted;
-        stream.level = Level {
+        let moved = Level {
             muted,
             ..stream.level
         };
+        stream.level = moved;
         let inputs = stream.inputs.clone();
-        state.ask_stream(inputs, None, Some(muted));
+        if inputs.is_empty() {
+            state.ask_front(moved);
+        } else {
+            state.ask_stream(inputs, None, Some(muted));
+        }
         self.shared.signal.notify_one();
         true
     }
@@ -630,6 +777,19 @@ impl Shared {
         }
     }
 
+    /// A change that was waiting for the application in front to make a sound
+    /// has been given to it, and is not waiting any more.
+    ///
+    /// Only the one that landed, on the same terms a reading is published
+    /// under: the user may have moved that row again while this was being
+    /// handed over, and the newer position is still waiting for its own moment.
+    fn landed(&self, level: Level) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.front_wanted == Some(level) {
+            state.front_wanted = None;
+        }
+    }
+
     /// Hand a device listing to the Settings column, unless a press overtook
     /// it. The same rule the mixer panel's listing is published under, and for
     /// the same reason: the row the user has just chosen must not be unmarked
@@ -674,6 +834,11 @@ struct Work {
 struct StreamWork {
     asks: Vec<StreamAsk>,
     epoch: u64,
+    /// The application in front, whose row is in the listing whether the server
+    /// mentions it or not.
+    front: Option<InFront>,
+    /// What is waiting to be given to that application the moment it plays.
+    wanted: Option<Level>,
 }
 
 /// What the device page is asking for this pass, and whether it is up.
@@ -776,6 +941,8 @@ impl Worker {
                 streams: StreamWork {
                     asks: std::mem::take(&mut state.stream_asks),
                     epoch: state.streams_epoch,
+                    front: state.front.clone(),
+                    wanted: state.front_wanted,
                 },
                 devices: DeviceWork {
                     asks: std::mem::take(&mut state.device_asks),
@@ -851,16 +1018,70 @@ impl Worker {
                 }
             }
         }
-        // Only while the sidebar the mixer opens from is up: this is a
-        // subprocess of its own, and nothing is looking at the answer otherwise.
-        //
-        // And no read back on the pass that carried a press out, exactly as the
+        // No read back on the pass that carried a press out, exactly as the
         // session bar does it: the panel already shows what was asked for, and
         // a server that has not caught up would pull the row backwards.
-        if work.on_screen && work.streams.asks.is_empty() {
-            self.shared
-                .publish_streams(work.streams.epoch, audio.streams());
+        if !work.streams.asks.is_empty() {
+            return;
         }
+        // Otherwise only while the sidebar the mixer opens from is up — this is
+        // a subprocess of its own, and nothing is looking at the answer — or
+        // while a change is waiting for the application in front to make a
+        // sound, which is the one case where nobody is looking and the moment
+        // still has to be caught. That one ends: it ends when the application
+        // plays, and it ends when the user leaves the application.
+        if !work.on_screen && work.streams.wanted.is_none() {
+            return;
+        }
+        let mut streams = audio.streams();
+        self.front_row(audio, &work.streams, &mut streams);
+        if work.on_screen {
+            self.shared.publish_streams(work.streams.epoch, streams);
+        }
+    }
+
+    /// Put the application in front into the listing, and give it anything that
+    /// has been waiting for it.
+    ///
+    /// Its row is first either way. It is the application the user is looking
+    /// at, so it is the row the panel opens with the highlight already on —
+    /// and a row that jumped up the list the moment the application started
+    /// playing would move under the user's hand.
+    fn front_row(&self, audio: &Audio, work: &StreamWork, streams: &mut Vec<Stream>) {
+        let Some(front) = work.front.as_ref() else {
+            return;
+        };
+        let Some(at) = streams.iter().position(|stream| front.owns(stream)) else {
+            // Nothing of the application's in the server: the row stands on
+            // what the server would give it when it does play, or on what is
+            // waiting to be given to it instead.
+            let level = work
+                .wanted
+                .or_else(|| remembered(&front.names))
+                .unwrap_or(FRESH);
+            streams.insert(0, front.silent(level));
+            return;
+        };
+        // It is playing after all. Whatever was asked of it while it was silent
+        // goes to the sounds it has now — this is the moment that was being
+        // waited for — and the row is put where it was asked to be in the same
+        // breath, since the listing was taken before any of it was set.
+        if let Some(level) = work.wanted {
+            tracing::info!(
+                app = %front.id,
+                value = level.value,
+                muted = level.muted,
+                "the application in front is playing; giving it what was set while it was silent"
+            );
+            for input in &streams[at].inputs {
+                audio.set_stream(*input, level.value);
+                audio.mute_stream(*input, level.muted);
+            }
+            streams[at].level = level;
+            self.shared.landed(level);
+        }
+        let row = streams.remove(at);
+        streams.insert(0, row);
     }
 
     fn drive_volume(&mut self, work: &Work) {
@@ -934,7 +1155,12 @@ impl Worker {
         // Bound rather than dropped: the guard has to outlive the wait, or the
         // lock is released and immediately retaken and nothing has been
         // waited for.
-        if state.on_screen || state.watching_devices {
+        //
+        // A change waiting for an application to play keeps the loop turning
+        // with nothing on screen, because the application it is waiting for
+        // will start playing with nothing on screen — that is what the user
+        // shut the guide to go and do.
+        if state.on_screen || state.watching_devices || state.front_wanted.is_some() {
             let _held = self.shared.signal.wait_timeout(state, REFRESH);
         } else {
             let _held = self.shared.signal.wait(state);
@@ -1484,6 +1710,170 @@ fn key_of(name: &str) -> u32 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     hash
+}
+
+/// Where an application starts when nothing has ever been set about it: all the
+/// way up and not silenced, which is what the session manager gives a sound it
+/// has never seen before.
+const FRESH: Level = Level {
+    value: 1.0,
+    muted: false,
+};
+
+/// The level the session manager will hand an application the next time it
+/// plays, where it remembers one.
+///
+/// Read out of the file WirePlumber keeps it in, because there is no interface
+/// to ask: the setting belongs to an application with no sound open, and every
+/// way of changing one — `pactl`, `wpctl`, this shell — acts on a sound the
+/// server already has. PipeWire's PulseAudio side does carry PulseAudio's
+/// stream-restore extension, which was that interface, but its session manager
+/// answers exactly one key of it: the notification role that `pavucontrol`
+/// shows as "System Sounds". There is nothing else to ask.
+///
+/// Reading it is sound in the way writing it would not be. WirePlumber holds
+/// this table in memory and writes the whole of it out after any change, so a
+/// line put here behind its back is lost the moment anything on the machine
+/// moves a slider, and it is not read back until the session manager restarts.
+/// Which is why a change made to a row with nothing playing is given to the
+/// application's own sounds when it opens them instead — see
+/// [`State::front_wanted`] — and written down by the session manager from
+/// there, the same as a change made in any other mixer.
+///
+/// `None` on a session whose sound is not WirePlumber's to remember: PulseAudio
+/// proper keeps the same table in a binary database of its own, and the kernel
+/// mixer has nothing to keep. A row with no answer here starts at [`FRESH`],
+/// which is where an application nothing is remembered about starts.
+fn remembered(names: &[String]) -> Option<Level> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    let saved =
+        std::fs::read_to_string(state.join("wireplumber").join("stream-properties")).ok()?;
+    parse_remembered(&saved, names)
+}
+
+/// What that file says about one application.
+///
+/// A line for each: a key of `Output/Audio:<property>:<name>` — the property
+/// being whichever one the session manager filed the application under, which
+/// is not knowable from here and does not matter — and then what was last set
+/// on it, as JSON. Spaces in the name are escaped as `\s`, this being a
+/// key-file.
+///
+/// Only the playback half is read. `Input/Audio` is the same application's
+/// microphone, which is not what a volume mixer is about.
+///
+/// The volume in it is the linear one PipeWire holds a node at, and the mixer's
+/// rows are on the cubic scale `pactl` reports and takes — they differ by a
+/// third of the bar at half volume — so it is converted here rather than drawn
+/// wrongly there.
+fn parse_remembered(saved: &str, names: &[String]) -> Option<Level> {
+    // Best name first, and each of them against the whole file: an application
+    // is filed under whichever property the session manager found first when it
+    // last played, so the name that identifies it best is the one to believe.
+    for name in names.iter().map(|name| plain(name)) {
+        if name.is_empty() {
+            continue;
+        }
+        for line in saved.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(under) = key.trim().strip_prefix("Output/Audio:") else {
+                continue;
+            };
+            // The property it was filed under, then the name itself — which
+            // may hold colons of its own, so only the first is a separator.
+            let Some((_, named)) = under.split_once(':') else {
+                continue;
+            };
+            if plain(&unescape(named)) != name {
+                continue;
+            }
+            return Some(Level {
+                value: saved_volume(value).unwrap_or(1.0).clamp(0.0, 1.0).cbrt(),
+                muted: saved_flag(value, "mute").unwrap_or(false),
+            });
+        }
+    }
+    None
+}
+
+/// The loudest channel of a saved level, or the volume of the whole node where
+/// the channels were not saved.
+///
+/// The loudest for the reason the row shows the loudest of an application's
+/// sounds: it is what the user would hear.
+fn saved_volume(value: &str) -> Option<f32> {
+    let channels = value
+        .split_once("\"channelVolumes\":")
+        .and_then(|(_, rest)| rest.split_once('['))
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .and_then(|(list, _)| {
+            list.split(',')
+                .filter_map(|number| number.trim().parse::<f32>().ok())
+                .fold(None, |loudest: Option<f32>, value| {
+                    Some(loudest.map_or(value, |loudest| loudest.max(value)))
+                })
+        });
+    if channels.is_some() {
+        return channels;
+    }
+    let (_, rest) = value.split_once("\"volume\":")?;
+    rest.trim_start()
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// One `"name":true` out of the same object.
+fn saved_flag(value: &str, name: &str) -> Option<bool> {
+    let (_, rest) = value.split_once(&format!("\"{name}\":"))?;
+    let rest = rest.trim_start();
+    if rest.starts_with("true") {
+        return Some(true);
+    }
+    rest.starts_with("false").then_some(false)
+}
+
+/// A key-file key with its escapes taken out, so that a name with a space in it
+/// is the name the application goes by rather than the spelling the file needs.
+fn unescape(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut letters = key.chars();
+    while let Some(letter) = letters.next() {
+        if letter != '\\' {
+            out.push(letter);
+            continue;
+        }
+        match letters.next() {
+            Some('s') => out.push(' '),
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// One name reduced to what two spellings of the same application have in
+/// common: its letters and digits, in lower case.
+///
+/// Everything else is how one side happens to write it. A window calls a game
+/// `TEKKEN 8` and its sound calls it `TEKKEN™8`; a desktop entry is
+/// `org.kde.dolphin` where the program is `dolphin`, which is why the shell
+/// offers both spellings rather than leaving the dots to be stripped here.
+fn plain(name: &str) -> String {
+    name.chars()
+        .filter(|letter| letter.is_alphanumeric())
+        .flat_map(|letter| letter.to_lowercase())
+        .collect()
 }
 
 /// Whatever the session is playing through now, rather than a device chosen
@@ -2040,6 +2430,237 @@ Sink Input #9504
             program: None,
         };
         assert_eq!(parse_sink_inputs(SINK_INPUTS, &anonymous).len(), 3);
+    }
+
+    /// The application in front, with the names the shell works out for it.
+    fn in_front(id: &str, title: &str, names: &[&str]) -> InFront {
+        InFront {
+            id: id.to_string(),
+            title: title.to_string(),
+            names: names.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    /// One application is spelled differently on the two sides, and none of the
+    /// difference means anything.
+    #[test]
+    fn an_applications_sounds_are_found_however_either_side_spells_it() {
+        let streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
+        let [browser, game] = [&streams[0], &streams[1]];
+
+        // By the program behind the sound, which is what a window of a
+        // reverse-DNS application is called at the end.
+        assert!(in_front("org.mozilla.zen", "Zen", &["org.mozilla.zen", "zen"]).owns(browser));
+        // By what the application calls itself, where the program does not
+        // match: the game's sound is made by `somegame.exe`.
+        assert!(in_front("somegame", "Some Game", &["somegame", "Some Game"]).owns(game));
+        // Punctuation and case are how one side happens to write it. A window
+        // titled `Some Game` and a sound calling itself `SOME-GAME` are one
+        // application.
+        assert!(in_front("steam_app_42", "Some Game", &["SOME-GAME"]).owns(game));
+        // And two applications are still two.
+        assert!(!in_front("cmus", "cmus", &["cmus"]).owns(browser));
+        // A name that is nothing but punctuation matches nothing, rather than
+        // matching every row whose name is also nothing.
+        assert!(!in_front("-", "-", &["-"]).owns(game));
+    }
+
+    /// Shaped exactly like the file WirePlumber keeps per-application levels
+    /// in: the section, the escaped spaces of a key-file, and the JSON. The
+    /// volumes are the linear ones it holds, which is why the half-volume row
+    /// below reads 0.125.
+    const REMEMBERED: &str = r#"[stream-properties]
+Output/Audio:media.role:Notification={"channelMap":["FL", "FR"], "mute":true, "channelVolumes":[1.000000, 1.000000], "volume":1.000000}
+Output/Audio:application.name:Zen={"channelMap":["FL", "FR"], "mute":false, "channelVolumes":[0.125000, 0.125000], "volume":1.000000}
+Output/Audio:application.name:Some\sGame={"channelMap":["FL", "FR"], "mute":true, "channelVolumes":[1.000000, 1.000000], "volume":1.000000}
+Input/Audio:application.name:Some\sGame={"channelMap":["MONO"], "mute":false, "channelVolumes":[0.001000], "volume":1.000000}
+Output/Audio:application.name:TEKKEN™8={"channelMap":["FL", "FR"], "mute":false, "channelVolumes":[0.421875, 0.421875], "volume":1.000000}
+Output/Audio:node.name:something-else={"mute":false, "volume":0.343000}
+"#;
+
+    /// What the row for a silent application stands on: the level the session
+    /// manager will hand it the next time it plays.
+    #[test]
+    fn a_silent_application_is_shown_at_the_level_it_will_come_back_at() {
+        let level = |names: &[&str]| {
+            parse_remembered(
+                REMEMBERED,
+                &names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        // The file holds what PipeWire holds, which is linear; the mixer's rows
+        // are the cubic percentages `pactl` reports and takes. Half a bar is
+        // an eighth of the number in the file.
+        let browser = level(&["zen"]).expect("the browser is in the file");
+        assert!((browser.value - 0.5).abs() < 1e-6, "{browser:?}");
+        assert!(!browser.muted);
+
+        // The whole point of the row: an application silenced when it was last
+        // playing is still silenced, and says so with nothing playing.
+        let game = level(&["Some Game"]).expect("the game is in the file");
+        assert!(game.muted, "{game:?}");
+        // And that is the *playback* row. The same application's microphone is
+        // a line of its own in the same file and is not what this is about.
+        assert!((game.value - 1.0).abs() < 1e-6, "{game:?}");
+
+        // Spelled either way round, since the file is written by whoever was
+        // playing and the names come from a window.
+        assert_eq!(level(&["TEKKEN 8"]), level(&["TEKKEN™8"]));
+
+        // A level saved without its channels falls back to the volume of the
+        // whole node.
+        let node = level(&["something else"]).expect("filed under its node name");
+        assert!((node.value - 0.7).abs() < 1e-6, "{node:?}");
+
+        // The best name first: the game's own name is in the file and the
+        // window's is not, and the row is the game's.
+        let both = level(&["steam_app_42", "Some Game"]).expect("found under the second name");
+        assert!(both.muted, "{both:?}");
+
+        // An application nothing is remembered about has no answer here at all,
+        // which is what leaves its row where a new application starts.
+        assert_eq!(level(&["nothing-has-ever-played-under-this"]), None);
+        // And a name that reduces to nothing matches no line, rather than the
+        // first line whose name is also punctuation.
+        assert_eq!(level(&["-"]), None);
+    }
+
+    /// A worker with something that answers without spawning a program. What is
+    /// under test is which rows come out of a listing; the two calls the merge
+    /// makes into the mixer are the two the kernel's has nothing to do about.
+    fn merging_worker(shared: &Arc<Shared>) -> Worker {
+        let mut worker = Worker::new(Arc::clone(shared));
+        worker.audio = Some(Audio::Alsa("Master".to_string()));
+        worker
+    }
+
+    fn stream_work(front: InFront, wanted: Option<Level>) -> StreamWork {
+        StreamWork {
+            asks: Vec::new(),
+            epoch: 0,
+            front: Some(front),
+            wanted,
+        }
+    }
+
+    /// The row that is the whole point: an application the server has nothing
+    /// of in it is still on the panel, so a silence set on it can be undone.
+    #[test]
+    fn the_application_in_front_has_a_row_with_nothing_playing() {
+        let quick = Quick::start();
+        let worker = merging_worker(&quick.shared);
+        // A name no file on any machine can hold, so the level it stands on is
+        // the one an application nothing is remembered about starts at.
+        let front = in_front(
+            "lxb.test.never-played",
+            "Never Played",
+            &["lxb.test.never-played"],
+        );
+        let work = stream_work(front.clone(), None);
+
+        let mut streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
+        worker.front_row(worker.audio.as_ref().unwrap(), &work, &mut streams);
+
+        assert_eq!(streams.len(), 4, "{streams:#?}");
+        // First, because it is the application the user is looking at.
+        assert_eq!(streams[0].name, "Never Played");
+        assert_eq!(streams[0].key, key_of("lxb.test.never-played"));
+        // And with no sounds behind it, which is what makes it that row.
+        assert!(streams[0].inputs.is_empty(), "{:#?}", streams[0]);
+        assert_eq!(streams[0].level, FRESH);
+        // Everything that is playing is still there, and in the order it was.
+        assert_eq!(streams[1].name, "Zen");
+        assert_eq!(streams[2].name, "Some Game");
+    }
+
+    /// And when it does start playing it is one row, not two.
+    #[test]
+    fn an_application_that_starts_playing_does_not_get_a_second_row() {
+        let quick = Quick::start();
+        let worker = merging_worker(&quick.shared);
+        let work = stream_work(in_front("somegame", "Some Game", &["somegame"]), None);
+
+        let mut streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
+        worker.front_row(worker.audio.as_ref().unwrap(), &work, &mut streams);
+
+        assert_eq!(streams.len(), 3, "{streams:#?}");
+        assert_eq!(streams[0].name, "Some Game");
+        assert_eq!(streams[0].inputs, vec![904]);
+    }
+
+    /// A change made to a row with nothing playing waits, and is given to the
+    /// application the moment it opens a sound — which is the moment it starts
+    /// to matter, and the moment the sound server writes it down itself.
+    #[test]
+    fn a_change_to_a_silent_row_waits_for_the_application_to_play() {
+        let quick = Quick::start();
+        let front = in_front("somegame", "Some Game", &["somegame", "Some Game"]);
+        let silenced = Level {
+            value: 1.0,
+            muted: true,
+        };
+
+        // Nothing playing: the row is the shell's own, and silencing it asks
+        // nothing of the server, which has nothing to be asked about.
+        {
+            let mut state = quick.shared.state.lock().unwrap();
+            state.front = Some(front.clone());
+            state.streams = vec![front.silent(FRESH)];
+        }
+        let key = quick.streams()[0].key;
+        assert!(quick.toggle_stream_mute(key));
+        {
+            let state = quick.shared.state.lock().unwrap();
+            assert!(state.stream_asks.is_empty(), "{:#?}", state.stream_asks);
+            assert_eq!(state.front_wanted, Some(silenced));
+        }
+        // And the row shows it, so the panel is not a control that did nothing.
+        assert!(quick.streams()[0].level.muted);
+
+        // Now it plays. The wait ends: the sounds it opened are set to what was
+        // asked for, the row stands on that, and nothing is left waiting.
+        let worker = merging_worker(&quick.shared);
+        let work = stream_work(front, Some(silenced));
+        let mut streams = parse_sink_inputs(SINK_INPUTS, &elsewhere());
+        worker.front_row(worker.audio.as_ref().unwrap(), &work, &mut streams);
+
+        assert_eq!(streams.len(), 3, "{streams:#?}");
+        assert_eq!(streams[0].inputs, vec![904]);
+        assert_eq!(streams[0].level, silenced);
+        let state = quick.shared.state.lock().unwrap();
+        assert_eq!(state.front_wanted, None);
+    }
+
+    /// The wait belongs to the application it was made about. Leaving that
+    /// application ends it; a window that has merely retitled itself has not.
+    #[test]
+    fn a_wait_ends_when_the_user_leaves_the_application() {
+        let quick = Quick::start();
+        let game = in_front("somegame", "Some Game", &["somegame"]);
+        quick.watch_front(Some(game.clone()));
+        {
+            let mut state = quick.shared.state.lock().unwrap();
+            state.front_wanted = Some(FRESH);
+        }
+
+        // The same application, saying something new about itself.
+        quick.watch_front(Some(in_front(
+            "somegame",
+            "Some Game",
+            &["somegame", "Some Game — a level"],
+        )));
+        {
+            let state = quick.shared.state.lock().unwrap();
+            assert_eq!(state.front_wanted, Some(FRESH), "the same application");
+        }
+
+        quick.watch_front(Some(in_front("zen", "Zen", &["zen"])));
+        let state = quick.shared.state.lock().unwrap();
+        assert_eq!(state.front_wanted, None, "another application");
     }
 
     #[test]

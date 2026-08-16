@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# Photograph the nested shell, driving it there with a script of key presses.
+#
+# The picture is taken by the shell itself — `--debug-actions …:screenshot`
+# goes through the compositor's own screencopy — because on a development
+# machine there may be no way to grab an X window from outside: ImageMagick is
+# routinely built without its X11 delegate, and neither `xwininfo` nor
+# `xdotool` is a given either. The shell can always photograph itself.
+#
+# The whole session runs against a scratch HOME on a private bus, so nothing it
+# does — the notification daemon taking a bus name, the screenshot landing in
+# Pictures, the settings it writes — can touch the desktop this is run from.
+#
+# Usage:
+#   scripts/nested-shot.sh OUT_DIR "4:guide,5.2:up,6:right,7:launch,9:screenshot"
+#   scripts/nested-shot.sh OUT_DIR "…" 'notify-send hello there'
+#
+# The third argument, if given, is a command run inside the nested session a
+# few seconds after it starts — for putting something on the screen that has
+# to come from outside the shell.
+
+set -euo pipefail
+
+out="${1:?usage: nested-shot.sh OUT_DIR ACTIONS [COMMAND]}"
+actions="${2:?usage: nested-shot.sh OUT_DIR ACTIONS [COMMAND]}"
+inside="${3:-}"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# How long the whole run lasts, which has to outlast the last action in the
+# script. Taken from the script itself rather than guessed at: a run that ends
+# before its own screenshot is a run that proves nothing.
+last=$(printf '%s\n' "$actions" | tr ',' '\n' | cut -d: -f1 | sort -g | tail -1)
+lifetime=$(printf '%.0f' "$(echo "$last + 4" | bc)")
+
+home="$out/home"
+mkdir -p "$home/.config/lxb"
+rm -rf "$home/Pictures"
+cat > "$home/.config/lxb/config.toml" <<EOF
+[general]
+shell = "$root/target/release/lxb-desktop --debug-actions $actions"
+EOF
+
+# A socket name of this run's own, so a session left over from a previous one
+# cannot make this one fail to start.
+socket="lxb-shot-$$"
+
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
+    HOME="$home" XDG_CONFIG_HOME="$home/.config" DISPLAY="${LXB_SHOT_DISPLAY:-:1}" \
+    dbus-run-session -- bash -c '
+        root=$1; socket=$2; lifetime=$3; inside=$4
+        "$root/target/release/lxb" --backend x11 --outputs 1 \
+            --window-size "${LXB_SHOT_SIZE:-1280x800}" --socket "$socket" --shell &
+        lxb=$!
+        if [[ -n "$inside" ]]; then
+            sleep 6
+            eval "$inside" || true
+        fi
+        sleep "$lifetime"
+        kill $lxb 2>/dev/null || true
+        wait $lxb 2>/dev/null || true
+    ' bash "$root" "$socket" "$lifetime" "$inside" > "$out/nested.log" 2>&1
+
+shots=("$home"/Pictures/Screenshots/*.png)
+if [[ ! -e "${shots[0]}" ]]; then
+    echo "the shell took no picture; see $out/nested.log" >&2
+    exit 1
+fi
+printf '%s\n' "${shots[@]}"

@@ -30,6 +30,16 @@ It is written by the shell rather than read from it, and is not part of
 
 `mirror` puts every output at the origin, so they all show the same region.
 
+`background` is what is behind everything **when there is no session shell**.
+A `--shell` session never shows it: the compositor draws the shell's own
+analytic wallpaper into every frame that has no session content in it, which
+is the interval before the shell's first frame and the interval after its
+last. Both used to be this colour, and this colour is very nearly black — a
+login screen handing over to a black screen and a logout starting with one.
+The palette comes from `~/.config/lxb/shell.toml`, or from a display manager
+that hands the session its wallpaper clock; see `LXB_BACKGROUND_HANDOFF`
+below.
+
 The resolved cursor theme, size, and search path are exported as
 `XCURSOR_THEME`, `XCURSOR_SIZE`, and `XCURSOR_PATH` to every child process, so
 applications drawing their own pointer match the compositor's. LineXinBar ships
@@ -78,6 +88,116 @@ already does); the marker says the session has a bus of its own, and only then
 is that bus's environment replaced. Without it, a nested session leaves the
 host's activation environment — and the host's portal — alone.
 
+### `LXB_BACKGROUND_HANDOFF`
+
+Not a setting: a one-shot record a display manager may put in the session's
+environment, saying which wallpaper was on screen when it handed over and how
+far its clock had run. A session started without one still comes up on the
+wallpaper — the palette from `shell.toml`, the clock from zero — so nothing
+requires it.
+
+It is read twice, and by design. The compositor reads it for the frames it
+draws before the shell exists (and after it has gone), then passes the record
+through **unaltered** to the session shell alone, which does the whole of its
+validation: that it names a visual this shell draws, that it was sampled on
+this boot, and that it is not stale. Nothing else in the session sees it —
+neither XWayland, nor autostarts, nor the portal, nor an application launched
+later — and an inherited copy is removed at every one of those boundaries.
+
+The record is `key=value` pairs joined by `;`, ASCII, at most 1024 bytes:
+
+```text
+v=1;visual=lxb-wallpaper-v1;clock=linux-monotonic;boot=<boot id>;sample-ns=<n>;scene-ns=<n>;accent=<palette>
+```
+
+`sample-ns` is `CLOCK_MONOTONIC` when the record was written and `scene-ns` is
+the wallpaper clock at that instant, so the far end advances one by the
+difference to recover the other. `boot` is `/proc/sys/kernel/random/boot_id`,
+which is what makes a monotonic sample meaningful to another process. `accent`
+is one of the palette names Settings offers. Bump `visual` if the wallpaper
+changes in a way that would draw a different frame at the same clock:
+LineXinBar's own consumer refuses a visual it does not know, which is a
+session that starts its animation from zero rather than one that jumps.
+
+Console Experience Desktop Manager writes it. Any display manager can.
+
+### `LXB_HOLD_DISPLAY`
+
+Also not a setting. Set to `1`, `yes` or `true` by a display manager on both
+sides of a login, it says that the displays are being passed between
+compositors rather than given back to a console. Anything else, the variable
+being absent included, means a session that ends by handing the machine back to
+whoever started it.
+
+It changes three things, all of them at the edges of a session and none of them
+while one is running:
+
+* **Coming up, the device is inherited rather than reset.** A compositor
+  normally disables every connector and clears every plane on opening the GPU,
+  so that no earlier compositor's state can make its own commits fail. That is a
+  black screen for as long as it takes to reach the first frame — a fifth of a
+  second here — laid over whatever the last compositor was still showing.
+  Inheriting instead means the connector-to-CRTC mapping is recovered as it was
+  left, so the first commit is a plane update on a live display rather than a
+  modeset. If what was inherited turns out to be unusable, the device is reset
+  and rescanned once, and the flicker comes back rather than the display
+  staying dark.
+* **Going down, the colour pipeline is left alone.** Undoing HDR makes the panel
+  re-sync, which is a black screen of the display's own making arriving exactly
+  where one is being removed. The compositor that follows sets its own within a
+  frame. This is the same decision as keeping the night light across a
+  hand-over, applied to the rest of the pipeline — so a display manager that
+  sets this must be handing to a compositor that sets its own colour state, or
+  the next session inherits BT.2020/PQ and does not know it.
+* **Going down, the picture is held.** Closing the last handle on a DRM device
+  is itself what blanks a display: the kernel destroys the framebuffers that
+  file created, and removing one a plane is still scanning out disables the
+  plane and the CRTC behind it. So a child process is forked to hold that
+  descriptor open, and does nothing else with it, until the next compositor has
+  committed a frame of its own or ten seconds have passed. Nothing is drawn, no
+  device is held open beyond that, and a session that fails to start therefore
+  leaves a machine that plainly needs attention rather than one frozen on a
+  picture of a login screen.
+
+Set it for a hand-over and only for a hand-over. On a bare TTY it would hold a
+picture over the console a user is expecting back.
+
+Holding the picture is necessary and is not sufficient. What the compositor that
+follows does with the display it was handed decides whether anybody sees a black
+screen — see below.
+
+## What the displays were last set to
+
+`$XDG_STATE_HOME/lxb/displays.toml`, or `~/.local/state/lxb/displays.toml`.
+
+Not a file to edit. The compositor writes it whenever the shell changes a
+display, and reads it back before it lights anything.
+
+It exists because of when the shell can speak. Every display setting arrives
+over `lxb_shell_v1`, and the shell cannot send one until it has a Wayland
+connection — about a second after the compositor has already brought the
+displays up in whatever it had. So the compositor would light a display, and
+then a second later be told to drive it in HDR instead. Turning HDR on or off
+re-drives the pipe and the panel re-locks behind it: measured on an RX 9060 XT,
+**169 ms** of dark for coming up in the wrong one, and **196 ms** more for being
+corrected. Two black screens, either side of a second of un-warmed picture, on
+every single login.
+
+Remembering means the first commit already carries the right mode, orientation
+and colour pipeline, so the driver finds nothing to change and cancels the
+modeset. It is what makes a hand-over seamless rather than merely short, and it
+is why `LXB_HOLD_DISPLAY` alone was not enough.
+
+The file uses the same `[[output]]` shape as `config.toml`, and **`config.toml`
+wins**, key by key. A key written by hand is a decision and is never overridden;
+remembered state only fills in what the config leaves unsaid. So a machine that
+pins `hdr = false` stays in SDR however often the shell is asked for HDR, while
+one that pins only a resolution still comes up in the colour it was left in.
+
+Deleting it costs one blinking login while it is written again. A file this
+compositor cannot parse is reported and ignored, never repaired: it is more
+likely to be a newer version's than a corrupt one.
+
 ## `[input]`
 
 | Key                   | Type    | Default | Meaning |
@@ -116,6 +236,8 @@ from inside a running compositor.
 | `hdr_sdr_brightness` | integer      | Luminance plain white is sent at, in cd/m². Default `200`. |
 | `hdr_srgb_intensity` | integer      | How far sRGB colour is stretched towards BT.2020, `0`–`100`. Default `0`. |
 | `hdr_peak_brightness` | integer     | Peak declared to the display, in cd/m². Omit to use the display's own. |
+| `night_light`   | boolean           | Warm this display's picture. Default `false`. |
+| `night_light_temperature` | integer | How warm, in kelvin — lower is warmer. `1000`–`6500`, default `4000`. |
 
 Refresh rates are matched to the closest mode the hardware reports, so `@60`
 will select a 59.94 Hz mode. If the requested resolution does not exist at
@@ -200,6 +322,44 @@ session looks exactly as it did in SDR. At `100` the numbers are passed through
 untouched, so sRGB's red is displayed as BT.2020's red and everything comes out
 far more saturated — the "vivid" mode a television ships in. In between is a
 blend of the two.
+
+### Night light
+
+The two `night_light_*` keys are the blue light filter, and they are what the
+session **comes up in** for the reason the `hdr_*` keys are. The shell writes
+the same setting at runtime from Settings → Display → Night light → *the
+screen*, per connector in its own file (`~/.config/lxb/shell.toml`), so a
+machine booting into `lxb --shell` is normally configured from there.
+
+It is the CRTC's `GAMMA_LUT`: green and blue scaled down against red, so the
+picture goes warm without anything getting brighter. That means it needs the
+atomic interface and a gamma ramp and *nothing else* — no EDID claim, no
+infoframe, nothing of what the link can carry — so unlike HDR it works on
+essentially any display this compositor owns, including SDR laptop panels. A
+nested session is the exception: it owns no CRTC, so there is no ramp to load.
+
+The filter composes with HDR rather than competing with it. Both are encoded
+into the same ramp and committed together, so turning HDR on does not undo a
+warm picture and turning the night light on does not undo the PQ encoding. On
+an HDR display the white point is applied in linear light, in front of the PQ
+encode; on an SDR one the ramp decodes, scales and re-encodes sRGB. They are
+the same white point expressed for two stages, so a display does not change
+colour when it changes signal.
+
+`6500` is ordinary daylight and is exactly the picture with the filter off: the
+curve is normalised so that temperature is the identity to the last code, not
+merely close to it. Below roughly 1900 K a black body has no blue in it at all
+and the ramp takes that channel to zero, which is why the shell's own page
+stops at 2000 K; a value set here is still honoured, and anything outside
+`1000`–`6500` is brought to the nearest end rather than refused.
+
+**There is no schedule here, deliberately.** Keeping hours means a clock and a
+time zone, and the compositor owns neither — the shell works these out against
+the machine's local time and sends only whether the light should be burning
+now. That is also where the sunset-to-sunrise schedule lives, and where the
+coordinates it needs are read: the shell's own file, not this one. So these keys
+are an always-on setting: for a session with no shell, or for what a display is
+warmed to until one connects.
 
 ## `[keybindings]`
 

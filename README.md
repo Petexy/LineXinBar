@@ -892,11 +892,12 @@ desktop's menu.
 `Settings > Display` is the one part of the Settings column the shell does not
 carry out itself. It sends what was chosen over `lxb_shell_v1` and the
 compositor does the work, because none of it is a client's to touch. There are
-four pages: **Resolution**, **Refresh rate**, **Orientation**, and **HDR**.
+five pages: **Resolution**, **Refresh rate**, **Orientation**, **Night light**,
+and **HDR**.
 
 Every one of them is *per screen*, and every one of them names the screen
 before it offers anything — see below, where the rule is written out once for
-HDR and holds for all three.
+HDR and holds for all five.
 
 #### Resolution and refresh rate
 
@@ -993,6 +994,134 @@ reports an orientation for every display it turns itself, and for no others. A
 nested session is the ordinary "no others" — the way up of its window belongs
 to the compositor LineXinBar is running inside — and where nothing reports one,
 the row says so instead of opening onto an empty column.
+
+#### Night light
+
+```
+Settings > Display > Night light  >  DP-1  >  Schedule  >  Sunset to sunrise
+```
+
+The blue light filter: everything on a screen tinted towards a warmer colour
+temperature, so a display looked at in the evening is not a daylight-white one.
+It is the CRTC's gamma ramp — green and blue scaled down against red — which is
+why it is the compositor's to carry out, and why it composes with HDR instead of
+fighting it: both are encoded into the same ramp, in one commit, so turning one
+on cannot undo the other.
+
+Three rows on every screen that has a ramp, and five where the schedule is one
+with hours in it:
+
+| | |
+| --- | --- |
+| **Night light** | Off, or on. Off is the whole of off, whatever the schedule says. |
+| **Color temperature** | A bar, 2000 K to 6500 K. Lower is warmer. |
+| **Schedule** | **All day**, **Sunset to sunrise**, or **Custom hours**. |
+| **From** | The hour of local time it comes on at. *Custom hours only.* |
+| **Until** | The hour it goes off at. *Custom hours only.* |
+
+Turned on for the first time it is an **evening**: 22:00 to 06:00, at 4000 K.
+That is the one default here that can look like nothing happening — switched on
+in daylight it warms nothing until ten — which is why the row's own comment
+reads *On at 22:00* rather than *On*. The alternative is worse: a filter whose
+whole purpose is the evening, coming on the moment it is asked for at eleven in
+the morning, is a filter most people would turn straight back off.
+
+##### The temperature is a bar
+
+`Color temperature` is the one setting in the tree that opens onto a **bar**
+rather than a list, because it is the one whose answers are a *scale*. Every
+hundred kelvin between candlelight and daylight is a sensible thing to want; as
+rows that is forty-five of them, which is a column nobody can scan standing for
+a quantity that has no steps in it to begin with. The short list it replaces was
+eight arbitrary points, and somebody who wanted the one between two of them
+could not have it.
+
+Up and Down move the value, which is what those two mean in every other column —
+there is simply nowhere for a cursor to go, because the bar is the whole of its
+column. **Left still leaves**, exactly as it leaves any other column, so nothing
+new has to be learnt either to use it or to get back out of it. The bar stops at
+both ends rather than wrapping, and a held direction crosses the whole range in
+a moment.
+
+The filled part is drawn **in the colour of the light it stands for**, which is
+the one thing neither the number nor the words can be: a picture of what the
+screen is about to look like. Higher up the track is more kelvin — cooler, less
+filter — so a full white bar reads as what it is, no warming at all, and a short
+orange one as candlelight.
+
+The groove, the light lying in it and the handle are each a slab of the **same
+glass every other control in the shell is cut from** — bevelled rim, the sheen
+down that bevel and the colour split at its edge all worked out from the one
+lamp the shell is lit by, not painted on. The groove *is* the row's glass: it
+stands where the disc under a chosen icon would have stood, and there is no disc
+under it, because a round pane behind a tall track is a button that has been
+pressed with a bar lying across it.
+
+The number is still said in kelvin rather than as a percentage of some
+undeclared maximum: 2700 K is the bulb in the lamp beside the screen, and
+somebody who knows that knows what the bar will do before they move it. The line
+under it carries the strength in words for everybody else — *A filament bulb*,
+*Distinctly warm, like a lamp*. The warm end stops at 2000 K because below
+roughly 1900 K a black body has no blue in it at all, and a screen with its blue
+channel taken to zero does not show blue-on-white text as warm, it shows it as
+blank. 6500 K is daylight and is exactly the picture with the filter off — the
+ramp is normalised so that it is the identity to the last code, rather than
+nearly one.
+
+##### The schedule
+
+**It is the shell's, not the compositor's.** A schedule is a clock and a time
+zone, and a compositor has no business owning either; so the shell works out
+whether the light should be burning at this moment and sends only the answer.
+Nine in the evening arriving is then an ordinary change to a value the shell was
+already comparing every pass of its loop, carried out by exactly the path a
+button press goes through.
+
+**Sunset to sunrise** needs no hours at all: both ends move every day, and the
+row says which they are today and where they were worked out for — *20:10 to
+05:13 today, at Europe/Warsaw*. The location comes from the **time zone's own
+coordinates**, out of the zone table the system's time zone data already ships.
+That is deliberately the cheapest of the honest answers: a geolocation daemon
+may not be installed and asks a permission question a colour setting has no
+business raising, an address looked up over the network is the user's location
+leaving the machine, and asking them to type a latitude is asking them to go and
+find one. This is already on the disk, already theirs, and costs one file read
+for the whole session.
+
+What it gives is the zone's representative city rather than a position, which
+inside a large zone can be a few hundred kilometres out — some tens of minutes
+of sunset, and far inside what a night light cares about. Somebody a long way
+from that city can write `night-light-latitude` and `night-light-longitude` into
+`~/.config/lxb/shell.toml`; there is no page for them, because a page asking for
+a latitude would be asking the user to look one up. Where the machine names no
+place at all the row is replaced by the reason there is none, rather than
+offering a schedule that could never come on. Above the arctic circle the two
+honest readings are kept: on a day the sun does not rise the light burns through
+it, and on one it does not set it does not come on at all.
+
+**Custom hours** is the two rows below. They wrap past midnight, which is the
+ordinary case rather than the exception — *21:00 to 07:00* is an evening, and
+each ending hour says how long the window it makes lasts. The end is exclusive:
+a light that goes off at 07:00 is off at seven. The two ends may never be the
+same hour, so the **Until** page lists twenty-three of them and leaves out the
+one the window starts on: a window that ends where it begins is neither a whole
+day nor none of one, and there would be no way to look at that row and tell
+which it meant.
+
+Changing the schedule puts the hours aside without forgetting them — asking for
+Custom hours again gives back the evening that was there, not one the shell made
+up — and while they are not being kept, **the two rows are not on the page at
+all**. Hidden rather than explained, because they are not the schedule's detail
+so much as *one* schedule's: a page that is following the sun and still shows
+*From 22:00* is making a claim about tonight that is not true, and no wording
+inside the row undoes two hours sitting there in plain sight.
+
+Which screens are listed is the compositor's answer again, and it is a much
+longer list than HDR's: warming a picture needs a gamma ramp and nothing else —
+no EDID claim, nothing of the link — so an ordinary SDR laptop panel that will
+never do HDR is on this page. What drops off is a nested session, which owns no
+CRTC and therefore no ramp; where nothing can be warmed, the row says so rather
+than opening onto a column of controls that would all be inert.
 
 #### HDR
 
@@ -1315,6 +1444,8 @@ menu over whatever is running:
 | ----------------- | ------ |
 | Stick pointer     | Whether the right stick is a mouse inside the application in front |
 | Volume mixer      | Opens [a panel](#the-volume-mixer) of everything making a noise, a row per application |
+| Do not disturb    | Whether anything may interrupt. On, an announcement is filed without a bubble and without a chime |
+| Notifications     | Opens the list of what has been announced to the session, newest first. Wears a mark while anything on it has not been looked at |
 | Volume            | How loud the session is — a bar, moved with Left/Right; `A` mutes |
 | Brightness        | How bright *this* display is, where that can be changed |
 | Resume            | Dismiss the overlay |
@@ -1337,13 +1468,35 @@ so the compositor works out what the application is before it works out how to
 end it. The grace is there so an application can finish writing, not so it can
 decline.
 
-The first two are square tiles sharing one line at the head of the column
-rather than rows of their own: Up and Down treat the pair as one stop on the way
-down the column, and a tile that can do nothing from where the user is standing
-is stepped over rather than stopped on. The stick pointer is a switch and is in
-that state with nothing running; the mixer is the one tile that opens something,
-and it is never in it, because the panel always has the session's own output on
-it.
+The first four are square tiles sharing one line at the head of the column
+rather than rows of their own, centred on the panel: Up and Down treat the line
+as one stop on the way down the column, Left and Right walk it, and a tile that
+can do nothing from where the user is standing is stepped over rather than
+stopped on. Only the stick pointer is ever in that state, because it is the one
+tile about the application in front — the mixer always has the session's own
+output on it, the notification list answers *nothing arrived* as readily as it
+lists what did, and whether the session may be interrupted is a question with an
+answer on an empty machine.
+
+The bell carries the one mark in the column: a bead in its corner while
+something has been announced that nobody has looked at, the badge every phone
+puts there. No number on it — what is worth knowing from across a room is
+*something arrived*, and how many there are is a question the list itself
+answers, one row per line, a press away. Opening the list is what counts as
+looking at it; a bubble in the corner of the screen deliberately does not,
+because it appears whether or not anybody is in the room. The mark is white
+rather than accent-coloured so that walking the selection onto the very tile it
+is pointing at does not make it disappear into the light.
+
+Two of the four are switches, and a switch says which state it is in by being
+*filled* rather than by being lit, since the selection is already lit. Do not
+disturb is the one that outlives the application it was thrown over: it is
+written to `shell.toml` and comes back with the next session, because a console
+that had quietly turned it off overnight would deliver a night of announcements
+at breakfast. What it stops is the bubble in the corner and the sound that goes
+with it — one answer, given in one place, so neither can be silenced without the
+other. Nothing is discarded: everything still arrives, and the tile beside it is
+where it is read.
 
 The header is the wall clock, and under it whatever is running on this display.
 

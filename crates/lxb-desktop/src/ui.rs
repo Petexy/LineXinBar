@@ -324,6 +324,77 @@ const LAUNCH_ICON: f32 = 168.0;
 const LAUNCH_DOTS: usize = 12;
 const LAUNCH_SPIN: f32 = 1.4;
 
+/// The box a game's logo settles inside, as shares of the display.
+///
+/// Shares rather than a figure against 1080p, unlike nearly everything else
+/// here, because what this is measuring itself against is the *picture behind
+/// it*: the hero fills the display whatever shape the display is, and a logo
+/// sized in scaled pixels would sit differently on it at every aspect ratio.
+///
+/// A box and not a size: a logo is fitted into it at its own shape, so the
+/// stacked ones reach the full height and the one-line ones the full width,
+/// and neither is stretched to meet the other. The width is the binding
+/// constraint for a wordmark set in one line, and it is held under half the
+/// display on purpose — a title that reached the edges would be a poster
+/// rather than a game starting.
+const LAUNCH_LOGO_WIDTH: f32 = 0.38;
+const LAUNCH_LOGO_HEIGHT: f32 = 0.30;
+
+/// How much smaller the logo starts than it settles.
+///
+/// Not out of the tile, which is what an application's icon does. The tile a
+/// game was chosen from holds its *cover*, and a logo growing out of a cover
+/// is one picture of the game turning into a different one — so this one comes
+/// forward out of the picture it is already standing on instead, which is the
+/// same move Valve's own library makes when a game is chosen.
+const LAUNCH_LOGO_FROM: f32 = 0.74;
+
+/// Where the ring stands while a game loads: how far its centre is from each
+/// corner, and how far the dots orbit it, against 1080p.
+///
+/// The corner rather than under the title, because on a game there is nothing
+/// under the title — the picture behind the whole thing is the game's own, and
+/// a spinner in the middle of it would be the shell writing across somebody's
+/// artwork. In the corner it says *working* without standing on anything, and
+/// it is where a console has always put it.
+const LAUNCH_RING_INSET: f32 = 78.0;
+const LAUNCH_RING_ORBIT: f32 = 30.0;
+
+/// The name a game falls back to when Valve has no logo for it: how big it is
+/// set against 1080p, and how much of the display's width it may run across.
+const LAUNCH_NAME: f32 = 62.0;
+const LAUNCH_NAME_WIDTH: f32 = 0.72;
+
+/// And how strongly it is ringed in shade.
+///
+/// Half of what a bubble's summary gets. A ring's reach is a share of the size
+/// the run is drawn at rather than a number of pixels — see
+/// [`crate::gpu::Text`]'s `halo` — and this run is nearly three times a
+/// bubble's. At a bubble's strength the same ring comes out as a hard black
+/// outline round every letter, which is a sticker rather than a title standing
+/// on a picture.
+const LAUNCH_NAME_HALO: f32 = 0.5;
+
+/// The line beside the indicator that says what is being waited for: its size
+/// against 1080p, the air between it and the ring, and how far back towards
+/// the middle of the display it may run before it is cut.
+///
+/// Not bold and not large. It is the answer to a question nobody asked out
+/// loud — *is this going anywhere* — and a heading-sized one would compete
+/// with the title in the middle of the screen, which is the thing the display
+/// is actually about.
+const LAUNCH_DOING: f32 = 25.0;
+const LAUNCH_DOING_GAP: f32 = 18.0;
+const LAUNCH_DOING_WIDTH: f32 = 0.34;
+
+/// How far past the ring the shade under it reaches, as a multiple of the
+/// ring's own radius.
+///
+/// Wide, because what makes a bloom read as light and not as a disc is that
+/// its edge is nowhere near the thing it is lighting. Anything close in starts
+/// to show as a grey coin in the corner of the picture.
+const LAUNCH_RING_SHADE: f32 = 3.6;
+
 /// Seconds per breath of the selection glow.
 const PULSE_PERIOD: f32 = 1.8;
 
@@ -342,7 +413,7 @@ const GUIDE_ROW_HEIGHT: f32 = 76.0;
 /// A quick-settings bar's row. Shorter than a button's: it holds a glyph and a
 /// track, with no label needing air around it.
 const GUIDE_BAR_HEIGHT: f32 = 62.0;
-/// The line the two tiles share, and how big a tile is on it. Taller than a
+/// The line the tiles share, and how big a tile is on it. Taller than a
 /// button's row because a tile is square and a square the width of a row would
 /// be half the sidebar.
 const GUIDE_TILE_ROW: f32 = 86.0;
@@ -543,10 +614,37 @@ pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> 
             // else fills it.
             let row = row_height(items[*first]) * scale;
             if items[*first].is_tile() {
-                let size = GUIDE_TILE * scale;
+                // The whole line at its own size, and how much room the column
+                // actually has for it.
+                let tiles = *count as f32;
+                let mut size = GUIDE_TILE * scale;
+                let mut gap = GUIDE_TILE_GAP * scale;
+                let mut run = size * tiles + gap * count.saturating_sub(1) as f32;
+                let inside = panel_w - margin * 2.0;
+                // A narrow sidebar carrying every tile this shell has cannot
+                // hold them all at full size — 280 px is the floor a sidebar
+                // is allowed to be, and it is nearly the width of four of
+                // them. The line is taken in as a whole rather than cropped at
+                // one end or allowed to overhang the inset every other control
+                // on the panel keeps: tiles and gaps shrink together, so what
+                // reads as a row of squares with even air between them stays
+                // one whichever screen it is drawn on.
+                if run > inside && run > 0.0 {
+                    let taken_in = inside / run;
+                    size *= taken_in;
+                    gap *= taken_in;
+                    run = inside;
+                }
+                // Centred on the panel rather than started at its margin. The
+                // tiles are the one line of the column that does not span it,
+                // so a run left-aligned under a rank of full-width capsules
+                // reads as a row that failed to finish rather than as a line
+                // of its own — and how far short it falls depends on how many
+                // tiles this session turned out to have, which is not
+                // something the eye can be asked to allow for.
                 let column = (index - first) as f32;
                 return [
-                    panel_x + margin + column * (size + GUIDE_TILE_GAP * scale),
+                    panel_x + (panel_w - run) * 0.5 + column * (size + gap),
                     y + (row - size) * 0.5,
                     size,
                     size,
@@ -980,6 +1078,8 @@ impl Scene {
             for clip in ends.into_iter().flatten() {
                 kept.push(Text {
                     clip: Some(clip),
+                    halo: 0.0,
+                    lines: 1,
                     ..text.clone()
                 });
             }
@@ -1268,6 +1368,8 @@ pub fn build(
             max_width: box_w,
             align: TextAlign::Right,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -1288,6 +1390,8 @@ pub fn build(
             max_width: width,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -1329,6 +1433,8 @@ pub fn build(
                 max_width: width,
                 align: TextAlign::Left,
                 clip: None,
+                halo: 0.0,
+                lines: 1,
             });
         }
     }
@@ -1494,6 +1600,15 @@ pub fn build(
             // row on screen is lit however deep the path runs.
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
+            // A value set on a scale is drawn as the scale, in the room the
+            // icon would have had — and the scale is a tall capsule where an
+            // icon is a small square, so the light behind it and the glass
+            // under it have to be that shape too. Worked out here rather than
+            // in [`column_bar`] because the bloom is drawn before the row and
+            // the groove *is* the row's glass: there is no disc under a bar.
+            let groove = entry
+                .bar()
+                .map(|bar| (bar, column_bar_box(x, y, height, scale * near)));
             // The card a picture stands on, when this column is one of
             // pictures. It exists whether or not the picture has arrived, so
             // nothing moves when one does.
@@ -1516,23 +1631,43 @@ pub fn build(
                 // reach past a card's long side stands half its own height
                 // above and below it — which is not a light behind an object,
                 // it is a haze the object is somewhere inside.
-                let (glow_w, glow_h) = match card {
-                    Some([_, _, w, h]) => {
+                //
+                // A bar takes the same treatment for the same reason, off its
+                // own groove: a square light big enough to reach past a track
+                // that is most of the screen tall would be a haze over the
+                // whole column rather than a light behind one control. It is
+                // spread on the short side, where the room is, so the groove
+                // stands in a soft vertical band instead of a hard-edged one.
+                let (glow_w, glow_h) = match (card, groove) {
+                    (Some([_, _, w, h]), _) => {
                         let out = h * (0.30 + 0.04 * pulse);
                         (w + out * 2.0, h + out * 2.0)
                     }
-                    None => {
+                    (None, Some((_, [_, _, w, h]))) => {
+                        let out = w * (3.4 + 0.4 * pulse);
+                        (w + out * 2.0, h + out)
+                    }
+                    (None, None) => {
                         let glow = icon_size * (2.3 + 0.2 * pulse);
                         (glow, glow)
                     }
                 };
+                // And it is quieter behind a bar. The same light spread over a
+                // shape this narrow arrives as a bright lamp with a control
+                // standing in front of it: the groove goes on showing what is
+                // behind it, and what is behind it would be the accent at full
+                // strength rather than the wallpaper — so the one pane whose
+                // whole job is to show a *colour* would be showing the shell's.
+                let behind_bar = if groove.is_some() { 0.55 } else { 1.0 };
                 quads.push(Quad {
                     x: x - glow_w / 2.0,
                     y: y - glow_h / 2.0,
                     w: glow_w,
                     h: glow_h,
                     slot: GLOW_SLOT,
-                    color: theme.accent.a((0.34 + 0.26 * pulse) * alpha * active),
+                    color: theme
+                        .accent
+                        .a((0.34 + 0.26 * pulse) * alpha * active * behind_bar),
                     ..Quad::default()
                 });
             }
@@ -1548,7 +1683,15 @@ pub fn build(
             // mount the picture is on, and a photograph with a transparent
             // corner or a drawing on a white ground needs something to sit on
             // whether or not it is the one being looked at.
-            let plate = if card.is_some() {
+            //
+            // Never under a bar. A bar's groove is already a pane of this same
+            // glass, cut to the shape of the control — see [`column_bar`] — and
+            // a disc behind it would be a second, rounder object sitting under
+            // the first with nothing in it: a button that had been pressed,
+            // with a track lying across it.
+            let plate = if groove.is_some() {
+                None
+            } else if card.is_some() {
                 card
             } else if distance < 0.5 && active > 0.01 {
                 let disc = icon_size * ITEM_DISC;
@@ -1647,9 +1790,15 @@ pub fn build(
             // stands in for the missing-icon tint too — a colour with no
             // drawing behind it is still that colour.
             let tint = entry.swatch().map(|swatch| swatch.a(alpha));
-            // Only where there is no picture. A row that drew both would be a
-            // film strip stamped over the frame it stands for.
-            if picture.is_none() {
+            // The scale itself, in the room the icon would have had. It is the
+            // whole of the row: there is no glyph beside it, because the name
+            // of the setting is on the row this column was opened from and is
+            // still on screen to the left.
+            if let Some((bar, box_)) = groove {
+                quads.extend(column_bar(box_, bar, alpha, active));
+            } else if picture.is_none() {
+                // Only where there is no picture. A row that drew both would be
+                // a film strip stamped over the frame it stands for.
                 let mut icon = icon_quad(
                     entry_slot(entry, slots),
                     x - icon_size / 2.0,
@@ -1717,6 +1866,8 @@ pub fn build(
                     max_width: text_max,
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
                 if let Some(comment) = comment {
                     texts.push(Text {
@@ -1729,6 +1880,8 @@ pub fn build(
                         max_width: text_max,
                         align: TextAlign::Left,
                         clip: None,
+                        halo: 0.0,
+                        lines: 1,
                     });
                 }
             } else {
@@ -1747,6 +1900,8 @@ pub fn build(
                     max_width: text_max,
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
             }
         }
@@ -1909,6 +2064,8 @@ pub fn build(
                 max_width: box_w,
                 align: TextAlign::Center,
                 clip: None,
+                halo: 0.0,
+                lines: 1,
             });
         }
 
@@ -2326,6 +2483,15 @@ pub struct GuideView<'a> {
     /// Whether the right stick is moving the pointer in the application in
     /// front of this display.
     pub stick_pointer: bool,
+    /// Whether announcements are being kept out of the corner of the screen.
+    /// The other switch on the tile line, and the one that is about the
+    /// session rather than about what is in front of it.
+    pub do_not_disturb: bool,
+    /// How far the unread mark on the bell has arrived: 0 for a bell with
+    /// nothing to say, 1 for one carrying it. A position rather than a flag
+    /// because it grows on and goes out again, and the tile is in plain sight
+    /// while it does both.
+    pub unread: f32,
     /// The foreground application's title, for the sidebar's header.
     pub app: Option<&'a str>,
     /// Name of the application the Close entry would end — the one behind the
@@ -2366,9 +2532,20 @@ impl GuideView<'_> {
     fn tile_on(&self, item: Item) -> bool {
         match item {
             Item::Pointer => self.stick_pointer && self.tile_live(item),
-            // Nothing to be on yet: the mixer is a place kept in the column
-            // for a control that has still to be written.
+            Item::DoNotDisturb => self.do_not_disturb,
+            // The other two raise a panel rather than holding a state, so
+            // there is nothing for them to be *on*: what a press does is
+            // visible in the panel that grows out of them.
             _ => false,
+        }
+    }
+
+    /// How far this tile's unread mark has arrived. Only the bell has one:
+    /// it is the only tile that holds anything that can be missed.
+    fn tile_badge(&self, item: Item) -> f32 {
+        match item {
+            Item::Notifications => self.unread,
+            _ => 0.0,
         }
     }
 
@@ -2470,6 +2647,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         max_width: text_w,
         align: TextAlign::Left,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
     // The day, on the clock's own line and pushed to the far side of the
     // column. Sharing the line keeps the header two rows tall — the sidebar is
@@ -2487,6 +2666,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             max_width: text_w,
             align: TextAlign::Right,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
     texts.push(Text {
@@ -2502,6 +2683,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         max_width: text_w,
         align: TextAlign::Left,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
     if let Some(screen) = view.screen {
         texts.push(Text {
@@ -2514,6 +2697,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             max_width: text_w,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -2663,6 +2848,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     live: view.tile_live(*item),
                     focused,
                     press,
+                    badge: view.tile_badge(*item),
                 },
                 scale,
                 view.behind,
@@ -2749,6 +2935,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             max_width: (rw - label_padding * 2.0).max(0.0),
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -2793,6 +2981,8 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             max_width: w.max(120.0 * scale),
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -3020,6 +3210,8 @@ fn push_power_dialog(
         max_width: panel_w,
         align: TextAlign::Center,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
 
     let label_size = 22.0 * scale;
@@ -3062,6 +3254,8 @@ fn push_power_dialog(
             max_width: panel_w,
             align: TextAlign::Center,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -3090,6 +3284,13 @@ fn push_power_dialog(
 /// on one of these — and no wider, because the menu is a note attached to an
 /// object on screen and must not read as a screen of its own.
 const CONTEXT_WIDTH: f32 = 440.0;
+/// What the announcement panels ask for on top of it — see [`Menu::widen`].
+///
+/// They are the exception the width was written against: their rows carry
+/// somebody else's sentences rather than a command the shell named to fit, and
+/// each of them a button as well. The extra hundred is the difference between
+/// a summary that wraps to three lines and one that fits on two.
+pub const NOTIFICATION_EXTRA_WIDTH: f32 = 100.0;
 const CONTEXT_ROW: f32 = 64.0;
 /// What a row that carries a track is given instead.
 ///
@@ -3111,6 +3312,21 @@ const MIXER_ICON_GAP: f32 = 14.0;
 /// particular program, which is the thing the user is picking between. Below
 /// [`MIXER_ICON`] because the row it is on is two thirds as tall.
 const CONTEXT_ICON: f32 = 0.7;
+/// One of the shell's own marks at the head of a row instead, as a share of the
+/// chip — smaller than a picture, being a symbol rather than a portrait.
+const CONTEXT_GLYPH: f32 = 0.46;
+/// The button on the right-hand end of a row — see [`crate::menu::Aside`]: how
+/// wide it is as a share of the row's settled chip, the air between it and the
+/// writing, and the mark on it as a share of its own width.
+///
+/// Square on a row that has not opened out, and the full height of the row
+/// whether it has or not — see [`context_menu_aside_rect`]. It is a button
+/// rather than a mark on the row, and the shell draws a button as something
+/// with a face that can be aimed at — the same reason the guide's tiles are
+/// squares.
+const CONTEXT_ASIDE: f32 = 1.0;
+const CONTEXT_ASIDE_GAP: f32 = 12.0;
+const CONTEXT_ASIDE_GLYPH: f32 = 0.42;
 /// Where the name and the track sit inside the chip, as shares of its height:
 /// the middle of the line the name is on, and the middle of the track's own.
 const MIXER_NAME_LINE: f32 = 0.32;
@@ -3123,6 +3339,11 @@ const MIXER_GLYPH_GAP: f32 = 10.0;
 /// being acted on, the air under it, and the hairline that separates it from
 /// the commands.
 const CONTEXT_TITLE: f32 = 62.0;
+/// What that name is set at, and what each line of it takes — the same 1.25
+/// the renderer spaces lines by, because a header that wraps has to be given
+/// exactly what the words will occupy.
+const CONTEXT_TITLE_SIZE: f32 = 24.0;
+const CONTEXT_TITLE_LINE: f32 = CONTEXT_TITLE_SIZE * 1.25;
 /// The space a change of band opens between two rows, and where the rule in it
 /// is drawn. The guide's own separator gap would be generous here: that column
 /// is the height of a display and this one is a handful of rows.
@@ -3175,29 +3396,285 @@ const CONTEXT_DEPTH: f32 = 0.1;
 /// than something opening out of the control it belongs to.
 const CONTEXT_CONTENT_IN: f32 = 0.45;
 
-/// How tall one row's own line is, in reference pixels. A track needs more of
-/// the column than a command does — see [`MIXER_ROW`].
+/// How tall one row's own line is, in reference pixels.
+///
+/// A track needs more of the column than a command does — see [`MIXER_ROW`] —
+/// and so does a row with a second line under its label, for the plainer
+/// reason that there are two lines to fit. The same number as a track's, not
+/// because the two have anything to do with each other but because both are a
+/// label plus one more thing the same size, and a panel that mixed them would
+/// otherwise have three row heights in one column.
 fn context_row_height(entry: &MenuEntry) -> f32 {
-    if entry.level.is_some() {
+    let stacked = if entry.level.is_some() || entry.detail.is_some() {
         MIXER_ROW
     } else {
         CONTEXT_ROW
+    };
+    // And one line more where there is a line above the label — see
+    // [`crate::menu::Entry::stamp`]. Added rather than folded into a third
+    // height because it is exactly that: the row it would have been, with a
+    // line put on top of it. Everything below keeps the placement it had, and
+    // a list of announcements is a list of three-line rows, of which fewer fit
+    // on a display than four — which is the price of the line.
+    stacked
+        + if entry.stamp.is_some() {
+            CONTEXT_STAMP_ROOM
+        } else {
+            0.0
+        }
+}
+
+/// The sizes a row's three runs are set at, in reference pixels, and the room
+/// the one above the label is given.
+///
+/// The stamp is the smallest of the three and the quietest, because it is the
+/// least of what the row says: it is a note about when, over a summary somebody
+/// else wrote. Its room is its own line spacing — one line, and it never asks
+/// for another.
+const CONTEXT_LABEL_SIZE: f32 = 23.0;
+const CONTEXT_DETAIL_SIZE: f32 = 20.0;
+const CONTEXT_STAMP_SIZE: f32 = 18.0;
+const CONTEXT_STAMP_ROOM: f32 = CONTEXT_STAMP_SIZE * 1.25;
+
+/// What a row grows by for each line of its label, and of the line under it,
+/// beyond the first. The factor is the renderer's line spacing — see the
+/// metrics `Gpu` shapes with — because a row has to open out by exactly what
+/// the text will take.
+const CONTEXT_LABEL_LINE: f32 = CONTEXT_LABEL_SIZE * 1.25;
+const CONTEXT_DETAIL_LINE: f32 = CONTEXT_DETAIL_SIZE * 1.25;
+
+/// The most either of a row's two runs will open out to, in lines.
+///
+/// A cap rather than however many the sentence takes, because the panel grows
+/// with the row and the display does not. Three lines is a long summary read
+/// in full; past that the row would be eating the list it belongs to, and what
+/// the user wants is the announcement itself rather than a taller row.
+pub const CONTEXT_MAX_LINES: u8 = 3;
+
+/// How wide the panel is drawn, in reference pixels.
+fn context_panel_width(extra: f32) -> f32 {
+    CONTEXT_WIDTH + extra
+}
+
+/// The height of a row's chip when nothing is opening out, in reference pixels
+/// — what sizes everything on the row that is not writing.
+fn context_chip_height(entry: &MenuEntry) -> f32 {
+    context_row_settled(entry) - GUIDE_ROW_PADDING * 2.0
+}
+
+/// How wide the button on the right-hand end of a row is, in reference pixels,
+/// or nought where the row has none.
+fn context_aside_width(entry: &MenuEntry) -> f32 {
+    match entry.aside {
+        Some(_) => context_chip_height(entry) * CONTEXT_ASIDE,
+        None => 0.0,
     }
+}
+
+/// How wide a row's writing is, in reference pixels — the same for both runs,
+/// because the second line starts under the first rather than beside it.
+///
+/// Everything that takes width off the line is asked here and nowhere else:
+/// the picture or the mark at the head of the row, and the button at the end of
+/// it. Measured against the row's *settled* height, which is what sizes all
+/// three — a row that has opened out keeps the furniture it had.
+fn context_text_width(entry: &MenuEntry, extra: f32) -> f32 {
+    let tall = context_row_height(entry) > CONTEXT_ROW;
+    let chip = context_chip_height(entry);
+    let mut width = context_panel_width(extra) - GUIDE_MARGIN * 2.0 - GUIDE_LABEL_PADDING * 2.0;
+    if entry.icon.is_some() {
+        width -= chip * if tall { MIXER_ICON } else { CONTEXT_ICON } + GUIDE_LABEL_PADDING * 0.5;
+    } else if entry.glyph.is_some() {
+        width -= chip * CONTEXT_GLYPH + GUIDE_LABEL_PADDING * 0.5;
+    }
+    if entry.aside.is_some() {
+        width -= context_aside_width(entry) + CONTEXT_ASIDE_GAP;
+    }
+    width.max(1.0)
+}
+
+/// The box a row's label is set in, in reference pixels: how wide, and at what
+/// size.
+///
+/// For whoever is building the rows to ask the renderer how many lines a label
+/// will take — see [`crate::menu::Entry::lines`]. It is here rather than at the
+/// caller because these are the numbers the row is *drawn* with, and a
+/// measurement taken against different ones would grow the row by the wrong
+/// amount or not at all. `extra` is how much wider than usual the panel the row
+/// is bound for will be — see [`Menu::widen`].
+pub fn context_label_box(entry: &MenuEntry, extra: f32) -> (f32, f32) {
+    (context_text_width(entry, extra), CONTEXT_LABEL_SIZE)
+}
+
+/// The same for the line under the label — see [`crate::menu::Entry::detail`].
+/// The width is the label's; the size is not.
+pub fn context_detail_box(entry: &MenuEntry, extra: f32) -> (f32, f32) {
+    (context_text_width(entry, extra), CONTEXT_DETAIL_SIZE)
+}
+
+/// And the same for the header — see [`crate::menu::Title`].
+///
+/// The whole width of the panel inside its margins, because the header is the
+/// one run on the panel with nothing beside it: no picture at its head and no
+/// button at its end.
+pub fn context_title_box(extra: f32) -> (f32, f32) {
+    (
+        (context_panel_width(extra) - (GUIDE_MARGIN + GUIDE_LABEL_PADDING) * 2.0).max(1.0),
+        CONTEXT_TITLE_SIZE,
+    )
+}
+
+/// The most lines a header will open out to, on a display this tall.
+///
+/// A header is a heading and not a paragraph, so this is a quarter of the
+/// display where a row raised to be read gets half — see
+/// [`context_read_lines`]. But it is a real number of lines and not one,
+/// because the header over an announcement is a sentence the program that sent
+/// it wrote, and a shell that cut it to fit would be hiding the one line the
+/// user opened the announcement to read in full. What is left over goes to the
+/// list underneath, which scrolls; the heading does not.
+pub fn context_title_lines(height: f32) -> u8 {
+    let scale = guide_scale(height);
+    ((height * 0.25) / (CONTEXT_TITLE_LINE * scale)).clamp(1.0, u8::MAX as f32) as u8
+}
+
+/// How tall the header is, in reference pixels: nought where there is none,
+/// and one line's worth more for every line past the first.
+fn context_title_height(menu: &Menu) -> f32 {
+    match menu.title() {
+        Some(_) => CONTEXT_TITLE + context_title_growth(menu),
+        None => 0.0,
+    }
+}
+
+/// How much of that is the header having opened out — what a panel with a
+/// one-line header, which is every other panel in the shell, does not pay.
+fn context_title_growth(menu: &Menu) -> f32 {
+    match menu.title() {
+        Some(_) => (menu.title_lines().max(1) - 1) as f32 * CONTEXT_TITLE_LINE,
+        None => 0.0,
+    }
+}
+
+/// The most lines a row that is there to be read will take, on a display this
+/// tall — see [`crate::menu::Entry::reading`].
+///
+/// Not a fixed number like [`CONTEXT_MAX_LINES`], because this row is not
+/// sharing a panel with a list somebody is scanning: it is the reason the panel
+/// was raised, and the only thing that has any business cutting it short is the
+/// edge of the screen. Half the display, so that whatever buttons the program
+/// offered underneath it, and the way out below them, are still on the panel.
+pub fn context_read_lines(height: f32) -> u8 {
+    let scale = guide_scale(height);
+    ((height * 0.5) / (CONTEXT_LABEL_LINE * scale)).clamp(1.0, u8::MAX as f32) as u8
+}
+
+/// How far a row would open out if it were selected and all the way out, in
+/// reference pixels: what the label wants, and what the line under it wants.
+///
+/// The two are kept apart all the way to the drawing because they are taken in
+/// different places — the label's room opens under the label, and the detail's
+/// under the detail — and a single total could not say where.
+fn entry_opening(entry: &MenuEntry) -> (f32, f32) {
+    // A row that is there to be read is capped by whoever counted its lines,
+    // against the display it is bound for — see [`context_read_lines`]. The
+    // three-line cap is for rows sharing a panel with a list, which this is
+    // not: cutting the paragraph short here would be cutting it short on the
+    // one panel raised to show it.
+    let cap = if entry_always_open(entry) {
+        u8::MAX
+    } else {
+        CONTEXT_MAX_LINES
+    };
+    let extra = |lines: u8| lines.min(cap).saturating_sub(1) as f32;
+    (
+        extra(entry.lines) * CONTEXT_LABEL_LINE,
+        extra(entry.detail_lines) * CONTEXT_DETAIL_LINE,
+    )
+}
+
+/// Whether a row is open all the time rather than only under the highlight.
+///
+/// A row that cannot be chosen never comes under the highlight, so it would
+/// never open — and a row put on a panel purely to be read is exactly the one
+/// that has to be all the way out from the moment the panel arrives. That is
+/// what an opened announcement's body is: a row the highlight steps over.
+fn entry_always_open(entry: &MenuEntry) -> bool {
+    entry.reading
+}
+
+/// How far row `index` has opened out to show writing too long for one line,
+/// in reference pixels: the label's share and the detail's.
+///
+/// Only the selected row, and only one at a time: this is the row being read,
+/// not a column that has decided to lay itself out differently. Everything
+/// else in the panel keeps the height it had, so the list a user was scanning
+/// does not rearrange itself under them.
+fn context_row_opening(menu: &Menu, index: usize) -> (f32, f32) {
+    let Some(entry) = menu.entries().get(index) else {
+        return (0.0, 0.0);
+    };
+    let out = if entry_always_open(entry) {
+        1.0
+    } else if index == menu.selected() {
+        menu.expansion()
+    } else {
+        return (0.0, 0.0);
+    };
+    let (label, detail) = entry_opening(entry);
+    (label * out, detail * out)
+}
+
+/// How much taller row `index` is for having opened out, in reference pixels.
+pub fn context_row_growth(menu: &Menu, index: usize) -> f32 {
+    let (label, detail) = context_row_opening(menu, index);
+    label + detail
+}
+
+/// A row's height with nothing opening out under the highlight — which for a
+/// row that is always open includes the room its writing takes.
+fn context_row_settled(entry: &MenuEntry) -> f32 {
+    let base = context_row_height(entry);
+    if !entry_always_open(entry) {
+        return base;
+    }
+    let (label, detail) = entry_opening(entry);
+    base + label + detail
+}
+
+/// How many lines a run may take, given the room it has been given.
+///
+/// Floored, so that a run never draws a line the row has not opened out far
+/// enough to hold: the two runs sit one under the other, and a label that grew
+/// its third line half-way through the movement put it straight through the
+/// first line of the body underneath. The nudge is for the arithmetic alone —
+/// at rest the room is a whole number of lines, and a whisker under it is
+/// still that number.
+fn lines_in(room: f32, line: f32) -> u8 {
+    1 + (room / line + 1e-3).floor().max(0.0) as u8
+}
+
+/// A row's height including however far it has opened out.
+fn context_row_height_at(menu: &Menu, index: usize) -> f32 {
+    let Some(entry) = menu.entries().get(index) else {
+        return CONTEXT_ROW;
+    };
+    context_row_height(entry) + context_row_growth(menu, index)
 }
 
 /// How much of the column a row and whatever precedes it take up, in reference
 /// pixels: the row itself, plus the gap a change of band opens above it.
-fn context_row_span(entries: &[MenuEntry], index: usize, first: usize) -> f32 {
+fn context_row_span(menu: &Menu, index: usize, first: usize) -> f32 {
+    let entries = menu.entries();
     let gap = index > first && entries[index].group != entries[index - 1].group;
-    context_row_height(&entries[index]) + if gap { CONTEXT_GROUP_GAP } else { 0.0 }
+    context_row_height_at(menu, index) + if gap { CONTEXT_GROUP_GAP } else { 0.0 }
 }
 
 /// How tall the drawn rows are altogether, in reference pixels.
 fn context_body_height(menu: &Menu) -> f32 {
-    let entries = menu.entries();
     let first = menu.first_visible();
     (first..first + menu.visible_rows())
-        .map(|index| context_row_span(entries, index, first))
+        .map(|index| context_row_span(menu, index, first))
         .sum()
 }
 
@@ -3205,11 +3682,7 @@ fn context_body_height(menu: &Menu) -> f32 {
 /// margin, the header if there is one, and the strip the upper arrow lives in.
 fn context_rows_top(menu: &Menu) -> f32 {
     GUIDE_MARGIN
-        + if menu.title().is_some() {
-            CONTEXT_TITLE
-        } else {
-            0.0
-        }
+        + context_title_height(menu)
         + if context_scrolls(menu) {
             CONTEXT_SCROLL_STRIP
         } else {
@@ -3244,24 +3717,69 @@ pub fn mixer_rows_that_fit(height: f32) -> usize {
 /// And for a menu that already has its rows, which is what the shell asks every
 /// frame — a display can change size under an open panel.
 pub fn menu_rows_that_fit(menu: &Menu, height: f32) -> usize {
-    let tallest = menu
+    // Room for the one row that will open out, held back from the count.
+    //
+    // Once, not per row: only the selected row grows — see
+    // [`context_row_opening`] — so the panel is at its tallest with the
+    // longest row in the list selected and every other row settled. Without
+    // this the panel, which is sized to its rows, would grow past the bottom
+    // of the display the moment somebody stopped on a long announcement, and
+    // cut off the row at the end of the list to pay for it.
+    let opening = menu
         .entries()
         .iter()
-        .map(context_row_height)
-        .fold(CONTEXT_ROW, f32::max);
-    rows_that_fit(height, tallest)
+        .filter(|entry| !entry_always_open(entry))
+        .map(|entry| {
+            let (label, detail) = entry_opening(entry);
+            label + detail
+        })
+        .fold(0.0, f32::max);
+
+    // Measured against the rows this list actually has, rather than against
+    // the tallest of them counted over and over. A panel raised to show one
+    // announcement is a paragraph several inches deep with three buttons under
+    // it, and measuring those buttons as though each were the paragraph would
+    // answer that one row fits — leaving the reader the words and no way to
+    // act on them.
+    // And against this panel's own header, which is the other thing that can be
+    // taller here than the worst case [`column_room`] allows for: a heading
+    // somebody else wrote, opened out to be read in full. The room it takes
+    // comes off the rows, so a long one costs the list its last row rather than
+    // pushing it off the bottom of the display.
+    let scale = guide_scale(height);
+    let mut room = column_room(height, opening + context_title_growth(menu));
+    let mut rows = 0;
+    for entry in menu.entries() {
+        let span = (context_row_settled(entry) + CONTEXT_GROUP_GAP) * scale;
+        if rows > 0 && span > room {
+            break;
+        }
+        room -= span;
+        rows += 1;
+    }
+    rows.max(1)
 }
 
 fn rows_that_fit(height: f32, row: f32) -> usize {
     let scale = guide_scale(height);
-    // The worst case, so the answer holds however the entries turn out to be
-    // grouped: a titled menu whose list is long enough to scroll, with a band
-    // change above every row.
-    let furniture =
-        (GUIDE_MARGIN * 2.0 + CONTEXT_TITLE + CONTEXT_SCROLL_STRIP * 2.0 + CONTEXT_GROUP_GAP)
-            * scale;
-    let room = height - PANEL_INSET * scale * 2.0 - furniture;
-    ((room / ((row + CONTEXT_GROUP_GAP) * scale)) as usize).max(1)
+    ((column_room(height, 0.0) / ((row + CONTEXT_GROUP_GAP) * scale)) as usize).max(1)
+}
+
+/// How much of a display this tall is left for rows, once the panel's own
+/// furniture and `reserve` reference pixels have been taken out of it.
+///
+/// The worst case, so the answer holds however the entries turn out to be
+/// grouped: a titled menu whose list is long enough to scroll, with a band
+/// change above every row.
+fn column_room(height: f32, reserve: f32) -> f32 {
+    let scale = guide_scale(height);
+    let furniture = (GUIDE_MARGIN * 2.0
+        + CONTEXT_TITLE
+        + CONTEXT_SCROLL_STRIP * 2.0
+        + CONTEXT_GROUP_GAP
+        + reserve)
+        * scale;
+    height - PANEL_INSET * scale * 2.0 - furniture
 }
 
 /// Where the menu's panel settles: beside the control it is about, on whichever
@@ -3275,7 +3793,8 @@ pub fn context_menu_rect(width: f32, height: f32, menu: &Menu) -> [f32; 4] {
     let inset = PANEL_INSET * scale;
     let gap = CONTEXT_GAP * scale;
 
-    let panel_w = (CONTEXT_WIDTH * scale).min((width - inset * 2.0).max(0.0));
+    let panel_w =
+        (context_panel_width(menu.extra_width()) * scale).min((width - inset * 2.0).max(0.0));
     let panel_h = ((context_rows_top(menu)
         + context_body_height(menu)
         + if context_scrolls(menu) {
@@ -3310,8 +3829,12 @@ pub fn context_menu_rect(width: f32, height: f32, menu: &Menu) -> [f32; 4] {
     ]
 }
 
-/// The chip for entry `index`, in settled display coordinates, or `None` when
-/// that entry is scrolled out of the panel.
+/// The whole line entry `index` occupies, in settled display coordinates, or
+/// `None` when that entry is scrolled out of the panel.
+///
+/// The line and not the chip: on a row with a button on its end the two are
+/// different things — see [`context_menu_chip_rect`] — and this is the one a
+/// press anywhere on the row lands in.
 ///
 /// Shared by the drawing below and by the caller easing the selection, for the
 /// same reason [`menu_item_rect`] is: two places computing one rectangle have
@@ -3326,7 +3849,6 @@ pub fn context_menu_row_rect(
     let [panel_x, panel_y, panel_w, _] = context_menu_rect(width, height, menu);
     let margin = GUIDE_MARGIN * scale;
     let padding = GUIDE_ROW_PADDING * scale;
-    let entries = menu.entries();
     let first = menu.first_visible();
     let last = first + menu.visible_rows();
     if index < first || index >= last {
@@ -3335,8 +3857,8 @@ pub fn context_menu_row_rect(
 
     let mut y = panel_y + context_rows_top(menu) * scale;
     for row in first..=index {
-        let line = context_row_height(&entries[row]);
-        y += (context_row_span(entries, row, first) - line) * scale;
+        let line = context_row_height_at(menu, row);
+        y += (context_row_span(menu, row, first) - line) * scale;
         if row == index {
             return Some([
                 panel_x + margin,
@@ -3348,6 +3870,78 @@ pub fn context_menu_row_rect(
         y += line * scale;
     }
     None
+}
+
+/// The face of row `index`: the whole line, less the button on its end and the
+/// air between them where it has one.
+///
+/// The row and its button are two chips side by side rather than one chip with
+/// a second laid over it, and this is the first of the two. A button drawn
+/// *inside* the row's own face is a button on top of a button — and worse, the
+/// light that says what the next press will reach has to fall on one of them:
+/// with the button standing on the row, a lit row lights the button as well and
+/// stops answering the only question the pair asks, which of the two is being
+/// aimed at.
+///
+/// So the row gives up the width instead. Everything on the row that is
+/// measured — see [`context_text_width`] — was already measured against this,
+/// because the writing always stopped before the button; what changes at the
+/// chip is only where the glass ends.
+pub fn context_menu_chip_rect(
+    width: f32,
+    height: f32,
+    menu: &Menu,
+    index: usize,
+) -> Option<[f32; 4]> {
+    let entry = menu.entries().get(index)?;
+    let [rx, ry, rw, rh] = context_menu_row_rect(width, height, menu, index)?;
+    if entry.aside.is_none() {
+        return Some([rx, ry, rw, rh]);
+    }
+    let taken = (context_aside_width(entry) + CONTEXT_ASIDE_GAP) * guide_scale(height);
+    Some([rx, ry, (rw - taken).max(0.0), rh])
+}
+
+/// The button on the right-hand end of row `index`, in settled display
+/// coordinates, or `None` where that row has none or is scrolled off the panel.
+///
+/// As wide as the row settles at is tall — see [`context_aside_width`] — and as
+/// tall as the row it is on, whatever the row has opened out to. The width is
+/// held off the settled row on purpose, because it is the width that takes room
+/// from the writing and a line that reflowed as the row grew would be a
+/// paragraph rearranging itself under the reader. The height is not: the button
+/// and the row's own face are a pair set side by side, and a pair whose halves
+/// are different heights reads as a control that has been dropped onto a row
+/// rather than as one half of it.
+pub fn context_menu_aside_rect(
+    width: f32,
+    height: f32,
+    menu: &Menu,
+    index: usize,
+) -> Option<[f32; 4]> {
+    let entry = menu.entries().get(index)?;
+    entry.aside?;
+    let [rx, ry, rw, rh] = context_menu_row_rect(width, height, menu, index)?;
+    let button = context_aside_width(entry) * guide_scale(height);
+    Some([rx + rw - button, ry, button, rh])
+}
+
+/// Where the highlight stands: the selected row's chip, or its button when the
+/// user has stepped sideways onto it.
+///
+/// One place answers it, because two would be the light and the press landing
+/// on different rectangles the moment they disagreed.
+pub fn context_menu_highlight_rect(width: f32, height: f32, menu: &Menu) -> Option<[f32; 4]> {
+    let index = menu.selected();
+    if menu.on_aside() {
+        if let Some(rect) = context_menu_aside_rect(width, height, menu, index) {
+            return Some(rect);
+        }
+    }
+    // The row's face and not its whole line: the light lands on exactly what
+    // the next press will reach, and on a row with a button that is everything
+    // up to the button.
+    context_menu_chip_rect(width, height, menu, index)
 }
 
 /// The rules between the menu's bands: one wherever two drawn rows disagree
@@ -3461,6 +4055,185 @@ pub fn recede_into_depth(scene: &mut Scene, width: f32, height: f32, depth: f32)
     );
 }
 
+/// How long the start screen takes to arrive when the shell is started, in
+/// seconds.
+///
+/// Exactly what the start screen takes to fly into its overview card, which is
+/// the shell's other whole-screen move and the longest thing in it that is not
+/// a wallpaper crossfade. Nothing here should outlast that.
+///
+/// It was nearly a second to begin with, on the reasoning that an arrival
+/// nobody asked for should be given time to be read — and that was the wrong
+/// way round. Nobody asked for it, so it is in the way: it stands between a
+/// person who has just started the machine and the bar they started it to use,
+/// and every frame of it past the point the move has been understood is a frame
+/// of waiting.
+///
+/// The whole of it is spent moving, too, which was not true of the ramp this
+/// once ran on: [`ease`] is gentle at both ends but never still, so three
+/// tenths of a second here is three tenths of a second of screen coming forward
+/// rather than a wait with a sweep on the end of it.
+pub const ARRIVAL: f32 = 0.3;
+
+/// How far back it starts, in the steps of recession a column of an open path
+/// stands in — see [`receded`].
+///
+/// Four, which is as far as the shell's depth goes: past about that the
+/// recession stops and everything sits at [`DEPTH_FLOOR_SCALE`], because
+/// another step tells the eye nothing it has not been told. So the screen comes
+/// in from the back of the same depth the trail is read in rather than from a
+/// distance invented for the occasion, and the size it starts at is the size a
+/// column four deep would be drawn at.
+const ARRIVAL_STEPS: f32 = 4.0;
+
+/// The share of the arrival by which the screen is fully lit.
+///
+/// The ink leads the movement, which is the mirror of what [`departing`] does
+/// for a column on its way out: what is leaving has to clear the ground for
+/// what replaces it, and what is arriving has nothing in its way at all, so it
+/// can be all the way up before it has finished travelling — and it should be.
+/// A screen still gaining opacity as it settles reads as one that has not
+/// finished loading. A screen that is fully there and merely still coming
+/// forward reads as the shell arriving, which is what this is.
+const ARRIVAL_LIT_BY: f32 = 0.7;
+
+/// Bring the start screen forward out of the depth the shell starts it in.
+///
+/// The first thing a session shows is a display with nothing of the shell on
+/// it: the wallpaper is drawn, and the bar is far enough back to be both small
+/// and unlit — which is to say invisible. Over [`ARRIVAL`] it travels the whole
+/// of [`ARRIVAL_STEPS`] home, growing to its settled size and taking its ink on
+/// the way, and lands exactly where a bar that never animated would have been.
+///
+/// On [`ease`], like everything else in the shell. This ran on an exponential
+/// for a while — speed rising the whole way, on the reasoning that a thing
+/// crossing a distance towards the viewer covers ground faster the nearer it
+/// gets — and the reasoning is sound about the world and wrong about the
+/// screen. A ramp that ends at full speed stops dead on the mark, and the eye
+/// reads a halt as something having been interrupted rather than as something
+/// having arrived; it also spends so much of its clock nearly still that the
+/// first half of the animation looks like a shell that has hung. Gentle at both
+/// ends is the shell's shape for a reason, and an arrival is no exception to
+/// it: the screen leaves the distance softly, crosses at its quickest through
+/// the middle, and settles onto the mark.
+///
+/// About the middle of the display, and this is the one depth move in the shell
+/// that is not anchored on the cross. Every other one is about something
+/// staying put — a tile a menu is growing out of, a row the trail hangs off —
+/// and there is nothing on screen yet for this one to hold still against. What
+/// is left is the plain reading of a thing approaching: it comes up the axis
+/// the viewer is looking down, which is the centre of the glass, and the whole
+/// screen swells out of it evenly. Anchored at the cross instead, the far side
+/// of the row would sweep across half the display and read as a slide.
+///
+/// `arrival` is how far through that it is, 0 at the back and 1 arrived; 1
+/// leaves the scene untouched rather than scaling it by one, for the reason
+/// [`recede_into_depth`] leaves a screen with nothing over it alone.
+///
+/// Applied to the whole scene, clock included. The screen is one object coming
+/// forward, not a bar with furniture arranged around it, and something that
+/// held its place while everything else approached would read as a hole in the
+/// picture rather than as part of the wallpaper.
+pub fn arrive_from_depth(scene: &mut Scene, width: f32, height: f32, arrival: f32) {
+    let arrival = arrival.clamp(0.0, 1.0);
+    if arrival >= 1.0 {
+        return;
+    }
+    let near = arrival_near(arrival);
+    scene.scale_by(
+        near,
+        [width * 0.5 * (1.0 - near), height * 0.5 * (1.0 - near)],
+    );
+    // The ink rides the same ramp as the movement, only finished sooner: a fade
+    // held to a straight line under an eased approach is a screen whose opacity
+    // and whose distance disagree about where it has got to.
+    scene.fade(ease(arrival / ARRIVAL_LIT_BY));
+}
+
+/// How large the arriving screen is drawn, as a share of its settled size.
+fn arrival_near(arrival: f32) -> f32 {
+    let travelled = ease(arrival);
+    let (near, _) = receded(ARRIVAL_STEPS * (1.0 - travelled));
+    near
+}
+
+/// Where a point on the display falls on a start screen that is still arriving.
+///
+/// The hit test measures the bar where it has settled, because that is where
+/// every layout function puts it — so a click landing while the screen is still
+/// coming forward has to be carried back through the same move the drawing was
+/// carried through, or it answers with whatever is at that point of the settled
+/// bar rather than with what the user is looking at. Three tenths of a second
+/// is short, and a session whose very first click goes to the wrong category is
+/// not something to leave to the user being quick.
+pub fn arrival_point(x: f32, y: f32, width: f32, height: f32, arrival: f32) -> (f32, f32) {
+    let near = arrival_near(arrival);
+    if near <= 0.0 {
+        return (x, y);
+    }
+    let (cx, cy) = (width * 0.5, height * 0.5);
+    (cx + (x - cx) / near, cy + (y - cy) / near)
+}
+
+/// How long the display takes to come up out of black when an application has
+/// walked out of it, in seconds.
+///
+/// A tenth, which is a blink and is meant to be. This is not an effect; it is a
+/// join. An application that ends gives its last frame back to the compositor
+/// mid-composite, and what stands behind that frame — the next window down, the
+/// shell's wallpaper coming back — arrives on its own schedule rather than on
+/// the one the shell is drawing to. A cut straight from one to the other shows
+/// whatever happened to be underneath for the frame or two before the shell has
+/// the display, which reads as a flicker of somebody else's window. Black
+/// covers the join, and being over in a tenth of a second is what keeps it a
+/// join rather than a fade to black — a transition the user waits through would
+/// be the shell making an occasion out of a program exiting.
+///
+/// A third of the arrival it runs under, so the screen is clear well before the
+/// bar has finished coming forward. See [`cover_with_black`].
+pub const BLACK_HANDOVER: f32 = 0.1;
+
+/// Lay black over a whole display, for coming up out of it.
+///
+/// The same sheet the launch splash dips a game through — see
+/// [`crate::launch::Launch::blackout`] — and it is drawn the same way, as one
+/// quad over everything the scene has put down.
+///
+/// A sheet cannot reach the scene's *text*, though: every quad is drawn before
+/// every run, so the labels would print straight through it — which on a screen
+/// meant to be black is the one thing on it anybody would see. The splash
+/// answers that by timing its title to be gone before the screen is fully
+/// black. There is no timing this one: the runs underneath belong to a start
+/// screen that is arriving, and it is arriving *because* of the black.
+///
+/// So the runs are taken down by hand, to exactly what the sheet would have
+/// left of them. That is not a second effect, it is the same one finished off,
+/// and it is why this dims rather than dropping: a run cut at a threshold would
+/// snap back the frame the black passed it, and what is wanted is the label
+/// coming up out of the dark with everything else.
+///
+/// Laid on after everything that moves the scene about, never before: this is a
+/// sheet over a *display*, and one that had been through the arrival's own
+/// shrink would leave the edges of the screen showing.
+pub fn cover_with_black(scene: &mut Scene, width: f32, height: f32, black: f32) {
+    let black = black.clamp(0.0, 1.0);
+    if black <= 0.0 {
+        return;
+    }
+    scene.quads.push(Quad {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        slot: SOLID_SLOT,
+        color: [0.0, 0.0, 0.0, black],
+        ..Quad::default()
+    });
+    for text in &mut scene.texts {
+        text.color[3] *= 1.0 - black;
+    }
+}
+
 /// Everything `build_context_menu` draws from.
 pub struct ContextMenuView<'a> {
     pub menu: &'a Menu,
@@ -3484,12 +4257,37 @@ pub struct ContextMenuView<'a> {
 /// How round a row's chip is.
 ///
 /// A capsule for a command, like every other pressable thing in the shell. A
-/// track's row is half again as tall and holds two lines, and a capsule that
-/// deep reads as a lozenge that something has been printed inside rather than
-/// as a row — the same reason the guide's tiles are rounded squares.
-fn context_chip_radius(entry: &MenuEntry, height: f32) -> f32 {
-    if entry.level.is_some() {
-        height * 0.32
+/// row half again as tall, holding two lines, gets the rounded square instead:
+/// a capsule that deep reads as a lozenge with something printed inside it
+/// rather than as a row — the same reason the guide's tiles are rounded
+/// squares.
+///
+/// Asked of the row's *height* rather than of what it happens to carry. It
+/// used to test for a level, which is one of the two things that makes a row
+/// tall — see [`context_row_height`] — and so an announcement, which is tall
+/// because it has a second line under its title, came out a deep capsule
+/// beside a mixer's rounded squares. Two functions asking "is this the tall
+/// kind of row" in two different ways is a difference waiting to be noticed on
+/// screen, and it was.
+///
+/// And of the height the row *settles* at rather than the height it has opened
+/// out to, which is why the scale is wanted: a radius taken off a growing chip
+/// would make the one row somebody is reading visibly rounder than the rows
+/// either side of it, which is the very inconsistency the shared question was
+/// written to end. Never more than would round the chip away altogether, so
+/// that a row drawn shorter than it settles at — one being pressed — is still
+/// a chip.
+/// How round the button on the end of a row is.
+///
+/// The rounded square a tall row wears, on a chip that is square to begin with:
+/// the button belongs to the row it sits on and has to read as part of it.
+fn context_aside_radius(entry: &MenuEntry, scale: f32) -> f32 {
+    context_chip_height(entry) * scale * 0.32
+}
+
+fn context_chip_radius(entry: &MenuEntry, height: f32, scale: f32) -> f32 {
+    if context_row_settled(entry) > CONTEXT_ROW {
+        (((context_row_settled(entry) - GUIDE_ROW_PADDING * 2.0) * scale) * 0.32).min(height * 0.5)
     } else {
         height * 0.5
     }
@@ -3553,6 +4351,8 @@ fn mixer_row(
         max_width: text_w,
         align: TextAlign::Left,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
 
     // The speaker says which way the track runs and whether the sound is on at
@@ -3711,10 +4511,15 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
     // same barely-there hairline the guide rules its bands with: a grouping,
     // not a border.
     if let Some(title) = menu.title() {
-        let title_size = 24.0 * scale;
+        let title_size = CONTEXT_TITLE_SIZE * scale;
         inside.texts.push(Text {
             content: title.to_string(),
             x: text_x,
+            // The first line stays where a one-line header has always sat, and
+            // the rest of it opens out underneath — the same bargain a row that
+            // opens out makes, and for the same reason: the line the reader is
+            // already looking at must not move to make room for the ones under
+            // it.
             y: panel_y + (GUIDE_MARGIN + CONTEXT_TITLE * 0.42) * scale - title_size * 0.5,
             size: title_size,
             color: theme.text_soft.a(0.85),
@@ -3722,10 +4527,18 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             max_width: text_w,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            // However many the panel was built to hold — see
+            // [`crate::menu::Title`]. A header is what the panel is *about*, so
+            // one that does not fit on a line is wrapped rather than cut: the
+            // announcement this panel was raised over is titled with a sentence
+            // its own program wrote, and an ellipsis there hides the thing the
+            // user pressed the row to read.
+            lines: menu.title_lines(),
         });
         inside.quads.push(Quad {
             x: panel_x + GUIDE_MARGIN * scale,
-            y: panel_y + (GUIDE_MARGIN + CONTEXT_TITLE * 0.78) * scale,
+            y: panel_y + (GUIDE_MARGIN + CONTEXT_TITLE * 0.78 + context_title_growth(menu)) * scale,
             w: panel_w - GUIDE_MARGIN * scale * 2.0,
             h: (1.0 * scale).max(1.0),
             slot: SOLID_SLOT,
@@ -3752,7 +4565,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
     let selected = menu.selected();
     let selected_rect = view
         .highlight
-        .or_else(|| context_menu_row_rect(width, height, menu, selected));
+        .or_else(|| context_menu_highlight_rect(width, height, menu));
     if let Some([hx, hy, hw, hh]) = selected_rect {
         // Warm rather than the accent's violet where the row cannot be taken
         // back. This light is the whole of what says so — the labels are all
@@ -3781,7 +4594,11 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         // It goes down with the row under it when that row is pressed. It has
         // to: it is drawn *over* the chip, so a press that sank only what was
         // underneath would happen entirely behind the thing being looked at.
-        let press = menu.press_progress(selected);
+        let press = if menu.on_aside() {
+            menu.aside_press_progress(selected)
+        } else {
+            menu.press_progress(selected)
+        };
         let [lx, ly, lw, lh] =
             scaled_about_centre([hx, hy, hw, hh], press.map_or(1.0, press_scale));
         inside.quads.push(Quad {
@@ -3795,9 +4612,11 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             // The light is the row being lit rather than a second object laid
             // on it, so a stadium sitting on a track's rounded square would
             // read as the selected row having changed shape.
-            radius: entries
-                .get(selected)
-                .map_or(lh * 0.5, |entry| context_chip_radius(entry, lh)),
+            radius: match entries.get(selected) {
+                Some(entry) if menu.on_aside() => context_aside_radius(entry, scale),
+                Some(entry) => context_chip_radius(entry, lh, scale),
+                None => lh * 0.5,
+            },
             thickness: DEPTH_CONTROL * scale,
             behind: view.behind,
             frost: FROST_CONTROL,
@@ -3813,7 +4632,10 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         .skip(first)
         .take(menu.visible_rows())
     {
-        let Some([rx, ry, rw, rh]) = context_menu_row_rect(width, height, menu, index) else {
+        // The row's own face, which stops where its button begins — the two are
+        // drawn side by side, and the light above has already been told to land
+        // on one or the other.
+        let Some([rx, ry, rw, rh]) = context_menu_chip_rect(width, height, menu, index) else {
             continue;
         };
         let focused = index == selected;
@@ -3828,7 +4650,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         let press = menu.press_progress(index);
         let chip = scaled_about_centre([rx, ry, rw, rh], press.map_or(1.0, press_scale));
 
-        let radius = context_chip_radius(entry, chip[3]);
+        let radius = context_chip_radius(entry, chip[3], scale);
         if entry.enabled {
             inside.quads.push(Quad {
                 x: chip[0],
@@ -3871,19 +4693,92 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             continue;
         }
 
+        // The button on the end of the row, drawn from the settled rectangle
+        // rather than from the pressed chip: it is beside the row and not on
+        // it, so a press on the row must not carry it down as well.
+        //
+        // Where the writing stops is the row's own end, which the chip has
+        // already given up to the button and the air between them — see
+        // [`context_menu_chip_rect`]. Taken from the settled row rather than
+        // from `chip`, so a line does not reflow while the row is going down.
+        let aside_end = rx + rw;
+        if let Some(aside) = entry.aside {
+            let Some(rect) = context_menu_aside_rect(width, height, menu, index) else {
+                continue;
+            };
+            let sunk = menu.aside_press_progress(index);
+            let [bx, by, bw, bh] = scaled_about_centre(rect, sunk.map_or(1.0, press_scale));
+            let on_it = focused && menu.on_aside();
+            inside.quads.push(Quad {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                slot: SOLID_SLOT,
+                color: theme.glass_raised.a(0.16),
+                radius: context_aside_radius(entry, scale),
+                thickness: DEPTH_CONTROL * scale,
+                behind: view.behind,
+                frost: FROST_CONTROL,
+                gloss: GLOSS_QUIET,
+                // It gives its face up to the light exactly as a row does.
+                fade: 1.0
+                    - match (on_it, selected_rect) {
+                        (true, Some(highlight)) => highlight_arrival(highlight, rect),
+                        _ => 0.0,
+                    },
+                ..Quad::default()
+            });
+            if let Some(slot) = view.slots.glyph(aside.glyph) {
+                // Off the button's width, which is the one side of it that does
+                // not grow with the row: a mark drawn as a share of a button
+                // that has opened out with a paragraph would be an inch of
+                // dustbin.
+                let mark = bw * CONTEXT_ASIDE_GLYPH;
+                inside.quads.push(Quad {
+                    x: bx + (bw - mark) * 0.5,
+                    y: by + (bh - mark) * 0.5,
+                    w: mark,
+                    h: mark,
+                    slot,
+                    // Brighter under the highlight than beside it, which is the
+                    // only thing on the row that says which of the two the next
+                    // press will reach. The two are a label's own two weights,
+                    // and for the same reason: quieter must still be legible,
+                    // and this glass has the wallpaper coming through it.
+                    color: [1.0, 1.0, 1.0, if on_it { 1.0 } else { 0.82 }],
+                    ..Quad::default()
+                });
+            }
+        }
+
+        // How much of the row this entry's two runs have been given beyond one
+        // line each, and therefore how many lines each may take. Needed before
+        // anything is placed: the row's writing is laid out against the height
+        // the row settles at, and the room it has opened out is taken from
+        // under each run rather than being shared out over the whole chip.
+        let (label_grown, detail_grown) = context_row_opening(menu, index);
+        let (label_grown, detail_grown) = (label_grown * scale, detail_grown * scale);
+        let grown = label_grown + detail_grown;
+        // The chip as it stands when it is not being read. Everything but the
+        // writing is sized and centred on this, so that a row opening out does
+        // not inflate its own picture.
+        let settled = chip[3] - grown;
+
         // What is at the head of the row: a picture of the thing it is about
         // where it has one, and one of the shell's own marks otherwise. A row
         // without either simply starts at its label, so a menu can mix all
         // three without leaving a column of holes.
+        // The line stops where the button starts, not where the chip does.
         let mut label_x = chip[0] + label_padding;
-        let mut label_w = chip[2] - label_padding * 2.0;
+        let mut label_w = aside_end - label_padding - label_x;
         let pictured = entry
             .icon
             .as_deref()
             .and_then(|name| view.slots.slot_for(Some(name)));
         if let Some(slot) = pictured {
-            let icon = chip[3] * CONTEXT_ICON;
-            let top = chip[1] + (chip[3] - icon) * 0.5;
+            let icon = settled * CONTEXT_ICON;
+            let top = chip[1] + (settled - icon) * 0.5;
             inside.quads.push(Quad {
                 x: label_x,
                 y: top,
@@ -3913,10 +4808,10 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             label_x += icon + label_padding * 0.5;
             label_w -= icon + label_padding * 0.5;
         } else if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
-            let glyph = chip[3] * 0.46;
+            let glyph = settled * CONTEXT_GLYPH;
             inside.quads.push(Quad {
                 x: label_x,
-                y: chip[1] + (chip[3] - glyph) * 0.5,
+                y: chip[1] + (settled - glyph) * 0.5,
                 w: glyph,
                 h: glyph,
                 slot,
@@ -3927,28 +4822,122 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             label_w -= glyph + label_padding * 0.5;
         }
 
-        let label_size = 23.0 * scale;
+        let label_size = CONTEXT_LABEL_SIZE * scale;
         // Every label is the same white, the grave rows included. What a row
         // does is said by the light that lands on it — the warm capsule chosen
         // above — and never by the colour of its letters: warm text on the
         // panel's dark glass is a dim red on a dark ground, which makes the one
         // row that most wants reading the hardest to read.
+        // Dim is how the shell says *not for you*, so it is kept for the rows
+        // that are not: a row put on the panel to be read is set in the same
+        // white as any other, because it is the reason the panel is up. Its
+        // outline has already said it cannot be pressed, and saying so twice
+        // costs the reader the contrast they need for a paragraph.
         let color = if entry.enabled {
             theme.text.a(if focused { 1.0 } else { 0.82 })
+        } else if entry.reading {
+            theme.text.a(0.92)
         } else {
             theme.text_soft.a(0.38)
         };
+        let label_lines = lines_in(label_grown, CONTEXT_LABEL_LINE * scale);
+
+        // The row's writing, as a stack of line boxes centred on the chip.
+        //
+        // One rule for one, two or three runs, and it is the reason the air
+        // above the first line matches the air under the last: the stack is
+        // measured and the leftover is halved, rather than each run being
+        // placed at a share of the row that happened to read well for the
+        // number of runs it was written for. The stamp arrived as a fourth
+        // such share and had almost no room over it — it sat against the top
+        // of its own line box while the body below kept a whole margin.
+        //
+        // The chip and the stack grow by the same amount when a row opens
+        // out — the room a run takes is inside its own box — so the margins
+        // do not move while it does, and neither does anything above the run
+        // that grew. That is what keeps the line somebody is already reading
+        // where they are looking.
+        let detail_size = CONTEXT_DETAIL_SIZE * scale;
+        let stamp_size = CONTEXT_STAMP_SIZE * scale;
+        let stamp_box = if entry.stamp.is_some() {
+            CONTEXT_STAMP_ROOM * scale
+        } else {
+            0.0
+        };
+        let label_box = CONTEXT_LABEL_LINE * scale + label_grown;
+        let detail_box = match &entry.detail {
+            Some(_) => CONTEXT_DETAIL_LINE * scale + detail_grown,
+            None => 0.0,
+        };
+        let stack_top = chip[1] + (chip[3] - (stamp_box + label_box + detail_box)) * 0.5;
+        if let Some(stamp) = &entry.stamp {
+            inside.texts.push(Text {
+                content: stamp.clone(),
+                x: label_x,
+                y: stack_top,
+                size: stamp_size,
+                // Quieter than the body under it, and quieter still beside the
+                // highlight. It is the one run on the row that nobody came to
+                // read: it answers *when*, which is a question asked of a whole
+                // column at a glance rather than of one row.
+                color: theme.text_soft.a(if focused { 0.85 } else { 0.6 }),
+                bold: false,
+                max_width: label_w.max(0.0),
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                // One, always. It is "now" or "3m", and a row that opened out
+                // to hold more of it would be opening out for nothing.
+                lines: 1,
+            });
+        }
+
         inside.texts.push(Text {
             content: entry.label.clone(),
             x: label_x,
-            y: chip[1] + chip[3] * 0.5 - label_size * 0.62,
+            y: stack_top + stamp_box,
             size: label_size,
             color,
             bold: focused,
             max_width: label_w.max(0.0),
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: label_lines,
         });
+        if let Some(detail) = &entry.detail {
+            // The whole of it, wrapped into however many lines the row has
+            // opened out to hold — one, until the highlight stops here. A
+            // notification body is a sentence written by the program that sent
+            // it, and the row somebody is reading is the only place in the
+            // shell where there is room to read one.
+            inside.texts.push(Text {
+                content: detail.clone(),
+                x: label_x,
+                // Under the label's whole box, however many lines that has
+                // opened out to — and no further. Its own lines open out
+                // beneath it, so it stays under the last line of the label
+                // rather than drifting away from it.
+                y: stack_top + stamp_box + label_box,
+                size: detail_size,
+                // White under the highlight, and quiet everywhere else. This
+                // line is the announcement itself rather than a note about the
+                // row, and the row the highlight has stopped on is the one
+                // being read — the same row that has just opened out to show
+                // the rest of it.
+                color: match (entry.enabled, focused) {
+                    (true, true) => theme.text.a(0.94),
+                    (true, false) => theme.text_soft.a(0.72),
+                    (false, _) => theme.text_soft.a(0.3),
+                },
+                bold: false,
+                max_width: label_w.max(0.0),
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                lines: lines_in(detail_grown, CONTEXT_DETAIL_LINE * scale),
+            });
+        }
     }
 
     // The arrows that say the list carries on past what is drawn. Only where
@@ -4069,13 +5058,6 @@ const DIALOG_CONTENT_IN: f32 = 0.45;
 /// panel is taken away on exactly this ramp, so nothing is hidden before the
 /// thing hiding it can be seen — see [`Scene::dim_text_behind`].
 const DIALOG_PANEL_IN: f32 = 0.25;
-/// How strongly the answer that destroys something carries its own red — at
-/// rest, and under the light once the highlight has reached it. Deeper than the
-/// accent's strengths at both ends, because the colour has to survive being
-/// drawn as a slab of glass over a pane the shell has already lit.
-const DESTRUCTIVE_RESTING: f32 = 0.62;
-const DESTRUCTIVE_LIT: f32 = 0.82;
-
 /// How tall one line of the panel is, in reference pixels.
 fn dialog_line_height(line: &Line) -> f32 {
     match line {
@@ -4353,6 +5335,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     max_width: *lw,
                     align: TextAlign::Center,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
             }
             Line::Note(text) => {
@@ -4367,6 +5351,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     max_width: *lw,
                     align: TextAlign::Center,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
             }
             // The label and the value are one row read across, so they sit on
@@ -4388,6 +5374,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     max_width: inner * 0.5,
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
                 inside.texts.push(Text {
                     content: value.clone(),
@@ -4399,6 +5387,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     max_width: inner * 0.5,
                     align: TextAlign::Right,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
             }
             // A field being typed into: a well sunk into the panel, with one
@@ -4516,6 +5506,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     max_width: (well[2] - inset * 2.0).max(0.0),
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 });
 
                 // The caret, after what has been typed. Placed from an
@@ -4641,10 +5633,10 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
         .highlight
         .or_else(|| layout.buttons.get(selected).copied());
     if let Some([hx, hy, hw, hh]) = selected_rect {
-        // No accent light on the answer that destroys something, even while it
-        // is the highlighted one — see [`crate::theme::DESTRUCTIVE`].
+        // Warm rather than the accent's violet on the answer there is no coming
+        // back from — the same light a grave menu row takes, because it is the
+        // same fact about a control and the shell says it one way.
         let tint = |alpha: f32| match buttons.get(selected) {
-            Some(button) if button.destructive => crate::theme::DESTRUCTIVE.a(alpha),
             Some(button) if button.grave => theme.danger.a(alpha),
             _ => theme.accent.a(alpha),
         };
@@ -4661,21 +5653,13 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
         let press = dialog.buttons.press_progress(selected);
         let [lx, ly, lw, lh] =
             scaled_about_centre([hx, hy, hw, hh], press.map_or(1.0, press_scale));
-        // Deeper for the destructive answer than for an ordinary one, so that
-        // walking on to it makes it *more* red rather than less: the chip it
-        // hands over to the light already carries the colour, and a lit capsule
-        // at the accent's own strength would have been a step back.
-        let lit = match buttons.get(selected) {
-            Some(button) if button.destructive => DESTRUCTIVE_LIT,
-            _ => 0.5,
-        };
         inside.quads.push(Quad {
             x: lx,
             y: ly,
             w: lw,
             h: lh,
             slot: SOLID_SLOT,
-            color: tint(lit + 0.05 * pulse),
+            color: tint(0.5 + 0.05 * pulse),
             radius: lh * 0.5,
             thickness: DEPTH_CONTROL * scale,
             behind: view.behind,
@@ -4697,32 +5681,28 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
         let press = dialog.buttons.press_progress(index);
         let chip = scaled_about_centre([rx, ry, rw, rh], press.map_or(1.0, press_scale));
 
-        // A destructive answer carries its red whether or not it is selected.
-        // It is the one control in the shell that is coloured by what it does
-        // rather than by whether the user is on it: a Yes that only turned red
-        // once highlighted would be an ordinary button right up to the moment it
-        // was too late to matter.
-        let resting = if button.destructive {
-            crate::theme::DESTRUCTIVE.a(DESTRUCTIVE_RESTING)
-        } else {
-            theme.glass_raised.a(0.10)
-        };
+        // Every answer rests as the same slab of glass, the one that destroys
+        // something included. It used to carry its red standing still, on the
+        // grounds that a Yes which only turned red once highlighted would be an
+        // ordinary button right up to the moment that stopped mattering. What
+        // that argument missed is that a panel with one button already lit has
+        // answered its own question before the user has — and it left this
+        // panel disagreeing with the one Steam's uninstall raises, which is the
+        // same question about a different thing. The warmth is on the light
+        // now, in both, and the order of the two answers says the rest: the
+        // harmless one is first and is the one being stood on.
         inside.quads.push(Quad {
             x: chip[0],
             y: chip[1],
             w: chip[2],
             h: chip[3],
             slot: SOLID_SLOT,
-            color: resting,
+            color: theme.glass_raised.a(0.10),
             radius: chip[3] * 0.5,
             thickness: DEPTH_CONTROL * scale,
             behind: view.behind,
             frost: FROST_CONTROL,
-            gloss: if button.destructive {
-                GLOSS_FULL
-            } else {
-                GLOSS_QUIET
-            },
+            gloss: GLOSS_QUIET,
             fade: 1.0 - handed_over,
             ..Quad::default()
         });
@@ -4738,6 +5718,8 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             max_width: (chip[2] - label_padding * 2.0).max(0.0),
             align: TextAlign::Center,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
     }
 
@@ -5048,6 +6030,8 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
                 max_width: w,
                 align: TextAlign::Center,
                 clip: None,
+                halo: 0.0,
+                lines: 1,
             });
         }
     }
@@ -5151,6 +6135,8 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
                 max_width: label * 0.6,
                 align: TextAlign::Center,
                 clip: None,
+                halo: 0.0,
+                lines: 1,
             });
             at += label * 0.6 + gap;
         }
@@ -5181,6 +6167,8 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
         max_width: x + w - at,
         align: TextAlign::Left,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
 
     Scene { quads, texts }
@@ -5197,7 +6185,26 @@ struct TileState {
     focused: bool,
     /// How far through a press it is, if it is being pressed.
     press: Option<f32>,
+    /// How far its unread mark has arrived, 0 for a tile that has none.
+    badge: f32,
 }
+
+/// The unread mark on the bell: how wide the bead is as a share of the tile,
+/// how far its centre sits in from the tile's top right corner, and how much
+/// wider than the bead the dark moat around it is.
+///
+/// In the corner rather than on the glyph. A bell already says *announcements*,
+/// and a mark laid over it would be a second thing to read inside one shape;
+/// a bead at the corner is the badge every phone in the user's pocket puts
+/// there, which is what makes it legible without a legend.
+///
+/// The inset is measured so the bead clears both the chip's rounded corner and
+/// the glyph inside it, which reaches [`GUIDE_TILE_GLYPH`] of the tile: the
+/// bead's own edge stops short of the bell's shoulder rather than resting on
+/// it.
+const TILE_BADGE: f32 = 0.21;
+const TILE_BADGE_INSET: f32 = 0.245;
+const TILE_BADGE_MOAT: f32 = 1.34;
 
 /// How far a tile sinks under a press, as a share of itself, and how far it
 /// springs back past its own size on the way out.
@@ -5291,37 +6298,86 @@ fn tile(
         });
     }
 
-    let Some(slot) = item.glyph().and_then(|name| slots.glyph(name)) else {
-        // A glyph the shell could not rasterise leaves the chip empty rather
-        // than a wrong drawing in its place.
-        return quads;
-    };
-    let glyph = h * GUIDE_TILE_GLYPH;
-    // Four depths, and the order is the point: a switch that is on is the
-    // brightest thing in the column, a switch that is merely selected is
-    // next, and one that cannot be reached at all is a long way behind both.
-    let lit = match (state.live, state.on, state.focused) {
-        // A ghost of a glyph, inside the hairline the caller drew instead of a
-        // chip. Three things say the same thing about a tile nothing can be
-        // done with — no chip, no light in the glyph, and a highlight that
-        // refuses to stop on it — because on a panel of five lit controls no
-        // one of them is enough on its own.
-        (false, _, _) => 0.3,
-        (_, true, _) => 1.0,
-        (_, false, true) => 0.95,
-        _ => 0.82,
-    };
-    quads.push(Quad {
-        x: x + (w - glyph) * 0.5,
-        y: y + (h - glyph) * 0.5,
-        w: glyph,
-        h: glyph,
-        slot,
-        color: [1.0, 1.0, 1.0, lit * alpha],
-        ..Quad::default()
-    });
+    // A glyph the shell could not rasterise leaves the chip empty rather than
+    // a wrong drawing in its place — but not the mark below, which is the one
+    // thing on this tile that is news rather than decoration.
+    if let Some(slot) = item.glyph().and_then(|name| slots.glyph(name)) {
+        let glyph = h * GUIDE_TILE_GLYPH;
+        // Four depths, and the order is the point: a switch that is on is the
+        // brightest thing in the column, a switch that is merely selected is
+        // next, and one that cannot be reached at all is a long way behind
+        // both.
+        let lit = match (state.live, state.on, state.focused) {
+            // A ghost of a glyph, inside the hairline the caller drew instead
+            // of a chip. Three things say the same thing about a tile nothing
+            // can be done with — no chip, no light in the glyph, and a
+            // highlight that refuses to stop on it — because on a panel of
+            // five lit controls no one of them is enough on its own.
+            (false, _, _) => 0.3,
+            (_, true, _) => 1.0,
+            (_, false, true) => 0.95,
+            _ => 0.82,
+        };
+        quads.push(Quad {
+            x: x + (w - glyph) * 0.5,
+            y: y + (h - glyph) * 0.5,
+            w: glyph,
+            h: glyph,
+            slot,
+            color: [1.0, 1.0, 1.0, lit * alpha],
+            ..Quad::default()
+        });
+    }
 
+    // Last, so it is over the glyph rather than under it: it is a thing sitting
+    // on the tile, and the corner it sits in belongs to it.
+    quads.extend(unread_badge([x, y, w, h], state.badge, alpha));
     quads
+}
+
+/// The unread mark, laid into the tile at `[x, y, w, h]`, `arrived` of the way
+/// on.
+///
+/// A bead and the dark moat it stands in. The moat is what makes it *sit on*
+/// the tile rather than be painted into it, and it is what the mark needs to
+/// survive both backgrounds it is drawn against: the plain glass chip, and the
+/// lit accent capsule that glides onto that chip when the tile is selected.
+///
+/// White rather than accent-coloured for the reason the quick-settings bars
+/// are — see [`quick_bar`]. A mark tinted with the accent would disappear into
+/// the selection the moment the user walked the highlight onto the very tile
+/// they were being told to open.
+///
+/// No number on it, at the user's direction, and it is the better answer
+/// anyway: a count is a thing to read, and this is a thing to notice. What is
+/// worth knowing from across a room is *something arrived*; how many there are
+/// is a question the list itself answers, one row per line, a press away.
+fn unread_badge([x, y, w, h]: [f32; 4], arrived: f32, alpha: f32) -> Vec<Quad> {
+    let arrived = arrived.clamp(0.0, 1.0);
+    if arrived <= 0.0 {
+        return Vec::new();
+    }
+    let theme = theme();
+    // It grows out of its own centre, which stays put: a bead that also
+    // travelled would be a second movement to follow in a corner the eye is
+    // only glancing at.
+    let centre = [x + w * (1.0 - TILE_BADGE_INSET), y + h * TILE_BADGE_INSET];
+    let bead = w * TILE_BADGE * arrived;
+    let moat = bead * TILE_BADGE_MOAT;
+    let disc = |size: f32, color: [f32; 4]| Quad {
+        x: centre[0] - size * 0.5,
+        y: centre[1] - size * 0.5,
+        w: size,
+        h: size,
+        slot: SOLID_SLOT,
+        color,
+        radius: size * 0.5,
+        ..Quad::default()
+    };
+    vec![
+        disc(moat, theme.glass.a(0.5 * arrived * alpha)),
+        disc(bead, theme.rim.a(arrived * alpha)),
+    ]
 }
 
 /// How much of the accent fill has arrived, `t` of the way through a press.
@@ -5553,6 +6609,167 @@ fn entry_slot(entry: &Entry, slots: &impl SlotLookup) -> Option<u32> {
     }
 }
 
+/// The vertical bar a value on a scale is set on, in the room a row's icon
+/// would have had.
+///
+/// How tall the track is as a share of the display, how wide it is drawn, and
+/// how much bigger than that the handle on the end of the fill is.
+///
+/// The height is a share rather than a fixed size because it is the *reach* of
+/// the control: what makes a bar worth having over a list is being able to see
+/// the whole range at once, and on a taller screen there is more room to see it
+/// in. The width is not, because it is a *thickness* — and because it has to be
+/// several times the bevel this is cut with, or the groove is all rim and no
+/// face and reads as a painted stripe rather than as a pane with an edge.
+const COLUMN_BAR_HEIGHT: f32 = 0.40;
+const COLUMN_BAR_WIDTH: f32 = 40.0;
+const COLUMN_BAR_HANDLE: f32 = 1.2;
+
+/// How far inside the groove the filled part is drawn, as a share of the
+/// groove's width.
+///
+/// The fill is a pane in its own right, laid *in* the channel rather than over
+/// it, so the groove keeps a rim of its own glass all the way round the light.
+/// Without it the two panes share an edge and the bevel of the one underneath
+/// has nowhere to be, which is a coloured stripe with a line drawn round it.
+///
+/// A rim, though, and not a margin: the light is what the control is *for*, and
+/// a fill held well inside its groove reads as two bars, a thin one drawn down
+/// the middle of a fat one.
+const COLUMN_BAR_INSET: f32 = 0.10;
+
+/// Where a bar's groove is drawn, given the room the row's icon would have had.
+///
+/// It is worked out apart from the drawing because two other things are cut to
+/// this shape before the bar is reached: the light behind the row, and the
+/// decision not to put a disc under it.
+fn column_bar_box(x: f32, y: f32, height: f32, scale: f32) -> [f32; 4] {
+    let w = COLUMN_BAR_WIDTH * scale;
+    let h = height * COLUMN_BAR_HEIGHT;
+    [x - w / 2.0, y - h / 2.0, w, h]
+}
+
+/// The bar itself: the groove, the part of it that is filled, and the handle
+/// on the end of the fill.
+///
+/// The same three marks the guide's quick-settings bars are made of — see
+/// [`track`], which is this lying down — because a level is one picture and
+/// the shell should not have two of it. What differs is the axis, the material
+/// and what the fill is *coloured*.
+///
+/// The material, because of where each of them stands. The guide's bar is one
+/// control among several already lying on a pane of glass, and putting glass on
+/// glass would only blur the pane twice; this one stands on the wallpaper, in
+/// the place the chosen row's glass disc would have been, and it *is* that
+/// glass — every one of these three marks is a slab of the material the rest of
+/// the shell's controls are cut from, so a level set in a column is the same
+/// object as a button, not a diagram of one. That is also why nothing here is
+/// drawn on: the rim light, the sheen down the bevel and the colour split at
+/// the edge are what a slab of this shape does with the one lamp the shell is
+/// lit by, worked out in the shader.
+///
+/// The colour, because a volume has none of its own and a colour temperature is
+/// nothing but one: where the guide's bar fills with the rim light this one
+/// fills with the light it stands for.
+///
+/// The fill grows upward from the foot, which is the way a quantity is read on
+/// anything vertical, and it is what Up adds to.
+fn column_bar(
+    [x, top, track_w, track_h]: [f32; 4],
+    bar: &crate::apps::Bar,
+    alpha: f32,
+    lit: f32,
+) -> Vec<Quad> {
+    let theme = theme();
+    let scale = track_w / COLUMN_BAR_WIDTH;
+    let depth = DEPTH_CONTROL * scale;
+    let mut quads = Vec::with_capacity(3);
+
+    // The groove: the row's glass, cut to the shape of the control. Stained
+    // with the accent as the disc under a chosen icon is, and *less* than it,
+    // because what is behind this is already the accent bloom and because the
+    // empty part of a bar has to read as empty — a groove tinted as strongly as
+    // a disc is a second fill above the real one, in a colour that means
+    // nothing. Lightly enough that the pane is mostly what it is transmitting,
+    // which is how a pane stays glass instead of turning into paint.
+    quads.push(Quad {
+        x,
+        y: top,
+        w: track_w,
+        h: track_h,
+        slot: SOLID_SLOT,
+        color: theme.accent.a(0.08 * lit.clamp(0.0, 1.0) + 0.05),
+        radius: track_w / 2.0,
+        thickness: depth,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_FULL,
+        fade: alpha,
+        ..Quad::default()
+    });
+
+    // The light in the channel. Held clear of the groove's rim on both sides so
+    // the two panes each keep a bevel of their own, and the same at the foot:
+    // the fill is lying in the groove, not filling it in.
+    let inset = track_w * COLUMN_BAR_INSET;
+    let (lit_w, room) = (track_w - inset * 2.0, track_h - inset * 2.0);
+    let filled = room * bar.fill.clamp(0.0, 1.0);
+    // The colour the value stands for, where it stands for one. Its own colour
+    // rather than the shell's: what this is showing is what the *screen* is
+    // about to look like, and a preview stained with the accent would be a
+    // preview of the wrong thing. Stained to the full, which on a slab this
+    // shallow still leaves the rim clear enough to read as an edge — see the
+    // stain term in the shader, which thins towards the bevel by itself.
+    let colour = match bar.swatch {
+        Some(colour) => colour.a(alpha),
+        None => theme.rim.a(0.92 * alpha),
+    };
+    // A fill shorter than it is wide has no length left to be a capsule of, and
+    // is drawn as the round end alone rather than as a squashed one.
+    if filled > 0.0 {
+        let height = filled.max(lit_w);
+        quads.push(Quad {
+            x: x + inset,
+            y: top + inset + room - height,
+            w: lit_w,
+            h: height,
+            slot: SOLID_SLOT,
+            color: colour,
+            radius: lit_w / 2.0,
+            thickness: depth,
+            gloss: GLOSS_FULL,
+            fade: alpha,
+            ..Quad::default()
+        });
+    }
+
+    // The handle. Only there to say that the end of the fill is a place the
+    // value *is* rather than where a drawing happens to stop — so it is drawn
+    // across the groove, wider than the channel it marks, the way the pointer
+    // on any scale overhangs the scale.
+    //
+    // Kept inside the ends of its own groove, exactly as the guide's is: a
+    // control at the top of its range would otherwise hang half a handle past
+    // the track, over whatever the track was laid on.
+    let handle = track_w * COLUMN_BAR_HANDLE;
+    let travel = top + inset + room - filled;
+    let at = travel.clamp(top + handle / 2.0, top + track_h - handle / 2.0);
+    quads.push(Quad {
+        x: x + track_w / 2.0 - handle / 2.0,
+        y: at - handle / 2.0,
+        w: handle,
+        h: handle,
+        slot: SOLID_SLOT,
+        color: theme.rim.a(0.55),
+        radius: handle / 2.0,
+        thickness: depth,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_FULL,
+        fade: alpha,
+        ..Quad::default()
+    });
+    quads
+}
+
 /// A square icon, or a tinted placeholder when the theme had no such icon —
 /// which keeps rows aligned instead of leaving a hole.
 fn icon_quad(slot: Option<u32>, x: f32, y: f32, size: f32, alpha: f32, missing: [f32; 4]) -> Quad {
@@ -5641,6 +6858,21 @@ pub struct LaunchView<'a> {
     pub name: &'a str,
     /// The application's icon, already resolved to a texture slot.
     pub icon: Option<u32>,
+    /// Whether this is a game opening out of the Steam library, which is drawn
+    /// a different way entirely — see [`build_launch`].
+    pub game: bool,
+    /// Steam's own logo for that game, if there is one and it has arrived.
+    ///
+    /// Its own picture rather than an atlas slot, because unlike an icon a
+    /// logo has a shape of its own: a title set in one line is six times as
+    /// wide as it is tall and a stacked one is square, and the splash fits
+    /// each into the same box rather than squashing either.
+    pub logo: Option<crate::gpu::Thumb>,
+    /// Which step of starting it the line beside the indicator says it is on.
+    pub doing: Option<crate::launch::Doing>,
+    /// How black the display is on its way to the game — see
+    /// [`crate::launch::Launch::blackout`]. Unshaped.
+    pub blackout: f32,
     /// The tile it is opening out of.
     pub from: [f32; 4],
     /// 0 on the tile, 1 filling the display.
@@ -5654,14 +6886,300 @@ pub struct LaunchView<'a> {
     pub time: f32,
 }
 
-/// Draw the splash: a panel out of the tile, the application's icon and name
-/// on it, and something that says the wait is expected.
+/// The corner of the screen where announcements arrive, against 1080p like
+/// every other metric here.
 ///
-/// Everything on it arrives *after* the panel has, so nothing is legible
-/// while it is still tile-sized — the same reason the power dialog's rows
-/// hold back, and the difference between an application opening and a
-/// screenful of furniture being scaled up.
+/// A bubble is [`CONTEXT_WIDTH`] across — the width every panel in the shell
+/// is, and deliberately: the corner and the list are the same announcement seen
+/// twice, and two pieces of furniture carrying the same words at two widths
+/// read as unrelated.
+///
+/// It does *not* follow the panel's extra hundred — see
+/// [`NOTIFICATION_EXTRA_WIDTH`]. The list took that width for the two things a
+/// bubble does not have: a button on the end of every row, and a summary given
+/// room to wrap. This is the one thing the shell draws over an application that
+/// nobody asked for, so it takes a corner and not a column — a bubble a third
+/// of the screen across would be the shell deciding that its news matters more
+/// than the game underneath it.
+const TOAST_WIDTH: f32 = CONTEXT_WIDTH;
+/// How far the stack stands off the display's corner, and the air between one
+/// bubble and the next.
+const TOAST_INSET: f32 = 30.0;
+const TOAST_GAP: f32 = 14.0;
+/// The air to the left and right of what is written on a bubble.
+///
+/// [`GUIDE_MARGIN`], because that is what every panel in this shell insets its
+/// contents by — the guide's column, the context menu's rows, its title. A
+/// bubble is a panel and inherits the number rather than choosing one.
+const TOAST_PAD: f32 = GUIDE_MARGIN;
+
+/// How tall a bubble is.
+///
+/// Sized to the two lines it carries and not much more. It was [`MIXER_ROW`]
+/// plus a full [`TOAST_PAD`] top and bottom, on the reasoning that a two-line
+/// row is worth the same everywhere — and that was wrong twice over. A mixer
+/// row is that tall because it holds a name *and a track*; two lines of
+/// writing need far less. And a panel margin is what a panel puts around a
+/// column of rows, where it separates the glass from things that have their
+/// own edges; here it was simply air, doubled, around a block of text that
+/// already has its own.
+///
+/// The stack is what makes the difference matter. Three of these at the old
+/// height reached nearly half the depth of a 1080p display, which for
+/// something nobody asked for is a great deal of somebody's game to be
+/// standing on.
+const TOAST_HEIGHT: f32 = 104.0;
+
+/// Where the two lines sit inside a bubble, as shares of its height: the
+/// middle of the summary's line, and the middle of the one under it.
+///
+/// Their own numbers rather than the panel's [`MIXER_NAME_LINE`], because the
+/// thing they are shares *of* is no longer the same height. Set so the pair is
+/// optically centred: the gap above the summary and the gap below the body are
+/// equal, which is what stops a short bubble reading as top-heavy.
+const TOAST_TITLE_LINE: f32 = 0.36;
+const TOAST_BODY_LINE: f32 = 0.68;
+
+/// The picture at the head of a bubble, as a share of the pane's height.
+///
+/// Smaller than the [`MIXER_ICON`] a row gets. An icon on a row is sharing its
+/// height with nothing else and can fill it; this one sits beside two lines of
+/// writing in a pane sized to them, and at a row's proportion it grows taller
+/// than the text it is labelling and starts to read as the subject rather than
+/// the mark.
+const TOAST_ICON: f32 = 0.46;
+
+/// How strongly a bubble's writing is ringed in shade.
+///
+/// The one place in the shell where a run needs it — see [`crate::gpu::Text`]'s
+/// `halo`. Everywhere else the shell chose what is behind the words; here it
+/// did not. A pane is nearly all borrowed light, and a bubble stands wherever
+/// the corner of the screen happens to be: over a wallpaper the writing is
+/// clear, over the bar's white category icons it is grey on white.
+///
+/// The alternative was to take the glass down behind the text until it read,
+/// and that is the wrong trade. It darkens a rectangle of somebody's game for
+/// the sake of a sentence, and it makes the panel look like the flat slab this
+/// one was rewritten to stop being. A ring costs the letters' own outline and
+/// nothing else.
+const TOAST_HALO: f32 = 1.0;
+
+/// The same for the line under it, and stronger — the one number here that is
+/// not the same for both lines.
+///
+/// It reads worse than the summary and every reason is stacked the same way:
+/// it is smaller, so its ring is thinner in real pixels; it is not bold, so
+/// there is less letter to carry the contrast; and it is drawn in the soft
+/// grey that makes it the second line rather than the first, which is the
+/// least of the three but the one that costs it against a white icon
+/// underneath. Matching the summary's ring leaves it the harder of the two to
+/// read, which is backwards — the line that is quieter *by design* still has
+/// to be legible, or it is not a second line, it is a smudge.
+const TOAST_BODY_HALO: f32 = 1.75;
+
+/// One bubble, as the corner needs it: what it says, what it came from, and
+/// where it has got to in its own life.
+///
+/// The words are borrowed rather than owned because the store already holds
+/// them, and the stage and progress come from [`crate::notify::Toast`] rather
+/// than being worked out here — the corner draws what the store says is
+/// happening, and does not keep a second opinion about when a bubble is due to
+/// leave.
+pub struct ToastCard<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub icon: Option<u32>,
+    pub stage: crate::notify::Stage,
+    pub progress: f32,
+}
+
+/// Where a bubble stands and how solid it is, from the stage it is in.
+///
+/// One function for all three stages so that a bubble caught mid-flight and
+/// sent away — which is what dismissing its row does — carries on from where
+/// it is rather than snapping to the start of the exit.
+///
+/// Returns `(x offset from resting, alpha, how much of its slot it still
+/// occupies)`. The third is what makes the stack close up: a bubble on its way
+/// out gives its slot back as it goes, so the ones below have finished
+/// climbing by the time it is swept, and nothing jumps.
+fn toast_flight(stage: crate::notify::Stage, progress: f32, travel: f32) -> (f32, f32, f32) {
+    match stage {
+        crate::notify::Stage::In => {
+            let arrived = ease(progress);
+            (travel * (1.0 - arrived), arrived, 1.0)
+        }
+        crate::notify::Stage::Sitting => (0.0, 1.0, 1.0),
+        crate::notify::Stage::Out => {
+            let gone = ease(progress);
+            (travel * gone, 1.0 - gone, 1.0 - gone)
+        }
+    }
+}
+
+/// The corner of the screen: bubbles stacked down from the top right.
+///
+/// Oldest at the top, which is the opposite of the panel behind the bell and
+/// deliberately so. The list is read from the top and the newest row is the
+/// one somebody opened it for; the corner is *watched*, and a stack that
+/// reordered itself as things arrived would move the bubble somebody was
+/// half-way through reading. New ones come in underneath.
+pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let mut scene = Scene::default();
+    let pad = TOAST_PAD * scale;
+    let label_padding = GUIDE_LABEL_PADDING * scale;
+
+    for (card, (rect, alpha)) in cards.iter().zip(toast_layout(cards, width, height)) {
+        if alpha <= 0.0 {
+            continue;
+        }
+
+        // The pane, and nothing else: this is the context menu's panel with
+        // the rows left off it.
+        //
+        // A chip was tried here and is wrong twice over. A chip is what a *row*
+        // looks like, and a row is a thing that can be moved onto and pressed —
+        // the corner is neither, so a bubble wearing one is inviting a press
+        // that has nowhere to land. And a chip is a second slab of glass laid
+        // on the first, which on a panel this small leaves the pane showing as
+        // a rim around it: a bordered box rather than a panel with something
+        // written on it.
+        //
+        // So the words sit directly on the glass, at the panel's own margin —
+        // exactly where a context menu puts its title.
+        scene
+            .quads
+            .extend(sidebar_surface(rect, scale, behind, alpha));
+
+        let icon = rect[3] * TOAST_ICON;
+        let icon_x = rect[0] + pad;
+        scene.quads.push(icon_quad(
+            card.icon,
+            icon_x,
+            rect[1] + (rect[3] - icon) * 0.5,
+            icon,
+            alpha,
+            theme.glass_raised.a(0.5 * alpha),
+        ));
+
+        let text_x = icon_x + icon + label_padding;
+        let text_w = (rect[0] + rect[2] - text_x - pad).max(0.0);
+        // Two lines in the panel's own places — see MIXER_NAME_LINE, which is
+        // where a row puts the name it has something under. The second one
+        // only if the program had anything more to say: a bubble with an empty
+        // line under its sentence is a sentence sitting above the middle of
+        // the chip for no reason, so it is centred instead when it stands
+        // alone.
+        let title_size = 23.0 * scale;
+        let body_size = 20.0 * scale;
+        let has_body = !card.body.trim().is_empty();
+        let title_y = if has_body {
+            rect[1] + rect[3] * TOAST_TITLE_LINE - title_size * 0.5
+        } else {
+            rect[1] + rect[3] * 0.5 - title_size * 0.62
+        };
+        scene.texts.push(Text {
+            content: card.title.to_string(),
+            x: text_x,
+            y: title_y,
+            size: title_size,
+            color: theme.text.a(0.97 * alpha),
+            bold: true,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            // Faded with the bubble, because the ring is no longer thinned by
+            // the run's own colour — see `halo_copies`. A bubble that flew off
+            // the display leaving its outlines standing would be the worst of
+            // both.
+            halo: TOAST_HALO * alpha,
+            lines: 1,
+        });
+        if has_body {
+            // One line of it. A notification body can be a paragraph — some
+            // programs put a whole email in one — and a bubble that grew to
+            // fit would be a program deciding how much of the screen it may
+            // have. The rest is on the row behind the bell, which is a list
+            // somebody chose to open.
+            scene.texts.push(Text {
+                content: card.body.lines().next().unwrap_or_default().to_string(),
+                x: text_x,
+                y: rect[1] + rect[3] * TOAST_BODY_LINE - body_size * 0.5,
+                size: body_size,
+                color: theme.text_soft.a(0.72 * alpha),
+                bold: false,
+                max_width: text_w,
+                align: TextAlign::Left,
+                clip: None,
+                halo: TOAST_BODY_HALO * alpha,
+                lines: 1,
+            });
+        }
+    }
+
+    scene
+}
+
+/// Where each bubble stands and how solid it is, in order.
+///
+/// Shared by the drawing above and by the caller cutting the runs underneath
+/// them, for the same reason the card layout is shared with the compositor:
+/// two places computing one rectangle have to agree, and a bubble that cut its
+/// hole somewhere other than where it landed is worse than one that cut none.
+fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], f32)> {
+    let scale = guide_scale(height);
+    let card_w = TOAST_WIDTH * scale;
+    let card_h = TOAST_HEIGHT * scale;
+    let inset = TOAST_INSET * scale;
+    let gap = TOAST_GAP * scale;
+    let rest_x = width - inset - card_w;
+    // Far enough to be off the display entirely, so a bubble is never seen
+    // cut in half by the edge it came in through.
+    let travel = card_w + inset * 2.0;
+
+    let mut placed = Vec::with_capacity(cards.len());
+    let mut y = inset;
+    for card in cards {
+        let (offset, alpha, slot) = toast_flight(card.stage, card.progress, travel);
+        placed.push(([rest_x + offset, y, card_w, card_h], alpha));
+        // Its own top is taken before its slot shrinks, so a bubble on its way
+        // out slides sideways from where it was standing while the ones under
+        // it climb into the room it is giving back.
+        y += (card_h + gap) * slot;
+    }
+    placed
+}
+
+/// The rectangles alone, for whatever the bubbles have landed on top of.
+///
+/// One per card and in the same order, including the ones that are invisible:
+/// a bubble is fully off the display at both ends of its flight, so a rect
+/// nothing can be seen in cuts nothing out of what is underneath, and an
+/// answer that quietly dropped entries would stop lining up with the cards it
+/// was asked about.
+pub fn toast_rects(cards: &[ToastCard], width: f32, height: f32) -> Vec<[f32; 4]> {
+    toast_layout(cards, width, height)
+        .into_iter()
+        .map(|(rect, _)| rect)
+        .collect()
+}
+
+/// Draw the splash — one of two, depending on what is starting.
+///
+/// An application gets a panel out of the tile it was chosen from, with its
+/// icon and name on it and something that says the wait is expected.
+/// Everything on it arrives *after* the panel has, so nothing is legible while
+/// it is still tile-sized — the same reason the power dialog's rows hold back,
+/// and the difference between an application opening and a screenful of
+/// furniture being scaled up.
+///
+/// A game gets no panel at all: see [`build_game_launch`].
 pub fn build_launch(view: LaunchView, width: f32, height: f32) -> Scene {
+    if view.game {
+        return build_game_launch(view, width, height);
+    }
     let theme = theme();
     let scale = guide_scale(height);
     let mut scene = Scene::default();
@@ -5730,46 +7248,279 @@ pub fn build_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         max_width: width,
         align: TextAlign::Center,
         clip: None,
+        halo: 0.0,
+        lines: 1,
     });
 
-    // A ring of dots lighting in turn. Not a bar: nothing here knows how far
-    // along the application is, and a bar that does not measure anything is a
-    // lie about how much longer this will take.
-    let dot = 9.0 * scale;
-    let orbit = icon_size * 0.5 + 34.0 * scale;
-    let phase = view.time / LAUNCH_SPIN;
-    for index in 0..LAUNCH_DOTS {
-        let turn = index as f32 / LAUNCH_DOTS as f32;
-        let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        // Each dot is brightest as the sweep passes it and dims behind it.
-        let behind = (phase - turn).rem_euclid(1.0);
-        let lit = if view.waiting {
-            0.2 + 0.8 * (1.0 - behind).powi(3)
-        } else {
-            // Nothing left to wait for: the ring settles rather than spinning
-            // on over an application that is already there.
-            0.2
-        };
-        scene.quads.push(Quad {
-            x: icon_x + angle.cos() * orbit - dot * 0.5,
-            y: icon_y + angle.sin() * orbit - dot * 0.5,
-            w: dot,
-            h: dot,
-            slot: SOLID_SLOT,
-            color: theme.accent_soft.a(lit * arrived),
-            radius: dot * 0.5,
-            ..Quad::default()
+    // The ring, round the icon it is waiting on.
+    scene.quads.extend(launch_ring(
+        [icon_x, icon_y],
+        icon_size * 0.5 + 34.0 * scale,
+        9.0 * scale,
+        view.time,
+        view.waiting,
+        arrived,
+    ));
+
+    scene.fade(view.fade);
+    scene
+}
+
+/// Draw a game starting: its own picture left exactly where it is, its title
+/// coming forward in the middle of it, and the ring down in a corner.
+///
+/// No panel, which is the whole of the difference. A game chosen in the
+/// library already has Steam's own picture of it standing behind the entire
+/// display — the shell fades it in as the cursor arrives on the row — and
+/// growing an opaque panel over that would be the shell throwing the picture
+/// away at the exact moment it stopped being decoration and became the thing
+/// somebody is waiting in front of. So the bar goes, the picture stays, and
+/// the press is answered by the game's own title in its own lettering.
+///
+/// The title is Valve's `logo.png` where there is one. Where there is not —
+/// an old title, a tool, a game whose logo has not come down the wire yet —
+/// the name is written in its place, at the same size and with the same move,
+/// because a splash with nothing in the middle of it is a picture with no
+/// answer on it.
+fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let mut scene = Scene::default();
+
+    // The title holds back while the bar is still on screen and then comes
+    // forward on its own, so the two never share the middle of the display.
+    // Both are over the same picture, and a name crossing a category row on
+    // its way in would read as part of the bar rather than as its answer.
+    let arrived = ease(((view.open - 0.35) / 0.65).clamp(0.0, 1.0));
+    let zoom = lerp(LAUNCH_LOGO_FROM, 1.0, arrived);
+    let room = [width * LAUNCH_LOGO_WIDTH, height * LAUNCH_LOGO_HEIGHT];
+    let middle = [width * 0.5, height * 0.5];
+
+    match view
+        .logo
+        .filter(|logo| logo.aspect.is_finite() && logo.aspect > 0.0)
+    {
+        Some(logo) => {
+            // Fitted into the room rather than filled into it: a wordmark is
+            // the one picture in the shell that must not be cropped, since
+            // what would be cropped is the end of the game's name.
+            let (w, h) = if logo.aspect >= room[0] / room[1] {
+                (room[0], room[0] / logo.aspect)
+            } else {
+                (room[1] * logo.aspect, room[1])
+            };
+            let (w, h) = (w * zoom, h * zoom);
+            scene.quads.push(Quad {
+                x: middle[0] - w * 0.5,
+                y: middle[1] - h * 0.5,
+                w,
+                h,
+                slot: logo.slot,
+                // Drawn as it was made. A logo is artwork Valve drew to stand
+                // on this very picture, so anything the shell tinted it with
+                // would be the shell correcting an artist.
+                color: [1.0, 1.0, 1.0, arrived],
+                ..Quad::default()
+            });
+        }
+        None => {
+            // Wider than the logo's room, and deliberately: that box is
+            // proportioned for a *picture* standing in the middle of a
+            // display, and a game's name is a sentence. Held to the same
+            // width would put an ellipsis in the middle of half the titles in
+            // a library, which on the one thing the screen is saying is worse
+            // than a line that runs a little wide.
+            let size = LAUNCH_NAME * scale * zoom;
+            let room = width * LAUNCH_NAME_WIDTH;
+            scene.texts.push(Text {
+                content: view.name.to_string(),
+                x: middle[0] - room * 0.5,
+                y: middle[1] - size * 0.62,
+                size,
+                color: theme.text.a(0.97 * arrived),
+                bold: true,
+                max_width: room,
+                align: TextAlign::Center,
+                clip: None,
+                // Ringed in shade, unlike the name on an application's panel —
+                // see [`TOAST_HALO`], which is here for the same reason. That
+                // one is written on glass the shell chose; this one is written
+                // on a photograph Valve chose, and a white title over the
+                // bright half of a hero is not a title.
+                //
+                // Faded by hand, twice over: a ring is not part of a run's
+                // colour, so neither the title arriving nor the whole splash
+                // handing the screen over would take it — and a shadow left
+                // standing over the game that has just appeared is the worst
+                // outline the shell could leave behind.
+                halo: LAUNCH_NAME_HALO * arrived * view.fade,
+                lines: 1,
+            });
+        }
+    }
+
+    // And the ring, in the bottom-right corner, arriving with the title.
+    let inset = LAUNCH_RING_INSET * scale;
+    let ring = [width - inset, height - inset];
+    let orbit = LAUNCH_RING_ORBIT * scale;
+
+    // On a shade of its own, because the corner of a hero is whatever Valve
+    // painted there. The dots are pale, and half the pictures in a library
+    // have a bright sky in the corner they land on — a ring that cannot be
+    // seen is worse than none, since the shell has then said nothing about
+    // the minutes it is asking somebody to wait.
+    //
+    // A bloom rather than a panel: it is the [`GLOW_SLOT`] this shell already
+    // lights its cursor with, in the glass's own near-black, and it has no
+    // edge anywhere. A pane in the corner would be furniture stamped on
+    // somebody's artwork; this is the artwork itself, a little further away.
+    let shade = (orbit + 9.0 * scale) * LAUNCH_RING_SHADE;
+    scene.quads.push(Quad {
+        x: ring[0] - shade * 0.5,
+        y: ring[1] - shade * 0.5,
+        w: shade,
+        h: shade,
+        slot: GLOW_SLOT,
+        color: theme.glass.a(0.55 * arrived),
+        ..Quad::default()
+    });
+    scene.quads.extend(launch_ring(
+        ring,
+        orbit,
+        9.0 * scale,
+        view.time,
+        view.waiting,
+        arrived,
+    ));
+
+    // And what it is waiting for, in words, beside it.
+    //
+    // Beside rather than under, because the ring is already as far into the
+    // corner as it can stand and a line under it would be off the display.
+    // Right up against it and running back towards the middle of the screen:
+    // the pair reads as one thing that way round, and a line of writing
+    // stranded in the middle of the bottom edge would read as a caption on the
+    // picture instead.
+    if let Some(doing) = view.doing {
+        let size = LAUNCH_DOING * scale;
+        let room = width * LAUNCH_DOING_WIDTH;
+        let right = ring[0] - orbit - 9.0 * scale - LAUNCH_DOING_GAP * scale;
+        scene.texts.push(Text {
+            content: launch_caption(doing).to_string(),
+            x: right - room,
+            // Centred on the ring rather than sharing its baseline: what it is
+            // beside is a circle, and a circle has no baseline to share.
+            y: ring[1] - size * 0.62,
+            size,
+            color: theme.text.a(0.9 * arrived),
+            bold: false,
+            max_width: room,
+            align: TextAlign::Right,
+            clip: None,
+            // Its own shade, for the reason the fallback title has one: the
+            // ring got a bloom it can sit in and this runs out past the edge
+            // of that, onto whatever Valve painted along the bottom.
+            halo: LAUNCH_NAME_HALO * arrived * view.fade,
+            lines: 1,
         });
     }
 
     scene.fade(view.fade);
+
+    // The dip to black, over everything above and over the picture under it.
+    //
+    // Added after the fade rather than before it because it is the one thing
+    // here that is not fading *with* the splash — it is what the splash is
+    // fading into, and it outlives everything else on the screen by the length
+    // of the hold and the way up. See [`crate::launch::Launch::blackout`].
+    //
+    // It does not cover the text runs above it, and cannot: every quad in a
+    // scene is drawn before every run — see [`Scene::hide_text_behind`]. That
+    // is why the title and the line under the ring are timed to be gone by the
+    // moment the screen is fully black rather than merely being stood over.
+    let black = ease(view.blackout);
+    if black > 0.0 {
+        scene.quads.push(Quad {
+            x: 0.0,
+            y: 0.0,
+            w: width,
+            h: height,
+            slot: SOLID_SLOT,
+            color: [0.0, 0.0, 0.0, black],
+            ..Quad::default()
+        });
+    }
+
     scene
+}
+
+/// What a game's splash says it is waiting for, beside the indicator.
+///
+/// Named steps rather than a spinner alone, and this is a reversal: the shell
+/// used to say nothing here on the reasoning that "starting Steam" is its own
+/// plumbing and not something anybody asked about. That holds for a wait of a
+/// second or two. It does not hold for this one — a cold client is the better
+/// part of a minute before the game is so much as asked for, and a spinner
+/// alone over a picture for that long does not read as *working*, it reads as
+/// stuck. Naming the step is what tells somebody the wait is going somewhere.
+///
+/// Neither line names the game. The whole middle of the display is the game's
+/// own title in its own lettering, and repeating it in grey along the bottom
+/// would be the shell saying the one thing already said largest.
+fn launch_caption(doing: crate::launch::Doing) -> &'static str {
+    match doing {
+        crate::launch::Doing::Steam => "Launching Steam",
+        crate::launch::Doing::Game => "Starting the game",
+    }
+}
+
+/// A ring of dots lighting in turn, centred at `at`.
+///
+/// Not a bar: nothing here knows how far along the application is, and a bar
+/// that does not measure anything is a lie about how much longer this will
+/// take.
+fn launch_ring(
+    at: [f32; 2],
+    orbit: f32,
+    dot: f32,
+    time: f32,
+    waiting: bool,
+    alpha: f32,
+) -> Vec<Quad> {
+    let theme = theme();
+    let phase = time / LAUNCH_SPIN;
+    (0..LAUNCH_DOTS)
+        .map(|index| {
+            let turn = index as f32 / LAUNCH_DOTS as f32;
+            let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+            // Each dot is brightest as the sweep passes it and dims behind it.
+            let behind = (phase - turn).rem_euclid(1.0);
+            let lit = if waiting {
+                0.2 + 0.8 * (1.0 - behind).powi(3)
+            } else {
+                // Nothing left to wait for: the ring settles rather than
+                // spinning on over an application that is already there.
+                0.2
+            };
+            Quad {
+                x: at[0] + angle.cos() * orbit - dot * 0.5,
+                y: at[1] + angle.sin() * orbit - dot * 0.5,
+                w: dot,
+                h: dot,
+                slot: SOLID_SLOT,
+                color: theme.accent_soft.a(lit * alpha),
+                radius: dot * 0.5,
+                ..Quad::default()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::apps::{App, Category, Choice, Folder};
+    use crate::menu::Title;
     use crate::model::Action;
     use std::path::{Path, PathBuf};
 
@@ -5945,6 +7696,18 @@ mod tests {
             comment: None,
             icon: Some("folder".into()),
             entries,
+        })
+    }
+
+    /// A column that is a value on a scale rather than a list of them.
+    fn bar(fill: f32) -> Entry {
+        Entry::Bar(crate::apps::Bar {
+            title: "4000 K".into(),
+            comment: None,
+            fill,
+            swatch: Some(crate::theme::Color(0xFFB46B)),
+            up: None,
+            down: None,
         })
     }
 
@@ -6128,6 +7891,10 @@ mod tests {
                 LaunchView {
                     name: "Celeste",
                     icon: Some(7),
+                    game: false,
+                    logo: None,
+                    doing: None,
+                    blackout: 0.0,
                     from: tile,
                     open,
                     fade,
@@ -6158,6 +7925,343 @@ mod tests {
             "nothing may outlast the handover"
         );
         assert_eq!(label(&handing), 0.0);
+    }
+
+    /// A game is answered on the picture it is already standing on. Nothing
+    /// covers the display, the title grows into the middle of it, and the ring
+    /// waits down in the bottom-right corner.
+    ///
+    /// The panel is what is being pinned out, not merely something that has
+    /// gone: a single opaque quad the size of the screen is the one thing that
+    /// would throw away the hero the shell spent the browse fetching, and it
+    /// is invisible to every other test here because a splash covering
+    /// everything looks perfectly deliberate.
+    #[test]
+    fn a_game_opens_on_its_own_picture_with_no_panel_over_it() {
+        let (width, height) = (1920.0, 1080.0);
+        let tile = launch_origin(width, height);
+        // A one-line wordmark, which is the shape that tests the fitting: it
+        // is far wider than the room is proportioned, so the width binds.
+        let logo = crate::gpu::Thumb {
+            slot: 4242,
+            aspect: 640.0 / 113.0,
+            covers: [1.0, 1.0],
+        };
+        let at = |open: f32, fade: f32, logo| {
+            build_launch(
+                LaunchView {
+                    name: "Hollow Knight",
+                    icon: Some(7),
+                    game: true,
+                    logo,
+                    doing: Some(crate::launch::Doing::Steam),
+                    blackout: 0.0,
+                    from: tile,
+                    open,
+                    fade,
+                    waiting: true,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+        };
+
+        let scene = at(1.0, 1.0, Some(logo));
+        assert!(
+            !scene
+                .quads
+                .iter()
+                .any(|quad| quad.w >= width * 0.9 && quad.h >= height * 0.9),
+            "something is covering the game's own picture"
+        );
+        // The only writing on it is the line beside the indicator. The middle
+        // of the display is the logo, and a name written under artwork that is
+        // the name would be the shell saying it twice.
+        assert_eq!(
+            scene
+                .texts
+                .iter()
+                .map(|text| text.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Launching Steam"]
+        );
+
+        // The logo, settled: fitted into its room at its own shape, centred.
+        let mark = scene
+            .quads
+            .iter()
+            .find(|quad| quad.slot == logo.slot)
+            .expect("the game's logo");
+        assert!((mark.w - width * LAUNCH_LOGO_WIDTH).abs() < 0.5, "{mark:?}");
+        assert!((mark.w / mark.h - logo.aspect).abs() < 0.01, "{mark:?}");
+        assert!(
+            (mark.x + mark.w * 0.5 - width * 0.5).abs() < 0.5,
+            "{mark:?}"
+        );
+        assert!(
+            (mark.y + mark.h * 0.5 - height * 0.5).abs() < 0.5,
+            "{mark:?}"
+        );
+
+        // And it got there by growing, from the middle rather than from the
+        // tile: a logo is not what the row it was chosen from was showing.
+        let opening = at(0.6, 1.0, Some(logo));
+        let growing = opening
+            .quads
+            .iter()
+            .find(|quad| quad.slot == logo.slot)
+            .expect("the game's logo");
+        assert!(growing.w < mark.w, "the logo does not grow");
+        assert!(growing.w > mark.w * LAUNCH_LOGO_FROM * 0.99);
+        assert!(growing.color[3] < 1.0, "it does not fade in");
+        assert!(
+            (growing.x + growing.w * 0.5 - width * 0.5).abs() < 0.5,
+            "it grew from somewhere other than the middle: {growing:?}"
+        );
+
+        // The ring is in the bottom-right corner, clear of both edges — not
+        // round the title, which on a game is standing on somebody's artwork.
+        let dots: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT)
+            .collect();
+        assert_eq!(dots.len(), LAUNCH_DOTS);
+        let far = |pick: fn(&Quad) -> f32| dots.iter().map(|dot| pick(dot)).fold(0.0, f32::max);
+        assert!(
+            far(|dot| dot.x + dot.w) < width && far(|dot| dot.x) > width * 0.9,
+            "the ring is not in the right of the display"
+        );
+        assert!(
+            far(|dot| dot.y + dot.h) < height && far(|dot| dot.y) > height * 0.9,
+            "the ring is not at the foot of the display"
+        );
+
+        // And the line saying what is being waited for sits beside the ring,
+        // clear of it and running back towards the middle rather than off the
+        // edge of the display.
+        let said = scene.texts.first().expect("the line beside the indicator");
+        let ring_left = far(|dot| dot.x);
+        assert!(
+            said.x + said.max_width < ring_left,
+            "the writing runs into the ring"
+        );
+        assert!(said.x > 0.0, "the writing runs off the left of the display");
+        let middle_of_dots = (far(|dot| dot.y + dot.h)
+            + dots.iter().map(|dot| dot.y).fold(f32::MAX, f32::min))
+            * 0.5;
+        assert!(
+            (said.y + said.size * 0.62 - middle_of_dots).abs() < said.size * 0.3,
+            "the writing is not level with the ring"
+        );
+
+        // Nothing outlasts the hand-over: the game's own window is behind all
+        // of this, and a title left over it belongs to the shell, not the game.
+        assert!(at(1.0, 0.0, Some(logo))
+            .quads
+            .iter()
+            .all(|quad| quad.fade <= 0.001));
+    }
+
+    /// The line beside the indicator names the step, and changes when the step
+    /// does. A loading screen still saying "Steam" a minute into a shader
+    /// cache is one lying about what it is waiting for.
+    #[test]
+    fn the_line_beside_the_indicator_says_which_step_this_is() {
+        let (width, height) = (1920.0, 1080.0);
+        let said = |doing| {
+            build_launch(
+                LaunchView {
+                    name: "Hollow Knight",
+                    icon: Some(7),
+                    game: true,
+                    logo: Some(crate::gpu::Thumb {
+                        slot: 4242,
+                        aspect: 2.0,
+                        covers: [1.0, 1.0],
+                    }),
+                    doing,
+                    blackout: 0.0,
+                    from: launch_origin(width, height),
+                    open: 1.0,
+                    fade: 1.0,
+                    waiting: true,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+            .texts
+            .first()
+            .map(|text| text.content.clone())
+        };
+
+        assert_eq!(
+            said(Some(crate::launch::Doing::Steam)).as_deref(),
+            Some("Launching Steam")
+        );
+        assert_eq!(
+            said(Some(crate::launch::Doing::Game)).as_deref(),
+            Some("Starting the game")
+        );
+        // Neither repeats the title, which is already the whole middle of the
+        // display in the game's own lettering.
+        for doing in [crate::launch::Doing::Steam, crate::launch::Doing::Game] {
+            assert!(!said(Some(doing)).expect("a line").contains("Hollow Knight"));
+        }
+        assert_eq!(said(None), None, "nothing to say, so nothing written");
+    }
+
+    /// The screen dips through black on its way to the game, and the dip is a
+    /// sheet over the whole display — not a fade of the splash, which would
+    /// show the game through the gaps as it went.
+    ///
+    /// The sheet also has to survive the splash's own fade. It is what the
+    /// splash fades *into*, and it outlives everything else on screen by the
+    /// length of the hold and the way up; a black added before the fade would
+    /// be taken out by it and the screen would cut straight to the game.
+    #[test]
+    fn a_game_is_reached_through_a_black_screen() {
+        let (width, height) = (1920.0, 1080.0);
+        let at = |fade: f32, blackout: f32| {
+            build_launch(
+                LaunchView {
+                    name: "Hollow Knight",
+                    icon: Some(7),
+                    game: true,
+                    logo: None,
+                    doing: Some(crate::launch::Doing::Game),
+                    blackout,
+                    from: launch_origin(width, height),
+                    open: 1.0,
+                    fade,
+                    waiting: false,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+        };
+        let sheet = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| quad.w >= width && quad.h >= height)
+                .map(|quad| (quad.color, quad.fade))
+        };
+
+        // Nothing while the splash is simply waiting: the picture behind it is
+        // the whole point of the splash.
+        assert_eq!(sheet(&at(1.0, 0.0)), None);
+
+        // Coming on, over everything.
+        let (colour, faded) = sheet(&at(0.5, 0.5)).expect("the black");
+        assert_eq!([colour[0], colour[1], colour[2]], [0.0, 0.0, 0.0]);
+        assert!(colour[3] > 0.0 && colour[3] < 1.0, "{colour:?}");
+        assert_eq!(faded, 1.0, "the splash's own fade took the black with it");
+
+        // Full black: nothing of the shell's is still being drawn on it, and
+        // the sheet is solid.
+        let black = at(0.0, 1.0);
+        assert_eq!(sheet(&black).expect("the black").0[3], 1.0);
+        assert!(
+            black.texts.iter().all(|text| text.color[3] <= 0.001),
+            "writing left standing on a black screen"
+        );
+
+        // And coming off again with the splash long gone, which is the half
+        // that shows the game.
+        let (colour, faded) = sheet(&at(0.0, 0.4)).expect("the black");
+        assert!(colour[3] > 0.0 && colour[3] < 1.0, "{colour:?}");
+        assert_eq!(faded, 1.0);
+    }
+
+    /// Not every game has a logo — an old title, a tool, a demo, or one whose
+    /// artwork has not come down the wire yet — and a splash with nothing in
+    /// the middle of it is a picture with no answer on it. So the name is
+    /// written where the logo would have been, and moves as the logo would.
+    #[test]
+    fn a_game_with_no_logo_is_still_named() {
+        let (width, height) = (1920.0, 1080.0);
+        let at = |open: f32| {
+            build_launch(
+                LaunchView {
+                    name: "Hollow Knight",
+                    icon: Some(7),
+                    game: true,
+                    logo: None,
+                    doing: Some(crate::launch::Doing::Game),
+                    blackout: 0.0,
+                    from: launch_origin(width, height),
+                    open,
+                    fade: 1.0,
+                    waiting: true,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+        };
+        let title = |scene: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == "Hollow Knight")
+                .cloned()
+                .expect("the game's name")
+        };
+
+        let settled = title(&at(1.0));
+        assert!(settled.color[3] > 0.9);
+        assert!(settled.halo > 0.0, "a name over a hero needs its own edge");
+        assert!(
+            (settled.x + settled.max_width * 0.5 - width * 0.5).abs() < 0.5,
+            "the name is not centred: {} wide at {}",
+            settled.max_width,
+            settled.x
+        );
+
+        // The same move the logo makes, so the two cases are one animation.
+        let growing = title(&at(0.6));
+        assert!(growing.size < settled.size);
+        assert!(growing.color[3] < settled.color[3]);
+        assert!(
+            growing.halo < settled.halo,
+            "the shadow arrived before the letters did"
+        );
+    }
+
+    /// A ring is not part of a run's colour, so nothing that fades a scene
+    /// touches it — which means the one thing on this splash that could
+    /// outlive the hand-over is the shadow under the name. A black outline of
+    /// a title left standing over the game that has just appeared is the worst
+    /// thing the shell could leave on somebody's screen.
+    #[test]
+    fn a_games_name_takes_its_shadow_with_it() {
+        let (width, height) = (1920.0, 1080.0);
+        let scene = build_launch(
+            LaunchView {
+                name: "Hollow Knight",
+                icon: Some(7),
+                game: true,
+                logo: None,
+                doing: Some(crate::launch::Doing::Game),
+                blackout: 0.0,
+                from: launch_origin(width, height),
+                open: 1.0,
+                fade: 0.0,
+                waiting: false,
+                time: 0.0,
+            },
+            width,
+            height,
+        );
+        for text in &scene.texts {
+            assert_eq!(text.color[3], 0.0, "a title outlasted the handover");
+            assert_eq!(text.halo, 0.0, "its shadow outlasted the handover");
+        }
+        assert!(scene.quads.iter().all(|quad| quad.fade <= 0.001));
     }
 
     #[test]
@@ -7011,6 +9115,85 @@ mod tests {
             "Wallpaper",
         );
         step.is_clean();
+    }
+
+    /// A column that is a bar is drawn as a bar and nothing else: no disc
+    /// behind it, and every mark of it a pane of the shell's own glass.
+    ///
+    /// The disc is the part worth pinning down. It is drawn under the row the
+    /// cursor is on everywhere else in the bar, and behind a track it is a
+    /// round pane with a tall thin one lying across it — which reads as a
+    /// button that has been pressed rather than as a control.
+    #[test]
+    fn a_bar_stands_on_its_own_glass_rather_than_on_a_disc() {
+        let xmb = Xmb::new(vec![Category {
+            id: "settings",
+            title: "Settings",
+            icon: "settings",
+            entries: vec![app("plain"), folder("Color temperature", vec![bar(0.4)])],
+        }]);
+        // One step in is the whole path: the bar is the only row of the column
+        // it opens onto, and there is nowhere further to go.
+        let cursor = stepped(&xmb);
+        let (width, height) = (1920.0, 1080.0);
+        let scene = build_with(&xmb, &cursor, width, height, true, &Named);
+
+        // The groove is the one tall narrow pane the shell draws, and the rest
+        // of the bar is what stands in the same channel.
+        let groove = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT && quad.h > quad.w * 3.0)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("the groove");
+        let (track_w, track_h) = (groove.w, groove.h);
+        let middle = groove.x + track_w / 2.0;
+        let marks: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT && (quad.x + quad.w / 2.0 - middle).abs() < 1.0)
+            .collect();
+        assert_eq!(marks.len(), 3, "a groove, the light in it, and a handle");
+        // Nothing in the channel is wider than the handle — which is what says
+        // the disc is gone rather than merely under something.
+        assert!(marks
+            .iter()
+            .all(|quad| quad.w <= track_w * COLUMN_BAR_HANDLE + 1.0));
+        for mark in &marks {
+            assert!(mark.thickness > 0.0, "every mark is a slab of glass");
+            assert_eq!(mark.gloss, GLOSS_FULL, "and takes the shell's own light");
+            assert!(
+                mark.radius >= mark.w / 2.0 - 0.01,
+                "and is a capsule, not a box"
+            );
+        }
+
+        // No disc. Every round pane the shell draws under a chosen row is as
+        // wide as it is tall; the bar's marks are not, but for the handle,
+        // which is far smaller than a disc would be.
+        let discs = marks
+            .iter()
+            .filter(|quad| (quad.w - quad.h).abs() < 1.0)
+            .count();
+        assert_eq!(discs, 1, "the handle, and nothing else round");
+        assert!(marks.iter().all(|quad| quad.w < track_h * 0.5));
+
+        // The light is inside the groove, growing up from the foot: its foot is
+        // the groove's, its head is not, and it is held clear of the groove's
+        // rim on both sides.
+        let fill = marks
+            .iter()
+            .filter(|quad| quad.h < groove.h && (quad.w - quad.h).abs() >= 1.0)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("the light in it");
+        assert!(track_h > height * 0.2, "the bar is the reach of the column");
+        assert!(fill.w < groove.w && fill.x > groove.x);
+        assert!(fill.x + fill.w < groove.x + groove.w);
+        assert!(fill.y + fill.h <= groove.y + groove.h + 0.01);
+        assert!(
+            fill.y > groove.y + groove.h * 0.4,
+            "it stands at 0.4 filled"
+        );
     }
 
     /// The value a setting is set to is marked, and a colour is drawn in
@@ -8024,6 +10207,8 @@ mod tests {
                 volume: level(Item::Volume, 0.35),
                 brightness: level(Item::Brightness, 0.85),
                 stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
                 app,
                 close_target,
                 screen,
@@ -8143,7 +10328,13 @@ mod tests {
             "the button is {from_left} from the side and {from_foot} from the foot"
         );
         // And it keeps the column's own inset, so it lines up with the chips.
-        assert!((px - menu_item_rect(&items, 0, 1920.0, 1080.0)[0]).abs() < 0.5);
+        // Measured against a row and not against the tile line, which is
+        // centred on the panel rather than started at the margin.
+        let resume = items
+            .iter()
+            .position(|item| *item == Item::Resume)
+            .expect("Resume is always present");
+        assert!((px - menu_item_rect(&items, resume, 1920.0, 1080.0)[0]).abs() < 0.5);
 
         // The symbol comes out of the atlas now rather than being assembled
         // from quads, so what there is to check is that it lands square and
@@ -8221,6 +10412,8 @@ mod tests {
             volume: None,
             brightness: None,
             stick_pointer: false,
+            do_not_disturb: false,
+            unread: 0.0,
             app: None,
             close_target: None,
             screen: None,
@@ -8312,6 +10505,8 @@ mod tests {
             items,
             vec![
                 Item::Mixer,
+                Item::DoNotDisturb,
+                Item::Notifications,
                 Item::Volume,
                 Item::Brightness,
                 Item::Resume,
@@ -8333,9 +10528,9 @@ mod tests {
             "and below the bars"
         );
 
-        // Rows in order, none overlapping, whatever heights they are. The
-        // second tile is skipped: it is beside the first rather than under it,
-        // which is exactly what the next assertion checks.
+        // Rows in order, none overlapping, whatever heights they are. Every
+        // tile but the first is skipped: they are beside it rather than under
+        // it, which is exactly what the assertion above checks.
         let tiles: Vec<[f32; 4]> = items
             .iter()
             .enumerate()
@@ -8369,6 +10564,8 @@ mod tests {
             plain.items(true),
             vec![
                 Item::Mixer,
+                Item::DoNotDisturb,
+                Item::Notifications,
                 Item::Resume,
                 Item::Close,
                 Item::Dashboard,
@@ -8384,7 +10581,11 @@ mod tests {
         // Resume is a row lower there than the bar is here, by exactly the
         // rule that separates the quick settings from what the menu does —
         // with no bars, the tiles are that whole band on their own.
-        let button = menu_item_rect(&plain_items, 1, 1920.0, 1080.0);
+        let resume_row = plain_items
+            .iter()
+            .position(|item| *item == Item::Resume)
+            .unwrap();
+        let button = menu_item_rect(&plain_items, resume_row, 1920.0, 1080.0);
         let bar = menu_item_rect(&items, index_of(Item::Volume), 1920.0, 1080.0);
         assert_eq!(button[0], bar[0], "and every row is inset the same");
         assert!(bar[3] < button[3], "a bar's row is shorter than a button's");
@@ -8403,6 +10604,12 @@ mod tests {
             [960.0, 600.0],
             [1000.0, 742.0],
             [1280.0, 720.0],
+            // The narrowest sidebar this shell draws against tiles at nearly
+            // their full size: four of them do not fit between the margins
+            // here, and the line is taken in rather than allowed to overhang
+            // them. It is also the size the nested session runs at, which is
+            // where the overhang was seen.
+            [1280.0, 800.0],
             [1920.0, 1080.0],
             [3440.0, 1440.0],
         ] {
@@ -8425,16 +10632,35 @@ mod tests {
                     continue;
                 }
 
-                // Only the first tile begins the shared tile line; its
-                // neighbour is deliberately further across that same line.
-                if index == 0 || !item.is_tile() {
-                    assert!((x - panel_x - expected).abs() < 0.01, "{width}x{height}");
+                // The tile line is measured as a line, below: it is centred
+                // on the panel, so no one tile on it is at the margin.
+                if item.is_tile() {
+                    continue;
                 }
-                if !item.is_tile() {
-                    let right = panel_x + panel_w - (x + w);
-                    assert!((right - expected).abs() < 0.01, "{width}x{height}");
-                }
+                assert!((x - panel_x - expected).abs() < 0.01, "{width}x{height}");
+                let right = panel_x + panel_w - (x + w);
+                assert!((right - expected).abs() < 0.01, "{width}x{height}");
             }
+
+            // The tiles are centred rather than inset, so what has to balance
+            // is the run: the air to the left of the first equals the air to
+            // the right of the last, and neither is inside the margin the rows
+            // keep.
+            let tiles: Vec<[f32; 4]> = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.is_tile())
+                .map(|(index, _)| menu_item_rect(&items, index, width, height))
+                .collect();
+            let first = tiles.first().expect("the column always carries tiles");
+            let last = tiles.last().expect("the column always carries tiles");
+            let left = first[0] - panel_x;
+            let right = panel_x + panel_w - (last[0] + last[2]);
+            assert!(
+                (left - right).abs() < 0.01,
+                "{width}x{height}: {left} {right}"
+            );
+            assert!(left >= expected - 0.01, "{width}x{height}: {left}");
         }
 
         // The glass and its label have the same air on every horizontal side
@@ -8515,8 +10741,15 @@ mod tests {
         }
     }
 
-    /// The two tiles at the head of the column are square, side by side on one
-    /// line, and inset like every other control on the panel.
+    /// The tiles at the head of the column are square, side by side on one
+    /// line, and centred on the panel rather than inset at its left edge like
+    /// the rows under them.
+    ///
+    /// Centred because the run is shorter than the panel and how much shorter
+    /// depends on the session: a machine with no pointer control carries three
+    /// tiles where this one carries four. Left-aligned, that difference lands
+    /// entirely on the right-hand side, and the line reads as a rank of
+    /// buttons that stopped early rather than as a line of its own.
     #[test]
     fn the_tiles_sit_side_by_side_at_the_head_of_the_column() {
         let mut guide = Guide::default();
@@ -8526,19 +10759,37 @@ mod tests {
 
         let pointer = menu_item_rect(&items, 0, 1920.0, 1080.0);
         let mixer = menu_item_rect(&items, 1, 1920.0, 1080.0);
+        let moon = menu_item_rect(&items, 2, 1920.0, 1080.0);
+        let bell = menu_item_rect(&items, 3, 1920.0, 1080.0);
         assert_eq!(items[0], Item::Pointer);
         assert_eq!(items[1], Item::Mixer);
+        assert_eq!(items[2], Item::DoNotDisturb);
+        assert_eq!(items[3], Item::Notifications);
 
-        // Square, both of them, and the same square.
+        // Square, all of them, and the same square.
         assert!((pointer[2] - pointer[3]).abs() < 0.01, "{pointer:?}");
-        assert_eq!([pointer[2], pointer[3]], [mixer[2], mixer[3]]);
-        // Beside one another on one line, with air between.
-        assert_eq!(pointer[1], mixer[1]);
-        assert!(mixer[0] > pointer[0] + pointer[2], "{pointer:?} {mixer:?}");
-        // And well short of the sidebar, unlike the rows below them.
-        let volume = menu_item_rect(&items, 2, 1920.0, 1080.0);
-        assert_eq!(pointer[0], volume[0], "inset like everything else");
-        assert!(mixer[0] + mixer[2] < volume[0] + volume[2]);
+        for tile in [mixer, moon, bell] {
+            assert_eq!([pointer[2], pointer[3]], [tile[2], tile[3]]);
+            // Beside one another on one line.
+            assert_eq!(pointer[1], tile[1]);
+        }
+        // With air between, and evenly spaced: one gap, used three times,
+        // rather than a row that drifts.
+        for pair in [[pointer, mixer], [mixer, moon], [moon, bell]] {
+            assert!(pair[1][0] > pair[0][0] + pair[0][2], "{pair:?}");
+            assert!(((pair[1][0] - pair[0][0]) - (mixer[0] - pointer[0])).abs() < 0.01);
+        }
+
+        // Centred on the row below rather than sharing its left edge: the same
+        // air at both ends of the line, and more of it than the rows keep.
+        let volume = menu_item_rect(&items, 4, 1920.0, 1080.0);
+        let left = pointer[0] - volume[0];
+        let right = (volume[0] + volume[2]) - (bell[0] + bell[2]);
+        assert!(
+            (left - right).abs() < 0.01,
+            "{left} at one end, {right} at the other"
+        );
+        assert!(left > 0.0, "the line is shorter than the rows under it");
         // The row under the tiles clears them rather than overlapping.
         assert!(volume[1] >= pointer[1] + pointer[3], "{volume:?}");
     }
@@ -8569,6 +10820,8 @@ mod tests {
                     volume: None,
                     brightness: None,
                     stick_pointer: on,
+                    do_not_disturb: false,
+                    unread: 0.0,
                     app: Some("Celeste"),
                     close_target: None,
                     screen: None,
@@ -8631,6 +10884,202 @@ mod tests {
             .expect("the outline standing in for the chip");
         assert_eq!(outline.thickness, 0.0, "an outline is not a slab");
         assert!(glyph(&scene(false, false)).color[3] < glyph(&scene(false, true)).color[3]);
+    }
+
+    /// The second switch on the line says which state it is in the same way
+    /// the first does — by being filled — and, unlike the first, it says it on
+    /// a machine with nothing running.
+    ///
+    /// That is the whole difference between the two switches and it is worth a
+    /// test of its own: the pointer tile is about the application in front, so
+    /// with none it is drawn inert; this one is about the session, which is
+    /// there whether or not anything is.
+    #[test]
+    fn the_do_not_disturb_tile_is_a_switch_the_empty_session_can_still_throw() {
+        let scene = |quiet: bool| {
+            let mut guide = Guide::default();
+            // No pointer control and nothing in front: the barest session
+            // there is, and the switch still has to work on it.
+            guide.open();
+            guide.backdate_open(2.0);
+            build_guide(
+                GuideView {
+                    guide: &guide,
+                    clock: None,
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: false,
+                    do_not_disturb: quiet,
+                    unread: 0.0,
+                    app: None,
+                    close_target: None,
+                    screen: None,
+                    cards: &[],
+                    highlight: None,
+                    menu_highlight: None,
+                    behind: 0.0,
+                    card_age: guide.age(),
+                    power: 0.0,
+                    time: 0.0,
+                    slots: &Named,
+                },
+                1920.0,
+                1080.0,
+            )
+        };
+
+        let items = Guide::default().items(false);
+        let index = items
+            .iter()
+            .position(|item| *item == Item::DoNotDisturb)
+            .expect("the tile is on every session");
+        let tile = menu_item_rect(&items, index, 1920.0, 1080.0);
+        let in_tile = move |q: &&Quad| {
+            q.x >= tile[0] - 0.5
+                && q.y >= tile[1] - 0.5
+                && q.x + q.w <= tile[0] + tile[2] + 0.5
+                && q.y + q.h <= tile[1] + tile[3] + 0.5
+        };
+        let glyph = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .filter(|q| q.slot == Named::slot_of(icons::DO_NOT_DISTURB))
+                .find(in_tile)
+                .copied()
+                .expect("the moon on its own tile")
+        };
+        let panes = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .filter(|q| q.slot == SOLID_SLOT && q.thickness > 0.0)
+                .filter(in_tile)
+                .count()
+        };
+
+        assert_eq!(panes(&scene(true)), 2, "on: the fill, over the chip");
+        assert_eq!(panes(&scene(false)), 1, "off: the chip alone");
+        assert!(glyph(&scene(true)).color[3] > glyph(&scene(false)).color[3]);
+        // Never the hairline the pointer tile is drawn as when it has nothing
+        // to act on: there is always a session to quieten.
+        assert!(
+            !scene(false)
+                .quads
+                .iter()
+                .filter(|q| q.slot == SOLID_SLOT && q.border > 0.0)
+                .any(|q| in_tile(&q)),
+            "the switch is never drawn out of reach"
+        );
+    }
+
+    /// The unread mark: a bead in the bell's own corner, on no other tile, and
+    /// still there when the highlight is sitting on the tile it marks.
+    ///
+    /// That last part is the whole of why it is white rather than accent
+    /// coloured. The moment the user walks the selection onto the bell — which
+    /// is exactly what the mark is telling them to do — the chip under it fills
+    /// with the accent, and a mark tinted with the accent would choose that
+    /// moment to disappear.
+    #[test]
+    fn the_unread_mark_sits_in_the_bells_corner_and_survives_the_selection() {
+        let scene = |unread: f32, on_the_bell: bool| {
+            let mut guide = Guide::default();
+            guide.open();
+            guide.backdate_open(2.0);
+            if on_the_bell {
+                // Up from Resume to the tile line, then along it to the bell.
+                guide.move_selection(-1, false);
+                while guide.selected_item(false) != Some(Item::Notifications) {
+                    assert!(guide.move_in_line(1, false), "the bell is on this line");
+                }
+            }
+            build_guide(
+                GuideView {
+                    guide: &guide,
+                    clock: None,
+                    volume: None,
+                    brightness: None,
+                    stick_pointer: false,
+                    do_not_disturb: false,
+                    unread,
+                    app: None,
+                    close_target: None,
+                    screen: None,
+                    cards: &[],
+                    highlight: None,
+                    menu_highlight: None,
+                    behind: 0.0,
+                    card_age: guide.age(),
+                    power: 0.0,
+                    time: 0.0,
+                    slots: &Named,
+                },
+                1920.0,
+                1080.0,
+            )
+        };
+
+        let items = Guide::default().items(false);
+        let corner = |item: Item| {
+            let index = items.iter().position(|held| *held == item).unwrap();
+            let [x, y, w, h] = menu_item_rect(&items, index, 1920.0, 1080.0);
+            // The quadrant the mark lives in, and nothing else does.
+            [x + w * 0.5, y, w * 0.5, h * 0.5]
+        };
+        let beads = |scene: &Scene, item: Item| {
+            let [cx, cy, cw, ch] = corner(item);
+            scene
+                .quads
+                .iter()
+                .filter(|q| {
+                    q.slot == SOLID_SLOT
+                        && q.radius > 0.0
+                        && (q.radius - q.w * 0.5).abs() < 0.01
+                        && q.x >= cx
+                        && q.y >= cy
+                        && q.x + q.w <= cx + cw + 0.01
+                        && q.y + q.h <= cy + ch + 0.01
+                })
+                .count()
+        };
+
+        // Nothing unread, nothing drawn — on any tile.
+        for item in [Item::Mixer, Item::DoNotDisturb, Item::Notifications] {
+            assert_eq!(beads(&scene(0.0, false), item), 0, "{item:?}");
+        }
+
+        // Unread: the bead and the moat it stands in, on the bell alone. The
+        // other tiles hold nothing that can be missed.
+        assert_eq!(beads(&scene(1.0, false), Item::Notifications), 2);
+        assert_eq!(beads(&scene(1.0, false), Item::Mixer), 0);
+        assert_eq!(beads(&scene(1.0, false), Item::DoNotDisturb), 0);
+
+        // And it is still there under the selection, at the same size.
+        let lit = scene(1.0, true);
+        assert_eq!(beads(&lit, Item::Notifications), 2);
+        let widest = |scene: &Scene| {
+            let [cx, cy, cw, ch] = corner(Item::Notifications);
+            scene
+                .quads
+                .iter()
+                .filter(|q| {
+                    q.slot == SOLID_SLOT
+                        && q.radius > 0.0
+                        && (q.radius - q.w * 0.5).abs() < 0.01
+                        && q.x >= cx
+                        && q.y >= cy
+                        && q.x + q.w <= cx + cw + 0.01
+                        && q.y + q.h <= cy + ch + 0.01
+                })
+                .map(|q| q.w)
+                .fold(0.0f32, f32::max)
+        };
+        assert!((widest(&lit) - widest(&scene(1.0, false))).abs() < 0.01);
+
+        // Part-way on, it is smaller and fainter rather than half-drawn.
+        let growing = widest(&scene(0.4, false));
+        assert!(growing > 0.0 && growing < widest(&scene(1.0, false)));
     }
 
     /// The bug this exists for, in its second form: a tile handed its own chip
@@ -8857,6 +11306,8 @@ mod tests {
                     volume: Some(Level { value: 0.4, muted }),
                     brightness: None,
                     stick_pointer: false,
+                    do_not_disturb: false,
+                    unread: 0.0,
                     app: None,
                     close_target: None,
                     screen: None,
@@ -9058,6 +11509,8 @@ mod tests {
                     volume: None,
                     brightness: None,
                     stick_pointer: false,
+                    do_not_disturb: false,
+                    unread: 0.0,
                     app: Some("Celeste"),
                     close_target: None,
                     screen: None,
@@ -9109,6 +11562,8 @@ mod tests {
             max_width: 300.0,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         };
         let beside = Text {
             content: "Start screen".to_string(),
@@ -9120,6 +11575,8 @@ mod tests {
             max_width: 300.0,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         };
 
         let mut scene = Scene {
@@ -9262,6 +11719,8 @@ mod tests {
                 volume: None,
                 brightness: None,
                 stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
                 app: Some("Celeste"),
                 close_target: Some("Celeste"),
                 screen: None,
@@ -9352,6 +11811,8 @@ mod tests {
                 volume: None,
                 brightness: None,
                 stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
                 app: Some("Celeste"),
                 close_target: None,
                 screen: None,
@@ -9767,6 +12228,8 @@ mod tests {
                     volume: None,
                     brightness: None,
                     stick_pointer: false,
+                    do_not_disturb: false,
+                    unread: 0.0,
                     app: Some("Celeste"),
                     close_target: Some("Celeste"),
                     screen: None,
@@ -9856,6 +12319,8 @@ mod tests {
                     volume: None,
                     brightness: None,
                     stick_pointer: false,
+                    do_not_disturb: false,
+                    unread: 0.0,
                     app: Some("Celeste"),
                     close_target: Some("Celeste"),
                     screen: None,
@@ -10246,6 +12711,319 @@ mod tests {
         }
     }
 
+    /// The session opens on a display with nothing of the shell on it. The bar
+    /// is as far back as the shell's depth goes and has no ink at all, which
+    /// between them is invisible — and it is the *whole* bar, categories and
+    /// the column hanging off them alike, because a category row arriving over
+    /// a list that was already there would read as half a screen.
+    #[test]
+    fn the_start_screen_starts_at_the_back_of_the_shells_own_depth() {
+        for [width, height] in SCREENS {
+            let xmb = cross();
+            let flat = focused(&xmb, width, height, &AllSlots);
+            let mut far = focused(&xmb, width, height, &AllSlots);
+            arrive_from_depth(&mut far, width, height, 0.0);
+
+            assert_eq!(far.quads.len(), flat.quads.len(), "arriving drops nothing");
+            assert_eq!(far.texts.len(), flat.texts.len());
+            for quad in &far.quads {
+                assert_eq!(quad.fade, 0.0, "{width}x{height}: a pane is showing");
+            }
+            for text in &far.texts {
+                assert_eq!(
+                    text.color[3], 0.0,
+                    "{width}x{height}: {:?} is showing",
+                    text.content
+                );
+            }
+
+            // And it stands where a column four deep would stand: smaller by
+            // the shell's own recession, and gathered in towards the middle of
+            // the display — the axis the viewer is looking down, which is what
+            // makes it read as distance rather than as a bar sliding.
+            let (near, _) = receded(ARRIVAL_STEPS);
+            let (cx, cy) = (width * 0.5, height * 0.5);
+            let mut gathered = 0;
+            for (there, here) in far.quads.iter().zip(&flat.quads) {
+                assert!((there.w - here.w * near).abs() < 1e-3);
+                assert!((there.h - here.h * near).abs() < 1e-3);
+                // Glass depth travels with everything else, for the reason it
+                // does on the way back — see the step-back test above.
+                assert!((there.thickness - here.thickness * near).abs() < 1e-3);
+                assert!((there.x - (cx + (here.x - cx) * near)).abs() < 1e-3);
+                assert!((there.y - (cy + (here.y - cy) * near)).abs() < 1e-3);
+                if (there.x - here.x).abs() > 1.0 {
+                    gathered += 1;
+                }
+            }
+            assert!(
+                gathered > 0,
+                "{width}x{height}: nothing had any way to come"
+            );
+            for (there, here) in far.texts.iter().zip(&flat.texts) {
+                assert!((there.size - here.size * near).abs() < 1e-3);
+                assert!((there.x - (cx + (here.x - cx) * near)).abs() < 1e-3);
+                assert!((there.y - (cy + (here.y - cy) * near)).abs() < 1e-3);
+            }
+        }
+    }
+
+    /// It comes the whole way forward and stops: an arrived screen is the bar
+    /// as it would have been drawn had nothing animated at all, exactly — not
+    /// scaled by one, for the reason a screen with nothing over it is left
+    /// alone rather than pushed back by nothing.
+    #[test]
+    fn an_arrived_start_screen_is_left_exactly_where_it_is() {
+        let xmb = cross();
+        let flat = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let mut landed = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        arrive_from_depth(&mut landed, 1920.0, 1080.0, 1.0);
+        for (quad, want) in landed.quads.iter().zip(&flat.quads) {
+            assert_eq!(
+                [quad.x, quad.y, quad.w, quad.h, quad.fade],
+                [want.x, want.y, want.w, want.h, want.fade]
+            );
+        }
+        for (text, want) in landed.texts.iter().zip(&flat.texts) {
+            assert_eq!(
+                [text.x, text.y, text.size, text.color[3]],
+                [want.x, want.y, want.size, want.color[3]]
+            );
+        }
+    }
+
+    /// One journey forward, never a step back — and the ink leads the
+    /// movement, so the screen is fully lit while it is still travelling
+    /// rather than still thickening as it settles.
+    #[test]
+    fn the_arrival_only_ever_comes_closer_and_is_lit_before_it_lands() {
+        let xmb = cross();
+        let (width, height) = (1920.0, 1080.0);
+        let flat = focused(&xmb, width, height, &AllSlots);
+        // The widest pane on the bar, which is the one with the most room to
+        // grow: a category's own glass.
+        let widest = |scene: &Scene| scene.quads.iter().map(|quad| quad.w).fold(0.0f32, f32::max);
+        let lit = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .map(|quad| quad.fade)
+                .fold(0.0f32, f32::max)
+        };
+
+        let mut last = (0.0f32, 0.0f32);
+        for step in 0..=20 {
+            let arrival = step as f32 / 20.0;
+            let mut scene = focused(&xmb, width, height, &AllSlots);
+            arrive_from_depth(&mut scene, width, height, arrival);
+            let (size, ink) = (widest(&scene), lit(&scene));
+            assert!(size >= last.0, "the screen went back at {arrival}");
+            assert!(ink >= last.1, "the screen dimmed at {arrival}");
+            assert!(size <= widest(&flat) + 1e-3, "it overshot at {arrival}");
+            last = (size, ink);
+        }
+        assert!((last.0 - widest(&flat)).abs() < 1e-3, "it never landed");
+
+        // Fully lit with the last of the travelling still to do.
+        let mut early = focused(&xmb, width, height, &AllSlots);
+        arrive_from_depth(&mut early, width, height, ARRIVAL_LIT_BY);
+        assert!((lit(&early) - lit(&flat)).abs() < 1e-3);
+        assert!(widest(&early) < widest(&flat), "and still on its way");
+    }
+
+    /// The arrival leaves the distance at rest and settles onto the mark at
+    /// rest, quickest through the middle, and is the same shape read from
+    /// either end — the shell's own ramp, which this deliberately does not have
+    /// a ramp of its own instead of.
+    #[test]
+    fn the_arrival_runs_on_the_shells_own_symmetric_ramp() {
+        let (width, height) = (1920.0, 1080.0);
+        let xmb = cross();
+        let settled = focused(&xmb, width, height, &AllSlots);
+        let widest = |scene: &Scene| scene.quads.iter().map(|quad| quad.w).fold(0.0f32, f32::max);
+        // How much of the journey is behind it, read off the drawing rather
+        // than off the ramp — and read in *steps of depth*, which is what the
+        // journey is measured in. The size those steps are drawn at is a
+        // perspective curve laid over the ramp: a screen crossing the last step
+        // swells far more than one crossing the first, exactly as an approach
+        // at a steady speed does. Mistaking that swelling for the ramp is how
+        // an even move gets read as an accelerating one.
+        let travelled = |arrival: f32| {
+            let mut scene = focused(&xmb, width, height, &AllSlots);
+            arrive_from_depth(&mut scene, width, height, arrival);
+            let near = widest(&scene) / widest(&settled);
+            let steps = near.ln() / DEPTH_SHRINK.ln();
+            1.0 - steps / ARRIVAL_STEPS
+        };
+
+        // Halfway through the clock is halfway home: the mark of a ramp with
+        // no lean either way.
+        assert!(
+            (travelled(0.5) - 0.5).abs() < 0.02,
+            "half the clock had it {} of the way there",
+            travelled(0.5)
+        );
+        // And what it has done by any point, it has left to do by the mirror of
+        // that point.
+        for step in 1..10 {
+            let t = step as f32 / 10.0;
+            assert!(
+                (travelled(t) + travelled(1.0 - t) - 1.0).abs() < 0.02,
+                "{t} and its mirror are not one journey: {} and {}",
+                travelled(t),
+                travelled(1.0 - t)
+            );
+        }
+
+        // Nothing bolts off the mark, and nothing arrives still at speed: a
+        // tenth of the clock at either end covers almost none of the ground.
+        assert!(
+            travelled(0.1) < 0.05,
+            "it left at a bolt: {}",
+            travelled(0.1)
+        );
+        assert!(
+            travelled(0.9) > 0.95,
+            "it was still travelling: {}",
+            travelled(0.9)
+        );
+        // The quickest part is the middle, by some way.
+        let middle = travelled(0.6) - travelled(0.4);
+        assert!(middle > (travelled(0.1) - travelled(0.0)) * 3.0);
+        assert!(middle > (travelled(1.0) - travelled(0.9)) * 3.0);
+    }
+
+    /// A click that lands while the screen is still arriving is about what the
+    /// user can see, not about where that button will end up: the point is
+    /// carried back through the arrival before the settled bar is asked.
+    ///
+    /// Taken off the drawn scene rather than worked out from the ramp, so it is
+    /// the picture the user is pressing on that is being tested and not this
+    /// test's own copy of the arithmetic.
+    #[test]
+    fn a_click_on_an_arriving_bar_is_about_where_it_looks() {
+        for [width, height] in SCREENS {
+            let xmb = cross();
+            let cursor = Cursor::new(xmb.categories.len());
+
+            let flat = focused(&xmb, width, height, &AllSlots);
+            // The second category's own glass, where the settled bar puts it.
+            let settled = (
+                bar_category_x(1.0, 0.0, width, height),
+                height * BAR_CROSS_Y,
+            );
+            let button = flat
+                .quads
+                .iter()
+                .position(|quad| {
+                    (quad.x + quad.w * 0.5 - settled.0).abs() < 0.5
+                        && (quad.y + quad.h * 0.5 - settled.1).abs() < 0.5
+                        && quad.w > 0.0
+                })
+                .expect("the second category stands on a tile of its own");
+
+            // Nothing is dropped on the way in, so the same pane is at the same
+            // index in a scene caught halfway through the arrival.
+            for arrival in [0.2, 0.5, 0.8] {
+                let mut coming = focused(&xmb, width, height, &AllSlots);
+                arrive_from_depth(&mut coming, width, height, arrival);
+                let drawn = &coming.quads[button];
+                let (x, y) = arrival_point(
+                    drawn.x + drawn.w * 0.5,
+                    drawn.y + drawn.h * 0.5,
+                    width,
+                    height,
+                    arrival,
+                );
+                assert!((x - settled.0).abs() < 1e-2 && (y - settled.1).abs() < 1e-2);
+                assert_eq!(
+                    bar_hit(&xmb, &cursor, x, y, width, height),
+                    Some(BarSpot::Category(1)),
+                    "{width}x{height} at {arrival}: a press on the second category missed it"
+                );
+            }
+        }
+    }
+
+    /// The black an application walking out leaves behind covers the display —
+    /// the whole of it, and everything the scene had put down.
+    #[test]
+    fn the_handover_lays_black_over_the_whole_display() {
+        for [width, height] in SCREENS {
+            let xmb = cross();
+            let mut scene = focused(&xmb, width, height, &AllSlots);
+            let quads = scene.quads.len();
+            cover_with_black(&mut scene, width, height, 1.0);
+
+            assert_eq!(scene.quads.len(), quads + 1, "one sheet, over everything");
+            let sheet = scene.quads.last().expect("the black");
+            assert_eq!(
+                [sheet.x, sheet.y, sheet.w, sheet.h],
+                [0.0, 0.0, width, height]
+            );
+            assert_eq!(sheet.color, [0.0, 0.0, 0.0, 1.0]);
+            // Flat: a rounded sheet would show the display at its corners, and
+            // a pane of glass would show what it was covering through it.
+            assert_eq!(sheet.radius, 0.0);
+            assert_eq!(sheet.thickness, 0.0);
+            assert_eq!(sheet.fade, 1.0);
+        }
+
+        // And a display with none left over it is left exactly as it was.
+        let xmb = cross();
+        let mut clear = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let quads = clear.quads.len();
+        cover_with_black(&mut clear, 1920.0, 1080.0, 0.0);
+        assert_eq!(clear.quads.len(), quads);
+    }
+
+    /// Nothing of the shell reads through the black, and text is the case that
+    /// could: every quad is drawn before every run, so a label on a screen
+    /// meant to be black would be the one thing on it anybody could see.
+    #[test]
+    fn nothing_of_the_shell_reads_through_the_black() {
+        let xmb = cross();
+        let (width, height) = (1920.0, 1080.0);
+
+        let mut dark = focused(&xmb, width, height, &AllSlots);
+        assert!(
+            dark.texts.iter().any(|text| text.color[3] > 0.0),
+            "the bar this is covering has writing on it"
+        );
+        cover_with_black(&mut dark, width, height, 1.0);
+        for text in &dark.texts {
+            assert_eq!(
+                text.color[3], 0.0,
+                "{:?} is legible on a black screen",
+                text.content
+            );
+        }
+
+        // Dimmed to what the sheet leaves, not cut at a threshold: a run that
+        // came back whole the frame the black passed it would snap into place
+        // instead of coming up out of the dark with the bar it belongs to.
+        let lit = focused(&xmb, width, height, &AllSlots);
+        let mut half = focused(&xmb, width, height, &AllSlots);
+        cover_with_black(&mut half, width, height, 0.5);
+        for (dimmed, whole) in half.texts.iter().zip(&lit.texts) {
+            assert!((dimmed.color[3] - whole.color[3] * 0.5).abs() < 1e-6);
+        }
+
+        // And the black is gone well before the bar has finished arriving,
+        // rather than the two ending together — the join is over, and what is
+        // left is the shell's own animation.
+        const {
+            assert!(BLACK_HANDOVER < ARRIVAL * 0.5);
+        }
+    }
+
+    /// And once it has landed the point is the point, untouched.
+    #[test]
+    fn a_click_on_a_settled_bar_is_not_moved_at_all() {
+        let (x, y) = arrival_point(640.0, 400.0, 1920.0, 1080.0, 1.0);
+        assert_eq!([x, y], [640.0, 400.0]);
+    }
+
     /// Text draws above every quad in a scene, so a bar flying past the
     /// sidebar has to dissolve rather than print over it.
     #[test]
@@ -10263,6 +13041,8 @@ mod tests {
                     max_width: 100.0,
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 },
                 Text {
                     content: "clear of it".into(),
@@ -10274,6 +13054,8 @@ mod tests {
                     max_width: 100.0,
                     align: TextAlign::Left,
                     clip: None,
+                    halo: 0.0,
+                    lines: 1,
                 },
             ],
         };
@@ -10711,7 +13493,7 @@ mod tests {
         let mut menu = Menu::default();
         assert!(menu.open_at(
             anchor,
-            Some("Celeste".to_string()),
+            Some(Title::new("Celeste")),
             menu_entries(count),
             context_menu_rows_that_fit(height),
         ));
@@ -10849,6 +13631,8 @@ mod tests {
             max_width: 40.0,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         });
         covered.hide_text_behind(panel);
         assert!(covered.texts.is_empty());
@@ -11061,6 +13845,1094 @@ mod tests {
 
     // --- the volume mixer --------------------------------------------------
 
+    // --- the corner of the screen -------------------------------------------
+
+    fn bubble(stage: crate::notify::Stage, progress: f32) -> ToastCard<'static> {
+        ToastCard {
+            title: "Download finished",
+            body: "linux-6.9.tar.xz",
+            icon: None,
+            stage,
+            progress,
+        }
+    }
+
+    /// Announcements arrive in the top right, stacked downwards, and every one
+    /// of them is inside the display: a bubble that hangs off the edge it came
+    /// in through is one nobody can read the end of.
+    #[test]
+    fn bubbles_stack_down_from_the_top_right_corner() {
+        use crate::notify::Stage;
+        let (w, h) = (1920.0, 1080.0);
+        let cards = [
+            bubble(Stage::Sitting, 0.0),
+            bubble(Stage::Sitting, 0.0),
+            bubble(Stage::Sitting, 0.0),
+        ];
+        let rects = toast_rects(&cards, w, h);
+        assert_eq!(rects.len(), 3);
+
+        for rect in &rects {
+            assert!(
+                rect[0] > w * 0.5,
+                "in the right half of the display: {rect:?}"
+            );
+            assert!(rect[0] + rect[2] < w, "and clear of the edge: {rect:?}");
+            assert!(rect[1] > 0.0 && rect[1] + rect[3] < h, "{rect:?}");
+        }
+        // One column, in order, with air between and never overlapping.
+        for pair in rects.windows(2) {
+            assert_eq!(pair[0][0], pair[1][0], "one column");
+            assert!(
+                pair[1][1] > pair[0][1] + pair[0][3],
+                "{:?} runs into {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// A bubble comes in from beyond the right-hand edge and goes back out the
+    /// same way, and at both ends of its life it is somewhere other than where
+    /// it sits. Which is the whole reason the corner is laid out from the
+    /// stage rather than from a row number.
+    #[test]
+    fn a_bubble_flies_in_from_outside_the_display_and_back_out_of_it() {
+        use crate::notify::Stage;
+        let (w, h) = (1920.0, 1080.0);
+
+        let arriving = toast_rects(&[bubble(Stage::In, 0.0)], w, h);
+        assert!(
+            arriving[0][0] >= w,
+            "it starts off the display entirely: {arriving:?}"
+        );
+        let settled = toast_rects(&[bubble(Stage::Sitting, 0.0)], w, h);
+        let leaving = toast_rects(&[bubble(Stage::Out, 0.5)], w, h);
+        assert!(
+            leaving[0][0] > settled[0][0],
+            "and leaves the way it came: {leaving:?} vs {settled:?}"
+        );
+        // Part-way in it is between the two, and it eases rather than
+        // travelling at a constant speed — nothing in this shell moves
+        // linearly. A quarter of the way through the flight it has barely
+        // left, which is what makes a bubble lean into its arrival.
+        let quarter = toast_rects(&[bubble(Stage::In, 0.25)], w, h);
+        assert!(quarter[0][0] > settled[0][0] && quarter[0][0] < arriving[0][0]);
+        let linear = arriving[0][0] + (settled[0][0] - arriving[0][0]) * 0.25;
+        assert!(
+            quarter[0][0] > linear + 1.0,
+            "a quarter of the way in it should still be near the edge: \
+             {quarter:?} against a linear {linear}"
+        );
+    }
+
+    /// A bubble on its way out gives its slot back as it goes, so the ones
+    /// under it have finished climbing by the time it is swept off the list.
+    ///
+    /// Without this the stack is correct in every frame and still jumps: three
+    /// bubbles hold three slots for the whole of the first one's exit, and
+    /// then the other two snap up a row in one frame, some tens of pixels,
+    /// after the thing that moved them has already gone.
+    #[test]
+    fn the_stack_closes_up_while_the_bubble_above_is_still_leaving() {
+        use crate::notify::Stage;
+        let (w, h) = (1920.0, 1080.0);
+
+        let settled = toast_rects(
+            &[bubble(Stage::Sitting, 0.0), bubble(Stage::Sitting, 0.0)],
+            w,
+            h,
+        );
+        let closing = toast_rects(
+            &[bubble(Stage::Out, 0.5), bubble(Stage::Sitting, 0.0)],
+            w,
+            h,
+        );
+        assert!(
+            closing[1][1] < settled[1][1],
+            "the one below climbs while the one above is still going"
+        );
+
+        // And by the end of the flight it is standing where the departing one
+        // stood, so the sweep changes nothing.
+        let closed = toast_rects(
+            &[bubble(Stage::Out, 1.0), bubble(Stage::Sitting, 0.0)],
+            w,
+            h,
+        );
+        assert!(
+            (closed[1][1] - settled[0][1]).abs() < 0.01,
+            "{:?} should have reached {:?}",
+            closed[1],
+            settled[0]
+        );
+    }
+
+    /// The glass and the words are one object: a bubble drawn with nothing on
+    /// it, or words with no pane under them, is a failure either way.
+    #[test]
+    fn a_bubble_carries_what_it_has_to_say() {
+        use crate::notify::Stage;
+        let scene = build_toasts(&[bubble(Stage::Sitting, 0.0)], 1920.0, 1080.0, 0.0);
+        let said: Vec<&str> = scene.texts.iter().map(|t| t.content.as_str()).collect();
+        assert_eq!(said, ["Download finished", "linux-6.9.tar.xz"]);
+        assert!(!scene.quads.is_empty(), "and stands on something");
+
+        // A program that sent no body gets one line, centred, rather than a
+        // sentence sitting above the middle of an empty pane.
+        let bare = ToastCard {
+            body: "",
+            ..bubble(Stage::Sitting, 0.0)
+        };
+        let scene = build_toasts(std::slice::from_ref(&bare), 1920.0, 1080.0, 0.0);
+        assert_eq!(scene.texts.len(), 1);
+        let [_, y, _, h] = toast_rects(std::slice::from_ref(&bare), 1920.0, 1080.0)[0];
+        let line = &scene.texts[0];
+        assert!(
+            (line.y + line.size * 0.5 - (y + h * 0.5)).abs() < h * 0.08,
+            "the lone line sits on the pane's middle"
+        );
+
+        // A body of several lines is cut to one. A bubble that grew to fit
+        // would be a program deciding how much of the screen it may have.
+        let wordy = ToastCard {
+            body: "first line\nsecond line\nthird",
+            ..bubble(Stage::Sitting, 0.0)
+        };
+        let scene = build_toasts(&[wordy], 1920.0, 1080.0, 0.0);
+        assert_eq!(scene.texts[1].content, "first line");
+    }
+
+    /// Both lines are ringed in shade, and the glass behind them is left
+    /// alone. A bubble stands wherever the corner of the screen happens to be
+    /// and shows whatever is under it, so its writing is the one text in the
+    /// shell with nothing chosen behind it.
+    #[test]
+    fn a_bubbles_writing_carries_its_own_contrast() {
+        use crate::notify::Stage;
+        let card = bubble(Stage::Sitting, 0.0);
+        let scene = build_toasts(std::slice::from_ref(&card), 1920.0, 1080.0, 0.0);
+        assert_eq!(scene.texts.len(), 2);
+        for line in &scene.texts {
+            assert!(
+                line.halo > 0.0,
+                "{:?} stands on borrowed light",
+                line.content
+            );
+        }
+
+        // The second line gets the *stronger* ring, not the weaker one. It is
+        // smaller, lighter and drawn in the soft grey that makes it second —
+        // every one of which costs it contrast, so matching the summary leaves
+        // it the harder of the two to read, which is backwards.
+        assert!(
+            scene.texts[1].halo > scene.texts[0].halo,
+            "the quieter line needs the most help: {} against {}",
+            scene.texts[1].halo,
+            scene.texts[0].halo
+        );
+
+        // And both rings leave with the bubble. Nothing thins them now that
+        // the run's own colour does not — see `gpu::halo_copies` — so a bubble
+        // that flew off leaving its outlines standing is the failure to watch
+        // for, and it is this line that would catch it.
+        let leaving = build_toasts(&[bubble(Stage::Out, 0.85)], 1920.0, 1080.0, 0.0);
+        for (going, sitting) in leaving.texts.iter().zip(&scene.texts) {
+            assert!(
+                going.halo > 0.0 && going.halo < sitting.halo,
+                "{:?} is on its way out",
+                going.content
+            );
+        }
+
+        // And nothing else is drawn to get that contrast. The bubble is the
+        // pane the context menu is made of and the picture at its head, and
+        // that is the whole of it: taking the glass down behind the words was
+        // tried, and a panel with a darker patch in the middle of it is the
+        // flat, cheap slab this one was rewritten to stop being.
+        let rect = toast_rects(std::slice::from_ref(&card), 1920.0, 1080.0)[0];
+        assert_eq!(
+            scene.quads.len(),
+            sidebar_surface(rect, guide_scale(1080.0), 0.0, 1.0).len() + 1,
+            "one pane's worth of glass, and the icon"
+        );
+    }
+
+    /// Nothing is drawn for a bubble that has finished leaving, and nothing is
+    /// cut out from under one either — a hole in the labels underneath, left
+    /// where a bubble used to be, is the same bug seen from the other side.
+    #[test]
+    fn a_bubble_that_has_gone_leaves_no_hole_behind_it() {
+        use crate::notify::Stage;
+        let width = 1920.0;
+        for card in [bubble(Stage::Out, 1.0), bubble(Stage::In, 0.0)] {
+            let rect = toast_rects(std::slice::from_ref(&card), width, 1080.0)[0];
+            assert!(rect[0] >= width, "still off the display: {rect:?}");
+            let scene = build_toasts(std::slice::from_ref(&card), width, 1080.0, 0.0);
+            assert!(scene.quads.is_empty() && scene.texts.is_empty());
+        }
+    }
+
+    /// The notification list as the guide raises it: a way to clear the lot,
+    /// and one announcement whose summary is longer than a row.
+    ///
+    /// Three runs, as the real rows have: when it arrived, what it is called,
+    /// and what it went on to say.
+    fn announcements(lines: u8, detail_lines: u8, height: f32) -> Menu {
+        announcements_stamped(Some("now"), lines, detail_lines, height)
+    }
+
+    /// The same, with the time made optional — for the one test that has to
+    /// weigh a row carrying it against the same row without.
+    fn announcements_stamped(
+        stamp: Option<&str>,
+        lines: u8,
+        detail_lines: u8,
+        height: f32,
+    ) -> Menu {
+        let mut menu = Menu::default();
+        let mut long = MenuEntry::new(Command::DismissNotification(1), "Hello World".repeat(6))
+            .icon("mail")
+            .stamp(stamp.unwrap_or_default())
+            .detail("the rest of what it said ".repeat(6))
+            .aside(Command::DismissNotification(1), icons::UNINSTALL);
+        long.lines = lines;
+        long.detail_lines = detail_lines;
+        assert!(menu.open_selecting(
+            [40.0, 200.0, 68.0, 68.0],
+            Some(Title::new("Notifications")),
+            vec![
+                MenuEntry::new(Command::DismissNotifications, "Clear All").glyph(icons::UNINSTALL),
+                long.group(1),
+            ],
+            mixer_rows_that_fit(height),
+            1,
+        ));
+        menu.widen(NOTIFICATION_EXTRA_WIDTH);
+        while menu.animate(0.05) < 1.0 {}
+        menu
+    }
+
+    /// Where a row's runs are drawn, top first: how far down the row's own chip
+    /// each one starts, what size it is set at, and how many lines it may take.
+    ///
+    /// Measured from the chip and not from the top of the display, because the
+    /// panel hangs centred off the tile it was raised from: it slides up by
+    /// half of whatever a row on it grows by, and every absolute reading inside
+    /// it moves with it.
+    fn row_writing(menu: &Menu, index: usize, width: f32, height: f32) -> Vec<(f32, f32, u8)> {
+        let chip = context_menu_row_rect(width, height, menu, index).unwrap();
+        let mut runs: Vec<(f32, f32, u8)> = context_scene(menu, width, height)
+            .texts
+            .iter()
+            .filter(|text| text.y >= chip[1] - 1.0 && text.y <= chip[1] + chip[3])
+            .map(|text| (text.y - chip[1], text.size, text.lines))
+            .collect();
+        runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        runs
+    }
+
+    /// A stacked row is cornered like the mixer's — a rounded square, cut to a
+    /// share of its own height — and not like a command, which is a capsule.
+    ///
+    /// The two were decided by different questions, one asking whether the row
+    /// carried a level and the other how tall it was, and a row that is tall
+    /// for the *other* reason fell between them: a deep capsule sitting beside
+    /// the mixer's rounded squares in a panel raised from the tile next door.
+    ///
+    /// One rule, not one number: an announcement's row is taller than a track
+    /// by the line above its summary, so it is a little rounder than one, and
+    /// nowhere near a capsule. Pinning the two to the same radius would make
+    /// the corner a fact about tracks rather than about tall rows.
+    #[test]
+    fn a_stacked_row_is_cornered_like_a_track_and_not_like_a_button() {
+        let height = 1080.0;
+        let scale = guide_scale(height);
+        let announced = announcements(1, 1, height);
+        let tracks = mixer([0.5; 3], height);
+
+        let row = |menu: &Menu, index: usize| {
+            let rect = context_menu_row_rect(1920.0, height, menu, index).unwrap();
+            (
+                context_chip_radius(&menu.entries()[index], rect[3], scale),
+                rect[3],
+            )
+        };
+
+        // Both are cut to the same share of themselves, and the taller of the
+        // two is the rounder by exactly that much.
+        let (announcement, announcement_h) = row(&announced, 1);
+        let (track, track_h) = row(&tracks, 0);
+        assert!(announcement_h > track_h, "the extra line: {announcement_h}");
+        assert!(
+            (announcement / announcement_h - track / track_h).abs() < 0.01,
+            "{announcement} of {announcement_h} against {track} of {track_h}"
+        );
+        // And neither is a capsule, which is what this test exists to catch.
+        assert!(announcement < announcement_h * 0.5 - 1.0);
+        assert!(track < track_h * 0.5 - 1.0);
+
+        // A one-line command still is one, here and everywhere else in the
+        // shell.
+        let (clear, clear_h) = row(&announced, 0);
+        assert!((clear - clear_h * 0.5).abs() < 1e-3);
+    }
+
+    /// The time stands above the summary, in its own smaller and quieter run,
+    /// and the row is one line taller for it.
+    ///
+    /// Above rather than sharing the body's line, which is where it was until
+    /// the user asked for this: the two ran together into one sentence
+    /// beginning with a time, and reading either meant finding the separator
+    /// first. The cost is the third line, and it is charged to the row rather
+    /// than taken out of the two runs that were already there — everything
+    /// under the time sits exactly where it sat before.
+    #[test]
+    fn an_announcement_says_when_above_its_summary() {
+        let height = 1080.0;
+        let width = 1920.0;
+        let scale = guide_scale(height);
+        let menu = announcements(1, 1, height);
+        let runs = row_writing(&menu, 1, width, height);
+        assert_eq!(runs.len(), 3, "a time, a summary and a body: {runs:?}");
+
+        // Top to bottom, and each smaller than the one above it: the time is
+        // the least of what the row says and is set as the least of it.
+        assert!(runs[0].0 < runs[1].0 && runs[1].0 < runs[2].0, "{runs:?}");
+        assert!(
+            (runs[0].1 - CONTEXT_STAMP_SIZE * scale).abs() < 1e-3,
+            "{runs:?}"
+        );
+        assert!(runs[0].1 < runs[2].1 && runs[2].1 < runs[1].1, "{runs:?}");
+
+        // The row is exactly one of the time's lines taller than the same row
+        // without one, and the two runs below it have not moved within what is
+        // left: the line was added over the row rather than squeezed into it.
+        let plain = announcements_stamped(None, 1, 1, height);
+        let shorter = row_writing(&plain, 1, width, height);
+        assert_eq!(shorter.len(), 2, "{shorter:?}");
+        let tall = context_menu_row_rect(width, height, &menu, 1).unwrap();
+        let short = context_menu_row_rect(width, height, &plain, 1).unwrap();
+        assert!(
+            (tall[3] - short[3] - CONTEXT_STAMP_ROOM * scale).abs() < 1.0,
+            "{tall:?} against {short:?}"
+        );
+        for (with, without) in runs[1..].iter().zip(&shorter) {
+            assert!(
+                (with.0 - without.0 - CONTEXT_STAMP_ROOM * scale).abs() < 1.0,
+                "moved down by the time's line and no more: {runs:?} against {shorter:?}"
+            );
+        }
+    }
+
+    /// The air over a row's first line is the air under its last, whether the
+    /// row carries one run, two or three.
+    ///
+    /// The bug: the time was given a line box at the very top of the chip and
+    /// sat against the border, while the body below it kept a whole margin —
+    /// visibly lopsided, and reported. It came of each run being placed at a
+    /// share of the row chosen to read well for the number of runs there were
+    /// at the time, so a run added later had nowhere balanced to go. The runs
+    /// are now a stack of line boxes with the leftover halved above and below,
+    /// which is one rule for any number of them.
+    #[test]
+    fn the_air_above_a_rows_writing_matches_the_air_under_it() {
+        let height = 1080.0;
+        let width = 1920.0;
+        // Every shape of row the panel has: a bare command, an announcement
+        // with nothing more to say, and one with all three runs.
+        let three = announcements(1, 1, height);
+        let two = announcements_stamped(None, 1, 1, height);
+        for (menu, index, runs_wanted) in [(&three, 0, 1), (&two, 1, 2), (&three, 1, 3)] {
+            let runs = row_writing(menu, index, width, height);
+            assert_eq!(runs.len(), runs_wanted, "{runs:?}");
+            let chip = context_menu_row_rect(width, height, menu, index).unwrap();
+
+            let above = runs[0].0;
+            let last = runs[runs.len() - 1];
+            // A run's box is its own line height, once per line it may take.
+            let below = chip[3] - (last.0 + last.2 as f32 * last.1 * 1.25);
+            assert!(
+                (above - below).abs() < 0.01,
+                "{runs_wanted} runs: {above} over, {below} under"
+            );
+            assert!(above > 0.0, "{runs_wanted} runs sit against the border");
+        }
+    }
+
+    /// A row whose label will not fit opens out under the highlight, and takes
+    /// the rows below it down with it.
+    #[test]
+    fn a_row_too_long_to_read_opens_out_when_it_is_selected() {
+        let height = 1080.0;
+        let width = 1920.0;
+        let mut menu = announcements(3, 1, height);
+        assert_eq!(menu.selected(), 1, "opened on the announcement");
+
+        let row = |menu: &Menu| context_menu_row_rect(width, height, menu, 1).unwrap();
+        let shut = row(&menu);
+        assert_eq!(context_row_growth(&menu, 1), 0.0, "nothing has moved yet");
+
+        // It opens over several frames rather than jumping.
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            menu.animate(0.05);
+            seen.push(row(&menu)[3]);
+        }
+        assert!(
+            seen.windows(2).all(|pair| pair[1] >= pair[0] - 1e-3),
+            "it only ever grows on the way out: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|h| *h > shut[3] + 1.0 && *h < seen[seen.len() - 1] - 1.0),
+            "and is caught part-way there: {seen:?}"
+        );
+
+        let open = row(&menu);
+        let scale = guide_scale(height);
+        assert!(
+            (open[3] - shut[3] - 2.0 * CONTEXT_LABEL_LINE * scale).abs() < 1.0,
+            "two lines taller: {} against {}",
+            open[3],
+            shut[3]
+        );
+
+        // Only that row. The one above it has not moved, and the panel behind
+        // them has grown to hold what has.
+        let above = context_menu_row_rect(width, height, &menu, 0).unwrap();
+        assert_eq!(context_row_growth(&menu, 0), 0.0);
+        assert!((above[3] - CONTEXT_ROW * scale + GUIDE_ROW_PADDING * 2.0 * scale).abs() < 1.0);
+        assert!(
+            open[1] >= above[1] + above[3],
+            "still below the row above it"
+        );
+
+        // Moving the highlight away closes it again.
+        menu.move_selection(-1);
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        assert!(
+            (row(&menu)[3] - shut[3]).abs() < 1e-3,
+            "shut behind the highlight"
+        );
+    }
+
+    /// And so does the line under it, which on an announcement is the longer of
+    /// the two: the summary is a headline and the body is the sentence.
+    ///
+    /// The two runs open out separately. The label's room is taken under the
+    /// label, so the body follows it down; the body's is taken under the body,
+    /// so the label stays where it was. A row that shared one total between
+    /// them would push the body away from the heading it belongs to.
+    #[test]
+    fn a_body_too_long_to_read_opens_out_under_its_own_heading() {
+        let height = 1080.0;
+        let width = 1920.0;
+        let scale = guide_scale(height);
+        let row = |menu: &Menu| context_menu_row_rect(width, height, menu, 1).unwrap();
+        let writing = |menu: &Menu| row_writing(menu, 1, width, height);
+
+        // Nothing but the body is too long. The row still grows, and by the
+        // body's line rather than the label's — they are different sizes, and
+        // opening by the wrong one leaves a gap or clips a line.
+        let mut menu = announcements(1, 3, height);
+        let shut = row(&menu);
+        let settled = writing(&menu);
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        let open = row(&menu);
+        assert!(
+            (open[3] - shut[3] - 2.0 * CONTEXT_DETAIL_LINE * scale).abs() < 1.0,
+            "two lines of body taller: {} against {}",
+            open[3],
+            shut[3]
+        );
+
+        // The body of the row being read is white, and every other row's stays
+        // quiet: the announcement under the highlight is the one being read,
+        // and it is the row that has just opened out to show the rest of it.
+        let body = |menu: &Menu, row: usize| {
+            let chip = context_menu_row_rect(width, height, menu, row).unwrap();
+            context_scene(menu, width, height)
+                .texts
+                .iter()
+                .filter(|text| text.y > chip[1] && text.y < chip[1] + chip[3])
+                .map(|text| text.color)
+                .next_back()
+                .unwrap()
+        };
+        let lit = body(&menu, 1);
+        menu.move_selection(-1);
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        assert!(
+            lit[3] > body(&menu, 1)[3] + 0.1,
+            "the row being read is the bright one: {lit:?}"
+        );
+        menu.move_selection(1);
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+
+        let opened = writing(&menu);
+        assert_eq!(opened.len(), 3, "a time, a heading and a body: {opened:?}");
+        assert_eq!(opened[2].2, 3, "the body may take three lines");
+        assert_eq!(opened[1].2, 1, "the heading still takes one");
+        assert_eq!(opened[0].2, 1, "and the time is always one");
+        // Neither run has moved: the label's room is nil and the body's opens
+        // out beneath it.
+        for (was, now) in settled.iter().zip(&opened) {
+            assert!(
+                (was.0 - now.0).abs() < 1e-3,
+                "the writing stayed put: {settled:?} against {opened:?}"
+            );
+        }
+
+        // With a long label as well, the body is pushed down by exactly the
+        // room the label took above it — no further, or it would drift away
+        // from the heading it belongs to.
+        let mut both = announcements(3, 3, height);
+        let before = writing(&both);
+        for _ in 0..40 {
+            both.animate(0.05);
+        }
+        let after = writing(&both);
+        for (was, now) in before.iter().zip(&after).take(2) {
+            assert!(
+                (was.0 - now.0).abs() < 1e-3,
+                "the time and the heading are where they were: {before:?} against {after:?}"
+            );
+        }
+        assert!(
+            (after[2].0 - before[2].0 - 2.0 * CONTEXT_LABEL_LINE * scale).abs() < 1.0,
+            "the body dropped by the label's two lines: {before:?} against {after:?}"
+        );
+        assert!(
+            (row(&both)[3] - shut[3] - 2.0 * (CONTEXT_LABEL_LINE + CONTEXT_DETAIL_LINE) * scale)
+                .abs()
+                < 1.0,
+            "and the row holds both"
+        );
+    }
+
+    /// Neither run ever draws a line the row has not yet opened out far enough
+    /// to hold.
+    ///
+    /// Caught on screen. The label took its third line as soon as the room for
+    /// it was more than half there, while the body underneath was still on its
+    /// way down, and for a third of a second every time the highlight arrived
+    /// the two were drawn straight through each other.
+    #[test]
+    fn a_line_is_drawn_only_once_there_is_room_for_it() {
+        let height = 1080.0;
+        let width = 1920.0;
+        let scale = guide_scale(height);
+        let mut menu = announcements(3, 3, height);
+
+        // From the last line of the label to the top of the body, which is the
+        // distance that closes up when a line arrives early.
+        let gap = |menu: &Menu| {
+            let runs = row_writing(menu, 1, width, height);
+            assert_eq!(runs.len(), 3, "a time, a heading and a body: {runs:?}");
+            runs[2].0 - (runs[1].0 + (runs[1].2 - 1) as f32 * CONTEXT_LABEL_LINE * scale)
+        };
+
+        let settled = gap(&menu);
+        for _ in 0..40 {
+            menu.animate(0.05);
+            assert!(
+                gap(&menu) >= settled - 1e-3,
+                "the body stays clear of the label: {} against {settled}",
+                gap(&menu)
+            );
+        }
+        // And at rest they are exactly as far apart as they were with one line
+        // each: the room went underneath them both, and never between them.
+        assert!((gap(&menu) - settled).abs() < 1e-3);
+    }
+
+    /// A row that is there to be read is open before the highlight reaches it —
+    /// which it never does.
+    ///
+    /// The panel behind an announcement is a paragraph on a row the highlight
+    /// steps over. Left to wait for one it would show a single line of the body
+    /// and an ellipsis, on the one panel whose whole purpose is the rest of it.
+    #[test]
+    fn a_row_that_is_there_to_be_read_is_open_before_it_is_reached() {
+        let height = 1080.0;
+        let width = 1920.0;
+        let scale = guide_scale(height);
+        let mut menu = Menu::default();
+        let mut body =
+            MenuEntry::new(Command::DismissNotification(1), "a paragraph ".repeat(20)).reading();
+        body.lines = 3;
+        assert!(menu.open_at(
+            [40.0, 200.0, 68.0, 68.0],
+            Some(Title::new("Hello World")),
+            vec![
+                body,
+                MenuEntry::new(Command::DismissNotification(1), "Dismiss").group(1),
+                MenuEntry::new(Command::Dismiss, "Not now")
+                    .group(1)
+                    .disabled(),
+            ],
+            mixer_rows_that_fit(height),
+        ));
+        while menu.animate(0.05) < 1.0 {}
+
+        assert_ne!(menu.selected(), 0, "the highlight stepped over it");
+        let read = context_menu_row_rect(width, height, &menu, 0).unwrap();
+        let runs = row_writing(&menu, 0, width, height);
+        assert_eq!(runs.len(), 1, "the paragraph and nothing else: {runs:?}");
+        assert_eq!(runs[0].2, 3, "all three lines of it");
+        assert!(
+            (read[3] - (CONTEXT_ROW + 2.0 * CONTEXT_LABEL_LINE - GUIDE_ROW_PADDING * 2.0) * scale)
+                .abs()
+                < 1.0,
+            "and the row is tall enough to hold them: {read:?}"
+        );
+
+        // It does not move, because there is nothing for it to wait for.
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        assert_eq!(
+            context_menu_row_rect(width, height, &menu, 0).unwrap(),
+            read
+        );
+
+        // And it is set in the shell's white, not in the grey that means a
+        // control is not for you. Its outline has already said it cannot be
+        // pressed; saying so a second time costs a paragraph its contrast.
+        let scene = context_scene(&menu, width, height);
+        let paragraph = scene
+            .texts
+            .iter()
+            .find(|text| text.content.starts_with("a paragraph"))
+            .expect("the paragraph is drawn");
+        let unavailable = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Not now")
+            .expect("and so is the row that is genuinely not for them");
+        assert!(
+            paragraph.color[3] > unavailable.color[3] + 0.3,
+            "not dimmed the way an unavailable row is: {:?} against {:?}",
+            paragraph.color,
+            unavailable.color
+        );
+        assert!(
+            paragraph.color[3] >= 0.9,
+            "and read at the shell's own white: {:?}",
+            paragraph.color
+        );
+    }
+
+    /// A row keeps the corners of the rows around it while it opens out.
+    ///
+    /// The radius follows the row's height, and the height is now something
+    /// that moves: taken off the grown one, the single row somebody is reading
+    /// would be visibly rounder than its neighbours for as long as they read it
+    /// — the very inconsistency that having one question decide the corners was
+    /// written to end.
+    #[test]
+    fn a_row_that_opens_out_keeps_the_corners_of_the_rows_around_it() {
+        let height = 1080.0;
+        let scale = guide_scale(height);
+        let mut menu = announcements(3, 3, height);
+        let radius = |menu: &Menu| {
+            let rect = context_menu_row_rect(1920.0, height, menu, 1).unwrap();
+            context_chip_radius(&menu.entries()[1], rect[3], scale)
+        };
+
+        let shut = radius(&menu);
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        assert!(
+            (radius(&menu) - shut).abs() < 1e-3,
+            "the same corners open as shut"
+        );
+
+        // And still cut to the share of itself a track is cut to — see
+        // `a_stacked_row_is_cornered_like_a_track_and_not_like_a_button`.
+        let tracks = mixer([0.5; 3], height);
+        let track = context_menu_row_rect(1920.0, height, &tracks, 0).unwrap();
+        let settled =
+            context_menu_row_rect(1920.0, height, &announcements(3, 3, height), 1).unwrap()[3];
+        assert!(
+            (shut / settled
+                - context_chip_radius(&tracks.entries()[0], track[3], scale) / track[3])
+                .abs()
+                < 0.01
+        );
+    }
+
+    /// The announcement panel is wider than every other one, and only it.
+    #[test]
+    fn only_the_announcement_panel_takes_the_extra_width() {
+        let (width, height) = (1920.0, 1080.0);
+        let scale = guide_scale(height);
+        let announced = context_menu_rect(width, height, &announcements(1, 1, height));
+        let commands = context_menu_rect(width, height, &raised([300.0; 4], 4, height));
+        assert!(
+            (announced[2] - commands[2] - NOTIFICATION_EXTRA_WIDTH * scale).abs() < 1.0,
+            "{announced:?} against {commands:?}"
+        );
+        // And the bubble in the corner keeps the ordinary width — it has
+        // neither of the two things the panel took the room for.
+        assert!((TOAST_WIDTH - CONTEXT_WIDTH).abs() < 1e-3);
+    }
+
+    /// Every announcement carries a button on its right-hand end, reached by
+    /// stepping sideways onto it, and a press there throws that one away
+    /// without putting the panel down.
+    #[test]
+    fn a_row_carries_its_own_way_of_being_thrown_away() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut menu = announcements(1, 1, height);
+        assert_eq!(menu.selected(), 1, "opened on the announcement");
+        assert!(!menu.on_aside(), "and on the row, not on its button");
+
+        // The button takes the right-hand end of the row's line, top to bottom.
+        let row = context_menu_row_rect(width, height, &menu, 1).unwrap();
+        let button = context_menu_aside_rect(width, height, &menu, 1).unwrap();
+        assert!(
+            button[0] >= row[0] && button[0] + button[2] <= row[0] + row[2] + 0.01,
+            "{button:?} inside {row:?}"
+        );
+        assert!(
+            (button[0] + button[2] - row[0] - row[2]).abs() < 0.01,
+            "at the end"
+        );
+        assert_eq!(
+            (button[1], button[3]),
+            (row[1], row[3]),
+            "the button and the row it is on are the same height"
+        );
+
+        // And the row's own face stops before it, with the air between them
+        // showing: they are two chips side by side rather than a button drawn
+        // on top of a row.
+        let chip = context_menu_chip_rect(width, height, &menu, 1).unwrap();
+        assert!(
+            (button[0] - (chip[0] + chip[2]) - CONTEXT_ASIDE_GAP * guide_scale(height)).abs()
+                < 0.01,
+            "the row's face {chip:?} runs into the button at {button:?}"
+        );
+        // The writing stops with it.
+        let runs = context_scene(&menu, width, height).texts;
+        for text in runs
+            .iter()
+            .filter(|text| text.y >= row[1] - 1.0 && text.y <= row[1] + row[3] && text.x >= row[0])
+        {
+            assert!(
+                text.x + text.max_width <= chip[0] + chip[2] + 0.01,
+                "{:?} runs past the row's face at {chip:?}",
+                text.content
+            );
+        }
+
+        // Right steps onto it and the highlight goes with it; Left comes back.
+        // The light lands on one of the two and never on both, which is the
+        // whole of what says which the next press will reach.
+        assert!(menu.move_aside(1));
+        assert!(menu.on_aside());
+        assert_eq!(menu.selected(), 1, "still the same row underneath");
+        assert_eq!(
+            context_menu_highlight_rect(width, height, &menu),
+            Some(button)
+        );
+        assert!(!menu.move_aside(1), "and there is nowhere further to go");
+        assert!(menu.move_aside(-1));
+        assert!(!menu.on_aside());
+        assert_eq!(
+            context_menu_highlight_rect(width, height, &menu),
+            Some(chip),
+            "the light on the row stops short of its button"
+        );
+
+        // A press on the button carries the row's *other* command, and leaves
+        // the panel standing so the next one can be thrown away too.
+        menu.move_aside(1);
+        assert_eq!(menu.choose(), Some(Command::DismissNotification(1)));
+        assert!(menu.is_open(), "the panel stayed up");
+        assert!(
+            menu.aside_press_progress(1).is_some(),
+            "the button went down"
+        );
+        assert!(
+            menu.press_progress(1).is_none(),
+            "and the row underneath did not"
+        );
+
+        // Nothing to step onto on a row without one.
+        let mut plain = raised([300.0; 4], 4, height);
+        assert!(!plain.move_aside(1));
+        assert!(!plain.on_aside());
+    }
+
+    /// The button on the end of a row is as tall as the row, and stays as tall
+    /// as it while the row opens out under the highlight.
+    ///
+    /// It used to be a square cut from the height the row settles at, which on
+    /// an announcement opened out to six lines of somebody's sentence left a
+    /// stub of a button at the top of a deep row with nothing under it. Its
+    /// *width* is still the settled one, because that is the side that takes
+    /// room from the writing.
+    #[test]
+    fn the_button_on_a_row_is_as_tall_as_the_row_however_far_it_opens() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut menu = announcements(3, 3, height);
+        let settled = context_menu_aside_rect(width, height, &menu, 1).unwrap();
+        assert!(
+            (settled[2] - settled[3]).abs() < 0.01,
+            "square on a row that has not opened out: {settled:?}"
+        );
+
+        for _ in 0..40 {
+            menu.animate(0.05);
+        }
+        let row = context_menu_row_rect(width, height, &menu, 1).unwrap();
+        let opened = context_menu_aside_rect(width, height, &menu, 1).unwrap();
+        assert!(
+            opened[3] > settled[3] + 1.0,
+            "the row opened out and the button did not: {opened:?}"
+        );
+        assert_eq!((opened[1], opened[3]), (row[1], row[3]));
+        assert!(
+            (opened[2] - settled[2]).abs() < 0.01,
+            "and it is no wider for it: {opened:?} against {settled:?}"
+        );
+
+        // The mark on it is the same size on both, being drawn off the width.
+        let mark = |menu: &Menu| {
+            let button = context_menu_aside_rect(width, height, menu, 1).unwrap();
+            context_scene(menu, width, height)
+                .quads
+                .iter()
+                .find(|quad| quad.x > button[0] && quad.x + quad.w < button[0] + button[2])
+                .map(|quad| quad.h)
+                .expect("the mark on the button")
+        };
+        assert!((mark(&menu) - mark(&announcements(3, 3, height))).abs() < 0.01);
+    }
+
+    /// Nothing of the row is drawn under its button.
+    ///
+    /// The button used to stand on the row's own face, which is a button on top
+    /// of a button — and under the highlight it was worse than untidy: the lit
+    /// capsule ran the whole width of the row, the button sat in the middle of
+    /// that light, and the pair stopped saying which of the two the next press
+    /// would reach.
+    #[test]
+    fn a_row_draws_nothing_under_its_own_button() {
+        let (width, height) = (1920.0, 1080.0);
+        let menu = announcements(1, 1, height);
+        let row = context_menu_row_rect(width, height, &menu, 1).unwrap();
+        let chip = context_menu_chip_rect(width, height, &menu, 1).unwrap();
+        let button = context_menu_aside_rect(width, height, &menu, 1).unwrap();
+        let scene = context_scene(&menu, width, height);
+        for quad in scene.quads.iter().filter(|quad| {
+            // What is on this row's own line and belongs to the row rather than
+            // to the button: the panel's glass and the selection's bloom are
+            // both taller than a row, and neither is the row.
+            quad.y >= row[1] - 1.0
+                && quad.y + quad.h <= row[1] + row[3] + 1.0
+                && quad.x < button[0] - 0.01
+        }) {
+            assert!(
+                quad.x + quad.w <= chip[0] + chip[2] + 0.01,
+                "{quad:?} reaches under the button at {button:?}"
+            );
+        }
+    }
+
+    /// One announcement opened out of the list: the paragraph it sent, a button
+    /// it offered and a way out — under a heading of its own that takes
+    /// `title_lines` lines to say.
+    fn opened_announcement(title_lines: u8, height: f32) -> Menu {
+        let mut menu = Menu::default();
+        let mut body =
+            MenuEntry::new(Command::DismissNotification(1), "a paragraph ".repeat(20)).reading();
+        body.lines = 3;
+        assert!(menu.open_at(
+            [40.0, 200.0, 68.0, 68.0],
+            Some(Title::new("Everything the program had to say in its heading").lines(title_lines)),
+            vec![
+                body,
+                MenuEntry::new(Command::InvokeNotification(1, 0), "Open File"),
+                MenuEntry::new(Command::DismissNotification(1), "Dismiss").group(1),
+            ],
+            context_menu_rows_that_fit(height),
+        ));
+        menu.widen(NOTIFICATION_EXTRA_WIDTH);
+        menu.set_window(menu_rows_that_fit(&menu, height));
+        while menu.animate(0.05) < 1.0 {}
+        menu
+    }
+
+    /// A heading too long for one line is wrapped rather than cut.
+    ///
+    /// The header of this panel is the announcement's own summary — a sentence
+    /// the program that sent it wrote, and the thing the user pressed the row
+    /// to read. It used to be set on one line and ellipsised, which hid the end
+    /// of the very line the panel was raised to show.
+    #[test]
+    fn a_heading_too_long_for_one_line_opens_out_instead_of_being_cut() {
+        let (width, height) = (1920.0, 1080.0);
+        let scale = guide_scale(height);
+        let one = opened_announcement(1, height);
+        let three = opened_announcement(3, height);
+        let grown = 2.0 * CONTEXT_TITLE_LINE * scale;
+        assert_eq!(
+            one.visible_rows(),
+            three.visible_rows(),
+            "the same rows are on both panels"
+        );
+
+        // The panel is taller by exactly the two lines the heading took...
+        let short = context_menu_rect(width, height, &one);
+        let long = context_menu_rect(width, height, &three);
+        assert!(
+            (long[3] - short[3] - grown).abs() < 1.0,
+            "{long:?} against {short:?}"
+        );
+
+        // ...and the rows start that much further down it, so the heading is
+        // read in the room the panel grew rather than over the paragraph.
+        let under = |menu: &Menu, panel: [f32; 4]| {
+            context_menu_row_rect(width, height, menu, 0).unwrap()[1] - panel[1]
+        };
+        assert!(
+            (under(&three, long) - under(&one, short) - grown).abs() < 1.0,
+            "the first row did not move down with the heading"
+        );
+
+        // The heading itself is drawn with room for all three lines, and it is
+        // still the first thing on the panel.
+        let scene = context_scene(&three, width, height);
+        let heading = scene
+            .texts
+            .iter()
+            .find(|text| text.content.starts_with("Everything"))
+            .expect("the heading is drawn");
+        assert_eq!(heading.lines, 3, "all three lines of it");
+        assert!(
+            heading.y + heading.size * 3.0
+                <= context_menu_row_rect(width, height, &three, 0).unwrap()[1],
+            "the heading runs into the paragraph under it"
+        );
+
+        // And a panel the shell titled itself is untouched: one line, and the
+        // same header it always had.
+        let plain = raised([300.0; 4], 4, height);
+        assert_eq!(plain.title_lines(), 1);
+    }
+
+    /// A panel raised to show one announcement keeps the buttons under it,
+    /// however long the announcement is.
+    ///
+    /// The row count used to measure the tallest row and then count that height
+    /// over and over, which for this panel — a paragraph several inches deep
+    /// with three buttons under it — answered that one row fits. That leaves
+    /// the reader the words and no way to act on them.
+    #[test]
+    fn a_paragraph_does_not_push_the_buttons_off_its_own_panel() {
+        for [width, height] in SCREENS {
+            let mut menu = Menu::default();
+            let mut body =
+                MenuEntry::new(Command::DismissNotification(1), "a paragraph ".repeat(60))
+                    .reading();
+            body.lines = context_read_lines(height);
+            assert!(menu.open_at(
+                [40.0, 200.0, 68.0, 68.0],
+                Some(Title::new("Hello World")),
+                vec![
+                    body,
+                    MenuEntry::new(Command::InvokeNotification(1, 0), "Install now"),
+                    MenuEntry::new(Command::InvokeNotification(1, 1), "Remind me later"),
+                    MenuEntry::new(Command::DismissNotification(1), "Dismiss").group(1),
+                ],
+                context_menu_rows_that_fit(height),
+            ));
+            menu.widen(NOTIFICATION_EXTRA_WIDTH);
+            menu.set_window(menu_rows_that_fit(&menu, height));
+            while menu.animate(0.05) < 1.0 {}
+
+            assert_eq!(
+                menu.visible_rows(),
+                4,
+                "{width}x{height}: the paragraph and all three buttons"
+            );
+            let panel = context_menu_rect(width, height, &menu);
+            let last = context_menu_row_rect(width, height, &menu, 3).unwrap();
+            assert!(
+                last[1] + last[3] <= panel[1] + panel[3] + 1.0,
+                "{width}x{height}: the way out is still on the panel"
+            );
+            assert!(
+                panel[1] >= PANEL_INSET * guide_scale(height) - 0.01
+                    && panel[1] + panel[3] <= height - PANEL_INSET * guide_scale(height) + 0.01,
+                "{width}x{height}: and the panel is still on the display"
+            );
+        }
+    }
+
+    /// A row that is there to be read is not cut at three lines, because the
+    /// panel it is on was raised to show it.
+    #[test]
+    fn what_a_panel_was_raised_to_show_is_cut_only_by_the_display() {
+        for [_, height] in SCREENS {
+            let allowed = context_read_lines(height);
+            assert!(
+                allowed > CONTEXT_MAX_LINES,
+                "{height}: a paragraph gets more than a row in a list does"
+            );
+            // And it leaves at least half the display for the buttons under it
+            // and the way out below them.
+            let scale = guide_scale(height);
+            assert!(
+                allowed as f32 * CONTEXT_LABEL_LINE * scale <= height * 0.5 + 1.0,
+                "{height}: {allowed} lines is more than half the screen"
+            );
+        }
+    }
+
+    /// The panel is built to hold the row that opens out, on a display it only
+    /// just fits on.
+    ///
+    /// It is sized to its rows, so a row growing under the highlight grows the
+    /// panel — and a panel already reaching the bottom of the display would
+    /// have nowhere to put the growth but over the edge, cutting off the row at
+    /// the end of the list for as long as somebody stood on a long one.
+    #[test]
+    fn the_panel_keeps_room_for_the_row_that_will_open_out() {
+        let width = 1920.0;
+        for height in [1080.0, 900.0, 768.0, 600.0] {
+            let mut menu = announcements(3, 3, height);
+            let rows = menu.visible_rows();
+            for _ in 0..40 {
+                menu.animate(0.05);
+            }
+            assert_eq!(rows, menu.visible_rows(), "the same rows are drawn");
+            let panel = context_menu_rect(width, height, &menu);
+            let last = context_menu_row_rect(width, height, &menu, rows - 1).unwrap();
+            assert!(
+                last[1] + last[3] <= panel[1] + panel[3] + 1.0,
+                "the last row is still on the panel at {height}: {last:?} in {panel:?}"
+            );
+            assert!(
+                panel[1] + panel[3] <= height - PANEL_INSET * guide_scale(height) + 1.0,
+                "and the panel is still on the display at {height}: {panel:?}"
+            );
+        }
+    }
+
     /// The mixer as the guide raises it: two applications and the session's own
     /// output under them, out of the tile in the column.
     fn mixer(levels: [f32; 3], height: f32) -> Menu {
@@ -11118,14 +14990,15 @@ mod tests {
                 "{width}x{height}: taller rows were said to fit as well"
             );
             // And the answer the shell asks for every frame follows the rows
-            // the menu actually holds.
+            // the menu actually holds — it walks them, so it never claims room
+            // for rows that are not there.
             assert_eq!(
                 menu_rows_that_fit(&menu, height),
-                mixer_rows_that_fit(height)
+                mixer_rows_that_fit(height).min(menu.entries().len())
             );
             assert_eq!(
                 menu_rows_that_fit(&command, height),
-                context_menu_rows_that_fit(height)
+                context_menu_rows_that_fit(height).min(command.entries().len())
             );
         }
     }
@@ -11530,7 +15403,8 @@ mod tests {
         dialog
     }
 
-    /// The uninstall question, open on the answer that declines it.
+    /// The uninstall question, open on the answer that declines it — which is
+    /// also the one drawn first, as it is in every question the shell asks.
     fn questioned(from: [f32; 4]) -> Dialog {
         let mut dialog = Dialog::default();
         assert!(dialog.ask(
@@ -11542,10 +15416,10 @@ mod tests {
                 Line::Rule,
             ],
             vec![
-                MenuEntry::new(Command::ConfirmUninstall, "Yes").destructive(),
                 MenuEntry::new(Command::Dismiss, "No"),
+                MenuEntry::new(Command::ConfirmUninstall, "Yes").grave(),
             ],
-            1,
+            0,
         ));
         while dialog.buttons.animate(0.05) < 1.0 {}
         dialog
@@ -11720,68 +15594,80 @@ mod tests {
         assert_eq!(surface.iter().filter(|quad| is_glass(quad)).count(), 1);
     }
 
-    /// The one control in the shell the accent may not touch.
+    /// A question wears its warning on the light, not on a button.
     ///
-    /// Both halves of it: the answer that destroys something is red before it
-    /// is highlighted — a Yes that only turned red once the user was on it
-    /// would be an ordinary button right up to the moment that stopped
-    /// mattering — and it is the *same* red under every palette, including the
-    /// red one, where `Theme::danger` deliberately is not.
+    /// Three things at once, because they are one decision. Both answers rest
+    /// as the same glass — the panel does not answer itself before the user
+    /// has. The answer that destroys something is the one *under* the harmless
+    /// one, which is where every question in the shell puts it, and the
+    /// harmless one is what the question opens standing on. And walking onto
+    /// the grave answer lights it warm rather than in the accent, which is the
+    /// same light a grave menu row takes.
     #[test]
-    fn the_destructive_answer_ignores_the_accent() {
+    fn a_question_rests_cold_and_lights_its_grave_answer_warm() {
         let (width, height) = (1920.0, 1080.0);
-        let destructive = crate::theme::DESTRUCTIVE.a(1.0);
+        let dialog = questioned([200.0, 400.0, 380.0, 54.0]);
+        // The *last* quad on the button's rectangle, not the first: the lit
+        // capsule is drawn under the chips and sits on exactly the same
+        // rectangle as the one it has arrived over.
+        let chip = |scene: &Scene, index: usize| {
+            let [x, y, _, h] = dialog_button_rect(width, height, &dialog, index).unwrap();
+            scene
+                .quads
+                .iter()
+                .rfind(|quad| {
+                    (quad.x - x).abs() < 0.5 && (quad.y - y).abs() < 0.5 && (quad.h - h).abs() < 0.5
+                })
+                .map(|quad| quad.color)
+                .expect("both answers are drawn")
+        };
 
-        let mut seen = Vec::new();
-        for accent in ["Purple", "Red"] {
-            let (chip, lit, ordinary) = crate::theme::with_accent(accent, || {
-                let dialog = questioned([200.0, 400.0, 380.0, 54.0]);
-                let scene = dialog_scene(&dialog, width, height);
-                let at = |index: usize| {
-                    let [x, y, _, h] = dialog_button_rect(width, height, &dialog, index).unwrap();
-                    scene
-                        .quads
-                        .iter()
-                        .find(|quad| {
-                            (quad.x - x).abs() < 0.5
-                                && (quad.y - y).abs() < 0.5
-                                && (quad.h - h).abs() < 0.5
-                        })
-                        .map(|quad| quad.color)
-                        .expect("both answers are drawn")
-                };
-                // The lit capsule under the highlight is the last quad that
-                // reaches across the panel; the chips are drawn over it.
-                let lit = scene
-                    .quads
-                    .iter()
-                    .find(|quad| quad.slot == GLOW_SLOT)
-                    .map(|quad| quad.color)
-                    .expect("the selection is lit");
-                (at(0), lit, at(1))
-            });
-
-            assert_eq!(
-                chip[..3],
-                destructive[..3],
-                "{accent}: Yes is not the shell's fixed red"
-            );
-            assert_ne!(
-                ordinary[..3],
-                destructive[..3],
-                "{accent}: No is drawn as though it were destructive too"
-            );
-            // The glow belongs to No, which is what the question opens on, so
-            // it is the accent's — the fixed red is on the button and only on
-            // the button.
-            seen.push((chip, lit));
-        }
-        assert_eq!(seen[0].0, seen[1].0, "the red moved with the accent");
-        assert_ne!(
-            seen[0].1[..3],
-            seen[1].1[..3],
-            "the accent did not change at all, so this proves nothing"
+        // The order, and where the highlight starts.
+        let labels: Vec<&str> = dialog
+            .buttons
+            .entries()
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["No", "Yes"],
+            "the destroying answer is drawn first"
         );
+        assert_eq!(dialog.buttons.selected(), 0);
+        assert!(dialog.buttons.entries()[1].grave);
+
+        let resting = dialog_scene(&dialog, width, height);
+        assert_eq!(
+            chip(&resting, 0),
+            chip(&resting, 1),
+            "one of the answers is coloured before it has been chosen"
+        );
+
+        // And the light that arrives on Yes is the warm one, where the light on
+        // No is the accent's. The lit capsule is the *first* quad on the
+        // button's rectangle, being the one the chip is then drawn over.
+        let theme = crate::theme::theme();
+        let lit = |dialog: &Dialog, index: usize| {
+            let [x, y, _, h] = dialog_button_rect(width, height, dialog, index).unwrap();
+            dialog_scene(dialog, width, height)
+                .quads
+                .iter()
+                .find(|quad| {
+                    (quad.x - x).abs() < 0.5 && (quad.y - y).abs() < 0.5 && (quad.h - h).abs() < 0.5
+                })
+                .map(|quad| quad.color)
+                .expect("the selection is lit")
+        };
+        let on_no = lit(&dialog, 0);
+        let mut dialog = dialog;
+        assert!(dialog.buttons.move_selection(1));
+        while dialog.buttons.animate(0.05) < 1.0 {}
+        let on_yes = lit(&dialog, 1);
+
+        assert_eq!(on_no[..3], theme.accent.a(1.0)[..3]);
+        assert_eq!(on_yes[..3], theme.danger.a(1.0)[..3]);
+        assert_ne!(theme.accent.a(1.0)[..3], theme.danger.a(1.0)[..3]);
     }
 
     /// The sign-in code: dark modules on a light card, every module a whole
@@ -11931,7 +15817,7 @@ mod tests {
                     Line::Note("Enter your password to allow this.".to_string()),
                     Line::Secret { typed },
                 ],
-                vec![MenuEntry::new(Command::SubmitPassword, "Uninstall").destructive()],
+                vec![MenuEntry::new(Command::SubmitPassword, "Uninstall").grave()],
                 0,
             ));
             while dialog.animate(0.05) < 1.0 {}
@@ -12093,6 +15979,8 @@ mod tests {
             max_width: 100.0,
             align: TextAlign::Left,
             clip: None,
+            halo: 0.0,
+            lines: 1,
         };
         let behind = || Scene {
             quads: Vec::new(),

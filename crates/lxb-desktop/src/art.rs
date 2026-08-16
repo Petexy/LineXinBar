@@ -1,5 +1,6 @@
-//! Steam's own pictures of a game: the cover on its row, and the picture
-//! behind the whole display while it is chosen.
+//! Steam's own pictures of a game: the cover on its row, the picture behind
+//! the whole display while it is chosen, and the title as artwork for the
+//! moment the game is starting.
 //!
 //! A library drawn as a column of identical Steam marks says only how many
 //! games somebody owns. The cover says which one each row *is*, from across a
@@ -26,8 +27,14 @@
 //! reason: a library is a thousand games, a hero is half a megabyte, and
 //! filling a cache with all of it would be half a gigabyte of somebody's disk
 //! and their whole line for a minute — to draw six rows. So the shell asks for
-//! the covers around each cursor and the hero of the row actually chosen, and
-//! [`crate::gpu`] drops whatever the cursor has left behind.
+//! the covers around each cursor, and the hero and logo of the row actually
+//! chosen, and [`crate::gpu`] drops whatever the cursor has left behind.
+//!
+//! The logo is asked for on the row rather than on the press, which looks like
+//! an exception and is not: it is the same *row* as the hero, fetched at the
+//! same moment and dropped at the same one. What decides it is that the thing
+//! it is wanted for cannot wait — a launch splash is on screen a fifth of a
+//! second after the button goes down.
 //!
 //! ## What a picture that never arrives does
 //!
@@ -69,6 +76,19 @@ use crate::thumbs::Picture;
 /// showing one does.
 pub const HERO_WIDTH: u32 = 1920;
 pub const HERO_HEIGHT: u32 = 620;
+
+/// The box a game's logo is held in.
+///
+/// Valve's ceiling and not a choice of this shell's: every `logo.png` in the
+/// client's cache is at most 640 across, and the ones that are not are
+/// narrower rather than wider. Holding it at anything smaller would be
+/// throwing away detail the splash then has to invent again — the logo is
+/// drawn a third of a display wide there, which is most of the way back to
+/// this number on a 1080p screen and past it on a 4K one.
+///
+/// A box, not a size. Nothing is stretched to it and nothing is padded out to
+/// it: a wordmark set in one line arrives 640 × 113 and is kept that way.
+pub const LOGO_SIZE: u32 = 640;
 
 /// How many rungs of ever-smaller copies each hero carries.
 ///
@@ -133,6 +153,14 @@ pub enum Made {
         app_id: u32,
         scenery: Scenery,
     },
+    /// A logo, by app id rather than by the file it came out of — unlike a
+    /// cover, which shares the atlas's thumbnail band with the user's own
+    /// pictures and is therefore filed the way those are. Only one thing in
+    /// the shell ever asks for a logo and it asks by game.
+    Logo {
+        app_id: u32,
+        picture: Picture,
+    },
 }
 
 /// The workers, and what has been asked of them.
@@ -173,6 +201,7 @@ struct Queue {
 enum Answer {
     Cover { path: PathBuf, picture: Picture },
     Hero(Scenery),
+    Logo(Picture),
 }
 
 impl Art {
@@ -252,6 +281,7 @@ impl Art {
                     out.push(Made::Cover { path, picture });
                 }
                 Ok(Answer::Hero(scenery)) => out.push(Made::Hero { app_id, scenery }),
+                Ok(Answer::Logo(picture)) => out.push(Made::Logo { app_id, picture }),
                 Err(why) => {
                     if why.worth_retrying() {
                         tracing::debug!(
@@ -335,6 +365,12 @@ fn produce(app_id: u32, piece: Piece, cdn: &Cdn) -> Result<Answer, Missing> {
                 Missing::Unreachable(format!("{} could not be decoded", path.display()))
             })?;
             Ok(Answer::Hero(scenery))
+        }
+        Piece::Logo => {
+            let picture = logo(&bytes).ok_or_else(|| {
+                Missing::Unreachable(format!("{} could not be decoded", path.display()))
+            })?;
+            Ok(Answer::Logo(picture))
         }
     }
 }
@@ -426,6 +462,32 @@ fn cover(bytes: &[u8]) -> Option<Picture> {
     // store the same detail, softened.
     let scaled = if image.width() > edge || image.height() > edge {
         image.resize(edge, edge, image::imageops::FilterType::Lanczos3)
+    } else {
+        image
+    };
+    let rgba = scaled.to_rgba8();
+    Some(Picture {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
+/// A logo, at its own shape inside [`LOGO_SIZE`].
+///
+/// Fitted, never filled and never padded: a wordmark is transparent almost
+/// everywhere, and the whole of what makes it usable is that the drawing
+/// reaches the edges of the picture it is in. Cropping one to a box would cut
+/// the ends off the title, and centring one in a square would leave the splash
+/// no way of knowing how much of what it is drawing is nothing at all.
+///
+/// Scaled down only. Nearly every logo Valve holds is already at the ceiling
+/// or under it, and stretching a small one would be storing invented pixels in
+/// an atlas block that is measured in megabytes.
+fn logo(bytes: &[u8]) -> Option<Picture> {
+    let image = decode(bytes)?;
+    let scaled = if image.width() > LOGO_SIZE || image.height() > LOGO_SIZE {
+        image.resize(LOGO_SIZE, LOGO_SIZE, image::imageops::FilterType::Lanczos3)
     } else {
         image
     };
@@ -540,6 +602,39 @@ mod tests {
             (crate::thumbs::SIZE as f32 * 600.0 / 900.0).round() as u32
         );
         assert_eq!(made.rgba.len(), (made.width * made.height * 4) as usize);
+    }
+
+    /// A logo keeps whatever shape it arrived in. Every other picture here is
+    /// cropped or fitted into a box the shell chose; this one is a drawing of
+    /// a title and its shape *is* the drawing — a wordmark squared off would
+    /// be a title with air stamped onto one end of it, and the splash has no
+    /// way of telling that air from the transparency the logo is mostly made
+    /// of.
+    #[test]
+    fn a_logo_keeps_its_own_shape() {
+        let drawn = |width, height| {
+            let source = image::DynamicImage::new_rgba8(width, height);
+            let mut bytes = Vec::new();
+            source
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .expect("a picture to decode");
+            let made = logo(&bytes).expect("a logo");
+            assert_eq!(made.rgba.len(), (made.width * made.height * 4) as usize);
+            (made.width, made.height)
+        };
+
+        // A one-line wordmark, at Valve's own ceiling: kept exactly.
+        assert_eq!(drawn(640, 113), (640, 113));
+        // A stacked one, likewise.
+        assert_eq!(drawn(640, 360), (640, 360));
+        // Smaller than the box, so it stays smaller: blowing it up would store
+        // invented pixels in a block measured in megabytes.
+        assert_eq!(drawn(320, 180), (320, 180));
+        // And one past the box comes down to it with its shape intact.
+        assert_eq!(drawn(1280, 360), (LOGO_SIZE, 180));
     }
 
     /// An invented library asks nothing of Steam and nothing of the disk: its

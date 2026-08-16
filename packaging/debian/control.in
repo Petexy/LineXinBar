@@ -1,21 +1,20 @@
-Package: linexinbar
+Package: lxb-desktop
 Version: @VERSION@-1
 Architecture: @ARCH@
 Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
 Section: x11
 Priority: optional
-Depends: @SHLIB_DEPENDS@, dbus, libwayland-client0, libwayland-server0,
- libwayland-egl1, libegl1, libx11-6, libx11-xcb1, libxcb1, libxcursor1,
- libxi6, libxkbcommon-x11-0
-Recommends: seatd, xwayland, libgl1-mesa-dri, wireplumber,
- pulseaudio-utils, hicolor-icon-theme, sudo, pipewire, xdg-desktop-portal
+Depends: @SHLIB_DEPENDS@, lxb-compositor (= @VERSION@-1), dbus,
+ libwayland-client0, libwayland-egl1, libegl1, libxkbcommon0
+Recommends: wireplumber, pulseaudio-utils, hicolor-icon-theme, sudo, pipewire,
+ xdg-desktop-portal
 Suggests: alsa-utils, ddcutil, mesa-vulkan-drivers
 Installed-Size: @INSTALLED_SIZE@
-Homepage: https://github.com/petexy/project-linexinbar
+Homepage: https://github.com/Petexy/LineXinBar
 Description: multi-display Wayland desktop with an XMB-style shell
- LineXinBar combines a small DRM/KMS Wayland compositor with a GPU-rendered,
- gamepad-friendly desktop shell. Every connected display is managed as an
- independent output.
+ LineXinBar is a GPU-rendered, gamepad-friendly desktop shell. Every connected
+ display is managed as an independent output.
  .
- This early-development package includes the compositor, shell, desktop portal,
- bundled cursor theme and a display-manager Wayland session.
+ This early-development package includes the shell, the desktop portal and a
+ display-manager Wayland session. The compositor it runs on is packaged
+ separately as lxb-compositor, which this package depends on.

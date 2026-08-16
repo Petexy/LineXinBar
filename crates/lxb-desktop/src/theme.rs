@@ -169,19 +169,19 @@ impl RenderedTheme {
     }
 }
 
-/// The one colour in the shell that belongs to no palette: the fill behind a
-/// button that destroys something the user installed.
-///
-/// Deliberately outside [`Theme`], and therefore outside the accent. Every
-/// other warm mark in the shell is [`Theme::danger`], which moves with the
-/// palette — it has to, because under the red accent an amber warning is the
-/// only way to keep "chosen" and "irreversible" apart. But that reasoning runs
-/// out at a confirmation whose *whole content* is the difference between Yes
-/// and No: those two buttons must not be told apart by a colour that is
-/// sometimes the same colour as being highlighted. So Yes is deep red under
-/// every accent, including the red one, and the accent's own light never
-/// touches it.
-pub const DESTRUCTIVE: Color = Color(0x8E1B1B);
+// There was a second warm colour here once — a fixed deep red, outside every
+// palette, for the fill behind a Yes that destroys something. The argument for
+// it was that a confirmation's whole content is the difference between its two
+// answers, so they must not be told apart by a colour that under the red accent
+// is also the colour of being highlighted.
+//
+// It went because the premise was wrong. The two answers are told apart by
+// their order — the harmless one first, and the one the question opens standing
+// on — and by which of them the highlight is on, which is the same thing the
+// user reads everywhere else in the shell. A button already lit before anybody
+// has chosen it is a panel answering its own question. [`Theme::danger`], on
+// the light, is now the only warning colour, and it is the same one on a menu
+// row as on an answer.
 
 /// Violet on a deep indigo night. The shell's own colour, and the one a first
 /// run comes up in.
@@ -554,6 +554,28 @@ mod tests {
     #[test]
     fn alpha_rides_along_untouched() {
         assert_eq!(Color(0xFFFFFF).a(0.42)[3], 0.42);
+    }
+
+    /// The compositor draws this same wallpaper before the shell exists, from
+    /// the shared table in `lxb-protocol::wallpaper`. That is what turns the
+    /// interval before the first shell frame from a black screen into the
+    /// picture the login screen was already showing — and it only works while
+    /// the two palettes are the same palette. This is the test that says so:
+    /// change an accent here and it fails until the shared table follows.
+    #[test]
+    fn the_compositor_draws_the_same_palette_before_the_shell_starts() {
+        assert_eq!(ACCENTS.len(), lxb_protocol::wallpaper::PALETTES.len());
+        for (accent, shared) in ACCENTS.iter().zip(lxb_protocol::wallpaper::PALETTES) {
+            assert_eq!(accent.name, shared.name);
+            let theme = accent.theme;
+            for (mine, theirs) in theme.sky.iter().zip(&shared.sky) {
+                assert_eq!(mine.0, theirs.0, "{} sky", accent.name);
+            }
+            assert_eq!(theme.accent.0, shared.accent[0].0, "{}", accent.name);
+            assert_eq!(theme.accent_soft.0, shared.accent[1].0, "{}", accent.name);
+            assert_eq!(theme.accent_deep.0, shared.accent[2].0, "{}", accent.name);
+            assert_eq!(theme.glow.0, shared.glow.0, "{} glow", accent.name);
+        }
     }
 
     /// An accent is a whole palette under a name, and the names are what the

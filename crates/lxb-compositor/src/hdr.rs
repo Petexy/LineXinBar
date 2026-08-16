@@ -35,6 +35,22 @@
 //! Both halves are per-connector, and smithay's atomic surface never touches
 //! any of these five properties, so what is set here survives its page flips
 //! and is only undone by [`Pipeline::reset`].
+//!
+//! # The night light
+//!
+//! The blue light filter lives here too, and not because it has anything to do
+//! with high dynamic range. It is the *same gamma stage*: warming a picture is
+//! scaling green and blue down against red, and the only place a compositor can
+//! do that to everything on a screen at once is the LUT at the end of the pipe
+//! above. Two pieces of code writing `GAMMA_LUT` on one CRTC would be two
+//! commits fighting over one property, and whichever landed second would be the
+//! whole answer — an HDR session that turned its night light on would go back to
+//! being SDR-encoded, or the other way about. So there is one curve, built from
+//! both, and [`Pipeline::apply`] is given both every time.
+//!
+//! That also makes the night light much more widely available than HDR: it
+//! needs no EDID claim, no infoframe and nothing of the link, only a ramp to
+//! commit. See [`Pipeline::warms`].
 
 use std::collections::HashMap;
 
@@ -105,6 +121,142 @@ impl Settings {
 /// composites is brighter than the SDR white level anyway.
 const DEFAULT_PEAK: u16 = 400;
 
+/// The night light: whether one display's picture is being warmed, and how far.
+///
+/// Kept apart from [`Settings`] rather than folded into it, because the two
+/// arrive as separate requests from separate pages and neither may overwrite
+/// the other's half. They do meet — in the one gamma curve both are encoded
+/// into — but that happens in [`Pipeline::apply`], which is handed both.
+///
+/// Nothing here says *when*. A schedule is a clock and a time zone, and the
+/// shell owns both; what reaches the compositor is only whether the light
+/// should be burning at this moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightLight {
+    /// Warm the picture at all.
+    pub enabled: bool,
+    /// The colour temperature to warm it to, in kelvin. Lower is warmer;
+    /// [`NEUTRAL_KELVIN`] is daylight and is the same picture as off.
+    pub temperature: u16,
+}
+
+impl Default for NightLight {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            // Warm enough to be worth switching on and mild enough that a
+            // photograph is still recognisably the colour it was — the setting
+            // an evening actually wants. Only consulted when nothing has been
+            // asked for, since a filter nobody enabled shows nothing anyway.
+            temperature: 4000,
+        }
+    }
+}
+
+/// Ordinary daylight white: the temperature at which this filter is doing
+/// nothing at all.
+///
+/// It is the identity *by construction* rather than by approximation — see
+/// [`NightLight::gains`], which divides through by the white point at this
+/// temperature — so a display asked for 6500 K shows exactly the picture it
+/// showed with the light switched off, to the last code.
+pub const NEUTRAL_KELVIN: u16 = 6500;
+
+/// The warmest this will encode. Below it the blue channel is already at zero
+/// and there is nothing left to take away.
+pub const WARMEST_KELVIN: u16 = 1000;
+
+impl NightLight {
+    /// The per-channel scale the picture is multiplied by, red first.
+    ///
+    /// In sRGB's *coded* values rather than in linear light, which is what
+    /// every gamma-ramp night light on this platform has always meant by a
+    /// colour temperature — the number people have in their heads for 4000 K is
+    /// the one this produces. [`Self::linear_gains`] is the same white point
+    /// for the stage that works in linear light.
+    ///
+    /// Red is always 1: warming is taking blue and green away, never adding
+    /// red, so nothing here can clip and the display never gets brighter than
+    /// it was.
+    ///
+    /// The curve is the usual closed-form fit to the Planckian locus. A table
+    /// interpolated per hundred kelvin would be a little more faithful and a
+    /// great deal more to carry; what the eye is being offered is a warmth, and
+    /// the fit is well inside the difference between two displays showing it.
+    fn gains(self) -> [f32; 3] {
+        if !self.enabled {
+            return [1.0, 1.0, 1.0];
+        }
+        let kelvin = self
+            .temperature
+            .clamp(WARMEST_KELVIN, NEUTRAL_KELVIN)
+            .max(WARMEST_KELVIN);
+        // Divided through by the white point at daylight so that the neutral
+        // temperature comes out exactly [1, 1, 1]. Without it the fit leaves
+        // green and blue a percent or two short at 6500 K, and "no filter"
+        // would be a slightly warm picture that nothing could take back off.
+        let neutral = planckian(NEUTRAL_KELVIN);
+        let wanted = planckian(kelvin);
+        [
+            (wanted[0] / neutral[0]).clamp(0.0, 1.0),
+            (wanted[1] / neutral[1]).clamp(0.0, 1.0),
+            (wanted[2] / neutral[2]).clamp(0.0, 1.0),
+        ]
+    }
+
+    /// The same white point, as a scale on linear light.
+    ///
+    /// For the HDR curve, whose gamma stage is fed light rather than codes.
+    /// sRGB's transfer function is very nearly a power law, and a power law
+    /// carries a multiply through unchanged — `(c·g)^γ = c^γ·g^γ` — so decoding
+    /// the coded gain is exactly the same white point expressed for the other
+    /// stage, and the two paths tint a display identically.
+    fn linear_gains(self) -> [f32; 3] {
+        self.gains().map(srgb_to_linear)
+    }
+
+    /// Whether this actually changes the picture. A filter switched on at
+    /// daylight is one nobody can see, and is not worth a commit.
+    pub fn tints(self) -> bool {
+        self.enabled && self.temperature < NEUTRAL_KELVIN
+    }
+}
+
+/// The colour of a black body at `kelvin`, as sRGB values in 0..=1.
+///
+/// The closed-form approximation everything from desktop night lights to
+/// photographic tools uses, good to a couple of percent across the range that
+/// matters here. It is not normalised: [`NightLight::gains`] does that, and has
+/// to, because the fit does not quite reach white at daylight.
+fn planckian(kelvin: u16) -> [f32; 3] {
+    let temperature = kelvin as f32 / 100.0;
+    let red = if temperature <= 66.0 {
+        255.0
+    } else {
+        329.698_73 * (temperature - 60.0).powf(-0.133_204_76)
+    };
+    let green = if temperature <= 66.0 {
+        99.470_8 * temperature.ln() - 161.119_57
+    } else {
+        288.122_16 * (temperature - 60.0).powf(-0.075_514_85)
+    };
+    let blue = if temperature >= 66.0 {
+        255.0
+    } else if temperature <= 19.0 {
+        // Below roughly 1900 K a black body has no blue left to speak of, and
+        // the logarithm below would run off to negative infinity rather than
+        // saying so.
+        0.0
+    } else {
+        138.517_73 * (temperature - 10.0).ln() - 305.044_8
+    };
+    [
+        (red / 255.0).clamp(0.0, 1.0),
+        (green / 255.0).clamp(0.0, 1.0),
+        (blue / 255.0).clamp(0.0, 1.0),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // what the session remembers, per display
 // ---------------------------------------------------------------------------
@@ -130,6 +282,17 @@ pub struct Status {
     /// be discovered, because a control that silently does nothing is worse
     /// than one that is not offered.
     pub gamut: bool,
+    /// This display's picture can be warmed: there is a gamma ramp on the pipe
+    /// driving it, and this session may commit to it.
+    ///
+    /// A far lower bar than [`Self::supported`] and reported separately for
+    /// that reason — an ordinary SDR laptop panel clears this and never comes
+    /// near HDR, so a page that read one for the other would leave the night
+    /// light off exactly the displays that most want it.
+    pub night_light: bool,
+    /// Its picture is being warmed right now. As [`Self::enabled`], this is
+    /// what the compositor is doing rather than what it was asked for.
+    pub warming: bool,
 }
 
 /// The session's view of HDR, kept outside the backend.
@@ -154,8 +317,11 @@ pub struct Manager {
 struct Entry {
     connector: String,
     settings: Settings,
+    /// The other half of the same gamma stage, asked for by its own request
+    /// from its own page. See [`NightLight`].
+    night: NightLight,
     status: Status,
-    /// Set when `settings` has not reached the hardware yet.
+    /// Set when `settings` or `night` has not reached the hardware yet.
     pending: bool,
 }
 
@@ -163,10 +329,16 @@ impl Manager {
     /// Take note of a display the backend can drive, with the settings it
     /// should come up in and what it turns out to be capable of.
     ///
-    /// `initial` is only consulted the first time a connector is seen. After
-    /// that the settings in force are the user's, and a display coming back
-    /// comes back the way they left it.
-    pub fn register(&mut self, output: &Output, initial: Settings, status: Status) {
+    /// Both `initial` values are only consulted the first time a connector is
+    /// seen. After that the settings in force are the user's, and a display
+    /// coming back comes back the way they left it.
+    pub fn register(
+        &mut self,
+        output: &Output,
+        initial: Settings,
+        initial_night: NightLight,
+        status: Status,
+    ) {
         match self.entry(output) {
             Some(entry) => {
                 entry.status = status;
@@ -175,6 +347,7 @@ impl Manager {
             None => self.displays.push(Entry {
                 connector: output.name(),
                 settings: initial,
+                night: initial_night,
                 status,
                 pending: true,
             }),
@@ -193,8 +366,9 @@ impl Manager {
         for entry in &mut self.displays {
             entry.pending = true;
             // What the hardware is doing is no longer known; it is whatever
-            // the modeset left, which is SDR.
+            // the modeset left, which is SDR with an identity ramp.
             entry.status.enabled = false;
+            entry.status.warming = false;
         }
     }
 
@@ -207,6 +381,7 @@ impl Manager {
         if let Some(entry) = self.entry(output) {
             entry.pending = true;
             entry.status.enabled = false;
+            entry.status.warming = false;
         }
     }
 
@@ -236,10 +411,44 @@ impl Manager {
         true
     }
 
+    /// The same for the night light, which is a request of its own.
+    ///
+    /// Separate from [`Self::request`] rather than another field on it,
+    /// because the two come from two pages: a shell changing the white level
+    /// must not have to know what the night light is set to in order to leave
+    /// it alone, and the other way about.
+    pub fn request_night_light(&mut self, output: &Output, night: NightLight) -> bool {
+        let Some(entry) = self.entry(output) else {
+            return false;
+        };
+        if entry.night == night {
+            return false;
+        }
+        entry.night = night;
+        entry.pending = true;
+        true
+    }
+
     /// The settings a display is waiting to have applied, if it is waiting.
-    pub fn take_pending(&mut self, output: &Output) -> Option<Settings> {
+    ///
+    /// Both halves together, always. They share the gamma stage, so the curve
+    /// that carries one has to be built from the other as well — see
+    /// [`Pipeline::apply`].
+    pub fn take_pending(&mut self, output: &Output) -> Option<(Settings, NightLight)> {
         let entry = self.entry(output)?;
-        entry.pending.then_some(entry.settings)
+        entry.pending.then_some((entry.settings, entry.night))
+    }
+
+    /// What one display is warmed to right now, for a session on its way out.
+    ///
+    /// A display nobody registered — a nested session's — is not warmed by
+    /// anything here, so it answers the default, which tints nothing.
+    pub fn night_light_of(&self, output: &Output) -> NightLight {
+        self.displays
+            .iter()
+            .find(|entry| entry.connector == output.name())
+            .map(|entry| entry.night)
+            .unwrap_or_default()
     }
 
     /// Report what actually happened. `true` when that is news, and so when
@@ -247,15 +456,16 @@ impl Manager {
     ///
     /// Clearing `pending` here rather than in [`Self::take_pending`] is what
     /// makes a commit that never happened get tried again on the next frame.
-    pub fn applied(&mut self, output: &Output, enabled: bool) -> bool {
+    pub fn applied(&mut self, output: &Output, applied: Applied) -> bool {
         let Some(entry) = self.entry(output) else {
             return false;
         };
         entry.pending = false;
-        if entry.status.enabled == enabled {
+        if entry.status.enabled == applied.enabled && entry.status.warming == applied.warming {
             return false;
         }
-        entry.status.enabled = enabled;
+        entry.status.enabled = applied.enabled;
+        entry.status.warming = applied.warming;
         true
     }
 
@@ -480,10 +690,12 @@ pub struct Pipeline {
 }
 
 /// What one call to [`Pipeline::apply`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Applied {
     /// Whether the display ended up in HDR.
     pub enabled: bool,
+    /// Whether it ended up with a warmed picture.
+    pub warming: bool,
     /// Whether the driver took the request.
     ///
     /// Separate from `enabled` because taking a display *out* of HDR is a
@@ -574,6 +786,18 @@ impl Pipeline {
         self.ctm.is_some() && self.degamma.is_some()
     }
 
+    /// Whether this connector's picture can be warmed, which is what the night
+    /// light asks for: a gamma ramp, and an atomic commit to put a curve in it.
+    ///
+    /// Nothing else. No EDID claim, no infoframe, nothing of what the link can
+    /// carry — a tint is three numbers multiplied into a lookup table that is
+    /// already there. It is deliberately a much shorter list than
+    /// [`Self::supported`], and the reason the night light is offered on
+    /// displays HDR is not.
+    pub fn warms(&self) -> bool {
+        self.atomic && self.gamma.is_some()
+    }
+
     /// What this pipeline will and will not be able to do, for the log. Said
     /// when the display is driven into HDR, because every one of these is a
     /// visible difference that the user would otherwise have to diagnose from
@@ -589,8 +813,8 @@ impl Pipeline {
         }
     }
 
-    /// Put `settings` into force on this connector, and say whether the
-    /// display ended up in HDR.
+    /// Put `settings` and `night` into force on this connector, and say what
+    /// the display ended up doing.
     ///
     /// All five properties go in **one** atomic request, and that request is
     /// offered to the driver as a test before it is committed for real.
@@ -605,6 +829,11 @@ impl Pipeline {
     /// dislikes — every one of those comes back as an error from a commit that
     /// changed nothing, instead of being attempted on a live display and
     /// leaving the session to find out.
+    ///
+    /// Both settings arrive together because they meet in the gamma stage: the
+    /// night light's white point is multiplied into whichever curve that stage
+    /// is carrying, so turning a filter on cannot undo the tone mapping and
+    /// turning HDR on cannot undo the filter.
     pub fn apply(
         &mut self,
         device: &impl ControlDevice,
@@ -612,13 +841,22 @@ impl Pipeline {
         crtc: crtc::Handle,
         display: &Display,
         settings: &Settings,
+        night: &NightLight,
     ) -> Applied {
         let on = settings.enabled && self.supported() && display.st2084;
+        let warm = night.tints() && self.warms();
         let mut request = AtomicModeReq::new();
         let mut fresh = Vec::new();
 
         if on {
             let peak = settings.peak(display);
+            // In linear light, because this curve's input is: the degamma
+            // stage has already undone sRGB, or the decode below is about to.
+            let gains = if warm {
+                night.linear_gains()
+            } else {
+                [1.0, 1.0, 1.0]
+            };
 
             if let Some((handle, size)) = self.degamma {
                 let curve: Vec<ColorLut> = (0..size)
@@ -663,8 +901,11 @@ impl Pipeline {
                         let relative = if decode { srgb_to_linear(coded) } else { coded };
                         // No clamp against the peak: `Settings::peak` will not
                         // return one below the white level, and white is the
-                        // brightest thing there is to encode.
-                        ColorLut::grey(pq_encode(relative * settings.sdr_brightness as f32))
+                        // brightest thing there is to encode. The night light
+                        // only ever scales down, so it cannot reach one either.
+                        let nits =
+                            |gain: f32| pq_encode(relative * gain * settings.sdr_brightness as f32);
+                        ColorLut::rgb(nits(gains[0]), nits(gains[1]), nits(gains[2]))
                     })
                     .collect();
                 self.stage_blob(device, &mut request, crtc, handle, cast(&curve), &mut fresh);
@@ -689,7 +930,11 @@ impl Pipeline {
                 );
             }
         } else {
-            self.stage_reset(device, &mut request, connector, crtc, &mut fresh);
+            // Out of HDR, but not necessarily back to an identity ramp: a
+            // display can be warm and SDR at the same time, and much the most
+            // usual night light is exactly that one.
+            let warmth = warm.then(|| night.gains());
+            self.stage_reset(device, &mut request, connector, crtc, warmth, &mut fresh);
         }
 
         let committed = commit(device, request);
@@ -711,21 +956,38 @@ impl Pipeline {
         }
         Applied {
             enabled: on && committed,
+            warming: warm && committed,
             committed,
         }
     }
 
     /// Take the connector back out of HDR: identity colour pipeline, the
     /// colorimetry the display came up in, and the signal handed back to SDR.
+    ///
+    /// `night` is what the display is warmed to, and it is *kept*. HDR is the
+    /// thing that has to be undone — a display left in BT.2020/PQ shows
+    /// whatever comes next through a transfer function it knows nothing about,
+    /// and what comes next may be a console the user needs to read. A warm
+    /// ramp is not like that. It is a slightly amber picture, which is what
+    /// the user asked every display on this machine for at this hour, and it
+    /// is what the next compositor is about to ask for again.
+    ///
+    /// Handing it back cold was a visible seam once the black screen between
+    /// two sessions stopped being black: the last frame of the outgoing
+    /// session would go cool, hold for the second it takes the next compositor
+    /// to take the displays, and warm again on its first frame. Three states
+    /// where the user asked for one.
     pub fn reset(
         &mut self,
         device: &impl ControlDevice,
         connector: connector::Handle,
         crtc: crtc::Handle,
+        night: &NightLight,
     ) {
         let mut request = AtomicModeReq::new();
         let mut fresh = Vec::new();
-        self.stage_reset(device, &mut request, connector, crtc, &mut fresh);
+        let warmth = (night.tints() && self.warms()).then(|| night.gains());
+        self.stage_reset(device, &mut request, connector, crtc, warmth, &mut fresh);
         if commit(device, request) {
             self.free_blobs(device);
             self.blobs = fresh;
@@ -754,12 +1016,19 @@ impl Pipeline {
     /// Only where HDR has actually been signalled, though. A connector this
     /// has never driven into it is left at 0, so a session whose displays are
     /// all in SDR does not begin with a modeset apiece to announce it.
+    ///
+    /// `warmth` is the one thing that survives the reset: an SDR display with
+    /// the night light on is a display whose gamma stage is doing something,
+    /// and blanking that here is what would make turning HDR off take the
+    /// filter with it. Every other stage still goes back to identity — a
+    /// tinted picture is a scaled ramp and nothing else.
     fn stage_reset(
         &self,
         device: &impl ControlDevice,
         request: &mut AtomicModeReq,
         connector: connector::Handle,
         crtc: crtc::Handle,
+        warmth: Option<[f32; 3]>,
         fresh: &mut Vec<u64>,
     ) {
         if let Some(handle) = self.metadata {
@@ -779,13 +1048,30 @@ impl Pipeline {
         if let Some((handle, _, default)) = self.colorspace {
             request.add_property(connector, handle, property::Value::UnsignedRange(default));
         }
-        for handle in [
-            self.gamma.map(|(handle, _)| handle),
-            self.ctm,
-            self.degamma.map(|(handle, _)| handle),
-        ]
-        .into_iter()
-        .flatten()
+        // The gamma stage first, because it is the one that may not be blank.
+        if let Some((handle, size)) = self.gamma {
+            match warmth {
+                // Decoded, scaled, encoded again. The gains are sRGB's own
+                // coded values, so this is very nearly `coded * gain` — but
+                // only very nearly, and doing it in light is what makes the
+                // SDR filter and the HDR one the same white point rather than
+                // two that agree in the midtones and part in the shadows.
+                Some(gains) => {
+                    let curve: Vec<ColorLut> = (0..size)
+                        .map(|index| {
+                            let light = srgb_to_linear(index as f32 / (size - 1) as f32);
+                            let coded = |gain: f32| linear_to_srgb(light * srgb_to_linear(gain));
+                            ColorLut::rgb(coded(gains[0]), coded(gains[1]), coded(gains[2]))
+                        })
+                        .collect();
+                    self.stage_blob(device, request, crtc, handle, cast(&curve), fresh);
+                }
+                None => request.add_property(crtc, handle, property::Value::Blob(0)),
+            }
+        }
+        for handle in [self.ctm, self.degamma.map(|(handle, _)| handle)]
+            .into_iter()
+            .flatten()
         {
             request.add_property(crtc, handle, property::Value::Blob(0));
         }
@@ -957,15 +1243,22 @@ struct ColorLut {
 }
 
 impl ColorLut {
-    /// The same value in all three channels. Every curve here is a tone
-    /// curve — the colour is the matrix's job — so no LUT entry is ever
-    /// anything else.
+    /// The same value in all three channels: a tone curve, where the colour is
+    /// the matrix's job.
     fn grey(value: f32) -> Self {
-        let level = (value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16;
+        Self::rgb(value, value, value)
+    }
+
+    /// Three channels that differ, which is what the night light needs and the
+    /// only reason this curve is ever anything but grey. Warming a picture is
+    /// pulling green and blue down against red, and a ramp is the one stage
+    /// that can do it without a matrix in front of it.
+    fn rgb(red: f32, green: f32, blue: f32) -> Self {
+        let level = |value: f32| (value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16;
         Self {
-            red: level,
-            green: level,
-            blue: level,
+            red: level(red),
+            green: level(green),
+            blue: level(blue),
             reserved: 0,
         }
     }
@@ -1123,6 +1416,20 @@ fn srgb_to_linear(coded: f32) -> f32 {
     }
 }
 
+/// The inverse: linear light back to an sRGB coded value.
+///
+/// For the night light on a display that is not in HDR. There the gamma stage
+/// is the only stage — nothing has decoded its input and nothing will encode
+/// its output — so a curve that scales light has to put the picture back into
+/// the transfer function the display is expecting it in.
+fn linear_to_srgb(light: f32) -> f32 {
+    if light <= 0.003_130_8 {
+        light * 12.92
+    } else {
+        1.055 * light.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// The inverse of SMPTE ST 2084: absolute luminance in cd/m² to a PQ code.
 ///
 /// PQ's domain runs to 10 000 cd/m², which is why this takes nits rather than
@@ -1263,6 +1570,144 @@ mod tests {
         assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
         // Mid grey: the whole reason a degamma stage is needed at all.
         assert!((srgb_to_linear(0.5) - 0.2140).abs() < 1e-3);
+    }
+
+    /// And back again, because the SDR night light curve makes the round trip
+    /// on every entry: decode, scale, encode. A mismatched pair of transfer
+    /// functions there would shift every midtone on a display whose filter is
+    /// switched off in all but name.
+    #[test]
+    fn srgb_encodes_light_back_to_the_codes_it_came_from() {
+        for step in 0..=64 {
+            let coded = step as f32 / 64.0;
+            let round_trip = linear_to_srgb(srgb_to_linear(coded));
+            assert!(
+                (round_trip - coded).abs() < 1e-5,
+                "at {coded}: {round_trip}"
+            );
+        }
+        // The two ends, and the knee where the linear segment meets the power
+        // law — the one place a wrong constant hides.
+        assert_eq!(linear_to_srgb(0.0), 0.0);
+        assert!((linear_to_srgb(1.0) - 1.0).abs() < 1e-6);
+        assert!((linear_to_srgb(0.0031308) - 0.04045).abs() < 1e-4);
+    }
+
+    /// Daylight is *exactly* no filter, and that is the one thing about this
+    /// curve that has to be exact rather than close.
+    ///
+    /// The fit it is built on does not reach white on its own — it leaves green
+    /// and blue about a percent short at 6500 K — so a night light written
+    /// straight off it would tint a display that had been asked for no tint at
+    /// all, with nothing in the settings able to take it back off.
+    #[test]
+    fn daylight_is_the_identity_and_warmer_only_takes_away() {
+        let neutral = NightLight {
+            enabled: true,
+            temperature: NEUTRAL_KELVIN,
+        };
+        assert_eq!(neutral.gains(), [1.0, 1.0, 1.0]);
+        assert!(!neutral.tints(), "at daylight there is nothing to commit");
+
+        // Switched off is the identity whatever the temperature says, so a
+        // remembered setting cannot leak into a display nobody warmed.
+        let off = NightLight {
+            enabled: false,
+            temperature: 2000,
+        };
+        assert_eq!(off.gains(), [1.0, 1.0, 1.0]);
+        assert!(!off.tints());
+
+        // Red is never touched: warming is subtraction, so nothing clips and
+        // no display is made brighter than it was.
+        for kelvin in [WARMEST_KELVIN, 2000, 2700, 3400, 4000, 5000, 5500] {
+            let gains = NightLight {
+                enabled: true,
+                temperature: kelvin,
+            }
+            .gains();
+            assert_eq!(gains[0], 1.0, "red moved at {kelvin} K");
+            assert!(gains[1] > 0.0 && gains[1] < 1.0, "{kelvin} K: {gains:?}");
+            assert!(gains[2] >= 0.0 && gains[2] < 1.0, "{kelvin} K: {gains:?}");
+            // Warm means blue is taken further than green, or it is a dimmer
+            // rather than a filter.
+            assert!(gains[2] < gains[1], "{kelvin} K is not warm: {gains:?}");
+        }
+    }
+
+    /// Warmer is monotonically warmer, and out-of-range numbers land on the
+    /// ends rather than anywhere surprising.
+    #[test]
+    fn the_filter_deepens_all_the_way_down() {
+        let gains = |kelvin| {
+            NightLight {
+                enabled: true,
+                temperature: kelvin,
+            }
+            .gains()
+        };
+        let mut previous = [1.0, 1.0, 1.0];
+        for kelvin in (WARMEST_KELVIN..=NEUTRAL_KELVIN).rev().step_by(100) {
+            let this = gains(kelvin);
+            assert!(this[1] <= previous[1], "green rose at {kelvin} K");
+            assert!(this[2] <= previous[2], "blue rose at {kelvin} K");
+            previous = this;
+        }
+
+        // Clamped, not wrapped or refused: a shell asking for something out of
+        // range gets the nearest picture that means anything.
+        assert_eq!(gains(0), gains(WARMEST_KELVIN));
+        assert_eq!(gains(u16::MAX), gains(NEUTRAL_KELVIN));
+        // And at the warm end the blue is gone entirely, which is where the
+        // logarithm in the fit would otherwise run off.
+        assert_eq!(gains(WARMEST_KELVIN)[2], 0.0);
+    }
+
+    /// The two stages describe one white point. The SDR filter works in sRGB
+    /// codes and the HDR one in linear light, and a session that turned HDR on
+    /// must not see its night light change colour as it does.
+    #[test]
+    fn both_encodings_of_the_filter_are_the_same_white_point() {
+        for kelvin in [2000u16, 2700, 3400, 4000, 5000] {
+            let night = NightLight {
+                enabled: true,
+                temperature: kelvin,
+            };
+            let coded = night.gains();
+            let light = night.linear_gains();
+            for channel in 0..3 {
+                // The linear gain is the coded one decoded, which is what
+                // makes `(c·g)^γ = c^γ·g^γ` hold across the two stages.
+                let expected = srgb_to_linear(coded[channel]);
+                assert!(
+                    (light[channel] - expected).abs() < 1e-6,
+                    "{kelvin} K channel {channel}: {light:?} vs {coded:?}"
+                );
+                // And the darker channel stays the darker one in both.
+                assert!(light[channel] <= 1.0);
+            }
+        }
+    }
+
+    /// A ramp entry is three numbers now, and the grey helper still has to
+    /// produce three equal ones — every HDR curve is a tone curve.
+    #[test]
+    fn a_ramp_entry_carries_three_channels() {
+        let grey = ColorLut::grey(0.5);
+        assert_eq!(grey.red, grey.green);
+        assert_eq!(grey.green, grey.blue);
+        assert_eq!(ColorLut::grey(1.0).red, u16::MAX);
+        assert_eq!(ColorLut::grey(0.0).red, 0);
+
+        let warm = ColorLut::rgb(1.0, 0.8, 0.6);
+        assert_eq!(warm.red, u16::MAX);
+        assert!(warm.green < warm.red && warm.blue < warm.green);
+        // Out of range in either direction is clamped rather than wrapped: a
+        // ramp entry that overflowed would be a black pixel where the brightest
+        // one belongs.
+        assert_eq!(ColorLut::rgb(2.0, -1.0, 0.0).red, u16::MAX);
+        assert_eq!(ColorLut::rgb(2.0, -1.0, 0.0).green, 0);
+        assert_eq!(warm.reserved, 0);
     }
 
     /// Both ends of the intensity slider, and the property that makes the
