@@ -63,6 +63,19 @@ pub enum Setting {
     /// to the session rather than to a screen — see [`crate::sound`] — so it is
     /// on or off for the whole of it.
     StartMusic(bool),
+    /// Draw every application this much larger than life, in per cent of its
+    /// own size. 100 is one to one, and the least this can be.
+    ///
+    /// Carries no display, unlike everything under Display, and deliberately:
+    /// how large an interface has to be to be read is a fact about the person
+    /// in front of the screens rather than about one of them.
+    ///
+    /// Set on a bar rather than chosen off a list, like the night light's
+    /// temperature and for the same reason — what arrives here is one step
+    /// along it. See [`Entry::Bar`].
+    ///
+    /// [`Entry::Bar`]: crate::apps::Entry::Bar
+    AppScale(u16),
     /// Send everything the machine plays to this device from now on, or take
     /// everything it records from it.
     ///
@@ -96,6 +109,12 @@ pub enum DisplayValue {
     RefreshRate(u32),
     /// Draw its picture turned this way, for a screen standing on its side.
     Orientation(Orientation),
+    /// Put this display at this place in the arrangement, counted from zero.
+    ///
+    /// The one value in this tree that is about two displays: the screen
+    /// already standing there trades places with this one, because a list of
+    /// screens has no empty places to move into. See [`display_order`].
+    Place(u32),
     /// Drive this display in high dynamic range, or stop.
     Hdr(bool),
     /// The luminance plain white is sent at while HDR is on, in cd/m².
@@ -631,6 +650,44 @@ static TURNED: Mutex<Vec<(String, Orientation)>> = Mutex::new(Vec::new());
 /// shell's to overrule.
 static TURN: Mutex<BTreeMap<String, Orientation>> = Mutex::new(BTreeMap::new());
 
+/// Where each screen the compositor arranges stands in that arrangement,
+/// counted from zero, in the order the compositor announced the screens.
+///
+/// Reported rather than remembered, as [`TURNED`] is, and the Display order
+/// page's screen list for the same reason. A display missing from it is one
+/// whose place is not the shell's to set — a nested session inside another
+/// compositor, a screen the compositor's own config has pinned to a position,
+/// or any screen at all on a session that mirrors them onto one region, where
+/// there is no first screen to be.
+///
+/// In the announced order rather than in the order they are laid out, which is
+/// the one thing here that is not the obvious choice. The page could list the
+/// screens as the desk has them, and it would read well — but every press
+/// would then reorder the rows under the cursor, and the cursor stays at the
+/// row it was on. A user who moved their second screen to the front would find
+/// themselves looking at a different screen's page with the mark apparently
+/// unmoved, which is a press that reads as having failed. Announced order is
+/// fixed for as long as the cables are, so the rows hold still and the mark
+/// moves to where it was pressed. Every row says which place it holds, so
+/// nothing about the arrangement is lost by not being able to read it off the
+/// order of the list.
+static PLACED: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
+
+/// The arrangement the user asked for: every display's place, counted from
+/// zero, as of the last time anybody moved one.
+///
+/// The whole order rather than the one screen that was moved, because moving
+/// one moves another — they trade — and half a permutation written down is an
+/// order nobody asked for. Displays that have since been unplugged keep their
+/// entries, which is what brings a screen back to its own place when it is
+/// plugged in again.
+///
+/// Filed on its own, like [`MODE`] and [`TURN`], with nothing inherited behind
+/// it: a screen nobody has moved is left where the compositor put it, which is
+/// the order the displays were plugged in and not something the shell should
+/// overrule by inventing one.
+static PLACE: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
+
 /// Each display's night light, for the displays one has been set on.
 ///
 /// Filed on its own, like [`MODE`] and [`TURN`], and with nothing inherited
@@ -668,12 +725,31 @@ static INHERITED: Mutex<Hdr> = Mutex::new(Hdr {
 /// preference all the same.
 static MEDIA_SORT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
+/// What the file explorer's key in that table is called.
+///
+/// The same table as the three shelves, because it is the same preference
+/// chosen from the same row of the same menu — how somebody wants a folder
+/// listed belongs beside how they want their music listed. One key rather than
+/// one per folder: an order is how a person reads a list, not something they
+/// hold about a particular directory, and a file kept per folder would be a
+/// settings file that grew every time somebody looked in one.
+const FILES: &str = "Files";
+
 /// Write down that a shelf is listed in this order from now on.
 pub fn remember_media_sort(kind: crate::media::Kind, sort: crate::media::Sort) {
-    MEDIA_SORT.lock().unwrap().insert(
-        crate::apps::shelf_title(kind).to_string(),
-        sort.key().to_string(),
-    );
+    remember_sort(crate::apps::shelf_title(kind), sort);
+}
+
+/// The same for every folder of the file explorer.
+pub fn remember_file_sort(sort: crate::media::Sort) {
+    remember_sort(FILES, sort);
+}
+
+fn remember_sort(what: &str, sort: crate::media::Sort) {
+    MEDIA_SORT
+        .lock()
+        .unwrap()
+        .insert(what.to_string(), sort.key().to_string());
     save(&stored());
 }
 
@@ -684,12 +760,24 @@ pub fn remember_media_sort(kind: crate::media::Kind, sort: crate::media::Sort) {
 /// rather than an error: the shelf comes up alphabetical, which is the answer
 /// that is never wrong.
 pub fn media_sort(kind: crate::media::Kind) -> Option<crate::media::Sort> {
+    sort_of(crate::apps::shelf_title(kind))
+}
+
+/// And what order every folder of the file explorer is listed in.
+///
+/// Asked once, when the shell starts, for the same reason: one order, held by
+/// the shell, applied to every folder it reads.
+pub fn file_sort() -> Option<crate::media::Sort> {
+    sort_of(FILES)
+}
+
+fn sort_of(what: &str) -> Option<crate::media::Sort> {
     let held = MEDIA_SORT.lock().unwrap();
-    let named = held.get(crate::apps::shelf_title(kind))?;
+    let named = held.get(what)?;
     let sort = crate::media::Sort::from_key(named);
     if sort.is_none() {
         tracing::warn!(
-            shelf = crate::apps::shelf_title(kind),
+            shelf = what,
             order = named,
             "the settings name an order this shell does not have"
         );
@@ -785,6 +873,28 @@ pub fn start_music() -> bool {
     *START_MUSIC.lock().unwrap()
 }
 
+/// How large every application draws its own interface, in per cent of the size
+/// it chose. See [`application_scale`].
+///
+/// Session-wide, and the one setting here that is neither the shell's own
+/// appearance nor a property of a screen: it is carried out by the compositor,
+/// for every application on the machine, and what it answers is how far away the
+/// user is sitting.
+///
+/// Kept here for the reason [`START_MUSIC`] and [`SOUND`] are: the settings file
+/// is built out of the live values at the moment it is written, so a value the
+/// writer cannot see is one the next change to anything else drops.
+static APP_SCALE: Mutex<u16> = Mutex::new(NATURAL_SCALE);
+
+/// How large applications are being drawn, in per cent. 100 is one to one.
+///
+/// One to one until somebody says otherwise, which is the only defensible
+/// default: a shell that came up magnifying every window would look like one
+/// that could not read its own display's size.
+pub fn app_scale() -> u16 {
+    *APP_SCALE.lock().unwrap()
+}
+
 /// Whether anything is allowed to interrupt: the guide's do-not-disturb tile.
 ///
 /// Here rather than in [`crate::pointer::Prefs`], which is the other file the
@@ -819,6 +929,53 @@ pub fn set_do_not_disturb(on: bool) -> bool {
     tracing::info!(on, "do not disturb");
     save(&stored());
     on
+}
+
+/// Which control the user has in their hands: the controller, or a keyboard.
+///
+/// Not a setting anybody chooses from a row — there is no page for it, and
+/// there should not be. It is an observation, made from the two things the
+/// shell can watch: a button pressed or a stick pushed on a pad it reads
+/// straight from `/dev/input`, and a key pressed on a keyboard, which reaches
+/// it either through its own focus or through the compositor's `typed` event
+/// while an application holds the keys.
+///
+/// What it decides is what the shell offers a controller. The corner chip that
+/// names the two buttons for the on-screen keyboard is a reminder for somebody
+/// holding a pad; over the shoulder of somebody typing it is a picture of the
+/// letters already under their hands, sitting on top of the thing they are
+/// typing into. The keyboard the shell would raise over a text field by itself
+/// is the same offer, larger.
+///
+/// Written down for the reason the do-not-disturb switch is, and with less
+/// excuse for getting it wrong: it is a statement about a person rather than
+/// about a session, and somebody who spent all of last night typing does not
+/// become a controller user again by turning the machine off. A console that
+/// forgot would throw a keyboard over the first text field of every morning.
+///
+/// True until something says otherwise. A console with nobody's habits recorded
+/// yet is a console, and the pad is what it is held with.
+static CONTROLLER_IN_HAND: Mutex<bool> = Mutex::new(true);
+
+/// Whether the controller is what the user last reached for.
+pub fn controller_in_hand() -> bool {
+    *CONTROLLER_IN_HAND.lock().unwrap()
+}
+
+/// Record which control is in hand now. Reports whether it is a change, which
+/// is when the shell has anything to do about it — the corner chip to put away
+/// or bring back, and the compositor to tell.
+pub fn set_controller_in_hand(in_hand: bool) -> bool {
+    {
+        let mut held = CONTROLLER_IN_HAND.lock().unwrap();
+        if *held == in_hand {
+            return false;
+        }
+        *held = in_hand;
+    }
+    tracing::info!(in_hand, "the controller is what is in hand");
+    save(&stored());
+    true
 }
 
 /// What the machine can play through and record from, as the sound server last
@@ -933,6 +1090,57 @@ pub fn note_turned(reported: Vec<(String, Orientation)>) -> bool {
 /// asked for one.
 pub fn turn_for(display: &str) -> Option<Orientation> {
     TURN.lock().unwrap().get(display).copied()
+}
+
+/// Where each screen the compositor arranges stands, in the order the screens
+/// were announced — which is the order the page lists them in.
+pub fn placed() -> Vec<(String, u32)> {
+    PLACED.lock().unwrap().clone()
+}
+
+/// Record where the compositor says the displays stand. `true` when it is a
+/// change, as [`note_support`].
+pub fn note_places(reported: Vec<(String, u32)>) -> bool {
+    let mut held = PLACED.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
+/// The same screens read the other way round: the arrangement itself, first
+/// screen first.
+///
+/// The places reported are one list's own indices, so this is a sort by them.
+/// Ties are broken by name, which cannot arise from a compositor that follows
+/// the protocol and is here so that one which does not still gives the page a
+/// fixed order rather than one that changes from frame to frame.
+fn arrangement() -> Vec<String> {
+    let mut order = placed();
+    order.sort_by(|(left, left_place), (right, right_place)| {
+        left_place.cmp(right_place).then_with(|| left.cmp(right))
+    });
+    order.into_iter().map(|(name, _)| name).collect()
+}
+
+/// The arrangement the shell is asking for, out of what it has been told is in
+/// force and what it remembers being asked for.
+///
+/// Names in order, first screen first, and only screens the compositor says it
+/// arranges — asking for a display that takes no part in the layout would be
+/// asking for nothing.
+///
+/// A screen the file has never heard of keeps its place at the back of the
+/// ones it has, which is where the compositor itself puts an arriving display:
+/// the sort is stable, so anything with no remembered place holds the place it
+/// was reported at. That is what makes plugging in a new monitor leave the
+/// arrangement alone instead of shuffling it.
+pub fn wanted_order() -> Vec<String> {
+    let held = PLACE.lock().unwrap();
+    let mut order = arrangement();
+    order.sort_by_key(|name| held.get(name).copied().unwrap_or(u32::MAX));
+    order
 }
 
 /// What one display's night light is set to. A display nobody has set one on
@@ -1137,8 +1345,13 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// The picture before the sound, which is the order a console has always put
 /// them in and the order the two are noticed in. Appearance stands in front of
 /// both because it is the shell describing itself rather than the machine.
+///
+/// System comes last because it is the one page about neither: what a display
+/// is doing and what the speakers are doing are things the user can point at,
+/// and how large the programs on the machine draw themselves is a setting they
+/// go looking for.
 pub fn column() -> Vec<Entry> {
-    vec![appearance(), display(), sounds()]
+    vec![appearance(), display(), sounds(), system()]
 }
 
 /// Replace the Settings column in a catalogue with a freshly built one.
@@ -1205,9 +1418,13 @@ fn accent_colour() -> Entry {
 /// The mode comes first, in its two halves, because it is the plainest thing
 /// about a display and the one a user is most likely to have come here for;
 /// the orientation is the other thing about the picture's shape, and stands
-/// with them. The last two describe the picture those carry, and in that order:
-/// the night light is the one every display can do and the one somebody comes
-/// looking for at ten in the evening, HDR is the one only some hardware has.
+/// with them. The order comes after those three because it is the one page
+/// here that is not about a single screen's picture at all — it is about where
+/// the screens stand relative to one another — and a user with one display
+/// never needs it. The last two describe the picture those carry, and in that
+/// order: the night light is the one every display can do and the one somebody
+/// comes looking for at ten in the evening, HDR is the one only some hardware
+/// has.
 fn display() -> Entry {
     folder(
         "Display",
@@ -1217,6 +1434,7 @@ fn display() -> Entry {
             resolution(),
             refresh_rate(),
             orientation(),
+            display_order(),
             night_light(),
             high_dynamic_range(),
         ],
@@ -1415,6 +1633,126 @@ fn nothing_can_be_turned() -> Entry {
         "No display can be turned",
         "Nothing here owns its own picture: the session is running inside \
          another compositor, which owns which way up its window is",
+    )
+}
+
+/// Display order: which screen the compositor puts first, which second, and so
+/// on down the row it lays them out in.
+///
+/// The one page under Display that is about the screens rather than about a
+/// screen. Everything else here answers "what is this display doing"; this
+/// answers "which of these is the first one", which is what decides where a
+/// pointer leaving one screen's edge comes out and which way along the desk
+/// the windows go.
+///
+/// Two of the three shapes the pages above it have, and deliberately not the
+/// third: a single screen does not collapse to a list of places, because there
+/// is no list. One display is the whole arrangement, and the row says so
+/// rather than offering the user the one thing they already have.
+///
+/// The screens are the ones the compositor says it arranges, which is neither
+/// the Resolution page's list nor the Orientation page's: a display pinned to a
+/// position by the compositor's own config takes no part in the arrangement,
+/// and on a session mirroring every screen onto one region there is no
+/// arrangement to take part in.
+///
+/// They are listed in the order they were announced rather than in the order
+/// they stand, so that the rows hold still while the arrangement changes under
+/// them — see [`PLACED`], which is the whole of that argument.
+fn display_order() -> Entry {
+    let listed = placed();
+    let order = arrangement();
+
+    match listed.as_slice() {
+        [] => folder(
+            "Display order",
+            "Which screen comes first",
+            icons::SETTING_ORDER,
+            vec![nothing_can_be_arranged()],
+        ),
+        [(only, _)] => folder(
+            "Display order",
+            &format!("{only} — the only screen"),
+            icons::SETTING_ORDER,
+            vec![one_screen_is_the_whole_arrangement()],
+        ),
+        _ => folder(
+            "Display order",
+            "Which screen comes first",
+            icons::SETTING_ORDER,
+            listed
+                .iter()
+                .map(|(name, standing)| {
+                    folder(
+                        name,
+                        &place_title(*standing as usize),
+                        icons::SETTING_DISPLAY,
+                        place_values(name, *standing, &order),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The places on offer, for one screen: as many as there are screens.
+///
+/// The mark is on where the compositor says this screen *is*, not on where it
+/// was last asked to be — the rule the Resolution and Orientation pages follow,
+/// and here as there the answer comes back in the same breath as the change.
+///
+/// Each row that is not the marked one says which screen is standing there,
+/// because that is what pressing it does: the two trade. A list of screens has
+/// no empty places to move into, so an order can only ever be changed by
+/// exchanging two of them, and a page that said "Display 1" without saying who
+/// was leaving it would be hiding half of what the press does.
+fn place_values(name: &str, standing: u32, order: &[String]) -> Vec<Entry> {
+    let display = intern(name);
+    order
+        .iter()
+        .enumerate()
+        .map(|(place, holder)| {
+            let here = place as u32 == standing;
+            let note = match here {
+                true => "Where this screen is now".to_string(),
+                false => format!("Trades places with {holder}"),
+            };
+            value(
+                &place_title(place),
+                Some(&note),
+                here,
+                setting(display, DisplayValue::Place(place as u32)),
+            )
+        })
+        .collect()
+}
+
+/// What one place is called: the user's own name for it.
+///
+/// Counted from one, unlike everything under the page — the protocol, the
+/// setting and the file all count places from zero, because they are indices
+/// into a list. Nobody calls their leftmost monitor the zeroth one.
+fn place_title(place: usize) -> String {
+    format!("Display {}", place + 1)
+}
+
+/// The row that stands in for the screen list when nothing has a place.
+fn nothing_can_be_arranged() -> Entry {
+    reading(
+        "No display can be moved",
+        "Nothing here has a place to change: the session is running inside \
+         another compositor, or every screen is set to show the same region, \
+         and neither has a first screen to be",
+    )
+}
+
+/// And the row for the ordinary machine: one screen, which is already the
+/// whole of the order it is in.
+fn one_screen_is_the_whole_arrangement() -> Entry {
+    reading(
+        "Only one display",
+        "An order is something two screens have. This one is the whole \
+         arrangement, and there is nowhere else in it to stand",
     )
 }
 
@@ -1873,6 +2211,14 @@ fn night_light_temperature(display: &'static str, night: NightLight) -> Entry {
             swatch: Some(tint_of(kelvin)),
             up: step(kelvin.saturating_add(TEMPERATURE_STEP)),
             down: step(kelvin.saturating_sub(TEMPERATURE_STEP)),
+            // The same steps a direction walks, all of them, so a click along
+            // the groove reaches the one it landed on directly. Every hundred
+            // kelvin of the range in order, which is exactly what `fill`
+            // measures the handle's place against.
+            steps: (WARMEST_ON_THE_BAR..=NEUTRAL_KELVIN)
+                .step_by(TEMPERATURE_STEP as usize)
+                .map(|kelvin| setting(display, DisplayValue::NightLightTemperature(kelvin)))
+                .collect(),
         })],
     )
 }
@@ -2498,6 +2844,137 @@ fn start_music_switch() -> Entry {
     )
 }
 
+/// System: how the machine behaves, as opposed to what its picture and its
+/// speakers are doing.
+///
+/// One row so far, and it is the reason the page exists rather than the page
+/// being a place to put things: how large applications draw themselves is
+/// neither a property of a display — the two screens on a desk want the same
+/// answer, because it is the person in front of them who has to read it — nor
+/// anything the shell does to itself, which is what Appearance holds.
+fn system() -> Entry {
+    folder(
+        "System",
+        "How the machine behaves",
+        icons::SETTING_SYSTEM,
+        vec![application_scale(), x11_is_left_alone()],
+    )
+}
+
+/// Application scaling: how large every application draws its own interface.
+///
+/// A bar, for the reason the colour temperature is one: what is being set is a
+/// *scale* and not a set of alternatives. Every five per cent between one to one
+/// and three times is a sensible answer, which as rows is forty-one of them —
+/// a column nobody can scan, standing for a quantity that has no steps in it to
+/// begin with. On a bar the whole range is under the cursor at once, Up and Down
+/// mean what they mean in every other column, and Left still leaves.
+///
+/// No swatch. The night light's bar is drawn in the colour of the light it
+/// stands for, because that bar is a picture of what the screen is about to look
+/// like and nothing else can be; a size has no colour, and tinting this one
+/// would be saying something about the setting that is not true.
+///
+/// The floor is one to one and the bar starts there — see [`NATURAL_SCALE`]. It
+/// is not a range with a neutral point in the middle: below it an application
+/// would be asked to draw its interface *smaller* than it chose, which is a
+/// thing to want at a desk and not on the screen this shell is for.
+fn application_scale() -> Entry {
+    let percent = app_scale();
+    let step = |to: u16| {
+        (NATURAL_SCALE..=LARGEST_SCALE)
+            .contains(&to)
+            .then_some(Setting::AppScale(to))
+    };
+    let span = (LARGEST_SCALE - NATURAL_SCALE) as f32;
+    folder(
+        "Application scaling",
+        &format!("{percent}% — {}", scale_note(percent).to_lowercase()),
+        icons::SETTING_SCALE,
+        vec![Entry::Bar(crate::apps::Bar {
+            title: format!("{percent}%"),
+            comment: Some(scale_note(percent).to_string()),
+            fill: (percent - NATURAL_SCALE) as f32 / span,
+            swatch: None,
+            up: step(percent.saturating_add(SCALE_STEP)),
+            down: step(percent.saturating_sub(SCALE_STEP)),
+            // The same steps a direction walks, all of them, so a click along
+            // the groove reaches the one it landed on directly.
+            steps: (NATURAL_SCALE..=LARGEST_SCALE)
+                .step_by(SCALE_STEP as usize)
+                .map(Setting::AppScale)
+                .collect(),
+        })],
+    )
+}
+
+/// What this setting does not reach, said on the page rather than left to be
+/// discovered.
+///
+/// A row rather than a footnote in the row above, because it is a fact about
+/// some of the windows on the machine and not about the setting: an application
+/// running under Xwayland has no per-surface scale to be told about, so the only
+/// thing that could be done to its window is to magnify pixels it has already
+/// drawn — and a blurred window is not what somebody asking for a larger one
+/// asked for. Two or three programs on an ordinary machine are in that
+/// position, and a user who scaled everything up and found one of them
+/// unchanged is owed the reason.
+///
+/// It carries no setting, so it cannot be chosen and no mark moves; see
+/// [`reading`].
+fn x11_is_left_alone() -> Entry {
+    reading(
+        "X11 applications",
+        "Drawn at their own size, whatever this is set to",
+    )
+}
+
+/// One to one: every application at the size it chose, and the foot of the bar.
+///
+/// The whole range is above it. See [`application_scale`], and the compositor's
+/// own `scale` module, which clamps to the same floor — the two agree, and the
+/// one that matters is the compositor's, because it is the one applications are
+/// configured by.
+pub const NATURAL_SCALE: u16 = 100;
+
+/// The head of the bar.
+///
+/// Three times over is already an interface with a third of the room it was
+/// designed for, which is where an application's own dialogs start arriving
+/// larger than the screen that has to hold them. The compositor stops here too.
+pub const LARGEST_SCALE: u16 = 300;
+
+/// How far one press moves the bar.
+///
+/// Five per cent, which is the smallest step that is a visible change to a line
+/// of text — and it puts the whole range forty presses from end to end, which a
+/// held direction crosses in a moment. It also divides the range exactly, so the
+/// head of the bar is a step the user can actually land on.
+const SCALE_STEP: u16 = 5;
+
+/// What a scale means, in the words a number cannot carry.
+///
+/// Bands rather than a phrase per step, because five per cent is not a
+/// difference anybody has a separate name for — and strictly larger down the
+/// list, so a bar walked in one direction never reads as turning back.
+///
+/// The foot of the track is a band of its own. 100% is the one size at which
+/// this setting does nothing whatever, and one step above it is an application
+/// that has been changed, however slightly: a row that said "its own size"
+/// there would be saying the setting had not taken.
+fn scale_note(percent: u16) -> &'static str {
+    match percent {
+        0..=100 => "Every application at its own size",
+        101..=115 => "A little larger than the application chose",
+        116..=135 => "Comfortable from an armchair",
+        136..=165 => "Half again as large",
+        166..=199 => "Large: made to be read across a room",
+        200..=249 => "Twice the size, and most windows still fit",
+        250..=299 => "Very large; some windows will run out of room",
+        _ => "As far as this goes, and further than most windows go",
+    }
+}
+
 fn setting(display: &'static str, value: DisplayValue) -> Setting {
     Setting::Display { display, value }
 }
@@ -2508,6 +2985,9 @@ fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry 
         comment: Some(comment.to_string()),
         icon: Some(icon.to_string()),
         entries,
+        // The settings tree is written here, in full, on every rebuild. Nothing
+        // in it comes off the disk, so there is no place for it to come back to.
+        place: None,
     })
 }
 
@@ -2610,7 +3090,17 @@ pub fn preview(setting: Option<Setting>) {
         // Highlighting a value the compositor or the sound server would have to
         // act on changes nothing; the accent goes back to what is applied, as
         // it does when the cursor leaves a list of values entirely.
-        Some(Setting::Display { .. } | Setting::StartMusic(_) | Setting::SoundDevice { .. })
+        //
+        // The application scale is one of those. It also never arrives here in
+        // practice — it is set on a bar, and a bar is not a row the cursor
+        // highlights — but it is a setting like any other and is answered like
+        // one, so that the day something else offers it there is no arm missing.
+        Some(
+            Setting::Display { .. }
+            | Setting::StartMusic(_)
+            | Setting::SoundDevice { .. }
+            | Setting::AppScale(_),
+        )
         | None => theme::restore_accent(),
     }
 }
@@ -2675,6 +3165,20 @@ fn mode_from(display: &str, value: DisplayValue) -> Option<Mode> {
     }
 }
 
+/// The whole arrangement one press asks for: the order in force, with this
+/// screen and whichever screen was standing at `place` exchanged.
+///
+/// `None` when this screen is not in the arrangement at all, or when there is
+/// no such place to move to — both of which are a display that went away
+/// between the row being drawn and the row being chosen.
+fn order_after_moving(display: &str, place: u32) -> Option<Vec<String>> {
+    let mut order = arrangement();
+    let from = order.iter().position(|name| name == display)?;
+    let to = usize::try_from(place).ok().filter(|to| *to < order.len())?;
+    order.swap(from, to);
+    Some(order)
+}
+
 fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
     match setting {
         Setting::Accent(name) => {
@@ -2691,6 +3195,21 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::StartMusic(playing) => {
             *START_MUSIC.lock().unwrap() = playing;
             tracing::info!(playing, "Start music");
+        }
+        // Recorded here and carried out by the compositor, which the caller
+        // tells — the same division the Display settings are under, and for the
+        // same reason: what an application is configured at is not the shell's
+        // to do, and a module that held a Wayland connection could not be
+        // tested without one.
+        //
+        // Clamped rather than refused, as the compositor clamps it: a bar built
+        // from [`NATURAL_SCALE`] and [`LARGEST_SCALE`] cannot ask for anything
+        // outside them, and a hand-edited file that does is answered with the
+        // nearest size that means something.
+        Setting::AppScale(percent) => {
+            let percent = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
+            *APP_SCALE.lock().unwrap() = percent;
+            tracing::info!(percent, "application scale");
         }
         // The one row here that is neither carried out nor written down by this
         // module. It is passed to the sound server — the caller does that, the
@@ -2743,6 +3262,29 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 // stood one on its side.
                 DisplayValue::Orientation(turn) => {
                     TURN.lock().unwrap().insert(screen.to_string(), turn);
+                }
+                // And the arrangement on its own again, for the same reason —
+                // but written as a whole rather than as one screen's entry,
+                // because that is what it is. Moving a display moves the one it
+                // trades with, and a file that recorded only the screen that
+                // was pressed would be describing an order no two screens
+                // agree on.
+                //
+                // Worked out against what the compositor last reported rather
+                // than against what was last asked for: that is what the page
+                // is showing, so it is what the press was aimed at. The
+                // compositor answers a move within the frame — it is a
+                // relayout, not a modeset — so the two cannot drift apart the
+                // way a resolution can.
+                DisplayValue::Place(place) => {
+                    let Some(order) = order_after_moving(screen, place) else {
+                        tracing::warn!(screen, place, "this display has no place to move from");
+                        return false;
+                    };
+                    let mut held = PLACE.lock().unwrap();
+                    for (place, name) in order.into_iter().enumerate() {
+                        held.insert(name, place as u32);
+                    }
                 }
                 // And the night light on its own again, for the third time and
                 // the same reason: a screen somebody warmed has not thereby
@@ -2814,6 +3356,7 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         DisplayValue::Resolution(_)
                         | DisplayValue::RefreshRate(_)
                         | DisplayValue::Orientation(_)
+                        | DisplayValue::Place(_)
                         | DisplayValue::NightLight(_)
                         | DisplayValue::NightLightTemperature(_)
                         | DisplayValue::NightLightSchedule(_)
@@ -2924,6 +3467,20 @@ fn adopt(stored: Stored) {
     if let Some(quiet) = stored.do_not_disturb {
         *DO_NOT_DISTURB.lock().unwrap() = quiet;
     }
+    // And for which control the last session saw in the user's hands, which is
+    // the whole point of writing that one down: a file that says nothing leaves
+    // it on the controller, because that is what a console is held with.
+    if let Some(in_hand) = stored.controller_in_hand {
+        *CONTROLLER_IN_HAND.lock().unwrap() = in_hand;
+    }
+    // How large applications are drawn. Clamped rather than refused, as a
+    // hand-edited sound level is: this is a file the user is entitled to open,
+    // and a smaller number than one to one has to come back as one to one —
+    // which is also what the compositor would do with it, so the file and the
+    // screen agree.
+    if let Some(percent) = stored.application_scale {
+        *APP_SCALE.lock().unwrap() = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
+    }
 
     // The flat keys a single-display version of this page wrote, which become
     // the starting point for every display the file says nothing about.
@@ -2947,10 +3504,12 @@ fn adopt(stored: Stored) {
     let mut held = HDR.lock().unwrap();
     let mut modes = MODE.lock().unwrap();
     let mut turns = TURN.lock().unwrap();
+    let mut places = PLACE.lock().unwrap();
     let mut nights = NIGHT.lock().unwrap();
     held.clear();
     modes.clear();
     turns.clear();
+    places.clear();
     nights.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
@@ -2984,6 +3543,21 @@ fn adopt(stored: Stored) {
                 transform = written.unwrap_or_default(),
                 "ignoring an orientation this shell does not have"
             ),
+            None => {}
+        }
+        // And the place, counted from one in the file and from zero here. A
+        // place before the first one is not a place: it is dropped with a word
+        // rather than read as the first, because a file that names the same
+        // screen twice — once as `0` and once as `1` — would otherwise become
+        // an order with two first screens.
+        match display.order {
+            Some(0) => tracing::warn!(
+                screen = %name,
+                "ignoring a place before the first one; the places are counted from one"
+            ),
+            Some(place) => {
+                places.insert(name.clone(), place - 1);
+            }
             None => {}
         }
         // And the night light, which is filed on its own again. A section
@@ -3131,6 +3705,24 @@ struct Stored {
     /// without a bubble and without a chime. Session-wide, like the three keys
     /// above it and unlike anything in `apps.toml`.
     do_not_disturb: Option<bool>,
+    /// How large every application draws its own interface, in per cent of the
+    /// size it chose. 100 is one to one and is the least it can be.
+    ///
+    /// Session-wide, and not in a display's section although it is about what
+    /// is on the screens: the two screens on a desk are looked at by the same
+    /// pair of eyes from the same chair, and a scale set per display would be a
+    /// window that changed size on being moved between them.
+    ///
+    /// Written by this shell and read by the next one — the compositor
+    /// remembers nothing about it, because every application is started after
+    /// the shell has connected and said what it is.
+    application_scale: Option<u16>,
+    /// Whether the controller is the control the user last reached for, or a
+    /// keyboard is. Nothing chooses it; the shell watches for it. See
+    /// [`CONTROLLER_IN_HAND`], and note that `false` is the one that does
+    /// something — it is what stops a keyboard being offered to somebody
+    /// already sitting at one.
+    controller_in_hand: Option<bool>,
     /// What order the Steam column is listed in. One key rather than a table
     /// like `media-sort`, because there is one library.
     ///
@@ -3180,6 +3772,21 @@ struct StoredDisplay {
     /// Absent for a display nobody has turned, which is left the way the
     /// compositor brought it up rather than being asked for `normal`.
     transform: Option<String>,
+    /// Which place this screen takes in the row the displays are laid out in,
+    /// counted **from one**: `1` is the first screen, which on the ordinary
+    /// left-to-right layout is the leftmost.
+    ///
+    /// From one here and from zero everywhere else in the shell, because this
+    /// is the one of the two a person reads: the page calls it Display 1, and a
+    /// file that called the same screen `order = 0` would be a file that
+    /// disagrees with the page about the user's own monitor.
+    ///
+    /// Written for every screen at once or for none, unlike every other key
+    /// here: an order is a statement about all of them together, and two
+    /// screens claiming one place is not an arrangement. A display the file
+    /// still names but that is no longer plugged in keeps its place, which is
+    /// what brings it back to that place when it returns.
+    order: Option<u32>,
     hdr: Option<bool>,
     hdr_sdr_brightness: Option<u16>,
     hdr_srgb_intensity: Option<u8>,
@@ -3257,6 +3864,7 @@ fn stored() -> Stored {
     let hdr = HDR.lock().unwrap();
     let modes = MODE.lock().unwrap();
     let turns = TURN.lock().unwrap();
+    let places = PLACE.lock().unwrap();
     let nights = NIGHT.lock().unwrap();
 
     // A screen may have been given one of these and not the others, so the
@@ -3272,6 +3880,12 @@ fn stored() -> Stored {
     for (name, turn) in turns.iter() {
         display.entry(name.clone()).or_default().transform = Some(turn.key().to_string());
     }
+    // Counted from one on the way out, and back to zero on the way in. See
+    // [`StoredDisplay::order`] for why this one key disagrees with the rest of
+    // the shell about where counting starts.
+    for (name, place) in places.iter() {
+        display.entry(name.clone()).or_default().order = Some(place + 1);
+    }
     for (name, night) in nights.iter() {
         display.entry(name.clone()).or_default().night_from(*night);
     }
@@ -3285,6 +3899,8 @@ fn stored() -> Stored {
         sound_muted: Some(sound.muted),
         start_music: Some(playing),
         do_not_disturb: Some(do_not_disturb()),
+        controller_in_hand: Some(controller_in_hand()),
+        application_scale: Some(app_scale()),
         hdr: Some(inherited.enabled),
         hdr_sdr_brightness: Some(inherited.sdr_brightness),
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
@@ -3587,6 +4203,31 @@ const PREAMBLE: &str = "\
 # had quietly turned it off overnight would deliver a night of announcements at
 # breakfast.
 #
+# controller-in-hand: which control the shell last saw the user reach for. It
+# is not chosen anywhere — the shell watches for it, on a button or a stick on
+# the controller and on any key on a keyboard — and it decides one thing: what
+# is offered to a controller. False, the chip in the corner naming the buttons
+# that summon the on-screen keyboard stays away, and no text field brings that
+# keyboard up by itself; a keyboard drawn over the shoulder of somebody typing
+# is a picture of the keys already under their hands. Any button on the pad
+# brings both back. Set it by hand if you like; the next thing you touch has
+# the last word.
+#
+# application-scale: how large every application draws its own interface, in
+# per cent of the size it chose, which is Settings > System > Application
+# scaling. 100 is one to one and is the least it can be; a smaller number is
+# read as 100, and anything past 300 as 300. It is one number for the whole
+# session rather than one per display, because what it answers is how far from
+# the screens the user is sitting.
+#
+# It is carried out by the compositor, which gives each window a logical size
+# this much smaller than the display and tells it to fill that with the
+# display's own pixels — so an interface is drawn larger without losing any
+# sharpness, exactly as it is on a high-density laptop panel. The shell's own
+# picture is not affected, and neither are windows running under Xwayland:
+# X11 has no per-surface scale to be told about, so the only thing that could
+# be done to those is to magnify pixels they have already drawn.
+#
 # Everything under [display.NAME] is Settings > Display for the connector of
 # that name, and is carried out by the compositor rather than by the shell.
 # Connector names are the ones lxb logs at startup.
@@ -3613,6 +4254,17 @@ const PREAMBLE: &str = "\
 #                       mirrored four can be set here and are named there.
 #                       Omit it to leave the display the way the compositor
 #                       brought it up.
+# order:                which place this screen takes in the row the displays
+#                       are laid out in, counted from one: 1 is the first
+#                       screen, which on the ordinary left-to-right layout is
+#                       the leftmost. Settings > Display > Display order sets
+#                       it, and writes one for every screen at once — an order
+#                       is a statement about all of them together, and two
+#                       screens claiming one place is not an arrangement. A
+#                       screen this file still names but that is unplugged
+#                       keeps its place and comes back to it. Omit them all to
+#                       leave the displays in the order they were plugged in,
+#                       which is what the compositor does by itself.
 # hdr:                  drive this display in high dynamic range.
 # hdr-sdr-brightness:   what plain white is sent at, in cd/m².
 # hdr-srgb-intensity:   how far sRGB colour is stretched towards BT.2020,
@@ -3652,8 +4304,9 @@ const PREAMBLE: &str = "\
 # neither; a pair that is not a place on the earth is ignored.
 #
 # [media-sort] is what order the rows of the user's own files are listed in,
-# one key per shelf — Music, Video, Images — chosen from the Sort row of the
-# context menu over any file in them. The orders are: name, name-reversed,
+# one key per shelf — Music, Video, Images — plus Files, which is every folder
+# of the file explorer under System. All of them are chosen from the Sort row of
+# the context menu over any file in them. The orders are: name, name-reversed,
 # size-largest-first, size-smallest-first, type, created-newest-first,
 # created-oldest-first, modified-newest-first, modified-oldest-first. A shelf
 # with no key here is listed by name.
@@ -3755,10 +4408,14 @@ mod tests {
         mode: BTreeMap<String, Mode>,
         reported_turns: Vec<(String, Orientation)>,
         turn: BTreeMap<String, Orientation>,
+        reported_places: Vec<(String, u32)>,
+        place: BTreeMap<String, u32>,
         night: BTreeMap<String, NightLight>,
         sound: Level,
+        app_scale: u16,
         start_music: bool,
         do_not_disturb: bool,
+        controller_in_hand: bool,
         devices: Devices,
     }
 
@@ -3771,17 +4428,24 @@ mod tests {
             mode: MODE.lock().unwrap().clone(),
             reported_turns: turned(),
             turn: TURN.lock().unwrap().clone(),
+            reported_places: placed(),
+            place: PLACE.lock().unwrap().clone(),
             night: NIGHT.lock().unwrap().clone(),
             sound: *SOUND.lock().unwrap(),
+            app_scale: app_scale(),
             start_music: start_music(),
             do_not_disturb: do_not_disturb(),
+            controller_in_hand: controller_in_hand(),
             devices: DEVICES.lock().unwrap().clone(),
         };
         HDR.lock().unwrap().clear();
         MODE.lock().unwrap().clear();
         TURN.lock().unwrap().clear();
+        PLACE.lock().unwrap().clear();
         NIGHT.lock().unwrap().clear();
+        *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
         note_turned(Vec::new());
+        note_places(Vec::new());
         note_devices(Devices::none());
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
@@ -3792,13 +4456,17 @@ mod tests {
         *INHERITED.lock().unwrap() = saved.inherited;
         *MODE.lock().unwrap() = saved.mode;
         *TURN.lock().unwrap() = saved.turn;
+        *PLACE.lock().unwrap() = saved.place;
         *NIGHT.lock().unwrap() = saved.night;
         *SOUND.lock().unwrap() = saved.sound;
+        *APP_SCALE.lock().unwrap() = saved.app_scale;
         *START_MUSIC.lock().unwrap() = saved.start_music;
         *DO_NOT_DISTURB.lock().unwrap() = saved.do_not_disturb;
+        *CONTROLLER_IN_HAND.lock().unwrap() = saved.controller_in_hand;
         note_support(saved.support);
         note_modes(saved.offered);
         note_turned(saved.reported_turns);
+        *PLACED.lock().unwrap() = saved.reported_places;
         note_devices(saved.devices);
     }
 
@@ -3914,6 +4582,41 @@ mod tests {
         if let Err(panic) = outcome {
             std::panic::resume_unwind(panic);
         }
+    }
+
+    /// And again for the arrangement: `displays` reported as standing in this
+    /// order, first screen first, and nothing else touched.
+    ///
+    /// Takes the order rather than a place per screen, because that is what an
+    /// arrangement is — and because a test that had to hand out its own place
+    /// numbers could write down an order with two second screens in it, which
+    /// no compositor can report.
+    fn with_places(displays: &[&str], body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_places(
+            displays
+                .iter()
+                .enumerate()
+                .map(|(place, name)| (name.to_string(), place as u32))
+                .collect(),
+        );
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// The place the shell is asking one display to stand in, if it has ever
+    /// been asked for one. Only the tests ask: what the shell sends is the
+    /// whole order — see [`wanted_order`] — because a place is not something
+    /// one display has on its own.
+    fn place_for(display: &str) -> Option<u32> {
+        PLACE.lock().unwrap().get(display).copied()
     }
 
     /// Modes from `(width, height, hertz)`, the first of which is the one the
@@ -4259,11 +4962,12 @@ mod tests {
                                 assert_eq!(live.peak_brightness, nits)
                             }
                             // Not on this page: the HDR controls are what
-                            // `controls_for` walks, and neither half of a mode
-                            // nor the turn is one of them.
+                            // `controls_for` walks, and neither half of a mode,
+                            // nor the turn, nor a place is one of them.
                             DisplayValue::Resolution(_)
                             | DisplayValue::RefreshRate(_)
                             | DisplayValue::Orientation(_)
+                            | DisplayValue::Place(_)
                             | DisplayValue::NightLight(_)
                             | DisplayValue::NightLightTemperature(_)
                             | DisplayValue::NightLightSchedule(_)
@@ -4413,6 +5117,7 @@ mod tests {
                 StoredDisplay {
                     mode: Some("2560x1440@144".to_string()),
                     transform: Some("90".to_string()),
+                    order: Some(2),
                     hdr: Some(true),
                     hdr_sdr_brightness: Some(250),
                     hdr_srgb_intensity: Some(50),
@@ -4657,6 +5362,52 @@ mod tests {
             *DO_NOT_DISTURB.lock().unwrap() = false;
             assert!(!do_not_disturb());
             assert_eq!(Stored::default().do_not_disturb, None);
+        });
+    }
+
+    /// Which control the user reaches for survives a session, which is the
+    /// whole reason it is written down: somebody who spent last night typing
+    /// does not become a controller user again by turning the machine off, and
+    /// a console that forgot would throw a keyboard over the first text field
+    /// of every morning.
+    ///
+    /// Through [`adopt`] and [`stored`] rather than [`set_controller_in_hand`],
+    /// which writes to the config directory of whoever is running the tests —
+    /// the same reason the switch above goes through this pair.
+    #[test]
+    fn which_control_is_in_hand_is_remembered() {
+        with_displays(&[], || {
+            *CONTROLLER_IN_HAND.lock().unwrap() = true;
+
+            adopt(Stored {
+                controller_in_hand: Some(false),
+                ..Stored::default()
+            });
+            assert!(!controller_in_hand());
+
+            let written = stored();
+            assert_eq!(written.controller_in_hand, Some(false));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("controller-in-hand"), "{body}");
+
+            adopt(toml::from_str(&body).unwrap());
+            assert!(
+                !controller_in_hand(),
+                "the keyboard was forgotten overnight"
+            );
+
+            adopt(Stored::default());
+            assert!(
+                !controller_in_hand(),
+                "a silent file answers nothing for the user"
+            );
+
+            // A machine nobody's habits have been recorded on yet is a console,
+            // and a console is held with a pad: everything the shell offers one
+            // is offered until somebody types.
+            *CONTROLLER_IN_HAND.lock().unwrap() = true;
+            assert!(controller_in_hand());
+            assert_eq!(Stored::default().controller_in_hand, None);
         });
     }
 
@@ -5064,6 +5815,7 @@ hdr-peak-brightness = 600
                         "Resolution",
                         "Refresh rate",
                         "Orientation",
+                        "Display order",
                         "Night light",
                         "HDR"
                     ],
@@ -5916,6 +6668,307 @@ hdr = true
         assert_eq!(Orientation::from_code(8), None);
     }
 
+    // -----------------------------------------------------------------------
+    // display order
+    // -----------------------------------------------------------------------
+
+    /// The Display order page's own shape: every screen the compositor
+    /// arranges, in the order it arranges them, each saying where it stands and
+    /// opening onto the places it could stand in instead.
+    #[test]
+    fn the_order_page_names_every_screen_and_where_it_stands() {
+        with_places(&[FIRST, SECOND, AWKWARD], || {
+            assert_eq!(
+                display_row("Display order").icon(),
+                Some(icons::SETTING_ORDER),
+                "the one page here about the screens rather than a screen"
+            );
+            assert_eq!(
+                page("Display order")
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                [FIRST, SECOND, AWKWARD],
+                "the screens are listed in the order they are laid out in"
+            );
+            // Each screen row says which place it holds, so the page answers
+            // before it is stepped into — and says it the way the user counts,
+            // from one.
+            assert_eq!(
+                page("Display order")
+                    .iter()
+                    .map(|entry| entry.comment().unwrap_or_default().to_string())
+                    .collect::<Vec<_>>(),
+                ["Display 1", "Display 2", "Display 3"]
+            );
+
+            for screen in page("Display order") {
+                let places = screen.entries().expect("a screen opens its places");
+                assert_eq!(
+                    places.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Display 1", "Display 2", "Display 3"],
+                    "as many places as there are screens, on every screen"
+                );
+                assert_eq!(
+                    places.iter().filter(|entry| entry.chosen()).count(),
+                    1,
+                    "one place is in force on {}",
+                    screen.title()
+                );
+                assert!(places.iter().all(|entry| entry.setting().is_some()));
+            }
+
+            // Every row that is not the one it is standing on says who it
+            // would be trading with, because that is what pressing it does.
+            let places = values_for("Display order", SECOND);
+            assert_eq!(
+                places[0].comment(),
+                Some(format!("Trades places with {FIRST}").as_str())
+            );
+            assert_eq!(places[1].comment(), Some("Where this screen is now"));
+            assert_eq!(
+                places[2].comment(),
+                Some(format!("Trades places with {AWKWARD}").as_str())
+            );
+
+            // And they are that screen's places, not a nameless set. Counted
+            // from zero on the wire, whatever the row is called.
+            assert_eq!(
+                places[0].setting(),
+                Some(setting(intern(SECOND), DisplayValue::Place(0)))
+            );
+        });
+    }
+
+    /// One screen is the whole of its own arrangement, and a session that
+    /// arranges nothing says so — neither opens onto a list of places, because
+    /// neither has one.
+    #[test]
+    fn one_screen_is_not_an_order() {
+        with_places(&[FIRST], || {
+            assert_eq!(
+                display_row("Display order").comment(),
+                Some(format!("{FIRST} — the only screen").as_str())
+            );
+            let alone = page("Display order");
+            assert_eq!(alone.len(), 1);
+            assert_eq!(alone[0].title(), "Only one display");
+            assert_eq!(alone[0].setting(), None, "a reason is not a choice");
+            assert_eq!(alone[0].icon(), Some(icons::SETTING_INFO));
+        });
+
+        with_places(&[], || {
+            let empty = page("Display order");
+            assert_eq!(empty.len(), 1);
+            assert_eq!(empty[0].title(), "No display can be moved");
+            assert_eq!(empty[0].setting(), None);
+            assert_eq!(empty[0].icon(), Some(icons::SETTING_INFO));
+        });
+    }
+
+    /// Choosing a place trades two screens, and writes down the whole order
+    /// rather than the screen that was pressed: half an arrangement is one no
+    /// two screens agree on.
+    ///
+    /// The mark stays where the compositor last put it until the compositor
+    /// says otherwise, which is the rule every page under Display follows.
+    #[test]
+    fn choosing_a_place_trades_two_screens() {
+        with_places(&[FIRST, SECOND, AWKWARD], || {
+            // The third screen is asked to become the first one.
+            assert!(apply_with(
+                setting(intern(AWKWARD), DisplayValue::Place(0)),
+                |_| {}
+            ));
+
+            assert_eq!(
+                place_for(AWKWARD),
+                Some(0),
+                "it takes the place it was given"
+            );
+            assert_eq!(place_for(FIRST), Some(2), "and the screen there takes its");
+            assert_eq!(place_for(SECOND), Some(1), "the screen between them stays");
+
+            assert_eq!(
+                wanted_order(),
+                [AWKWARD, SECOND, FIRST],
+                "which is the order the compositor is asked for"
+            );
+            assert!(
+                values_for("Display order", AWKWARD)[2].chosen(),
+                "the compositor has not said it moved, so the mark has not"
+            );
+
+            // The compositor answering is what moves the mark — and only the
+            // mark: the rows are the screens, listed as they were announced,
+            // and they hold still while the arrangement changes under them.
+            note_places(vec![
+                (FIRST.to_string(), 2),
+                (SECOND.to_string(), 1),
+                (AWKWARD.to_string(), 0),
+            ]);
+            assert_eq!(
+                page("Display order")
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                [FIRST, SECOND, AWKWARD],
+                "the same rows, in the same places on the page"
+            );
+            assert!(values_for("Display order", AWKWARD)[0].chosen());
+            assert!(values_for("Display order", FIRST)[2].chosen());
+            // And each row says where its screen now stands.
+            assert_eq!(page("Display order")[0].comment(), Some("Display 3"));
+            assert_eq!(page("Display order")[2].comment(), Some("Display 1"));
+            // The screen that traded is named on the row that would trade back.
+            assert_eq!(
+                values_for("Display order", AWKWARD)[2].comment(),
+                Some(format!("Trades places with {FIRST}").as_str())
+            );
+        });
+    }
+
+    /// A place chosen on a screen that is no longer in the arrangement changes
+    /// nothing: the row was drawn before the display went away.
+    #[test]
+    fn a_place_on_a_screen_that_is_gone_is_refused() {
+        with_places(&[FIRST, SECOND], || {
+            assert!(!apply_with(
+                setting(intern(AWKWARD), DisplayValue::Place(0)),
+                |_| panic!("nothing may be written for a screen that is not there")
+            ));
+            assert_eq!(place_for(FIRST), None);
+
+            // And so is a place past the end of the list, which is the same
+            // thing one step later: an arrangement this session does not have.
+            assert!(!apply_with(
+                setting(intern(FIRST), DisplayValue::Place(2)),
+                |_| panic!("there is no third place on a two-screen desk")
+            ));
+        });
+    }
+
+    /// Highlighting a place must not take it. Every screen on the desk moves,
+    /// and every window on them is re-tiled — which is the reason no Display
+    /// value previews.
+    #[test]
+    fn walking_over_a_place_changes_nothing() {
+        with_places(&[FIRST, SECOND], || {
+            for screen in page("Display order") {
+                for entry in screen.entries().expect("a screen opens its places") {
+                    preview(entry.setting());
+                }
+            }
+            assert_eq!(place_for(FIRST), None);
+            assert_eq!(place_for(SECOND), None);
+        });
+    }
+
+    /// The order survives the file, counted from one there and from zero here,
+    /// and is filed on its own: moving a screen must not write it a mode, a
+    /// turn or a colour pipeline nobody asked for.
+    #[test]
+    fn an_order_survives_the_file() {
+        with_places(&[FIRST, SECOND], || {
+            let mut written = None;
+            assert!(apply_with(
+                setting(intern(SECOND), DisplayValue::Place(0)),
+                |stored| written = Some(stored.display.clone())
+            ));
+
+            let written = written.unwrap();
+            assert_eq!(written[SECOND].order, Some(1), "the file counts from one");
+            assert_eq!(written[FIRST].order, Some(2));
+            assert_eq!(written[FIRST].mode, None);
+            assert_eq!(written[FIRST].transform, None);
+            assert_eq!(written[FIRST].hdr, None);
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(place_for(SECOND), Some(0));
+            assert_eq!(place_for(FIRST), Some(1));
+        });
+    }
+
+    /// A place before the first one is not a place. It is dropped with a word
+    /// about it rather than read as the first, because a file naming both `0`
+    /// and `1` would otherwise be an order with two first screens.
+    #[test]
+    fn a_place_before_the_first_one_is_dropped() {
+        with_places(&[FIRST, SECOND], || {
+            let mut stored = Stored::default();
+            stored.display.insert(
+                FIRST.to_string(),
+                StoredDisplay {
+                    order: Some(0),
+                    ..StoredDisplay::default()
+                },
+            );
+            stored.display.insert(
+                SECOND.to_string(),
+                StoredDisplay {
+                    order: Some(1),
+                    ..StoredDisplay::default()
+                },
+            );
+            adopt(stored);
+
+            assert_eq!(place_for(FIRST), None);
+            assert_eq!(place_for(SECOND), Some(0));
+        });
+    }
+
+    /// What the shell asks for, given what it remembers and what is plugged in
+    /// now: the remembered order, and a screen it has never heard of left where
+    /// the compositor put it, which is at the back.
+    #[test]
+    fn a_screen_the_file_has_never_seen_keeps_its_place_at_the_back() {
+        with_places(&[FIRST, SECOND, AWKWARD], || {
+            // An order remembered for two of the three.
+            PLACE.lock().unwrap().insert(SECOND.to_string(), 0);
+            PLACE.lock().unwrap().insert(FIRST.to_string(), 1);
+
+            assert_eq!(wanted_order(), [SECOND, FIRST, AWKWARD]);
+        });
+
+        // And the remembered order is kept where only some of it is plugged
+        // in: the screen that is missing takes nobody's place with it.
+        with_places(&[AWKWARD, FIRST], || {
+            PLACE.lock().unwrap().insert(FIRST.to_string(), 0);
+            PLACE.lock().unwrap().insert(SECOND.to_string(), 1);
+            PLACE.lock().unwrap().insert(AWKWARD.to_string(), 2);
+
+            assert_eq!(wanted_order(), [FIRST, AWKWARD]);
+        });
+    }
+
+    /// The arrangement is read out of the places the screens report, whatever
+    /// order the screens themselves are listed in — and the list keeps the
+    /// order they were announced in, which is what holds the rows still.
+    #[test]
+    fn the_arrangement_is_read_from_the_places_rather_than_the_listing() {
+        with_places(&[], || {
+            assert!(note_places(vec![
+                (AWKWARD.to_string(), 2),
+                (FIRST.to_string(), 0),
+                (SECOND.to_string(), 1),
+            ]));
+            assert_eq!(arrangement(), [FIRST, SECOND, AWKWARD]);
+            assert_eq!(
+                placed().iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                [AWKWARD, FIRST, SECOND],
+                "the screens are listed as they were announced"
+            );
+            // The same answer again is not a change: the Settings column is
+            // rebuilt on every one of these.
+            assert!(!note_places(vec![
+                (AWKWARD.to_string(), 2),
+                (FIRST.to_string(), 0),
+                (SECOND.to_string(), 1),
+            ]));
+        });
+    }
+
     /// Rates are printed the way somebody would say them: 60, not 60.00, and
     /// 59.94 rather than either 59 or 60.
     #[test]
@@ -6269,6 +7322,66 @@ hdr = true
             };
             assert!(apply_with(down, |_| {}));
             assert_eq!(night_light_for(FIRST).temperature, started);
+        });
+    }
+
+    /// And it is set by pointing at it as well as by stepping it: a press along
+    /// the groove asks for the temperature drawn at that point.
+    ///
+    /// The row carries every value it can be set to rather than a range and a
+    /// step, so what a press picks is a setting like any other on this page —
+    /// and it is picked off the same share of the track that put the handle
+    /// where the user aimed.
+    #[test]
+    fn a_press_along_the_bar_asks_for_the_temperature_drawn_there() {
+        with_displays(&[(FIRST, warmable())], || {
+            let bar = temperature_bar(FIRST);
+            let kelvin_at = |level: f32| match bar.at(level) {
+                Some(Setting::Display {
+                    display,
+                    value: DisplayValue::NightLightTemperature(kelvin),
+                }) => {
+                    assert_eq!(display, FIRST, "on the screen the page is about");
+                    kelvin
+                }
+                other => panic!("a press at {level} along the track asked for {other:?}"),
+            };
+
+            // The ends of the track are the ends of the range, exactly, and the
+            // middle of it is the nearest step to the middle of the range.
+            assert_eq!(
+                kelvin_at(0.0),
+                WARMEST_ON_THE_BAR,
+                "the foot is candlelight"
+            );
+            assert_eq!(kelvin_at(1.0), NEUTRAL_KELVIN, "and the head is daylight");
+            let middle = (WARMEST_ON_THE_BAR + NEUTRAL_KELVIN) / 2;
+            assert!(kelvin_at(0.5).abs_diff(middle) <= TEMPERATURE_STEP / 2);
+
+            // The two ways of moving it move along the one range: what a
+            // direction applies is one of the values a press can land on.
+            for step in [bar.up, bar.down].into_iter().flatten() {
+                assert!(bar.steps.contains(&step), "{step:?} is not on the track");
+            }
+
+            // What a press asks for is applied like any other row, and the row
+            // that comes back is standing where the press landed — within the
+            // half step that is as fine as this bar goes.
+            let asked = bar.at(0.75).expect("three quarters of the way up");
+            assert!(apply_with(asked, |_| {}));
+            let moved = temperature_bar(FIRST);
+            let step = 1.0 / (moved.steps.len() - 1) as f32;
+            assert!(
+                (moved.fill - 0.75).abs() <= step / 2.0 + 1e-6,
+                "{}",
+                moved.fill
+            );
+
+            // And a press on the step the handle is already standing on asks
+            // for nothing at all: that is what aiming at a value and missing by
+            // a pixel looks like, and it is not a change to apply and write
+            // down.
+            assert_eq!(moved.at(moved.fill), None);
         });
     }
 
@@ -6891,6 +8004,289 @@ hdr = true
             bands.len() >= 5,
             "the range is described, not labelled once"
         );
+    }
+
+    /// The System page's rows, in the order it offers them.
+    fn system_page() -> Vec<Entry> {
+        column()
+            .into_iter()
+            .find(|entry| entry.title() == "System")
+            .expect("the Settings column has a System row")
+            .entries()
+            .expect("which opens onto its own page")
+            .to_vec()
+    }
+
+    /// The bar the Application scaling row opens onto.
+    fn scaling_bar() -> crate::apps::Bar {
+        let row = system_page()
+            .into_iter()
+            .find(|entry| entry.title() == "Application scaling")
+            .expect("the System page offers the scale");
+        let inside = row.entries().expect("the row opens onto its bar");
+        assert_eq!(inside.len(), 1, "a bar is the whole of its column");
+        inside[0]
+            .bar()
+            .expect("and that one row is the bar")
+            .clone()
+    }
+
+    /// Set the scale, the way a press on the bar sets it.
+    fn set_scale(percent: u16) {
+        assert!(apply_with(Setting::AppScale(percent), |_| {}));
+    }
+
+    /// How large applications draw themselves is set by sliding rather than by
+    /// picking, like the night light's temperature and for the same reason:
+    /// what is being chosen is a scale and not a set of alternatives.
+    #[test]
+    fn the_scale_is_set_on_a_bar_rather_than_picked_off_a_list() {
+        with_displays(&[], || {
+            let bar = scaling_bar();
+            let started = app_scale();
+            assert_eq!(started, NATURAL_SCALE, "a session starts at one to one");
+            assert_eq!(bar.title, format!("{started}%"), "the number is the row");
+            assert!(bar.comment.is_some(), "and it says what that means");
+            assert_eq!(
+                bar.swatch, None,
+                "a size has no colour to be drawn in, unlike a temperature"
+            );
+            assert!(bar.fill.abs() < 1e-6, "the handle starts at the foot");
+
+            // One press moves it one step, and the row that comes back says so.
+            let Some(up) = bar.up else {
+                panic!("there is room above one to one")
+            };
+            assert!(apply_with(up, |_| {}));
+            assert_eq!(app_scale(), started + SCALE_STEP);
+            assert_eq!(
+                scaling_bar().title,
+                format!("{}%", started + SCALE_STEP),
+                "and the row reads as where it now stands"
+            );
+
+            // The row above it carries the same answer, so a user who has
+            // walked back out of the bar can still read what it is set to.
+            let row = system_page()
+                .into_iter()
+                .find(|entry| entry.title() == "Application scaling")
+                .expect("the row is still there");
+            assert!(
+                row.comment().is_some_and(
+                    |comment| comment.starts_with(&format!("{}%", started + SCALE_STEP))
+                ),
+                "the row says the scale: {:?}",
+                row.comment()
+            );
+
+            let Some(down) = scaling_bar().down else {
+                panic!("and room below it again")
+            };
+            assert!(apply_with(down, |_| {}));
+            assert_eq!(app_scale(), started);
+        });
+    }
+
+    /// Nothing below the size an application chose for itself.
+    ///
+    /// The one property of this bar that is not the temperature bar's: that one
+    /// has a range with a neutral end, and this one has a *floor*. An
+    /// application asked to draw its interface smaller than it chose is not
+    /// something a screen looked at from an armchair ever wants, so the foot of
+    /// the track is one to one and there is no step below it — by any route.
+    #[test]
+    fn nothing_is_drawn_smaller_than_the_application_chose() {
+        with_displays(&[], || {
+            let bar = scaling_bar();
+            assert_eq!(bar.down, None, "nothing below one to one");
+            assert!(bar.up.is_some());
+            assert!(
+                bar.steps.iter().all(
+                    |step| matches!(step, Setting::AppScale(percent) if *percent >= NATURAL_SCALE)
+                ),
+                "a press along the groove can never ask for less"
+            );
+
+            // Nor by asking for it outright: a hand-edited file or an older
+            // shell is answered with the nearest size that means something,
+            // exactly as an out-of-range colour temperature is.
+            set_scale(50);
+            assert_eq!(app_scale(), NATURAL_SCALE);
+            set_scale(0);
+            assert_eq!(app_scale(), NATURAL_SCALE);
+            set_scale(u16::MAX);
+            assert_eq!(app_scale(), LARGEST_SCALE);
+            assert!((0.0..=1.0).contains(&scaling_bar().fill));
+        });
+    }
+
+    /// And the top of the range is a step the bar can actually stand on, with
+    /// nothing above it.
+    #[test]
+    fn the_scaling_bar_stops_at_the_top_of_its_range() {
+        with_displays(&[], || {
+            set_scale(LARGEST_SCALE);
+            let top = scaling_bar();
+            assert_eq!(top.up, None, "nothing past the largest");
+            assert!(top.down.is_some());
+            assert!((top.fill - 1.0).abs() < 1e-6, "a full track");
+            assert_eq!(
+                top.steps.last(),
+                Some(&Setting::AppScale(LARGEST_SCALE)),
+                "the head of the track is the end of the range"
+            );
+            // Which needs the step to divide the range: a bar whose last step
+            // fell short would have a head the user could not land on.
+            assert_eq!((LARGEST_SCALE - NATURAL_SCALE) % SCALE_STEP, 0);
+        });
+    }
+
+    /// A press along the groove asks for the size drawn at that point, the way
+    /// a press along the temperature bar asks for the temperature there.
+    #[test]
+    fn a_press_along_the_scaling_bar_asks_for_the_size_drawn_there() {
+        with_displays(&[], || {
+            let bar = scaling_bar();
+            let percent_at = |level: f32| match bar.at(level) {
+                Some(Setting::AppScale(percent)) => percent,
+                other => panic!("a press at {level} along the track asked for {other:?}"),
+            };
+
+            assert_eq!(
+                percent_at(1.0),
+                LARGEST_SCALE,
+                "the head is as far as it goes"
+            );
+            let middle = (NATURAL_SCALE + LARGEST_SCALE) / 2;
+            assert!(percent_at(0.5).abs_diff(middle) <= SCALE_STEP / 2 + 1);
+
+            // The two ways of moving it move along the one range.
+            for step in [bar.up, bar.down].into_iter().flatten() {
+                assert!(bar.steps.contains(&step), "{step:?} is not on the track");
+            }
+
+            // What a press asks for is applied like any other row, and the row
+            // that comes back is standing where the press landed.
+            let asked = bar.at(0.75).expect("three quarters of the way up");
+            assert!(apply_with(asked, |_| {}));
+            let moved = scaling_bar();
+            let step = 1.0 / (moved.steps.len() - 1) as f32;
+            assert!(
+                (moved.fill - 0.75).abs() <= step / 2.0 + 1e-6,
+                "{}",
+                moved.fill
+            );
+
+            // And a press on the step the handle is already on asks for
+            // nothing: that is aiming at the handle and missing by a pixel.
+            assert_eq!(moved.at(moved.fill), None);
+        });
+    }
+
+    /// Every size the bar can be set to has a word for what it is, and the
+    /// words only ever grow: walking the bar one way never reads as turning
+    /// back.
+    #[test]
+    fn every_scale_on_the_bar_has_a_word() {
+        // Only the foot of the track claims to leave applications alone. One
+        // step above it they *have* been changed, however slightly, and a row
+        // saying otherwise there would be saying the setting had not taken.
+        let its_own_size = scale_note(NATURAL_SCALE);
+        assert_ne!(scale_note(NATURAL_SCALE + SCALE_STEP), its_own_size);
+
+        let mut bands: Vec<&str> = Vec::new();
+        let mut percent = NATURAL_SCALE;
+        while percent <= LARGEST_SCALE {
+            assert!(!scale_note(percent).is_empty(), "{percent}% says nothing");
+            if percent > NATURAL_SCALE {
+                assert_ne!(
+                    scale_note(percent),
+                    its_own_size,
+                    "{percent}% is not one to one"
+                );
+            }
+            if bands.last() != Some(&scale_note(percent)) {
+                assert!(
+                    !bands.contains(&scale_note(percent)),
+                    "{percent}% goes back to a band the bar has already left"
+                );
+                bands.push(scale_note(percent));
+            }
+            percent += SCALE_STEP;
+        }
+        assert!(
+            bands.len() >= 5,
+            "the range is described, not labelled once"
+        );
+    }
+
+    /// The page says what this setting does not reach, and says it as something
+    /// that cannot be chosen.
+    ///
+    /// An application under Xwayland has no per-surface scale to be told about,
+    /// so its window keeps its own size — see the compositor's `scale` module.
+    /// A user who scaled everything up and found one program unchanged is owed
+    /// the reason, and a row that could be *pressed* would be offering to
+    /// change something that is not a setting.
+    #[test]
+    fn the_page_says_which_windows_it_leaves_alone() {
+        with_displays(&[], || {
+            let page = system_page();
+            assert_eq!(
+                page.iter().map(Entry::title).collect::<Vec<_>>(),
+                vec!["Application scaling", "X11 applications"]
+            );
+            let x11 = &page[1];
+            assert_eq!(x11.setting(), None, "it is a reading, not a control");
+            assert!(!x11.chosen(), "and nothing is in force about it");
+            assert_eq!(x11.icon(), Some(icons::SETTING_INFO));
+        });
+    }
+
+    /// It survives the file, and a file that says nothing about it leaves every
+    /// application at its own size.
+    #[test]
+    fn the_scale_survives_the_file() {
+        with_displays(&[], || {
+            set_scale(150);
+
+            let written = stored();
+            assert_eq!(written.application_scale, Some(150));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("application-scale"), "{body}");
+
+            *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(app_scale(), 150, "and it comes back where it was left");
+
+            // Session-wide: it is not written into any display's section, and
+            // it is not read out of one either.
+            assert!(
+                !body.contains("[display."),
+                "the scale put a screen in the file:\n{body}"
+            );
+
+            // A silent file answers nothing for the user, as it does for the
+            // Start music: what a session with no file comes up at is one to
+            // one, which is where the value starts rather than something the
+            // reader has to put back.
+            adopt(Stored::default());
+            assert_eq!(app_scale(), 150);
+
+            // A hand-edited size outside the range is clamped rather than
+            // refused, and the same way the compositor would clamp it, so the
+            // file and the screen agree about what is in force.
+            adopt(Stored {
+                application_scale: Some(10),
+                ..Stored::default()
+            });
+            assert_eq!(app_scale(), NATURAL_SCALE);
+            adopt(Stored {
+                application_scale: Some(9000),
+                ..Stored::default()
+            });
+            assert_eq!(app_scale(), LARGEST_SCALE);
+        });
     }
 
     /// The login screen is told when its half of these settings changes, and

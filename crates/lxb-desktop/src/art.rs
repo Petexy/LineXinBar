@@ -21,6 +21,11 @@
 //!    in this file.
 //! 3. **Steam's content network**, once, for anything neither cache has.
 //!
+//! All three are asked at the path Steam publishes the picture at, which the
+//! library carries for every game it lists and which cannot be worked out from
+//! the game's id — see [`lxb_steam::art::Published`]. A picture asked for by
+//! name alone is one that a recent game does not have anywhere.
+//!
 //! ## Nothing is fetched ahead of time
 //!
 //! The same rule as the pictures of the user's own files, and for a stronger
@@ -44,19 +49,28 @@
 //! cover for is never asked about again, while a wire that was down is asked
 //! again after [`AGAIN`] — one is a fact about the game, the other is a fact
 //! about this minute.
+//!
+//! "Never again" holds only while the question is the same one. The shell lists
+//! the games on the disk the moment it signs in and learns where their pictures
+//! are a second later, so its first question about an installed game is asked
+//! without knowing where to look — and an answer to *that* must not settle the
+//! matter for the session. Each conclusion is kept with the path it was reached
+//! from, and a game whose published path turns out to be another one is asked
+//! once more.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// Which picture of a game is meant. The shell's callers name pieces through
-/// this module rather than reaching past it into the Steam crate: what a
-/// cover and a hero *are* is Valve's, but which of them this shell has any use
-/// for is settled here.
-pub use lxb_steam::art::Piece;
 use lxb_steam::art::{Cdn, Missing};
+
+/// Which picture of a game is meant, and where Steam publishes it. The shell's
+/// callers name pieces through this module rather than reaching past it into
+/// the Steam crate: what a cover and a hero *are* is Valve's, but which of them
+/// this shell has any use for is settled here.
+pub use lxb_steam::art::{Piece, Published};
 
 use crate::thumbs::Picture;
 
@@ -163,15 +177,43 @@ pub enum Made {
     },
 }
 
+/// One picture to make: which game's, which piece, and where Steam says it is.
+///
+/// The path travels with the request rather than being looked up by the worker,
+/// because it is the library's to know: it arrives in the same PICS record as
+/// the game's name, and a worker thread has no library to ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Job {
+    app_id: u32,
+    piece: Piece,
+    /// Where Valve publishes it, when the catalogue said — see
+    /// [`lxb_steam::art::Published`]. `None` for a game that is on the disk
+    /// without being in the account's catalogue, which is asked for by name.
+    published: Option<String>,
+}
+
 /// The workers, and what has been asked of them.
 pub struct Art {
     queue: Arc<Queue>,
     done: Receiver<(u32, Piece, Result<Answer, Missing>)>,
     /// Asked for and not yet answered, so a row on screen for a hundred frames
-    /// is asked for once.
-    asked: HashSet<(u32, Piece)>,
-    /// Steam has no such picture for these. A permanent answer.
-    barren: HashSet<(u32, Piece)>,
+    /// is asked for once. Against the path it was asked for at, which is what
+    /// an answer of "there is none" has to be recorded against.
+    asked: HashMap<(u32, Piece), Option<String>>,
+    /// Steam has no such picture for these, at the path it was asked for.
+    ///
+    /// The path is half of the answer, and leaving it out is what made a game
+    /// keep an empty row for a whole session: the shell lists the games on the
+    /// disk the moment it signs in and learns where their pictures are a second
+    /// later, so the first thing it asks about a freshly installed game is asked
+    /// without knowing where to look. "Not there" was then remembered as a fact
+    /// about the game rather than about that question, and the answer that
+    /// arrived with the catalogue was never asked for.
+    ///
+    /// So a conclusion is kept with the question it answers. A game whose
+    /// published path is not the one this was decided from is asked again — once
+    /// — and a game asked the same way twice is not.
+    barren: HashMap<(u32, Piece), Option<String>>,
     /// And these could not be reached, at that moment. See [`AGAIN`].
     later: HashMap<(u32, Piece), Instant>,
     /// Where each game's cover turned out to be, once one has been found. Held
@@ -193,7 +235,7 @@ pub struct Art {
 /// What the workers take their work from.
 struct Queue {
     /// Most recently wanted at the front.
-    jobs: Mutex<VecDeque<(u32, Piece)>>,
+    jobs: Mutex<VecDeque<Job>>,
     ready: Condvar,
 }
 
@@ -222,23 +264,29 @@ impl Art {
         Art {
             queue,
             done,
-            asked: HashSet::new(),
-            barren: HashSet::new(),
+            asked: HashMap::new(),
+            barren: HashMap::new(),
             later: HashMap::new(),
             covers: HashMap::new(),
             real,
         }
     }
 
-    /// Whether asking for this picture now could achieve anything.
+    /// Whether asking for this picture, at this path, could achieve anything.
     ///
     /// Its own answer rather than a run of early returns inside [`Self::want`]
     /// so that it can be checked without workers: everything this decides is
     /// about *not* reaching Steam, and a test that had to start two threads
     /// and a TLS session to see it would be a test that reaches Steam.
-    fn worth_asking(&self, key: (u32, Piece)) -> bool {
-        !self.barren.contains(&key)
-            && !self.asked.contains(&key)
+    fn worth_asking(&self, key: (u32, Piece), published: Option<&str>) -> bool {
+        // A game Steam has no picture for is not asked again — unless what is
+        // known about where to look has changed since it said so, which makes
+        // this a different question with its own answer.
+        !self
+            .barren
+            .get(&key)
+            .is_some_and(|asked| asked.as_deref() == published)
+            && !self.asked.contains_key(&key)
             && !self
                 .later
                 .get(&key)
@@ -246,18 +294,36 @@ impl Art {
     }
 
     /// Ask for one picture of one game, unless it is already being fetched,
-    /// already known not to exist, or was unreachable a moment ago.
-    pub fn want(&mut self, app_id: u32, piece: Piece) {
+    /// already known not to exist where it would be looked for, or was
+    /// unreachable a moment ago.
+    ///
+    /// `where_they_are` is the game's own record of where Steam publishes its
+    /// pictures, which the library carries. Without it the piece is asked for by
+    /// its plain name, which is right for everything published before Valve
+    /// began addressing artwork by its contents and finds nothing for anything
+    /// published since — so the shell asks again if it learns better, and that
+    /// is what the path recorded here is for.
+    pub fn want(&mut self, app_id: u32, piece: Piece, where_they_are: Option<&Published>) {
         let key = (app_id, piece);
-        if !self.real || !self.worth_asking(key) {
+        let published = where_they_are
+            .and_then(|published| published.of(piece))
+            .map(str::to_owned);
+        if !self.real || !self.worth_asking(key, published.as_deref()) {
             return;
         }
         self.later.remove(&key);
-        self.asked.insert(key);
+        // Whatever was concluded from asking a different way is no longer what
+        // is known: this is now the question, and its answer replaces that one.
+        self.barren.remove(&key);
+        self.asked.insert(key, published.clone());
         let Ok(mut jobs) = self.queue.jobs.lock() else {
             return;
         };
-        jobs.push_front(key);
+        jobs.push_front(Job {
+            app_id,
+            piece,
+            published,
+        });
         jobs.truncate(QUEUE);
         drop(jobs);
         self.queue.ready.notify_one();
@@ -274,7 +340,9 @@ impl Art {
         // while this end is held — so an empty channel and a dead one are the
         // same thing here: nothing more this frame.
         while let Ok((app_id, piece, answer)) = self.done.try_recv() {
-            self.asked.remove(&(app_id, piece));
+            // The path it was asked for at, which is what a "there is none"
+            // has to be filed under to be worth anything later.
+            let asked_for = self.asked.remove(&(app_id, piece)).unwrap_or_default();
             match answer {
                 Ok(Answer::Cover { path, picture }) => {
                     self.covers.insert(app_id, path.clone());
@@ -292,8 +360,13 @@ impl Art {
                         );
                         self.later.insert((app_id, piece), Instant::now());
                     } else {
-                        tracing::debug!(app_id, ?piece, "Steam has no such picture for this game");
-                        self.barren.insert((app_id, piece));
+                        tracing::debug!(
+                            app_id,
+                            ?piece,
+                            asked_for,
+                            "Steam has no such picture for this game"
+                        );
+                        self.barren.insert((app_id, piece), asked_for);
                     }
                 }
             }
@@ -308,8 +381,11 @@ impl Art {
     /// still coming is worth holding the last one on screen for, and one that
     /// is never coming is a display that should go back to its wallpaper
     /// instead of showing the previous game for the rest of the session.
+    ///
+    /// "Never" as far as anything known now goes: a game whose published path
+    /// arrives later is asked again, and this then answers the other way.
     pub fn hopeless(&self, app_id: u32, piece: Piece) -> bool {
-        self.barren.contains(&(app_id, piece))
+        self.barren.contains_key(&(app_id, piece))
     }
 
     /// The file a game's cover is in, once one has been found.
@@ -328,7 +404,7 @@ impl Art {
 fn work(queue: &Queue, send: &Sender<(u32, Piece, Result<Answer, Missing>)>) {
     let cdn = Cdn::new();
     loop {
-        let (app_id, piece) = {
+        let job = {
             let Ok(mut jobs) = queue.jobs.lock() else {
                 return;
             };
@@ -343,16 +419,17 @@ fn work(queue: &Queue, send: &Sender<(u32, Piece, Result<Answer, Missing>)>) {
             }
         };
 
-        let made = produce(app_id, piece, &cdn);
-        if send.send((app_id, piece, made)).is_err() {
+        let made = produce(&job, &cdn);
+        if send.send((job.app_id, job.piece, made)).is_err() {
             return;
         }
     }
 }
 
 /// Find one picture and turn it into what the GPU takes.
-fn produce(app_id: u32, piece: Piece, cdn: &Cdn) -> Result<Answer, Missing> {
-    let (path, bytes) = source(app_id, piece, cdn)?;
+fn produce(job: &Job, cdn: &Cdn) -> Result<Answer, Missing> {
+    let piece = job.piece;
+    let (path, bytes) = source(job, cdn)?;
     match piece {
         Piece::Cover => {
             let picture = cover(&bytes).ok_or_else(|| {
@@ -379,10 +456,11 @@ fn produce(app_id: u32, piece: Piece, cdn: &Cdn) -> Result<Answer, Missing> {
 ///
 /// Both caches are read before anything is asked of Steam, and what is fetched
 /// is written into this shell's own so the next session does not ask again.
-fn source(app_id: u32, piece: Piece, cdn: &Cdn) -> Result<(PathBuf, Vec<u8>), Missing> {
-    let ours = ours(app_id, piece)
+fn source(job: &Job, cdn: &Cdn) -> Result<(PathBuf, Vec<u8>), Missing> {
+    let (app_id, piece, published) = (job.app_id, job.piece, job.published.as_deref());
+    let ours = ours(app_id, piece, published)
         .ok_or_else(|| Missing::Unreachable("there is nowhere to cache pictures".to_string()))?;
-    let already = lxb_steam::art::in_the_client_cache(app_id, piece)
+    let already = lxb_steam::art::in_the_client_cache(app_id, piece, published)
         .into_iter()
         .chain(std::iter::once(ours.clone()));
     for path in already {
@@ -398,13 +476,20 @@ fn source(app_id: u32, piece: Piece, cdn: &Cdn) -> Result<(PathBuf, Vec<u8>), Mi
         }
     }
 
-    let bytes = cdn.fetch(app_id, piece)?;
+    let bytes = cdn.fetch(app_id, piece, published)?;
     store(&ours, &bytes);
     Ok((ours, bytes))
 }
 
 /// Where this shell keeps what it had to fetch.
-fn ours(app_id: u32, piece: Piece) -> Option<PathBuf> {
+///
+/// Under the path Steam publishes the picture at, which is how the client's own
+/// cache is laid out and is worth copying for the reason Valve did it: that path
+/// is named after the picture's contents, so a game whose artwork is replaced
+/// asks for a file this cache has never held instead of showing last year's
+/// cover for the rest of the machine's life. A game with no published path
+/// keeps the plain name, which is where the last session left it.
+fn ours(app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -419,7 +504,7 @@ fn ours(app_id: u32, piece: Piece) -> Option<PathBuf> {
             .join("linexinbar")
             .join("steam-art")
             .join(app_id.to_string())
-            .join(piece.file_name()),
+            .join(published.unwrap_or_else(|| piece.file_name())),
     )
 }
 
@@ -643,11 +728,54 @@ mod tests {
     #[test]
     fn an_invented_library_is_never_fetched_for() {
         let mut art = Art::start(false);
-        art.want(10, Piece::Cover);
-        art.want(10, Piece::Hero);
+        art.want(10, Piece::Cover, None);
+        art.want(10, Piece::Hero, None);
         assert!(art.queue.jobs.lock().expect("the queue").is_empty());
         assert!(art.take().is_empty());
         assert_eq!(art.cover(10), None);
+    }
+
+    /// Where the picture is travels with the request, one piece's path per
+    /// request. A worker handed the game's whole record would have to decide
+    /// which of three paths this job meant, and a worker handed nothing would
+    /// go looking for a file name Valve stopped publishing.
+    #[test]
+    fn a_request_carries_the_path_of_the_piece_it_is_for() {
+        let published = Published::from(lxb_steam::art::LibraryArt {
+            capsule: Some("28dbb244/library_600x900.jpg".to_string()),
+            hero: Some("67a1c596/library_hero.jpg".to_string()),
+            logo: None,
+        });
+        let mut art = Art::start(false);
+        // Started with no workers, so nothing here reaches Steam; the queue is
+        // the thing under test and it is filled the same way either way.
+        art.real = true;
+        art.want(3288210, Piece::Cover, Some(&published));
+        art.want(3288210, Piece::Logo, Some(&published));
+        art.want(440, Piece::Cover, None);
+
+        let jobs = art.queue.jobs.lock().expect("the queue");
+        assert_eq!(
+            jobs.iter().cloned().collect::<Vec<_>>(),
+            vec![
+                // Most recently wanted at the front.
+                Job {
+                    app_id: 440,
+                    piece: Piece::Cover,
+                    published: None,
+                },
+                Job {
+                    app_id: 3288210,
+                    piece: Piece::Logo,
+                    published: None,
+                },
+                Job {
+                    app_id: 3288210,
+                    piece: Piece::Cover,
+                    published: Some("28dbb244/library_600x900.jpg".to_string()),
+                },
+            ]
+        );
     }
 
     /// A picture that could not be reached is asked for again later, and one
@@ -656,20 +784,84 @@ mod tests {
     fn only_a_picture_worth_asking_for_twice_is_asked_for_twice() {
         let key = (504230, Piece::Cover);
         let mut art = Art::start(false);
-        assert!(art.worth_asking(key), "nothing is known about it yet");
+        assert!(art.worth_asking(key, None), "nothing is known about it yet");
 
-        art.asked.insert(key);
-        assert!(!art.worth_asking(key), "it is already being fetched");
+        art.asked.insert(key, None);
+        assert!(!art.worth_asking(key, None), "it is already being fetched");
 
         art.asked.clear();
-        art.barren.insert(key);
-        assert!(!art.worth_asking(key), "Steam has no cover for this game");
+        art.barren.insert(key, None);
+        assert!(
+            !art.worth_asking(key, None),
+            "Steam has no cover for this game"
+        );
 
         art.barren.clear();
         art.later.insert(key, Instant::now());
-        assert!(!art.worth_asking(key), "the wire was down a moment ago");
+        assert!(
+            !art.worth_asking(key, None),
+            "the wire was down a moment ago"
+        );
 
         art.later.insert(key, Instant::now() - AGAIN * 2);
-        assert!(art.worth_asking(key), "that was a minute ago");
+        assert!(art.worth_asking(key, None), "that was a minute ago");
+    }
+
+    /// Learning where a picture is makes a game that had none worth asking
+    /// about again.
+    ///
+    /// The shell lists the games on the disk as soon as it signs in and learns
+    /// where their pictures are a moment later, so the first thing it asks about
+    /// an installed game is asked without knowing where to look. A "there is
+    /// none" kept as a fact about the game rather than about that question is a
+    /// row that stays empty until the shell is restarted — and, since the same
+    /// race runs every time it starts, one that stays empty after that too.
+    #[test]
+    fn a_game_is_asked_again_once_the_shell_knows_where_to_look() {
+        let key = (3812600, Piece::Cover);
+        let published = Published::from(lxb_steam::art::LibraryArt {
+            capsule: Some("e5b5c644/library_capsule.jpg".to_string()),
+            hero: None,
+            logo: None,
+        });
+        let mut art = Art::start(false);
+        art.real = true;
+
+        // Asked before the catalogue arrived, with nothing to go on, and Steam
+        // answered that there is no such picture by that name.
+        art.want(key.0, key.1, None);
+        art.asked.clear();
+        art.barren.insert(key, None);
+        assert!(
+            !art.worth_asking(key, None),
+            "the same question has the same answer"
+        );
+
+        // Then the catalogue arrives and says where the cover is.
+        assert!(
+            art.worth_asking(key, Some("e5b5c644/library_capsule.jpg")),
+            "a different place to look is a different question"
+        );
+        art.want(key.0, key.1, Some(&published));
+        assert_eq!(
+            art.queue
+                .jobs
+                .lock()
+                .expect("the queue")
+                .front()
+                .map(|job| job.published.clone()),
+            Some(Some("e5b5c644/library_capsule.jpg".to_string()))
+        );
+        assert!(
+            !art.barren.contains_key(&key),
+            "what was concluded from not knowing is not still held"
+        );
+        assert!(!art.hopeless(key.0, key.1), "it is being asked about again");
+
+        // And once the answer for that path is in, it is not asked a third time.
+        art.asked.clear();
+        art.barren
+            .insert(key, Some("e5b5c644/library_capsule.jpg".to_string()));
+        assert!(!art.worth_asking(key, Some("e5b5c644/library_capsule.jpg")));
     }
 }

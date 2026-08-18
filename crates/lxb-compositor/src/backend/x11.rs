@@ -23,7 +23,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{DeviceFd, Transform};
-use smithay::wayland::dmabuf::DmabufGlobal;
+use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal};
 
 use super::ImportError;
 use crate::config::Config;
@@ -193,13 +193,30 @@ pub fn init(
             .add_output(&mut state.lxb.space, output, &config);
     }
 
+    // With default feedback, which is what carries the global past version 3 —
+    // measured at 5 here. The version is not a detail: feedback is where
+    // `main_device` lives, and a client that cannot read that has no way to
+    // know which GPU to allocate on. Firefox answers that by turning dmabuf off
+    // entirely (`FEATURE_FAILURE_NO_DRM_DEVICE`) and falling back to software
+    // rendering — silently, and only in the nested session, which makes every
+    // GPU path here untestable and reads as a bug in whatever was being looked
+    // at. The udev backend has always built the global this way; this is the
+    // same call.
     if !dmabuf_formats.is_empty() {
-        let global = state
-            .lxb
-            .dmabuf_state
-            .create_global::<LxbState>(&state.lxb.display_handle, dmabuf_formats);
-        if let super::Backend::X11(x11) = &mut state.backend {
-            x11.dmabuf_global = Some(global);
+        match DmabufFeedbackBuilder::new(drm_node.dev_id(), dmabuf_formats).build() {
+            Ok(feedback) => {
+                let global = state
+                    .lxb
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<LxbState>(
+                        &state.lxb.display_handle,
+                        &feedback,
+                    );
+                if let super::Backend::X11(x11) = &mut state.backend {
+                    x11.dmabuf_global = Some(global);
+                }
+            }
+            Err(err) => tracing::warn!(?err, "could not build dmabuf feedback"),
         }
     }
 
@@ -350,7 +367,7 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
         .bind(&mut buffer)
         .map_err(|e| anyhow::anyhow!("bind failed: {e}"))?;
 
-    virtual_output
+    let result = virtual_output
         .damage_tracker
         .render_output(renderer, &mut framebuffer, age, &elements, clear_color)
         .map_err(|e| anyhow::anyhow!("render_output failed: {e:?}"))?;
@@ -364,7 +381,16 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
     virtual_output.full_redraw = false;
 
     let time = state.lxb.start_time.elapsed();
-    post_repaint(&state.lxb, &output, time, Some(Duration::ZERO));
+    post_repaint(
+        &state.lxb,
+        &output,
+        time,
+        Some(Duration::ZERO),
+        &result.states,
+    );
+    // The host X server never tells us when this frame is seen, so the
+    // hand-over is the best answer there is — and far better than none.
+    crate::render::answer_presentation_now(&state.lxb, &output, &result.states, time);
     // Anything else recording this display is answered here, with the screen
     // in the state it was just drawn in and a renderer already in hand.
     if state.lxb.screencopy.wanted(&output) {

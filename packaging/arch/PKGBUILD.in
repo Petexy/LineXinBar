@@ -13,7 +13,7 @@ pkgrel=1
 pkgdesc='Multi-display Wayland desktop with an XMB-style shell'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Petexy/LineXinBar'
-license=('GPL-3.0-only' 'Apache-2.0')
+license=('GPL-3.0-only' 'Apache-2.0' 'MIT')
 # The union of both packages' runtime needs. Split packages take their own
 # `depends` from the `package_*` functions below; this one is what makepkg
 # resolves before building, and every entry is needed to build either half.
@@ -94,6 +94,10 @@ _linexinbar_licenses() {
         "$pkgdir/usr/share/licenses/$1/GPL-3.0-only.txt"
     install -Dm0644 font/Roboto/LICENSE.txt \
         "$pkgdir/usr/share/licenses/$1/Roboto-Apache-2.0.txt"
+    # Smithay is in this tree rather than pulled from crates.io, and MIT asks
+    # for its notice to travel with the binary it is linked into.
+    install -Dm0644 third_party/smithay/LICENSE.txt \
+        "$pkgdir/usr/share/licenses/$1/Smithay-MIT.txt"
 }
 
 package_lxb-compositor() {

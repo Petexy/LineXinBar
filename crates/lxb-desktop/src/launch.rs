@@ -610,6 +610,46 @@ mod tests {
         assert!(splash.finished(at(t0, 1.0 + STEAM_WATCHING + 1.0)));
     }
 
+    /// Watching is not being on the screen, and for a game the difference is
+    /// seconds long.
+    ///
+    /// The shell asks both questions and they are not interchangeable. What is
+    /// still *drawn* is what stands in front of the user: while any of it is
+    /// there the Home button is refused, the bar holds the overlay layer above
+    /// the application, and the display keeps redrawing. What still *exists*
+    /// is only a claim on the display, kept so a hand-over to the wrong window
+    /// can be taken back.
+    ///
+    /// Asking the second where the first was meant cost the user five seconds
+    /// of a dead Home button after every game they started, with the game
+    /// already on screen in front of them and the shell still holding the
+    /// layer above it.
+    #[test]
+    fn a_faded_splash_is_watching_rather_than_standing_in_front() {
+        let t0 = Instant::now();
+        let mut splash = game(t0);
+        assert_eq!(
+            splash.advance(at(t0, 1.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+
+        // The dip is the last of it on the screen, and it is over in about a
+        // second.
+        let up = 1.0 + BLACK_IN + BLACK_HOLD + BLACK_OUT;
+        assert!(splash.drawing(at(t0, up - 0.01)));
+        assert!(!splash.drawing(at(t0, up)));
+
+        // And then it is out of the way for seconds while it goes on watching
+        // — which is the whole of what this test is about.
+        assert!(!splash.finished(at(t0, up)));
+        assert!(!splash.drawing(at(t0, 1.0 + STEAM_WATCHING - 0.01)));
+        assert!(
+            STEAM_WATCHING - (up - 1.0) > 5.0,
+            "the gap the shell must not spend in front of the user"
+        );
+        assert!(splash.finished(at(t0, 1.0 + STEAM_WATCHING)));
+    }
+
     /// Which window a game turned out to be is knowable at exactly one moment
     /// — this one — and nothing can work it out afterwards: a window carries
     /// the class its binary announces and nothing that says who started it.
@@ -636,6 +676,13 @@ mod tests {
             splash.newcomers(&[7, 9, 11]).collect::<Vec<_>>(),
             vec![9, 11]
         );
+
+        // And it goes on answering after the hand-over, which is what the
+        // shell asks of it: the first window is not always the game — a
+        // launcher is swapped for the game itself, an anti-cheat installer
+        // comes and goes — and a shell that asked only once would be left
+        // holding the id of a window that had already closed.
+        assert_eq!(splash.newcomers(&[7, 13]).collect::<Vec<_>>(), vec![13]);
     }
 
     /// A game that never appeared has nothing at the other end of a dip — what

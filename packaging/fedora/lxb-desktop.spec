@@ -132,8 +132,15 @@ export CARGO_TARGET_DIR=target
     --prefix %{_prefix} \
     --target-dir target
 
+# `%%license` installs a file under its basename, and the two third-party
+# licences carried in this tree are both called LICENSE.txt: listed as they are
+# they would land on the same path and one would replace the other. Copy them
+# to names that say whose they are and can share a directory.
+cp -p font/Roboto/LICENSE.txt Roboto-LICENSE.txt
+cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
+
 %files
-%license LICENSE font/Roboto/LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
 %doc README.md
 %{_bindir}/lxb-desktop
 %{_bindir}/lxb-portal
@@ -148,7 +155,7 @@ export CARGO_TARGET_DIR=target
 # under. The cursor theme goes here because the compositor is what loads it
 # and draws the pointer from it.
 %files -n       lxb-compositor
-%license LICENSE font/Roboto/LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
 %doc docs/configuration.md examples/config.toml
 %{_bindir}/lxb
 %{_datadir}/icons/Bibata-Modern-Classic/

@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use smithay::backend::egl::EGLDevice;
 use smithay::backend::input::InputEvent;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -20,7 +21,7 @@ use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::window::Window as WinitWindow;
 use smithay::utils::{Rectangle, Transform};
-use smithay::wayland::dmabuf::DmabufGlobal;
+use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal};
 
 use super::ImportError;
 use crate::config::Config;
@@ -137,20 +138,44 @@ pub fn init(
         .outputs
         .add_output(&mut state.lxb.space, &output, &config);
 
-    // Advertise dmabuf so clients can hand us GPU buffers directly.
+    // Advertise dmabuf so clients can hand us GPU buffers directly, with
+    // default feedback for the reason [`super::x11`] gives: without it the
+    // global is version 3, `main_device` is never sent, and a client that wants
+    // to know which GPU to allocate on gives up and renders in software.
     if let super::Backend::Winit(winit_backend) = &mut state.backend {
-        let formats: Vec<_> = winit_backend
-            .backend
-            .renderer()
-            .dmabuf_formats()
-            .iter()
-            .copied()
-            .collect();
-        let global = state
-            .lxb
-            .dmabuf_state
-            .create_global::<LxbState>(&state.lxb.display_handle, formats);
-        winit_backend.dmabuf_global = Some(global);
+        let renderer = winit_backend.backend.renderer();
+        let formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
+        let node = EGLDevice::device_for_display(renderer.egl_context().display())
+            .and_then(|device| device.try_get_render_node());
+        match node {
+            Ok(Some(node)) => match DmabufFeedbackBuilder::new(node.dev_id(), formats).build() {
+                Ok(feedback) => {
+                    winit_backend.dmabuf_global = Some(
+                        state
+                            .lxb
+                            .dmabuf_state
+                            .create_global_with_default_feedback::<LxbState>(
+                                &state.lxb.display_handle,
+                                &feedback,
+                            ),
+                    );
+                }
+                Err(err) => tracing::warn!(?err, "could not build dmabuf feedback"),
+            },
+            // No render node to name means no feedback to build. The version 3
+            // global still lets a client hand over buffers it has allocated
+            // some other way, so it is worth advertising rather than dropping.
+            other => {
+                if let Err(err) = other {
+                    tracing::warn!(?err, "could not find the render node for dmabuf feedback");
+                }
+                let global = state
+                    .lxb
+                    .dmabuf_state
+                    .create_global::<LxbState>(&state.lxb.display_handle, formats);
+                winit_backend.dmabuf_global = Some(global);
+            }
+        }
     }
 
     state.lxb.pointer_location = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
@@ -286,7 +311,16 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("submit failed: {e}"))?;
 
     let time = state.lxb.start_time.elapsed();
-    post_repaint(&state.lxb, &output, time, Some(Duration::ZERO));
+    post_repaint(
+        &state.lxb,
+        &output,
+        time,
+        Some(Duration::ZERO),
+        &result.states,
+    );
+    // The host compositor never tells us when this frame is seen, so the
+    // hand-over is the best answer there is — and far better than none.
+    crate::render::answer_presentation_now(&state.lxb, &output, &result.states, time);
     // Anything else recording this display is answered here, with the screen
     // in the state it was just drawn in and a renderer already in hand.
     if state.lxb.screencopy.wanted(&output) {

@@ -922,8 +922,11 @@ impl Guide {
     /// `focused` is whether this is the display being driven; `keyboard` is
     /// whether the on-screen keyboard or its hint is on it; `typing_here` is
     /// whether that keyboard is typing into a field of the shell's own rather
-    /// than into whatever is in front; `base` is the layer the bar sits on when
-    /// it is not covering anything.
+    /// than into whatever is in front; `toasting` is whether the corner has a
+    /// bubble in it and `volume` whether the volume keys have raised their
+    /// control, both of which are the shell drawing over an application
+    /// without taking anything from it; `base` is the layer the bar sits on
+    /// when it is not covering anything.
     #[allow(clippy::too_many_arguments)]
     pub fn surface_state(
         &self,
@@ -934,6 +937,7 @@ impl Guide {
         keyboard: bool,
         typing_here: bool,
         toasting: bool,
+        volume: bool,
         base: Layer,
     ) -> (Layer, KeyboardInteractivity) {
         // A launch splash is over the application it is waiting for — that is
@@ -994,11 +998,13 @@ impl Guide {
         // background layer for initial focus, which would leave the launcher
         // unusable at startup.
         if app_running && !keep_grabbed {
-            // Unless something has been announced. A bubble in the corner is
-            // the one thing this shell draws over an application that the user
-            // did not ask for, so it has to reach the overlay layer — a
-            // notification the game is covering is a notification that did not
-            // happen.
+            // Unless something has been announced, or a volume key has been
+            // pressed. A bubble in the corner and the control those keys raise
+            // are the two things this shell draws over an application without
+            // being asked to open anything, so both have to reach the overlay
+            // layer — a notification the game is covering is a notification
+            // that did not happen, and a volume bar behind the game is a key
+            // that appears to do nothing.
             //
             // Exactly the launch splash's state, and for the same reason: the
             // shell is putting something in front of an application somebody is
@@ -1006,15 +1012,20 @@ impl Guide {
             // reads that pair and hands the clicks back too. The alternative —
             // an overlay that kept `OnDemand` — would be a transparent sheet
             // over the whole display swallowing every press for four seconds.
+            // It matters more for the volume than for the corner: the hand
+            // that pressed the key is on the keyboard of a game that is still
+            // being played, and a control that took the keys for a second
+            // would be a second of somebody's game played by nobody.
             //
             // Only this branch is lifted. The two states above it are already
             // over the application; the two the condition excludes are the
             // shell holding the keyboard on purpose — a dialog, or a start
-            // screen with nothing in front — and a bubble must not take the
-            // keys off either of those. Neither needs the lift anyway: with
-            // nothing running there is nothing for the corner to be behind.
-            let layer = if toasting { Layer::Overlay } else { base };
-            let interactivity = if toasting {
+            // screen with nothing in front — and neither of these may take the
+            // keys off those. Neither needs the lift anyway: with nothing
+            // running there is nothing to be behind.
+            let over = toasting || volume;
+            let layer = if over { Layer::Overlay } else { base };
+            let interactivity = if over {
                 KeyboardInteractivity::None
             } else {
                 KeyboardInteractivity::OnDemand
@@ -1849,6 +1860,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     Layer::Background
                 ),
                 (Layer::Overlay, KeyboardInteractivity::None),
@@ -1860,6 +1872,7 @@ mod tests {
             guide.surface_state(
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -1885,6 +1898,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
@@ -1897,6 +1911,7 @@ mod tests {
                 guide.surface_state(
                     false,
                     true,
+                    false,
                     false,
                     false,
                     false,
@@ -1932,6 +1947,7 @@ mod tests {
                         false,
                         false,
                         false,
+                        false,
                         Layer::Background,
                     );
                     assert_eq!(
@@ -1961,6 +1977,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::None)
@@ -1976,6 +1993,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::None)
@@ -1988,6 +2006,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 false,
                 false,
                 Layer::Background
@@ -2007,9 +2026,89 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+    }
+
+    /// The volume the keys raise is the other thing drawn over an application
+    /// without anything being opened, and it lives or dies by this: the whole
+    /// point of the keys is that they work while a game holds the display, so
+    /// a control left on the layer under that game is a key that does nothing.
+    ///
+    /// And it must hand back what it rose over. The hand that pressed the key
+    /// is on the keyboard of a game still being played — a control that took
+    /// the keys for a second would be a second of that game played by nobody.
+    #[test]
+    fn the_volume_keys_lift_the_shell_over_the_application_and_take_nothing() {
+        let guide = Guide::default();
+        const RAISED: bool = true;
+
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                RAISED,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::None),
+            "the control is over the game, and holds neither its keys nor its clicks"
+        );
+
+        // The same three states a bubble may not change, for the same reasons:
+        // the shell holding the keys on purpose, and a display nobody is
+        // driving.
+        assert_eq!(
+            guide.surface_state(
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                RAISED,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::Exclusive),
+            "with nothing running the bar is already the top of the display"
+        );
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                RAISED,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::Exclusive),
+            "a volume key must not answer a dialog by taking the keys off it"
+        );
+        assert_eq!(
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                RAISED,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::None),
+            "and a display nobody is driving stays where it is"
         );
     }
 
@@ -2036,6 +2135,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::OnDemand),
@@ -2050,6 +2150,7 @@ mod tests {
                 false,
                 false,
                 TOASTING,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::None),
@@ -2076,6 +2177,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
@@ -2093,6 +2195,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
@@ -2111,6 +2214,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
@@ -2128,6 +2232,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::None)
@@ -2154,6 +2259,7 @@ mod tests {
                     true,
                     true,
                     false,
+                    false,
                     Layer::Background
                 ),
                 (Layer::Overlay, KeyboardInteractivity::Exclusive),
@@ -2172,6 +2278,7 @@ mod tests {
                 true,
                 true,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::None)
@@ -2184,6 +2291,7 @@ mod tests {
                 true,
                 true,
                 true,
+                false,
                 false,
                 Layer::Background
             ),
@@ -2203,6 +2311,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
@@ -2211,6 +2320,7 @@ mod tests {
             guide.surface_state(
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2226,6 +2336,7 @@ mod tests {
                 true,
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,

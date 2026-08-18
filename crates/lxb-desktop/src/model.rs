@@ -141,6 +141,16 @@ pub enum Action {
     /// worked on the shell's own screens would work everywhere except where it
     /// is wanted.
     Screenshot,
+    /// Turn the session up or down by one step, or silence it.
+    ///
+    /// Honoured from outside for the same reason again, and the plainest of
+    /// the four: the application holding the screen is the thing being turned
+    /// down. Nothing on screen is opened, closed or moved by these — they set
+    /// the machine's own volume and say on screen that they did, wherever the
+    /// user happens to be.
+    VolumeUp,
+    VolumeDown,
+    VolumeMute,
 }
 
 /// The applications available to launch, and the processes started from them.
@@ -203,6 +213,39 @@ pub struct Cursor {
     category_speed: f32,
     item_speed: f32,
     depth_speed: f32,
+}
+
+/// Read the place on `entries[row]` off the disk, keeping what answers to
+/// `query`, and hang what comes back under it.
+///
+/// The one place a folder's column is built, so opening one and searching one
+/// cannot come to different conclusions about what is in it. `None` for a row
+/// that does not stand for anywhere, which is every row in the shell but the
+/// explorer's; otherwise what the listing could be ordered by, which is a
+/// question about the filesystem it came off and is therefore only answerable
+/// by the read that just happened.
+fn read_into(
+    entries: &mut [Entry],
+    row: usize,
+    query: &str,
+    sort: crate::media::Sort,
+) -> Option<crate::media::Orders> {
+    let Some(Entry::Folder(folder)) = entries.get_mut(row) else {
+        return None;
+    };
+    let place = folder.place.clone()?;
+    let shown = match place {
+        crate::files::Place::Volumes => crate::files::volumes(query),
+        crate::files::Place::Directory(at) => crate::files::listing(&at, query, sort),
+    };
+    folder.entries = shown.rows;
+    // What was found, in place of the date the row was carrying: "14 folders,
+    // 6 files" is what the user has just been shown, and a row that went on
+    // saying when the folder was last written would be answering a question
+    // nobody asked twice. What a *search* has left of it is on the field
+    // instead, which is the row that is doing the narrowing.
+    folder.comment = Some(shown.note);
+    Some(shown.orders)
 }
 
 /// One column below the category's own.
@@ -311,6 +354,15 @@ impl Xmb {
         if let Some(file) = cursor.current_entry(self).and_then(Entry::media) {
             return self.open_media(&file.clone());
         }
+        // The same thing in the other column it can be pressed from. One
+        // function underneath both, so a song opened out of the folder it is
+        // in joins the launched applications on exactly the terms it would
+        // have from the shelf — under its own name, and closable like
+        // anything else.
+        if let Some(file) = cursor.current_entry(self).and_then(Entry::file) {
+            let file = file.clone();
+            return self.open_file(&file);
+        }
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -354,8 +406,19 @@ impl Xmb {
     /// what Close should offer to end. The program behind it is in the log,
     /// which is where the question "why did that open in VLC" is answered.
     fn open_media(&mut self, file: &crate::media::File) -> Option<u32> {
-        let opening = crate::media::opening(file, &self.categories)?;
+        let opening = crate::media::opening(&file.path, file.mime, &self.categories)?;
         self.open_media_with(file, opening)
+    }
+
+    /// The same, for a file the explorer found in a folder.
+    ///
+    /// Its own two lines rather than a shared one, because the two rows carry
+    /// different things and the difference is the whole of what the user
+    /// sees: a shelved song is titled without its extension and this is titled
+    /// with it, which is what the column it was pressed in is *for*.
+    fn open_file(&mut self, file: &crate::files::Item) -> Option<u32> {
+        let opening = crate::media::opening(&file.path, file.mime, &self.categories)?;
+        self.open_path_with(&file.path, &file.name, opening)
     }
 
     /// The same, in an application the user has picked by name off the Open
@@ -370,8 +433,19 @@ impl Xmb {
         file: &crate::media::File,
         opening: crate::media::Opening,
     ) -> Option<u32> {
+        self.open_path_with(&file.path, &file.title, opening)
+    }
+
+    /// What both of those come down to: start `opening`, and file the process
+    /// under the name of the file rather than the name of the program.
+    fn open_path_with(
+        &mut self,
+        path: &Path,
+        title: &str,
+        opening: crate::media::Opening,
+    ) -> Option<u32> {
         tracing::info!(
-            file = %file.path.display(),
+            file = %path.display(),
             with = %opening.name,
             "opening a file the shell found"
         );
@@ -386,7 +460,7 @@ impl Xmb {
                 let pid = child.id();
                 tracing::info!(command = %opening.command, pid, "player process started");
                 self.launched_apps.push(LaunchedApp {
-                    name: file.title.clone(),
+                    name: title.to_string(),
                     command: opening.command,
                     child,
                     started_at: Instant::now(),
@@ -588,6 +662,17 @@ impl Cursor {
         xmb.categories.get(self.selected_category)
     }
 
+    /// The row the column the cursor is standing in was opened from — the last
+    /// step of the trail, one level up.
+    ///
+    /// `None` at the top of a category, where the column is the category's own
+    /// and was not opened from anything. What it answers is "what is this a
+    /// list *of*", which is how a panel raised inside a column is titled.
+    pub fn open_from<'a>(&self, xmb: &'a Xmb) -> Option<&'a Entry> {
+        let level = self.open.checked_sub(1)?;
+        self.level_entries(xmb, level)?.get(self.row_at(level))
+    }
+
     /// The rows of the column the cursor is standing in.
     pub fn current_entries<'a>(&self, xmb: &'a Xmb) -> &'a [Entry] {
         self.level_entries(xmb, self.open).unwrap_or_default()
@@ -696,6 +781,79 @@ impl Cursor {
             }
         }
         Some(setting)
+    }
+
+    /// Read the folder under the cursor off the disk, so that stepping into it
+    /// steps into what is there *now*.
+    ///
+    /// The file explorer's columns are the only ones in the tree that are not
+    /// known in advance, and this is where they come from. It runs on the press
+    /// that opens a folder — Accept, or Right from inside a column — and never
+    /// on the way past: a cursor walking down `/usr` passes a hundred
+    /// directories on its way to one of them, and reading each as it went by
+    /// would be a hundred directories read to answer nothing.
+    ///
+    /// Read every time rather than kept, which is what makes the column honest
+    /// about a file that has been added or deleted since the user was last in
+    /// it. It also bounds what the tree holds: the *other* folders of the same
+    /// column give up their rows here, so what is left in memory is the path
+    /// the user is standing in and not everywhere they have been.
+    ///
+    /// The remembered row of the column about to be opened goes with them, for
+    /// the same reason — it was a row number in a listing that no longer
+    /// exists, and a folder read afresh opens at the top of itself.
+    ///
+    /// Returns whether anything was read, which is `false` for every row in the
+    /// shell that is not one of the explorer's.
+    pub fn open_place(
+        &mut self,
+        xmb: &mut Xmb,
+        sort: crate::media::Sort,
+    ) -> Option<crate::media::Orders> {
+        let row = self.selected_item();
+        let entries = self.level_entries_mut(xmb, self.open)?;
+        // A fresh visit, so the field it opens with is empty. A search belongs
+        // to the looking somebody is doing rather than to the folder — walking
+        // out of one and into another is a different question, and a column
+        // that arrived already narrowed by what was typed in the last one would
+        // be hiding files with no field in sight to say so.
+        let orders = read_into(entries, row, "", sort)?;
+
+        for (index, entry) in entries.iter_mut().enumerate() {
+            if index == row {
+                continue;
+            }
+            if let Entry::Folder(folder) = entry {
+                if folder.place.is_some() {
+                    folder.entries = Vec::new();
+                }
+            }
+        }
+        self.stack.truncate(self.open);
+        Some(orders)
+    }
+
+    /// Read the folder the cursor is standing *in* again, keeping only what
+    /// answers to `query`.
+    ///
+    /// The other end of the field at the head of an explorer column. A shelf is
+    /// narrowed by asking the worker that holds half a million files; a folder
+    /// is narrowed by looking at it again, because looking at it is what a
+    /// folder costs — one `readdir`, and a `stat` for each row the query keeps.
+    /// Which means a search of a large directory is *cheaper* than opening it.
+    ///
+    /// The folder is the row the column was opened from, one level up, so this
+    /// answers `false` at the top of a category where there is no such row.
+    pub fn search_here(
+        &self,
+        xmb: &mut Xmb,
+        query: &str,
+        sort: crate::media::Sort,
+    ) -> Option<crate::media::Orders> {
+        let level = self.open.checked_sub(1)?;
+        let row = self.row_at(level);
+        let entries = self.level_entries_mut(xmb, level)?;
+        read_into(entries, row, query, sort)
     }
 
     /// The row selected in the column at `level`.
@@ -1440,7 +1598,8 @@ fn is_executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-/// Make an application use the same display servers as the shell.
+/// Make an application use the same display servers as the shell, and the same
+/// controllers.
 ///
 /// In nested mode both `WAYLAND_SOCKET` and `DISPLAY` can refer to the host.
 /// A connected `WAYLAND_SOCKET` cannot be reused by another client. `DISPLAY`
@@ -1463,6 +1622,36 @@ fn confine_to_session(
             .env_remove("DISPLAY")
             .env_remove("LXB_XWAYLAND_DISPLAY");
     }
+
+    hide_guarded_pads_from_hidapi(command);
+}
+
+/// Tell SDL to read the pads this shell is guarding through `/dev/input`,
+/// which is the only place it will find them without their guide button.
+///
+/// SDL prefers its own HIDAPI drivers to the kernel's gamepad node for the
+/// controllers it recognises, and reads those over `hidraw`, where the grab in
+/// [`crate::pad_guard`] does not reach — so a game would find the guide button
+/// after all, on exactly the popular pads those drivers exist for. Named
+/// devices are skipped by `SDL_hid_enumerate`, which is what every HIDAPI
+/// driver is offered devices from.
+///
+/// Only pads the guard actually holds are named, so nothing is ever asked to
+/// ignore the one route a controller has: a pad with no gamepad node is a pad
+/// the guard never took, and it is not on this list.
+///
+/// Anything the user set is kept and added to rather than replaced. A person
+/// who has told SDL to ignore a device has told it for a reason, and this is
+/// not an argument with them.
+pub(crate) fn hide_guarded_pads_from_hidapi(command: &mut Command) {
+    let Some(guarded) = crate::pad_guard::hidapi_ignore_list() else {
+        return;
+    };
+    let ignore = match std::env::var("SDL_HIDAPI_IGNORE_DEVICES") {
+        Ok(theirs) if !theirs.trim().is_empty() => format!("{theirs},{guarded}"),
+        _ => guarded,
+    };
+    command.env("SDL_HIDAPI_IGNORE_DEVICES", ignore);
 }
 
 #[cfg(test)]
@@ -1499,6 +1688,7 @@ mod tests {
             comment: None,
             icon: None,
             entries,
+            place: None,
         })
     }
 
@@ -1582,6 +1772,232 @@ mod tests {
 
     fn cursor(xmb: &Xmb) -> Cursor {
         Cursor::new(xmb.categories.len())
+    }
+
+    // --- the file explorer's columns ---------------------------------------
+
+    /// A directory of this test's own under the system's temporary folder, or
+    /// `None` where there is nowhere to write — in which case the test that
+    /// wanted it says nothing rather than failing.
+    fn scratch(name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::env::temp_dir().join(format!("lxb-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+
+    /// The order every folder opens in until somebody chooses another.
+    fn by_name() -> crate::media::Sort {
+        crate::media::Sort::NameAscending
+    }
+
+    /// One column of two rows, both of them somewhere on the disk: the bar as
+    /// it stands the moment somebody has stepped into Files.
+    fn places(first: &Path, second: &Path) -> Xmb {
+        let place = |title: &str, at: &Path| {
+            Entry::Folder(crate::apps::Folder {
+                title: title.into(),
+                comment: None,
+                icon: None,
+                entries: Vec::new(),
+                place: Some(crate::files::Place::Directory(at.to_path_buf())),
+            })
+        };
+        Xmb::with_wayland_display(
+            vec![Category {
+                id: "system",
+                title: "System",
+                icon: "system",
+                entries: vec![place("First", first), place("Second", second)],
+            }],
+            OsString::from("lxb-test"),
+        )
+    }
+
+    /// A folder is empty until it is pressed, and a press is what fills it.
+    /// Nothing is read on the way past, which is the whole reason the reading
+    /// can be done on the thread that draws.
+    #[test]
+    fn a_folder_is_read_on_the_press_that_opens_it() {
+        let Some(dir) = scratch("open-place") else {
+            return;
+        };
+        std::fs::create_dir(dir.join("inside")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let mut xmb = places(&dir, &dir);
+        let mut cursor = cursor(&xmb);
+        assert!(
+            !cursor.enter(&xmb),
+            "there is nothing in it to step into yet"
+        );
+
+        assert!(
+            cursor.open_place(&mut xmb, by_name()).is_some(),
+            "the press reads the folder"
+        );
+        assert!(cursor.enter(&xmb), "and now there is a column");
+        let rows: Vec<&str> = cursor
+            .current_entries(&xmb)
+            .iter()
+            .map(Entry::title)
+            .collect();
+        assert_eq!(
+            rows,
+            ["Search", "inside", "a.txt"],
+            "the field stands over the folder"
+        );
+        assert_eq!(
+            cursor.selected_item(),
+            1,
+            "and the column opens on the folder, not on the field"
+        );
+        // What was found, on the row it was found under.
+        assert_eq!(
+            xmb.categories[0].entries[0].comment(),
+            Some("1 folder, 1 file")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reading one folder drops what was read of the ones beside it. The tree
+    /// holds the path the user is standing in; everywhere they have been is on
+    /// the disk, where it can be read again.
+    #[test]
+    fn the_folders_beside_the_one_being_opened_give_up_their_rows() {
+        let Some(dir) = scratch("siblings") else {
+            return;
+        };
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let mut xmb = places(&dir, &dir);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.open_place(&mut xmb, by_name()).is_some());
+        assert!(!xmb.categories[0].entries[0].entries().unwrap().is_empty());
+
+        assert!(cursor.navigate(Action::Down, &xmb), "down to the second");
+        assert!(cursor.open_place(&mut xmb, by_name()).is_some());
+        assert!(
+            xmb.categories[0].entries[0].entries().unwrap().is_empty(),
+            "the first has given up what it was holding"
+        );
+        assert!(!xmb.categories[0].entries[1].entries().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder read again opens at the top of itself rather than at the row
+    /// number it was left on: the listing it came back with is not the listing
+    /// that number was about.
+    #[test]
+    fn a_folder_read_again_opens_at_its_first_row() {
+        let Some(dir) = scratch("reread") else {
+            return;
+        };
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        let mut xmb = places(&dir, &dir);
+        let mut cursor = cursor(&xmb);
+        cursor.open_place(&mut xmb, by_name());
+        cursor.enter(&xmb);
+        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &xmb);
+        assert_eq!(cursor.selected_item(), 3);
+
+        assert!(cursor.leave(), "back out to the folder it came from");
+        cursor.open_place(&mut xmb, by_name());
+        cursor.enter(&xmb);
+        assert_eq!(
+            cursor.selected_item(),
+            1,
+            "the first row of the listing, under the field that stands over it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The field at the head of a folder narrows the column it stands over —
+    /// the one the cursor is standing *in*, which is the folder one level up.
+    #[test]
+    fn the_field_narrows_the_column_it_stands_over() {
+        let Some(dir) = scratch("search-here") else {
+            return;
+        };
+        for file in ["alpha.txt", "beta.txt", "another.txt"] {
+            std::fs::write(dir.join(file), b"x").unwrap();
+        }
+
+        let mut xmb = places(&dir, &dir);
+        let mut cursor = cursor(&xmb);
+        cursor.open_place(&mut xmb, by_name());
+        cursor.enter(&xmb);
+
+        assert!(cursor.search_here(&mut xmb, "alp", by_name()).is_some());
+        let rows: Vec<&str> = cursor
+            .current_entries(&xmb)
+            .iter()
+            .map(Entry::title)
+            .collect();
+        assert_eq!(rows, ["alp", "Clear search", "alpha.txt"]);
+
+        // And out again, without stepping anywhere: the row that empties the
+        // field is the only thing that undoes one.
+        assert!(cursor.search_here(&mut xmb, "", by_name()).is_some());
+        assert_eq!(
+            cursor.current_entries(&xmb).len(),
+            4,
+            "the field, and three"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A search belongs to the looking somebody is doing rather than to the
+    /// folder: stepping out and back in is a fresh visit, and it opens on
+    /// everything that is there.
+    #[test]
+    fn stepping_back_into_a_folder_does_not_inherit_the_last_search() {
+        let Some(dir) = scratch("search-fresh") else {
+            return;
+        };
+        for file in ["alpha.txt", "beta.txt"] {
+            std::fs::write(dir.join(file), b"x").unwrap();
+        }
+
+        let mut xmb = places(&dir, &dir);
+        let mut cursor = cursor(&xmb);
+        cursor.open_place(&mut xmb, by_name());
+        cursor.enter(&xmb);
+        cursor.search_here(&mut xmb, "alpha", by_name());
+        assert_eq!(cursor.current_entries(&xmb).len(), 3);
+
+        assert!(cursor.leave());
+        cursor.open_place(&mut xmb, by_name());
+        cursor.enter(&xmb);
+        assert_eq!(
+            cursor.current_entries(&xmb).len(),
+            3,
+            "the field, and both files"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every other row in the shell is left exactly as it was: this runs in
+    /// front of both presses that open a column, and on all but the explorer's
+    /// rows it has to do nothing at all.
+    #[test]
+    fn nothing_else_on_the_bar_is_read_off_the_disk() {
+        let mut xmb = nested();
+        let mut cursor = cursor(&xmb);
+        assert!(
+            cursor.open_place(&mut xmb, by_name()).is_none(),
+            "a plain row"
+        );
+        cursor.navigate(Action::Down, &xmb);
+        assert!(
+            cursor.open_place(&mut xmb, by_name()).is_none(),
+            "a subcategory of the shell's"
+        );
+        assert!(cursor.enter(&xmb), "which still opens");
     }
 
     /// A catalogue with one real application in it, filed inside a
@@ -2119,6 +2535,7 @@ mod tests {
                         query,
                         found,
                     ),
+                    place: None,
                 })],
             }],
             OsString::from("lxb-test"),

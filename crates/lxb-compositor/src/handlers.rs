@@ -2,6 +2,7 @@
 
 use std::os::unix::io::OwnedFd;
 
+use smithay::backend::renderer::sync::Fence;
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
@@ -20,10 +21,11 @@ use smithay::reexports::wayland_server::{Client, Resource};
 use smithay::utils::{Logical, Point, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler,
-    CompositorState,
+    add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
+    CompositorClientState, CompositorHandler, CompositorState,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
@@ -76,6 +78,91 @@ impl CompositorHandler for LxbState {
         client_compositor_state(client)
     }
 
+    /// Hold a surface's commit until the GPU work behind it has actually
+    /// finished.
+    ///
+    /// A client using explicit synchronisation hands over a buffer together
+    /// with an *acquire point*: a place on a timeline that signals once the
+    /// rendering into that buffer is done. Nothing about the buffer says so by
+    /// itself, so a compositor that reads it as soon as the commit arrives is
+    /// reading whatever the GPU happened to have written by then — a frame torn
+    /// across its own draw calls.
+    ///
+    /// The commit is therefore made to wait. Smithay's transaction machinery
+    /// takes a blocker per surface and applies the state once every one of them
+    /// has cleared, and the kernel wakes us through an eventfd on the timeline
+    /// rather than us polling it, so a slow frame costs this compositor no work
+    /// at all — it costs the client the frame it was already going to miss.
+    ///
+    /// Registered per surface as it is created, because a client may start
+    /// using sync points at any commit and the hook has to already be there
+    /// when it does.
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+            let acquire = with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<DrmSyncobjCachedState>()
+                    .pending()
+                    .acquire_point
+                    .clone()
+            });
+            let Some(acquire) = acquire else {
+                return;
+            };
+            // Already done: taking the slow path here would cost a round trip
+            // through the event loop for a frame that is ready to be drawn.
+            if acquire.is_signaled() {
+                return;
+            }
+            let Ok((blocker, source)) = acquire.generate_blocker() else {
+                // The point cannot be waited on, so the alternative to reading
+                // the buffer now is never reading it. A frame that may be torn
+                // beats a client that never draws again.
+                return;
+            };
+            let Some(client) = surface.client() else {
+                return;
+            };
+            // Counted, because a commit held here is a frame the client has
+            // handed over and cannot have back, and from its own side that is
+            // indistinguishable from a compositor that has stopped listening.
+            // A game that stops drawing is asked about this: see
+            // [`crate::render`]'s quiet-application watch.
+            let held_since = std::time::Instant::now();
+            let inserted = state
+                .lxb
+                .loop_handle
+                .insert_source(source, move |_, _, state| {
+                    state.lxb.blocked_commits = state.lxb.blocked_commits.saturating_sub(1);
+                    if state.lxb.blocked_commits == 0 {
+                        state.lxb.blocked_since = None;
+                    }
+                    // A frame's GPU work outlasting a whole second is not a
+                    // slow frame, it is a client waiting on something it is not
+                    // going to get.
+                    if held_since.elapsed() > std::time::Duration::from_secs(1) {
+                        tracing::warn!(
+                            waited = ?held_since.elapsed(),
+                            "a client's frame was held for its own GPU work far longer than a frame"
+                        );
+                    }
+                    let dh = state.lxb.display_handle.clone();
+                    state
+                        .client_compositor_state(&client)
+                        .blocker_cleared(state, &dh);
+                    Ok(())
+                });
+            if let Err(err) = inserted {
+                tracing::warn!(?err, "could not wait on a client's acquire point");
+                return;
+            }
+            state.lxb.blocked_commits += 1;
+            state.lxb.blocked_since.get_or_insert(held_since);
+            add_blocker(surface, blocker);
+        });
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
 
@@ -88,6 +175,8 @@ impl CompositorHandler for LxbState {
             }
             if let Some(window) = self.lxb.window_for_surface(&root) {
                 window.on_commit();
+                self.announce_window(&window, &root);
+                crate::render::drew(&window);
             }
         }
 
@@ -107,6 +196,42 @@ impl CompositorHandler for LxbState {
 }
 
 impl LxbState {
+    /// Say which window this is, once — the first time it has anything to show.
+    ///
+    /// Not where the window is mapped, although that is where the shape of it
+    /// is logged. A toplevel is created before its client has said a word about
+    /// itself, so the line there can only ever name a window that arrived
+    /// already titled, which is none of them; by the first buffer both the
+    /// `app_id` and the title are set. And the first buffer is the moment worth
+    /// recording anyway, because that is when the window starts covering
+    /// whatever was on the display before it.
+    ///
+    /// Which is the question this answers, and it took a game to ask it: an
+    /// application under Proton opens a window per Win32 window, this shell
+    /// tiles each of them over the whole display, and reading a run afterwards
+    /// meant telling those apart by nothing but a geometry they all share.
+    fn announce_window(&self, window: &Window, surface: &WlSurface) {
+        /// Marker: this window has been named already.
+        struct Announced;
+
+        let has_buffer =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
+                state.buffer().is_some()
+            });
+        if has_buffer != Some(true) {
+            return;
+        }
+        if !window.user_data().insert_if_missing(|| Announced) {
+            return;
+        }
+        tracing::info!(
+            app_id = crate::shell_control::window_app_id(window),
+            title = crate::shell_control::window_title(window),
+            geometry = ?self.lxb.space.element_geometry(window),
+            "a window is showing"
+        );
+    }
+
     /// Send the mandatory first `configure` once a surface has a role and has
     /// committed without a buffer, as required by xdg-shell and layer-shell.
     fn handle_initial_configure(&mut self, surface: &WlSurface) {
@@ -197,6 +322,24 @@ impl LxbState {
         if previous != self.lxb.exclusive_keyboard_focus || self.keyboard_focus_needs_refresh() {
             self.focus_topmost_window();
         }
+        // The pointer, every time, and not only when the keyboard moved with
+        // it. This is the moment the shell's own screen arrives over an
+        // application or steps back off it, and what is under a pointer nobody
+        // has touched changes with it — see [`LxbState::refresh_pointer_focus`].
+        // The two do not always move together: the shell can leave the overlay
+        // layer, or shrink its input region to a keyboard's keys, without the
+        // seat's exclusive claim changing at all, and the pointer left pointing
+        // at a surface that is no longer under it belongs to the shell — so a
+        // click meant for the game underneath goes on landing on the start
+        // screen until the user moves the mouse. Cheap when nothing changed:
+        // this is a walk of the layers and windows under one point, and it
+        // returns without sending anything once the focus is already right.
+        self.refresh_pointer_focus();
+        // And whether each application is still the one on screen. This is the
+        // commit that puts the shell's own screen over a display or takes it
+        // off again, which is the whole of what decides that — see
+        // [`LxbState::refresh_window_activation`].
+        self.refresh_window_activation();
     }
 
     /// Record which layer surface, if any, currently demands exclusive
@@ -394,6 +537,14 @@ impl XdgShellHandler for LxbState {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.lxb.window_for_surface(surface.wl_surface()) {
+            // The other half of the line `map_new_window` writes: which of an
+            // application's windows went away, and when, against which of them
+            // arrived.
+            tracing::info!(
+                app_id = crate::shell_control::window_app_id(&window),
+                title = crate::shell_control::window_title(&window),
+                "unmapped toplevel"
+            );
             // Before it is unmapped, while it still has its id: a flight left
             // behind would be replayed on whatever window inherits that id.
             self.lxb
@@ -669,6 +820,7 @@ impl SeatHandler for LxbState {
             .and_then(|surface| dh.get_client(surface.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+        self.refresh_window_activation();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -756,25 +908,41 @@ impl PointerConstraintsHandler for LxbState {
                     .map(|current| current.as_ref() == surface)
             })
             .unwrap_or(false);
+        // In the surface's own coordinates, which on an application drawing
+        // larger than life is not the screen's: a constraint's region is the
+        // client's own rectangle. See `crate::input::Hit`.
         let local_location = self
             .surface_under(self.lxb.pointer_location)
-            .filter(|(current, _)| current == surface)
-            .map(|(_, origin)| self.lxb.pointer_location - origin);
-        if has_focus {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                if let Some(constraint) = constraint {
-                    let inside = local_location.is_some_and(|location| {
-                        constraint
-                            .region()
-                            .map(|region| region.contains(location.to_i32_round()))
-                            .unwrap_or(true)
-                    });
-                    if inside {
-                        constraint.activate();
-                    }
+            .filter(|hit| &hit.surface == surface)
+            .map(|hit| hit.point - hit.origin);
+        with_pointer_constraint(surface, pointer, |constraint| {
+            if let Some(constraint) = constraint {
+                let inside = local_location.is_some_and(|location| {
+                    constraint
+                        .region()
+                        .map(|region| region.contains(location.to_i32_round()))
+                        .unwrap_or(true)
+                });
+                tracing::info!(
+                    kind = match &*constraint {
+                        smithay::wayland::pointer_constraints::PointerConstraint::Locked(_) =>
+                            "locked",
+                        _ => "confined",
+                    },
+                    whole_surface = constraint.region().is_none(),
+                    // The rectangles themselves, because the size of the box a
+                    // pointer is being held in is what says whose box it is.
+                    region = ?constraint.region().map(|region| region.rects.clone()),
+                    ?local_location,
+                    has_focus,
+                    inside,
+                    "a client asked to hold the pointer"
+                );
+                if has_focus && inside {
+                    constraint.activate();
                 }
-            });
-        }
+            }
+        });
     }
 
     fn cursor_position_hint(
@@ -817,14 +985,26 @@ impl smithay::wayland::tablet_manager::TabletSeatHandler for LxbState {
 
 impl FractionalScaleHandler for LxbState {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
+        let window = self.lxb.window_for_surface(&surface);
         // Advertise the scale of whichever output the surface's window is on.
-        let scale = self
-            .lxb
-            .window_for_surface(&surface)
-            .and_then(|w| self.lxb.space.outputs_for_element(&w).first().cloned())
+        let output = window
+            .as_ref()
+            .and_then(|w| self.lxb.space.outputs_for_element(w).first().cloned())
             .or_else(|| self.lxb.space.outputs().next().cloned())
             .map(|o| o.current_scale().fractional_scale())
             .unwrap_or(1.0);
+        // Times how much larger than life its application is drawing, which is
+        // the second of the three parts of that: the window was configured
+        // smaller than the display, and this is what tells the client to fill
+        // that smaller window with the display's own pixels. See
+        // [`crate::scale`].
+        let scale = crate::scale::preferred_scale(
+            output,
+            window
+                .as_ref()
+                .map(|window| crate::scale::window_scale(self.lxb.outputs.app_scale(), window))
+                .unwrap_or(1.0),
+        );
 
         with_states(&surface, |states| {
             smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {
@@ -900,3 +1080,88 @@ delegate_single_pixel_buffer!(LxbState);
 delegate_cursor_shape!(LxbState);
 delegate_xdg_activation!(LxbState);
 delegate_dmabuf!(LxbState);
+crate::delegate_tearing_control!(LxbState);
+
+/// Carrying a client's colour into the display pipeline.
+///
+/// The policy lives in [`LxbState::follow_surface_colour`]; this is only the
+/// wiring. See [`crate::colour`] for why the user's setting outranks the
+/// client's request rather than the other way round.
+impl crate::colour::ColourHandler for LxbState {
+    fn colour_changed(&mut self, surface: &WlSurface) {
+        self.follow_surface_colour(surface);
+    }
+
+    fn describe_surface(
+        &mut self,
+        surface: &WlSurface,
+        resource: &lxb_protocol::server::frog::frog_color_managed_surface::FrogColorManagedSurface,
+    ) {
+        // A display this session is not driving in HDR is described as sRGB
+        // whatever the panel could do, because that is what the client's
+        // pixels will actually meet.
+        // A display this session is actually driving in HDR is described as
+        // PQ/BT.2020, and one that is not is described as sRGB whatever the
+        // panel could do — because what a client is owed here is what its
+        // pixels will actually meet, not what the hardware is capable of.
+        //
+        // Answering PQ is only safe because the pipeline gets out of the way
+        // when it has to: see `crate::render::output_shows_encoded_content`
+        // and `hdr::Manager::request_passthrough`. A client that takes this
+        // answer and fills the display gets its own encoding passed through
+        // untouched.
+        let status = self
+            .output_of(surface)
+            .map(|output| self.lxb.hdr.status(&output));
+        let hdr = status.as_ref().is_some_and(|status| status.enabled);
+        let peak = status
+            .as_ref()
+            .map(|status| status.max_luminance)
+            .unwrap_or(0);
+        crate::colour::send_preferred_metadata(resource, hdr, peak, 0.0);
+    }
+
+    fn output_of(&self, surface: &WlSurface) -> Option<Output> {
+        let window = self.lxb.window_for_surface(surface)?;
+        self.lxb
+            .space
+            .outputs_for_element(&window)
+            .into_iter()
+            .next()
+    }
+}
+crate::delegate_colour_management!(LxbState);
+
+/// The same, through the protocol everything that is not a Proton game speaks.
+///
+/// No second policy: this hands back the same two descriptions the frog
+/// implementation above does, from the same [`crate::hdr::Status`].
+impl crate::colour_management::ColourManagerHandler for LxbState {
+    fn colour_manager_state(&mut self) -> &mut crate::colour_management::ColourManagerState {
+        &mut self.lxb.colour_manager
+    }
+
+    fn output_is_hdr(&self, output: &Output) -> bool {
+        self.lxb.hdr.status(output).enabled
+    }
+
+    fn output_for_resource(&self, resource: &WlOutput) -> Option<Output> {
+        Output::from_resource(resource)
+    }
+}
+crate::delegate_colour_manager!(LxbState);
+
+impl DrmSyncobjHandler for LxbState {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+        self.lxb.syncobj_state.as_mut()
+    }
+}
+smithay::delegate_drm_syncobj!(LxbState);
+
+impl LxbState {
+    /// React to a surface saying what its colour is.
+    ///
+    /// Deliberately only re-describes the surface: see the note in
+    /// [`crate::colour`] about the user's setting outranking the client's.
+    fn follow_surface_colour(&mut self, _surface: &WlSurface) {}
+}

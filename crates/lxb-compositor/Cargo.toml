@@ -35,6 +35,11 @@ png = "0.18"
 
 lxb-protocol = { path = "../lxb-protocol", features = ["server"] }
 
+# `wp_color_manager_v1` is a staging protocol smithay has no module for, so the
+# bindings come straight from here and `colour_management` does the dispatch.
+# Same crate and version smithay already builds against.
+wayland-protocols = { version = "0.32", features = ["server", "staging"] }
+
 # Connector scanning / CRTC mapping for the DRM backend. `display-info` is off
 # because its bundled bindings target an older libdisplay-info than most distros
 # ship; connector names come from the connector type instead, as elsewhere.

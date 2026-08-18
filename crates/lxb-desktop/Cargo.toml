@@ -60,6 +60,12 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 libc = "0.2"
 gilrs = "0.11.2"
+# The pad itself, one level below GilRs: grabbing a controller's own device
+# node and standing a `uinput` device in its place, so that the guide button
+# reaches this shell and no application. GilRs reads what is left, and cannot
+# do this — it opens pads to read them and has no notion of taking one away.
+# See `src/pad_guard.rs`.
+evdev = "0.13"
 
 # The shell's own sounds: decoding its four effects, streaming its Start music,
 # and putting them on the machine's output.

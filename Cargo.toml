@@ -22,6 +22,21 @@ exclude = ["third_party/steam-cm-protocol"]
 [patch.crates-io]
 steam-cm-protocol = { path = "third_party/steam-cm-protocol" }
 
+# 0.7.0 verbatim, plus the one thing it has no way to express: an atomic page
+# flip that does not wait for the vertical retrace. The kernel has taken
+# `DRM_MODE_PAGE_FLIP_ASYNC` on atomic commits for years and the `drm` crate
+# exposes it as `AtomicCommitFlags::PAGE_FLIP_ASYNC`, but smithay's atomic
+# surface never sets it and offers no way to ask — so a compositor built on
+# `DrmOutput` cannot tear at all, whatever a client requests.
+#
+# That is what `wp_tearing_control_v1` is *for*. Advertising the protocol
+# without this would be worse than not advertising it: Mesa offers clients
+# `VK_PRESENT_MODE_IMMEDIATE_KHR` because the global exists, so a game would
+# render uncapped and still be shown at the retrace — all of the cost and none
+# of the latency. Upstream has no such support on master either, checked at
+# 347b2b3.
+smithay = { path = "third_party/smithay" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

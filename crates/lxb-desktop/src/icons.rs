@@ -102,6 +102,28 @@ pub const CATEGORY_OTHER: &str = "lxb:category-other";
 pub const CATEGORY_MUSIC: &str = "lxb:category-music";
 pub const CATEGORY_VIDEO: &str = "lxb:category-video";
 pub const CATEGORY_IMAGES: &str = "lxb:category-images";
+/// System's own subcategory: the disks, walked folder by folder.
+///
+/// Two folders rather than one, which is the same distinction [`CATEGORY_IMAGES`]
+/// draws against `CATEGORY_GRAPHICS` — the row is about a quantity of files
+/// rather than about a file — and it is deliberately the same distinction so
+/// that the bar has one way of saying it rather than three.
+pub const CATEGORY_FILES: &str = "lxb:category-files";
+
+/// The marks the file explorer's own rows wear: a folder, a file, a volume,
+/// and the user's own folder at the head of it all.
+///
+/// Four objects rather than a table of one per file type. What a `.pdf` is, is
+/// written on the row in words the user can read; a cabinet of half-recognised
+/// drawings under that would be the same information told worse, and told
+/// wrongly the moment somebody keeps a format nothing has heard of. Where the
+/// shell *does* already know a file — a song, a film, a photograph — it keeps
+/// that shelf's own mark instead, so one file has one drawing wherever it is
+/// being looked at from. See file-page.svg.
+pub const FILE_FOLDER: &str = "lxb:file-folder";
+pub const FILE_PAGE: &str = "lxb:file-page";
+pub const FILE_DRIVE: &str = "lxb:file-drive";
+pub const FILE_HOME: &str = "lxb:file-home";
 
 /// The Steam column, and the mark every row that came from Steam wears.
 ///
@@ -151,6 +173,14 @@ pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
 pub const SETTING_ORIENTATION: &str = "lxb:setting-orientation";
 pub const SETTING_HDR: &str = "lxb:setting-hdr";
 
+/// Settings > Display > Display order: which screen the compositor puts first.
+///
+/// The one glyph in this set with two screens in it, because it is the one page
+/// under Display that is about the screens rather than about a screen — see the
+/// file itself. It goes on that folder and nowhere else; the screens listed
+/// inside it wear [`SETTING_DISPLAY`], as they do on every other page there.
+pub const SETTING_ORDER: &str = "lxb:setting-order";
+
 /// Settings > Display > Night light: the blue light filter, and the hours it
 /// keeps.
 ///
@@ -188,6 +218,23 @@ pub const SETTING_ROTATION_0: &str = "lxb:setting-rotation-0";
 pub const SETTING_ROTATION_90: &str = "lxb:setting-rotation-90";
 pub const SETTING_ROTATION_180: &str = "lxb:setting-rotation-180";
 pub const SETTING_ROTATION_270: &str = "lxb:setting-rotation-270";
+/// Settings > System, and the one row under it: how large applications draw
+/// themselves.
+///
+/// [`SETTING_SYSTEM`] is a chip. It is neither the cog that stands for the whole
+/// Settings column nor another monitor — every drawing of one in this set
+/// belongs to a page under Display — because this is the page about the machine
+/// rather than about its picture. See setting-system.svg.
+///
+/// [`SETTING_SCALE`] is a window and the larger window it is being drawn out to,
+/// with one arrow along the diagonal. Deliberately unlike
+/// [`SETTING_RESOLUTION`], which measures a *screen's* pixels across and down
+/// inside a bezel: this has no bezel and one arrow, because what it changes is
+/// one number that moves both dimensions at once, and it changes it for
+/// applications rather than for the display.
+pub const SETTING_SYSTEM: &str = "lxb:setting-system";
+pub const SETTING_SCALE: &str = "lxb:setting-scale";
+
 /// A read-only explanation in Settings, visually distinct from the control it
 /// sits beneath so an unavailable mode or capability is not mistaken for HDR.
 pub const SETTING_INFO: &str = "lxb:setting-info";
@@ -265,7 +312,7 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 58] = [
+pub const BUILTIN: [(&str, &str); 66] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -318,6 +365,12 @@ pub const BUILTIN: [(&str, &str); 58] = [
     (CATEGORY_MUSIC, include_str!("glyphs/category-music.svg")),
     (CATEGORY_VIDEO, include_str!("glyphs/category-video.svg")),
     (CATEGORY_IMAGES, include_str!("glyphs/category-images.svg")),
+    (CATEGORY_FILES, include_str!("glyphs/category-files.svg")),
+    // And the rows the file explorer under it is made of.
+    (FILE_FOLDER, include_str!("glyphs/file-folder.svg")),
+    (FILE_PAGE, include_str!("glyphs/file-page.svg")),
+    (FILE_DRIVE, include_str!("glyphs/file-drive.svg")),
+    (FILE_HOME, include_str!("glyphs/file-home.svg")),
     // The Settings column's own rows, and the marks its lists are made of.
     (
         SETTING_APPEARANCE,
@@ -350,6 +403,7 @@ pub const BUILTIN: [(&str, &str); 58] = [
         SETTING_ROTATION_270,
         include_str!("glyphs/setting-rotation-270.svg"),
     ),
+    (SETTING_ORDER, include_str!("glyphs/setting-order.svg")),
     (
         SETTING_NIGHT_LIGHT,
         include_str!("glyphs/setting-night-light.svg"),
@@ -363,6 +417,8 @@ pub const BUILTIN: [(&str, &str); 58] = [
         SETTING_MICROPHONE,
         include_str!("glyphs/setting-microphone.svg"),
     ),
+    (SETTING_SYSTEM, include_str!("glyphs/setting-system.svg")),
+    (SETTING_SCALE, include_str!("glyphs/setting-scale.svg")),
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
     (SWATCH, include_str!("glyphs/swatch.svg")),
     (CHOSEN, include_str!("glyphs/chosen.svg")),
@@ -1341,14 +1397,16 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            58,
+            66,
             "a speaker, a struck-out one, a sun, a stick pointer, a mixer, a \
              moon, a \
              bell, two \
              controller buttons, four arrows, a keyboard folding away, a power \
              symbol, one per column of the category row, the two subcategories \
-             Multimedia is divided into and the one under Graphics, the \
-             thirteen marks the Settings column is drawn from plus its four \
+             Multimedia is divided into and the one under Graphics, the two \
+             folders that stand for System's Files with the folder, page, drum \
+             and house its own rows are drawn with, the \
+             sixteen marks the Settings column is drawn from plus its four \
              turns of a monitor, the context menu's bin, play mark, ellipsis, sort bars \
              and camera, the magnifier at the head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
@@ -1433,6 +1491,11 @@ mod tests {
                 CATEGORY_MUSIC,
                 CATEGORY_VIDEO,
                 CATEGORY_IMAGES,
+                CATEGORY_FILES,
+                FILE_FOLDER,
+                FILE_PAGE,
+                FILE_DRIVE,
+                FILE_HOME,
                 SETTING_APPEARANCE,
                 SETTING_ACCENT,
                 SETTING_DISPLAY,
@@ -1443,10 +1506,13 @@ mod tests {
                 SETTING_ROTATION_90,
                 SETTING_ROTATION_180,
                 SETTING_ROTATION_270,
+                SETTING_ORDER,
                 SETTING_NIGHT_LIGHT,
                 SETTING_SCHEDULE,
                 SETTING_HDR,
                 SETTING_MICROPHONE,
+                SETTING_SYSTEM,
+                SETTING_SCALE,
                 SETTING_INFO,
                 SWATCH,
                 CHOSEN,

@@ -71,6 +71,10 @@ pub struct Game {
     pub install_dir: Option<String>,
     /// Launch choices resolved from the app's PICS `config/launch` block.
     pub launch: Vec<Launch>,
+    /// Where Steam publishes this game's cover, hero and logo, from the same
+    /// PICS record. Empty for a game that is on the disk without being in this
+    /// account's catalogue — see [`crate::art::Published`].
+    pub pictures: crate::art::Published,
     /// What the row is sorted on: the name, folded. Kept rather than computed
     /// at every comparison, because a library of a thousand games is sorted
     /// whenever one of them finishes installing.
@@ -93,6 +97,7 @@ impl Game {
             to_download: 0,
             install_dir: None,
             launch: Vec::new(),
+            pictures: crate::art::Published::default(),
         }
     }
 
@@ -388,6 +393,7 @@ pub fn owned(games: Vec<steam_cm_protocol::ProtocolGame>) -> Vec<Game> {
             );
             owned.last_played = game.rtime_last_played;
             owned.install_dir = game.installdir;
+            owned.pictures = game.library_art.into();
             owned.launch = game
                 .launch
                 .into_iter()
@@ -683,6 +689,7 @@ mod tests {
             app_type: Some("game".to_string()),
             installdir: None,
             launch: Vec::new(),
+            library_art: Default::default(),
         }
     }
 
@@ -702,6 +709,35 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].app_id, 1);
         assert_eq!(listed[0].name, "A game");
+    }
+
+    /// Where a game's pictures are published travels with the game. Without
+    /// it, everything released since Steam started addressing artwork by its
+    /// contents is a row with no cover, because there is nowhere left to look
+    /// for one — see [`crate::art::Published`].
+    #[test]
+    fn cm_catalogue_carries_where_the_pictures_are() {
+        let mut protocol = protocol_game(3288210, "Super Meat Boy 3D");
+        protocol.library_art = crate::art::LibraryArt {
+            capsule: Some("28dbb244/library_600x900.jpg".to_string()),
+            hero: Some("67a1c596/library_hero.jpg".to_string()),
+            logo: None,
+        };
+
+        let listed = owned(vec![protocol, protocol_game(440, "Team Fortress 2")]);
+
+        assert_eq!(
+            listed[0].pictures.of(crate::art::Piece::Cover),
+            Some("28dbb244/library_600x900.jpg")
+        );
+        assert_eq!(
+            listed[0].pictures.of(crate::art::Piece::Hero),
+            Some("67a1c596/library_hero.jpg")
+        );
+        assert_eq!(listed[0].pictures.of(crate::art::Piece::Logo), None);
+        // And a game whose record says nothing has nothing said about it,
+        // rather than a path assembled out of hope.
+        assert!(listed[1].pictures.is_empty());
     }
 
     #[test]

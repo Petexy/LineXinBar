@@ -79,8 +79,30 @@ pub struct ShellControlState {
     /// it is one whose picture is not ours to turn, and no event is sent for
     /// it at all.
     output_transform: Vec<(Output, Transform)>,
+    /// Last place broadcast per display, for the displays this compositor
+    /// arranges. Diffed like the rest, and one display moving moves at least
+    /// one other — they trade — so a change here is normally two events.
+    output_place: Vec<(Output, usize)>,
     /// Display the shell says the user is on, from `set_launch_output`.
     launch_output: Option<Output>,
+    /// Display a press on an application was last reported on, so that clicking
+    /// about inside a game does not wake the shell once per click.
+    ///
+    /// Forgotten whenever the shell names a launch display, because that is the
+    /// shell moving of its own accord — with a shoulder button, or by coming
+    /// back to a window from the guide — and a press back on the display it
+    /// moved away from has to be reported again.
+    pressed_output: Option<Output>,
+    /// Whether the next key pressed on a keyboard is worth telling the shell
+    /// about.
+    ///
+    /// Armed when a shell binds — one that has just started has been told
+    /// nothing — and again whenever a shell says the controller is back in the
+    /// user's hands. Spent by the event being sent, because what the shell
+    /// wants out of it is that the hands have moved: a message somebody types
+    /// into a game would otherwise wake it once per letter to say what the
+    /// first letter already said.
+    typing_is_news: bool,
     /// Questions in flight: who asked, and what number they gave it.
     ///
     /// One list rather than one per client, because an answer names only the
@@ -188,15 +210,48 @@ const OUT_OF_SIGHT_SINCE: u32 = 19;
 /// able to do it.
 const NIGHT_LIGHT_SINCE: u32 = 20;
 
+/// First version that says where each display stands in the arrangement, and
+/// can be asked to move one. Below it a shell has no way to know which screen
+/// the compositor puts first, and the displays are laid out in the order they
+/// were plugged in.
+const PLACE_SINCE: u32 = 21;
+
+/// First version that forwards the volume keys. Below it they are keys like
+/// any other and go to whatever holds the keyboard, which is to say that under
+/// a game they do nothing at all.
+const VOLUME_SINCE: u32 = 22;
+
+/// First version that says which display a press landed on. Below it a shell
+/// learns of a press only where its own surfaces are in front, so clicking the
+/// application on the second screen left it driving the first one.
+const PRESSED_SINCE: u32 = 23;
+
+/// First version that says a key was pressed on a keyboard, and that can be
+/// told the controller is back. Below it a shell learns of typing only where it
+/// holds the keys itself, so a user typing into a game keeps being offered a
+/// keyboard they are already sitting at.
+const TYPED_SINCE: u32 = 24;
+
+/// First version that can be asked to draw applications larger than life.
+/// Below it every window is the size of the display it is on, and a shell's
+/// Application scaling page still remembers what it was set to — the file is
+/// read by whichever compositor comes next — but nothing is sent.
+const APP_SCALE_SINCE: u32 = 25;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = NIGHT_LIGHT_SINCE;
+const CURRENT_VERSION: u32 = APP_SCALE_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
 /// claiming "the next version" cannot both be merged — the easy mistake, and
 /// one that otherwise shows up as a shell silently not being sent an event.
 const _: () = assert!(NIGHT_LIGHT_SINCE == OUT_OF_SIGHT_SINCE + 1);
+const _: () = assert!(PLACE_SINCE == NIGHT_LIGHT_SINCE + 1);
+const _: () = assert!(VOLUME_SINCE == PLACE_SINCE + 1);
+const _: () = assert!(PRESSED_SINCE == VOLUME_SINCE + 1);
+const _: () = assert!(TYPED_SINCE == PRESSED_SINCE + 1);
+const _: () = assert!(APP_SCALE_SINCE == TYPED_SINCE + 1);
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -214,7 +269,10 @@ impl ShellControlState {
             output_hdr: Vec::new(),
             output_modes: Vec::new(),
             output_transform: Vec::new(),
+            output_place: Vec::new(),
             launch_output: None,
+            pressed_output: None,
+            typing_is_news: true,
             asked: Vec::new(),
         }
     }
@@ -264,6 +322,22 @@ impl ShellControlState {
         }
     }
 
+    /// Whether any shell listening can be told about a volume key. Used only
+    /// to explain a key that did nothing.
+    fn wants_volume(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|instance| instance.version() >= VOLUME_SINCE)
+    }
+
+    fn send_volume(&self, change: lxb_shell_v1::VolumeChange) {
+        for instance in &self.instances {
+            if instance.version() >= VOLUME_SINCE {
+                instance.volume(change);
+            }
+        }
+    }
+
     /// Whether any shell listening can be asked for a screenshot. Used only to
     /// explain a key that did nothing.
     fn wants_screenshot(&self) -> bool {
@@ -290,6 +364,68 @@ impl ShellControlState {
             }
         }
         sent
+    }
+
+    /// Tell every shell that a press landed on an application, and on which
+    /// display, so that the display the user is driving follows their hand onto
+    /// a screen the shell's own surfaces are not in front of.
+    ///
+    /// Nothing is sent for a press on the display this last reported — see
+    /// [`Self::pressed_output`] — and the display is only remembered once it has
+    /// actually been sent, so a press made before any shell had bound that
+    /// `wl_output` is not recorded as delivered.
+    pub(crate) fn send_output_pressed(&mut self, output: &Output) {
+        if !press_is_news(self.pressed_output.as_ref(), output) {
+            return;
+        }
+        let mut sent = false;
+        for instance in &self.instances {
+            if instance.version() < PRESSED_SINCE {
+                continue;
+            }
+            let Some(client) = instance.client() else {
+                continue;
+            };
+            for wl_output in output.client_outputs(&client) {
+                instance.output_pressed(&wl_output);
+                sent = true;
+            }
+        }
+        if sent {
+            tracing::debug!(display = %output.name(), "a press landed on an application here");
+            self.pressed_output = Some(output.clone());
+        }
+    }
+
+    /// Tell every shell that a key went down on a keyboard, so that whatever it
+    /// is offering a controller can be put away.
+    ///
+    /// Once, and then nothing until a shell says the controller has been picked
+    /// back up — see [`Self::typing_is_news`]. Spent only once it has actually
+    /// been sent, so a key pressed before any shell new enough had bound this
+    /// interface is not recorded as delivered.
+    pub(crate) fn send_typed(&mut self) {
+        if !self.typing_is_news {
+            return;
+        }
+        let mut sent = false;
+        for instance in &self.instances {
+            if instance.version() < TYPED_SINCE {
+                continue;
+            }
+            instance.typed();
+            sent = true;
+        }
+        if sent {
+            tracing::debug!("a key was pressed on a keyboard; the shell is told");
+            self.typing_is_news = false;
+        }
+    }
+
+    /// Arm that event again: the user has picked the controller back up, or a
+    /// shell has just bound and has been told nothing yet.
+    fn typing_is_news_again(&mut self) {
+        self.typing_is_news = true;
     }
 
     /// Put one client's question to everybody else bound to this interface,
@@ -486,6 +622,27 @@ impl ShellControlState {
         self.output_transform = current;
     }
 
+    /// Publish where each display stands in the arrangement.
+    ///
+    /// `current` lists only the displays this compositor arranges, and lists
+    /// them in the order it arranges them, so one it does not — and one that
+    /// has gone away — simply stops being named.
+    fn broadcast_output_place(&mut self, current: Vec<(Output, usize)>) {
+        for (output, place) in &current {
+            let known = self
+                .output_place
+                .iter()
+                .any(|(seen, seen_place)| seen == output && seen_place == place);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_place(instance, output, *place);
+            }
+        }
+        self.output_place = current;
+    }
+
     /// Bring a newly bound shell up to date, since the broadcasts above only
     /// carry changes.
     ///
@@ -516,6 +673,9 @@ impl ShellControlState {
         for (output, transform) in &self.output_transform {
             sent |= send_output_transform(shell, output, *transform);
         }
+        for (output, place) in &self.output_place {
+            sent |= send_output_place(shell, output, *place);
+        }
         sent
     }
 
@@ -531,6 +691,16 @@ impl ShellControlState {
             .filter(|shell| shell.is_alive() && !self.send_current(shell))
             .collect();
     }
+}
+
+/// Whether a press on `output` is news to the shell, given the display the last
+/// one was reported on.
+///
+/// The whole of the diff, so that clicking about inside a game does not wake the
+/// shell once per click: a press moves the display being driven, and a press on
+/// the display already being driven moves nothing.
+fn press_is_news(last: Option<&Output>, output: &Output) -> bool {
+    last != Some(output)
 }
 
 /// Send one display's foreground title, resolving the `wl_output` belonging to
@@ -672,6 +842,23 @@ fn send_output_transform(shell: &LxbShellV1, output: &Output, transform: Transfo
     sent
 }
 
+/// Send where one display stands in the arrangement, resolved through the
+/// receiving client's own `wl_output` for the same reason the title is.
+fn send_output_place(shell: &LxbShellV1, output: &Output, place: usize) -> bool {
+    if shell.version() < PLACE_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_place(&wl_output, place.min(u32::MAX as usize) as u32);
+        sent = true;
+    }
+    sent
+}
+
 /// One of the eight orientations as the protocol counts them, which is how
 /// `wl_output` counts them.
 fn wire_transform(transform: Transform) -> lxb_shell_v1::Transform {
@@ -759,6 +946,22 @@ impl LxbState {
             return;
         }
         self.lxb.shell_control.send_keyboard();
+    }
+
+    /// Tell the shell a volume key was pressed.
+    ///
+    /// Forwarded rather than carried out here for the same reason the
+    /// screenshot is: the compositor has the key and the shell has the mixer.
+    /// It is the shell that worked out which sound server this machine is
+    /// running, that holds where the control stands, and that has a bar to
+    /// show it on — a compositor setting the volume behind its back would be a
+    /// second opinion about it.
+    pub fn change_volume(&mut self, change: lxb_shell_v1::VolumeChange) {
+        if !self.lxb.shell_control.wants_volume() {
+            tracing::debug!("volume key pressed but no shell is listening for it");
+            return;
+        }
+        self.lxb.shell_control.send_volume(change);
     }
 
     /// Ask the shell to photograph the display the user is on.
@@ -897,6 +1100,41 @@ impl LxbState {
         self.queue_redraw();
     }
 
+    /// Draw every application this much larger than life from now on.
+    ///
+    /// One relayout does all three parts of it: every window is configured at
+    /// the size the new factor leaves it, told over `wp_fractional_scale_v1`
+    /// what to fill that size with, and drawn back out over the display it is
+    /// on. See [`crate::scale`], and
+    /// [`crate::outputs::OutputManager::tile_window_on_output`] for where the
+    /// first two are sent together.
+    ///
+    /// Nothing is written down. An application is started by the shell and the
+    /// shell says what this is as soon as it connects, so there is no window
+    /// that could ever come up at a size the two disagree about — which is what
+    /// makes this unlike a mode or a night light, both of which the compositor
+    /// remembers because the alternative is a black screen a second after
+    /// login.
+    ///
+    /// A window that has been given a new size has not yet drawn one. Each
+    /// client answers the configure in its own time, and until it does the
+    /// picture on screen is the last one it sent, drawn into the rectangle the
+    /// new factor asks for — soft for those few frames, and then right. There
+    /// is no way to have it otherwise: the pixels belong to the application.
+    pub fn set_application_scale(&mut self, scale: crate::scale::AppScale) {
+        if !self.lxb.outputs.set_app_scale(scale) {
+            return;
+        }
+        tracing::info!(
+            percent = scale.percent(),
+            "the shell changed how large applications draw"
+        );
+        self.lxb.outputs.relayout_windows(&mut self.lxb.space);
+        // Nothing here reaches a screen by itself: every window has been given
+        // a new size and nothing has been scanned out since.
+        self.queue_redraw();
+    }
+
     /// Publish the foreground application's title, if it changed — both for
     /// the session as a whole and for each display.
     ///
@@ -993,6 +1231,13 @@ impl LxbState {
     /// reach the Settings column the user is looking at rather than wait for
     /// the next time a window moves.
     pub fn refresh_hdr(&mut self) {
+        // Before the shell guard below, and deliberately: an application that
+        // asked what its display is being driven as is owed the answer whether
+        // or not a shell is bound. On a session started without one — every
+        // nested debugging run — the guard would otherwise swallow the only
+        // notification a colour-managed client ever gets.
+        crate::colour_management::displays_changed(self);
+
         if !self.lxb.shell_control.has_shell() {
             return;
         }
@@ -1055,6 +1300,32 @@ impl LxbState {
             .broadcast_output_transform(transforms);
     }
 
+    /// Publish where each display stands in the arrangement, if any of them
+    /// moved.
+    ///
+    /// Called on the same occasions the orientations are, plus the one that is
+    /// this event's own: a display arriving or leaving renumbers every display
+    /// laid out after it, without anybody having asked for anything.
+    ///
+    /// Built from the compositor's own order rather than from the space's list
+    /// of outputs, because that order *is* the answer — see
+    /// [`crate::outputs::OutputManager::placed`], which is also what leaves out
+    /// the displays whose place is not this compositor's to set.
+    pub fn refresh_places(&mut self) {
+        if !self.lxb.shell_control.has_shell() {
+            return;
+        }
+        let places = self
+            .lxb
+            .outputs
+            .placed(&self.lxb.config)
+            .into_iter()
+            .enumerate()
+            .map(|(place, output)| (output, place))
+            .collect();
+        self.lxb.shell_control.broadcast_output_place(places);
+    }
+
     /// The window an overview id names, if it is still mapped.
     fn window_by_overview_id(&self, id: u32) -> Option<Window> {
         self.lxb
@@ -1091,6 +1362,11 @@ impl LxbState {
     /// itself, and ending *that* would take the whole X session with it, so
     /// the pid is read from the window instead.
     pub fn kill_window(&mut self, window: &Window) {
+        // Before anything is sent: a `SIGTERM` to a stopped process is a signal
+        // pending on something that will never run to handle it, and the whole
+        // point of sending it first is that the application gets to finish what
+        // it was doing. See [`LxbState::wake_this_application`].
+        self.wake_this_application(window);
         let pid = self.window_pid(window);
         let title = window_title(window);
         let app_id = window_app_id(window);
@@ -1194,12 +1470,17 @@ impl LxbState {
 
         // The display it is on, for its scale: a picture of a window on a
         // doubled screen has twice the pixels, which is what was on screen.
+        // Times how much larger than life the application is drawing, for
+        // exactly the same reason — a window scaled to 150% put a buffer half
+        // again as wide on the screen, and a photograph of it that ignored
+        // that would be the one picture of this window nobody ever saw.
         let scale = self
             .lxb
             .outputs
             .window_display(&self.lxb.space, &window)
             .map(|output| output.current_scale().fractional_scale())
-            .unwrap_or(1.0);
+            .unwrap_or(1.0)
+            * crate::scale::window_scale(self.lxb.outputs.app_scale(), &window);
 
         let shot = match self.backend.capture_window(&window, scale) {
             Ok(shot) => shot,
@@ -1223,7 +1504,7 @@ impl LxbState {
     }
 
     /// The process behind a window, however the window got here.
-    fn window_pid(&self, window: &Window) -> Option<i32> {
+    pub(crate) fn window_pid(&self, window: &Window) -> Option<i32> {
         if let Some(surface) = window.x11_surface() {
             surface
                 .pid()
@@ -1349,7 +1630,7 @@ impl LxbState {
 
 /// A window's human-readable title, falling back to something the shell can
 /// still put in a menu when the client set none.
-fn window_title(window: &Window) -> String {
+pub(crate) fn window_title(window: &Window) -> String {
     if let Some(toplevel) = window.toplevel() {
         let title = with_states(toplevel.wl_surface(), |states| {
             states
@@ -1425,15 +1706,23 @@ impl GlobalDispatch<LxbShellV1, ()> for LxbState {
         state.lxb.shell_control.instances.push(shell);
         tracing::info!("session shell bound lxb_shell_v1");
 
+        // Whatever the last shell was told about the user's hands was told to
+        // it and not to this one, which has just started and knows nothing: the
+        // next key pressed is news again. Otherwise a shell restarted after a
+        // spell of typing would go on offering a keyboard to somebody sitting
+        // at one, with nothing left that could ever say so.
+        state.lxb.shell_control.typing_is_news_again();
+
         // The first instance turns foreground tracking on; publish the current
         // window straight away rather than waiting for the next change.
         state.refresh_foreground();
-        // And what every display can be driven at, and how each one's picture
-        // is turned, which are otherwise only published when a display is
-        // plugged in — on a session that started with its displays already
-        // there, that is never.
+        // And what every display can be driven at, how each one's picture is
+        // turned, and where each one stands, which are otherwise only published
+        // when a display is plugged in — on a session that started with its
+        // displays already there, that is never.
         state.refresh_modes();
         state.refresh_transforms();
+        state.refresh_places();
     }
 }
 
@@ -1464,6 +1753,11 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     "shell chose the display to launch applications on"
                 );
                 state.lxb.shell_control.launch_output = output;
+                // The shell has moved of its own accord, so what it was last
+                // told about a press is spent: a press back on the display it
+                // has just left is news again. See
+                // [`ShellControlState::pressed_output`].
+                state.lxb.shell_control.pressed_output = None;
             }
             lxb_shell_v1::Request::SetOutputOverview { output, enabled } => {
                 match Output::from_resource(&output) {
@@ -1491,6 +1785,9 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     Some(window) => {
                         state.raise_window(&window, true);
                         state.set_window_keyboard_focus(&window);
+                        // And what the pointer is over, which has just changed
+                        // under a pointer that did not move.
+                        state.refresh_pointer_focus();
                     }
                     // It closed between the shell drawing the card and the
                     // user choosing it.
@@ -1531,6 +1828,7 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                         }
                         state.raise_window(&window, true);
                         state.set_window_keyboard_focus(&window);
+                        state.refresh_pointer_focus();
                         state.queue_redraw();
                     }
                     None => tracing::debug!(id, "restore of a window that is gone"),
@@ -1732,6 +2030,25 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     ),
                 }
             }
+            lxb_shell_v1::Request::SetOutputPlace { output, place } => {
+                match Output::from_resource(&output) {
+                    Some(output) => {
+                        // Nothing is clamped here, for the reason a mode is
+                        // not: a place past the end of the list is not a
+                        // request with a sensible neighbour, it is a shell
+                        // describing an arrangement this compositor does not
+                        // have, and putting the display at the far end instead
+                        // would be inventing an answer.
+                        if state.set_output_place(&output, place as usize) {
+                            // Where every display now stands, for the page that
+                            // asked — and for the page on the display it traded
+                            // with, which moved without being asked.
+                            state.refresh_places();
+                        }
+                    }
+                    None => tracing::debug!("a display that is gone was asked to move"),
+                }
+            }
             lxb_shell_v1::Request::AskToShare { id, app_id } => {
                 tracing::info!(id, %app_id, "an application is asking to see a display");
                 if !state
@@ -1762,7 +2079,19 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             lxb_shell_v1::Request::KeepOutOfSight { app_id, hidden } => {
                 state.keep_out_of_sight(&app_id, hidden == 1)
             }
+            lxb_shell_v1::Request::SetApplicationScale { scale } => {
+                state.set_application_scale(crate::scale::AppScale::from_percent(scale))
+            }
             lxb_shell_v1::Request::HidePointer => state.pointer_put_down(),
+            lxb_shell_v1::Request::ControllerUsed => {
+                // The one thing about the user's hands the compositor cannot
+                // see for itself: a pad is read from `/dev/input` by the shell
+                // and is not a seat device, so a thumb landing on it happens
+                // entirely outside this process. The next key pressed is news
+                // again. See [`ShellControlState::typing_is_news`].
+                tracing::debug!("the shell says the controller is back in hand");
+                state.lxb.shell_control.typing_is_news_again();
+            }
             lxb_shell_v1::Request::KeyboardKey { key, state: down } => {
                 // As above: anything that is not "pressed" is a release.
                 let pressed = down
@@ -1800,5 +2129,44 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
         if !state.lxb.shell_control.has_shell() {
             state.lxb.overview.close_all(std::time::Instant::now());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        )
+    }
+
+    /// A press is told to the shell when it lands on a display other than the
+    /// one the last press was told about, and only then: a hand clicking about
+    /// inside a game must not wake the shell once per click, and the display
+    /// that hand is on has not changed.
+    #[test]
+    fn only_a_press_on_another_display_is_told_to_the_shell() {
+        let first = output("A");
+        let second = output("B");
+
+        // Nothing remembered: the first press of the session, and every press
+        // after the shell has named a launch display and this was forgotten, so
+        // that a press back on the display it moved away from is news again.
+        assert!(press_is_news(None, &first));
+
+        assert!(!press_is_news(Some(&first), &first));
+        assert!(press_is_news(Some(&first), &second));
+
+        // The display, not its name: a display unplugged and plugged back in is
+        // a new `Output` with the old name, and a press on it is news.
+        assert!(press_is_news(Some(&first), &output("A")));
     }
 }

@@ -113,6 +113,17 @@ const CARD_CORNER: f32 = 0.09;
 /// The category's is a squircle, which at a fourth-power corner already holds
 /// a square this size with room to spare.
 const ITEM_DISC: f32 = std::f32::consts::SQRT_2 * 1.04;
+
+/// How wide a round preview is, as a multiple of the room a glyph would have
+/// had.
+///
+/// Wider than the glyph and narrower than the glass under it. A glyph is a
+/// drawing with its own margin inside a square, so a photograph drawn to the
+/// same square would read as the smaller object of the two; and one drawn to
+/// the disc would cover the glass exactly, leaving the chosen row with no glass
+/// showing at all. Between the two, the picture is the largest thing on the
+/// row and the light still reaches round it.
+const ITEM_PREVIEW: f32 = ITEM_DISC * 0.8;
 const CATEGORY_DISC: f32 = 1.30;
 /// What says where the next letter will land, in the one row of the bar that
 /// can be typed into.
@@ -1306,14 +1317,42 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
         // column per frame is exactly the cost this shell does not pay.
         match entry {
             Entry::Media(file) => return file.kind.has_picture().then(|| Cards::of(CARD_ASPECT)),
+            // A folder's field says nothing about cards, and says it without
+            // stopping the walk: what a directory holds is folders, documents
+            // and photographs together, so its column is rows — see the round
+            // preview an explorer row draws instead.
             Entry::Search(search) => {
-                return search.kind.has_picture().then(|| Cards::of(CARD_ASPECT))
+                let kind = search.of.shelf()?;
+                return kind.has_picture().then(|| Cards::of(CARD_ASPECT));
             }
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
             _ => {}
         }
     }
     None
+}
+
+/// The square out of the middle of a picture that a round hole shows, as
+/// fractions of the whole picture: left, top, right, bottom.
+///
+/// A photograph is almost never square and a hole always is, so something has
+/// to give. Stretching gives the wrong face; fitting gives a picture with two
+/// empty crescents round it, which in a *column* of them reads as pictures of
+/// several different sizes. What is left is the middle, which is where the
+/// subject of a photograph is in the overwhelming majority of photographs — and
+/// it is what every gallery on every phone does with a thumbnail grid.
+///
+/// The middle and not the top: a portrait picture cropped from the top would be
+/// a column of foreheads.
+fn round_crop(aspect: f32) -> [f32; 4] {
+    // The fraction of the long side the short side is worth.
+    let (keep_x, keep_y) = if aspect >= 1.0 {
+        (1.0 / aspect, 1.0)
+    } else {
+        (1.0, aspect)
+    };
+    let (edge_x, edge_y) = ((1.0 - keep_x) / 2.0, (1.0 - keep_y) / 2.0);
+    [edge_x, edge_y, 1.0 - edge_x, 1.0 - edge_y]
 }
 
 /// Lay out one display's bar.
@@ -1784,6 +1823,35 @@ pub fn build(
                 });
             }
 
+            // The picture a file in a folder is *of*, in the round hole its glyph
+            // would have had.
+            //
+            // Round, and cut from the middle, because this column is not a
+            // column of pictures: a folder holds folders, documents and
+            // photographs together, so the rows have to stay rows — one shape,
+            // one rhythm, a picture where the mark of a kind would otherwise
+            // be. The shelves answer the same question the other way round,
+            // with cards, because everything on one of those *is* a picture and
+            // the column can be made of them.
+            let preview = entry
+                .file()
+                .and_then(|file| slots.thumbnail(&file.path))
+                .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+            if let Some(thumb) = preview {
+                let size = icon_size * ITEM_PREVIEW;
+                quads.push(Quad {
+                    x: x - size / 2.0,
+                    y: y - size / 2.0,
+                    w: size,
+                    h: size,
+                    slot: thumb.slot,
+                    color: [1.0, 1.0, 1.0, alpha],
+                    radius: size / 2.0,
+                    crop: round_crop(thumb.aspect),
+                    ..Quad::default()
+                });
+            }
+
             // A row standing for a colour is drawn *in* that colour: the atlas
             // multiplies the quad's colour into the texel, so the swatch is
             // one white drawing tinted rather than a drawing per colour. It
@@ -1796,7 +1864,7 @@ pub fn build(
             // still on screen to the left.
             if let Some((bar, box_)) = groove {
                 quads.extend(column_bar(box_, bar, alpha, active));
-            } else if picture.is_none() {
+            } else if picture.is_none() && preview.is_none() {
                 // Only where there is no picture. A row that drew both would be
                 // a film strip stamped over the frame it stands for.
                 let mut icon = icon_quad(
@@ -2141,12 +2209,16 @@ fn bar_item_y(offset: f32, level: usize, near: f32, height: f32, cards: Option<C
 }
 
 /// What a click at `(x, y)` on the start screen has landed on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BarSpot {
     /// A button on the category row.
     Category(usize),
-    /// A row of the column the user is standing in.
-    Item(usize),
+    /// A row of the column the user is standing in. `level` is where along the
+    /// groove the point fell, for a row that is a bar — the one row in the tree
+    /// a press says something *with* rather than merely to, exactly as the
+    /// guide's own bars and the mixer's rows do. `None` for every other row,
+    /// and for a point that was on a bar's row but not on its track.
+    Item { row: usize, level: Option<f32> },
     /// The row a column further back was opened from — the trail. Carries how
     /// many columns back it is, which is how many steps out reach it.
     Trail(usize),
@@ -2251,8 +2323,10 @@ fn column_hit(
         // A column of pictures is wider and taller than one of applications,
         // and the hand has to land where the eye says the row is.
         let cards = cards_in(column.entries);
-        let reach = cards.map_or(ITEM_ICON_FOCUSED * ITEM_DISC, |cards| cards.reach());
-        let left = bar_column_x(level as f32, depth, width, height) - reach * scale * near * 0.5;
+        let row_reach =
+            cards.map_or(ITEM_ICON_FOCUSED * ITEM_DISC, |cards| cards.reach()) * scale * near;
+        let column_x = bar_column_x(level as f32, depth, width, height);
+        let left = column_x - row_reach * 0.5;
         // The strip ends where the next column *the user can act on* begins, so
         // a column stepped out of does not go on holding back the one it came
         // out of: half the open column would answer to nothing until the next
@@ -2304,6 +2378,27 @@ fn column_hit(
             if row_y < -band || row_y > height + band {
                 continue;
             }
+            // A bar is not a row-sized thing. Its groove is a track most of the
+            // column tall — see [`column_bar`] — and the whole of that track is
+            // the control: what a press on it asks for is decided by *where*
+            // along it the press was made, the way it is on the guide's bars and
+            // on the mixer's rows. So the track is asked before the row's own
+            // band, which is one icon high and would answer for the middle of a
+            // track that reaches most of the way up the screen.
+            //
+            // It cannot take a click off the row above or below it: a bar is the
+            // whole of its column, which is what makes the number on it readable
+            // as the value — the name of the setting is on the row the column
+            // was opened from. See [`crate::apps::Bar`].
+            if column.entries[index].bar().is_some() {
+                let track = column_bar_box(column_x, row_y, height, scale * near);
+                if let Some(level) = column_bar_level_at(track, row_reach, x, y) {
+                    return Some(BarSpot::Item {
+                        row: index,
+                        level: Some(level),
+                    });
+                }
+            }
             let reach = |neighbour: f32| {
                 let step = (neighbour - row_y).abs();
                 // The ends of the column have a row on one side only, and there
@@ -2317,7 +2412,10 @@ fn column_hit(
             let above = reach(row_at(index.saturating_sub(1)));
             let below = reach(row_at((index + 1).min(column.entries.len() - 1)));
             if y >= row_y - above && y <= row_y + below {
-                return Some(BarSpot::Item(index));
+                return Some(BarSpot::Item {
+                    row: index,
+                    level: None,
+                });
             }
         }
     }
@@ -6649,6 +6747,32 @@ fn column_bar_box(x: f32, y: f32, height: f32, scale: f32) -> [f32; 4] {
     [x - w / 2.0, y - h / 2.0, w, h]
 }
 
+/// What a press at `(x, y)` sets a bar whose groove is drawn at `track`, or
+/// `None` where the press was not on the control at all.
+///
+/// The other half of [`column_bar`], and read off the same arithmetic: the
+/// level is measured against the channel the fill is laid in rather than
+/// against the whole groove, so a press on the handle is the value the handle
+/// is already standing on and a press at either end reaches that end exactly.
+///
+/// `reach` is how wide the control answers, and it is the room the row's icon
+/// would have had rather than the width of the drawn groove. A track is aimed
+/// at across its width and pressed along its length: the groove is a pane
+/// [`COLUMN_BAR_WIDTH`] across where an icon is a hundred-odd, and a bar the
+/// hand had to be threaded into would be the one control in the shell that
+/// wanted care. It is the same width the column measures its own strip from,
+/// which is what keeps a press on the track from being one on the wallpaper
+/// beside it. Past the ends of the track there is no value to be asking for,
+/// so the length is the track itself.
+fn column_bar_level_at([left, top, w, h]: [f32; 4], reach: f32, x: f32, y: f32) -> Option<f32> {
+    if (x - (left + w / 2.0)).abs() > reach / 2.0 || y < top || y > top + h {
+        return None;
+    }
+    let inset = w * COLUMN_BAR_INSET;
+    let room = h - inset * 2.0;
+    (room > 0.0).then(|| ((top + inset + room - y) / room).clamp(0.0, 1.0))
+}
+
 /// The bar itself: the groove, the part of it that is filled, and the handle
 /// on the end of the fill.
 ///
@@ -6836,6 +6960,25 @@ pub fn launch_origin(width: f32, height: f32) -> [f32; 4] {
     );
     let size = ITEM_ICON_FOCUSED * scale * ITEM_DISC;
     [cross_x - size * 0.5, y - size * 0.5, size, size]
+}
+
+/// The same, for a row that stands on a Steam cover rather than on a disc.
+///
+/// A library is a column of pictures and the picture *is* the row — see
+/// [`Cards`] — so this is the chosen card at the cross, at the shape Valve's
+/// portrait capsule comes in. A game brought back out of [`launch_origin`]
+/// would grow out of a small square hole in the middle of the cover the user
+/// pressed, which reads as the window arriving from somewhere else.
+///
+/// Derived from the same numbers the column is laid out with, and held to the
+/// drawing by `a_game_opens_out_of_the_cover_it_was_chosen_from`.
+pub fn cover_origin(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let cards = Cards::of(COVER_ASPECT);
+    let y = height * BAR_CROSS_Y + gap_below(Some(cards)) * scale;
+    let h = cards.focused * scale;
+    let w = cards.width(h);
+    [width * BAR_CROSS_X - w * 0.5, y - h * 0.5, w, h]
 }
 
 /// The splash panel `open` of the way out of `from`, and the corner radius to
@@ -7164,6 +7307,96 @@ pub fn toast_rects(cards: &[ToastCard], width: f32, height: f32) -> Vec<[f32; 4]
         .into_iter()
         .map(|(rect, _)| rect)
         .collect()
+}
+
+// --- the volume control the keys raise -------------------------------------
+
+/// How tall the control the volume keys raise is.
+///
+/// Added up rather than chosen, out of the one thing standing in it: the glyph
+/// at its head is [`BAR_GLYPH`] of the pane's height and stands [`BAR_INSET`]
+/// in from its left edge, and this is the height at which the air under that
+/// glyph is the same as the air beside it. Anything else reads as a bar that
+/// has slipped up or down inside its own panel.
+const VOLUME_HEIGHT: f32 = BAR_INSET * 2.0 / (1.0 - BAR_GLYPH);
+
+/// How far it stands off the foot of the display.
+///
+/// The corner's own distance — see [`TOAST_INSET`] — because two pieces of this
+/// shell's furniture standing different distances from the edge of one screen
+/// is one of them looking misplaced.
+const VOLUME_INSET: f32 = TOAST_INSET;
+
+/// How far below where it settles it comes up from.
+///
+/// A short way, and not the whole panel: this is not something arriving from
+/// off the display like a bubble is — it belongs to a key that has already
+/// taken effect, and the movement is only there to say which direction it came
+/// from. Far enough to be a rise, near enough that the eye has nothing to
+/// follow.
+const VOLUME_TRAVEL: f32 = 26.0;
+
+/// The volume, as the control the keys raise needs it: where it stands, and how
+/// far through its own arrival the panel is.
+pub struct VolumeView<'a> {
+    pub level: Level,
+    /// 0 to 1, and linear — the easing is applied here, so that a showing
+    /// turned around half-way through carries on from where it was.
+    pub fade: f32,
+    /// The blur the pane bends what is behind it by, as every other pane in
+    /// the shell does.
+    pub behind: f32,
+    pub slots: &'a dyn SlotLookup,
+}
+
+/// Where the control stands: centred at the foot of the display, risen by
+/// however much of its arrival is done.
+///
+/// Its own function because two other things are cut to this shape — the runs
+/// underneath it, which a pane in front of them has to cut, and the input
+/// region, which must not be cut at all: this is drawn over an application
+/// somebody is still using and takes neither its keys nor its clicks.
+pub fn volume_rect(width: f32, height: f32, fade: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let w = CONTEXT_WIDTH * scale;
+    let h = VOLUME_HEIGHT * scale;
+    let rest = height - VOLUME_INSET * scale - h;
+    [
+        (width - w) * 0.5,
+        rest + VOLUME_TRAVEL * scale * (1.0 - ease(fade)),
+        w,
+        h,
+    ]
+}
+
+/// The control itself: one pane, with the sidebar's own volume bar laid on it.
+///
+/// Deliberately the same bar, drawn by the same code — see [`quick_bar`]. The
+/// keys and the row in the guide set one thing, and a shell that drew a
+/// different picture for each would be telling the user they are two controls.
+/// What the pane adds is somewhere for it to stand: the row has the sidebar's
+/// glass under it, and this one is over a game.
+pub fn build_volume(view: VolumeView, width: f32, height: f32) -> Scene {
+    let mut scene = Scene::default();
+    let alpha = ease(view.fade.clamp(0.0, 1.0));
+    if alpha <= 0.0 {
+        return scene;
+    }
+    let scale = guide_scale(height);
+    let rect = volume_rect(width, height, view.fade);
+
+    scene
+        .quads
+        .extend(sidebar_surface(rect, scale, view.behind, alpha));
+    scene.quads.extend(quick_bar(
+        rect,
+        Bar::Volume,
+        view.level,
+        scale,
+        alpha,
+        view.slots,
+    ));
+    scene
 }
 
 /// Draw the splash — one of two, depending on what is starting.
@@ -7524,6 +7757,45 @@ mod tests {
     use crate::model::Action;
     use std::path::{Path, PathBuf};
 
+    /// A round hole shows the middle of a picture, and the middle of a square
+    /// one is all of it. What must never happen is the crop reaching outside
+    /// the picture, which would sample whatever of the atlas is next door.
+    #[test]
+    fn a_round_preview_takes_the_middle_of_a_picture() {
+        assert_eq!(
+            round_crop(1.0),
+            [0.0, 0.0, 1.0, 1.0],
+            "a square is all of it"
+        );
+
+        let wide = round_crop(2.0);
+        assert_eq!(wide, [0.25, 0.0, 0.75, 1.0], "half the width of a 2:1");
+        let tall = round_crop(0.5);
+        assert_eq!(tall, [0.0, 0.25, 1.0, 0.75], "and half the height of a 1:2");
+
+        // Centred in both, whatever the shape: a portrait cropped from the top
+        // would be a column of foreheads.
+        for aspect in [0.2, 0.9, 1.6, 4.0] {
+            let [x0, y0, x1, y1] = round_crop(aspect);
+            assert!(
+                (x0 + x1 - 1.0).abs() < 1e-6,
+                "{aspect} is off-centre across"
+            );
+            assert!((y0 + y1 - 1.0).abs() < 1e-6, "{aspect} is off-centre down");
+            assert!(
+                (0.0..=1.0).contains(&x0) && (0.0..=1.0).contains(&y1),
+                "{aspect} reaches outside its own picture"
+            );
+            // And what is kept is square: the same fraction of the picture's
+            // width and height, once the shape is taken into account.
+            let kept = ((x1 - x0) * aspect, y1 - y0);
+            assert!(
+                (kept.0 - kept.1).abs() < 1e-6,
+                "{aspect} keeps {kept:?}, which is not a square"
+            );
+        }
+    }
+
     /// An icon, as opposed to the glass it stands on or the bloom behind it:
     /// icons are drawn square and unlit, everything else is material.
     fn is_icon(quad: &Quad) -> bool {
@@ -7689,6 +7961,13 @@ mod tests {
         }])
     }
 
+    /// The answer a point on an ordinary row gives: that row, and no value —
+    /// which is every row in the tree but a bar's track, the one place a press
+    /// says something with where it landed.
+    fn row_hit(row: usize) -> Option<BarSpot> {
+        Some(BarSpot::Item { row, level: None })
+    }
+
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
         Entry::Folder(Folder {
@@ -7696,10 +7975,15 @@ mod tests {
             comment: None,
             icon: Some("folder".into()),
             entries,
+            place: None,
         })
     }
 
     /// A column that is a value on a scale rather than a list of them.
+    ///
+    /// Its steps are a colour temperature's, because that is the one bar the
+    /// tree has: a test that presses the track is then pressing what the shell
+    /// draws, and gets back the setting the shell would apply.
     fn bar(fill: f32) -> Entry {
         Entry::Bar(crate::apps::Bar {
             title: "4000 K".into(),
@@ -7708,6 +7992,13 @@ mod tests {
             swatch: Some(crate::theme::Color(0xFFB46B)),
             up: None,
             down: None,
+            steps: (2000..=6500)
+                .step_by(100)
+                .map(|kelvin| crate::settings::Setting::Display {
+                    display: "TEST-OUT-1",
+                    value: crate::settings::DisplayValue::NightLightTemperature(kelvin),
+                })
+                .collect(),
         })
     }
 
@@ -7864,6 +8155,54 @@ mod tests {
             assert!(
                 disc.is_some(),
                 "{width}x{height}: nothing on the bar is at {tile:?}"
+            );
+        }
+    }
+
+    /// And a game grows out of its cover, which is a different rectangle
+    /// entirely.
+    ///
+    /// The one that matters most, because it is the one the *window itself*
+    /// flies out of: a game already running is not loaded again, it is brought
+    /// back — see `lxb_shell_v1.activate_window_from` — and what the user
+    /// pressed to get it is a tall picture, not the small disc every other row
+    /// stands on. Out of the disc it would grow from a square hole in the
+    /// middle of the cover, which reads as a window arriving from nowhere.
+    #[test]
+    fn a_game_opens_out_of_the_cover_it_was_chosen_from() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let xmb = library(&[(504230, "Celeste"), (367520, "Hollow Knight")]);
+            let scene = opened(&xmb, width, height, &Covers);
+            let tile = cover_origin(width, height);
+
+            // The chosen game's own cover, which is the tallest picture drawn:
+            // the card under it is what `cover_origin` describes, and the
+            // picture stands inside that card's mount.
+            let cover = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == THUMB_SLOT)
+                .max_by(|a, b| a.h.total_cmp(&b.h))
+                .expect("a library draws a cover on every row");
+            let mount = Cards::of(COVER_ASPECT).mount(tile[3]);
+            for (name, drawn, want) in [
+                ("left", cover.x, tile[0] + mount),
+                ("top", cover.y, tile[1] + mount),
+                ("width", cover.w, tile[2] - mount * 2.0),
+                ("height", cover.h, tile[3] - mount * 2.0),
+            ] {
+                assert!(
+                    (drawn - want).abs() < 0.5,
+                    "{width}x{height}: the cover's {name} is {drawn}, not {want}"
+                );
+            }
+
+            // And it is the cover it grows out of rather than the disc, which
+            // is neither where it stands nor the shape it is.
+            let disc = launch_origin(width, height);
+            assert!(
+                tile[3] > disc[3] * 1.5 && tile[2] < tile[3],
+                "{width}x{height}: a portrait capsule, not a disc: {tile:?}"
             );
         }
     }
@@ -8344,7 +8683,7 @@ mod tests {
         for (index, [x, y]) in rows.iter().enumerate() {
             assert_eq!(
                 bar_hit(&xmb, &cursor, *x, *y, width, height),
-                Some(BarSpot::Item(index)),
+                row_hit(index),
                 "the icon drawn at ({x}, {y}) is row {index}"
             );
         }
@@ -8354,7 +8693,7 @@ mod tests {
         let [ox, oy, ow, oh] = launch_origin(width, height);
         assert_eq!(
             bar_hit(&xmb, &cursor, ox + ow * 0.5, oy + oh * 0.5, width, height),
-            Some(BarSpot::Item(0))
+            row_hit(0)
         );
     }
 
@@ -8415,7 +8754,7 @@ mod tests {
         );
         assert_eq!(
             bar_hit(&xmb, &cursor, icons[1][0], middle, width, height),
-            Some(BarSpot::Item(0)),
+            row_hit(0),
             "and the column in front of it is still being browsed"
         );
 
@@ -9196,6 +9535,98 @@ mod tests {
         );
     }
 
+    /// And the whole of that track is the control: a press anywhere along it
+    /// asks for the value drawn at that point, exactly as a press along the
+    /// guide's own bars does.
+    ///
+    /// The track is most of the column tall and the band a row would otherwise
+    /// have is one icon high, so a bar measured as a row answers on a strip
+    /// through its middle and nowhere else — which leaves the one control in
+    /// the tree that says what it is set to by *where* it is drawn unable to be
+    /// set by pointing at it.
+    #[test]
+    fn a_bar_is_set_by_where_along_its_track_the_press_landed() {
+        let fill = 0.4;
+        let xmb = Xmb::new(vec![Category {
+            id: "settings",
+            title: "Settings",
+            icon: "settings",
+            entries: vec![app("plain"), folder("Color temperature", vec![bar(fill)])],
+        }]);
+        let cursor = stepped(&xmb);
+        let (width, height) = (1920.0, 1080.0);
+        let scene = build_with(&xmb, &cursor, width, height, true, &Named);
+
+        // The groove and the handle as they were drawn, because what the hand
+        // aims at is what the eye can see — the same reading of the scene the
+        // drawing test makes.
+        let groove = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT && quad.h > quad.w * 3.0)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("the groove");
+        let middle = groove.x + groove.w / 2.0;
+        let handle = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT && (quad.w - quad.h).abs() < 1.0)
+            .find(|quad| (quad.x + quad.w / 2.0 - middle).abs() < 1.0)
+            .expect("the handle on the end of the fill");
+
+        let pressed = |x: f32, y: f32| match bar_hit(&xmb, &cursor, x, y, width, height) {
+            Some(BarSpot::Item { row: 0, level }) => level,
+            other => panic!("{other:?} at ({x}, {y})"),
+        };
+
+        // The value the handle stands at is the value pressing the handle asks
+        // for: the drawing and the hit test are one answer read two ways here
+        // as much as anywhere else on the bar.
+        let at_handle =
+            pressed(middle, handle.y + handle.h / 2.0).expect("the handle is the track");
+        assert!((at_handle - fill).abs() < 0.01, "{at_handle} for {fill}");
+
+        // Both ends of the groove reach both ends of the range. Up the track is
+        // more, which is the way a quantity is read on anything vertical.
+        let head = pressed(middle, groove.y + 1.0).expect("the head of the track");
+        let foot = pressed(middle, groove.y + groove.h - 1.0).expect("the foot of it");
+        assert!(head > 0.99, "{head}");
+        assert!(foot < 0.01, "{foot}");
+
+        // And every point between them is somewhere on the range, in order.
+        // This is what the row's own band could not do: outside the one icon it
+        // is high, the length of the track answered to nothing at all.
+        let mut last = f32::INFINITY;
+        let mut step = groove.y + 1.0;
+        while step < groove.y + groove.h {
+            let level = pressed(middle, step).unwrap_or_else(|| panic!("nothing at {step}"));
+            assert!(level <= last + 1e-6, "{level} below {last} at {step}");
+            last = level;
+            step += 1.0;
+        }
+
+        // The name beside the track is the row rather than a place on it, which
+        // is the ordinary press — and on a bar that does nothing at all.
+        let beside = middle + ITEM_ICON_FOCUSED * ITEM_DISC * guide_scale(height);
+        assert_eq!(
+            pressed(beside, groove.y + groove.h * 0.5),
+            None,
+            "the label is the row, not a value on it"
+        );
+
+        // And the track answers for its own length only. Past either end of it
+        // there is no value to be asking for, and it does not reach across the
+        // column at the height it happens to be drawn at.
+        for at in [groove.y - 2.0, groove.y + groove.h + 2.0] {
+            assert_eq!(bar_hit(&xmb, &cursor, middle, at, width, height), None);
+        }
+        assert_eq!(
+            bar_hit(&xmb, &cursor, beside, groove.y + 1.0, width, height),
+            None,
+            "the head of the track is not the whole of that line"
+        );
+    }
+
     /// The value a setting is set to is marked, and a colour is drawn in
     /// itself: the swatch is the answer, and the word beside it is its name.
     #[test]
@@ -9807,7 +10238,7 @@ mod tests {
         for row in 0..3 {
             assert_eq!(
                 bar_hit(&xmb, &cursor, x, row_y(row), width, height),
-                Some(BarSpot::Item(row)),
+                row_hit(row),
                 "row {row}"
             );
         }
@@ -9823,7 +10254,7 @@ mod tests {
             assert!(
                 matches!(
                     bar_hit(&xmb, &cursor, x, step, width, height),
-                    Some(BarSpot::Item(_))
+                    Some(BarSpot::Item { .. })
                 ),
                 "nothing at {step}, between {top} and {bottom}"
             );
@@ -9921,7 +10352,7 @@ mod tests {
             );
             assert_eq!(
                 bar_hit(&xmb, &cursor, x, y, width, height),
-                Some(BarSpot::Item(row)),
+                row_hit(row),
                 "row {row}"
             );
         }
@@ -14071,6 +14502,127 @@ mod tests {
             let scene = build_toasts(std::slice::from_ref(&card), width, 1080.0, 0.0);
             assert!(scene.quads.is_empty() && scene.texts.is_empty());
         }
+    }
+
+    // --- the volume the keys raise -------------------------------------------
+
+    fn volume_control(level: Level, fade: f32) -> Scene {
+        build_volume(
+            VolumeView {
+                level,
+                fade,
+                behind: 0.0,
+                slots: &Named,
+            },
+            1920.0,
+            1080.0,
+        )
+    }
+
+    /// It stands at the foot of the display, clear of every other thing this
+    /// shell puts on one: the clock and the bubbles in the top right, the
+    /// cross and the guide's sidebar down the left.
+    #[test]
+    fn the_volume_control_stands_at_the_foot_of_the_display() {
+        let (w, h) = (1920.0, 1080.0);
+        let [x, y, cw, ch] = volume_rect(w, h, 1.0);
+        assert!(x > 0.0 && x + cw < w, "inside the display: {x} {cw}");
+        assert!(
+            (x + cw * 0.5 - w * 0.5).abs() < 0.01,
+            "centred: {x} + {cw} on {w}"
+        );
+        assert!(y > h * 0.75, "at the foot of it: {y}");
+        assert!(y + ch < h, "and clear of the edge: {y} + {ch}");
+
+        // It comes up from below rather than appearing, and has arrived by the
+        // time it is solid — nothing that has finished arriving is still on
+        // its way somewhere.
+        let arriving = volume_rect(w, h, 0.0);
+        assert!(arriving[1] > y, "it rises: {} to {y}", arriving[1]);
+        assert_eq!(volume_rect(w, h, 1.0), [x, y, cw, ch]);
+    }
+
+    /// One pane, with the sidebar's own volume bar laid on it — the same
+    /// picture, because a volume set two ways is one control.
+    #[test]
+    fn the_volume_control_wears_the_speaker_of_the_level_it_shows() {
+        let glyph = |level: Level| {
+            volume_control(level, 1.0)
+                .quads
+                .iter()
+                .find(|quad| quad.slot != SOLID_SLOT && quad.slot != GLOW_SLOT)
+                .map(|quad| quad.slot)
+                .expect("the speaker")
+        };
+        assert_eq!(
+            glyph(Level {
+                value: 0.4,
+                muted: false
+            }),
+            Named::slot_of(icons::VOLUME)
+        );
+        assert_eq!(
+            glyph(Level {
+                value: 0.4,
+                muted: true
+            }),
+            Named::slot_of(icons::VOLUME_MUTED),
+            "a silenced session says so, as the row in the guide does"
+        );
+    }
+
+    /// The fill is the reading, and it is the one thing on the control that
+    /// changes with the value.
+    #[test]
+    fn the_volume_controls_fill_follows_the_level() {
+        let filled = |value: f32| {
+            let scene = volume_control(
+                Level {
+                    value,
+                    muted: false,
+                },
+                1.0,
+            );
+            // The groove and what is lying in it: the two flat marks the
+            // track is made of, which are the only things on the control as
+            // thin as `BAR_TRACK`. The pane behind them is the height of the
+            // whole panel, and the handle is twice the track.
+            let parts: Vec<&Quad> = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == SOLID_SLOT && quad.h <= BAR_TRACK + 0.5)
+                .collect();
+            let track = parts
+                .iter()
+                .max_by(|a, b| a.w.total_cmp(&b.w))
+                .expect("a groove");
+            parts
+                .iter()
+                .filter(|quad| (quad.x - track.x).abs() < 0.5 && quad.w < track.w)
+                .map(|quad| quad.w / track.w)
+                .fold(0.0f32, f32::max)
+        };
+        let quiet = filled(0.2);
+        let loud = filled(0.8);
+        assert!(quiet > 0.0 && quiet < loud && loud < 1.0, "{quiet} {loud}");
+        assert!(
+            (loud / quiet - 4.0).abs() < 0.2,
+            "four times as loud is four times as much of the groove: {quiet} {loud}"
+        );
+    }
+
+    /// Nothing at all is drawn once it has gone — a control that left its
+    /// glass standing over somebody's game is the failure to watch for.
+    #[test]
+    fn a_volume_control_that_has_gone_draws_nothing() {
+        let scene = volume_control(
+            Level {
+                value: 0.5,
+                muted: false,
+            },
+            0.0,
+        );
+        assert!(scene.quads.is_empty() && scene.texts.is_empty());
     }
 
     /// The notification list as the guide raises it: a way to clear the lot,

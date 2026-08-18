@@ -27,6 +27,7 @@ use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
 use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::dmabuf::DmabufState;
+use smithay::wayland::drm_syncobj::DrmSyncobjState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::seat::WaylandFocus;
@@ -144,6 +145,9 @@ pub struct Lxb {
     /// That is the home button on a keyboard, and it cannot live in the table
     /// above: see [`crate::input::HomeTap`].
     pub home_tap: crate::input::HomeTap,
+    /// The volume key being held down, which is the one binding that goes on
+    /// acting while it is held: see [`crate::input::VolumeKey`].
+    pub volume_key: crate::input::VolumeKey,
 
     // Protocol globals. Several of these are never read after construction,
     // but dropping them would unadvertise the global, so they are owned here
@@ -165,12 +169,59 @@ pub struct Lxb {
     pub presentation_state: PresentationState,
     pub activation_state: XdgActivationState,
     pub dmabuf_state: DmabufState,
+    /// Explicit synchronisation, once a DRM device has been opened to import
+    /// timelines against.
+    ///
+    /// `None` until then, and `None` for good on a device whose kernel driver
+    /// cannot wake us when a timeline point signals: the protocol is only
+    /// advertised where the acquire point can actually be waited on, because a
+    /// compositor that took the fences and ignored them would show clients
+    /// half-drawn frames rather than blocking on them.
+    ///
+    /// The nested backends never set it. There is no DRM device of our own
+    /// there — the host compositor owns the display — so a client inside one
+    /// synchronises the way it did before.
+    pub syncobj_state: Option<DrmSyncobjState>,
+    /// How many client commits are being held right now waiting for the GPU
+    /// work behind them to finish — an explicit acquire point that has not
+    /// signalled yet.
+    ///
+    /// Normally none, or one for an instant. A number that stays up is a client
+    /// whose frame this compositor is sitting on, which from the client's side
+    /// is indistinguishable from a compositor that has stopped answering: see
+    /// [`crate::render`], which prints this beside an application that has gone
+    /// quiet.
+    pub blocked_commits: usize,
+    /// When the run of held commits started, cleared when the last one clears.
+    pub blocked_since: Option<std::time::Instant>,
     pub xwayland_shell_state: XWaylandShellState,
     #[allow(dead_code)]
     pub xwayland_keyboard_grab_state: XWaylandKeyboardGrabState,
     pub shell_control: ShellControlState,
     pub xwm: Option<X11Wm>,
+    /// `wp_tearing_control_v1`, kept only so the global lives as long as the
+    /// session does. What a client sets through it is read off the surface.
+    #[allow(dead_code)]
+    pub tearing_control: crate::tearing::TearingControlState,
+    /// `frog_color_management_v1`. Kept for the global's lifetime; what a
+    /// client says through it is read off the surface. See [`crate::colour`].
+    #[allow(dead_code)]
+    pub colour: crate::colour::ColourState,
+    /// `wp_color_manager_v1`, the same question asked the standard way. This
+    /// one is read from as well as held: it keeps the live output and feedback
+    /// objects that have to be told when a display changes what it is being
+    /// driven as. See [`crate::colour_management`].
+    pub colour_manager: crate::colour_management::ColourManagerState,
     pub x11_focus_probe: Option<X11FocusProbe>,
+    /// The window last named in `_NET_ACTIVE_WINDOW`, so the property is only
+    /// written when the answer changes — see
+    /// `LxbState::name_the_active_x11_window`. `None` until the first one goes
+    /// out, so that one is always written.
+    pub x11_active_window: Option<u32>,
+    /// The last disagreement reported by [`LxbState::check_xwayland_focus`] —
+    /// the window we focused, and the one X says holds the keyboard. Kept only
+    /// so a steady disagreement is logged once rather than at every poll.
+    pub last_x11_focus_drift: Option<(u32, u32)>,
     /// Where XWayland's pointer was at the last check, and where ours was. A
     /// difference appearing in the first without the second having moved is
     /// motion an X client synthesised — see `follow_xwayland_pointer`.
@@ -186,6 +237,8 @@ pub struct Lxb {
     pub overview: crate::overview::Overviews,
     /// Windows on their way back out of the tile that asked for them.
     pub restores: crate::restore::Restores,
+    /// Applications stopped because nothing of them is on screen.
+    pub sleepers: crate::sleep::Sleepers,
     /// Displays answering for a screenshot that has just been taken of them.
     pub flashes: crate::flash::Flashes,
     /// Frames other clients have asked for over wlr-screencopy, and the damage
@@ -203,6 +256,17 @@ pub struct Lxb {
     pub nested_host_pointer_location: Option<Point<f64, Logical>>,
     /// Client-provided position to restore after an active pointer lock ends.
     pub pointer_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
+    /// How often a confinement has refused to let the pointer move, and when
+    /// that was last said out loud — see
+    /// [`crate::input::watch_a_refused_pointer`], which is the only thing that
+    /// reads or writes it.
+    pub pointer_refused: Option<crate::input::Repeatedly>,
+    /// The same for the pointer being held on screen, having been driven off
+    /// every display — see `crate::input::watch_a_clamped_pointer`.
+    pub pointer_clamped: Option<crate::input::Repeatedly>,
+    /// When a client last placed the pointer itself, and how many times it has
+    /// done so since — see `crate::input::watch_a_client_placing_the_pointer`.
+    pub pointer_hints: Option<(std::time::Instant, u32)>,
     pub cursor_status: smithay::input::pointer::CursorImageStatus,
     /// Whether the cursor is drawn at all.
     ///
@@ -277,6 +341,9 @@ impl LxbState {
         let xwayland_shell_state = XWaylandShellState::new::<Self>(dh);
         let xwayland_keyboard_grab_state = XWaylandKeyboardGrabState::new::<Self>(dh);
         let shell_control = ShellControlState::new::<Self>(dh);
+        let tearing_control = crate::tearing::TearingControlState::new::<Self>(dh);
+        let colour = crate::colour::ColourState::new::<Self>(dh);
+        let colour_manager = crate::colour_management::ColourManagerState::new::<Self>(dh);
         let screencopy = crate::screencopy::ScreencopyState::new::<Self>(dh);
 
         smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(dh);
@@ -367,6 +434,7 @@ impl LxbState {
                 config,
                 keybindings,
                 home_tap: crate::input::HomeTap::default(),
+                volume_key: crate::input::VolumeKey::default(),
                 compositor_state,
                 xdg_shell_state,
                 xdg_decoration_state,
@@ -380,11 +448,20 @@ impl LxbState {
                 presentation_state,
                 activation_state,
                 dmabuf_state,
+                syncobj_state: None,
+                blocked_commits: 0,
+                blocked_since: None,
                 xwayland_shell_state,
                 xwayland_keyboard_grab_state,
                 shell_control,
                 xwm: None,
+
+                tearing_control,
+                colour,
+                colour_manager,
                 x11_focus_probe: None,
+                x11_active_window: None,
+                last_x11_focus_drift: None,
                 last_xwayland_pointer: None,
                 last_synced_pointer: None,
                 space: Space::default(),
@@ -392,6 +469,7 @@ impl LxbState {
                 outputs: OutputManager::new(),
                 overview: crate::overview::Overviews::default(),
                 restores: crate::restore::Restores::default(),
+                sleepers: crate::sleep::Sleepers::default(),
                 flashes: crate::flash::Flashes::default(),
                 screencopy,
                 hdr: crate::hdr::Manager::default(),
@@ -399,6 +477,9 @@ impl LxbState {
                 pointer_location: (0.0, 0.0).into(),
                 nested_host_pointer_location: None,
                 pointer_position_hint: None,
+                pointer_refused: None,
+                pointer_clamped: None,
+                pointer_hints: None,
                 cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
                 // Nothing has moved a pointer yet, and on a machine with no
                 // mouse plugged in nothing ever will.
@@ -645,6 +726,8 @@ impl LxbState {
                     return TimeoutAction::Drop;
                 }
                 state.follow_xwayland_pointer();
+                // Same tick, same reason: neither can be subscribed to.
+                state.check_xwayland_focus();
                 TimeoutAction::ToDuration(XWAYLAND_POINTER_INTERVAL)
             },
         );
@@ -1062,6 +1145,48 @@ fn sibling_binary(program: &str) -> std::ffi::OsString {
     }
 }
 
+/// Let everything this session starts render in high dynamic range, without
+/// anybody having to ask for it.
+///
+/// A game under Proton does not get HDR by noticing the display can do it. It
+/// has to be told to build an HDR swapchain: `ENABLE_HDR_WSI` loads the Vulkan
+/// layer that carries a swapchain's colour to the compositor over
+/// `frog_color_management_v1`, and `DXVK_HDR` is what lets a Direct3D title ask
+/// for one at all. Neither has a default that means yes, so without them a game
+/// renders SDR on an HDR screen however capable both ends are — which is why
+/// every guide to HDR on Linux ends in a paragraph telling people to paste two
+/// variables into a launch option.
+///
+/// Set here, on the session, rather than on Valve's client or on any one game.
+/// This is the environment every child of the compositor gets, so it reaches
+/// the shell, and through the shell it reaches Steam, and through Steam every
+/// game Steam starts — as well as everything that never goes near Steam: a
+/// Proton prefix run by hand, another launcher, an emulator. Setting it any
+/// further in would be setting it once per way of starting a game, and would
+/// miss the next one.
+///
+/// This is what a console does. Not because the variables are the same ones —
+/// SteamOS runs the game nested inside gamescope and uses gamescope's own WSI
+/// layer — but because on a console nobody types anything to make HDR work. The
+/// session is the thing that has been configured, so the session is what
+/// carries it.
+///
+/// Harmless where HDR is off or the screen cannot do it. The layer asks the
+/// compositor what the display is and believes the answer: one this session is
+/// not driving in HDR is described as sRGB, and the layer then leaves the
+/// swapchain exactly as it found it. See [`crate::colour`].
+///
+/// Neither is forced. A value already in the environment this session was
+/// started from was put there deliberately — including a `0` — and outranks a
+/// default meant for everything.
+fn offer_hdr_to_children(command: &mut std::process::Command) {
+    for (key, value) in [("ENABLE_HDR_WSI", "1"), ("DXVK_HDR", "1")] {
+        if std::env::var_os(key).is_none() {
+            command.env(key, value);
+        }
+    }
+}
+
 /// Pin a child process to LineXinBar's Wayland socket.
 ///
 /// `WAYLAND_SOCKET` takes precedence over `WAYLAND_DISPLAY` in Wayland client
@@ -1095,6 +1220,8 @@ fn confine_to_session(
         // inherited host token is invalid in this session.
         .env_remove("XDG_ACTIVATION_TOKEN")
         .env_remove("DESKTOP_STARTUP_ID");
+
+    offer_hdr_to_children(command);
 
     if let Some(display) = xwayland_display {
         command
@@ -1196,6 +1323,108 @@ pub fn client_compositor_state(client: &Client) -> &CompositorClientState {
         return &data.compositor_state;
     }
     panic!("client created without compositor state")
+}
+
+// ---------------------------------------------------------------------------
+// ending on a signal
+// ---------------------------------------------------------------------------
+
+/// The write end of the pipe the signal handler pokes, or `-1` before there is
+/// one.
+///
+/// A raw fd in an atomic because that is what a signal handler may touch: it
+/// may not allocate, take a lock, or call back into the runtime, and `write` is
+/// one of the few calls that is safe there.
+static SIGNAL_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Note that a signal arrived, from inside the handler.
+///
+/// # Safety
+///
+/// Runs in a signal handler, so it does exactly one async-signal-safe thing:
+/// writes a byte to a pipe the event loop is watching. A full pipe means a
+/// signal is already waiting to be read, which is the same news.
+extern "C" fn note_the_signal(signal: libc::c_int) {
+    let fd = SIGNAL_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    let byte = signal as u8;
+    // SAFETY: a byte written to a pipe fd that is open for as long as the
+    // process runs. The result is deliberately ignored: there is nothing a
+    // handler could do about it.
+    unsafe {
+        libc::write(fd, std::ptr::addr_of!(byte).cast(), 1);
+    }
+}
+
+impl LxbState {
+    /// End the session tidily when something asks it to stop.
+    ///
+    /// Without this a `SIGTERM` ends the compositor where it stands, and
+    /// everything the exit path does is simply skipped: the displays keep the
+    /// session's HDR encoding, the services it took on the user's bus are never
+    /// released, and — the one that cannot be put right afterwards — every
+    /// application it stopped stays stopped. `SIGCONT` is the only thing that
+    /// undoes `SIGSTOP`, and a process that has been killed sends none.
+    ///
+    /// So the signal is turned into an ordinary event: the handler writes one
+    /// byte down a pipe, the loop reads it, and the session ends the way
+    /// quitting the shell ends it — through [`crate::sleep`]'s wake, the colour
+    /// restore, and the rest of `main`.
+    ///
+    /// Three signals, and all of them mean the same thing here: `SIGTERM` is
+    /// what logind and greetd send when they take a session down, `SIGINT` is a
+    /// developer's Ctrl-C, and `SIGHUP` is the terminal going away.
+    pub fn end_the_session_on_a_signal(&mut self) {
+        let (read, write) = match pipe_pair() {
+            Some(pair) => pair,
+            None => {
+                tracing::warn!("no pipe for signals; the session cannot end tidily on one");
+                return;
+            }
+        };
+        SIGNAL_PIPE.store(write, std::sync::atomic::Ordering::Relaxed);
+
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            // SAFETY: installing a handler that does nothing but write a byte.
+            unsafe {
+                libc::signal(signal, note_the_signal as *const () as libc::sighandler_t);
+            }
+        }
+
+        // SAFETY: `read` is a fresh pipe fd this owns from here on.
+        let read = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(read) };
+        let source = Generic::new(read, Interest::READ, Mode::Level);
+        let inserted = self.lxb.loop_handle.insert_source(source, |_, fd, state| {
+            let mut buffer = [0u8; 8];
+            // SAFETY: reading into a buffer this call owns, from a pipe the
+            // loop has just said is readable.
+            let read = unsafe {
+                libc::read(
+                    std::os::fd::AsRawFd::as_raw_fd(&**fd),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                )
+            };
+            let signal = if read > 0 { buffer[0] as i32 } else { 0 };
+            tracing::info!(signal, "asked to stop; ending the session");
+            state.lxb.running = false;
+            state.lxb.loop_signal.stop();
+            Ok(PostAction::Continue)
+        });
+        if let Err(err) = inserted {
+            tracing::warn!(?err, "could not watch for signals");
+        }
+    }
+}
+
+/// A close-on-exec, non-blocking pipe, as two raw fds.
+fn pipe_pair() -> Option<(i32, i32)> {
+    let mut fds = [0i32; 2];
+    // SAFETY: `fds` is a two-element array, which is what pipe2 writes.
+    let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    (made == 0).then_some((fds[0], fds[1]))
 }
 
 #[cfg(test)]

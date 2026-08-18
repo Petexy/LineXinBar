@@ -250,9 +250,34 @@ fn described(path: &Path) -> Option<(Kind, &'static str)> {
         .map(|(_, kind, mime)| (*kind, *mime))
 }
 
+/// Whether a file of this type has a picture in it worth showing in place of
+/// its mark.
+///
+/// The same question [`Kind::has_picture`] answers, asked of a type rather than
+/// of a shelf: the file explorer meets files by extension and has no shelf to
+/// ask. One rule underneath both, so a photograph is thumbnailed in a folder if
+/// and only if it would have been on a shelf.
+pub fn has_picture(mime: &str) -> bool {
+    TYPES
+        .iter()
+        .any(|(_, kind, own)| *own == mime && kind.has_picture())
+}
+
 /// Which shelf a path belongs on.
 pub fn kind_of(path: &Path) -> Option<Kind> {
     described(path).map(|(kind, _)| kind)
+}
+
+/// And what it would be handed to an application as, for the files the shelves
+/// know about.
+///
+/// Asked from outside by the file explorer, which meets the same files in the
+/// folders they are actually in and must not come to a different conclusion
+/// about what they are — a `.flac` is `audio/flac` whichever column it is being
+/// looked at from. `None` for everything the shelves do not hold, which
+/// [`crate::files`] then answers for out of its own, wider table.
+pub fn mime_of(path: &Path) -> Option<&'static str> {
+    described(path).map(|(_, mime)| mime)
 }
 
 /// One file on one of the shelves.
@@ -462,13 +487,21 @@ impl Sort {
 /// Compare two times, with a file whose time is unknown always last — whichever
 /// end of the list that is.
 ///
+/// Shared with [`crate::files`], which puts a directory in these same nine
+/// orders: this rule is the subtle half of them, and two copies of it would be
+/// two chances to get it wrong.
+///
 /// Not `Option`'s own ordering, and not the same comparison read backwards.
 /// `None` sorts before `Some`, so reversing the arguments to get "newest first"
 /// would also move the files nothing is known about from one end of the shelf
 /// to the other: they would be at the head of one order and the tail of its
 /// reverse, which is not what reversing an order means. Unknown is last in
 /// both, because it is not a date at all.
-fn by_time(a: Option<SystemTime>, b: Option<SystemTime>, newest_first: bool) -> std::cmp::Ordering {
+pub fn by_time(
+    a: Option<SystemTime>,
+    b: Option<SystemTime>,
+    newest_first: bool,
+) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (Some(a), Some(b)) if newest_first => b.cmp(&a),
@@ -684,7 +717,7 @@ impl Shelves {
             note: if query.is_empty() {
                 note(kind, found, self.settled)
             } else {
-                search_note(kind, matched, found)
+                search_note(kind.plural(), matched, found)
             },
             orders: Orders {
                 created: shelf.iter().any(|file| file.created.is_some()),
@@ -1038,10 +1071,10 @@ pub fn note(kind: Kind, found: usize, settled: bool) -> String {
 /// and a search is a question about the shelf as it stands, which is answered
 /// the same way whether or not the walk has more to find. What is still coming
 /// arrives in this column exactly as it arrives in an unsearched one.
-pub fn search_note(kind: Kind, matched: usize, found: usize) -> String {
-    let of_all = format!("of {found} {}", kind.plural());
+pub fn search_note(plural: &str, matched: usize, found: usize) -> String {
+    let of_all = format!("of {found} {plural}");
     match matched {
-        0 => format!("No {} match", kind.plural()),
+        0 => format!("No {plural} match"),
         // The verb has to agree with the count, and the count is the user's
         // rather than ours: a collection with exactly one Beatles track in it
         // is a common enough answer to be worth writing the sentence for.
@@ -1453,22 +1486,27 @@ pub struct Opening {
 /// in. It knows every installed application's `Exec` and `MimeType`, which is
 /// the whole of what a handler lookup needs, and it means the process that
 /// gets started is one the shell can name, count and close like any other.
-pub fn opening(file: &File, categories: &[Category]) -> Option<Opening> {
-    if let Some(app) = handlers(file, categories).first() {
-        return Some(opening_with(file, app));
+/// A path and a type rather than a file, because that is everything the answer
+/// depends on and there are two kinds of row that have them: a file the walk
+/// shelved, and a file the explorer found in the folder it lives in. One
+/// function, so a `.flac` opens in the same application whichever column it was
+/// pressed in.
+pub fn opening(path: &Path, mime: &str, categories: &[Category]) -> Option<Opening> {
+    if let Some(app) = handlers(mime, categories).first() {
+        return Some(opening_with(path, app));
     }
 
     if crate::model::executable_on_path(OsStr::new("xdg-open")) {
         return Some(Opening {
             name: "xdg-open".to_string(),
             icon: None,
-            command: format!("xdg-open {}", quoted(&file.path)),
+            command: format!("xdg-open {}", quoted(path)),
         });
     }
 
     tracing::warn!(
-        mime = file.mime,
-        file = %file.path.display(),
+        mime,
+        file = %path.display(),
         "nothing installed opens this, and there is no xdg-open to ask"
     );
     None
@@ -1484,23 +1522,23 @@ pub fn opening(file: &File, categories: &[Category]) -> Option<Opening> {
 /// The user's own default heads the list where they have set one, and the rest
 /// follow in [`declares`]'s order. The default is not repeated further down: it
 /// is one application and it gets one row.
-pub fn handlers<'a>(file: &File, categories: &'a [Category]) -> Vec<&'a App> {
-    let chosen = preferred(file.mime, categories);
+pub fn handlers<'a>(mime: &str, categories: &'a [Category]) -> Vec<&'a App> {
+    let chosen = preferred(mime, categories);
     let mut handlers: Vec<&App> = chosen.into_iter().collect();
     handlers.extend(
-        ranked(file.mime, categories)
+        ranked(mime, categories)
             .into_iter()
             .filter(|app| chosen.is_none_or(|chosen| !std::ptr::eq(chosen, *app))),
     );
     handlers
 }
 
-/// What starting `file` in `app` would take.
-pub fn opening_with(file: &File, app: &App) -> Opening {
+/// What starting the file at `path` in `app` would take.
+pub fn opening_with(path: &Path, app: &App) -> Opening {
     Opening {
         name: app.name.clone(),
         icon: app.icon.clone(),
-        command: with_file(&app.exec, &file.path),
+        command: with_file(&app.exec, path),
     }
 }
 
@@ -1529,12 +1567,12 @@ pub struct Handler {
 /// writing down, which cannot happen for anything the catalogue scanned off
 /// the disk — but a row that could be chosen and then not recorded would be a
 /// row that lies about what it did.
-pub fn handler_row(file: &File, app: &App) -> Option<Handler> {
+pub fn handler_row(mime: &'static str, app: &App) -> Option<Handler> {
     Some(Handler {
         name: app.name.clone(),
         icon: app.icon.clone(),
         id: app.path.file_name().and_then(OsStr::to_str)?.to_string(),
-        mime: file.mime,
+        mime,
     })
 }
 
@@ -2125,14 +2163,17 @@ mod tests {
     #[test]
     fn a_searched_shelf_says_how_much_of_itself_it_is_showing() {
         assert_eq!(
-            search_note(Kind::Audio, 12, 3400),
+            search_note(Kind::Audio.plural(), 12, 3400),
             "12 of 3400 audio files match"
         );
         assert_eq!(
-            search_note(Kind::Video, 1, 20),
+            search_note(Kind::Video.plural(), 1, 20),
             "1 of 20 video files matches"
         );
-        assert_eq!(search_note(Kind::Image, 0, 250_000), "No images match");
+        assert_eq!(
+            search_note(Kind::Image.plural(), 0, 250_000),
+            "No images match"
+        );
     }
 
     /// A file the disk knows no date for goes to the end of a list ordered by
@@ -2566,7 +2607,7 @@ mod tests {
             app("Something", "s.desktop", "s", &["audio/flac"]),
         ]);
         let song = file("/home/x/a.flac").unwrap();
-        let offered = handlers(&song, &categories);
+        let offered = handlers(song.mime, &categories);
 
         // Every application that opens the type, each of them once: a default
         // the user has set heads the list rather than appearing twice in it.
@@ -2577,7 +2618,7 @@ mod tests {
         assert_eq!(once.len(), names.len(), "{names:?}");
         assert_eq!(names.len(), 3, "{names:?}");
 
-        let opening = opening(&song, &categories).unwrap();
+        let opening = opening(&song.path, song.mime, &categories).unwrap();
         assert_eq!(opening.name, names[0]);
         assert!(opening.command.ends_with("'/home/x/a.flac'"));
         assert_eq!(opening.icon, offered[0].icon);
@@ -2585,7 +2626,7 @@ mod tests {
         // And nothing at all for a type nothing installed claims, which is what
         // greys the Open with row out.
         let film = file("/home/x/a.mkv").unwrap();
-        assert!(handlers(&film, &categories).is_empty());
+        assert!(handlers(film.mime, &categories).is_empty());
     }
 
     /// A default naming something that is not installed is not an answer.

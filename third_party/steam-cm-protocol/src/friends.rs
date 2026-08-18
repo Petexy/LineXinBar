@@ -107,6 +107,9 @@ pub struct ProtocolGame {
     pub installdir: Option<String>,
     /// Appinfo `config/launch` entries (how Steam would launch it). Empty when unresolved.
     pub launch: Vec<LaunchEntry>,
+    /// Where the app's library pictures are published — see [`crate::pics::LibraryArt`]. All
+    /// `None` when unresolved or for the recently-played / Web-API fallback paths.
+    pub library_art: crate::pics::LibraryArt,
 }
 
 #[derive(Debug, Clone)]

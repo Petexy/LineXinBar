@@ -1,0 +1,114 @@
+<!--
+A file, for the rows the shell has nothing better to say about: a sheet with
+its top corner turned over.
+
+  Deliberately the *only* mark for everything that is not a song, a film or a
+  photograph. Those three keep the shelf marks they already have — one file,
+  one drawing, whichever column it is being looked at from — and everything
+  else is a page, whether it is a spreadsheet, a shell script or four hundred
+  megabytes of somebody's backup.
+
+  A page and not a page per type, because the alternative is inventing a
+  drawing for every extension in the table and getting most of them wrong. What
+  tells a `.pdf` from a `.zip` on this bar is that the row says `.pdf`: the name
+  is the whole answer and it is already on the screen in type the user can
+  read. A cabinet of half-recognisable icons under it would be a second, worse
+  copy of the same information — and a wrong one on the day somebody keeps
+  their photographs in a format the table has never heard of.
+
+  The turned corner is the whole of what makes it paper rather than a card or a
+  screen. It is drawn as its own small plate, lit harder than the sheet: it is
+  the *underside* of the corner, folded up towards the lamp, so it is the one
+  surface in the drawing not facing the same way as everything else. The notch
+  it leaves in the sheet is cut out of the sheet's own path rather than covered
+  over, so the silhouette is a folded page even before any shading arrives.
+
+  Three ruled lines, solid rather than graded. A stroked straight line has a
+  bounding box with no width in it, and an object-space gradient painted
+  through one comes out as nothing at all — see setting-schedule.svg, which
+  lost both its hands that way. Each rule is two strokes: a dark one with a
+  lighter one just below, which is how the rest of the set sinks a mark into a
+  face.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The sheet, with the corner already missing from it. -->
+    <path id="sheet" d="M8.6 3.4h9.9l6.9 6.9v16.5a1.9 1.9 0 0 1-1.9 1.9H8.6a1.9
+                        1.9 0 0 1-1.9-1.9V5.3a1.9 1.9 0 0 1 1.9-1.9z"/>
+    <!-- The corner itself, folded up and forward. -->
+    <path id="fold" d="M18.5 3.4l6.9 6.9h-5a1.9 1.9 0 0 1-1.9-1.9z"/>
+    <clipPath id="sheet-clip"><use href="#sheet"/></clipPath>
+    <path id="sheet-gloss" d="M5.4 2H26.4V14.8C22.6 16.7 9.2 16.7 5.4 14.8z"/>
+    <linearGradient id="fold-face" gradientUnits="userSpaceOnUse"
+                    x1="18.5" y1="3.4" x2="25.4" y2="10.3">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#f2f2f2"/>
+      <stop offset="1" stop-color="#d9d9d9"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#drop)">
+    <use href="#sheet" fill="url(#face)"/>
+    <g clip-path="url(#sheet-clip)">
+      <use href="#sheet-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#sheet" fill="url(#turn)"/>
+    <g clip-path="url(#sheet-clip)">
+      <use href="#sheet" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
+      <!-- What is written on it. Sunk into the face: the dark stroke is the
+           cut and the pale one under it is the lit lower wall of the cut. -->
+      <g stroke-linecap="round">
+        <path d="M10.6 17.4h11.2" stroke="#9a9a9a" stroke-opacity="0.75" stroke-width="1"/>
+        <path d="M10.6 18.1h11.2" stroke="#ffffff" stroke-opacity="0.7" stroke-width="0.5"/>
+        <path d="M10.6 21.2h11.2" stroke="#9a9a9a" stroke-opacity="0.75" stroke-width="1"/>
+        <path d="M10.6 21.9h11.2" stroke="#ffffff" stroke-opacity="0.7" stroke-width="0.5"/>
+        <path d="M10.6 25h7.4" stroke="#9a9a9a" stroke-opacity="0.75" stroke-width="1"/>
+        <path d="M10.6 25.7h7.4" stroke="#ffffff" stroke-opacity="0.7" stroke-width="0.5"/>
+      </g>
+    </g>
+
+    <!-- The fold, over the notch it was folded out of. The shade along its
+         diagonal is the sheet showing through the gap the paper leaves as it
+         lifts. -->
+    <use href="#fold" fill="url(#fold-face)"/>
+    <path d="M18.5 3.4l6.9 6.9" stroke="#000000" stroke-opacity="0.18" stroke-width="0.7"/>
+    <path d="M18.6 4.1v4.3a1.9 1.9 0 0 0 1.9 1.9h4.2" fill="none"
+          stroke="#ffffff" stroke-opacity="0.8" stroke-width="0.7"/>
+  </g>
+</svg>

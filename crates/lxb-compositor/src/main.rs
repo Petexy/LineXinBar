@@ -3,6 +3,8 @@
 mod backdrop;
 mod backend;
 mod capture;
+mod colour;
+mod colour_management;
 mod config;
 mod cursor;
 mod flash;
@@ -16,10 +18,13 @@ mod overview;
 mod remembered;
 mod render;
 mod restore;
+mod scale;
 mod screencopy;
 mod shell_control;
+mod sleep;
 mod state;
 mod teardown;
+mod tearing;
 mod text_input;
 mod xwayland;
 
@@ -144,6 +149,11 @@ fn main() -> anyhow::Result<()> {
     std::env::set_var("WAYLAND_DISPLAY", &state.lxb.socket_name);
     tracing::info!(socket = %state.lxb.socket_name, "wayland socket ready");
 
+    // Before the loop takes over: a session that is asked to stop has to stop
+    // tidily, or every application it put to sleep stays asleep. See
+    // [`LxbState::end_the_session_on_a_signal`].
+    state.end_the_session_on_a_signal();
+
     let autostart = state.lxb.config.general.autostart.clone();
     let shell = cli.shell.then(|| state.lxb.config.general.shell.clone());
     state.start_xwayland(autostart, shell, background_handoff);
@@ -163,8 +173,29 @@ fn main() -> anyhow::Result<()> {
         // One place to notice that the window stack changed, rather than a
         // hook on every path that can map, unmap or retitle a window.
         state.refresh_foreground();
+        // And, for the same reason and in the same breath, whether each
+        // application can still be seen at all — which is what decides whether
+        // it goes on running. It belongs here rather than beside
+        // `refresh_window_activation`, which is where the same question is
+        // answered for the screen: that one is driven by focus changes and
+        // layer commits, and both of those stop happening the moment an
+        // application covers the shell, so the one pass that mattered — the
+        // one just after the covering window was placed — was the pass that
+        // never ran. See [`sleep`].
+        state.refresh_application_sleep();
+        // Answers to "what colour is this?" that could not be finished inside
+        // the request that asked, because the event that ends one destroys the
+        // object carrying it. See [`colour_management::finish_information`].
+        colour_management::finish_information(state);
         let _ = state.lxb.display_handle.flush_clients();
     });
+
+    // The first thing, before a single question about how the session ended is
+    // asked: anything this compositor stopped has to be started again. Nothing
+    // else can do it — `SIGSTOP` is undone by `SIGCONT` and by nothing else,
+    // and the process that would send it is the one exiting here. See
+    // [`sleep`].
+    state.wake_every_sleeping_application("the session is ending");
 
     // Before anything below can return, and deliberately not behind the `?` on
     // that result: a display left in BT.2020/PQ outlives the session that asked

@@ -4,4 +4,5 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=protocols/lxb-shell-v1.xml");
+    println!("cargo:rerun-if-changed=protocols/frog-color-management-v1.xml");
 }

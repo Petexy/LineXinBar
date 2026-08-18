@@ -976,10 +976,12 @@ pub struct Osk {
     /// has the cursor now. Without it, closing the keyboard over a still
     /// focused field would only re-open it on the next frame.
     offered: bool,
-    /// Whether the user has shown they have a keyboard of their own, by
-    /// pressing a key on it while the board was up. It stops the board
-    /// offering itself to any further text field; see
-    /// [`Self::dismiss_for_typing`].
+    /// Whether the user has shown they have a keyboard of their own. It stops
+    /// the board offering itself to any further text field; see
+    /// [`Self::dismiss_for_typing`], which is what concludes it from a key
+    /// pressed while the board was up, and [`Self::set_controller_in_hand`],
+    /// which is the shell saying the same thing from what it can see beyond
+    /// this board — including from a session before this one.
     keyboard_at_hand: bool,
     /// Pending `activate` / `deactivate`, applied on `done` as the input
     /// method protocol requires: the two are state, not notifications.
@@ -1310,6 +1312,25 @@ impl Osk {
     pub fn dismiss_for_typing(&mut self) -> bool {
         self.keyboard_at_hand = true;
         self.close()
+    }
+
+    /// The same conclusion, reached from outside and in both directions: which
+    /// control the shell has last seen in the user's hands.
+    ///
+    /// [`Self::dismiss_for_typing`] can only know about a key pressed while the
+    /// board was up, holding the grab that carried it. The shell knows more —
+    /// keys pressed on its own screens, keys the compositor says went to an
+    /// application, a thumb landing anywhere on a pad — and it remembers the
+    /// answer across sessions, because which control somebody reaches for is a
+    /// fact about them rather than about this session. A user who spent last
+    /// night typing must not have a keyboard thrown over the first text field
+    /// of the morning.
+    ///
+    /// Only what the board would offer *by itself* is affected. Asking for it —
+    /// from the controller, from the compositor's binding, from the shell's own
+    /// password field — raises it whichever hand asked.
+    pub fn set_controller_in_hand(&mut self, in_hand: bool) {
+        self.keyboard_at_hand = !in_hand;
     }
 
     /// Type something the board itself was not used for: a key the user
@@ -2146,6 +2167,40 @@ mod tests {
         osk.set_focused(false);
         osk.set_focused(true);
         assert!(osk.is_open(), "summoning it did not undo the refusal");
+    }
+
+    /// The same refusal, carried in from outside — which is how it survives a
+    /// session. The shell watches for typing the board itself cannot see, and
+    /// remembers which control it last saw; a user who spent the evening typing
+    /// must not have a keyboard thrown over the first text field of the
+    /// morning.
+    #[test]
+    fn a_board_told_the_keyboard_is_in_hand_stops_offering_itself() {
+        let mut osk = armed();
+        osk.set_controller_in_hand(false);
+
+        osk.set_focused(true);
+        assert!(
+            !osk.is_open(),
+            "a keyboard came up over the shoulder of somebody typing"
+        );
+        // And the corner chip is still wanted, because that answer belongs to
+        // the shell: what it draws over an application is decided beside every
+        // other thing that is, in `keyboard_is_visible`.
+        assert!(osk.wants_hint());
+
+        // A thumb lands on the pad. The next field is offered a board again.
+        osk.set_controller_in_hand(true);
+        osk.set_focused(false);
+        osk.set_focused(true);
+        assert!(osk.is_open(), "the controller asked and was refused");
+
+        // And asking for it outright is never refused, whichever hand asks: a
+        // keyboard user who presses the binding wants the board.
+        osk.close();
+        osk.set_controller_in_hand(false);
+        assert!(osk.open());
+        assert!(osk.is_open());
     }
 
     /// A dismissed board leaves the way it arrived. The keys go back to the

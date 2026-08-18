@@ -321,7 +321,12 @@ struct Entry {
     /// from its own page. See [`NightLight`].
     night: NightLight,
     status: Status,
-    /// Set when `settings` or `night` has not reached the hardware yet.
+    /// Whether the display is currently showing content that is already
+    /// encoded the way the cable is, so the colour pipeline must not touch it.
+    /// See [`Manager::request_passthrough`].
+    passthrough: bool,
+    /// Set when `settings`, `night` or `passthrough` has not reached the
+    /// hardware yet.
     pending: bool,
 }
 
@@ -349,6 +354,7 @@ impl Manager {
                 settings: initial,
                 night: initial_night,
                 status,
+                passthrough: false,
                 pending: true,
             }),
         }
@@ -429,14 +435,41 @@ impl Manager {
         true
     }
 
+    /// Say whether this display is showing content that is already encoded the
+    /// way the cable is.
+    ///
+    /// Asked of the compositor each frame rather than of the user: it is not a
+    /// setting but a description of what is on screen, and it changes whenever
+    /// a game goes fullscreen, the guide opens over it, or it exits. `true`
+    /// when that is a change, so a steady answer costs no commits.
+    ///
+    /// What makes it safe to honour is that the frame is the client's buffer
+    /// and nothing else — scanned out directly, with nothing composited over
+    /// it. A frame the shell has drawn into is a frame with sRGB pixels in it,
+    /// and those need the encode the pipeline normally does. See
+    /// [`crate::render::output_shows_encoded_content`].
+    pub fn request_passthrough(&mut self, output: &Output, passthrough: bool) -> bool {
+        let Some(entry) = self.entry(output) else {
+            return false;
+        };
+        if entry.passthrough == passthrough {
+            return false;
+        }
+        entry.passthrough = passthrough;
+        entry.pending = true;
+        true
+    }
+
     /// The settings a display is waiting to have applied, if it is waiting.
     ///
-    /// Both halves together, always. They share the gamma stage, so the curve
-    /// that carries one has to be built from the other as well — see
+    /// All three together, always. They share the gamma stage, so the curve
+    /// that carries one has to be built from the others as well — see
     /// [`Pipeline::apply`].
-    pub fn take_pending(&mut self, output: &Output) -> Option<(Settings, NightLight)> {
+    pub fn take_pending(&mut self, output: &Output) -> Option<(Settings, NightLight, bool)> {
         let entry = self.entry(output)?;
-        entry.pending.then_some((entry.settings, entry.night))
+        entry
+            .pending
+            .then_some((entry.settings, entry.night, entry.passthrough))
     }
 
     /// What one display is warmed to right now, for a session on its way out.
@@ -834,6 +867,12 @@ impl Pipeline {
     /// night light's white point is multiplied into whichever curve that stage
     /// is carrying, so turning a filter on cannot undo the tone mapping and
     /// turning HDR on cannot undo the filter.
+    // Seven of these are the question and the eighth is the answer's context;
+    // splitting them into a struct would name a thing that has no life outside
+    // this call. The three that vary together — settings, night light and
+    // passthrough — are exactly the three the one gamma curve is built from,
+    // which is the invariant this module opens by explaining.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
         device: &impl ControlDevice,
@@ -842,9 +881,21 @@ impl Pipeline {
         display: &Display,
         settings: &Settings,
         night: &NightLight,
+        passthrough: bool,
     ) -> Applied {
         let on = settings.enabled && self.supported() && display.st2084;
-        let warm = night.tints() && self.warms();
+        // Only ever inside HDR: passthrough means "the content is already
+        // encoded the way the cable is", and outside HDR the cable is sRGB,
+        // which is what everything composited here already is. There would be
+        // nothing to pass through.
+        let passthrough = passthrough && on;
+        // A warm ramp scales linear light. Passthrough hands the client's own
+        // PQ-coded values to the cable untouched, and scaling those is not the
+        // same operation at all — it would darken the picture unevenly rather
+        // than warm it. So the night light stands down for as long as a game
+        // is driving the display's colour, and `Applied` reports that honestly
+        // rather than claiming a warmth nobody applied.
+        let warm = night.tints() && self.warms() && !passthrough;
         let mut request = AtomicModeReq::new();
         let mut fresh = Vec::new();
 
@@ -860,7 +911,18 @@ impl Pipeline {
 
             if let Some((handle, size)) = self.degamma {
                 let curve: Vec<ColorLut> = (0..size)
-                    .map(|index| ColorLut::grey(srgb_to_linear(index as f32 / (size - 1) as f32)))
+                    .map(|index| {
+                        let coded = index as f32 / (size - 1) as f32;
+                        // Passthrough: the identity. The client's values are
+                        // already PQ-coded BT.2020, so undoing an sRGB
+                        // transfer function they were never encoded with is
+                        // the exact mistake this mode exists to stop.
+                        ColorLut::grey(if passthrough {
+                            coded
+                        } else {
+                            srgb_to_linear(coded)
+                        })
+                    })
                     .collect();
                 self.stage_blob(device, &mut request, crtc, handle, cast(&curve), &mut fresh);
             }
@@ -875,7 +937,12 @@ impl Pipeline {
             // matrix inherited from whatever was there before would be a
             // setting nobody chose and nothing reports.
             if let Some(handle) = self.ctm {
-                if self.degamma.is_some() {
+                if passthrough {
+                    // The client sent BT.2020 already; rotating it again would
+                    // move it somewhere nothing asked for. Identity, set
+                    // explicitly for the reason the branch below gives.
+                    request.add_property(crtc, handle, property::Value::Blob(0));
+                } else if self.degamma.is_some() {
                     let matrix = ColorCtm::gamut(settings.srgb_intensity);
                     self.stage_blob(
                         device,
@@ -898,6 +965,12 @@ impl Pipeline {
                 let curve: Vec<ColorLut> = (0..size)
                     .map(|index| {
                         let coded = index as f32 / (size - 1) as f32;
+                        // Passthrough: the identity again, and the stage that
+                        // matters most. Re-encoding a value that is already PQ
+                        // is what would blow the picture out.
+                        if passthrough {
+                            return ColorLut::grey(coded);
+                        }
                         let relative = if decode { srgb_to_linear(coded) } else { coded };
                         // No clamp against the peak: `Settings::peak` will not
                         // return one below the white level, and white is the
@@ -1449,6 +1522,59 @@ fn pq_encode(nits: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::output::{PhysicalProperties, Subpixel};
+
+    fn display(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        )
+    }
+
+    /// Passthrough is asked every frame and answered by a property commit, so
+    /// a steady answer has to cost nothing: only a *change* may mark the
+    /// display pending, or a game would re-commit the colour pipeline sixty
+    /// times a second.
+    #[test]
+    fn only_a_change_of_passthrough_is_worth_a_commit() {
+        let output = display("test-1");
+        let mut manager = Manager::default();
+        manager.register(
+            &output,
+            Settings::default(),
+            NightLight::default(),
+            Status::default(),
+        );
+        // Registering already leaves it pending; take that.
+        assert!(manager.take_pending(&output).is_some());
+        manager.applied(&output, Applied::default());
+
+        assert!(manager.request_passthrough(&output, true));
+        let (_, _, passthrough) = manager.take_pending(&output).expect("pending");
+        assert!(passthrough);
+        manager.applied(&output, Applied::default());
+
+        // Saying the same thing again is not news.
+        assert!(!manager.request_passthrough(&output, true));
+        assert!(manager.take_pending(&output).is_none());
+
+        assert!(manager.request_passthrough(&output, false));
+        let (_, _, passthrough) = manager.take_pending(&output).expect("pending");
+        assert!(!passthrough);
+    }
+
+    /// A display nobody registered — a nested session's — must not be a panic
+    /// or a phantom entry when a fullscreen game asks for passthrough on it.
+    #[test]
+    fn passthrough_on_an_unknown_display_is_simply_nothing() {
+        let mut manager = Manager::default();
+        assert!(!manager.request_passthrough(&display("absent"), true));
+    }
 
     /// The bug that took a machine down, written as a test so it cannot come
     /// back.

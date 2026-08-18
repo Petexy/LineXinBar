@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="20">
+  <interface name="lxb_shell_v1" version="25">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -684,6 +684,117 @@
            summary="colour temperature in kelvin; lower is warmer, 6500 is daylight"/>
     </request>
 
+    <request name="set_output_place" since="21">
+      <description summary="put one display at this place in the layout">
+        Moves a display along the row the compositor lays its displays out in:
+        the screen the user calls their first one becomes place 0, the one
+        beside it place 1, and so on.
+
+        It belongs to the compositor because the arrangement is the desktop's
+        own shape. Where each display sits decides where a pointer crossing an
+        edge comes out, which display a window is tiled onto, and the
+        coordinates every client on the session is told about — none of which a
+        client can be allowed to compute for itself.
+
+        place is counted from zero, and it is an index into the displays the
+        output_place event reports rather than into every display connected.
+        A display the compositor does not place — one pinned by its own config,
+        or a session mirroring every screen onto the same region — takes no
+        part in either.
+
+        The display already at that place takes the one being vacated: this is
+        a trade, not an insertion. That is what makes it composable, which is
+        what a shell restoring a whole arrangement needs — sending one of these
+        per display, in ascending place, leaves every display where it was
+        asked for, because each request fixes one display and can only disturb
+        a place no later request names.
+
+        Silently ignored when the output is gone, when place is past the end of
+        the list, and when this display is not one the compositor places. In
+        each case the arrangement is left as it is, and the output_place events
+        say so — a shell should mark what those report rather than what it
+        asked for.
+
+        Not remembered by the compositor, unlike a mode or an orientation. Both
+        of those are written down because the alternative is a modeset a second
+        after login, which is a black screen; an arrangement costs a relayout,
+        which at login is a desktop with nothing on it yet. So the shell keeps
+        this one, and sends it when it connects.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to move"/>
+      <arg name="place" type="uint" summary="the place it should take, counted from zero"/>
+    </request>
+
+    <request name="controller_used" since="24">
+      <description summary="the user has picked the controller back up">
+        Says that a button was pressed or a stick pushed on a controller, which
+        the compositor never sees: a shell reads its pads straight from
+        /dev/input, so a user who has put the keyboard down and taken a gamepad
+        up leaves no trace here at all. This is the counterpart of
+        hide_pointer, one step further out — that one says the mouse has been
+        put down, this one says the keyboard has.
+
+        It arms the typed event again. That event is sent once and then held
+        back until this request arrives, so the two together are one message per
+        handover rather than one per keystroke.
+
+        A shell that never sends it is told about the first key pressed after it
+        bound this interface and about nothing after that.
+      </description>
+    </request>
+
+    <request name="set_application_scale" since="25">
+      <description summary="how large applications draw themselves">
+        Sets how much larger than life every application on the session draws
+        its own interface: at 150 a window's text, buttons and margins come out
+        half again the size they would at 100, without losing a pixel of
+        sharpness.
+
+        It is the compositor's because it is not a filter over a picture — it
+        is a *smaller window told to draw at more pixels*. Each application is
+        configured with a logical size the given factor smaller than the screen
+        and told, over wp_fractional_scale_v1, that its scale is that much
+        higher; a client that honours the two renders exactly as many pixels as
+        the display has, and the compositor puts them on it one for one. So
+        nothing is stretched and nothing is resampled: the interface is drawn
+        bigger, in the same way it is drawn bigger on a high-density laptop
+        panel. A client that ignores the scale is drawn at the size it chose
+        and enlarged, which is the same graceful answer such a client gets from
+        every other compositor.
+
+        scale is in per cent of natural size, and 100 — one to one — is the
+        floor. Below it an application would be asked to draw more of its
+        interface than the display has room for, which is not what a screen
+        looked at from a sofa wants and is not what this is for; a smaller
+        number is clamped up to 100 rather than refused, as an out-of-range
+        colour temperature is clamped, because an application shown at some
+        unrelated size is a worse way to report a bad number than the nearest
+        one that means something. The ceiling is likewise a clamp.
+
+        Applications only, and Wayland ones. The shell's own surfaces are
+        untouched — it is not an application, it draws itself against the
+        display it was given, and a shell that changed size with this setting
+        would take the Settings page the user is looking at with it. Windows
+        under Xwayland are untouched too: X11 has no per-surface scale to be
+        told about, so the only thing that could be done to those windows is to
+        magnify pixels that are already drawn, and a blurred window is not what
+        somebody asking for a larger one asked for.
+
+        Session-wide rather than per display, unlike everything about a
+        display's picture: this is a statement about how far away the user is
+        sitting and how well they see, which is true of the person and not of
+        one screen.
+
+        Not remembered by the compositor. An application is started by the
+        shell, always after the shell has connected and said what this is, so
+        there is no window that could come up at the wrong size while the two
+        agree — and the shell has the Settings page it was set on, which is
+        where a preference belongs.
+      </description>
+      <arg name="scale" type="uint"
+           summary="per cent of natural size; 100 is one to one, and the floor"/>
+    </request>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -710,6 +821,110 @@
         about them as zwp_input_method_v2, and it types with
         zwp_virtual_keyboard_v1 — all three of which are standard, and none
         of which can express a binding the compositor has to intercept.
+      </description>
+    </event>
+
+    <enum name="volume_change" since="22">
+      <description summary="what a volume key asked for">
+        One step of the machine's own volume, in the direction the key pressed
+        is printed with, or the switch that silences it.
+
+        A step rather than a value: which value one press is worth is a
+        question about the control the shell draws, and the compositor has no
+        opinion about it.
+      </description>
+      <entry name="up" value="0" summary="one step louder"/>
+      <entry name="down" value="1" summary="one step quieter"/>
+      <entry name="mute" value="2" summary="silence it, or bring it back"/>
+    </enum>
+
+    <event name="volume" since="22">
+      <description summary="a volume key was pressed">
+        Sent when the user pressed one of the keys the session's volume is set
+        with. The shell is expected to move its own volume control by one step,
+        or to silence the session, and to say on screen that it did.
+
+        Routed by the compositor for the reason the guide, keyboard and
+        screenshot events are: a fullscreen application holds the keyboard, and
+        a volume key that only worked while the shell had focus would be one
+        that never worked over the game somebody was turning down.
+
+        The compositor forwards the press rather than setting the volume itself
+        because the mixer belongs to the shell's half of the session. It is the
+        shell that found out which sound server this machine has, that knows
+        where the control stands, and that has somewhere to draw it; a
+        compositor that shelled out to a mixer of its own would be a second
+        opinion about the volume, one step out of step with the bar the user
+        can see.
+
+        A key held down repeats, at the seat's own repeat rate, in the
+        direction it was pressed. Mute does not: a switch held down is a switch
+        thrown once.
+      </description>
+      <arg name="change" type="uint" enum="volume_change" summary="what the key asked for"/>
+    </event>
+
+    <event name="output_pressed" since="23">
+      <description summary="the user pressed an application on one display">
+        Sent when a pointer button or a finger landed on an application window,
+        naming the display it landed on. The shell is expected to treat that
+        display as the one the user is now driving, exactly as it does a press
+        made on its own surface there.
+
+        A shell drawing itself on every display keeps its own idea of which one
+        is being driven, and it can see a press move that for itself only while
+        its own surfaces are in front — the press is delivered to the surface it
+        was made on. Once an application is in front of it, it sees nothing at
+        all: its overlay hands the clicks through so the application under it
+        stays usable with a mouse, and so the very press that says "the user is
+        over here now" is the one press the shell never hears about. On a
+        machine with the launcher on one screen and a game on another, clicking
+        the game left the launcher driving the first screen, which is where the
+        guide then opened and where the next application started.
+
+        Only presses the shell has no other way to learn about are sent. A press
+        on one of its own surfaces is delivered to that surface and is not
+        repeated here — a shell that were told twice would move control on the
+        compositor's word before it had read the press itself, turning a click
+        that should only have claimed the display into one that also pressed
+        whatever it landed on.
+
+        Nor is a press repeated on the display it was last sent for, so that
+        clicking about inside a game does not wake the shell once per click. The
+        compositor forgets that display whenever the shell names one with
+        set_launch_output, because a shell that has moved on its own has to be
+        able to hear about a press back on the display it left.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display the press landed on"/>
+    </event>
+
+    <event name="typed" since="24">
+      <description summary="the user pressed a key on a keyboard">
+        Sent when a key goes down on a keyboard the compositor can see: the
+        user saying with their hands that the controller is not what they are
+        holding. A shell is expected to put away what it is offering that
+        controller — the corner chip naming the buttons that summon its
+        on-screen keyboard, and the keyboard it would raise over a text field
+        of its own accord.
+
+        Forwarded for the reason the guide, keyboard and volume events are, and
+        with more at stake than any of them: while a fullscreen application owns
+        the keyboard the shell is sent no keys whatsoever, and that is exactly
+        the moment this answers for — somebody typing into a game's chat box,
+        with a chip in the corner of the screen telling them which buttons to
+        press for a keyboard they already have under their hands.
+
+        Only keys from a device the compositor reads itself. What a shell sends
+        through zwp_virtual_keyboard_v1, and the arrows it sends with
+        keyboard_key, are the shell typing on the user's behalf and are never
+        reported back to it as the user typing.
+
+        Sent once, and then held back until the shell says the controller has
+        been picked back up with controller_used. Somebody writing a message in
+        a game would otherwise wake the shell once per letter to tell it
+        something it was told at the first one. It is armed again whenever a
+        shell binds this interface, because a shell that has just started has
+        been told nothing.
       </description>
     </event>
 
@@ -917,6 +1132,36 @@
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
       <arg name="supported" type="uint" summary="1 when this display's picture can be warmed"/>
       <arg name="active" type="uint" summary="1 when it currently is"/>
+    </event>
+
+    <event name="output_place" since="21">
+      <description summary="where one display stands in the layout">
+        Says which place a display holds in the row the compositor lays its
+        displays out in — 0 is the first one, which on a left-to-right layout is
+        the leftmost screen — and, by being sent at all, that this display's
+        place is the shell's to set.
+
+        The places reported are always 0 to n-1 over the displays reported,
+        with no gaps: they are positions in one list, not identities. A display
+        this compositor does not place is left out of that list entirely rather
+        than given a place it does not have — one pinned to a position by the
+        compositor's own config, which takes no part in the arrangement, and
+        every display on a session that mirrors them onto the same region,
+        where there is no order to be in. A shell listing what it is sent
+        therefore offers the setting exactly where it does something.
+
+        place is where the display actually is, not what was last asked for.
+        The two differ when a request could not be carried out, which is the
+        case a shell must not present as success.
+
+        Every display whose place changed is sent one, so a trade between two
+        of them arrives as two events. Sent once per display when a version 21
+        object is bound, and again whenever the arrangement changes — including
+        when a display is plugged in or unplugged, which renumbers the ones
+        that outlast it.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="place" type="uint" summary="its place in the layout, counted from zero"/>
     </event>
 
     <enum name="mode_flag" bitfield="true" since="11">

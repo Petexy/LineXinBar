@@ -14,12 +14,21 @@
 //! Launching Steam ends that: Steam claims the pad, writes lizard mode off, and
 //! every keystroke stops. So the whole pad is read from its HID report now, and
 //! the compositor drops the lizard keyboard so the two cannot both arrive.
+//!
+//! Reading a pad this way means every application on the machine can read the
+//! same pad, because a controller never passes through the compositor at all.
+//! That is fine for every button but one: the guide button is the way *out* of
+//! an application, and an application that could see it could take it. So the
+//! pads GilRs reads here are pads [`crate::pad_guard`] has already taken apart
+//! — the shell reads the guide button from the guard, and GilRs reads a
+//! stand-in device with everything else on it.
 
 use std::time::Duration;
 
 use gilrs::{Axis, Button, EventType, Gilrs, GilrsBuilder, MappingSource};
 
 use crate::model::Action;
+use crate::pad_guard::PadGuard;
 use crate::steam_hid::{Buttons, SteamPad};
 
 /// Controller state is sampled often enough that input never feels tied to a
@@ -75,6 +84,30 @@ pub struct Poll {
     /// client's own key repeat — which is the repeat rate the user set, on the
     /// control that is meant to have one.
     pub arrows: Vec<(u32, bool)>,
+    /// Whether there is a hand on the pad at all: any button down, any
+    /// direction held, any stick pushed.
+    ///
+    /// Not "did the shell get anything out of this poll", which is what the
+    /// four fields above are between them. This is the wider question, and it
+    /// is asked of every control on the pad whether or not the shell is the one
+    /// listening: with an application in front the buttons are dropped here and
+    /// read from `/dev/input` by the game instead, and a thumb on them is still
+    /// a thumb that is not on a keyboard. That is the only thing this answers,
+    /// and the whole of what it is for: which control the shell last saw in the
+    /// user's hands, which [`crate::settings::controller_in_hand`] remembers
+    /// from one session to the next.
+    pub stirred: bool,
+}
+
+/// Whether a stick has been pushed rather than merely left alone.
+///
+/// The same threshold navigating the bar takes, and deliberately not a smaller
+/// one. What this decides is whether the user's hands are on the controller,
+/// and a worn stick resting a little off centre would otherwise say they were,
+/// for as long as the pad stayed plugged in: a keyboard user would be offered a
+/// keyboard again every time the shell looked.
+fn stick_is_pushed((x, y): (f32, f32)) -> bool {
+    x.abs() >= STICK_ENGAGE || y.abs() >= STICK_ENGAGE
 }
 
 /// Owns the platform controller context and translates it into XMB actions.
@@ -94,6 +127,10 @@ pub struct ControllerInput {
     /// because the kernel gives that pad no gamepad node at all. Read from its
     /// HID report instead — see [`crate::steam_hid`].
     pad: SteamPad,
+    /// The guide button of every other pad, which by then has been taken out of
+    /// what GilRs is reading — see [`crate::pad_guard`]. It arrives here and
+    /// nowhere else on the machine.
+    guard: PadGuard,
     /// Whether the guide button now held down has already been spent on a
     /// chord, and so must not open the overlay when it comes back up.
     ///
@@ -113,6 +150,7 @@ impl ControllerInput {
                 dpad_held: [false; Direction::COUNT],
                 guide_chorded: false,
                 pad: SteamPad::new(false),
+                guard: PadGuard::new(false),
             };
         }
 
@@ -126,6 +164,7 @@ impl ControllerInput {
                     dpad_held: [false; Direction::COUNT],
                     guide_chorded: false,
                     pad: SteamPad::new(true),
+                    guard: PadGuard::new(true),
                 }
             }
             Err(err) => {
@@ -139,6 +178,10 @@ impl ControllerInput {
                     // through GilRs in the first place, so whatever stopped
                     // GilRs from starting has not cost us this.
                     pad: SteamPad::new(true),
+                    // And still worth guarding, for the same reason twice
+                    // over: whatever stopped GilRs from reading a pad has not
+                    // stopped anything else on the machine from reading one.
+                    guard: PadGuard::new(true),
                 }
             }
         }
@@ -163,10 +206,33 @@ impl ControllerInput {
     pub fn poll(&mut self, now: Duration, active: bool) -> Poll {
         let mut actions = Vec::new();
         let mut clicks = Vec::new();
+        // Whether anything on the pad has been touched, which is a wider
+        // question than any of the above and is asked of the raw controls
+        // rather than of what the shell made of them: a shoulder button bound
+        // to nothing is still a hand on the controller.
+        let mut stirred = false;
         // Whether the guide button has already been spent, carried out of the
         // field and back into it so both halves below can read and write it
         // while GilRs is borrowed.
         let mut chorded = self.guide_chorded;
+
+        // The guide button of every pad GilRs can see, which GilRs cannot see:
+        // it is held back from the stand-in device the guard leaves in the
+        // pad's place, so that no application gets it either. See
+        // [`crate::pad_guard`].
+        //
+        // Read in two halves around everything else, and that ordering is the
+        // whole of it. A press only begins a hold, so it is answered first,
+        // before a chord below can be spelled on it; the release is answered
+        // last, once every button that arrived in the same eight milliseconds
+        // has had its chance to claim the hold. Doing both here would open the
+        // guide on a screenshot chord whose two halves landed in one poll.
+        let guide = self.guard.take_edges();
+        let guide_held = self.guard.guide_held();
+        stirred |= guide.pressed || guide_held;
+        if guide.pressed {
+            chorded = false;
+        }
 
         // The Steam Controller first, and outside everything GilRs does: that
         // pad has no gamepad node for GilRs to have opened, so it is reachable
@@ -174,6 +240,7 @@ impl ControllerInput {
         // and writes lizard mode off, this is the *only* way any of it arrives.
         let pad = self.pad.poll(now);
         if let Some(frame) = &pad {
+            stirred |= !frame.held.is_empty();
             actions.extend(pad_actions(frame, &mut chorded));
             for (button, code) in PAD_CLICKS {
                 if frame.pressed.has(*button) {
@@ -205,6 +272,9 @@ impl ControllerInput {
                     }
                     EventType::ButtonPressed(button, code) => {
                         let code = code.into_u32();
+                        // Before anything is made of it: a button this shell
+                        // has no use for is still a thumb on the pad.
+                        stirred = true;
                         if let Some(click) = pointer_button(button, code) {
                             clicks.push((click, true));
                         }
@@ -217,7 +287,14 @@ impl ControllerInput {
                         // be told apart at all; see [`Layout`].
                         let layout = Layout::of(gilrs, event.id);
                         let action = chord_action(button, code, layout, select_is_held(gilrs))
-                            .or_else(|| photograph_chord(button, code, guide_is_held(gilrs)))
+                            .or_else(|| {
+                                // Either source will do for the modifier. A
+                                // guarded pad spells it through the guard, an
+                                // unguarded one — a pad the guard could not
+                                // take, on a machine with no `/dev/uinput` —
+                                // still spells it through GilRs.
+                                photograph_chord(button, code, guide_held || guide_is_held(gilrs))
+                            })
                             .or_else(|| action_for_button(button, code, layout));
                         if action == Some(Action::Screenshot) {
                             chorded = true;
@@ -258,6 +335,16 @@ impl ControllerInput {
             }
         }
 
+        // The guarded guide button's other half, last of everything: by here a
+        // chord spelled in this same poll has already claimed the hold, and a
+        // hold nothing claimed is a tap. See the drain at the top.
+        if guide.released {
+            if !chorded {
+                actions.push(Action::Guide);
+            }
+            chorded = false;
+        }
+
         // Every stick and the D-pad, sampled once. Some of it is read whether
         // or not the shell is being driven: the pointer these move is wanted
         // *inside* the application, which is exactly when nothing else here is
@@ -269,6 +356,12 @@ impl ControllerInput {
         }
         let right_stick = sticks.right;
         let scroll_stick = sticks.left;
+        // Held rather than pressed, for both the D-pad and the sticks: this is
+        // asked of every poll and a thumb resting on a direction is a hand on
+        // the pad on all of them, not only the one it landed on.
+        stirred |= sticks.dpad.iter().any(|held| *held)
+            || stick_is_pushed(sticks.left)
+            || stick_is_pushed(sticks.right);
         let arrows = self.arrow_edges(sticks.dpad);
         self.guide_chorded = chorded;
 
@@ -281,6 +374,12 @@ impl ControllerInput {
                 scroll_stick,
                 clicks,
                 arrows,
+                // Whatever the gate above dropped, the hand that sent it was
+                // still on the controller. This is the case that matters most:
+                // with a game in front the shell listens to almost nothing, and
+                // it is over a game that it has something in the corner of the
+                // screen offering a pad a keyboard.
+                stirred,
             };
         }
 
@@ -292,6 +391,7 @@ impl ControllerInput {
             scroll_stick,
             clicks,
             arrows,
+            stirred,
         }
     }
 
@@ -1567,6 +1667,25 @@ mod tests {
     fn chooses_the_axis_furthest_from_rest() {
         assert_eq!(larger_axis(0.4, -0.8), -0.8);
         assert_eq!(larger_axis(-0.8, 0.5), -0.8);
+    }
+
+    /// A stick says there is a hand on the pad only once it has been pushed as
+    /// far as navigating the bar takes.
+    ///
+    /// The threshold is the point of it. What this decides is whether the shell
+    /// goes on offering a keyboard to a controller, and a worn stick resting a
+    /// little off centre would answer yes for as long as the pad stayed plugged
+    /// in — so a keyboard user would find the corner chip back every time they
+    /// looked, with nobody having touched anything.
+    #[test]
+    fn only_a_stick_that_has_been_pushed_says_the_pad_is_in_hand() {
+        assert!(!stick_is_pushed((0.0, 0.0)));
+        assert!(!stick_is_pushed((0.2, -0.2)), "a stick that rests crooked");
+        assert!(!stick_is_pushed((0.54, 0.0)));
+
+        assert!(stick_is_pushed((0.56, 0.0)));
+        assert!(stick_is_pushed((0.0, -0.9)), "and in every direction");
+        assert!(stick_is_pushed((-0.7, 0.0)));
     }
 
     fn pad_action(button: Buttons) -> Option<Action> {

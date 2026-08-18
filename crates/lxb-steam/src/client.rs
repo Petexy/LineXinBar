@@ -45,7 +45,35 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// What the shell wants done to every process this module starts, or nothing
+/// where it has not said.
+///
+/// Valve's client is an application the shell starts, and it was the one
+/// application not being handed the environment the shell hands the others:
+/// this module builds the command, so the shell's own launcher never saw it.
+/// The one thing that costs, measured on this machine, is the guide button.
+/// The shell takes a controller away from `/dev/input` and gives it back with
+/// that button missing, and then tells applications to leave the pad's *raw*
+/// node alone, because a driver reading `hidraw` walks straight around the
+/// swap — and Steam, reading the raw node, went on seeing the button and
+/// raising its overlay over the guide the button had just opened.
+///
+/// A hook rather than a table of variables, because what it answers changes
+/// while the session runs: pads are plugged in and unplugged, and the list is
+/// whatever the guard is holding at the moment the client is started.
+static CONFINEMENT: Mutex<Option<fn(&mut Command)>> = Mutex::new(None);
+
+/// Say how every Steam process started from here is to be confined.
+///
+/// Set once, by the shell, before anything is started.
+pub fn confine_children_with(hook: fn(&mut Command)) {
+    if let Ok(mut confinement) = CONFINEMENT.lock() {
+        *confinement = Some(hook);
+    }
+}
 
 /// What Valve's client calls its own windows.
 ///
@@ -101,15 +129,26 @@ impl Where {
     }
 
     /// A command that runs the client with no arguments yet.
+    ///
+    /// Every process this module starts is built here, which is why the
+    /// shell's confinement is applied here and nowhere else: the client, the
+    /// courier that hands it a URL, and the one that starts it with a URL
+    /// already in hand are all the same command with different arguments, and
+    /// a game the client launches inherits whatever the client was given. See
+    /// [`CONFINEMENT`].
     fn command(&self) -> Command {
-        match self {
+        let mut command = match self {
             Where::Native(path) => Command::new(path),
             Where::Flatpak => {
                 let mut command = Command::new("flatpak");
                 command.arg("run").arg("com.valvesoftware.Steam");
                 command
             }
+        };
+        if let Some(confine) = CONFINEMENT.lock().ok().and_then(|hook| *hook) {
+            confine(&mut command);
         }
+        command
     }
 }
 
@@ -164,11 +203,25 @@ pub enum Doing {
     Install,
     /// Check what is on the disk against what should be, and repair it.
     Verify,
-    /// Bring up the client itself.
+    /// Bring the client up in Big Picture, its own console screen.
     ///
     /// Not about one title at all, which is why it ignores the id it is given.
     /// It is here rather than as a function of its own because it is the same
     /// journey as every other row of that menu.
+    ///
+    /// The plain one of the two, and the one simply called "Open Steam",
+    /// because it is the one that belongs on this screen: a shell driven from
+    /// a pad across the room has just handed over to another program, and Big
+    /// Picture is the only face of the client that can be driven the same way.
+    /// The desktop client is still a row away — see [`Doing::Open`].
+    BigPicture,
+    /// Bring up the client's desktop window.
+    ///
+    /// Offered beside [`Doing::BigPicture`] rather than instead of it: the
+    /// storefront's small print, the console tabs of the settings, and every
+    /// dialog Big Picture has no screen for are in this window and nowhere
+    /// else, so a shell that could only raise the console one would be a shell
+    /// with a part of Steam it cannot reach.
     Open,
 }
 
@@ -178,7 +231,8 @@ impl Doing {
         match self {
             Doing::Install => "Install with Steam",
             Doing::Verify => "Verify with Steam",
-            Doing::Open => "Open Steam",
+            Doing::BigPicture => "Open Steam",
+            Doing::Open => "Open Steam (Client)",
         }
     }
 
@@ -187,11 +241,22 @@ impl Doing {
         match self {
             Doing::Install => format!("steam://install/{app_id}"),
             Doing::Verify => format!("steam://validate/{app_id}"),
+            // Big Picture is a mode of the running client rather than a
+            // separate program, so this is the whole of how it is entered —
+            // and it starts the client first where there is not one running,
+            // exactly as the rest of these do.
+            Doing::BigPicture => "steam://open/bigpicture".to_string(),
             // `open/main` rather than starting the program with no arguments,
             // so a client that is already running comes to the front instead
             // of a second process starting and immediately exiting.
             Doing::Open => "steam://open/main".to_string(),
         }
+    }
+
+    /// Whether this is about the client itself rather than about one title, and
+    /// so needs nothing selected to be pressed.
+    pub fn about_the_client(self) -> bool {
+        matches!(self, Doing::BigPicture | Doing::Open)
     }
 }
 
@@ -264,14 +329,52 @@ pub fn start(client: &Where, options: &Options) -> std::io::Result<()> {
         .map(drop)
 }
 
-/// Hand the running client one `steam:` URL — which is how it is asked to do
-/// anything at all once it is up.
+/// Ask the client for one `steam:` URL, starting one where there is none
+/// running — which is what every caller actually wants, and is not the same
+/// command twice.
 ///
-/// A second `steam` process started this way notices the first one through its
-/// pipe, hands the URL over and exits, which is why this waits for it: the wait
-/// is milliseconds and its exit status is the only sign that the client took
-/// the request.
-pub fn tell(client: &Where, url: &str) -> std::io::Result<()> {
+/// The difference is what the process does, and it is the difference between a
+/// press that works and a shell that stops. With a client already up, `steam
+/// <url>` is a courier: it finds the running one through the pipe, hands the
+/// URL over and exits in milliseconds, and its exit status is the only sign the
+/// request was taken — so [`tell`] waits for it. With no client up, that same
+/// command *is* the client: `/usr/bin/steam` execs the real thing, which then
+/// runs until the user quits Steam. Waiting on that is waiting for the whole
+/// session, and a caller that did it from a shell's event loop would freeze the
+/// screen for as long as Steam was open.
+///
+/// So the wait is only ever spent on a courier. Where there is no client, this
+/// starts one with the URL already in hand — no `-silent`, because every URL
+/// that comes through here is a window somebody asked to see — and does not
+/// wait for it at all, exactly as [`start`] does not.
+///
+/// `options` is how the two are told apart, and `None` — a machine whose client
+/// directories cannot be found — is treated as no client running. The cost of
+/// being wrong in that direction is a request that is delivered and not waited
+/// for; the other way round is the freeze.
+pub fn open(client: &Where, options: Option<&Options>, url: &str) -> std::io::Result<()> {
+    let running = options.is_some_and(|options| state(Some(client), options).running());
+    if running {
+        return tell(client, url);
+    }
+    tracing::info!(url, "no client to hand this to; starting one with it");
+    client
+        .command()
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
+/// Hand the *running* client one `steam:` URL, and wait for the handover.
+///
+/// Only ever called with a client already up — see [`open`], which is what
+/// decides that and is what every caller outside this module uses. The wait is
+/// milliseconds and its exit status is the only sign that the client took the
+/// request.
+fn tell(client: &Where, url: &str) -> std::io::Result<()> {
     tracing::debug!(url, "handing Valve's client a request");
     let status = client
         .command()
@@ -1156,6 +1259,79 @@ mod tests {
         assert!(!State::Stopped.running() && !State::Stopped.signed_in());
         assert!(State::Starting.running() && !State::Starting.signed_in());
         assert!(State::SignedIn(1).running() && State::SignedIn(1).signed_in());
+    }
+
+    /// The two rows that open the client open two different things, and the
+    /// plain name belongs to the one a pad can drive.
+    #[test]
+    fn open_steam_is_the_console_one() {
+        assert_eq!(Doing::BigPicture.label(), "Open Steam");
+        assert_eq!(
+            Doing::BigPicture.url(0),
+            "steam://open/bigpicture",
+            "the plainly named row raises the desktop client instead"
+        );
+        assert_eq!(Doing::Open.label(), "Open Steam (Client)");
+        assert_eq!(Doing::Open.url(0), "steam://open/main");
+
+        // Both ignore the id they are given, which is what lets the row be
+        // pressed with nothing selected; the ones about a title do not.
+        for doing in [Doing::BigPicture, Doing::Open] {
+            assert!(doing.about_the_client());
+            assert_eq!(doing.url(730), doing.url(0));
+        }
+        for doing in [Doing::Install, Doing::Verify] {
+            assert!(!doing.about_the_client());
+            assert!(doing.url(730).ends_with("/730"));
+        }
+    }
+
+    /// A request made with no client running must not be waited on.
+    ///
+    /// The whole of the freeze, measured. `steam <url>` is two different
+    /// programs depending on what is already running: a courier that exits in
+    /// milliseconds, or — with nothing to hand the URL to — the client itself,
+    /// which exits when the user quits Steam. Waiting on the second one from
+    /// the shell's own thread is a screen stopped on its last frame, its music
+    /// still playing, with Steam audible and never shown; that is what this
+    /// stands on. The stand-in client here behaves like the real one: it does
+    /// not exit.
+    #[test]
+    fn a_request_with_no_client_running_is_not_waited_on() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("lxb-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("steam");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 10\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // No `steam.pipe` in this home, so nothing is listening and this is a
+        // machine with no client up — the state the freeze happened in.
+        let options = Options {
+            root: root.clone(),
+            home: root.clone(),
+        };
+        assert_eq!(
+            state(Some(&Where::Native(script.clone())), &options),
+            State::Stopped
+        );
+
+        let began = Instant::now();
+        open(
+            &Where::Native(script),
+            Some(&options),
+            "steam://open/bigpicture",
+        )
+        .expect("it should have started one");
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "it waited {:?} for a client that was never going to exit",
+            began.elapsed()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// With no client on the machine, nothing about the disk can change the

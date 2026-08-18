@@ -127,6 +127,16 @@ pub struct Quad {
     /// cover its colour back without the atlas being touched — and because the
     /// same cover is a single copy shared by every display.
     pub drain: f32,
+    /// Which part of what this quad samples is actually drawn, as fractions of
+    /// the whole: left, top, right, bottom.
+    ///
+    /// [`WHOLE`] for everything the shell draws but one thing — a photograph in
+    /// the round hole a file explorer's row gives it. A picture *fitted* into a
+    /// circle is a picture with glass above and below it, and one stretched to
+    /// fill the circle is a picture of somebody standing in a funhouse mirror;
+    /// the only honest answer is to show the middle of it. See
+    /// [`crate::ui::round_crop`], which decides how much middle.
+    pub crop: [f32; 4],
     /// The pane's own opacity, multiplied into everything above.
     ///
     /// Separate from the alpha in `color`, which on a glass pane means how
@@ -171,6 +181,9 @@ impl Default for Quad {
             gloss: 0.0,
             face_curve: 0.0,
             drain: 0.0,
+            // The whole of whatever this quad samples, which is what every
+            // drawing in the shell but a round preview wants.
+            crop: WHOLE,
             // Written out because this is the one field whose zero is wrong:
             // every `..Quad::default()` in the shell would draw nothing.
             fade: 1.0,
@@ -660,6 +673,19 @@ struct Instance {
     /// the conversion belongs here rather than once per fragment. A pane with
     /// nothing cutting it is given a box larger than any display.
     cut: [f32; 4],
+}
+
+/// All of what a quad samples: see [`Quad::crop`].
+pub const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// The part of an atlas rectangle a quad's [`crop`](Quad::crop) keeps.
+///
+/// In the rectangle's own units rather than the atlas's, so a crop says the
+/// same thing about a picture wherever in the atlas that picture landed and
+/// however much of its block it covers.
+fn cropped([u0, v0, u1, v1]: [f32; 4], [x0, y0, x1, y1]: [f32; 4]) -> [f32; 4] {
+    let (w, h) = (u1 - u0, v1 - v0);
+    [u0 + w * x0, v0 + h * y0, u0 + w * x1, v0 + h * y1]
 }
 
 /// The `cut` of a pane nothing is cutting: far enough out that no pixel of any
@@ -1872,7 +1898,7 @@ impl Gpu {
             .iter()
             .map(|q| Instance {
                 rect: [q.x, q.y, q.w, q.h],
-                uv: self.uv_for(q.slot),
+                uv: cropped(self.uv_for(q.slot), q.crop),
                 color: q.color,
                 shape: [q.radius, q.border, q.notch, q.frost],
                 material: [q.thickness, q.behind, q.gloss, q.fade],

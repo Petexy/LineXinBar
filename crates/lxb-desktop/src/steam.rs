@@ -187,6 +187,12 @@ pub enum Typed {
 
 impl Steam {
     pub fn start() -> Steam {
+        // Before the worker can start anything: Valve's client is an
+        // application this shell starts, and it gets what the others get. It
+        // was the one that did not, and the whole of the difference was the
+        // guide button — see [`crate::model::hide_guarded_pads_from_hidapi`]
+        // and [`crate::pad_guard`].
+        lxb_steam::client::confine_children_with(crate::model::hide_guarded_pads_from_hidapi);
         Steam {
             client: lxb_steam::Steam::start(),
             account: None,
@@ -543,12 +549,25 @@ impl Steam {
     /// Nothing comes back. What says the game started is the game's own window
     /// arriving on the display, which is what the splash is already watching
     /// for; there is no answer from Steam to wait on and none to be had.
+    ///
+    /// Straight from this thread, unlike every other request to the client:
+    /// this one is only ever reached with the client already up and signed in —
+    /// the splash has just spent as long as it took waiting for exactly that —
+    /// so what runs here is a courier that exits in milliseconds, and its
+    /// answer is what decides whether the splash carries on or the press is
+    /// refused. [`lxb_steam::client::open`] is still what runs it, so a client
+    /// that has died in the meantime is started rather than waited on.
     pub fn play(&mut self, app_id: u32) -> Result<(), String> {
         let Some(where_it_is) = lxb_steam::client::Where::find() else {
             return Err("There is no Steam client installed on this machine.".to_string());
         };
-        lxb_steam::client::tell(&where_it_is, &format!("steam://rungameid/{app_id}"))
-            .map_err(|error| format!("Steam would not start this game: {error}"))
+        let options = lxb_steam::client::Options::found();
+        lxb_steam::client::open(
+            &where_it_is,
+            options.as_ref(),
+            &format!("steam://rungameid/{app_id}"),
+        )
+        .map_err(|error| format!("Steam would not start this game: {error}"))
     }
 
     /// Have Valve's client fetch a game the account owns and has not got.
@@ -586,6 +605,16 @@ impl Steam {
     /// One game out of the library, by its app id.
     pub fn game(&self, app_id: u32) -> Option<&Game> {
         self.games.iter().find(|game| game.app_id == app_id)
+    }
+
+    /// Where Steam publishes that game's pictures, as the library was told.
+    ///
+    /// The library is the only thing that knows: the paths arrive in the same
+    /// record as the game's name, and [`crate::art`] has no catalogue to look
+    /// them up in. Nothing for a game the account does not own — one on the disk
+    /// from somebody else's library — which is asked for by name instead.
+    pub fn pictures(&self, app_id: u32) -> Option<&lxb_steam::art::Published> {
+        self.game(app_id).map(|game| &game.pictures)
     }
 
     /// Sign in by photographing a code.

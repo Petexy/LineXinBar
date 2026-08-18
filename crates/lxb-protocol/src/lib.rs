@@ -38,4 +38,24 @@ pub mod server {
     use self::__interfaces::*;
 
     wayland_scanner::generate_server_code!("protocols/lxb-shell-v1.xml");
+
+    /// `frog_color_management_v1`, vendored rather than private.
+    ///
+    /// Not LineXinBar's protocol and not in wayland-protocols either: it is
+    /// the interface Valve's HDR Vulkan layer and Gamescope actually speak,
+    /// which is what makes it the one an HDR game under Proton will find. It
+    /// is carried here for the same reason every other asset is — a session
+    /// may have no desktop to borrow one from.
+    pub mod frog {
+        use wayland_server;
+        use wayland_server::protocol::*;
+
+        pub mod __interfaces {
+            use wayland_server::protocol::__interfaces::*;
+            wayland_scanner::generate_interfaces!("protocols/frog-color-management-v1.xml");
+        }
+        use self::__interfaces::*;
+
+        wayland_scanner::generate_server_code!("protocols/frog-color-management-v1.xml");
+    }
 }

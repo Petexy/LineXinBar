@@ -163,6 +163,50 @@ impl Boundary {
     fn stops_at(&self, pid: i32) -> bool {
         pid <= 1 || self.shell == Some(pid) || self.compositor == Some(pid)
     }
+
+    /// Whether this is the session itself rather than something inside it.
+    fn is_the_session(&self, pid: i32) -> bool {
+        self.shell == Some(pid) || self.compositor == Some(pid)
+    }
+}
+
+/// Whether `pid` belongs to this session at all: a walk up from it reaches the
+/// shell or the compositor before it reaches init.
+///
+/// The question every signal has to ask first, and the one that was missing.
+/// [`application_root`] answers "how far up does this application go", and it
+/// answers it by walking until the parent is the session — which is the right
+/// answer for an application the session started and a catastrophic one for
+/// anything else. A client that connected to the socket from outside has no
+/// ancestor in this session at all, so the walk runs out of tree instead, stops
+/// at the process below init, and hands back a root that is somebody else's
+/// whole login: `systemd --user`, and every desktop, terminal and browser
+/// under it. Signalling that is signalling the machine.
+///
+/// Measured, on this machine, by stopping it: a nested session was given a
+/// window belonging to a client started from a terminal, decided nothing of it
+/// was on screen, walked up out of its own session and `SIGSTOP`ped the user's
+/// entire Plasma desktop.
+///
+/// So: not inside the session, not ours to signal. The cost of being wrong in
+/// that direction is a Close that falls back to asking politely, or an
+/// application that goes on running behind the start screen. The cost of being
+/// wrong the other way is the one above.
+pub fn inside_the_session(processes: &Processes, pid: i32, boundary: Boundary) -> bool {
+    let mut at = pid;
+    for _ in 0..MAX_DEPTH {
+        if boundary.is_the_session(at) {
+            return true;
+        }
+        let Some(process) = processes.get(at) else {
+            return false;
+        };
+        if process.parent <= 1 {
+            return false;
+        }
+        at = process.parent;
+    }
+    false
 }
 
 /// An application that runs other applications for the user, and rebuilds its
@@ -267,6 +311,16 @@ pub fn ending(app_id: &str, pid: Option<i32>, processes: &Processes, boundary: B
     let Some(pid) = pid.filter(|pid| *pid > 1) else {
         return Ending::Unreachable;
     };
+    // And the same containment Close needs and never had: the walk below finds
+    // the topmost ancestor that is not this session, which for a process the
+    // session never started is a stranger's login. Unreachable rather than
+    // fatal — the caller falls back to asking the window to close itself,
+    // which is the right answer for somebody else's client anyway. See
+    // [`inside_the_session`].
+    if !inside_the_session(processes, pid, boundary) {
+        tracing::debug!(pid, "this process is not in this session; only asking");
+        return Ending::Unreachable;
+    }
     let Some(root) = application_root(processes, pid, boundary) else {
         return Ending::Unreachable;
     };
@@ -279,6 +333,61 @@ pub fn ending(app_id: &str, pid: Option<i32>, processes: &Processes, boundary: B
     match processes.application(root) {
         doomed if doomed.is_empty() => Ending::Unreachable,
         doomed => Ending::Signal(doomed),
+    }
+}
+
+/// The processes to stop while nobody can see this application, or `None` for
+/// one that has to go on running whether it can be seen or not.
+///
+/// The same walk Close makes, asked for a different reason and answered more
+/// cautiously, because the two mistakes are not alike. Ending the wrong thing
+/// takes an application away from somebody; *stopping* the wrong thing leaves
+/// a machine that looks broken — a session with no shell, a client that will
+/// never start the game it was asked for — and says nothing in the log about
+/// why.
+///
+/// Two applications are refused outright:
+///
+/// * **A supervisor's own interface.** Valve's client is the one that matters:
+///   it starts games, downloads them, and answers the shell over its own
+///   socket. Stopped behind the start screen it would do none of that, and the
+///   next press of a game would hand its request to a process that is not
+///   listening. [`SUPERVISORS`] already says which windows are the client
+///   itself rather than something it is running, for exactly this distinction.
+/// * **Anything with a recipe of its own.** Waydroid's processes belong to
+///   root inside a container; a stop that cannot be undone from here is not one
+///   to send.
+pub fn sleeping(
+    app_id: &str,
+    pid: Option<i32>,
+    processes: &Processes,
+    boundary: Boundary,
+) -> Option<Vec<Doomed>> {
+    if recipe(app_id).is_some() {
+        return None;
+    }
+    let pid = pid.filter(|pid| *pid > 1)?;
+    let window = processes.get(pid)?;
+    if SUPERVISORS
+        .iter()
+        .any(|supervisor| supervisor.interface.contains(&window.name.as_str()))
+    {
+        return None;
+    }
+    // Not ours, not stopped. See [`inside_the_session`], which is the whole of
+    // why this is asked before anything else about the tree.
+    if !inside_the_session(processes, pid, boundary) {
+        tracing::debug!(pid, "not stopping a process this session did not start");
+        return None;
+    }
+    let root = application_root(processes, pid, boundary)?;
+    if boundary.stops_at(root) {
+        tracing::warn!(pid, root, "refusing to stop the session itself");
+        return None;
+    }
+    match processes.application(root) {
+        doomed if doomed.is_empty() => None,
+        doomed => Some(doomed),
     }
 }
 
@@ -411,6 +520,119 @@ mod tests {
         for surviving in [147779, 147893, 148158] {
             assert!(!doomed.contains(&surviving), "{surviving} would have died");
         }
+    }
+
+    /// The bug this cost a desktop to find: a window whose process this session
+    /// never started is not this session's to signal.
+    ///
+    /// What happened, on this machine. A nested compositor was handed a client
+    /// started from a terminal, decided nothing of it was on screen, and walked
+    /// up the tree looking for the top of that application. There was no top —
+    /// nothing in that chain belonged to the nested session — so the walk ran
+    /// until the process below init, took *that* as the application, and
+    /// stopped it and everything under it: the user's whole Plasma desktop, in
+    /// one signal, with no way left to send the one that undoes it.
+    #[test]
+    fn a_process_this_session_never_started_is_never_signalled() {
+        let processes = Processes::from_list([
+            // The session: a shell and a compositor, as the boundary names them.
+            process(100, 1, 100, "lxb-desktop"),
+            process(50, 1, 50, "lxb"),
+            // Somebody else's login, with a window of its own that happens to
+            // have connected to this compositor's socket.
+            process(900, 1, 900, "systemd"),
+            process(901, 900, 901, "plasmashell"),
+            process(902, 901, 902, "konsole"),
+            process(903, 902, 903, "stray-client"),
+        ]);
+
+        assert!(
+            !inside_the_session(&processes, 903, boundary()),
+            "a client from another login is not in this session"
+        );
+        assert!(
+            sleeping("stray", Some(903), &processes, boundary()).is_none(),
+            "it would have stopped the other login"
+        );
+        assert_eq!(
+            ending("stray", Some(903), &processes, boundary()),
+            Ending::Unreachable,
+            "and Close would have killed it"
+        );
+
+        // Everything the session did start is still reachable, by both.
+        for pid in [100, 50] {
+            assert!(inside_the_session(&processes, pid, boundary()));
+        }
+    }
+
+    /// The three shapes that are inside the session: a launch of the shell's,
+    /// something the compositor started, and a game several processes below
+    /// the client that started it.
+    #[test]
+    fn everything_the_session_started_is_inside_it() {
+        assert!(inside_the_session(&steam(), 200001, boundary()), "a game");
+        assert!(
+            inside_the_session(&steam(), 148158, boundary()),
+            "the client's own interface"
+        );
+
+        let processes = Processes::from_list([
+            process(100, 1, 100, "lxb-desktop"),
+            process(50, 1, 50, "lxb"),
+            process(400, 50, 400, "autostarted"),
+        ]);
+        assert!(
+            inside_the_session(&processes, 400, boundary()),
+            "the compositor's own child"
+        );
+
+        // And the one that is not: a process reparented to init has no chain
+        // left to prove it by, so it is left alone rather than guessed at.
+        let orphaned = Processes::from_list([
+            process(100, 1, 100, "lxb-desktop"),
+            process(500, 1, 500, "reparented"),
+        ]);
+        assert!(!inside_the_session(&orphaned, 500, boundary()));
+    }
+
+    /// A game behind the start screen is stopped at its own tree, exactly as
+    /// Close would end it there.
+    #[test]
+    fn a_game_nobody_can_see_is_stopped_below_the_client() {
+        let stopped = sleeping("steam_app_3812600", Some(200001), &steam(), boundary())
+            .expect("a game is an application like any other");
+        let stopped: Vec<i32> = stopped.iter().map(|d| d.pid).collect();
+        assert_eq!(stopped, vec![200000, 200001]);
+    }
+
+    /// And the client that starts games is not, whichever of its windows the
+    /// question is asked about. A stopped Steam is a session where the next
+    /// game the user presses never starts, with nothing on screen to say so.
+    #[test]
+    fn the_client_that_starts_games_is_never_stopped() {
+        for window in [148158, 147893] {
+            assert!(
+                sleeping("steam", Some(window), &steam(), boundary()).is_none(),
+                "the client would have been stopped through pid {window}"
+            );
+        }
+    }
+
+    /// Nor is anything whose lifetime is not a process this session owns.
+    #[test]
+    fn an_application_with_a_recipe_of_its_own_is_left_running() {
+        assert!(sleeping("Waydroid", Some(200001), &steam(), boundary()).is_none());
+        assert!(sleeping("waydroid.com.example", Some(200001), &steam(), boundary()).is_none());
+    }
+
+    /// A window with no process behind it, or one whose process is already
+    /// gone, is nothing to stop rather than something to guess at.
+    #[test]
+    fn a_window_with_no_process_is_not_stopped() {
+        assert!(sleeping("x", None, &steam(), boundary()).is_none());
+        assert!(sleeping("x", Some(1), &steam(), boundary()).is_none());
+        assert!(sleeping("x", Some(999_999), &steam(), boundary()).is_none());
     }
 
     /// A process group is only ever taken from a root that leads one. A game

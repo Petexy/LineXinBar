@@ -1,8 +1,11 @@
 //! Input routing and compositor keybindings.
 
+use std::time::Duration;
+
+use lxb_protocol::server::lxb_shell_v1::VolumeChange;
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-    KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    KeyState, KeyboardKeyEvent, Keycode, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     TouchEvent,
 };
 use smithay::desktop::{layer_map_for_output, Window, WindowSurfaceType};
@@ -10,16 +13,19 @@ use smithay::input::keyboard::{keysyms, xkb, FilterResult, Keysym, ModifiersStat
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::output::Output;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Point, Size, SERIAL_COUNTER};
+use smithay::utils::{IsAlive, Logical, Physical, Point, Size, SERIAL_COUNTER};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use smithay::xwayland::xwm::WmWindowType;
+use smithay::xwayland::X11Surface;
 
 use crate::config::Config;
 use crate::focus::{x11_surface_matches, KeyboardFocusTarget};
+use crate::render::same_application;
 use crate::state::LxbState;
 use crate::xwayland::x11_window_accepts_input;
 
@@ -27,6 +33,41 @@ use crate::xwayland::x11_window_accepts_input;
 enum ActivePointerConstraint {
     Locked,
     Confined(Option<RegionAttributes>),
+}
+
+/// What the pointer or a finger is over, and in whose coordinates.
+///
+/// Three things rather than the surface and its origin, because the two are not
+/// enough on their own: an application drawing larger than life works in a
+/// smaller coordinate space than the screen does — see [`crate::scale`] — and a
+/// press has to be delivered in that space. So the point is carried here
+/// already converted, alongside the step it was converted by, and every caller
+/// hands the seat [`Hit::point`] rather than the location it started with.
+///
+/// The origin is the surface's own place in whichever space the point is in, so
+/// `point - origin` is what the client is told about and needs no further
+/// arithmetic. That is also what lets a scaled window be delivered through
+/// smithay's seat unchanged: what it wants is a location and an origin, and
+/// these are that pair — measured in the client's space instead of the screen's.
+#[derive(Clone)]
+pub struct Hit {
+    /// The surface the point landed on: a window's, one of its subsurfaces or
+    /// popups, or one of the shell's own layer surfaces.
+    pub surface: WlSurface,
+    /// Where that surface's origin is, in the same coordinates as [`Self::point`].
+    pub origin: Point<f64, Logical>,
+    /// Where the press landed, in the coordinates the surface's client works
+    /// in. The screen's own for everything but a scaled application's windows.
+    pub point: Point<f64, Logical>,
+    /// The step between the two spaces, for going back the other way.
+    pub mapping: crate::scale::Mapping,
+}
+
+impl Hit {
+    /// Where in the surface the press landed, which is what a client is told.
+    fn local(&self) -> Point<f64, Logical> {
+        self.point - self.origin
+    }
 }
 
 /// A compositor level action, triggered by a keybinding.
@@ -64,6 +105,16 @@ pub enum Action {
     /// the picture is of whatever is in front, so the key has to work while
     /// something is in front of everything.
     Screenshot,
+    /// Ask the session shell to set the volume, or to silence it.
+    ///
+    /// A compositor binding for the fourth time, and here the application in
+    /// front is not merely holding the key — it is the thing being turned
+    /// down. A volume key that stopped working the moment a game took the
+    /// keyboard would be a volume key for the launcher only.
+    ///
+    /// Forwarded rather than acted on, like the screenshot: the compositor has
+    /// the key, and the shell has the mixer and somewhere to draw it.
+    Volume(VolumeChange),
 }
 
 impl Action {
@@ -86,6 +137,9 @@ impl Action {
             "guide" | "overlay" => Action::Guide,
             "keyboard" | "osk" => Action::Keyboard,
             "screenshot" | "capture-screen" => Action::Screenshot,
+            "volume-up" => Action::Volume(VolumeChange::Up),
+            "volume-down" => Action::Volume(VolumeChange::Down),
+            "volume-mute" | "mute" => Action::Volume(VolumeChange::Mute),
             _ => return None,
         })
     }
@@ -234,10 +288,19 @@ fn is_logo_key(syms: &[Keysym]) -> bool {
 /// every chord in the session would be shadowed by it. What names the key on
 /// its own is the release: down, up, and nothing in between.
 ///
-/// Both edges still reach the client. Swallowing the release of a modifier
-/// whose press was forwarded leaves the application holding a Super that is
-/// never let go of — a stuck modifier is a worse fault than an application
-/// seeing a key that also meant something to the shell.
+/// Neither edge reaches the application, and that is the point rather than a
+/// side effect. The home button belongs to the shell and to the compositor and
+/// to nothing else: a console's home button is the one control that means the
+/// same thing whatever is on screen, and an application that can see it is an
+/// application that can act on it — Valve's client takes it for an overlay of
+/// its own, and a game takes it for whatever the Windows key does in that game.
+///
+/// It used to forward both edges, on the reasoning that swallowing only the
+/// release would leave the application holding a Super it never sees let go of.
+/// That reasoning is sound, and is exactly why *both* go now: a key the client
+/// never learns about cannot be stuck down. Chords are untouched — the modifier
+/// state belongs to the seat and is updated before any of this, so `Super+Q`
+/// still resolves; what an application loses is the Windows key by itself.
 #[derive(Debug, Default)]
 pub struct HomeTap {
     /// Whether a Super that is down has, so far, been pressed on its own.
@@ -275,6 +338,65 @@ impl HomeTap {
     pub fn interrupt(&mut self) {
         self.armed = false;
         self.fired = false;
+    }
+}
+
+/// The volume key the user is holding down.
+///
+/// A binding acts once and is done with — a guide button held down is a guide
+/// button pressed once. A volume key is the exception, and not by choice:
+/// the control moves a twentieth of its range per press, so crossing it means
+/// twenty presses or one key held, and every machine anybody has ever used
+/// does the second. Nothing else can supply it either. A client repeats keys
+/// itself, from the rate the seat hands it — and this key never reaches a
+/// client, because the compositor swallowed it on the way to the application
+/// underneath. So the repeat is the compositor's, at the same rate.
+///
+/// Which press a step belongs to is a number rather than a comparison of what
+/// is held: the timer for a key that has been let go of cannot be taken out of
+/// the loop from outside its own callback, so it is left to expire and asks on
+/// the way past whether anybody still wants it. A press taken *since* answers
+/// no, which is what keeps a key pressed twice quickly from ending up with two
+/// timers stepping the volume together.
+#[derive(Debug, Default)]
+pub struct VolumeKey {
+    /// The key that is down, and the number its steps are booked under.
+    held: Option<(Keycode, u64)>,
+    /// The last number handed out, so no two presses share one.
+    generation: u64,
+}
+
+impl VolumeKey {
+    /// Note a key going down, and take the number to book its steps under.
+    fn pressed(&mut self, keycode: Keycode) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.held = Some((keycode, self.generation));
+        self.generation
+    }
+
+    /// Note a key coming up.
+    ///
+    /// Only the key that owns the repeat can end it. Turning the volume up and
+    /// then down without letting go of the first key hands the repeat to the
+    /// second, and the release of the first must not stop the one now running.
+    fn released(&mut self, keycode: Keycode) {
+        if self.held.is_some_and(|(held, _)| held == keycode) {
+            self.held = None;
+        }
+    }
+
+    /// Whether the step booked under `generation` is still wanted.
+    fn wants(&self, generation: u64) -> bool {
+        self.held.is_some_and(|(_, booked)| booked == generation)
+    }
+
+    /// Whatever was being held, it is not being held now.
+    ///
+    /// The session losing the keys, on the same terms as [`HomeTap::interrupt`]
+    /// and for a louder reason: a repeat that survived a VT switch would go on
+    /// turning the volume down on a session the user has left.
+    pub fn interrupt(&mut self) {
+        self.held = None;
     }
 }
 
@@ -336,6 +458,18 @@ impl KeyBindings {
             ("Any+Print", Action::Screenshot),
             ("Ctrl+Shift+3", Action::Screenshot),
             ("Alt+Shift+3", Action::Screenshot),
+            // The three keys with a speaker printed on them, and they are
+            // loose for the same reason `Print` is: each is a key with one job
+            // rather than a letter with something held down. They are reached
+            // through Fn on most laptops and through the media row on most
+            // keyboards, neither of which agrees with the other about what
+            // else is being held at the time.
+            ("Any+XF86AudioRaiseVolume", Action::Volume(VolumeChange::Up)),
+            (
+                "Any+XF86AudioLowerVolume",
+                Action::Volume(VolumeChange::Down),
+            ),
+            ("Any+XF86AudioMute", Action::Volume(VolumeChange::Mute)),
             ("Super+Tab", Action::CycleWindow),
             ("Super+Right", Action::FocusNextOutput),
             ("Super+Left", Action::FocusPrevOutput),
@@ -512,35 +646,53 @@ impl LxbState {
             // Which key this is, in the one place the symbols it produces are
             // known. Every key passes through here, because what makes a tap a
             // tap is as much the keys that are *not* the Windows key.
-            state
-                .lxb
-                .home_tap
-                .key(is_logo_key(&handle.raw_syms()), pressed);
+            let logo = is_logo_key(&handle.raw_syms());
+            state.lxb.home_tap.key(logo, pressed);
 
             // The modified symbol as well as the raw ones, so that both
             // `Super+Q` and shift-rewritten combos like `Super+Shift+Right`
             // resolve to the same binding.
             let candidates = std::iter::once(handle.modified_sym()).chain(handle.raw_syms());
             match state.lxb.keybindings.lookup(mods, candidates) {
-                Some(action) => FilterResult::Intercept(action),
+                Some(action) => FilterResult::Intercept(Some(action)),
+                // The home button is the shell's and the compositor's, and no
+                // application is told it was pressed — see [`HomeTap`]. Held,
+                // it is still the modifier half of every chord in the table;
+                // that is the seat's own state and is not affected by this.
+                None if logo => FilterResult::Intercept(None),
                 None => FilterResult::Forward,
             }
         });
+        let action = action.flatten();
 
         // A key was pressed on a keyboard the compositor can see, which is the
         // user telling it they are not using the mouse. Done for every key,
         // including the ones that turn out to be bindings: the guide button is
         // as much a hand off the mouse as a letter is.
+        //
+        // And the shell is told the same thing about the control it holds
+        // instead: a hand on the keyboard is a hand off the controller, and the
+        // shell has a corner of the screen offering that controller a keyboard.
+        // It cannot see this for itself while an application owns the keys,
+        // which is the case the offer is made in. Sent once until the shell says
+        // the pad is back — see `ShellControlState::typing_is_news`.
         if pressed {
             self.pointer_put_down();
+            self.lxb.shell_control.send_typed();
         }
 
         // Actions fire on press only; the matching release is swallowed too,
         // which is what clients expect from a grabbed binding.
-        if let Some(action) = action {
-            if pressed {
-                self.run_action(action);
-            }
+        //
+        // Except the volume keys, which are the one binding that goes on
+        // meaning something while it is held: they act on the press like
+        // everything else and then keep stepping until the key comes back up,
+        // so the release is the only thing that can stop them. See
+        // [`VolumeKey`].
+        match action {
+            Some(Action::Volume(change)) => self.volume_key(change, keycode, pressed),
+            Some(action) if pressed => self.run_action(action),
+            _ => {}
         }
 
         // And the home button last, on the release of a Windows key that was
@@ -573,6 +725,64 @@ impl LxbState {
             Action::Guide => self.open_guide(),
             Action::Keyboard => self.open_keyboard(),
             Action::Screenshot => self.screenshot_focused_output(),
+            Action::Volume(change) => self.change_volume(change),
+        }
+    }
+
+    /// One volume key going down or coming up.
+    ///
+    /// The press is forwarded at once, and the key then holds the repeat until
+    /// it is let go of — which is what makes crossing the whole range one held
+    /// key rather than twenty presses.
+    ///
+    /// Mute is not stepped and takes no repeat: it is a switch, and a switch
+    /// held down is a switch thrown once. Holding it would flip the session
+    /// between silent and loud twenty-five times a second.
+    fn volume_key(&mut self, change: VolumeChange, keycode: Keycode, pressed: bool) {
+        if !pressed {
+            self.lxb.volume_key.released(keycode);
+            return;
+        }
+        self.run_action(Action::Volume(change));
+        if change != VolumeChange::Mute {
+            self.repeat_volume_key(change, keycode);
+        }
+    }
+
+    /// Book the steps a held volume key owes, at the seat's own repeat rate.
+    ///
+    /// The user's rate, from the same two settings every key in the session
+    /// repeats by: this is a key on their keyboard, and one that walked a bar
+    /// at a pace of the compositor's own choosing would be the one key on the
+    /// machine that ignores what they asked for. A rate of nothing turns the
+    /// repeat off, exactly as it does for every other key.
+    fn repeat_volume_key(&mut self, change: VolumeChange, keycode: Keycode) {
+        let input = &self.lxb.config.input;
+        if input.repeat_rate <= 0 {
+            return;
+        }
+        let delay = Duration::from_millis(input.repeat_delay.max(0) as u64);
+        let interval = Duration::from_secs_f64(1.0 / f64::from(input.repeat_rate));
+        let booked = self.lxb.volume_key.pressed(keycode);
+
+        let timer = Timer::from_duration(delay);
+        let insert =
+            self.lxb
+                .loop_handle
+                .insert_source(timer, move |_, _, state: &mut LxbState| {
+                    // Asked every time rather than once: the key may have come up,
+                    // or another may have taken the repeat over, between one step
+                    // and the next.
+                    if !state.lxb.volume_key.wants(booked) {
+                        return TimeoutAction::Drop;
+                    }
+                    state.run_action(Action::Volume(change));
+                    TimeoutAction::ToDuration(interval)
+                });
+        if let Err(err) = insert {
+            // The press itself has already been forwarded; what is lost is the
+            // holding, so the key is a key that steps once.
+            tracing::warn!(?err, "no timer for a held volume key");
         }
     }
 
@@ -581,6 +791,10 @@ impl LxbState {
     /// This is a request, not a kill: the client may prompt about unsaved work
     /// or ignore it entirely.
     pub fn request_window_close(&mut self, window: &Window) {
+        // Nothing can act on a request while it is stopped, and an application
+        // behind the start screen is exactly the one Close is pressed on. See
+        // [`LxbState::wake_this_application`].
+        self.wake_this_application(window);
         if let Some(toplevel) = window.toplevel() {
             toplevel.send_close();
         } else if let Some(surface) = window.x11_surface() {
@@ -615,6 +829,26 @@ impl LxbState {
     /// is in the way of what the user is actually doing.
     pub fn pointer_put_down(&mut self) {
         self.set_pointer_visible(false);
+    }
+
+    /// The arrow has moved, so the picture has changed.
+    ///
+    /// Nothing else is going to say so. This compositor draws on demand — a
+    /// display whose render state is idle draws nothing until something asks —
+    /// and the cursor is the one thing on screen that moves without any client
+    /// committing anything. On the shell that never showed, because the start
+    /// screen animates continuously and the cursor rode along with it. Over an
+    /// application it is the whole bug: LineXinBar gives a game the entire
+    /// display, the shell behind it stops drawing altogether, and a game with
+    /// nothing to redraw — a point-and-click waiting for the very motion being
+    /// delivered — commits nothing either. So the arrow stayed where it was
+    /// last painted while the pointer went on moving underneath it: clicks
+    /// landed where the user was really pointing, and the thing they were
+    /// aiming with sat still. On a session that had just handed a game the
+    /// screen, where it was last painted is where the pointer starts, which is
+    /// the corner.
+    fn cursor_moved(&mut self) {
+        self.queue_redraw();
     }
 
     fn set_pointer_visible(&mut self, visible: bool) {
@@ -656,6 +890,19 @@ impl LxbState {
         utime: u64,
         time_msec: u32,
     ) {
+        self.pointer_moved_by(delta, delta_unaccel, utime, time_msec, RelativeStream::Send);
+    }
+
+    /// The same movement, saying whether the client hears it on the relative
+    /// stream as well. See [`RelativeStream`].
+    fn pointer_moved_by(
+        &mut self,
+        delta: Point<f64, Logical>,
+        delta_unaccel: Point<f64, Logical>,
+        utime: u64,
+        time_msec: u32,
+        relative: RelativeStream,
+    ) {
         let serial = SERIAL_COUNTER.next_serial();
         let Some(pointer) = self.lxb.seat.get_pointer() else {
             return;
@@ -667,23 +914,34 @@ impl LxbState {
         let old_hit = self.surface_under(old_location);
         let old_under = old_hit
             .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
-        let constraint = old_hit.as_ref().and_then(|(surface, origin)| {
-            active_pointer_constraint(&pointer, surface, old_location - *origin)
-        });
+            .map(|hit| (self.input_target_for_surface(&hit.surface), hit.origin));
+        let constraint = old_hit
+            .as_ref()
+            .and_then(|hit| active_pointer_constraint(&pointer, &hit.surface, hit.local()));
 
         // Relative motion is delivered even while the logical pointer is
         // locked. Games use this stream for camera movement while wl_pointer
         // remains stationary.
-        pointer.relative_motion(
-            self,
-            old_under.clone(),
-            &RelativeMotionEvent {
-                delta,
-                delta_unaccel,
-                utime,
-            },
-        );
+        //
+        // In the same space as the motion beside it, which on a scaled
+        // application is that window's rather than the screen's: a game whose
+        // camera came off this stream at the screen's scale would turn further
+        // per inch of mouse than its own cursor moved.
+        let travel = old_hit
+            .as_ref()
+            .map(|hit| hit.mapping)
+            .unwrap_or_else(crate::scale::Mapping::none);
+        if relative == RelativeStream::Send {
+            pointer.relative_motion(
+                self,
+                old_under.clone(),
+                &RelativeMotionEvent {
+                    delta: travel.delta_into_window(delta),
+                    delta_unaccel: travel.delta_into_window(delta_unaccel),
+                    utime,
+                },
+            );
+        }
 
         if matches!(constraint, Some(ActivePointerConstraint::Locked)) {
             pointer.frame(self);
@@ -695,32 +953,39 @@ impl LxbState {
         let location = self.lxb.pointer_location;
         let hit = self.surface_under(location);
 
-        if !confined_motion_is_valid(
-            constraint.as_ref(),
-            old_hit.as_ref(),
-            hit.as_ref(),
-            location,
-        ) {
+        let valid = confined_motion_is_valid(constraint.as_ref(), old_hit.as_ref(), hit.as_ref());
+        watch_a_refused_pointer(&mut self.lxb, !valid, old_location);
+        if !valid {
             self.lxb.pointer_location = old_location;
             pointer.frame(self);
             return;
         }
 
-        let under = hit
-            .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+        // The location handed over is the one the surface's own client works
+        // in — see [`Hit`] — and it is paired with the origin from the same
+        // hit, so what smithay computes from the two is the point inside the
+        // surface. Nothing is delivered where nothing was hit, and there the
+        // screen's own coordinate is as good as any.
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
 
         pointer.motion(
             self,
             under.clone(),
             &MotionEvent {
-                location,
+                location: delivered,
                 serial,
                 time: time_msec,
             },
         );
-        self.activate_constraint_at(&pointer, hit.as_ref(), location);
+        self.activate_constraint_at(&pointer, hit.as_ref());
         pointer.frame(self);
+        self.cursor_moved();
     }
 
     fn on_pointer_motion_absolute<B: InputBackend>(
@@ -765,15 +1030,21 @@ impl LxbState {
         let old_hit = self.surface_under(old_location);
         let old_under = old_hit
             .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
-        let constraint = old_hit.as_ref().and_then(|(surface, origin)| {
-            active_pointer_constraint(&pointer, surface, old_location - *origin)
-        });
+            .map(|hit| (self.input_target_for_surface(&hit.surface), hit.origin));
+        let constraint = old_hit
+            .as_ref()
+            .and_then(|hit| active_pointer_constraint(&pointer, &hit.surface, hit.local()));
 
         // Nested backends only expose host cursor coordinates. Deriving a
         // delta here keeps wp_relative_pointer useful for nested testing; the
         // native libinput backend supplies true unaccelerated relative events.
         if let Some(delta) = nested_delta.filter(|delta| delta.x != 0.0 || delta.y != 0.0) {
+            // In the surface's own space, as in [`Self::pointer_motion_by`].
+            let travel = old_hit
+                .as_ref()
+                .map(|hit| hit.mapping)
+                .unwrap_or_else(crate::scale::Mapping::none);
+            let delta = travel.delta_into_window(delta);
             pointer.relative_motion(
                 self,
                 old_under,
@@ -804,47 +1075,54 @@ impl LxbState {
         self.clamp_pointer();
         let location = self.lxb.pointer_location;
         let hit = self.surface_under(location);
-        if !confined_motion_is_valid(
-            constraint.as_ref(),
-            old_hit.as_ref(),
-            hit.as_ref(),
-            location,
-        ) {
+        let valid = confined_motion_is_valid(constraint.as_ref(), old_hit.as_ref(), hit.as_ref());
+        watch_a_refused_pointer(&mut self.lxb, !valid, old_location);
+        if !valid {
             self.lxb.pointer_location = old_location;
             pointer.frame(self);
             return;
         }
 
-        let under = hit
-            .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+        // Delivered in the surface's own coordinates; see the same pair in
+        // [`Self::pointer_motion_by`].
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
         pointer.motion(
             self,
             under,
             &MotionEvent {
-                location,
+                location: delivered,
                 serial,
                 time: event.time_msec(),
             },
         );
-        self.activate_constraint_at(&pointer, hit.as_ref(), location);
+        self.activate_constraint_at(&pointer, hit.as_ref());
         pointer.frame(self);
+        self.cursor_moved();
     }
 
     fn activate_constraint_at(
         &mut self,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
-        hit: Option<&(WlSurface, Point<f64, Logical>)>,
-        location: Point<f64, Logical>,
+        hit: Option<&Hit>,
     ) {
-        let Some((surface, origin)) = hit else {
+        let Some(hit) = hit else {
             return;
         };
-        with_pointer_constraint(surface, pointer, |constraint| {
+        // A constraint's region is the client's own, so the point compared
+        // against it has to be the client's own too — which is what a [`Hit`]
+        // already carries.
+        let local = hit.local();
+        with_pointer_constraint(&hit.surface, pointer, |constraint| {
             if let Some(constraint) = constraint {
                 let inside = constraint
                     .region()
-                    .map(|region| region.contains((location - *origin).to_i32_round()))
+                    .map(|region| region.contains(local.to_i32_round()))
                     .unwrap_or(true);
                 if inside && !constraint.is_active() {
                     constraint.activate();
@@ -883,18 +1161,26 @@ impl LxbState {
             return;
         }
 
-        let Some((current, origin)) = self.surface_under(self.lxb.pointer_location) else {
+        let Some(hit) = self.surface_under(self.lxb.pointer_location) else {
             self.lxb.pointer_position_hint = None;
             return;
         };
-        if current != surface {
+        if hit.surface != surface {
             self.lxb.pointer_position_hint = None;
             return;
         }
 
-        self.lxb.pointer_location = origin + hint;
+        // The hint is a place in the client's own surface, and where the
+        // pointer is kept is a place on the screen. On a scaled application
+        // those are two different spaces, so the answer has to come back out of
+        // the window's before it is believed.
+        let from = self.lxb.pointer_location;
+        self.lxb.pointer_location = hit.mapping.onto_screen(hit.origin + hint);
         self.clamp_pointer();
+        let to = self.lxb.pointer_location;
+        watch_a_client_placing_the_pointer(&mut self.lxb, from, to);
         self.lxb.pointer_position_hint = None;
+        self.cursor_moved();
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
@@ -993,7 +1279,16 @@ impl LxbState {
         }
 
         let time = self.monotonic_msec();
-        self.pointer_motion_by(delta, delta, u64::from(time) * 1000, time);
+        // Withheld from the relative stream: this is us catching up with a
+        // pointer XWayland has already moved, not a hand moving a mouse. See
+        // [`RelativeStream::Withhold`] for what sending it here did.
+        self.pointer_moved_by(
+            delta,
+            delta,
+            u64::from(time) * 1000,
+            time,
+            RelativeStream::Withhold,
+        );
         self.lxb.last_synced_pointer = Some(self.lxb.pointer_location);
     }
 
@@ -1091,6 +1386,30 @@ impl LxbState {
         );
     }
 
+    /// Re-derive what the pointer is sitting on, without moving it.
+    ///
+    /// Pointer focus normally follows the pointer, and a pointer that has not
+    /// moved is one nothing needs to be said about. That is only true while
+    /// what is *under* it holds still. When the shell hands a display back to
+    /// an application — its start screen leaves the overlay layer, or a window
+    /// is asked back to the front — the surface under an untouched pointer
+    /// changes without a single pointer event to notice it by, and the
+    /// application it changed to hears nothing: no enter, no cursor, and no
+    /// chance to have the pointer lock it asks for on the way back granted,
+    /// since a lock is only activated for the surface the pointer is on.
+    ///
+    /// What that looked like: a game brought back from its cover appeared,
+    /// filled the screen, and then sat there ignoring the pad. It came alive on
+    /// the first click of a mouse — which is not a fix but the diagnosis, since
+    /// a click is the one thing that re-derives this, and it is also the one
+    /// thing a controller cannot do.
+    pub fn refresh_pointer_focus(&mut self) {
+        let Some(pointer) = self.lxb.seat.get_pointer() else {
+            return;
+        };
+        self.ensure_pointer_focus(&pointer);
+    }
+
     /// Make sure the pointer has entered whatever it is sitting on before
     /// something other than motion is sent through it.
     ///
@@ -1107,7 +1426,7 @@ impl LxbState {
     fn ensure_pointer_focus(&mut self, pointer: &smithay::input::pointer::PointerHandle<Self>) {
         let location = self.lxb.pointer_location;
         let hit = self.surface_under(location);
-        let wanted = hit.as_ref().map(|(surface, _)| surface.clone());
+        let wanted = hit.as_ref().map(|hit| hit.surface.clone());
         let current = pointer
             .current_focus()
             .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
@@ -1115,20 +1434,24 @@ impl LxbState {
             return;
         }
 
-        let under = hit
-            .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
         let time = self.monotonic_msec();
         pointer.motion(
             self,
             under,
             &MotionEvent {
-                location,
+                location: delivered,
                 serial: SERIAL_COUNTER.next_serial(),
                 time,
             },
         );
-        self.activate_constraint_at(pointer, hit.as_ref(), location);
+        self.activate_constraint_at(pointer, hit.as_ref());
         pointer.frame(self);
     }
 
@@ -1216,16 +1539,25 @@ impl LxbState {
             geometry.loc.to_f64() + absolute_position::<B, _>(&event, geometry.size, source_size);
         let serial = SERIAL_COUNTER.next_serial();
         let hit = self.surface_under(location);
-        let under = hit
-            .as_ref()
-            .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+        // In the surface's own coordinates, as a pointer's motion is — and here
+        // it matters for the whole gesture rather than one event: the seat keeps
+        // the origin a finger went down at and measures every motion of that
+        // slot against it, so a down delivered in the screen's space and a
+        // motion in the window's would drag away from the finger.
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
 
         touch.down(
             self,
             under.clone(),
             &DownEvent {
                 slot: event.slot(),
-                location,
+                location: delivered,
                 serial,
                 time: event.time_msec(),
             },
@@ -1243,8 +1575,13 @@ impl LxbState {
                     self.raise_window(&window, true);
                     self.set_window_keyboard_focus(&window);
                 }
-            } else if hit.as_ref().is_some_and(|(surface, _)| {
-                click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(surface))
+                // And a finger put down on an application takes that display,
+                // exactly as a click does — the shell's own touch handler moves
+                // control on a finger put down on one of its surfaces, and this
+                // is the same rule for the surfaces it is behind.
+                self.tell_shell_where_the_press_landed(&window, location);
+            } else if hit.as_ref().is_some_and(|hit| {
+                click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(&hit.surface))
             }) {
                 self.set_keyboard_target(Some(target));
             }
@@ -1272,15 +1609,23 @@ impl LxbState {
 
         let location =
             geometry.loc.to_f64() + absolute_position::<B, _>(&event, geometry.size, source_size);
-        let under = self
-            .surface_under(location)
-            .map(|(surface, origin)| (self.input_target_for_surface(&surface), origin));
+        let hit = self.surface_under(location);
+        // The finger's own space again, and the seat measures this against the
+        // origin the slot went down at — so both have to be in it. See
+        // [`Self::on_touch_down`].
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
         touch.motion(
             self,
             under,
             &TouchMotionEvent {
                 slot: event.slot(),
-                location,
+                location: delivered,
                 time: event.time_msec(),
             },
         );
@@ -1307,9 +1652,11 @@ impl LxbState {
     /// never wander into the void between displays.
     fn clamp_pointer(&mut self) {
         let mut location = self.lxb.pointer_location;
+        let wanted = location;
 
         // Already inside an output: nothing to do.
         if self.lxb.space.output_under(location).next().is_some() {
+            watch_a_clamped_pointer(&mut self.lxb, false, wanted, location);
             return;
         }
 
@@ -1334,14 +1681,12 @@ impl LxbState {
             location = clamped;
         }
         self.lxb.pointer_location = location;
+        watch_a_clamped_pointer(&mut self.lxb, true, wanted, location);
     }
 
     /// Resolve the surface under a logical point, honouring layer ordering:
     /// overlay > top > windows > bottom > background.
-    pub fn surface_under(
-        &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    pub fn surface_under(&self, location: Point<f64, Logical>) -> Option<Hit> {
         let output = self.lxb.outputs.output_at(&self.lxb.space, location)?;
         let output_geo = self.lxb.space.output_geometry(&output)?;
         let output_loc = output_geo.loc.to_f64();
@@ -1357,7 +1702,15 @@ impl LxbState {
                     .unwrap_or_default();
                 surface
                     .surface_under(relative - layer_loc.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(s, p)| (s, p.to_f64() + layer_loc.to_f64() + output_loc))
+                    // The shell's own surfaces are never scaled — see
+                    // [`crate::scale`] — so a hit on one is in the screen's own
+                    // coordinates, which is what `Mapping::none` says.
+                    .map(|(s, p)| Hit {
+                        surface: s,
+                        origin: p.to_f64() + layer_loc.to_f64() + output_loc,
+                        point: location,
+                        mapping: crate::scale::Mapping::none(),
+                    })
             })
         };
 
@@ -1365,11 +1718,22 @@ impl LxbState {
             return Some(hit);
         }
 
-        if let Some((window, window_loc)) = self.window_under(location) {
+        if let Some((window, window_loc, mapping)) = self.window_under(location) {
+            // Everything from here on is in the window's own coordinates,
+            // which on a scaled application is not the screen's: the surface
+            // tree was laid out at the size the client was configured at, so
+            // the point has to be brought into that space before it is asked
+            // which surface it landed on.
+            let point = mapping.into_window(location);
             if let Some((s, p)) =
-                window.surface_under(location - window_loc.to_f64(), WindowSurfaceType::ALL)
+                window.surface_under(point - window_loc.to_f64(), WindowSurfaceType::ALL)
             {
-                return Some((s, p.to_f64() + window_loc.to_f64()));
+                return Some(Hit {
+                    surface: s,
+                    origin: p.to_f64() + window_loc.to_f64(),
+                    point,
+                    mapping,
+                });
             }
         }
 
@@ -1390,7 +1754,17 @@ impl LxbState {
     /// that frame inside a larger surface, so the surface starts before the
     /// mapped location does. That difference is what `render_location` is, and
     /// input has to subtract it exactly as drawing does.
-    fn window_under(&self, location: Point<f64, Logical>) -> Option<(Window, Point<i32, Logical>)> {
+    ///
+    /// The third thing returned is the step between the screen's coordinates
+    /// and this window's own, which is the identity except on an application
+    /// drawing larger than life — see [`crate::scale`]. Everything after the
+    /// point where it is applied is unchanged, because in the window's own
+    /// space nothing about it has changed: it is the same surface tree at the
+    /// same size, and only the coordinate arriving at it was somewhere else.
+    fn window_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(Window, Point<i32, Logical>, crate::scale::Mapping)> {
         use smithay::desktop::space::SpaceElement;
 
         self.lxb
@@ -1401,14 +1775,22 @@ impl LxbState {
             .find_map(|window| {
                 let mapped = self.lxb.space.element_location(window)?;
                 let render_location = mapped - window.geometry().loc;
+                // Anchored at the window's mapped corner, which is where the
+                // render anchors the growth it has to agree with: pixels and
+                // presses have to come apart nowhere.
+                let mapping = crate::scale::Mapping::of(
+                    mapped.to_f64(),
+                    crate::scale::window_scale(self.lxb.outputs.app_scale(), window),
+                );
+                let point = mapping.into_window(location);
                 let mut bbox = window.bbox();
                 bbox.loc += render_location;
-                if !bbox.to_f64().contains(location) {
+                if !bbox.to_f64().contains(point) {
                     return None;
                 }
                 window
-                    .is_in_input_region(&(location - render_location.to_f64()))
-                    .then(|| (window.clone(), render_location))
+                    .is_in_input_region(&(point - render_location.to_f64()))
+                    .then(|| (window.clone(), render_location, mapping))
             })
     }
 
@@ -1483,7 +1865,137 @@ impl LxbState {
                 return;
             }
             let serial = SERIAL_COUNTER.next_serial();
+            self.log_keyboard_focus(target.as_ref());
             keyboard.set_focus(self, target, serial);
+        }
+    }
+
+    /// Tell each application whether it is the one with the keyboard, and make
+    /// sure it hears about it.
+    ///
+    /// An application that is not in front has to be told so. It is the only
+    /// way it can know: a client cannot see the screen, and "am I the one the
+    /// user is looking at" is not a question it can ask. A game that is never
+    /// told goes on believing it is being played — which is exactly what it
+    /// did. The user pressed the Home button, walked back to the start screen,
+    /// and the game carried on: still drawing frames at whatever rate it
+    /// pleased, and still playing its music, from behind a start screen that
+    /// covered it completely.
+    ///
+    /// It looked like a Wayland problem and it was one, but not the client's.
+    /// An X11 game *does* stop, because the one place focus is handed over in
+    /// smithay's X11 path sets the X input focus as a side effect, and Wine
+    /// turns the resulting `FocusOut` into everything a Windows program expects
+    /// when it goes to the background. Nothing did the equivalent for an
+    /// `xdg_toplevel`. Activation was set — [`smithay::desktop::Space`] sets it
+    /// on every raise — but only ever into the *pending* state, and nothing
+    /// sent the configure that carries pending state to the client, so the
+    /// whole session ran with every toplevel believing it was activated.
+    ///
+    /// What decides it is being *on screen*, not holding the keyboard, and the
+    /// difference is a game that never came back. Tying it to the keyboard put
+    /// a Unity game to sleep the moment the guide borrowed the keys — which is
+    /// right by the letter of xdg-shell and wrong here: the guide is glass, the
+    /// game is still on the screen underneath it, and its cards in the overview
+    /// are that very window drawing. Told it was deactivated, the game stopped
+    /// its loop and sat in Wine's message wait at zero CPU with the correct X
+    /// focus and `_NET_WM_STATE_FOCUSED` still on it, which from the outside
+    /// looks exactly like a game that never got focus back. Measured on the
+    /// real session: 10 CPU ticks per four seconds before, 0 after, and no
+    /// pixel of it changed again.
+    ///
+    /// So both halves are here: the state on every window, and the configure
+    /// that delivers it.
+    ///
+    /// Whether to send one is smithay's decision and not this function's, and
+    /// that is the whole subtlety. The obvious version asks `set_activated`
+    /// whether it changed anything and sends only then — and it misses exactly
+    /// the case that matters. Raising a window already sets the pending state
+    /// on every *other* window, silently, so by the time the keyboard has
+    /// finished moving there is nothing left for this to change and the window
+    /// that just lost the screen is never told. Verified: a client covered by a
+    /// second one heard nothing at all until this asked unconditionally.
+    /// `send_pending_configure` compares against what the client was actually
+    /// last sent, which is the only comparison that answers the question.
+    pub(crate) fn refresh_window_activation(&mut self) {
+        // One answer per display: the application in front of it, and nothing
+        // at all where the shell is painting over the whole thing.
+        let fronts: Vec<Option<Window>> = self
+            .lxb
+            .space
+            .outputs()
+            .cloned()
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|output| crate::render::front_application_on_screen(&self.lxb, output))
+            .collect();
+        let windows: Vec<Window> = self.lxb.space.elements().cloned().collect();
+        for window in windows {
+            let in_front = fronts
+                .iter()
+                .flatten()
+                .any(|front| front == &window || same_application(front, &window));
+            window.set_activated(in_front);
+            // X11 activation is a property, written by `set_activated` itself.
+            // A toplevel's is a state on a configure it has not been sent yet.
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_pending_configure();
+            }
+        }
+        // And the one property an X client reads to answer the same question
+        // for itself — see [`LxbState::name_the_active_x11_window`], which is
+        // where the whole of why it matters is written down.
+        self.name_the_active_x11_window(&fronts);
+    }
+
+    /// Tell the X server which window this session considers active.
+    ///
+    /// `_NET_WM_STATE_FOCUSED` on the window says it to whoever asks about that
+    /// window; `_NET_ACTIVE_WINDOW` on the root says it about the session, and
+    /// it is the one a great many clients actually read. Wine reads it, so
+    /// every game under Proton does: a window that does not find itself named
+    /// there decides it is in the background, throws away the pointer motion
+    /// arriving at it and comes back only on a click, which is spent on the
+    /// waking and never reaches the game. That is a game nobody can use without
+    /// clicking twice, and it is what this session was doing.
+    ///
+    /// The window named is the one the *frame throttle* named, which is the
+    /// same answer given to `set_activated` a few lines up: the application the
+    /// user can see. Not the one holding the keyboard — the guide borrows that
+    /// while the game is still on the screen under its glass, and a game told
+    /// it had gone to the background there is a game that stops. Where the
+    /// shell is painting over the display, or where what is in front is a
+    /// Wayland window, no X11 window is active and the property says so.
+    ///
+    /// One display's answer for a property the X screen has only one of. Two
+    /// games on two screens cannot both be the active window, so the first
+    /// found wins, which is the display nearest the front of the layout.
+    ///
+    /// Written only when it changes: this is asked wherever activation is, and
+    /// that is several times a second on a session that is merely animating.
+    fn name_the_active_x11_window(&mut self, fronts: &[Option<Window>]) {
+        let active = fronts
+            .iter()
+            .flatten()
+            .find_map(|window| window.x11_surface())
+            .map(|surface| surface.window_id())
+            .unwrap_or(x11rb::NONE);
+        if self.lxb.x11_active_window == Some(active) {
+            return;
+        }
+        let Some(probe) = self.lxb.x11_focus_probe.as_ref() else {
+            return;
+        };
+        match probe.set_active_window(active) {
+            Ok(()) => {
+                self.lxb.x11_active_window = Some(active);
+                tracing::debug!(window = active, "said which X11 window is active");
+            }
+            Err(err) => tracing::warn!(
+                window = active,
+                %err,
+                "could not say which X11 window is active"
+            ),
         }
     }
 
@@ -1519,6 +2031,9 @@ impl LxbState {
         // leaving the keys, so a Windows key that was down when focus went away
         // must not summon the guide on the way back.
         self.lxb.home_tap.interrupt();
+        // And a volume key that was down goes with them, or a session the user
+        // has switched away from carries on turning itself down.
+        self.lxb.volume_key.interrupt();
 
         let Some(keyboard) = self.lxb.seat.get_keyboard() else {
             return;
@@ -1603,8 +2118,8 @@ impl LxbState {
 
     fn focus_under_pointer(&mut self, _serial: smithay::utils::Serial) {
         let location = self.lxb.pointer_location;
-        if let Some((surface, _)) = self.surface_under(location) {
-            let target = self.input_target_for_surface(&surface);
+        if let Some(hit) = self.surface_under(location) {
+            let target = self.input_target_for_surface(&hit.surface);
             // Raise the owning window so click-to-focus also raises.
             if let Some(window) = self.window_for_input_target(&target) {
                 let accepts_focus = window_accepts_keyboard_focus(&window);
@@ -1612,9 +2127,45 @@ impl LxbState {
                 if accepts_focus {
                     self.set_window_keyboard_focus(&window);
                 }
-            } else if click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(&surface)) {
+                // The screen's own coordinate, not the window's: what this
+                // answers is which *display* the hand landed on.
+                self.tell_shell_where_the_press_landed(&window, location);
+            } else if click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(&hit.surface)) {
                 self.set_keyboard_target(Some(target));
             }
+        }
+    }
+
+    /// Tell the shell which display a press on an application landed on, so the
+    /// display it is driving follows the user's hand there.
+    ///
+    /// Only for a press on a window, which is only ever an application: the
+    /// shell draws itself in layer surfaces and is delivered every press made on
+    /// one of them, so it moves control itself when a press lands on a display
+    /// it was not driving. Repeating that here would move control on the
+    /// compositor's word first, and the press the shell then read would be one
+    /// on a display it was already driving — pressing whatever it landed on,
+    /// where a press claiming the display is meant to do nothing else.
+    ///
+    /// Where its own surfaces are behind an application it hears nothing at all:
+    /// the overlay hands the clicks through so the application stays usable with
+    /// a mouse, which makes the press that says the user has moved the one press
+    /// it can never see. Hence this.
+    ///
+    /// The display the window belongs to, rather than the one the pointer is
+    /// over, on the same terms as [`Self::keyboard_focus_output`]: an application
+    /// belongs to the display it was started on, and that is the display whose
+    /// windows, foreground and menu the shell would be moving control to. They
+    /// only differ for a window keeping geometry of its own — X11 chrome — and
+    /// then the display it hangs off the edge of is not the one it is on.
+    fn tell_shell_where_the_press_landed(&mut self, window: &Window, at: Point<f64, Logical>) {
+        let output = self
+            .lxb
+            .outputs
+            .window_display(&self.lxb.space, window)
+            .or_else(|| self.lxb.outputs.output_at(&self.lxb.space, at));
+        if let Some(output) = output {
+            self.lxb.shell_control.send_output_pressed(&output);
         }
     }
 
@@ -1755,15 +2306,20 @@ impl LxbState {
                 geo.loc.x as f64 + geo.size.w as f64 / 2.0,
                 geo.loc.y as f64 + geo.size.h as f64 / 2.0,
             ));
+            self.cursor_moved();
 
             // Keep the seat's pointer focus in sync with the compositor-side
             // warp. Otherwise a button pressed before physical mouse motion
             // would still be delivered to the old output's surface.
             let location = self.lxb.pointer_location;
             let hit = self.surface_under(location);
-            let under = hit
-                .as_ref()
-                .map(|(surface, origin)| (self.input_target_for_surface(surface), *origin));
+            let (under, delivered) = match hit.as_ref() {
+                Some(hit) => (
+                    Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                    hit.point,
+                ),
+                None => (None, location),
+            };
             let time = self
                 .lxb
                 .start_time
@@ -1775,12 +2331,12 @@ impl LxbState {
                     self,
                     under,
                     &MotionEvent {
-                        location,
+                        location: delivered,
                         serial: SERIAL_COUNTER.next_serial(),
                         time,
                     },
                 );
-                self.activate_constraint_at(&pointer, hit.as_ref(), location);
+                self.activate_constraint_at(&pointer, hit.as_ref());
                 pointer.frame(self);
             }
         }
@@ -1877,21 +2433,182 @@ fn active_pointer_constraint(
 
 fn confined_motion_is_valid(
     constraint: Option<&ActivePointerConstraint>,
-    old_hit: Option<&(WlSurface, Point<f64, Logical>)>,
-    new_hit: Option<&(WlSurface, Point<f64, Logical>)>,
-    new_location: Point<f64, Logical>,
+    old_hit: Option<&Hit>,
+    new_hit: Option<&Hit>,
 ) -> bool {
     let Some(ActivePointerConstraint::Confined(region)) = constraint else {
         return true;
     };
-    let (Some((old_surface, _)), Some((new_surface, new_origin))) = (old_hit, new_hit) else {
+    let (Some(old), Some(new)) = (old_hit, new_hit) else {
         return false;
     };
-    old_surface == new_surface
+    old.surface == new.surface
         && region
             .as_ref()
-            .map(|region| region.contains((new_location - *new_origin).to_i32_round()))
+            // The client's region, so the client's own coordinates: a [`Hit`]
+            // has already put the point into them.
+            .map(|region| region.contains(new.local().to_i32_round()))
             .unwrap_or(true)
+}
+
+/// Something that happens to some motion events and not to others, counted so
+/// that the log can say it once a second rather than once an event.
+///
+/// Both of the things below are edges in name only, and treating them as edges
+/// is what buried a session's log in them: a pointer resting against the bottom
+/// of a display is sent past it by one event and back inside by the next, all
+/// day, at the rate the mouse reports. What the two of them can honestly say is
+/// a rate — how often the pointer is being sent somewhere it cannot go — and
+/// that a whole second has gone by without it happening again.
+#[derive(Debug, Clone, Copy)]
+pub struct Repeatedly {
+    /// When the last line about it was written.
+    said: std::time::Instant,
+    /// When it last actually happened, which is what says it has stopped.
+    last: std::time::Instant,
+    /// How many times since that line.
+    times: u32,
+}
+
+/// How long a run of these goes unmentioned, and how long the quiet has to be
+/// before it counts as over.
+const REPEATEDLY: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl Repeatedly {
+    /// Note one more, answering with how many have happened since the last
+    /// line when it is time to write another — and `None` while it is not.
+    fn again(slot: &mut Option<Self>, now: std::time::Instant) -> Option<u32> {
+        let Some(state) = slot else {
+            // The first is worth a line on its own, and immediately: it is the
+            // one that says which of these is happening at all.
+            *slot = Some(Self {
+                said: now,
+                last: now,
+                times: 0,
+            });
+            return Some(0);
+        };
+        state.last = now;
+        state.times += 1;
+        if now.duration_since(state.said) < REPEATEDLY {
+            return None;
+        }
+        let times = state.times;
+        state.said = now;
+        state.times = 0;
+        Some(times)
+    }
+
+    /// Note that it did not happen this time, answering whether that is the
+    /// end of a run — a whole second of the pointer moving freely, rather than
+    /// the gap between two events at the edge of a screen.
+    fn stopped(slot: &mut Option<Self>, now: std::time::Instant) -> bool {
+        let Some(state) = slot else {
+            return false;
+        };
+        if now.duration_since(state.last) < REPEATEDLY {
+            return false;
+        }
+        *slot = None;
+        true
+    }
+}
+
+/// Say so while a confinement is refusing the pointer's motion, and again once
+/// it has stopped.
+///
+/// A confined pointer that will not move looks exactly like a compositor that
+/// has stopped reading the mouse, and from the log the two were
+/// indistinguishable. Reported by the second rather than by the event: this is
+/// asked several hundred times a second, and a pointer held against the edge of
+/// its own region is refused and let go alternately for as long as the hand
+/// keeps pushing. See [`Repeatedly`].
+fn watch_a_refused_pointer(lxb: &mut crate::state::Lxb, refused: bool, at: Point<f64, Logical>) {
+    let now = std::time::Instant::now();
+    if !refused {
+        if Repeatedly::stopped(&mut lxb.pointer_refused, now) {
+            tracing::info!(?at, "the pointer is moving again");
+        }
+        return;
+    }
+    if let Some(times) = Repeatedly::again(&mut lxb.pointer_refused, now) {
+        tracing::info!(
+            ?at,
+            in_the_last_second = times,
+            "a confined pointer is refusing to move"
+        );
+    }
+}
+
+/// Say so while the pointer is being held on screen, and again once it has
+/// stopped.
+///
+/// The other way a cursor that will not move looks from the outside, and the
+/// one that means something is driving it somewhere there is no display: what
+/// the user sees is an arrow welded to a corner, because a corner is the
+/// nearest place to wherever it was sent. Counted rather than edge-triggered,
+/// for the reason [`watch_a_refused_pointer`] gives — and here the count is
+/// also the difference between the two things this can be. A hand resting the
+/// pointer against the bottom of a screen crosses the edge a few dozen times a
+/// second and lands a pixel outside; a client driving it off the layout does it
+/// once and lands half a million pixels away.
+fn watch_a_clamped_pointer(
+    lxb: &mut crate::state::Lxb,
+    clamped: bool,
+    wanted: Point<f64, Logical>,
+    held_at: Point<f64, Logical>,
+) {
+    let now = std::time::Instant::now();
+    if !clamped {
+        if Repeatedly::stopped(&mut lxb.pointer_clamped, now) {
+            tracing::info!(at = ?held_at, "the pointer is back on a display");
+        }
+        return;
+    }
+    if let Some(times) = Repeatedly::again(&mut lxb.pointer_clamped, now) {
+        tracing::info!(
+            ?wanted,
+            ?held_at,
+            in_the_last_second = times,
+            "the pointer is being held on screen"
+        );
+    }
+}
+
+/// Say so when a client puts the pointer somewhere itself.
+///
+/// This is `set_cursor_position_hint`: a place a client may name only while it
+/// holds a pointer lock, and which is honoured once that lock is let go. One
+/// of them is an application restoring its own cursor, which is the feature.
+/// One of them *per frame* is an application the user cannot move the mouse
+/// away from — so the number of them is the whole point, and this is rate
+/// limited rather than edge-triggered.
+fn watch_a_client_placing_the_pointer(
+    lxb: &mut crate::state::Lxb,
+    from: Point<f64, Logical>,
+    to: Point<f64, Logical>,
+) {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+    let now = std::time::Instant::now();
+    let Some((since, count)) = lxb.pointer_hints else {
+        // The first one is worth a line on its own: an application that places
+        // the pointer once is not the same thing as one doing it constantly,
+        // and waiting a second to say so would lose the difference.
+        lxb.pointer_hints = Some((now, 0));
+        tracing::info!(?from, ?to, "a client placed the pointer itself");
+        return;
+    };
+    if now.duration_since(since) < EVERY {
+        lxb.pointer_hints = Some((since, count + 1));
+        return;
+    }
+    lxb.pointer_hints = Some((now, 0));
+    tracing::info!(
+        ?from,
+        ?to,
+        in_the_last_second = count + 1,
+        "a client is placing the pointer itself"
+    );
 }
 
 /// Whether a mapped desktop window is an application target rather than
@@ -1902,10 +2619,17 @@ fn confined_motion_is_valid(
 /// `WM_HINTS input=false` alone is deliberately not rejected: ICCCM globally
 /// active clients combine that hint with `WM_TAKE_FOCUS`, and Smithay's X11
 /// keyboard target implements the required protocol handshake.
+///
+/// A window that has said *nothing whatever* about itself is chrome too, for
+/// the reason given at [`x11_window_says_nothing`].
 pub(crate) fn window_is_x11_chrome(window: &Window) -> bool {
     let Some(surface) = window.x11_surface() else {
         return false;
     };
+
+    if x11_window_says_nothing(surface) {
+        return true;
+    }
 
     matches!(
         surface.window_type(),
@@ -1921,8 +2645,138 @@ pub(crate) fn window_is_x11_chrome(window: &Window) -> bool {
     )
 }
 
+/// Whether an X11 window has told us nothing at all about itself: no class, no
+/// instance, no title, no window type, no `WM_HINTS`, no `_NET_WM_PID`.
+///
+/// Wine gives every process it starts a handful of X11 windows that are not
+/// windows in any sense the user would recognise — the cursor clipping window,
+/// a per-thread IME window, and one bare toplevel per short-lived helper
+/// process. A game under Proton is surrounded by them: Valve's client runs
+/// `d3ddriverquery64.exe` over and over while a game is up, and each run maps
+/// one of these and takes it away again a few milliseconds later.
+///
+/// Treated as an application, one of those does three things to the game it
+/// appears over, and all three were reported as the game's own fault. It is
+/// tiled across the whole display, so it covers the picture. It is the topmost
+/// window that takes focus, so it becomes the application in front — and the
+/// game behind it, being another process, is starved of frame callbacks and
+/// stops dead. And it is announced to the shell as a display-filling window,
+/// so when it goes the shell reads an application walking out and brings the
+/// start screen forward over a game that is still running.
+///
+/// The test is deliberately unanimous rather than a guess at a shape: any one
+/// of those six properties makes this an application window and this returns
+/// false. A game that sets nothing but a title — and there is one in this
+/// session's own logs — is still a game. Nothing that draws for a user arrives
+/// with all six missing, and everything Wine leaves lying about does.
+///
+/// It is also not a one-time judgement. A client is free to create a window,
+/// map it, and only then say what it is; [`XwmHandler::property_notify`] asks
+/// again whenever one of these properties lands, and a window that names
+/// itself late is promoted to an application there.
+///
+/// [`XwmHandler::property_notify`]: smithay::xwayland::XwmHandler::property_notify
+pub(crate) fn x11_window_says_nothing(surface: &X11Surface) -> bool {
+    says_nothing(
+        &surface.class(),
+        &surface.instance(),
+        &surface.title(),
+        surface.window_type().is_some(),
+        surface.hints().is_some(),
+        surface.pid().is_some(),
+    )
+}
+
+/// The same question of the six answers themselves, so it can be asked without
+/// an X server.
+fn says_nothing(
+    class: &str,
+    instance: &str,
+    title: &str,
+    has_window_type: bool,
+    has_hints: bool,
+    has_pid: bool,
+) -> bool {
+    class.trim().is_empty()
+        && instance.trim().is_empty()
+        && title.trim().is_empty()
+        && !has_window_type
+        && !has_hints
+        && !has_pid
+}
+
 pub(crate) fn window_accepts_keyboard_focus(window: &Window) -> bool {
-    !window_is_x11_chrome(window) && x11_window_accepts_input(window)
+    // A window that has already gone is still in the space for a moment, and
+    // handing it the keyboard is not harmless: Smithay drops the X input focus
+    // on the way out of whatever held it before, then addresses a window the X
+    // server has destroyed and gets `BadWindow` for it. The keyboard lands
+    // nowhere, the next tick puts it back, and the window that is really on
+    // screen is left taking focus in and focus out several times a second.
+    window.alive() && !window_is_x11_chrome(window) && x11_window_accepts_input(window)
+}
+
+/// Record who has just been handed the keyboard.
+///
+/// Every hand-over, not only the X11 ones. "Which of the shell and the game has
+/// the keys" is the first question asked of a session where a button did
+/// nothing, and the shell's half of the answer used to be a debug line — so a
+/// journal kept at the level a session actually runs at showed the keyboard
+/// arriving at a game and never leaving it, whatever had happened in between.
+/// There is one of these per guide opened or closed, which is not a rate worth
+/// hiding anything at.
+///
+/// The X11 case carries the most, because an X11 window is focused twice over:
+/// the surface takes the Wayland keyboard, and Smithay sets the X input focus
+/// underneath as a side effect, following the window's own `WM_HINTS`. Which of
+/// those it asked for decides whether the focus lands at all, so the hint is
+/// logged beside the window rather than left to be guessed: a window mapped
+/// with `input = Some(false)` and no `WM_TAKE_FOCUS` is one the X server will
+/// never give the keyboard to, however plainly it is the thing on screen.
+///
+/// A client mapping several windows under one class is the case that decides
+/// the shape of it. The name alone cannot tell them apart, so the window id is
+/// what ties this to [`LxbState::check_xwayland_focus`] and to the ids the map
+/// logs.
+impl LxbState {
+    fn log_keyboard_focus(&self, target: Option<&KeyboardFocusTarget>) {
+        match target {
+            Some(KeyboardFocusTarget::X11(surface)) => tracing::info!(
+                window = surface.window_id(),
+                title = surface.title(),
+                class = surface.class(),
+                wants_input = ?surface.hints().and_then(|hints| hints.input),
+                "the keyboard went to an X11 window"
+            ),
+            // The shell is worth telling apart from any other client, and it is
+            // the one a compositor can always name: this is the guide or the
+            // board taking the keys off whatever is on screen, which is the
+            // event on one side of every "the button did nothing".
+            Some(KeyboardFocusTarget::Wayland(surface))
+                if smithay::reexports::wayland_server::Resource::client(surface)
+                    .is_some_and(|client| self.lxb.shell_control.is_shell_client(&client)) =>
+            {
+                tracing::info!("the keyboard went to the session shell")
+            }
+            Some(KeyboardFocusTarget::Wayland(surface)) => {
+                let window = self.lxb.window_for_surface(surface);
+                tracing::info!(
+                    app_id = window
+                        .as_ref()
+                        .map(crate::shell_control::window_app_id)
+                        .unwrap_or_default(),
+                    title = window
+                        .as_ref()
+                        .map(crate::shell_control::window_title)
+                        .unwrap_or_default(),
+                    "the keyboard went to a Wayland window"
+                )
+            }
+            // Which is a session with nowhere for a key to land, and says so:
+            // it is what the user is looking at when nothing they press does
+            // anything at all.
+            None => tracing::info!("the keyboard went nowhere"),
+        }
+    }
 }
 
 /// Whether a click or a touch on a surface may hand it the keyboard.
@@ -1971,6 +2825,29 @@ fn map_window_coordinate(value: f64, source_extent: i32, target_extent: i32) -> 
     (value / source_extent as f64 * target_extent as f64).clamp(0.0, upper)
 }
 
+/// Whether a movement is one the client hears on the relative stream too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelativeStream {
+    /// A real movement — a mouse, or the shell's stick. The client is told
+    /// both ways, which is what `wp_relative_pointer_v1` is for: a game reads
+    /// its camera off the relative stream while its cursor moves.
+    Send,
+    /// Catching up with a pointer something else has already moved.
+    ///
+    /// The client moved it *itself*, so it needs no telling — and telling it
+    /// anyway is a feedback loop rather than a redundancy. XWayland moves its
+    /// own pointer by whatever relative motion it is sent, so a correction of
+    /// `theirs - ours` sent this way lands twice: ours arrives at theirs, and
+    /// theirs moves the same distance again. The difference between the two
+    /// is therefore exactly what it was before the correction, and the next
+    /// poll sends it again. What the user sees is the cursor tearing off at a
+    /// constant speed — measured at a quarter of the screen every 8ms — until
+    /// it reaches the edge of the layout and parks in whichever corner the
+    /// first difference happened to point at, unmovable, because no hand on a
+    /// mouse can outrun it.
+    Withhold,
+}
+
 /// Whether a difference between the two pointers is XWayland's doing alone.
 ///
 /// Three things have to hold, and each rules out a way of being wrong:
@@ -1997,6 +2874,42 @@ fn xwayland_moved_alone(
 
 #[cfg(test)]
 mod tests {
+    use super::says_nothing;
+
+    /// The windows Wine leaves lying around every game under Proton: no class,
+    /// no instance, no title, no type, no hints, no pid. Tiled over the
+    /// display and given the keyboard, one of these covers the game, starves
+    /// it of frames, and — when the helper process that owns it exits a few
+    /// milliseconds later — tells the shell an application has walked out.
+    #[test]
+    fn a_window_that_says_nothing_is_not_an_application() {
+        assert!(says_nothing("", "", "", false, false, false));
+        // Whitespace is not a name either.
+        assert!(says_nothing("  ", "", " ", false, false, false));
+    }
+
+    /// And any one word about itself makes it one. Unanimity is the point: the
+    /// cost of getting this wrong is a game treated as furniture, which is a
+    /// game that never appears, so every doubt is resolved towards the window
+    /// being real.
+    #[test]
+    fn one_word_about_itself_is_enough_to_be_an_application() {
+        assert!(!says_nothing(
+            "steam_app_3812600",
+            "",
+            "",
+            false,
+            false,
+            false
+        ));
+        assert!(!says_nothing("", "restory", "", false, false, false));
+        // A game in this session's own logs mapped with a title and no class
+        // at all.
+        assert!(!says_nothing("", "", "ScannerSombre", false, false, false));
+        assert!(!says_nothing("", "", "", true, false, false));
+        assert!(!says_nothing("", "", "", false, true, false));
+        assert!(!says_nothing("", "", "", false, false, true));
+    }
 
     /// The cursor follows XWayland only when XWayland moved on its own.
     #[test]
@@ -2249,7 +3162,108 @@ mod tests {
             Some(Action::Spawn("foot -e htop".into()))
         );
         assert_eq!(Action::parse("vt:3"), Some(Action::SwitchVt(3)));
+        assert_eq!(
+            Action::parse("volume-up"),
+            Some(Action::Volume(VolumeChange::Up))
+        );
+        assert_eq!(
+            Action::parse("volume-down"),
+            Some(Action::Volume(VolumeChange::Down))
+        );
+        for spelling in ["volume-mute", "mute"] {
+            assert_eq!(
+                Action::parse(spelling),
+                Some(Action::Volume(VolumeChange::Mute))
+            );
+        }
         assert_eq!(Action::parse("nonsense"), None);
+    }
+
+    /// The keys with a speaker printed on them, which a session with no
+    /// desktop behind it has nothing else to answer: no settings daemon, no
+    /// applet, and — while a game holds the keyboard — no shell either.
+    #[test]
+    fn the_volume_keys_are_bound_out_of_the_box() {
+        let bindings = KeyBindings::from_config(&Config::default());
+        let mods = ModifiersState::default();
+        for (key, action) in [
+            (keysyms::KEY_XF86AudioRaiseVolume, VolumeChange::Up),
+            (keysyms::KEY_XF86AudioLowerVolume, VolumeChange::Down),
+            (keysyms::KEY_XF86AudioMute, VolumeChange::Mute),
+        ] {
+            assert_eq!(
+                bindings.lookup(&mods, [Keysym::from(key)]),
+                Some(Action::Volume(action)),
+                "{action:?}"
+            );
+        }
+    }
+
+    /// And they answer whatever is held with them, for the reason the
+    /// screenshot key does: they are keys with one job printed on them,
+    /// reached through Fn on a laptop and through a media row on a keyboard,
+    /// and no two of those agree about what else is down at the time.
+    #[test]
+    fn the_volume_keys_do_not_care_what_is_held_with_them() {
+        let bindings = KeyBindings::from_config(&Config::default());
+        let up = [Keysym::from(keysyms::KEY_XF86AudioRaiseVolume)];
+        for held in [
+            ModifiersState {
+                shift: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                ctrl: true,
+                alt: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                logo: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                bindings.lookup(&held, up),
+                Some(Action::Volume(VolumeChange::Up))
+            );
+        }
+    }
+
+    /// A held volume key steps until it is let go of, and the release that
+    /// stops it is its own. Turning up and then down without letting go of the
+    /// first hands the repeat over, and the release of the key that lost it
+    /// must not stop the one now running.
+    #[test]
+    fn only_the_key_that_owns_the_repeat_can_end_it() {
+        let mut held = VolumeKey::default();
+        let up = Keycode::new(123);
+        let down = Keycode::new(124);
+
+        let first = held.pressed(up);
+        assert!(held.wants(first));
+
+        let second = held.pressed(down);
+        assert!(held.wants(second));
+        assert!(
+            !held.wants(first),
+            "the timer for the first key is not wanted once the second has it"
+        );
+
+        held.released(up);
+        assert!(held.wants(second), "the key still down keeps stepping");
+        held.released(down);
+        assert!(!held.wants(second));
+    }
+
+    /// The session losing the keys — a VT switch, focus taken away — stops it
+    /// too, or a session nobody is looking at goes on turning itself down.
+    #[test]
+    fn a_session_that_loses_the_keys_stops_stepping() {
+        let mut held = VolumeKey::default();
+        let booked = held.pressed(Keycode::new(123));
+        assert!(held.wants(booked));
+        held.interrupt();
+        assert!(!held.wants(booked));
     }
 
     /// The guide is how a user gets back out of a fullscreen application. A

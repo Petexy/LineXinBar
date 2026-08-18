@@ -59,6 +59,7 @@ pub fn recently_played_games(playtimes: &HashMap<u32, PlaytimeInfo>) -> Vec<Prot
             app_type: None,
             installdir: None,
             launch: Vec::new(),
+            library_art: Default::default(),
         })
         .collect();
     games.sort_by(|a, b| {
@@ -86,6 +87,7 @@ pub fn merge_catalog_and_playtimes(
                 app_type: app.app_type,
                 installdir: app.installdir,
                 launch: app.launch,
+                library_art: app.library_art,
             }
         })
         .collect();
@@ -113,6 +115,7 @@ mod tests {
                 app_type: Some("game".to_owned()),
                 installdir: None,
                 launch: Vec::new(),
+                library_art: Default::default(),
             },
             AppCatalogInfo {
                 appid: 10,
@@ -121,6 +124,7 @@ mod tests {
                 app_type: Some("game".to_owned()),
                 installdir: None,
                 launch: Vec::new(),
+                library_art: Default::default(),
             },
         ];
         let playtimes = HashMap::from([(

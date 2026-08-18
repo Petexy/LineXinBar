@@ -66,29 +66,68 @@ impl App {
 
     /// Whether a window calling itself `app_id` is one of this application's.
     ///
-    /// Loose in two directions, because the two sides spell the same
-    /// application differently: case, since an X11 class is conventionally
-    /// capitalised (`Steam`) where a desktop entry is not, and the trailing
-    /// component of a reverse-DNS name, since an application shipped as
-    /// `org.mozilla.firefox` still runs `firefox`. Both are what every other
-    /// desktop matches on, and the cost of being wrong is bounded: the user
-    /// gets the window they already had instead of a second copy.
+    /// The names this entry could go by, against the one the window gave,
+    /// under [`same_application`]'s rule.
     pub fn owns_window(&self, app_id: &str) -> bool {
-        let app_id = app_id.trim();
-        if app_id.is_empty() {
-            return false;
-        }
-        let tail = |name: &str| {
-            name.rsplit('.')
-                .next()
-                .filter(|tail| !tail.is_empty())
-                .unwrap_or(name)
-                .to_string()
-        };
-        self.window_names().iter().any(|name| {
-            name.eq_ignore_ascii_case(app_id) || tail(name).eq_ignore_ascii_case(&tail(app_id))
-        })
+        self.window_names()
+            .iter()
+            .any(|name| same_application(name, app_id))
     }
+}
+
+/// Whether two window names are the same application's.
+///
+/// Loose in two directions, because the same application is spelled
+/// differently depending on who is doing the spelling: case, since an X11
+/// class is conventionally capitalised (`Steam`) where a desktop entry is not,
+/// and the trailing component of a reverse-DNS name, since an application
+/// shipped as `org.mozilla.firefox` still runs `firefox`. Both are what every
+/// other desktop matches on, and the cost of being wrong is bounded: the user
+/// gets the window they already had instead of a second copy.
+///
+/// A name against nothing is never a match. An application that never said
+/// what it is has told us nothing to match on, and treating one silence as
+/// equal to another would file every nameless window in the session under one
+/// application.
+pub fn same_application(one: &str, other: &str) -> bool {
+    let (one, other) = (one.trim(), other.trim());
+    if one.is_empty() || other.is_empty() {
+        return false;
+    }
+    identity(one).eq_ignore_ascii_case(&identity(other))
+}
+
+/// The part of a name that says which application it is.
+///
+/// Two things are taken off it, and the second exists because the first, left
+/// alone, was wrong about every program in the session that runs under Wine.
+///
+/// A Windows program is named by its file, and a file's extension is not its
+/// identity: `Affinity.exe` is Affinity. So `.exe` comes off, which is also
+/// what lets a window calling itself `Affinity.exe` match the entry that calls
+/// the program `affinity`.
+///
+/// And the reverse-DNS rule below has to be told which names it is for.
+/// Reading "the bit after the last dot" off *any* name makes the extension the
+/// identity — every `.exe` in existence becomes the same application, and a
+/// game's audio stream is then filed under whichever `.exe` the machine
+/// happens to have a desktop entry for. That is not hypothetical: it put a
+/// running game's volume in the mixer under Affinity's name and Affinity's
+/// icon, on a machine where Affinity was not running. A reverse-DNS name has a
+/// vendor between the domain and the program — `org.mozilla.firefox`,
+/// `app.zen_browser.zen` — so two dots is what says this rule applies, and a
+/// single-dotted `Haste.x86_64` is left whole.
+fn identity(name: &str) -> String {
+    let name = match name.len().checked_sub(4) {
+        Some(cut) if cut > 0 && name[cut..].eq_ignore_ascii_case(".exe") => &name[..cut],
+        _ => name,
+    };
+    if name.matches('.').count() >= 2 {
+        if let Some(tail) = name.rsplit('.').next().filter(|tail| !tail.is_empty()) {
+            return tail.to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// The name of the program an `Exec` line runs, without its path or arguments.
@@ -127,6 +166,16 @@ pub enum Entry {
     /// Shared with the library it came from rather than copied out of it; see
     /// [`crate::media::Shelved`].
     Media(crate::media::Shelved),
+    /// One file, in the folder it is actually in.
+    ///
+    /// The third kind of row about a file on this disk, and it is a third kind
+    /// for the reason the second is: what the shelves hold is what the user
+    /// *has*, gathered by kind from everywhere at once, and what this holds is
+    /// what is in one directory. The two answer different questions and they
+    /// carry different things — a shelved song is titled without its extension
+    /// and says which folder it came from, neither of which is any use to
+    /// somebody standing in that folder. See [`crate::files::Item`].
+    File(crate::files::Item),
     Folder(Folder),
     Choice(Choice),
     /// A value set by sliding rather than by picking: the one row of the
@@ -223,8 +272,8 @@ pub struct Game {
 /// both of them and leave nothing to say they were about the same search.
 #[derive(Debug, Clone)]
 pub struct Search {
-    /// Which shelf this searches, so a press on the row knows what to narrow.
-    pub kind: crate::media::Kind,
+    /// What this field narrows, so a press on the row knows what to ask.
+    pub of: Searched,
     /// What is being searched for, as the user typed it. Empty for a shelf
     /// nobody has searched, which is the state every column starts in.
     ///
@@ -243,6 +292,43 @@ pub struct Search {
     pub role: Role,
 }
 
+/// What a field at the head of a column is a search *of*.
+///
+/// Two answers and they are answered in two different places, which is the
+/// whole reason this is a type. A shelf is half a million files held on a
+/// worker, so narrowing one is a message to that worker and the rows come back
+/// when they are ready. A folder is one directory on the disk, so narrowing one
+/// is reading it again — which costs a `readdir` and a `stat` per row kept, and
+/// is done on the frame the letter was typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Searched {
+    Shelf(crate::media::Kind),
+    Folder,
+}
+
+impl Searched {
+    /// The shelf this is, if it is one. `None` for a folder, which is what
+    /// keeps everything the media library does away from the explorer's rows.
+    pub fn shelf(self) -> Option<crate::media::Kind> {
+        match self {
+            Searched::Shelf(kind) => Some(kind),
+            Searched::Folder => None,
+        }
+    }
+
+    /// What a list of what it holds is called, in a sentence: "audio files",
+    /// "images", "items".
+    fn plural(self) -> &'static str {
+        match self {
+            Searched::Shelf(kind) => kind.plural(),
+            // Not "files": what a folder holds is folders as well, and a field
+            // saying "3 of 40 files match" over a column of directories would
+            // be counting something the user cannot see.
+            Searched::Folder => "items",
+        }
+    }
+}
+
 /// Which of the two rows a [`Search`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -255,27 +341,30 @@ pub enum Role {
 }
 
 impl Search {
-    /// The field at the head of a shelf that holds `found` files, `matched` of
-    /// which the query has kept.
-    fn field(kind: crate::media::Kind, query: &str, matched: usize, found: usize) -> Search {
+    /// The field at the head of a column that holds `found` things, `matched`
+    /// of which the query has kept.
+    fn field(of: Searched, query: &str, matched: usize, found: usize) -> Search {
         Search {
-            kind,
+            of,
             query: query.to_string(),
             note: if query.is_empty() {
-                format!("Search {} by name", kind.plural())
+                match of {
+                    Searched::Shelf(kind) => format!("Search {} by name", kind.plural()),
+                    Searched::Folder => "Search this folder by name".to_string(),
+                }
             } else {
-                crate::media::search_note(kind, matched, found)
+                crate::media::search_note(of.plural(), matched, found)
             },
             role: Role::Field,
         }
     }
 
     /// The row under it that empties it.
-    fn clear(kind: crate::media::Kind, query: &str, found: usize) -> Search {
+    fn clear(of: Searched, query: &str, found: usize) -> Search {
         Search {
-            kind,
+            of,
             query: query.to_string(),
-            note: format!("Show all {found} {}", kind.plural()),
+            note: format!("Show all {found} {}", of.plural()),
             role: Role::Clear,
         }
     }
@@ -312,6 +401,15 @@ pub struct Folder {
     /// be launched rather than as a way further in.
     pub icon: Option<String>,
     pub entries: Vec<Entry>,
+    /// Where on the disk this column comes from, for the subcategories that
+    /// are a place rather than a list the shell wrote.
+    ///
+    /// `None` for every subcategory in the tree but the file explorer's, which
+    /// is the only part of the bar whose columns are not known until somebody
+    /// asks for them: a folder is read on the press that opens it and thrown
+    /// away when the user walks past it. See [`crate::files`], and
+    /// [`crate::model::Cursor::open_place`] for where the reading happens.
+    pub place: Option<crate::files::Place>,
 }
 
 /// One of a set of alternatives, exactly one of which is in force.
@@ -361,6 +459,45 @@ pub struct Bar {
     /// end of the range, which is what makes the bar stop there.
     pub up: Option<crate::settings::Setting>,
     pub down: Option<crate::settings::Setting>,
+    /// Every value the bar can be set to, the foot of the track first. What a
+    /// press *along* the groove picks from: a direction knows only the step
+    /// either side of where the handle is, and a click has landed somewhere the
+    /// handle is not.
+    ///
+    /// Evenly spaced, which is what [`Bar::fill`] already says — the handle
+    /// stands at the same share of the track as the value does of the range —
+    /// so where a click landed and which of these it asks for are the same
+    /// question. Carried as the whole list rather than as a range and a step
+    /// because a setting is a setting: the shell applies one of these exactly
+    /// as it applies the row above it, and nothing here has to know what a
+    /// kelvin is.
+    pub steps: Vec<crate::settings::Setting>,
+}
+
+impl Bar {
+    /// Which step of the bar stands at `level` along the track — 0 at the foot
+    /// and 1 at the head.
+    ///
+    /// Rounded, so each step owns the half of the track on either side of it
+    /// and there is nowhere on the groove that belongs to no value.
+    fn step_at(&self, level: f32) -> Option<usize> {
+        let last = self.steps.len().checked_sub(1)?;
+        Some((level.clamp(0.0, 1.0) * last as f32).round() as usize)
+    }
+
+    /// What a press at `level` along the groove applies.
+    ///
+    /// `None` where the press asks for nothing: a bar with no steps in it, and
+    /// a press that landed on the step the handle is already standing on —
+    /// which is what aiming at a value and missing by a pixel looks like, and
+    /// is not a change to apply, write down and make a noise about.
+    pub fn at(&self, level: f32) -> Option<crate::settings::Setting> {
+        let step = self.step_at(level)?;
+        if self.step_at(self.fill) == Some(step) {
+            return None;
+        }
+        self.steps.get(step).copied()
+    }
 }
 
 /// A top-level XMB column.
@@ -386,6 +523,11 @@ pub const SHELL_SETTINGS: (&str, &str, &str) =
 /// installed, and are therefore named in more than one place.
 const MULTIMEDIA: &str = "multimedia";
 const GRAPHICS: &str = "graphics";
+/// System is named for a third reason again: the row it carries is not
+/// something found or something installed, but a way in to the disk itself,
+/// and it is on the column whether or not this machine has a single system
+/// tool on it. See [`subcategories`] and the retain at the end of [`assemble`].
+const SYSTEM: &str = "system";
 /// Games is here for a different reason from the other two: nothing is
 /// *found* for it, but the Steam row goes at its head whether or not a single
 /// game is installed, so the column has to be nameable from outside the table.
@@ -399,7 +541,7 @@ const GAMES: &str = "games";
 /// column is not somewhere an installed application belongs.
 const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
     (
-        "system",
+        SYSTEM,
         "System",
         crate::icons::CATEGORY_SYSTEM,
         &["Settings", "System"],
@@ -493,6 +635,9 @@ pub fn shelf_title(kind: crate::media::Kind) -> &'static str {
 /// under it. It is the same kind of row all the same — a way in to what the
 /// user has, standing above the tools that make more of it.
 fn subcategories(id: &str) -> Vec<Entry> {
+    if id == SYSTEM {
+        return vec![files_row()];
+    }
     SHELVES
         .iter()
         .filter(|(column, ..)| *column == id)
@@ -505,9 +650,32 @@ fn subcategories(id: &str) -> Vec<Entry> {
                 comment: Some(crate::media::note(*kind, 0, false)),
                 icon: Some(kind.glyph().to_string()),
                 entries: Vec::new(),
+                place: None,
             })
         })
         .collect()
+}
+
+/// The row at the head of System that opens the disk.
+///
+/// It hangs in System rather than in a column of its own, and rather than in
+/// Utilities where a file manager's `.desktop` file would land. What is under
+/// it is not a tool and not a document: it is the machine's own storage — the
+/// disks, and what is on them — which is the same subject as the rest of that
+/// column and is filed with it for the same reason the console filed a memory
+/// card there.
+///
+/// Empty until it is stepped into. What the disks are is a question about the
+/// moment it is asked — a drive plugged in during a session has to be on it —
+/// so the answer is not built here; see [`crate::files::volumes`].
+fn files_row() -> Entry {
+    Entry::Folder(Folder {
+        title: "Files".to_string(),
+        comment: Some("Your folder, this machine, and anything plugged in".to_string()),
+        icon: Some(crate::icons::CATEGORY_FILES.to_string()),
+        entries: Vec::new(),
+        place: Some(crate::files::Place::Volumes),
+    })
 }
 
 /// The rows a shelf of the user's own files makes: the search at the head of
@@ -535,19 +703,45 @@ pub fn media_rows(
     found: usize,
 ) -> Vec<Entry> {
     let mut rows = Vec::with_capacity(listing.len() + 2);
-    if found > 0 {
-        rows.push(Entry::Search(Search::field(
-            kind,
-            query,
-            listing.len(),
-            found,
-        )));
-        if !query.is_empty() {
-            rows.push(Entry::Search(Search::clear(kind, query, found)));
-        }
-    }
+    head(
+        &mut rows,
+        Searched::Shelf(kind),
+        query,
+        listing.len(),
+        found,
+    );
     rows.extend(listing.into_iter().map(Entry::Media));
     rows
+}
+
+/// The same for a column of the file explorer: the field at the head of it, and
+/// then whatever the search has left of the folder.
+///
+/// The same two rows for the same reasons, which is the point — a field is a
+/// field wherever it is on this bar, reached by pressing Up from the top of the
+/// list, typed into with the same board, and emptied by the row under it. What
+/// differs is only where the narrowing happens; see [`Searched`].
+///
+/// `found` is everything the folder holds, so a column narrowed to nothing
+/// still carries the two rows that say why. A folder with nothing in it at all
+/// gets neither: there is nothing there to search, and a column holding only
+/// the offer to search it is a column worth stepping into for nothing.
+pub fn place_rows(listing: Vec<Entry>, query: &str, found: usize) -> Vec<Entry> {
+    let mut rows = Vec::with_capacity(listing.len() + 2);
+    head(&mut rows, Searched::Folder, query, listing.len(), found);
+    rows.extend(listing);
+    rows
+}
+
+/// The rows that stand over a list: the field, and the row that empties it.
+fn head(rows: &mut Vec<Entry>, of: Searched, query: &str, matched: usize, found: usize) {
+    if found == 0 {
+        return;
+    }
+    rows.push(Entry::Search(Search::field(of, query, matched, found)));
+    if !query.is_empty() {
+        rows.push(Entry::Search(Search::clear(of, query, found)));
+    }
 }
 
 /// Which shelf of the user's own files a column is, if it is one of the three.
@@ -561,7 +755,7 @@ pub fn media_rows(
 /// which carries no rows and cannot be stepped into.
 pub fn shelf_shown(entries: &[Entry]) -> Option<crate::media::Kind> {
     match entries.first() {
-        Some(Entry::Search(search)) => Some(search.kind),
+        Some(Entry::Search(search)) => search.of.shelf(),
         _ => None,
     }
 }
@@ -601,7 +795,7 @@ pub fn set_search_text(categories: &mut [Category], kind: crate::media::Kind, qu
             let Some(Entry::Search(search)) = rows.first_mut() else {
                 continue;
             };
-            if search.kind != kind {
+            if search.of != Searched::Shelf(kind) {
                 continue;
             }
             search.query = query.to_string();
@@ -711,7 +905,7 @@ pub fn carried_media(categories: &mut [Category]) -> Vec<crate::media::Made> {
     carried
 }
 
-/// Take the row for `path` off whichever shelf holds it, because the file is
+/// Take the row for `path` off every column that holds one, because the file is
 /// not on the disk any more. Says whether there was one.
 ///
 /// The bar's own copy only. The shelf it was built from is the worker's, and is
@@ -719,22 +913,35 @@ pub fn carried_media(categories: &mut [Category]) -> Vec<crate::media::Made> {
 /// the user is owed is the row leaving the screen on the frame they deleted it,
 /// and waiting for a shelf of half a million rows to be rebuilt and sent back
 /// is not that.
-pub fn forget_media(categories: &mut [Category], path: &std::path::Path) -> bool {
+pub fn forget_file(categories: &mut [Category], path: &std::path::Path) -> bool {
+    let mut dropped = false;
     for category in categories {
-        for entry in &mut category.entries {
-            let Entry::Folder(folder) = entry else {
-                continue;
-            };
-            let before = folder.entries.len();
-            folder
-                .entries
-                .retain(|row| row.media().is_none_or(|file| file.path != path));
-            if folder.entries.len() != before {
-                return true;
-            }
+        dropped |= forget_below(&mut category.entries, path);
+    }
+    dropped
+}
+
+/// The walk that does it, one column at a time.
+///
+/// Recursive, and it does not stop at the first row it drops: the same file can
+/// be on the bar twice over — once on the shelf the walk shelved it on, once in
+/// the folder the explorer is listing — and a deletion that took the row the
+/// user was looking at and left the other would be a shell that had half
+/// understood.
+fn forget_below(entries: &mut Vec<Entry>, path: &std::path::Path) -> bool {
+    let before = entries.len();
+    entries.retain(|row| match row {
+        Entry::Media(file) => file.path != path,
+        Entry::File(file) => file.path != path,
+        _ => true,
+    });
+    let mut dropped = entries.len() != before;
+    for entry in entries {
+        if let Entry::Folder(folder) = entry {
+            dropped |= forget_below(&mut folder.entries, path);
         }
     }
-    false
+    dropped
 }
 
 /// The column somebody's Steam library hangs in.
@@ -758,6 +965,61 @@ pub fn steam_title() -> &'static str {
     STEAM.1
 }
 
+/// Whether the shell's own Steam row is on this bar.
+///
+/// Which is the same question as whether this session does Steam at all: the
+/// row goes up as the shell starts and stays up signed in or out, and only a
+/// session started with `--no-steam` is without one. Asked before a bar is
+/// rebuilt from a fresh scan, so that what Steam put on it can be put back.
+pub fn steam_offered(categories: &[Category]) -> bool {
+    categories.iter().any(|column| {
+        column
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, Entry::Steam(_)))
+    })
+}
+
+/// Take Valve's client's own `.desktop` entry off the bar, wherever the scan
+/// filed it.
+///
+/// Two rows called Steam — one starting a program, one signing an account in —
+/// is the kind of thing a user has to press to tell apart; and of the two, the
+/// shell's own is the one that leads somewhere, since the client itself is
+/// still one row of the menu raised on it away. So the shell's row replaces the
+/// client's rather than standing beside it.
+///
+/// Every column and not just Games, which is the whole reason this is a sweep
+/// of its own rather than a line of [`offer_steam`]. Valve's file declares
+/// `Categories=Network;FileTransfer;Game`, and the first main category that
+/// matches decides the column — so on an ordinary machine the client's row is
+/// not in Games at all but in Internet, where the row replacing it never
+/// looked. A column left with nothing to start goes with it, by the rule every
+/// scanned column is kept or dropped by; see [`assemble`].
+///
+/// Called once for each catalogue built from the disk, and only on a session
+/// that has a Steam row of its own to offer: one started with `--no-steam`
+/// keeps the client's entry, because there it is the only way to reach Steam.
+pub fn hide_steam_client(categories: &mut Vec<Category>) {
+    let mut emptied = Vec::new();
+    for (at, column) in categories.iter_mut().enumerate() {
+        let before = column.entries.len();
+        column
+            .entries
+            .retain(|entry| !entry.app().is_some_and(|app| app.owns_window("steam")));
+        // Only a column this took something out of can have been emptied by
+        // it, which is also what keeps the shell's own Settings column — which
+        // has nothing launchable in it and never an application — out of this.
+        if column.entries.len() != before && !column.has_launchable() {
+            emptied.push(at);
+        }
+    }
+    // Back to front, so each index still means the column it was read from.
+    for at in emptied.into_iter().rev() {
+        categories.remove(at);
+    }
+}
+
 /// Put the Steam row at the head of the Games column, or take it away.
 ///
 /// `account` is who is signed in, if anybody. Returns where a column had to be
@@ -765,11 +1027,10 @@ pub fn steam_title() -> &'static str {
 /// offer to sign in to Steam is enough to earn it one, because from that row
 /// the whole library is one press away.
 ///
-/// Any `.desktop` entry for the Steam client itself is taken out of the column
-/// as this goes in. Two rows called Steam, one starting a program and one
-/// signing an account in, is the kind of thing a user has to press to tell
-/// apart; and of the two this is the one that leads somewhere, since the
-/// client is still one row of the menu raised on it away.
+/// The row is rebuilt rather than edited, because what it says is built from
+/// the account and there is nothing else on it. The client's own entry is not
+/// this function's business — it is taken off the bar wherever it landed, by
+/// [`hide_steam_client`], as each catalogue is built.
 pub fn offer_steam(categories: &mut Vec<Category>, account: Option<String>) -> Shifted {
     let mut shifted = Shifted::default();
 
@@ -796,13 +1057,10 @@ pub fn offer_steam(categories: &mut Vec<Category>, account: Option<String>) -> S
     };
 
     let column = &mut categories[at];
-    column.entries.retain(|entry| {
-        // The client's own entry, and the row this is replacing, if it is
-        // already there — the row is rebuilt rather than edited, because what
-        // it says is built from the account and there is nothing else on it.
-        !matches!(entry, Entry::Steam(_))
-            && !entry.app().is_some_and(|app| app.owns_window("steam"))
-    });
+    // The row this is replacing, if it is already there.
+    column
+        .entries
+        .retain(|entry| !matches!(entry, Entry::Steam(_)));
     // At the head of the column, above the applications: it is the way in to
     // a whole other column, and a way in belongs where the eye lands.
     column
@@ -1014,6 +1272,7 @@ impl Entry {
         match self {
             Entry::App(app) => &app.name,
             Entry::Media(file) => &file.title,
+            Entry::File(file) => &file.name,
             Entry::Folder(folder) => &folder.title,
             Entry::Choice(choice) => &choice.title,
             Entry::Bar(bar) => &bar.title,
@@ -1030,6 +1289,10 @@ impl Entry {
             // Where it was found, which for a music collection is the only
             // thing telling the album's copy of a track from the compilation's.
             Entry::Media(file) => Some(&file.folder),
+            // How big it is and when it was written, which is what the folder
+            // it is in cannot say: the folder is the column the user is
+            // standing in and is on the screen already.
+            Entry::File(file) => Some(file.note.as_str()).filter(|note| !note.is_empty()),
             Entry::Folder(folder) => folder.comment.as_deref(),
             Entry::Choice(choice) => choice.comment.as_deref(),
             Entry::Bar(bar) => bar.comment.as_deref(),
@@ -1043,6 +1306,7 @@ impl Entry {
         match self {
             Entry::App(app) => app.icon.as_deref(),
             Entry::Media(file) => Some(file.kind.glyph()),
+            Entry::File(file) => Some(file.glyph),
             Entry::Folder(folder) => folder.icon.as_deref(),
             Entry::Choice(choice) => choice.icon.as_deref(),
             // The track is the drawing. A glyph beside it would be the name of
@@ -1113,6 +1377,15 @@ impl Entry {
         }
     }
 
+    /// The file this row stands for, if it is one the explorer found in a
+    /// folder rather than one the walk shelved.
+    pub fn file(&self) -> Option<&crate::files::Item> {
+        match self {
+            Entry::File(file) => Some(file),
+            _ => None,
+        }
+    }
+
     /// The same, as the shared handle the shelf holds — for telling one row
     /// from another across a list that has been rebuilt, where comparing the
     /// handles is comparing two pointers and comparing the files means
@@ -1133,7 +1406,10 @@ impl Entry {
         // answers with its concrete compatibility/install limitation. The
         // Steam service row itself only raises a panel, which is why the Games
         // column is separately exempt from being dropped; see `offer_steam`.
-        matches!(self, Entry::App(_) | Entry::Media(_) | Entry::Game(_))
+        matches!(
+            self,
+            Entry::App(_) | Entry::Media(_) | Entry::File(_) | Entry::Game(_)
+        )
     }
 
     /// The colour this row stands for — see [`Choice::swatch`].
@@ -1394,7 +1670,12 @@ fn assemble(apps: Vec<App>) -> Vec<Category> {
     //
     // The shell's own is exempt: it is a fixed part of the bar rather than a
     // consequence of what happens to be installed, and nothing in it launches.
-    categories.retain(Category::has_launchable);
+    //
+    // System is exempt on the same terms. Its Files row is a fixed part of the
+    // bar — every machine has a disk — and it holds nothing launchable until
+    // somebody has walked down to a file, which is exactly the state a column
+    // dropped here would never let them reach.
+    categories.retain(|column| column.id == SYSTEM || column.has_launchable());
     categories.insert(0, shell_settings);
     categories
 }
@@ -1556,6 +1837,7 @@ mod tests {
             )
             .expect("a well-formed entry"),
         ]);
+        hide_steam_client(&mut categories);
         offer_steam(&mut categories, None);
 
         let games = column(&categories, GAMES).expect("the Games column");
@@ -1573,6 +1855,80 @@ mod tests {
             games.entries[1].app().is_some(),
             "a different program that happens to start with Steam was taken out"
         );
+    }
+
+    /// Valve's own file, verbatim in the part that matters: it declares three
+    /// main categories and `Network` is the one that wins, so the client's row
+    /// is filed under Internet and a sweep that only looked in Games would
+    /// leave it on the bar beside the shell's own.
+    #[test]
+    fn the_clients_entry_goes_from_whatever_column_it_was_filed_in() {
+        let mut categories = assemble(vec![
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=Steam\nExec=/usr/bin/steam %U\nCategories=Network;FileTransfer;Game;\n",
+                Path::new("/usr/share/applications/steam.desktop"),
+            )
+            .expect("a well-formed entry"),
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=Browser\nExec=browse\nCategories=Network;\n",
+                Path::new("/usr/share/applications/browse.desktop"),
+            )
+            .expect("a well-formed entry"),
+        ]);
+        assert_eq!(
+            column(&categories, "internet")
+                .expect("the Internet column")
+                .apps(),
+            2,
+            "the client's entry was filed somewhere other than Internet"
+        );
+
+        hide_steam_client(&mut categories);
+        offer_steam(&mut categories, Some("someone".to_string()));
+
+        let internet = column(&categories, "internet").expect("the Internet column");
+        let rows: Vec<&str> = internet.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["Browser"], "the client's entry is still listed");
+        let games = column(&categories, GAMES).expect("the Games column");
+        assert!(
+            games.entries[0].service().is_some(),
+            "the shell's own row did not go up in its place"
+        );
+    }
+
+    /// And the column it was the only thing in goes with it, by the rule every
+    /// scanned column is kept or dropped by: a column with nothing left in it
+    /// to start is dead space to scroll past.
+    #[test]
+    fn a_column_the_client_was_alone_in_goes_with_it() {
+        let mut categories = assemble(vec![App::parse(
+            "[Desktop Entry]\nType=Application\nName=Steam\nExec=/usr/bin/steam %U\nCategories=Network;FileTransfer;Game;\n",
+            Path::new("/usr/share/applications/steam.desktop"),
+        )
+        .expect("a well-formed entry")]);
+        assert!(column(&categories, "internet").is_some(), "nothing to drop");
+
+        hide_steam_client(&mut categories);
+
+        assert!(
+            column(&categories, "internet").is_none(),
+            "an empty Internet column was left on the bar"
+        );
+        assert!(
+            column(&categories, SHELL_SETTINGS.0).is_some(),
+            "the shell's own column has nothing launchable in it and was dropped"
+        );
+    }
+
+    /// The row is what says a session does Steam at all — the question asked
+    /// before a bar rebuilt from a fresh scan is given back what Steam put on
+    /// it. A session started with `--no-steam` has no row and gets none.
+    #[test]
+    fn the_row_is_what_says_this_session_does_steam() {
+        let mut categories = catalogue();
+        assert!(!steam_offered(&categories));
+        offer_steam(&mut categories, None);
+        assert!(steam_offered(&categories));
     }
 
     /// The library becomes a column of its own, immediately after Games —
@@ -1750,6 +2106,47 @@ mod tests {
         assert!(!wrapped.owns_window("env"));
     }
 
+    /// Everything under Wine calls itself `something.exe`, and the extension
+    /// is not the application. Read as a reverse-DNS tail it made every
+    /// Windows program in the session one application: a game's audio stream
+    /// arrives at the mixer as `Restory.exe`, the only entry on this machine
+    /// declaring an `.exe` window class is Affinity's, and the running game's
+    /// volume was drawn under Affinity's name and icon.
+    #[test]
+    fn one_windows_program_is_not_another() {
+        let affinity = App::parse(
+            "[Desktop Entry]\nType=Application\nName=Affinity\n\
+             Exec=sh -c /usr/bin/affinity\nStartupWMClass=Affinity.exe\n",
+            Path::new("/home/user/.local/share/applications/affinity.desktop"),
+        )
+        .unwrap();
+
+        assert!(
+            !affinity.owns_window("Restory.exe"),
+            "a game under Proton is not the one graphics editor that runs under Wine"
+        );
+        assert!(!affinity.owns_window("d3ddriverquery64.exe"));
+        assert!(!same_application("photo.exe", "designer.exe"));
+
+        // And the application does still own its own windows — including the
+        // one spelling the extension off, which the old rule got wrong too.
+        assert!(affinity.owns_window("Affinity.exe"));
+        assert!(affinity.owns_window("affinity.exe"));
+        assert!(affinity.owns_window("Affinity"));
+    }
+
+    /// The reverse-DNS rule this is all about is untouched: it is for a name
+    /// with a vendor in the middle, not for anything that merely has a dot.
+    #[test]
+    fn a_reverse_dns_name_still_finds_its_program() {
+        assert!(same_application("org.mozilla.firefox", "firefox"));
+        assert!(same_application("app.zen_browser.zen", "zen"));
+        assert!(same_application("org.kde.dolphin", "Dolphin"));
+        // A Unity game's class is its binary, dot and all, and its last
+        // component is an architecture rather than a name.
+        assert!(!same_application("Haste.x86_64", "Celeste.x86_64"));
+    }
+
     #[test]
     fn skips_hidden_and_non_applications() {
         assert!(
@@ -1813,7 +2210,11 @@ mod tests {
     #[test]
     fn the_shell_settings_column_is_always_first_and_always_there() {
         let empty = assemble(Vec::new());
-        assert_eq!(empty.len(), 1, "nothing installed leaves only the shell's");
+        assert_eq!(
+            empty.iter().map(|c| c.id).collect::<Vec<_>>(),
+            ["settings", SYSTEM],
+            "nothing installed leaves the shell's own two"
+        );
         assert_eq!(empty[0].id, "settings");
         assert_eq!(empty[0].title, "Settings");
         // Rows of its own, none of which is an application: the column is the
@@ -1851,6 +2252,7 @@ mod tests {
                 entries: vec![Entry::App(
                     parse("[Desktop Entry]\nType=Application\nName=X\nExec=x\n").unwrap(),
                 )],
+                place: None,
             })],
         };
         assert!(buried.has_launchable());
@@ -1862,6 +2264,7 @@ mod tests {
                 comment: None,
                 icon: None,
                 entries: Vec::new(),
+                place: None,
             })],
             ..buried.clone()
         };
@@ -1994,8 +2397,30 @@ mod tests {
         .unwrap()]);
         assert_eq!(
             categories.iter().map(|c| c.id).collect::<Vec<_>>(),
-            ["settings", "office"]
+            ["settings", SYSTEM, "office"]
         );
+    }
+
+    /// System is the one scanned column that stands with nothing installed in
+    /// it, because what it carries is not something installed: every machine
+    /// has a disk, so the row that opens it is always there.
+    #[test]
+    fn the_files_row_is_on_system_whether_or_not_anything_is_installed() {
+        for catalogue in [assemble(Vec::new()), catalogue()] {
+            let system = column(&catalogue, SYSTEM).expect("System is always a column");
+            let files = match &system.entries[0] {
+                Entry::Folder(folder) => folder,
+                other => panic!("expected the Files row at the head, got {other:?}"),
+            };
+            assert_eq!(files.title, "Files");
+            assert_eq!(files.icon.as_deref(), Some(crate::icons::CATEGORY_FILES));
+            assert_eq!(
+                files.place,
+                Some(crate::files::Place::Volumes),
+                "it is read on the press that opens it, not now"
+            );
+            assert!(files.entries.is_empty(), "and it holds nothing until then");
+        }
     }
 
     fn found(path: &str) -> crate::media::Shelved {
@@ -2125,7 +2550,7 @@ mod tests {
         // And an empty library never makes one.
         let mut bare = assemble(Vec::new());
         assert!(hang(&mut bare, Vec::new()).is_empty());
-        assert_eq!(bare.len(), 1);
+        assert_eq!(bare.len(), 2, "the shell's own column, and System's Files");
     }
 
     /// Both columns can be earned in the same pass, and the second index is
@@ -2142,22 +2567,22 @@ mod tests {
                 &mut categories,
                 vec![found("/home/x/a.mp3"), found("/home/x/b.png")]
             ),
-            vec![1, 2]
+            vec![2, 3]
         );
         assert_eq!(
             categories.iter().map(|c| c.id).collect::<Vec<_>>(),
-            ["settings", MULTIMEDIA, GRAPHICS, "office"]
+            ["settings", SYSTEM, MULTIMEDIA, GRAPHICS, "office"]
         );
 
         // A kind with nothing found never conjures the column that holds it.
         let mut only_pictures = assemble(Vec::new());
         assert_eq!(
             hang(&mut only_pictures, vec![found("/home/x/b.png")]),
-            vec![1]
+            vec![2]
         );
         assert_eq!(
             only_pictures.iter().map(|c| c.id).collect::<Vec<_>>(),
-            ["settings", GRAPHICS]
+            ["settings", SYSTEM, GRAPHICS]
         );
     }
 

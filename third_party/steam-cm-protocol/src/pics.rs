@@ -32,6 +32,30 @@ pub struct AppCatalogInfo {
     pub installdir: Option<String>,
     /// Appinfo `config/launch` entries — used by the direct (no-Steam) launch path.
     pub launch: Vec<LaunchEntry>,
+    /// Appinfo `common/library_assets_full` — where the app's library pictures are published.
+    pub library_art: LibraryArt,
+}
+
+/// Where Valve publishes one app's library pictures, as its own client asks for them.
+///
+/// Appinfo `common/library_assets_full`. Each picture is a path below the app's own asset
+/// directory, in one of two forms: a bare file name, `library_600x900.jpg`, or a
+/// content-addressed one, `28dbb24430c7fe4732fafd7ce3a3b701d1d805eb/library_600x900.jpg`.
+/// Both are current — Valve moved store artwork to the hashed form and left what was
+/// already published where it was — and the two are mixed within one app, so a game may
+/// have a bare capsule and a hashed logo.
+///
+/// Carried because the path cannot be guessed. Artwork published only under the hashed form
+/// is served under nothing else and the client caches it under nothing else, so an app whose
+/// pictures were uploaded since the change has none at all for a caller that asks by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryArt {
+    /// `library_capsule` — the portrait capsule, what a game is recognised by.
+    pub capsule: Option<String>,
+    /// `library_hero` — the wide picture from the app's own page.
+    pub hero: Option<String>,
+    /// `library_logo` — the app's title drawn as artwork on a transparent ground.
+    pub logo: Option<String>,
 }
 
 /// Library entries we surface: real games plus owned software/tools. DLC, soundtracks (music),
@@ -355,6 +379,7 @@ async fn resolve_app_infos(
                     app_type: None,
                     installdir: None,
                     launch: Vec::new(),
+                    library_art: LibraryArt::default(),
                 },
             )
         })
@@ -603,6 +628,10 @@ fn parse_binary_app_info(appid: u32, buffer: &[u8]) -> Option<AppCatalogInfo> {
         .and_then(|config| config.get("launch"))
         .map(launch_entries_from_kv)
         .unwrap_or_default();
+    let library_art = common
+        .get("library_assets_full")
+        .map(library_art_from_kv)
+        .unwrap_or_default();
 
     Some(AppCatalogInfo {
         appid,
@@ -611,7 +640,37 @@ fn parse_binary_app_info(appid: u32, buffer: &[u8]) -> Option<AppCatalogInfo> {
         app_type,
         installdir,
         launch,
+        library_art,
     })
+}
+
+/// Read `common/library_assets_full` from a binary-KV node.
+///
+/// Each picture is `{piece}/image/english`, with `image2x` standing in when there is no 1×
+/// entry — some artwork is published only at the larger size, and a picture twice as big as
+/// it needs to be is a picture rather than nothing.
+///
+/// English rather than the session's language, deliberately: it is the variant every app that
+/// has the picture at all publishes, while the localized ones exist only where a publisher
+/// made them. Falling back the other way round would give a caller a Chinese capsule for a
+/// game whose English one is right there.
+fn library_art_from_kv(assets: &KVValue) -> LibraryArt {
+    let published = |piece: &str| -> Option<String> {
+        let entry = assets.get(piece)?;
+        ["image", "image2x"].into_iter().find_map(|size| {
+            entry
+                .get(size)?
+                .get("english")
+                .and_then(KVValue::as_str)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+        })
+    };
+    LibraryArt {
+        capsule: published("library_capsule"),
+        hero: published("library_hero"),
+        logo: published("library_logo"),
+    }
 }
 
 /// Collect `config/launch` entries from a binary-KV `launch` node (numbered children `0`, `1`, …).
@@ -679,6 +738,10 @@ fn parse_text_app_info(appid: u32, buffer: &[u8]) -> Option<AppCatalogInfo> {
         .and_then(|config| config.get_node("launch"))
         .map(launch_entries_from_vdf)
         .unwrap_or_default();
+    let library_art = common
+        .get_node("library_assets_full")
+        .map(library_art_from_vdf)
+        .unwrap_or_default();
 
     Some(AppCatalogInfo {
         appid,
@@ -687,7 +750,27 @@ fn parse_text_app_info(appid: u32, buffer: &[u8]) -> Option<AppCatalogInfo> {
         app_type,
         installdir,
         launch,
+        library_art,
     })
+}
+
+/// The same as [`library_art_from_kv`], from a text-VDF node.
+fn library_art_from_vdf(assets: &VdfNode) -> LibraryArt {
+    let published = |piece: &str| -> Option<String> {
+        let entry = assets.get_node(piece)?;
+        ["image", "image2x"].into_iter().find_map(|size| {
+            entry
+                .get_node(size)?
+                .get_str("english")
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+        })
+    };
+    LibraryArt {
+        capsule: published("library_capsule"),
+        hero: published("library_hero"),
+        logo: published("library_logo"),
+    }
 }
 
 /// Collect `config/launch` entries from a text-VDF `launch` node (numbered child nodes).
@@ -894,6 +977,7 @@ mod tests {
             app_type: app_type.map(str::to_owned),
             installdir: None,
             launch: Vec::new(),
+            library_art: LibraryArt::default(),
         }
     }
 
@@ -1063,5 +1147,92 @@ mod tests {
         assert_eq!(entries[0].oslist.as_deref(), Some("windows"));
         assert_eq!(entries[0].osarch.as_deref(), Some("64"));
         assert_eq!(entries[0].arguments, None);
+    }
+
+    /// Both forms of published path, in the shape a real app has them: a hashed capsule and
+    /// logo beside a bare hero, and localized variants that must not be picked over English.
+    /// Taken from app 3288210, whose capsule is published under a hash and nowhere else.
+    #[test]
+    fn parses_where_library_pictures_are_published_from_text_common() {
+        let data = br#"
+            "appinfo"
+            {
+                "common"
+                {
+                    "name" "Super Meat Boy 3D"
+                    "type" "game"
+                    "library_assets_full"
+                    {
+                        "library_capsule"
+                        {
+                            "image"
+                            {
+                                "english" "28dbb244/library_600x900.jpg"
+                                "schinese" "3b1cf993/library_capsule_schinese.jpg"
+                            }
+                            "image2x" { "english" "28dbb244/library_600x900_2x.jpg" }
+                        }
+                        "library_hero" { "image" { "english" "library_hero.jpg" } }
+                        "library_logo" { "image" { "english" "032d5382/logo.png" } }
+                        "library_header" { "image" { "english" "d9e88f30/library_header.jpg" } }
+                    }
+                }
+            }
+        "#;
+
+        let app = parse_app_info(3288210, data).expect("app info should parse");
+        assert_eq!(
+            app.library_art.capsule.as_deref(),
+            Some("28dbb244/library_600x900.jpg")
+        );
+        assert_eq!(app.library_art.hero.as_deref(), Some("library_hero.jpg"));
+        assert_eq!(app.library_art.logo.as_deref(), Some("032d5382/logo.png"));
+    }
+
+    /// An app that publishes nothing under `library_assets_full` says so with every path
+    /// absent, rather than with a guess the caller would then fetch a 404 for.
+    #[test]
+    fn an_app_with_no_published_pictures_has_no_paths() {
+        let data = br#""appinfo" { "common" { "name" "Half-Life" "type" "game" } }"#;
+
+        let app = parse_app_info(70, data).expect("app info should parse");
+        assert_eq!(app.library_art, LibraryArt::default());
+    }
+
+    /// The binary-KV path reads the same block, and takes the 2× file for a picture published
+    /// only at that size.
+    #[test]
+    fn library_art_from_kv_reads_the_published_paths() {
+        let named = |key: &str, value: &str| (key.to_owned(), KVValue::Str(value.to_owned()));
+        let assets = KVValue::Nested(vec![
+            (
+                "library_capsule".to_owned(),
+                KVValue::Nested(vec![(
+                    "image".to_owned(),
+                    KVValue::Nested(vec![named("english", "28dbb244/library_600x900.jpg")]),
+                )]),
+            ),
+            (
+                // Only a 2× hero: bigger than it needs to be is a picture, and nothing is not.
+                "library_hero".to_owned(),
+                KVValue::Nested(vec![(
+                    "image2x".to_owned(),
+                    KVValue::Nested(vec![named("english", "67a1c596/library_hero_2x.jpg")]),
+                )]),
+            ),
+            (
+                // A logo in Chinese only, which is not this caller's picture.
+                "library_logo".to_owned(),
+                KVValue::Nested(vec![(
+                    "image".to_owned(),
+                    KVValue::Nested(vec![named("schinese", "a9884e0b/logo_schinese.png")]),
+                )]),
+            ),
+        ]);
+
+        let art = library_art_from_kv(&assets);
+        assert_eq!(art.capsule.as_deref(), Some("28dbb244/library_600x900.jpg"));
+        assert_eq!(art.hero.as_deref(), Some("67a1c596/library_hero_2x.jpg"));
+        assert_eq!(art.logo, None);
     }
 }

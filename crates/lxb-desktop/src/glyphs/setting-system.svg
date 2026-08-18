@@ -1,0 +1,121 @@
+<!--
+The System subcategory's glyph: a chip, seen from above.
+
+  This is the one page in the Settings tree that is about neither the picture
+  nor the sound, and its rows are not about a screen: how large applications
+  draw themselves is a statement about the person in the room, carried out by
+  the machine for every program on it. So the mark has to say "the machine
+  itself" without saying "a display", and the two obvious candidates were
+  already spent — the cog is the Settings column's own mark one level up, and
+  every drawing of a monitor in this set belongs to something under Display.
+
+  A chip is neither of those and is the only object in the shell that reads as
+  the computer rather than as a part of its interface. Nothing else in the set
+  is one, so it cannot be confused with a row it does not belong to.
+
+  Twelve legs, three to a side, and no more: the leg is what makes the square
+  read as a component instead of as a picture frame, and at 64 px a fourth leg
+  per side closes the gaps between them into one grey band. The die is sunk
+  into the package the way every recess in this set is sunk — see
+  setting-display.svg — because nothing here may go dark: the atlas multiplies
+  the quad's colour into the texel, so ink darker than the label beside it is
+  not reachable and a near-black mark comes back as a hole punched in the
+  drawing.
+
+  See pointer-stick.svg for what each gradient below is doing.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8e8e"/>
+      <stop offset="0.45" stop-color="#a8a8a8"/>
+      <stop offset="1" stop-color="#dedede"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The package. Square, because a chip is, and because every other
+         object in this set that is about a display is wider than it is tall. -->
+    <rect id="package" x="7.4" y="7.4" width="17.2" height="17.2" rx="2.3"/>
+    <clipPath id="package-clip"><use href="#package"/></clipPath>
+    <!-- One lamp over the package, the same one every glyph in the set has. -->
+    <path id="lamp" d="M5 5H27V15.4C22 18 10 18 5 15.4z"/>
+
+    <!-- The legs, as one path each side so the pair of gradients over them
+         shades the row rather than each leg identically. -->
+    <path id="legs-left"
+          d="M2.9 9.9h5.1v2.3H2.9zM2.9 14.85h5.1v2.3H2.9zM2.9 19.8h5.1v2.3H2.9z"/>
+    <path id="legs-right"
+          d="M24 9.9h5.1v2.3H24zM24 14.85h5.1v2.3H24zM24 19.8h5.1v2.3H24z"/>
+    <path id="legs-top"
+          d="M9.9 2.9h2.3v5.1H9.9zM14.85 2.9h2.3v5.1h-2.3zM19.8 2.9h2.3v5.1h-2.3z"/>
+    <path id="legs-bottom"
+          d="M9.9 24h2.3v5.1H9.9zM14.85 24h2.3v5.1h-2.3zM19.8 24h2.3v5.1h-2.3z"/>
+
+    <!-- The die, sunk into the middle of the package. -->
+    <rect id="die" x="11.3" y="11.3" width="9.4" height="9.4" rx="1.1"/>
+    <clipPath id="die-clip"><use href="#die"/></clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <!-- Legs first, so the package's own shadow falls across their roots. -->
+    <g fill="url(#face)">
+      <use href="#legs-top"/>
+      <use href="#legs-left"/>
+      <use href="#legs-right"/>
+      <use href="#legs-bottom"/>
+    </g>
+    <use href="#legs-left" fill="url(#turn)"/>
+    <use href="#legs-right" fill="url(#turn)"/>
+
+    <use href="#package" fill="url(#face)"/>
+    <g clip-path="url(#package-clip)">
+      <use href="#lamp" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#package" fill="url(#turn)"/>
+    <g clip-path="url(#package-clip)">
+      <use href="#package" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+    </g>
+
+    <use href="#die" fill="url(#recess)"/>
+    <g clip-path="url(#die-clip)">
+      <!-- The lamp again, on the glass over the die: one hard diagonal band,
+           as on every sunk face in this set. -->
+      <path d="M10.4 19.4 18.4 11.3h2.9L12.6 20.7z" fill="#ffffff" fill-opacity="0.32"
+            filter="url(#polish)"/>
+      <path d="M10.4 15.4 14.6 11.3h1.4L10.4 17z" fill="#ffffff" fill-opacity="0.2"
+            filter="url(#polish)"/>
+    </g>
+    <use href="#die" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+  </g>
+</svg>

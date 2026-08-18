@@ -46,7 +46,11 @@ fn main() {
     }
 
     let began = Instant::now();
-    if let Err(error) = client::tell(&where_it_is, &format!("steam://rungameid/{app_id}")) {
+    if let Err(error) = client::open(
+        &where_it_is,
+        Some(&options),
+        &format!("steam://rungameid/{app_id}"),
+    ) {
         println!("the client would not take it: {error}");
         return;
     }

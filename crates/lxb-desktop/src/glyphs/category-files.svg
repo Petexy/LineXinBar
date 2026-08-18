@@ -1,0 +1,137 @@
+<!--
+The Files subcategory's glyph: two folders, one behind the other.
+
+  System's other rows are tools — one thing each, and each of them a program.
+  This row is not a thing, it is the way in to everything the machine is
+  holding, and a quantity of folders is what that looks like. So it is told
+  apart from the folder rows it leads to on exactly the terms Images is told
+  apart from Graphics: not by redrawing the subject, but by how many of it
+  there are. One folder there, a pair here.
+
+  The back folder is a bare plate — no tab, no pocket. Everything drawn on it
+  would fall behind the front one anyway, and the two millimetres that show
+  would be a strip of something unidentifiable rather than the corner of a
+  folder. It is darkened a little, because it is behind, and turned ten degrees
+  so that the pair reads as a stack rather than as one folder with a thick
+  edge.
+
+  The front folder is file-folder.svg's drawing, unchanged and at the same
+  size: the two are the same object seen twice, which is the whole statement
+  the row is making. Each carries its own drop shadow so the front one lands on
+  the back one; see category-images.svg, which explains why a single shadow
+  around the pair would flatten them into one cut-out.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- The material, and the lamp above it. Identical in every glyph of
+         this set on purpose: see pointer-stick.svg, which explains what each
+         of these is doing and why the gloss is a shape rather than a stop. -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
+      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
+                    flood-color="#3c3c3c" flood-opacity="0.5"/>
+    </filter>
+    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.16"/>
+    </filter>
+
+    <!-- The folder behind: one plate, leaning away to the right. To the
+         right and not to the left, which is where category-images.svg puts
+         its back print: the tab is on the left of the front folder, and a
+         plate behind it there would be a plate the tab is lost against. -->
+    <rect id="behind" x="10.6" y="7.0" width="17.6" height="11.8" rx="2.2"
+          transform="rotate(10 19.4 12.9)"/>
+    <!-- Its own fall-away, a third of the set's: see the group that uses it. -->
+    <linearGradient id="behind-turn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.04"/>
+      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.05"/>
+    </linearGradient>
+
+    <!-- And the one in front, which is file-folder.svg. -->
+    <rect id="tab" x="2.8" y="10.2" width="10.2" height="6.2" rx="1.8"/>
+    <rect id="back" x="2.8" y="12.6" width="21.4" height="13.0" rx="2.2"/>
+    <rect id="pocket" x="2.8" y="15.0" width="21.4" height="10.6" rx="2.2"/>
+    <mask id="back-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+      <g fill="#ffffff"><use href="#tab"/><use href="#back"/></g>
+    </mask>
+    <clipPath id="pocket-clip"><use href="#pocket"/></clipPath>
+    <clipPath id="behind-clip"><use href="#behind"/></clipPath>
+    <linearGradient id="back-face" gradientUnits="userSpaceOnUse" x1="0" y1="10.2" x2="0" y2="25.6">
+      <stop offset="0" stop-color="#f6f6f6"/>
+      <stop offset="0.35" stop-color="#e9e9e9"/>
+      <stop offset="0.58" stop-color="#d6d6d6"/>
+      <stop offset="0.78" stop-color="#dfdfdf"/>
+      <stop offset="0.92" stop-color="#eeeeee"/>
+      <stop offset="1" stop-color="#f8f8f8"/>
+    </linearGradient>
+    <path id="pocket-gloss" d="M1.4 13.4H25.6V20.8C21 22.6 6 22.6 1.4 20.8z"/>
+  </defs>
+
+  <!-- The folder behind. What holds it back is the shadow the front one drops
+       across it and nothing else: the shade and the full fall-away that the
+       back print carries in category-images.svg are not affordable here,
+       because the front folder's edges cross this plate near its own sides and
+       a shadow landing on a face already darkened twice comes out at half the
+       brightness of the material. That is not a plate in shadow any more, it
+       is a hole. See the drop below, which is doing the work. -->
+  <g filter="url(#drop)">
+    <use href="#behind" fill="url(#face)"/>
+    <use href="#behind" fill="url(#behind-turn)"/>
+    <g clip-path="url(#behind-clip)">
+      <use href="#behind" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
+    </g>
+  </g>
+
+  <!-- The folder in front, back and pocket inside one shadow rather than two.
+       They share a right-hand edge, so two shadows would land on the same few
+       pixels of the folder behind and darken it twice — which is where the
+       plate stops reading as white material. What that costs is the shadow the
+       pocket would have dropped onto its own back, and it is drawn in below
+       instead. -->
+  <g filter="url(#drop)">
+    <g mask="url(#back-mask)">
+      <rect x="0" y="0" width="32" height="32" fill="url(#back-face)"/>
+      <rect x="0" y="0" width="32" height="32" fill="url(#turn)"/>
+      <rect x="0" y="0" width="32" height="32" fill="#000000" fill-opacity="0.09"/>
+      <path d="M4.6 10.4h6.6" stroke="#ffffff" stroke-opacity="0.85" stroke-width="0.7"/>
+    </g>
+
+    <!-- The pocket standing proud of the back it is fixed to. -->
+    <path d="M4.4 14.5h17.6" stroke="#000000" stroke-opacity="0.22" stroke-width="1.1"
+          filter="url(#polish)"/>
+    <use href="#pocket" fill="url(#face)"/>
+    <g clip-path="url(#pocket-clip)">
+      <use href="#pocket-gloss" fill="url(#gloss)" filter="url(#polish)"/>
+    </g>
+    <use href="#pocket" fill="url(#turn)"/>
+    <g clip-path="url(#pocket-clip)">
+      <use href="#pocket" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
+    </g>
+  </g>
+</svg>

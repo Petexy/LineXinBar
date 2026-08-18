@@ -26,6 +26,7 @@ use smithay::backend::drm::{
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::input::{Event as InputEventTrait, InputEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
@@ -33,7 +34,6 @@ use smithay::backend::renderer::ImportDma;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{self, UdevEvent};
-use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, RegistrationToken};
@@ -46,6 +46,7 @@ use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::DeviceFd;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal};
+use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -106,6 +107,15 @@ struct SurfaceData {
     global: Option<GlobalId>,
     drm_output: LxbDrmOutput,
     render_state: RenderState,
+    /// When the frame now on its way to the screen was handed to the kernel.
+    ///
+    /// Only so that [`watch_for_a_lost_flip`] can tell one queued frame from
+    /// the next: a page flip whose event never arrives leaves this surface
+    /// waiting for a vblank that is not coming, and nothing else would ever say
+    /// so — the display keeps showing the last frame, every client on it stops
+    /// being sent frame callbacks, and the session is over without a single
+    /// line in the log.
+    queued_at: Option<std::time::Instant>,
     /// The connector itself, which HDR is signalled on — the CRTC only carries
     /// the colour pipeline half of it.
     connector: connector::Handle,
@@ -480,6 +490,49 @@ fn renderer_node(node: DrmNode) -> DrmNode {
 // device lifecycle
 // ---------------------------------------------------------------------------
 
+/// Offer explicit synchronisation, once the GPU that will import the timelines
+/// is open.
+///
+/// Only for the primary GPU, and only once. That is the device every client's
+/// buffers are imported on — see the renderer choice in [`render_surface`] —
+/// so it is the one whose kernel handles a client's timeline can be resolved
+/// against. A second card being plugged in later does not get a second global:
+/// the protocol carries one device, and clients have already been told which.
+///
+/// Silently absent where the driver cannot signal a timeline point through an
+/// eventfd. The protocol is deliberately not advertised then rather than
+/// advertised and half-honoured, because the only other way to respect an
+/// acquire point without being woken for it is to block the whole compositor
+/// on the client's GPU work — which is one slow client away from a frozen
+/// session.
+///
+/// Without this a client falls back to implicit synchronisation, which still
+/// works but leaves it guessing when a buffer is free again from
+/// `wl_buffer.release` alone. Every modern Vulkan client — anything through
+/// DXVK or VKD3D, which is every game under Proton — expects to find this.
+fn advertise_explicit_sync(
+    lxb: &mut crate::state::Lxb,
+    primary_gpu: DrmNode,
+    render_node: DrmNode,
+    fd: &DrmDeviceFd,
+) {
+    if lxb.syncobj_state.is_some() || render_node != primary_gpu {
+        return;
+    }
+    if !supports_syncobj_eventfd(fd) {
+        tracing::info!(
+            gpu = ?render_node,
+            "no explicit synchronisation: this driver cannot signal a timeline point"
+        );
+        return;
+    }
+    lxb.syncobj_state = Some(DrmSyncobjState::new::<LxbState>(
+        &lxb.display_handle,
+        fd.clone(),
+    ));
+    tracing::info!(gpu = ?render_node, "explicit synchronisation offered to clients");
+}
+
 fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Result<()> {
     let super::Backend::Udev(udev) = &mut state.backend else {
         return Ok(());
@@ -511,7 +564,7 @@ fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Res
     // the state it is in, and there the known state is worth the flicker.
     let inheriting = crate::handover::wanted();
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), !inheriting)?;
-    let gbm = GbmDevice::new(fd)?;
+    let gbm = GbmDevice::new(fd.clone())?;
 
     // The render node may differ from the primary node (e.g. split render/display).
     let render_node = EGLDevice::device_for_display(&unsafe {
@@ -525,6 +578,10 @@ fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Res
         .as_mut()
         .add_node(render_node, gbm.clone())
         .map_err(|e| anyhow::anyhow!("failed to register GPU with the renderer: {e}"))?;
+
+    // Disjoint fields: `udev` holds `state.backend`, this takes `state.lxb`.
+    let primary_gpu = udev.primary_gpu;
+    advertise_explicit_sync(&mut state.lxb, primary_gpu, render_node, &fd);
 
     let registration_token = state
         .lxb
@@ -841,6 +898,7 @@ fn connector_connected(
             global: Some(global),
             drm_output,
             render_state: RenderState::Idle,
+            queued_at: None,
             connector: connector.handle(),
             modes: connector.modes().to_vec(),
             hdr,
@@ -881,12 +939,15 @@ fn connector_connected(
         "display connected"
     );
 
-    // What this display can be driven at, and how its picture is turned, are
-    // pages in the shell's Settings column, and a display that has just
-    // arrived has to appear in them without waiting for something else on
-    // screen to change.
+    // What this display can be driven at, how its picture is turned, and where
+    // it stands among the others are pages in the shell's Settings column, and
+    // a display that has just arrived has to appear in them without waiting for
+    // something else on screen to change. The last of the three is also about
+    // the displays that were already here: a screen arriving takes the place at
+    // the end of the row, and the page has to say so on every one of them.
     state.refresh_modes();
     state.refresh_transforms();
+    state.refresh_places();
 
     schedule_render(state, node, crtc, Duration::ZERO);
 }
@@ -932,9 +993,12 @@ fn remove_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     // whoever was waiting on a frame of it is told rather than left waiting.
     state.lxb.screencopy.output_gone(&surface.output);
     // Nor can it be driven at anything, or turned, until then — which the
-    // shell's pages have to hear about the same way they heard it arrive.
+    // shell's pages have to hear about the same way they heard it arrive. Its
+    // leaving renumbers every display that was laid out after it, so the
+    // arrangement is republished for the survivors as well.
     state.refresh_modes();
     state.refresh_transforms();
+    state.refresh_places();
 
     if let Some(global) = surface.global {
         state.lxb.display_handle.remove_global::<LxbState>(global);
@@ -1241,6 +1305,28 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         .map(|m| Duration::from_secs_f64(1000.0 / m.refresh as f64))
         .unwrap_or(Duration::from_millis(16));
 
+    // Decided per frame rather than when the client asks, because what makes a
+    // frame safe to tear is what is on the screen with it, and that changes
+    // between one frame and the next — the guide opening over a game is the
+    // whole case. See [`crate::render::output_may_tear`].
+    let may_tear = crate::render::output_may_tear(&state.lxb, &output);
+    // Asked here rather than where the client speaks, for the reason tearing
+    // is: what makes a frame safe to pass through is everything *else* on the
+    // screen, and that changes between one frame and the next. Recorded now
+    // and committed by `apply_pending_hdr` at the next quiet moment, because a
+    // property commit racing a page flip on the same CRTC comes back EBUSY.
+    let encoded = crate::render::output_shows_encoded_content(&state.lxb, &output);
+    if state.lxb.hdr.request_passthrough(&output, encoded) {
+        tracing::info!(
+            display = %output.name(),
+            passthrough = encoded,
+            "the colour pipeline is following what is on screen"
+        );
+    }
+    surface.drm_output.with_compositor(|compositor| {
+        compositor.surface().set_tearing(may_tear);
+    });
+
     let result =
         surface
             .drm_output
@@ -1248,12 +1334,23 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
 
     drop(renderer);
 
+    let time = state.lxb.start_time.elapsed();
     match result {
         Ok(render_result) => {
+            // Before the feedback below is collected, and before the frame is
+            // queued: this is what records where each surface was drawn, and
+            // both of those read it back. See
+            // [`crate::render::record_where_each_surface_was_drawn`].
+            post_repaint(&state.lxb, &output, time, None, &render_result.states);
+
             let feedback = if render_result.is_empty {
                 None
             } else {
-                Some(presentation_feedback(state, &output))
+                Some(crate::render::collect_presentation_feedback(
+                    &state.lxb,
+                    &output,
+                    &render_result.states,
+                ))
             };
 
             // Queue inside a scope so the surface borrow ends before the
@@ -1273,6 +1370,7 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
                 match surface.drm_output.queue_frame(feedback) {
                     Ok(()) => {
                         surface.render_state = RenderState::WaitingForVblank { dirty: false };
+                        surface.queued_at = Some(std::time::Instant::now());
                         true
                     }
                     // Nothing actually changed on screen.
@@ -1287,17 +1385,78 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
             // Not submitted, so no vblank is coming: poll again next retrace.
             if !queued {
                 schedule_render(state, node, crtc, refresh);
+            } else {
+                watch_for_a_lost_flip(state, node, crtc);
             }
         }
         Err(err) => {
             tracing::warn!(?err, output = output.name(), "failed to render frame");
             schedule_render(state, node, crtc, refresh);
+            // Nothing was drawn, so nothing was drawn anywhere — but the
+            // clients still have to be paced, or a failed frame would stop
+            // every one of them for good.
+            post_repaint(
+                &state.lxb,
+                &output,
+                time,
+                None,
+                &RenderElementStates::default(),
+            );
         }
     }
 
-    let time = state.lxb.start_time.elapsed();
-    post_repaint(&state.lxb, &output, time, None);
     serve_screencopy(state, &output, time);
+}
+
+/// Say so if the frame just queued never reaches the screen.
+///
+/// Every frame this compositor draws is queued as a page flip and answered by a
+/// vblank event, and the next frame is only drawn once that answer arrives. So
+/// an answer that never comes is not a dropped frame: it is the end of this
+/// display. It never draws again, every client on it stops being sent frame
+/// callbacks and blocks in its own present, and nothing anywhere says why —
+/// the picture simply stops, still showing the last frame that made it.
+///
+/// A second is several dozen refreshes. Nothing legitimate takes that long, and
+/// the check costs one timer per frame that is already waiting on the kernel.
+fn watch_for_a_lost_flip(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
+    let queued_at = {
+        let super::Backend::Udev(udev) = &state.backend else {
+            return;
+        };
+        let Some(surface) = udev.devices.get(&node).and_then(|d| d.surfaces.get(&crtc)) else {
+            return;
+        };
+        surface.queued_at
+    };
+    let timer = Timer::from_duration(Duration::from_secs(1));
+    let res = state
+        .lxb
+        .loop_handle
+        .insert_source(timer, move |_, _, state| {
+            let super::Backend::Udev(udev) = &state.backend else {
+                return TimeoutAction::Drop;
+            };
+            let Some(surface) = udev.devices.get(&node).and_then(|d| d.surfaces.get(&crtc)) else {
+                return TimeoutAction::Drop;
+            };
+            // The same frame, still waiting: `queued_at` is what tells this
+            // from the ordinary case of several frames having gone by since.
+            if surface.queued_at == queued_at
+                && matches!(surface.render_state, RenderState::WaitingForVblank { .. })
+            {
+                tracing::error!(
+                    output = %surface.output.name(),
+                    waited = ?queued_at.map(|at| at.elapsed()),
+                    "a frame was queued and the display never answered; nothing on this screen \
+                     will be drawn or paced again"
+                );
+            }
+            TimeoutAction::Drop
+        });
+    if let Err(err) = res {
+        tracing::warn!(?err, "could not watch for a lost page flip");
+    }
 }
 
 /// Answer whatever is recording this display, now that its frame has been
@@ -1349,7 +1508,7 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
     let output = surface.output.clone();
-    let Some((settings, night)) = state.lxb.hdr.take_pending(&output) else {
+    let Some((settings, night, passthrough)) = state.lxb.hdr.take_pending(&output) else {
         return;
     };
 
@@ -1360,6 +1519,7 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         &surface.hdr_display,
         &settings,
         &night,
+        passthrough,
     );
     let enabled = applied.enabled;
 
@@ -1438,42 +1598,6 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     if state.lxb.hdr.applied(&output, applied) {
         state.refresh_hdr();
     }
-}
-
-/// Collect the presentation feedback for everything visible on `output`.
-fn presentation_feedback(
-    state: &LxbState,
-    output: &Output,
-) -> smithay::desktop::utils::OutputPresentationFeedback {
-    let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
-
-    for window in state.lxb.space.elements_for_output(output) {
-        window.take_presentation_feedback(
-            &mut feedback,
-            surface_primary_scanout_output,
-            |surface, _| {
-                smithay::desktop::utils::surface_presentation_feedback_flags_from_states(
-                    surface,
-                    &Default::default(),
-                )
-            },
-        );
-    }
-
-    for layer in smithay::desktop::layer_map_for_output(output).layers() {
-        layer.take_presentation_feedback(
-            &mut feedback,
-            surface_primary_scanout_output,
-            |surface, _| {
-                smithay::desktop::utils::surface_presentation_feedback_flags_from_states(
-                    surface,
-                    &Default::default(),
-                )
-            },
-        );
-    }
-
-    feedback
 }
 
 fn on_vblank(

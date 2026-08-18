@@ -83,7 +83,7 @@ one feature:
 | ----------------------------------------- | -------------------------------------- | ---------------------------------------------- |
 | `Xwayland`                                | X11 applications                       | A Wayland-only session; logged, never fatal    |
 | `dbus` (`dbus-update-activation-environment`) | D-Bus activation inside the session — including the desktop portal, which is what screen sharing is | No screen sharing at all, and activated apps may appear on the outer desktop |
-| `wpctl` / `pactl` / `amixer`              | The volume bar, in that order of preference. `pactl` also lists what each application is playing, which is the mixer | No volume bar; with `amixer` alone, a mixer holding only the session's own output |
+| `wpctl` / `pactl` / `amixer`              | The volume bar and the volume keys, in that order of preference. `pactl` also lists what each application is playing, which is the mixer | No volume bar, and the volume keys do nothing; with `amixer` alone, a mixer holding only the session's own output |
 | `ddcutil`                                 | Brightness for external monitors, over DDC/CI | Brightness only where the kernel has a backlight |
 | `xdg-open`                                | Opening one of the user's own files when nothing installed declares its type | Those rows are listed but report that nothing opens them |
 | `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
@@ -103,6 +103,11 @@ one feature:
   control rather than as a slider that does nothing.
 - **i2c**, for `ddcutil` to reach an external monitor — usually the `i2c`
   group.
+- **`/dev/uinput`**, to keep [the guide button](#the-guide-button-is-the-shells-alone)
+  off every controller an application can read. A logind session normally has
+  it through `uaccess`; otherwise it is the `uinput` group or a udev rule.
+  Without it every pad still works exactly as it did, and the guide button
+  reaches applications as well as the shell.
 
 ### Bundled, so not required
 
@@ -273,9 +278,10 @@ Office, Games, Development, Education & Science, Utilities, and Other. A
 category with no application in it is hidden — except Settings, which is part
 of the bar rather than a result of what is installed.
 
-Multimedia carries two subcategories of its own, Music and Video, and Graphics
-carries one, Images. What is in them is the user's own files rather than
-applications. No `.desktop` file can say which half of Multimedia an
+Multimedia carries two subcategories of its own, Music and Video, Graphics
+carries one, Images, and System carries **Files**. What is in all four is the
+user's own files rather than applications — the first three by kind, gathered
+from everywhere under `$HOME`, and the fourth by where they actually are. No `.desktop` file can say which half of Multimedia an
 application belongs to — the menu spec requires `AudioVideo` alongside `Audio`
 or `Video` but never the reverse, so an entry may declare `AudioVideo` and
 stop, and many of the best-known media applications do exactly that — so the
@@ -538,6 +544,114 @@ were. Pressing accept moves the mark, applies the value and remembers it in
 `~/.config/lxb/shell.toml`. Stepping back or left without accepting flows
 back to the applied value instead.
 
+### Files
+
+System's first row opens the disk itself. Where Music, Video and Images answer
+"what have I got", this answers the other question — "what is *in there*" — and
+it is the same tree of columns that answers it: a folder is a subcategory, a
+file is a row, and the trail of columns behind the cursor is the path.
+
+```
+System  >  Files  >  Root  >  usr  >  lib
+```
+
+It opens on three kinds of place. **Home** is the user's own folder; **Root**
+is `/`; and after them comes a row per drive that is mounted. Each says how
+much room is left on it. The list is built on the press that opens it rather
+than when the shell starts, so a stick plugged in half an hour into a session
+is on it the moment somebody goes looking.
+
+A drive is a mounted filesystem backed by a device node, or a network share.
+`/` is not one of them, because it is the Root row; nor is any of the mount
+points a machine makes for itself (`/boot`, `/home`, `/usr`, `/var` and the
+rest), which on a machine with subvolumes would otherwise offer the same disk
+five times under the names of its own directories. Loop devices count only
+under `/run/media`, `/media` and `/mnt`, where they are an `.iso` somebody
+attached rather than a packaged application the system mounted.
+
+Inside a folder the subcategories come first, then the files. A folder says
+when it was last written until it has been opened, and afterwards what was
+found in it (`239 folders, 5804 files`); a file says how big it is and when it
+was written. Files of a kind the shelves already know keep that shelf's mark —
+a song is drawn as a song here too — and everything else is a page. Dotfiles
+are left out: nobody's photographs are in `~/.cache`, and the shell's own
+settings are a column of their own.
+
+Every column here carries the same field at its head that the three shelves do,
+and it means the same thing: `A` on it raises the on-screen keyboard, what is
+typed goes onto the row itself, and the column narrows as each letter lands. A
+name matches on any part of it, ignoring case. The row above goes on saying
+what is in the folder while the field says what is being shown of it — `4 of 6
+items match` — and the **Clear search** row under it is there for exactly as
+long as there is something to clear.
+
+The field is never what a column opens on. It stands over the list where
+anything standing over a list stands, and stepping into Files puts the cursor
+on Home, one row below it — the same arrangement a column of music has, and for
+the same reason: opening on the field would make every visit begin by stepping
+over a control nobody asked for. Pressing Up from the first row is how it is
+reached.
+
+A search belongs to the looking somebody is doing rather than to the folder.
+Stepping out and back in is a fresh visit and shows everything that is there,
+because a column that arrived already narrowed by what was typed in the last
+one would be hiding files with no field in sight to say so.
+
+Narrowing a folder is *cheaper* than opening one. A shelf is half a million
+files held on a worker, so a search there is a message and the rows arrive when
+they are ready; a folder is one directory, so the search is one more `readdir`
+— and only the rows the query keeps cost the `stat` behind a size and a date.
+
+**Sort** is on the menu over any file, and it offers the same nine orders the
+shelves do: name either way, size either way, type, created either way and
+modified either way. It is about the column rather than the file, as it is on a
+shelf — and about every folder rather than this one, because an order is how
+somebody reads a list and a shell that had to be told again in each directory
+would be asking them to say the same thing over and over. It is remembered in
+`[media-sort]` of the settings file under `Files`, beside the three shelves'
+own orders.
+
+Folders stay above files in all nine. Two of them a directory cannot answer
+for — it has no type, and what `stat` gives for its size is the size of the
+index rather than of what is in it — so in those the folders keep the
+alphabetical order somebody can find them in, and only the files are ranked.
+
+A folder is read on the press that opens it, on the thread that draws, and
+never on the way past — a cursor walking down `/usr` passes a hundred
+directories on its way to one. An ordinary folder takes under a millisecond
+and the largest on a stock machine, `/usr/lib` with six thousand entries,
+takes sixteen: one frame, once, on a press somebody made. Nothing is cached, so
+what is on the bar is what was on the disk when it was pressed, and the folders
+beside the one being opened give up their rows as it opens — the tree holds the
+path the user is standing in and not everywhere they have been. A listing stops
+at ten thousand rows and the row above says how many were left out.
+
+`Y` over a file offers the same menu the shelves do — Open, Open with, Delete,
+Sort, Cancel — and every row means there what it means here. Delete is greyed
+outside the user's home directory, which in this column is most of what can be reached — the
+machine's own files can be looked at from here and never destroyed from here.
+Opening a file starts it in whatever the desktop already opens that type with,
+exactly as pressing it on a shelf does, and the loading screen carries the
+file's own name.
+
+A photograph or a film in a folder is drawn as itself, in the round hole its
+mark would have had. Not as a card: a shelf of photographs is a column of cards
+because everything on one *is* a picture, and a folder holds folders, documents
+and photographs together — a column that was half cards and half rows would be
+answering two shapes at once. So the rows stay rows, and the picture takes the
+place of the mark of its kind.
+
+The hole is square and a photograph almost never is, so the middle of it is
+shown. Fitting the whole picture inside the circle would leave two empty
+crescents round it, which down a column reads as pictures of several different
+sizes; stretching it to fill would give the wrong face. The middle is what
+every gallery on every phone shows in a grid, and it is where the subject of a
+photograph nearly always is.
+
+They are made the same way the shelves' are and out of the same cache — the
+rows within four of each display's cursor, two workers, nothing ahead of time —
+so a folder of six thousand files costs six thumbnails.
+
 ### Steam
 
 The Games column opens with one row of the shell's own: **Steam**. Signed out
@@ -545,8 +659,18 @@ it offers to sign in; signed in it says whose library it leads to, and pressing
 it takes the bar to that library. Where the Steam client has a `.desktop` entry
 of its own, this row takes its place — two rows called Steam, one starting a
 program and one signing an account in, is something a user would have to press
-to tell apart. The client itself is still one press away, on the menu raised
-over that row.
+to tell apart. The client's entry goes from whatever column it was filed in and
+not only from Games: Valve's file declares `Network` before `Game`, so on an
+ordinary machine that row sits in Internet.
+
+The client itself is still one press away, on the menu raised over that row,
+and it opens two ways. **Open Steam** raises Big Picture, Valve's own console
+screen — the one face of the client a pad across the room can drive, which is
+why it has the plain name. **Open Steam (Client)** raises the desktop window,
+for the parts of Steam that have no Big Picture screen at all. Either one on a
+machine with no client running starts one, with the request already in hand —
+so what comes up is Steam's own startup, on whichever account it signs itself
+in as, rather than the shell's.
 
 Signing in is a panel, and it offers both ways Steam has:
 
@@ -1334,6 +1458,68 @@ over, which is not what the setting sounds like. It is written to
 start-music = false
 ```
 
+### System
+
+`Settings > System` is the page about neither the picture nor the sound. It holds
+one row, and that row is the reason it exists: **Application scaling**, how large
+every application draws its own interface.
+
+```
+Settings > System > Application scaling  >  150%
+                    X11 applications         (why this does not reach them)
+```
+
+It is a bar, not a list, and the same object the night light's colour temperature
+is set on: every five per cent between 100% and 300% is a sensible answer, and as
+rows that would be forty-one of them standing for a quantity that has no steps in
+it. Up and Down move the value, Left leaves, and a click along the groove goes
+straight to the size it landed on. The row above it reads `150% — half again as
+large`, so the usual question is answered without stepping in.
+
+**100% is the floor.** The bar starts there — one to one, every application at
+the size it chose — and there is no step below it: an application asked to draw
+its interface *smaller* than it chose is a thing to want at a desk two feet from
+a 4K panel, and this shell is driven from an armchair. A number below 100 in the
+file, or from an older shell, is read as 100.
+
+It is not a magnification. What the compositor does with it is give each
+application a logical window that much smaller than the display and tell it —
+over `wp_fractional_scale_v1` — that its scale is that much higher, so the client
+renders a buffer with exactly as many pixels as the screen has and those pixels
+are put on it one for one. At 200% on a 1280×800 display a window is configured
+at 640×400, hands over a 1280×800 buffer, and its text comes out twice the size
+and just as sharp — the same thing a high-density laptop panel does to every
+toolkit on it. A client that ignores the scale is drawn at the size it chose and
+enlarged, which is soft, and is the answer such a client gets everywhere.
+
+**The shell is not affected.** It draws itself in layer surfaces sized against
+the display it was given, so the bar, the guide and this very page stay exactly
+where they are at any setting — which is the whole reason this is done per window
+instead of by moving the output's own scale.
+
+**Neither is anything under Xwayland**, and the page says so in a row that cannot
+be pressed. X11 has no per-surface scale to tell a client about, so the only
+thing that could be done to those windows is to magnify pixels they have already
+drawn, and a blurred window is not what somebody asking for a larger one asked
+for.
+
+One number for the session rather than one per display, unlike everything under
+Display: the two screens on a desk are looked at by the same pair of eyes from
+the same chair, and a window that changed size on being moved between them would
+be answering a question nobody asked. It is written to
+`~/.config/lxb/shell.toml`:
+
+```toml
+application-scale = 150
+```
+
+The compositor remembers nothing about it, which is the one place this differs
+from a mode or a night light. Those are written down by the compositor because it
+lights the displays a second before the shell can speak and being corrected
+afterwards costs a black screen; here there is nothing on screen to correct —
+every application is started *by* the shell, always after it has said what this
+is.
+
 ### Several displays
 
 Each display gets its own bar, not a copy of one: they browse independently and
@@ -1380,6 +1566,7 @@ passes it to a neighbour.
 | `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
 | `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](#the-context-menu) on what is selected |
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3`, controller Guide/STEAM + `R1` | [Photograph](#screenshots) the display being driven |
+| The volume keys, with anything held | Turn [the session](#quick-settings) up or down a step, or silence it |
 
 Keyboard navigation also accepts the keypad arrows, WASD, and HJKL. Held
 directions repeat after a short delay; the analogue stick uses a dead zone
@@ -1424,7 +1611,64 @@ RUST_LOG=lxb_desktop::controller=debug lxb-desktop
 
 Controller initialisation failure is non-fatal and leaves the keyboard usable.
 Pass `--no-gamepad` to skip controller discovery entirely — which also turns
-off [the stick pointer](#the-stick-pointer), since there is no stick to read.
+off [the stick pointer](#the-stick-pointer), since there is no stick to read,
+and leaves every pad's guide button alone along with the rest of it.
+
+### The guide button is the shell's alone
+
+The compositor holds every other spelling of the guide back from the focused
+application outright — the `Home` key, `Super`, the mouse's side button, both
+edges of each. It is the way *out* of an application that is holding everything
+else, and an application that could take it over would be an application there
+is no way out of.
+
+A controller cannot be held back that way, because a controller never passes
+through the compositor at all. There is no gamepad protocol in Wayland, so a
+game opens `/dev/input` itself and sees exactly what the shell sees. So the pad
+is taken away and given back with one button missing: LineXinBar grabs each
+pad's device node — `EVIOCGRAB`, which makes every other reader of it deaf —
+and puts a `uinput` device in its place that says it is the same pad and
+repeats everything it does except the guide button. Applications find the
+stand-in where they would have found the pad, and the only reader of the real
+one is this shell.
+
+The stand-in is the same pad in every respect an application can ask about:
+name, bus, vendor, product, version, every button, every axis with its range
+and resolution, and force feedback, which is passed back the other way so a
+game can still shake the real pad. The guide button is *declared* there and
+never sent — SDL builds its controller GUID from the identity and numbers
+buttons by walking the capability bitmap, so a stand-in that differed in any of
+that would be a pad the mapping database has never heard of, with every button
+in the wrong place.
+
+Three rules keep this from costing more than it is worth:
+
+- **A pad is never taken without being given back.** The grab and the stand-in
+  are made together, and if any part of it fails — no `/dev/uinput`, no
+  permission, a node that never appears — the grab is dropped and the pad is
+  left exactly as it was found. Losing the rule is a leaked button; losing the
+  pad is a console nobody can play.
+- **A pad another program has already grabbed is left alone**, for the same
+  reason.
+- **Nothing that can type is ever taken**, however many gamepad codes it also
+  declares, and nothing `uinput` made — which is this shell's own stand-in,
+  Steam Input's pad for a game, or another session's.
+
+The one route this cannot cover is `hidraw`. A pad that speaks HID has a raw
+report node too, reads of it are not exclusive, and there is no kernel
+interface for making them so — SDL will read a pad that way in preference to
+`/dev/input` when its HIDAPI drivers recognise it. So every application the
+shell starts is handed `SDL_HIDAPI_IGNORE_DEVICES` naming *the pads this shell
+is holding*, and only those: a listed pad still arrives complete through
+`/dev/input`, and a pad that was never taken — one with no gamepad node at all,
+such as the second-generation Steam Controller — is never listed, so nothing is
+ever asked to ignore the only route a controller has. Anything already in the
+environment is added to rather than replaced.
+
+That last pad is the exception in every direction. It has no gamepad node to
+grab, so Steam reads its report exactly as the shell does and takes its own
+view of the Steam button; what the shell can do there it already does, which is
+to drop the pad's lizard-mode keyboard in the compositor.
 
 Icons are resolved through the freedesktop icon theme spec, following
 `Inherits` from `index.theme` and falling back to hicolor and
@@ -1446,7 +1690,7 @@ menu over whatever is running:
 | Volume mixer      | Opens [a panel](#the-volume-mixer) of everything making a noise, a row per application |
 | Do not disturb    | Whether anything may interrupt. On, an announcement is filed without a bubble and without a chime |
 | Notifications     | Opens the list of what has been announced to the session, newest first. Wears a mark while anything on it has not been looked at |
-| Volume            | How loud the session is — a bar, moved with Left/Right; `A` mutes |
+| Volume            | How loud the session is — a bar, moved with Left/Right; `A` mutes. The [volume keys](#quick-settings) move this same control from anywhere |
 | Brightness        | How bright *this* display is, where that can be changed |
 | Resume            | Dismiss the overlay |
 | Close *app*       | End the application on the selected card. It is asked first and cannot refuse |
@@ -1549,6 +1793,22 @@ Set `LXB_BACKLIGHT` to a directory under `/sys/class/backlight` to name
 the backlight device outright, for the machines where two devices describe one
 panel or where the screen cannot be recognised as built in.
 
+The volume also has the keys it is printed on: `XF86AudioRaiseVolume`,
+`XF86AudioLowerVolume` and `XF86AudioMute`, whatever is held down with them.
+They work from wherever the user is — the compositor holds those bindings and
+forwards them over `lxb_shell_v1`, because a fullscreen application owns the
+keyboard and is usually the thing being turned down. Held down, the two
+directions repeat at the session's own key repeat rate; mute is a switch and is
+thrown once.
+
+A press moves the same control the guide's row moves, by the same twentieth,
+and raises it at the foot of the display for a second so there is something to
+read while it moves. That control is the sidebar's own bar on a pane of its
+own; while the guide is open it does not appear at all, because the row in the
+sidebar is already showing it. Nothing else of the shell comes up with it — the
+start screen stays behind the application, and the keys neither give the shell
+focus nor swallow a click.
+
 The overlay is drawn by the shell, not the compositor, so it uses the same
 renderer and fonts as the bar. It moves its layer surface to the overlay layer
 with `Exclusive` interactivity and draws onto a transparent surface, which is
@@ -1570,7 +1830,9 @@ Two input paths reach it, because neither alone is enough:
   as do the two chords spelled on it and on Select: the on-screen keyboard's,
   and [the screenshot's](#screenshots), which is wanted in that state more than
   in any other. Every other control is ignored there, so the bar cannot react
-  behind a running game.
+  behind a running game. That the game cannot read the guide button *at all* is
+  a separate piece of work on the pad itself — see
+  [the guide button is the shell's alone](#the-guide-button-is-the-shells-alone).
 - **Keyboards** go to the focused application, so the shell would never see the
   key. The compositor therefore owns the `guide` binding and forwards it over
   `lxb_shell_v1` (see below).
@@ -2156,6 +2418,7 @@ protocol generated from one XML file for both sides:
 | request `capture_window` | Photograph one window into a PNG at a path the shell chooses. |
 | event `window_captured` | Where that picture went, or that it did not happen. |
 | event `screenshot`  | The compositor's screenshot binding fired, and on which display. |
+| event `volume`      | A volume key was pressed: one step up, one step down, or the switch that silences the session. A key held down arrives as a run of them. |
 | request `capture_output` | Photograph a whole display — everything on it — into a PNG. |
 | event `output_captured` | Where *that* picture went, or that it did not happen. |
 | request `move_pointer` | Move the seat's pointer, as a mouse would. |
@@ -2556,6 +2819,12 @@ already stops drawing by itself once something covers it, so there was nothing
 to reclaim there. Applications are different: one blocked in its present is
 one costing nothing, and it wakes the moment it is back in front.
 
+The shell starts drawing again for the four things it puts in front of an
+application: a launch splash, the on-screen keyboard, a bubble in the corner
+and the control a volume key raises. It then draws *only* that thing — the
+start screen belongs behind the application, and a shell that drew both would
+lay every icon of the bar over the game underneath.
+
 X11 applications are a partial exception in the other direction. Xwayland
 absorbs the missing callbacks rather than passing the stall on, so an X11
 client can carry on rendering into a window nobody can see; what is saved
@@ -2578,6 +2847,7 @@ applications stop properly.
 | `Super` on its own, `Super+Home`, `XF86HomePage`, mouse side button | Show the guide overlay |
 | `Super+K`, `XF86Keyboard` | Show the on-screen keyboard  |
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3` | Photograph this display |
+| `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` (with anything held) | Turn the session up or down, or silence it |
 | `Super+Tab`            | Cycle windows on this output    |
 | `Super+←` / `Super+→`  | Focus the previous/next output  |
 | `Super+Shift+→`        | Move the window to the next output |
@@ -2643,6 +2913,8 @@ crates/lxb-desktop/
   settings.rs     the Settings column, written here rather than found on disk
   model.rs        the shared catalogue, and one cursor per display
   controller.rs   gamepads through gilrs, and what a button means
+  pad_guard.rs    the pad taken away and given back with the guide button
+                  missing, so that no application can read it
   steam_hid.rs    the second-generation Steam Controller, read from hidraw
   guide.rs        the overlay's modes and menu
   menu.rs         the context menu: entries, selection, scrolling and
@@ -2662,6 +2934,7 @@ crates/lxb-desktop/
                   real keyboard drive it
   system.rs       volume, per-application volume and brightness, off the
                   main thread
+  volume.rs       how long the control a volume key raises stays on screen
   sound.rs        the ten effects and Start music, and the output and focus
                   transitions they go through
   ui.rs           layout: model to quads and text runs

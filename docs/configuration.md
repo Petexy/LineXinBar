@@ -267,6 +267,23 @@ turn swaps its width and height, which moves the outputs laid out after it —
 so `position`, `scale` and the window layout are all resolved against the
 turned size.
 
+`position` is also what takes a display out of the shell's reach. Displays
+without one are laid out in the order they were plugged in, and Settings →
+Display → Display order changes that order: choosing a place for a screen
+trades it with the screen standing there, and the shell writes the whole
+resulting arrangement under a per-connector `order` key in its own file
+(`~/.config/lxb/shell.toml`, counted from one). A display pinned here is where
+this file says and takes no part in it, so it is left off that page rather than
+listed with a setting that would do nothing — as is every display when
+`output_layout` is `mirror`, where the screens share one region and there is no
+first one to be.
+
+The arrangement is the one display setting the compositor does not remember
+across a session. The rest are written to `displays.toml` because coming up in
+the wrong one costs a modeset, which is a black screen; an arrangement costs a
+relayout, and at login there is nothing laid out yet. So the shell keeps it and
+sends it when it connects.
+
 ### High dynamic range
 
 The four `hdr_*` keys are what the session **comes up in**. The shell writes
@@ -361,6 +378,28 @@ coordinates it needs are read: the shell's own file, not this one. So these keys
 are an always-on setting: for a session with no shell, or for what a display is
 warmed to until one connects.
 
+### How large applications draw themselves
+
+**There is no key here for it, deliberately**, although it is the compositor
+that carries it out. Settings → System → Application scaling gives every
+application a logical window some fraction smaller than the display and tells it
+— over `wp_fractional_scale_v1` — to fill that window with the display's own
+pixels, so an interface comes out larger without losing a pixel of sharpness.
+The shell keeps the number, in its own file (`~/.config/lxb/shell.toml`), and
+sends it over `lxb_shell_v1` as soon as it connects.
+
+That is the whole difference from the two settings above. Those are here because
+the compositor lights the displays a second before the shell can speak, and
+being corrected afterwards costs a black screen. Nothing is on screen to
+correct here: every application on the session is started *by* the shell, always
+after it has said what this is, so no window is ever configured at the wrong
+size in the first place.
+
+The shell's own surfaces are not affected — it is not an application, and a
+shell that changed size with this would take the Settings page being read with
+it — and neither are windows under Xwayland, which have no per-surface scale to
+be told about.
+
 ## `[keybindings]`
 
 Keys are `Modifier+Modifier+Keysym`. Modifiers are `Ctrl`, `Alt`, `Shift`,
@@ -383,6 +422,9 @@ Actions:
 | `guide`               | Show the session shell's guide overlay. |
 | `keyboard`            | Show the session shell's on-screen keyboard. |
 | `screenshot`          | Photograph the display the user is on. |
+| `volume-up`           | Turn the session up one step. |
+| `volume-down`         | Turn it down one step. |
+| `volume-mute`         | Silence it, or bring it back. Also spelled `mute`. |
 
 Anything defined here replaces the built-in binding for the same key
 combination, with one exception: the `guide` chords below cannot be taken over
@@ -395,9 +437,9 @@ shift and `Super+Shift+Q` is a separate binding.
 `Any+` in front of a key binds the key rather than a chord: it fires whatever
 modifiers are held, and none of them can be spelled beside it. It is for a key
 with one job printed on its cap, whose variants elsewhere are all the same job
-here — `Any+Print` is the only built-in that uses it, so that `Shift+Print`,
-`Ctrl+Print` and `Meta+Shift+Print` all take the one kind of picture this shell
-takes. Reach for it sparingly: a loose binding on a letter takes that letter
+here — `Any+Print`, so that `Shift+Print`, `Ctrl+Print` and `Meta+Shift+Print`
+all take the one kind of picture this shell takes, and the three volume keys,
+which mean the same thing however they are reached. Reach for it sparingly: a loose binding on a letter takes that letter
 away from every application in the session, in every chord it appears in.
 Binding the same key here, decorated or not, takes the whole key back from a
 loose built-in — writing `"Print" = "spawn:grim"` leaves `Shift+Print` doing
@@ -448,6 +490,21 @@ not the compositor's to read: the shell opens it from `/dev/input`, which is
 also why the chord works while a game holds everything else. Nothing in this
 file changes it.
 
+The three `volume-*` actions are compositor bindings for the reason `guide` and
+`screenshot` are, and the plainest of the three: the fullscreen application
+holding the keyboard is usually the thing being turned down. They are forwarded
+over `lxb_shell_v1` and set nothing themselves — the shell owns the mixer, knows
+where the control stands and has somewhere to draw it, so the key does nothing
+at all when no shell has bound the protocol. The built-ins are the three keys
+with a speaker printed on them, bound with `Any+` for the reason `Print` is: they
+are reached through Fn on a laptop and through a media row on a keyboard, and no
+two of those agree about what else is held down at the time.
+
+Held down, `volume-up` and `volume-down` go on stepping at the `repeat_rate` and
+`repeat_delay` set in `[input]`, because they are keys on the user's keyboard
+like any other; `repeat_rate = 0` turns that off as it does everywhere else.
+`volume-mute` never repeats: a switch held down is a switch thrown once.
+
 When running nested for debugging, the host compositor's own global shortcuts
 win: KDE claims most `Super`+letter combinations, so pick something it does not
 use, or drive the overlay with Escape inside the shell instead.
@@ -462,6 +519,9 @@ use, or drive the overlay with Escape inside the shell instead.
 | `Super+Home`, `XF86HomePage` | `guide` (and `Super` on its own, which is not a chord) |
 | `Super+K`, `XF86Keyboard` | `keyboard` |
 | `Any+Print`, `Ctrl+Shift+3`, `Alt+Shift+3` | `screenshot` |
+| `Any+XF86AudioRaiseVolume` | `volume-up` |
+| `Any+XF86AudioLowerVolume` | `volume-down` |
+| `Any+XF86AudioMute`  | `volume-mute` |
 | `Super+Tab`          | `cycle-window` |
 | `Super+Left` / `Super+Right` | `focus-prev-output` / `focus-next-output` |
 | `Super+Shift+Right`  | `move-to-next-output` |

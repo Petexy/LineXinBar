@@ -151,6 +151,10 @@ pub enum Ask {
     /// Have Valve's client running and signed in, because something is about
     /// to need it. Does nothing if it already is.
     WakeClient,
+    /// Hand Valve's client one `steam:` URL — install, verify, or simply come
+    /// to the front. Off the shell's thread because starting a process is not
+    /// something a render loop can afford to wait on; see [`Steam::tell`].
+    Tell { app_id: u32, doing: Doing },
 }
 
 /// What Valve's background client is doing, as the shell needs to know it.
@@ -300,13 +304,25 @@ impl Steam {
         self.client_at.as_ref()
     }
 
-    /// The `steam:` URL for one thing to be done to one title, handed to the
-    /// client. `None` on a machine with no client.
+    /// Ask Valve's client for one thing to be done to one title, as a `steam:`
+    /// URL.
+    ///
+    /// The refusal this returns is the one that can be answered *now*: there is
+    /// no client on this machine, so there is nothing to ask and the press has
+    /// to say so on the frame it was made. Everything else happens on the
+    /// worker, because the alternative is starting a process from the render
+    /// thread — and where there is no client running yet, the process that
+    /// carries a `steam:` URL is the client, which does not exit until the user
+    /// quits Steam. Waited for from the loop that draws, that is a shell frozen
+    /// on its last frame with Steam audible behind it.
+    ///
+    /// A failure the worker sees arrives as [`ClientReport::Unavailable`].
     pub fn tell(&self, app_id: u32, doing: Doing) -> Result<(), String> {
-        let Some(where_it_is) = self.client_at.as_ref() else {
+        if self.client_at.is_none() {
             return Err("There is no Steam client installed on this machine.".to_string());
-        };
-        client::tell(where_it_is, &doing.url(app_id)).map_err(|error| error.to_string())
+        }
+        self.ask(Ask::Tell { app_id, doing });
+        Ok(())
     }
 
     /// Everything the worker has said since the last look.
@@ -851,6 +867,10 @@ fn answer(
             wake_the_client(stored, waking, events);
             state
         }
+        Ask::Tell { app_id, doing } => {
+            hand_over(doing.url(app_id), events);
+            state
+        }
         Ask::Refresh => {
             if let State::In {
                 stored,
@@ -1004,6 +1024,38 @@ fn at_once(state: State) -> State {
         },
         other => other,
     }
+}
+
+/// Hand Valve's client one `steam:` URL, on a thread of its own.
+///
+/// A thread even here, where the work is a fraction of a second in the ordinary
+/// case: the case that is not ordinary is a machine with no client running,
+/// where the process carrying the URL becomes the client and lives for as long
+/// as Steam is open. [`client::open`] is what refuses to wait on that one — and
+/// the thread is what keeps even the courier's half-second off the worker,
+/// which is what answers the library and every other press meanwhile.
+///
+/// Nothing is reported on success. What the press was for is a window of
+/// Steam's own, and the sign that it worked is that window.
+fn hand_over(url: String, events: &Sender<Event>) {
+    let events = events.clone();
+    std::thread::spawn(move || {
+        let Some(where_it_is) = client::Where::find() else {
+            let _ = events.send(Event::Client(ClientReport::Unavailable(
+                "There is no Steam client installed on this machine.".to_string(),
+            )));
+            return;
+        };
+        // Its directories are how a running client is told from none, and a
+        // machine that has never started one has none of them. Not being able
+        // to say is not a failure — see [`client::open`], which then starts one
+        // rather than waiting on a courier that may not be one.
+        let options = client::Options::found();
+        if let Err(why) = client::open(&where_it_is, options.as_ref(), &url) {
+            tracing::warn!(%url, %why, "Valve's client would not take that");
+            let _ = events.send(Event::Client(ClientReport::Unavailable(why.to_string())));
+        }
+    });
 }
 
 /// Start Valve's client and sign it in, on a thread of its own.

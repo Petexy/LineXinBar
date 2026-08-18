@@ -143,11 +143,31 @@ pub(crate) fn set_maximized_states(states: &mut ToplevelStateSet) {
 pub struct OutputManager {
     /// Outputs in the order they were added; drives auto-placement.
     order: Vec<Output>,
+    /// How much larger than life applications draw themselves.
+    ///
+    /// Here because it is part of the layout: what it changes is how much room
+    /// a window is given on the display it is tiled onto. See [`crate::scale`],
+    /// which is where the rest of that bargain — what the client is told, and
+    /// how its pixels are drawn back out — is written down.
+    scale: crate::scale::AppScale,
 }
 
 impl OutputManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How much larger than life applications are drawing.
+    pub fn app_scale(&self) -> crate::scale::AppScale {
+        self.scale
+    }
+
+    /// Draw applications this much larger than life from now on. `true` when
+    /// that is a change, which is what the caller re-tiles and redraws on.
+    pub fn set_app_scale(&mut self, scale: crate::scale::AppScale) -> bool {
+        let changed = self.scale != scale;
+        self.scale = scale;
+        changed
     }
 
     pub fn is_empty(&self) -> bool {
@@ -329,8 +349,17 @@ impl OutputManager {
         };
 
         if let Some(toplevel) = window.toplevel() {
+            // The one place a window is given less room than the display has,
+            // and the first of the three parts of drawing an application larger
+            // than life: fewer logical pixels to lay its interface out in, each
+            // of them worth more of the screen. The other two are the scale the
+            // client is told and the way its buffer is drawn back out; see
+            // [`crate::scale`]. A Wayland window only — the X11 branch below
+            // takes the whole area, because there is no scale to tell an X11
+            // client about and a magnified window is not a larger one.
+            let room = crate::scale::configured_size(area.size, self.scale.factor());
             toplevel.with_pending_state(|state| {
-                state.size = Some(area.size);
+                state.size = Some(room);
                 // A size alone is only advisory. xdg-shell lets a client pick
                 // its own dimensions unless the configure also carries a state
                 // that makes the size binding, so without this a client maps at
@@ -340,8 +369,15 @@ impl OutputManager {
                 set_maximized_states(&mut state.states);
                 // For the window's own idea of a sensible size, before and
                 // outside of any state we impose.
-                state.bounds = Some(area.size);
+                state.bounds = Some(room);
             });
+            // And the second part, sent with the size it belongs to: the scale
+            // that turns those logical pixels back into the display's own.
+            crate::scale::tell(
+                window,
+                output.current_scale().fractional_scale(),
+                self.scale.factor(),
+            );
             toplevel.send_pending_configure();
         } else if let Some(surface) = window.x11_surface() {
             // The X11 equivalent: _NET_WM_STATE_MAXIMIZED_{HORZ,VERT}, so a
@@ -397,12 +433,126 @@ impl OutputManager {
         true
     }
 
+    /// The displays this compositor arranges, in the order it arranges them.
+    ///
+    /// Not every connected display: only the ones whose place in the row is
+    /// this compositor's to decide, which is what the shell's page has to be
+    /// built from. Two kinds are left out, and both would otherwise be a row
+    /// that does nothing when pressed.
+    ///
+    /// A display pinned with `position` in the config takes no part in
+    /// auto-placement — [`Self::relayout`] puts it where the file says and does
+    /// not advance the cursor for it — so moving it along a list it is not in
+    /// would change nothing. And a session laid out as [`OutputLayout::Mirror`]
+    /// has every display at the origin showing the same region, where there is
+    /// no first screen for one to be.
+    pub fn placed(&self, config: &Config) -> Vec<Output> {
+        if config.general.output_layout == OutputLayout::Mirror {
+            return Vec::new();
+        }
+        self.order
+            .iter()
+            .filter(|output| {
+                config
+                    .output_for(&output.name())
+                    .and_then(|entry| entry.position)
+                    .is_none()
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Put a display at `place`, trading with whichever display is there.
+    ///
+    /// A trade rather than an insertion, and that is the whole of the
+    /// behaviour: it is self-inverse, so a user who has just put their fourth
+    /// screen first can undo it by putting it back, and it composes — a shell
+    /// restoring a whole arrangement sends one of these per display in
+    /// ascending place, and each one fixes a display that no later request can
+    /// disturb, because no later request names the place it was fixed at.
+    ///
+    /// `false` when nothing moved: the display is already there, it is not one
+    /// this compositor places, or there is no such place. What follows a `true`
+    /// is a full relayout — every display after the two that traded may have
+    /// moved, since they need not be the same width — and every window with
+    /// them.
+    pub fn set_place(
+        &mut self,
+        space: &mut Space<Window>,
+        output: &Output,
+        place: usize,
+        config: &Config,
+    ) -> bool {
+        let placed = self.placed(config);
+        let Some(from) = placed.iter().position(|candidate| candidate == output) else {
+            tracing::debug!(
+                output = %output.name(),
+                "this display's place is not this compositor's to set"
+            );
+            return false;
+        };
+        let Some(other) = placed.get(place) else {
+            tracing::debug!(
+                output = %output.name(),
+                place,
+                placed = placed.len(),
+                "there is no such place to move a display to"
+            );
+            return false;
+        };
+        if from == place {
+            return false;
+        }
+        // The two indices are into `placed`, which skips the pinned displays;
+        // the swap happens in `order`, which does not. Found by identity rather
+        // than by arithmetic for exactly that reason.
+        let (Some(a), Some(b)) = (
+            self.order.iter().position(|held| held == output),
+            self.order.iter().position(|held| held == other),
+        ) else {
+            return false;
+        };
+        self.order.swap(a, b);
+        self.relayout(space, config);
+        tracing::info!(
+            output = %output.name(),
+            traded_with = %other.name(),
+            from,
+            to = place,
+            "moved a display along the layout"
+        );
+        true
+    }
+
     /// Re-tile every mapped window. Cheap enough to call on any layout change.
     pub fn relayout_windows(&self, space: &mut Space<Window>) {
         let windows: Vec<Window> = space.elements().cloned().collect();
         for window in windows {
             self.tile_window(space, &window);
         }
+    }
+}
+
+impl crate::state::LxbState {
+    /// Move one display along the arrangement. `true` when anything moved.
+    ///
+    /// Unlike a mode or a transform there is no backend behind this: the
+    /// layout is the compositor's own bookkeeping either way, so a nested
+    /// session arranges its displays exactly as a session on real connectors
+    /// does.
+    pub fn set_output_place(&mut self, output: &smithay::output::Output, place: usize) -> bool {
+        let config = self.lxb.config.clone();
+        let moved = self
+            .lxb
+            .outputs
+            .set_place(&mut self.lxb.space, output, place, &config);
+        if moved {
+            // Nothing is scanned out by the move itself: the displays are in
+            // new places and every window has been re-tiled into them, none of
+            // which reaches a screen until that screen draws again.
+            self.queue_redraw();
+        }
+        moved
     }
 }
 
@@ -629,5 +779,145 @@ mod tests {
         assert_eq!(parse_transform("90"), Some(Transform::_90));
         assert_eq!(parse_transform("flipped-180"), Some(Transform::Flipped180));
         assert_eq!(parse_transform("sideways"), None);
+    }
+
+    /// Three displays in the order they were plugged in, and a space to lay
+    /// them out in.
+    ///
+    /// Named after nothing on anybody's desk: the arrangement is a list of
+    /// whatever the backend announced, and a test written around one
+    /// developer's connectors is how a dependency on their hardware gets in.
+    fn arranged() -> (OutputManager, Space<Window>, Vec<Output>) {
+        let outputs = vec![output("one"), output("two"), output("three")];
+        for out in &outputs {
+            out.change_current_state(
+                Some(Mode {
+                    size: (1920, 1080).into(),
+                    refresh: 60_000,
+                }),
+                None,
+                None,
+                None,
+            );
+        }
+        let mut space = Space::default();
+        let mut manager = OutputManager::new();
+        let config = Config::default();
+        for out in &outputs {
+            manager.add_output(&mut space, out, &config);
+        }
+        (manager, space, outputs)
+    }
+
+    /// The names of the displays as they are laid out, for reading an
+    /// arrangement off in one line.
+    fn order_of(manager: &OutputManager, config: &Config) -> Vec<String> {
+        manager
+            .placed(config)
+            .iter()
+            .map(|output| output.name())
+            .collect()
+    }
+
+    /// Displays are laid out in the order they arrived until somebody says
+    /// otherwise, and moving one to a place trades it with the display
+    /// standing there.
+    #[test]
+    fn moving_a_display_trades_it_with_the_one_it_displaces() {
+        let (mut manager, mut space, outputs) = arranged();
+        let config = Config::default();
+        assert_eq!(order_of(&manager, &config), ["one", "two", "three"]);
+
+        // The third screen becomes the first, and the first takes its place.
+        assert!(manager.set_place(&mut space, &outputs[2], 0, &config));
+        assert_eq!(order_of(&manager, &config), ["three", "two", "one"]);
+
+        // Which makes it its own undo, and puts every window back where it was
+        // without the user having to work out what they did.
+        assert!(manager.set_place(&mut space, &outputs[2], 2, &config));
+        assert_eq!(order_of(&manager, &config), ["one", "two", "three"]);
+    }
+
+    /// A display already where it was asked to be, and a place that is not one,
+    /// both change nothing — and say so, because the caller republishes the
+    /// arrangement on a `true` and would otherwise do it for every press.
+    #[test]
+    fn a_move_that_moves_nothing_is_not_a_move() {
+        let (mut manager, mut space, outputs) = arranged();
+        let config = Config::default();
+
+        assert!(!manager.set_place(&mut space, &outputs[1], 1, &config));
+        assert!(!manager.set_place(&mut space, &outputs[0], 3, &config));
+        assert!(!manager.set_place(&mut space, &output("elsewhere"), 0, &config));
+        assert_eq!(order_of(&manager, &config), ["one", "two", "three"]);
+    }
+
+    /// What the shell relies on when it restores a whole arrangement: sending
+    /// one move per display, in ascending place, arrives at exactly that order
+    /// however scrambled the displays started out.
+    ///
+    /// Each move fixes one display, and can only disturb a display standing in
+    /// the place it was asked for — which no later move names. So walking the
+    /// wanted order from the front is a selection sort with the compositor
+    /// doing the swapping.
+    #[test]
+    fn an_arrangement_can_be_restored_one_display_at_a_time() {
+        let config = Config::default();
+        for wanted in [
+            ["three", "one", "two"],
+            ["two", "three", "one"],
+            ["three", "two", "one"],
+            ["one", "two", "three"],
+        ] {
+            let (mut manager, mut space, outputs) = arranged();
+            for (place, name) in wanted.iter().enumerate() {
+                let output = outputs
+                    .iter()
+                    .find(|output| output.name() == *name)
+                    .expect("a display of that name");
+                manager.set_place(&mut space, output, place, &config);
+            }
+            assert_eq!(order_of(&manager, &config), wanted, "restoring {wanted:?}");
+        }
+    }
+
+    /// A display pinned to a position by the config takes no part in the
+    /// arrangement, because the arrangement does not decide where it is. It is
+    /// left out of the list rather than given a place it does not have.
+    #[test]
+    fn a_pinned_display_is_not_in_the_arrangement() {
+        let (mut manager, mut space, outputs) = arranged();
+        let config = Config {
+            outputs: vec![crate::config::OutputConfig {
+                name: "two".into(),
+                position: Some([0, 2160]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(order_of(&manager, &config), ["one", "three"]);
+        // And the places are places in that list: putting the third screen
+        // first trades it with the first, not with the pinned one between them.
+        assert!(manager.set_place(&mut space, &outputs[2], 0, &config));
+        assert_eq!(order_of(&manager, &config), ["three", "one"]);
+        assert!(!manager.set_place(&mut space, &outputs[1], 0, &config));
+    }
+
+    /// Mirrored displays all show the same region from the same origin, so
+    /// there is no first screen for one of them to be moved to.
+    #[test]
+    fn mirrored_displays_have_no_order() {
+        let (mut manager, mut space, outputs) = arranged();
+        let config = Config {
+            general: crate::config::General {
+                output_layout: OutputLayout::Mirror,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(manager.placed(&config).is_empty());
+        assert!(!manager.set_place(&mut space, &outputs[2], 0, &config));
     }
 }
