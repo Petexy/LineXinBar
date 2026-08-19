@@ -88,7 +88,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = if compositorOnly then "lxb-compositor" else "lxb-desktop";
-  version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
+  version = lib.removeSuffix "\n" (builtins.readFile ../../VERSION);
   src = cleanSrc;
 
   cargoLock.lockFile = "${cleanSrc}/Cargo.lock";

@@ -16,12 +16,6 @@ The split is a partition, and `packaging/build.sh check` enforces that — a fil
 installed by neither package is one that has quietly stopped shipping, and a
 file installed by both is one two packages will fight over at install time.
 
-The package version is **0.1.0**, which is the workspace's own version: what a
-package claims and what `lxb --version` reports are the same number, and
-`packaging/build.sh check` refuses to let the two drift apart. Bumping a
-release means editing both `packaging/VERSION` and `[workspace.package]` in
-`Cargo.toml`.
-
 Between them the two packages install the compositor and shell, a complete
 bundled cursor theme, and a native Wayland session:
 
@@ -43,6 +37,31 @@ display manager one foreground process whose lifetime is tied to the desktop
 shell. The original application sources and `share/wayland-sessions/lxb.desktop`
 are not modified; packages stage the production session files from
 `packaging/files/`.
+
+## One version, in one file
+
+The version this project releases under is the single line in `VERSION` at the
+root of the checkout — **0.1.0** — and what a package claims and what
+`lxb --version` reports are the same number because both come from there.
+
+Almost everything reads that file where it stands: the Arch, Debian and Nix
+definitions, the source archive's name, and the build scripts in
+`crates/lxb-compositor` and `crates/lxb-desktop`, which refuse to build a
+binary whose manifest has drifted away from it. Two places cannot read a file
+and carry the number as a literal instead — `[workspace.package]` in
+`Cargo.toml`, which is where `--version` gets it, and `Version:` in the Fedora
+spec, which has to be a literal for the spec to be one anyone could submit — so
+a release is one command that writes those from the file:
+
+```sh
+./scripts/bump-version.sh 0.2.0
+```
+
+That writes `VERSION`, the manifest, `Cargo.lock` (every packaged build is
+`--locked` or `--frozen`, so a lock left behind is a build that refuses to
+start) and the spec's `Version:`, and then asks for the one thing only a person
+can write: a `%changelog` entry. `packaging/build.sh check` refuses to let any
+of them drift apart.
 
 ## Where the build happens, and why not /tmp
 
@@ -84,7 +103,7 @@ over the environment, so a machine that sets `BUILDDIR` builds there whatever
 ```
 
 This checks shell/package syntax, confirms every package definition still
-takes its version from `packaging/VERSION`, builds both release binaries,
+takes its version from `VERSION`, builds both release binaries,
 stages the common payload, validates the standard desktop-entry fields, and
 verifies that all cursor-theme symlinks survive. Use `--no-build` only when
 current release binaries already exist in `target/release` (or in

@@ -1,140 +1,23 @@
 <!--
-  The notifications tile's glyph: a bell.
+  The bell.
 
-  A bell rather than an envelope, a speech bubble or a dot. The tile does not
-  hold messages and it is not a conversation — it holds the things that arrived
-  while the user was doing something else, and a bell is the one object whose
-  whole purpose is to say *something has happened* to somebody who was looking
-  elsewhere. It is also the mark every other shell uses for this, which matters
-  more here than anywhere else in the set: the two tiles beside it are controls
-  nobody has seen before and can afford to teach themselves, and this one has to
-  be recognised from a couch at a glance.
+  Three bodies: the bell, the loop it hangs by and the clapper under it. The
+  loop and the clapper each take a crevice against the bell, which is what makes
+  them read as three things rather than as one lumpy one — the clapper in
+  particular sat a third of a unit clear of the bell in the old drawing, and a
+  third of a unit is under a pixel where this is drawn, so the field would have
+  run them together.
 
-  White and greys for the reason the other built-ins are — see pointer-stick —
-  and lit by the same lamp, out of the same parts: a face that falls away from
-  the light, a polished top whose lower edge is a curve, a rim where the shell
-  turns over, and shadow. It sits in a row with the stick pointer and the mixer
-  and has to read as the third object moulded from that one material.
+  The lip the old drawing ruled across the bell's foot is gone. It was a line
+  and not an edge, and the material has no way to be told about it.
 
-  It carries the full modelling rather than the reduced version the
-  quick-settings bars get, because it is drawn at a tile's 42 px like they are:
-  a lip with a thickness, a crown lifted off the dome, and a clapper hung below
-  with a shadow of its own. See brightness.svg for what the same drawing gives
-  up at 33.
-
-  A bell is also the one shape in the set where the *silhouette* does all the
-  work — nobody reads a bell by its lip, they read it by the shoulders — so the
-  outline is the thing that had to be got right, and the modelling is laid on
-  inside it rather than shaping it. Which is why the dome and the flare are one
-  path and not a stack of pieces: a seam anywhere down the side would break the
-  one line the glyph is recognised by.
-
-  Deliberately not a ringing bell — no motion lines, no tilt. Those say a
-  notification is arriving *now*, which is the toast's job in the corner of the
-  screen; this tile is where they are kept afterwards, and a tile drawn mid-ring
-  would be a control permanently announcing something.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, before it is polished. Same stops as the stick-pointer
-         and mixer glyphs': one lamp, one shell, three drawings. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-
-    <!-- The polish, laid on as its own shape so its lower edge can curve. -->
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-
-    <radialGradient id="spec" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
-      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-
-    <!-- The outer edge, where the shell turns over: lit along the top, lit
-         again off the bounce at the bottom, dark down the sides. -->
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.88" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-
-    <!-- A bell is a body of revolution, so its sides fall away from the eye as
-         well as from the lamp. This is what stops the dome reading as a flat
-         shield with a gradient down it. -->
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.16"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.76" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.2"/>
-    </linearGradient>
-
-    <!-- The lip: the band of metal at the mouth, which on a real bell is
-         thicker than the wall above it and therefore catches the light
-         differently. Dark where it tucks under the flare, bright along its
-         own bottom face where the bounce reaches it. -->
-    <linearGradient id="lip" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.28"/>
-      <stop offset="0.3" stop-color="#000000" stop-opacity="0.04"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.72"/>
-    </linearGradient>
-
-    <!-- The crown, seen end-on: a small rod, lit across its width rather than
-         along its length, exactly as the mixer's rails are. -->
-    <linearGradient id="rod" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#f0f0f0"/>
-      <stop offset="0.3" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#cacaca"/>
-    </linearGradient>
-
-    <!-- The clapper is a ball hanging in the open mouth, so it is lit from
-         above and to the left and dark underneath — the one part of this
-         drawing that is a sphere and has to be shaded like one. -->
-    <radialGradient id="ball" cx="0.36" cy="0.3" r="0.78">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.42" stop-color="#ededed"/>
-      <stop offset="0.78" stop-color="#cdcdcd"/>
-      <stop offset="1" stop-color="#e4e4e4"/>
-    </radialGradient>
-
-    <!-- The shadow the bell drops behind itself, matched to the one on the
-         stick-pointer and mixer glyphs so all three tiles float at the same
-         height above the sidebar. -->
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-
-    <!-- The shadow the crown and the clapper drop onto the bell itself:
-         thrown shorter and blurred tighter, because they are sitting on it
-         where the bell is standing clear of whatever is behind it. Getting
-         these two distances the same is what flattens a drawing like this. -->
-    <filter id="drop-near" x="-60%" y="-60%" width="220%" height="220%">
-      <feDropShadow dx="0.28" dy="0.6" stdDeviation="0.26"
-                    flood-color="#4a4a4a" flood-opacity="0.5"/>
-    </filter>
-
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Dome and flare in one path, mirrored about x=16: shoulders that fall
-         away from the crown, a waist, and a skirt that turns out to the mouth.
-         The mouth is closed with a straight edge and two small corner turns,
-         which is what a bell looks like seen square-on — the ellipse a
-         three-quarter view would give it reads as a lampshade at this size. -->
-    <path id="body"
+    <path id="bell"
           d="M16 4.8
              C12.1 4.8 9.5 7.9 9.2 12
              C8.95 15.6 8.3 19 6.9 20.9
@@ -144,43 +27,18 @@
              C23.7 19 23.05 15.6 22.8 12
              C22.5 7.9 19.9 4.8 16 4.8
              Z"/>
-
-    <!-- The polish over the shoulders. Its lower edge is a curve, because a
-         curved object's highlight ends on a curve; a straight cut-off is the
-         single fastest way to make moulded plastic look like a sticker.
-
-         Bent harder than the mixer's, which is laid over a flat faceplate. A
-         dome's terminator runs *around* it, so the shallow arc that reads as
-         a curve on a rectangle reads as a ruled line drawn across a bell. -->
-    <path id="body-gloss" d="M4 2h24v8.8c-4.4 4.9-19.6 4.9-24 0z"/>
-
-    <clipPath id="body-clip"><use href="#body"/></clipPath>
+    <rect id="loop" x="14.15" y="2.6" width="3.7" height="3.6" rx="1.6"/>
+    <circle id="clapper" cx="16" cy="25.9" r="2.15"/>
+    <g id="hung"><use href="#loop"/><use href="#clapper"/></g>
+    <g id="bead"><use href="#bell"/><use href="#hung"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#hung" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#hung" fill="#ffffff"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <use href="#body" fill="url(#face)"/>
-    <g clip-path="url(#body-clip)">
-      <use href="#body-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <ellipse cx="14.2" cy="8.2" rx="6.6" ry="3.6" fill="url(#spec)"/>
-      <use href="#body" fill="url(#turn)"/>
-      <!-- The lip, clipped to the bell so it takes the flare's own outline at
-           both ends rather than sticking out past it as a bar would. -->
-      <rect x="4" y="20.4" width="24" height="2.8" fill="url(#lip)"/>
-    </g>
-    <use href="#body" fill="none" stroke="url(#edge)" stroke-width="1.1"/>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
-
-  <!-- The crown on top and the clapper below, raised together off the bell.
-
-       Both are drawn after it and lit as separate pieces on purpose: a bell
-       that is one silhouette from handle to clapper is a bell-shaped blob, and
-       the two shadows are the only thing saying that the handle stands proud
-       of the dome and that the ball hangs in the open mouth rather than being
-       painted on the front of it. -->
-  <g filter="url(#drop-near)">
-    <rect x="14.15" y="1.9" width="3.7" height="3.6" rx="1.6" fill="url(#rod)"/>
-    <circle cx="16" cy="25.7" r="2.15" fill="url(#ball)"/>
-  </g>
-  <circle cx="16" cy="25.7" r="2.15" fill="none" stroke="url(#edge)"
-          stroke-width="0.5"/>
 </svg>

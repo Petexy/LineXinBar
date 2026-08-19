@@ -38,18 +38,24 @@ fn main() {
     // one is asking for the other.
     let start = context || std::env::args().any(|argument| argument == "--start");
 
-    let Some(options) = client::Options::found() else {
-        println!("there is no Steam installation on this machine");
-        return;
-    };
-    println!("root: {}", options.root.display());
-    println!("home: {}", options.home.display());
-    match client::Where::find() {
+    let found = client::Where::find();
+    match &found {
         Some(client::Where::Native(path)) => println!("client: {}", path.display()),
         Some(client::Where::Flatpak) => println!("client: the Flatpak"),
         None => println!("client: none is installed"),
     }
-    let found = client::Where::find();
+    let Some(where_it_is) = found.as_ref() else {
+        return;
+    };
+    let Some(options) = client::Options::for_client(where_it_is) else {
+        println!("there is no home directory to find Steam's own in");
+        return;
+    };
+    println!("root: {}", options.root.display());
+    println!("home: {}", options.home.display());
+    if !lxb_steam::library::looks_like_a_root(&options.root) {
+        println!("this client has never been run; the first press would start it");
+    }
     let state = client::state(found.as_ref(), &options);
     println!("state: {state:?}");
 

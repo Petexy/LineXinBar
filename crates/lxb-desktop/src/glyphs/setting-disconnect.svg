@@ -1,0 +1,17 @@
+<!--
+  The same chain, snapped: the row that leaves a network.
+
+  Two hooks with a gap where the links parted. The gap is the whole mark, and it
+  is the easiest thing in the set for the material to say — two ends facing each
+  other, each with the wall standing up round it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <path d="M13.79 21.36A6.8 6.8 0 1 1 13.79 10.64L11.69 13.32A3.4 3.4 0 1 0 11.69 18.68Z"/>
+    <path d="M18.21 10.64A6.8 6.8 0 1 1 18.21 21.36L20.31 18.68A3.4 3.4 0 1 0 20.31 13.32Z"/>
+  </g>
+</svg>

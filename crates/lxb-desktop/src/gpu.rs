@@ -205,7 +205,24 @@ impl Quad {
     /// it does hands it the frame as it stood before the thing it is lying on
     /// was drawn.
     fn reads_backdrop(&self) -> bool {
-        self.radius > 0.0 && self.border <= 0.0 && self.thickness > 0.0
+        // Not a glyph, which has a depth and is shaded rather than traced
+        // through. That is a decision and not an oversight: a panel draws a
+        // dozen marks over surfaces drawn moments earlier in the same run, and
+        // handing each one a snapshot of its own would spend the whole of
+        // [`MAX_GLASS_BATCHES`] on icons. See `glyph_material` in shaders.wgsl,
+        // which is why one is lit instead of transparent.
+        !self.glyph_material() && self.radius > 0.0 && self.border <= 0.0 && self.thickness > 0.0
+    }
+
+    /// Whether this quad's cell holds the *shape* of one of the shell's own
+    /// glyphs rather than a picture of one, and so is to be shaded as a bead of
+    /// water standing on whatever is below it.
+    ///
+    /// The same test `fs_quad` makes, written once on this side so the two
+    /// cannot drift: a square-cornered quad with a depth in it is nothing else
+    /// the shell draws.
+    pub fn glyph_material(&self) -> bool {
+        self.radius <= 0.0 && self.thickness > 0.0
     }
 
     fn overlaps(&self, other: &Quad) -> bool {
@@ -423,6 +440,233 @@ const HERO_LAYERS: u32 = 4;
 const UI_FONT: &str = "Roboto";
 const UI_FONT_REGULAR: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-Regular.ttf");
 const UI_FONT_BOLD: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-Bold.ttf");
+
+/// The characters the start screen's corner is written in, and the cells they
+/// are measured into.
+///
+/// The corner is the one place in this shell where *type* is drawn as the same
+/// material as the marks beside it — a bead of water, lit by the one lamp above
+/// the drawing — rather than as flat coverage through the text pipeline. It can
+/// be, because a clock is thirteen characters and not a language: each is cut
+/// out of the bundled face once at startup, measured into a signed distance
+/// field exactly as a glyph's shape is (see [`crate::icons::distance_field`]),
+/// and drawn as one quad per letter. Nothing else in the shell may follow: a
+/// window title is somebody else's alphabet, and a cell per codepoint is not a
+/// text renderer.
+///
+/// The fourteenth is the per cent sign, and it is here on exactly that
+/// argument rather than in spite of it. What it writes is the battery's charge,
+/// which stands in this same corner, in this same material, on the same line —
+/// see [`crate::ui::corner_percent`]. A number drawn there through the text
+/// pipeline would be flat coverage sitting between two beads of water. Adding a
+/// character for a second thing the corner says is not the same as opening the
+/// set to an alphabet: three digits and a sign is still not a language.
+///
+/// The space is in the set for its *advance* and has no cell of its own —
+/// nothing to measure, and a field with no shape in it would fail the same test
+/// an empty glyph does.
+const LETTER_SET: [(char, &str); 14] = [
+    ('0', "lxb:letter-0"),
+    ('1', "lxb:letter-1"),
+    ('2', "lxb:letter-2"),
+    ('3', "lxb:letter-3"),
+    ('4', "lxb:letter-4"),
+    ('5', "lxb:letter-5"),
+    ('6', "lxb:letter-6"),
+    ('7', "lxb:letter-7"),
+    ('8', "lxb:letter-8"),
+    ('9', "lxb:letter-9"),
+    (':', "lxb:letter-colon"),
+    ('/', "lxb:letter-slash"),
+    ('%', "lxb:letter-percent"),
+    (' ', ""),
+];
+
+/// The square of the text a letter's cell covers, as a multiple of the type's
+/// size, and where the middle of that square sits above the baseline.
+///
+/// One square for every character rather than a tight box each, and that is the
+/// whole of what keeps the run looking like one object: the shader's bevel is a
+/// fixed fraction of the *quad*, so a colon in a box its own size would be
+/// modelled twice as deeply as the digits either side of it. The square is
+/// centred on each character's own advance, so the letters keep the spacing the
+/// face gives them.
+///
+/// An em covers every character in the set with margin to spare for the
+/// shadow — the tallest of them is the slash, which reaches from a little below
+/// the baseline to a little under the cap. The numbers are held to that by
+/// `every_letter_of_the_clock_is_a_shape_in_its_cell`.
+pub const LETTER_BOX: f32 = 1.0;
+pub const LETTER_MIDDLE: f32 = 0.35;
+
+/// One of the corner's characters, ready to be drawn.
+///
+/// The cell it was measured into — `None` for the space, which has an advance
+/// and nothing to draw — and how far the pen moves after it, as a multiple of
+/// the type's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Letter {
+    pub cell: Option<u32>,
+    pub advance: f32,
+}
+
+/// The size the letters are cut at.
+///
+/// Large enough that the supersampled grid the distance transform runs on is
+/// the letter's own resolution rather than a guess at it: the cell is measured
+/// at [`crate::icons::SDF_SUPERSAMPLE`] times [`CELL`], and an em of type at
+/// this size is exactly that many pixels across.
+const LETTER_FIELD_SIZE: f32 = (CELL * crate::icons::SDF_SUPERSAMPLE) as f32 / LETTER_BOX;
+
+/// Which cell one of the corner's characters is filed under, if it has one.
+fn letter_name(letter: char) -> Option<&'static str> {
+    LETTER_SET
+        .iter()
+        .find(|(c, _)| *c == letter)
+        .map(|(_, name)| *name)
+        .filter(|name| !name.is_empty())
+}
+
+/// The shell's own two faces and nothing else.
+///
+/// For measuring rather than for drawing: what is wanted here is *this* type,
+/// and a system fallback chain would answer with whatever the machine has. The
+/// drawing side keeps the fallbacks — see [`Gpu::new`] — because a window title
+/// may be in an alphabet Roboto has never heard of.
+fn shell_faces() -> FontSystem {
+    let mut db = glyphon::fontdb::Database::new();
+    for face in [UI_FONT_REGULAR, UI_FONT_BOLD] {
+        db.load_font_data(face.to_vec());
+    }
+    FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+}
+
+/// Shape one character on its own and answer with the glyph it came out as.
+///
+/// `None` for a character the face has no glyph for, which for this set would
+/// mean the bundled font had been replaced by something that is not Roboto.
+fn shaped_letter(
+    font_system: &mut FontSystem,
+    letter: char,
+    size: f32,
+) -> Option<glyphon::cosmic_text::LayoutGlyph> {
+    let mut buffer = TextBuffer::new(font_system, Metrics::new(size, size));
+    buffer.set_size(None, None);
+    let attrs = Attrs::new()
+        .family(Family::Name(UI_FONT))
+        .weight(Weight::NORMAL);
+    buffer.set_text(&letter.to_string(), &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+        .layout_runs()
+        .next()?
+        .glyphs
+        .first()
+        .cloned()
+        .filter(|glyph| glyph.glyph_id != 0)
+}
+
+/// Cut the corner's letters out of the bundled face and measure each into the
+/// cell the quad shader shades a shape out of.
+///
+/// Done on the thread that decodes the built-in glyphs and handed to the atlas
+/// with them — see `load_builtin_icons` — because it is the same work: a
+/// coverage grid at four times the cell, then one exact distance transform. On
+/// the main thread it would be a hundred milliseconds of the first frame.
+pub fn letter_fields() -> Vec<(String, Icon)> {
+    let mut font_system = shell_faces();
+    let mut swash = SwashCache::new();
+    let fine = CELL * crate::icons::SDF_SUPERSAMPLE;
+    let mut out = Vec::new();
+
+    for (letter, name) in LETTER_SET {
+        if name.is_empty() {
+            continue;
+        }
+        let Some(glyph) = shaped_letter(&mut font_system, letter, LETTER_FIELD_SIZE) else {
+            tracing::warn!(%letter, "the bundled face has no such character");
+            continue;
+        };
+        // The pen at the origin, so the mask's placement is measured from the
+        // letter's own baseline and nothing else.
+        let physical = glyph.physical((0.0, 0.0), 1.0);
+        let Some(image) = swash.get_image_uncached(&mut font_system, physical.cache_key) else {
+            tracing::warn!(%letter, "the face would not rasterise a character");
+            continue;
+        };
+        if image.content != glyphon::cosmic_text::SwashContent::Mask {
+            tracing::warn!(%letter, "a character came back as something other than coverage");
+            continue;
+        }
+
+        // Where the letter's square sits in the same pixels the mask is in: the
+        // pen is at zero, the baseline is at zero, and up is negative.
+        let box_side = LETTER_BOX * LETTER_FIELD_SIZE;
+        let left = glyph.w * 0.5 - box_side * 0.5;
+        let top = -(LETTER_MIDDLE * LETTER_FIELD_SIZE) - box_side * 0.5;
+
+        let mut inside = vec![false; (fine * fine) as usize];
+        for row in 0..image.placement.height {
+            for column in 0..image.placement.width {
+                // Coverage of a half or more is the letter, which is where the
+                // distance field's zero belongs: the transform measures a
+                // shape, and a shape's edge is where it covers half a pixel.
+                let coverage = image.data[(row * image.placement.width + column) as usize];
+                if coverage < 128 {
+                    continue;
+                }
+                let x = image.placement.left + column as i32 - left.round() as i32;
+                let y = -image.placement.top + row as i32 - top.round() as i32;
+                if x < 0 || y < 0 || x >= fine as i32 || y >= fine as i32 {
+                    // A letter that does not fit its own square would be drawn
+                    // with a straight cut down it. The test holds the box big
+                    // enough; this is what stops a bad one corrupting a
+                    // neighbouring cell instead of being visible.
+                    tracing::warn!(%letter, "a character reaches outside its cell");
+                    continue;
+                }
+                inside[(y as u32 * fine + x as u32) as usize] = true;
+            }
+        }
+
+        match crate::icons::distance_field(&inside, fine, CELL) {
+            Some(icon) => out.push((name.to_string(), icon)),
+            None => tracing::warn!(%letter, "a character would not measure"),
+        }
+    }
+    out
+}
+
+/// How far the pen moves after each of the corner's characters, in ems.
+///
+/// Measured from the bundled faces alone, like the cells themselves: a machine
+/// with its own copy of Roboto installed would otherwise be able to answer this
+/// with metrics the letters were not cut to.
+///
+/// The corner adds these up to lay its run out, which is exactly what shaping
+/// would answer — there is no kerning between any pair in this set, and
+/// `the_corners_run_is_as_wide_as_the_same_letters_shaped` holds it to that.
+fn letter_advances() -> HashMap<char, f32> {
+    let mut font_system = shell_faces();
+    let mut out = HashMap::new();
+    for (letter, _) in LETTER_SET {
+        match shaped_letter(&mut font_system, letter, LETTER_ADVANCE_SIZE) {
+            Some(glyph) => {
+                out.insert(letter, glyph.w / LETTER_ADVANCE_SIZE);
+            }
+            // A face with no such character is a face this shell was not built
+            // with. The corner then draws no clock at all rather than a run
+            // with a hole in it — see `ui::build`.
+            None => tracing::warn!(%letter, "no advance for one of the clock's characters"),
+        }
+    }
+    out
+}
+
+/// The size the advances are measured at: large enough that the sixteenths of a
+/// pixel a face quantises to are noise against it, and the answer is a ratio
+/// either way.
+const LETTER_ADVANCE_SIZE: f32 = 1000.0;
 
 /// Where a run sits inside its `max_width` box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -896,6 +1140,10 @@ pub struct Gpu {
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_cache: Cache,
+    /// How far the pen moves after each character the corner's clock is written
+    /// in. See [`letter_advances`], and [`Gpu::letter`], which is what the
+    /// layout asks.
+    letter_advances: HashMap<char, f32>,
 }
 
 /// The two textures a display's frame is actually built in.
@@ -1373,6 +1621,7 @@ impl Gpu {
                 swash_cache,
                 text_atlas,
                 text_cache,
+                letter_advances: letter_advances(),
             },
             target,
         ))
@@ -1427,12 +1676,46 @@ impl Gpu {
         ))
     }
 
+    /// What the shell is drawing through, as the adapter names itself.
+    ///
+    /// The one fact on the System information panel that is not on the disk
+    /// somewhere: which of a machine's adapters is in use is a decision this
+    /// renderer made when it opened one — see [`Gpu::new`] — and asking the
+    /// kernel afterwards would answer with all of them and no way to tell
+    /// which. Whole and unedited, driver name and all — a Mesa adapter calls
+    /// itself `Some Card (SOMEDRV CHIP)` — because deciding which half of that
+    /// a *row* has room for is the panel's business and not the renderer's.
+    /// See [`crate::machine::Facts::read`], which is where it is shortened.
+    pub fn graphics(&self) -> String {
+        self.adapter.get_info().name
+    }
+
     /// Atlas slot for an icon name, if it was loaded.
     pub fn slot(&self, name: &str) -> Option<u32> {
         self.slots
             .get(name)
             .or_else(|| self.late_slots.get(name))
             .copied()
+    }
+
+    /// One of the corner's characters: the cell it was measured into and how far
+    /// the pen moves after it.
+    ///
+    /// `None` for anything outside the set the clock is written in — the corner
+    /// draws no clock at all rather than a run with a hole in it. The space
+    /// answers with an advance and no cell, because it has nothing to draw.
+    pub fn letter(&self, letter: char) -> Option<Letter> {
+        let advance = *self.letter_advances.get(&letter)?;
+        let cell = letter_name(letter).and_then(|name| self.slot(name));
+        // A character with a drawing that is not in the atlas is not drawable,
+        // and the run must not close up over it: the atlas is still the
+        // provisional one on the first frames of a session, and a clock that
+        // arrived a letter at a time as cells appeared would be worse than one
+        // that arrives whole.
+        if cell.is_none() && letter_name(letter).is_some() {
+            return None;
+        }
+        Some(Letter { cell, advance })
     }
 
     /// Replace the provisional procedural atlas with the completed catalogue.
@@ -3254,11 +3537,157 @@ mod tests {
     /// the same on any machine — the system's fonts differ from one to the
     /// next, and a test that shaped with them would be measuring the machine.
     fn shell_fonts() -> FontSystem {
-        let mut db = glyphon::fontdb::Database::new();
-        for face in [UI_FONT_REGULAR, UI_FONT_BOLD] {
-            db.load_font_data(face.to_vec());
+        shell_faces()
+    }
+
+    /// Every character the corner's clock is written in ships as a measurement of
+    /// its own shape, inside its own cell, with room round it for the shadow.
+    ///
+    /// The letters are held to the same three things a built-in glyph is — see
+    /// `icons::tests::a_glyph_can_ship_as_the_shape_of_itself` — with one
+    /// difference, which is the ink share. A glyph has to be a mark on a space
+    /// and covers at least a twentieth of its cell; a colon is two dots in an em
+    /// and covers a fiftieth, and that is right. What matters here is that it is
+    /// *there*, that it is inside its cell, and that the field is a distance.
+    #[test]
+    fn every_letter_of_the_clock_is_a_shape_in_its_cell() {
+        let fields = letter_fields();
+        let expected: Vec<&str> = LETTER_SET
+            .iter()
+            .map(|(_, name)| *name)
+            .filter(|name| !name.is_empty())
+            .collect();
+        let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, expected, "the clock's own alphabet, in order");
+
+        let size = CELL as usize;
+        for (name, icon) in &fields {
+            assert_eq!(icon.size, CELL);
+            assert_eq!(icon.rgba.len(), size * size * 4);
+            let at = |x: usize, y: usize| {
+                let stored = f32::from(icon.rgba[(y * size + x) * 4 + 3]) / 255.0;
+                (stored - 0.5) * 2.0 * crate::icons::SDF_RANGE * size as f32
+            };
+
+            // Signed: some of the cell is letter and some of it is air. A
+            // character that came out entirely one way is a mask that landed
+            // outside its cell or a face that drew nothing.
+            let inside = (0..size * size)
+                .filter(|i| at(i % size, i / size) < 0.0)
+                .count();
+            let share = inside as f32 / (size * size) as f32;
+            assert!(
+                (0.005..0.40).contains(&share),
+                "{name} is {share:.3} letter, which is not a letter on a space"
+            );
+
+            // The margin the shadow is drawn in, which for a letter is what
+            // keeps one from ending in a straight cut where its cell does. The
+            // tightest of them is the slash, which is nearly a cap tall and
+            // dips below the baseline.
+            let edge = size / 20;
+            for i in 0..size {
+                for (x, y) in [
+                    (i, edge),
+                    (i, size - 1 - edge),
+                    (edge, i),
+                    (size - 1 - edge, i),
+                ] {
+                    assert!(
+                        at(x.min(size - 1), y.min(size - 1)) > 0.0,
+                        "{name} reaches its own edge at {x},{y}"
+                    );
+                }
+            }
+
+            // And it is a distance: one pixel of travel can only ever be one
+            // pixel of distance.
+            for y in 1..size - 1 {
+                for x in 1..size - 1 {
+                    let step = (at(x, y) - at(x + 1, y))
+                        .abs()
+                        .max((at(x, y) - at(x, y + 1)).abs());
+                    assert!(step <= 1.35, "{name} steps {step} at {x},{y}");
+                }
+            }
         }
-        FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+    }
+
+    /// A run of the corner's letters laid out by adding up their advances is
+    /// exactly as wide as the same letters shaped.
+    ///
+    /// Which is why the corner may lay itself out at all: the alternative is
+    /// shaping the time on the thread that has a frame due, and the reason it is
+    /// allowed is that no pair of characters in this set kerns. If a future face
+    /// changed that, the clock would drift from the mark beside it and from the
+    /// edge it is aligned against — so it is checked here rather than assumed.
+    #[test]
+    fn the_corners_run_is_as_wide_as_the_same_letters_shaped() {
+        let advances = letter_advances();
+        assert_eq!(
+            advances.len(),
+            LETTER_SET.len(),
+            "every character of the clock has an advance",
+        );
+
+        let mut font_system = shell_faces();
+        let size = 100.0;
+        // The clock, and the charge that stands on the same line in the same
+        // material — the per cent sign is in this set for that and nothing
+        // else, so the pairs it makes are checked here with the rest.
+        for content in [
+            "8/19 10:02",
+            "12/31 23:59",
+            "1/1 0:00",
+            "9/9 9:09",
+            "100%",
+            "96%",
+            "7%",
+            "0%",
+        ] {
+            let summed: f32 = content.chars().map(|c| advances[&c] * size).sum::<f32>();
+            let mut buffer = TextBuffer::new(&mut font_system, Metrics::new(size, size * 1.25));
+            buffer.set_size(None, None);
+            let attrs = Attrs::new()
+                .family(Family::Name(UI_FONT))
+                .weight(Weight::NORMAL);
+            buffer.set_text(content, &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut font_system, false);
+            let shaped: f32 = buffer
+                .layout_runs()
+                .map(|run| run.line_w)
+                .fold(0.0, f32::max);
+            assert!(
+                (summed - shaped).abs() < 0.05,
+                "{content:?} adds up to {summed} and shapes to {shaped}",
+            );
+        }
+    }
+
+    /// The corner puts its letters on the baseline the text pipeline would have
+    /// put them on.
+    ///
+    /// The clock is drawn as quads now, so nothing forces the two to agree — and
+    /// they have to, or the corner moves the day this is edited and every run
+    /// drawn beside it in the ordinary way sits on a different line.
+    #[test]
+    fn the_clock_sits_on_the_line_the_text_pipeline_would_have_put_it_on() {
+        let mut font_system = shell_faces();
+        for size in [18.0f32, 24.0, 60.0] {
+            let mut buffer = TextBuffer::new(&mut font_system, Metrics::new(size, size * 1.25));
+            buffer.set_size(None, None);
+            let attrs = Attrs::new()
+                .family(Family::Name(UI_FONT))
+                .weight(Weight::NORMAL);
+            buffer.set_text("8/19 10:02", &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut font_system, false);
+            let baseline = buffer.layout_runs().next().expect("one line").line_y / size;
+            assert!(
+                (baseline - crate::ui::CORNER_CLOCK_BASELINE).abs() < 1e-3,
+                "at {size} the pipeline's baseline is {baseline}, the corner's is {}",
+                crate::ui::CORNER_CLOCK_BASELINE,
+            );
+        }
     }
 
     fn label(content: &str, max_width: f32) -> Text {

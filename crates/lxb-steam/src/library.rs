@@ -620,19 +620,47 @@ pub fn libraries() -> Vec<PathBuf> {
 /// from the presence or absence of the client executable.
 pub fn root() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
+    native_roots(&home)
+        .into_iter()
+        .chain(std::iter::once(unpacks_into(&flatpak_home(&home))))
+        .find(|path| looks_like_a_root(path))
+}
+
+/// The places the *native* client installs itself into, in the order it
+/// prefers them.
+///
+/// Kept here rather than in [`crate::client`] so that the paths this module
+/// searches and the paths a client is started against cannot drift apart: they
+/// are the same three, read once.
+pub(crate) fn native_roots(home: &Path) -> [PathBuf; 3] {
     [
         home.join(".steam").join("steam"),
         home.join(".steam").join("root"),
-        home.join(".local").join("share").join("Steam"),
-        home.join(".var")
-            .join("app")
-            .join("com.valvesoftware.Steam")
-            .join(".local")
-            .join("share")
-            .join("Steam"),
+        unpacks_into(home),
     ]
-    .into_iter()
-    .find(|path| path.join("steamapps").is_dir() || path.join("config").is_dir())
+}
+
+/// Where a client unpacks itself below a home directory — the real one for the
+/// native client, and the Flatpak's remapped one for the Flatpak.
+pub(crate) fn unpacks_into(home: &Path) -> PathBuf {
+    home.join(".local").join("share").join("Steam")
+}
+
+/// The home directory the Flatpak runs with, which is not the user's.
+pub(crate) fn flatpak_home(home: &Path) -> PathBuf {
+    home.join(".var")
+        .join("app")
+        .join(crate::client::FLATPAK_APP)
+}
+
+/// Whether a directory is a Steam that has been run at least once.
+///
+/// Deliberately not "does the directory exist": the Flatpak's remapped home is
+/// made by Flatpak itself and a native root can be left behind by an install
+/// that was removed, so an empty directory of the right name says nothing.
+/// What says a client has been here is its own furniture.
+pub fn looks_like_a_root(path: &Path) -> bool {
+    path.join("steamapps").is_dir() || path.join("config").is_dir()
 }
 
 /// A size, as the row under a game's name says it.

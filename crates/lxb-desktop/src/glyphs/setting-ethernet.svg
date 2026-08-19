@@ -1,0 +1,57 @@
+<!--
+  An RJ-45 connector, for the wired network rows.
+
+  Redrawn because the first shape of it was unrecognisable. What was wrong was
+  not detail but arrangement, and it took three goes to find out which:
+
+    * A body barely wider than it was tall, with the latch above it and the
+      cable boot below, stacked into three blocks of about one size. That is a
+      battery.
+    * Tapering the latch and the boot in opposite directions to break the stack.
+      That is a bowtie — one symmetry swapped for another.
+    * Widening the body and narrowing both ends. That is a plus sign.
+
+  The cable was the problem in all three. Face on, a plug with a cord leaving it
+  is a wide thing with a narrower thing centred above and below, and there is no
+  arrangement of that which is not either a stack or a cross. So the cord is
+  gone and what is left is the connector itself: one wide body, one tab on top,
+  and the stepped outline between them, which is the RJ-45 form and is not the
+  shape of anything else in the shell.
+
+  Eight contacts, because an RJ-45 is 8P8C and eight is part of what the thing
+  is — the first attempt had six, which is a grille. They sit in a band near the
+  top of the body, where they are on the real connector, and they are about two
+  pixels apart where a settings row draws this. They will not resolve one by one
+  at that size and are not meant to: the outline carries the mark small, and the
+  contacts confirm it once there is room for them.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="latch" x="11" y="6.4" width="10" height="6" rx="1.6"/>
+    <rect id="body" x="3.2" y="11.4" width="25.6" height="14.2" rx="1.8"/>
+    <g id="pins">
+      <rect x="5.89" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="8.55" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="11.21" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="13.87" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="16.53" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="19.19" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="21.85" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+      <rect x="24.51" y="13.8" width="1.6" height="5.8" rx="0.55"/>
+    </g>
+    <g id="bead"><use href="#latch"/><use href="#body"/></g>
+    <g id="holes"><use href="#pins"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

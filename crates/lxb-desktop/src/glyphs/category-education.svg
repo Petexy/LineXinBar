@@ -1,113 +1,37 @@
 <!--
-The Education & Science column's glyph: a conical flask.
+  The Education column's glyph: a flask.
 
-  The column takes both the XDG `Education` and `Science` groups. A mortarboard
-  would answer only the first half of the title and a book only the narrowest
-  reading of that; a flask answers the second half outright and is read as
-  "learning" besides, because it is what school looks like in pictures.
+  Education collects the things that teach, and a flask is the one object that
+  says learning without saying *school* — which would be wrong for a machine
+  that has a chemistry set and a language course in the same column.
 
-  It is the one object in the set that is honestly made of the material the
-  others are only pretending to be, and it is lit accordingly. Everything else
-  here has a polished top that stops along a curve — the mark of a moulded
-  shell. Glass has no such boundary. It has *streaks*: bright bands running
-  down the length of it where it reflects whatever is behind the viewer. The
-  first version of this glyph had the shell's horizontal gloss line across the
-  cone and the contents' surface a little below it, and two parallel horizontal
-  lines across a triangle read as a printing fault rather than as light.
+  The bubbles are the openings, and they are the reason this object was chosen
+  over a book: bubbles in water are holes in water, so the mark and the material
+  are saying the same thing.
 
-  So the boundary is gone and the streaks do the work, and the only horizontal
-  line left is the one that means something: the surface of what is in it.
+  The lip is a second body across the neck and takes a crevice, which is what
+  makes it a lip rather than a widening.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Glass, and its rim, in user space over the whole vessel: the rolled
-         lip and the body are one piece, and a gradient per shape would put a
-         step across the joint between them. -->
-    <linearGradient id="glass" gradientUnits="userSpaceOnUse" x1="0" y1="2.9" x2="0" y2="27.8">
-      <stop offset="0" stop-color="#f4f4f4"/>
-      <stop offset="0.3" stop-color="#fdfdfd"/>
-      <stop offset="0.72" stop-color="#e4e4e4"/>
-      <stop offset="1" stop-color="#f2f2f2"/>
-    </linearGradient>
-    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="2.9" x2="0" y2="27.8">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.14" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
-    </linearGradient>
-    <!-- What is in the flask. Read as contents rather than as a shadow because
-         it is lighter at its own foot than the glass around it. -->
-    <linearGradient id="fill-level" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#c6c6c6"/>
-      <stop offset="0.5" stop-color="#d2d2d2"/>
-      <stop offset="1" stop-color="#eaeaea"/>
-    </linearGradient>
     <path id="flask" d="M13.4 3.4h5.2v7.6l6.5 13.2a2.6 2.6 0 0 1-2.33 3.76H9.23a2.6 2.6 0 0 1-2.33-3.76l6.5-13.2z"/>
     <rect id="lip" x="12.1" y="2.9" width="7.8" height="2.3" rx="1.15"/>
-    <clipPath id="flask-clip"><use href="#flask"/><use href="#lip"/></clipPath>
+    <g id="bubbles"><circle cx="13.1" cy="23.4" r="1.85"/><circle cx="18.6" cy="21.2" r="1.25"/><circle cx="15.9" cy="17.6" r="0.85"/></g>
+    <g id="bead"><use href="#flask"/><use href="#lip"/></g>
+    <g id="holes"><use href="#bubbles"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#lip" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#lip" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <g fill="url(#glass)">
-      <use href="#flask"/>
-      <use href="#lip"/>
-    </g>
-
-    <g clip-path="url(#flask-clip)">
-      <!-- What is in it. Lower than half, because a flask drawn full is a
-           flask nobody has poured from. -->
-      <rect x="4" y="20.6" width="24" height="10" fill="url(#fill-level)"/>
-      <rect x="4" y="20.3" width="24" height="0.72" fill="#ffffff" fill-opacity="0.9"/>
-      <!-- The streaks, which is what glass does instead of a gloss boundary. -->
-      <g filter="url(#polish)">
-        <path d="M12.6 5h1.7v6L9.8 23.6H7.4L12.6 11z" fill="#ffffff" fill-opacity="0.5"/>
-        <path d="M17.9 5h1v6l4.5 12.6h-1.5L17.9 11z" fill="#ffffff" fill-opacity="0.26"/>
-      </g>
-    </g>
-
-    <g fill="url(#turn)">
-      <use href="#flask"/>
-      <use href="#lip"/>
-    </g>
-    <g fill="none" stroke="url(#edge)" stroke-width="1.1">
-      <use href="#flask"/>
-      <use href="#lip"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

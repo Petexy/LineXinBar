@@ -1,81 +1,45 @@
 <!--
-The 90° Rotation row's glyph: the screen turned clockwise onto its side.
+  The display at 90 degrees, one of the four a rotation row offers.
 
-  The stand goes to the left, which is where a monitor's foot ends up when it is
-  turned clockwise — the turn 90° actually makes. See setting-rotation-0.svg for
-  what the four have in common.
+  **The stand is the mark.** Bezel and screen are the same object in all four —
+  the same landscape rectangle, stood on its end for two of them — so what says
+  which turn this is, and the only thing that does, is where the stand ends up:
+  to its left. Drop the stand and this glyph and the one for the opposite turn
+  become the same picture, which is exactly what happened when this set was first
+  cut back to its shape: the stand was drawn in the body rather than in the defs
+  the conversion read, so all four came out as a bare screen and two pairs of
+  them were indistinguishable.
+
+  Bezel, neck and foot are one object and take no crevice between them — a
+  monitor is not a screen resting on a separate stand. The screen is an opening,
+  as it is on every display in these rows.
+
+  The four all carry the same scale whatever each needs on its own. They are one
+  object turned, and one object seen four ways cannot change size as it goes
+  round; the factor is what the two portrait turns need, because on its end the
+  display is the tallest thing here.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material and the lamp above it, identical to setting-display.svg's:
-         these are the same monitor, and a row whose screen was lit differently
-         from the screen list's would read as a different object. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <path id="bezel" d="M12.75 3.15h12.9a2.0 2.0 0 0 1 2.0 2.0v23.2a2.0 2.0 0 0 1 -2.0 2.0h-12.9a2.0 2.0 0 0 1 -2.0 -2.0v-23.2a2.0 2.0 0 0 1 2.0 -2.0z"/>
-    <path id="bezel-gloss" d="M9.35 1.05H29.05V14.57C23.98 18.92 14.42 18.92 9.35 14.57z"/>
-    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <path id="bezel" d="M12.75 3.15h12.9a2 2 0 0 1 2 2v23.2a2 2 0 0 1-2 2h-12.9a2 2 0 0 1-2-2V5.15a2 2 0 0 1 2-2z"/>
     <path id="pane" d="M13.25 6.15h11.9v21.2h-11.9z"/>
-    <clipPath id="pane-clip"><use href="#pane"/></clipPath>
+    <path id="neck" d="M7.15 14.15h4.2v5.2h-4.2z"/>
+    <path id="foot" d="M5.45 8.25h0.8a1.1 1.1 0 0 1 1.1 1.1v14.8a1.1 1.1 0 0 1-1.1 1.1h-0.8a1.1 1.1 0 0 1-1.1-1.1V9.35a1.1 1.1 0 0 1 1.1-1.1z"/>
+    <g id="bead"><use href="#bezel"/><use href="#neck"/><use href="#foot"/></g>
+    <g id="holes"><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <!-- Stand first, so the bezel sits in front of the neck it grows out of. -->
-    <path d="M7.15 14.15h4.2v5.2h-4.2z" fill="url(#face)"/>
-    <path d="M5.449999999999999 8.25h0.8a1.1 1.1 0 0 1 1.1 1.1v14.8a1.1 1.1 0 0 1 -1.1 1.1h-0.8a1.1 1.1 0 0 1 -1.1 -1.1v-14.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="url(#face)"/>
-    <path d="M5.449999999999999 8.25h0.8a1.1 1.1 0 0 1 1.1 1.1v14.8a1.1 1.1 0 0 1 -1.1 1.1h-0.8a1.1 1.1 0 0 1 -1.1 -1.1v-14.8a1.1 1.1 0 0 1 1.1 -1.1z" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <use href="#bezel" fill="url(#face)"/>
-    <g clip-path="url(#bezel-clip)">
-      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#bezel" fill="url(#turn)"/>
-
-    <use href="#pane" fill="url(#recess)"/>
-    <g clip-path="url(#pane-clip)">
-      <path d="M13.25 24.38L18.72 6.15L21.82 6.15L15.51 27.35z" fill="#ffffff" fill-opacity="0.34" filter="url(#polish)"/>
-      <path d="M13.25 14.63L15.99 6.15L17.3 6.15L13.25 18.45z" fill="#ffffff" fill-opacity="0.22" filter="url(#polish)"/>
-    </g>
-    <use href="#pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <g clip-path="url(#bezel-clip)">
-      <use href="#bezel" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
+  <g transform="translate(16 16) scale(0.9059) translate(-16 -16)">
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
     </g>
   </g>
 </svg>

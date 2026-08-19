@@ -1,88 +1,32 @@
 <!--
-The Internet column's glyph: a globe.
+  The Internet column's glyph: a globe.
 
-  The one mark for "the network" that needs no caption in any language, which
-  is the whole job of a column heading.
+  Latitudes and longitudes are the openings, cut as slits rather than drawn as
+  lines: a line on a bead of water is a thing painted on it, and a slit is a
+  thing the water was pulled away from.
 
-  A sphere, so it is shaded radially rather than split at a waist — see
-  brightness.svg, where the same decision is argued at a tenth the size. The
-  graticule is cut *into* the ball rather than laid on top of it: each line is
-  a groove with its near wall shadowed and a lit lip under it, which is what
-  keeps the lines on the surface. Drawn flat over the top they slide off it and
-  the ball goes back to being a disc with a cage in front.
+  The meridians stop short of both poles. Run all the way up they would meet in
+  a single hole at the top and the globe would come apart into segments; held
+  back, the shape stays one body and the field keeps a continuous crown to
+  stand its wall up on.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.8">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.42" stop-color="#f6f6f6"/>
-      <stop offset="0.8" stop-color="#dedede"/>
-      <stop offset="1" stop-color="#d2d2d2"/>
-    </radialGradient>
-
-    <clipPath id="globe-clip"><circle cx="16" cy="15.9" r="12.6"/></clipPath>
+    <circle id="ball" cx="16" cy="15.9" r="12.6"/>
+    <g id="grid"><path d="M18.07 28.33L18.75 27.67L18.76 27.66L18.77 27.65L18.78 27.65L18.79 27.64L18.79 27.63L18.80 27.62L18.81 27.61L18.82 27.60L18.82 27.59L19.46 26.71L19.47 26.70L19.48 26.70L19.48 26.69L19.49 26.68L19.49 26.67L19.50 26.66L19.50 26.66L19.51 26.65L19.51 26.64L20.09 25.56L20.10 25.55L20.10 25.54L20.10 25.54L20.11 25.53L20.11 25.52L20.11 25.52L20.12 25.51L20.12 25.50L20.12 25.50L20.63 24.23L20.64 24.23L20.64 24.22L20.64 24.22L20.64 24.21L20.65 24.20L20.65 24.20L20.65 24.19L20.65 24.19L20.65 24.18L21.09 22.76L21.09 22.75L21.09 22.75L21.09 22.74L21.09 22.74L21.09 22.73L21.10 22.73L21.10 22.72L21.10 22.72L21.10 22.71L21.45 21.16L21.45 21.16L21.45 21.15L21.45 21.15L21.45 21.14L21.45 21.14L21.45 21.13L21.45 21.13L21.45 21.12L21.45 21.12L21.71 19.47L21.71 19.46L21.71 19.46L21.71 19.45L21.71 19.45L21.71 19.45L21.71 19.44L21.71 19.44L21.71 19.43L21.71 19.43L21.87 17.71L21.87 17.70L21.87 17.70L21.87 17.70L21.87 17.69L21.87 17.69L21.87 17.68L21.87 17.68L21.87 17.68L21.87 17.67L21.92 15.92L21.92 15.91L21.92 15.91L21.92 15.91L21.92 15.90L21.92 15.90L21.92 15.89L21.92 15.89L21.92 15.89L21.92 15.88L21.87 14.13L21.87 14.12L21.87 14.12L21.87 14.12L21.87 14.11L21.87 14.11L21.87 14.10L21.87 14.10L21.87 14.10L21.87 14.09L21.71 12.37L21.71 12.37L21.71 12.36L21.71 12.36L21.71 12.35L21.71 12.35L21.71 12.35L21.71 12.34L21.71 12.34L21.71 12.33L21.45 10.68L21.45 10.68L21.45 10.67L21.45 10.67L21.45 10.66L21.45 10.66L21.45 10.65L21.45 10.65L21.45 10.64L21.45 10.64L21.10 9.09L21.10 9.08L21.10 9.08L21.10 9.07L21.09 9.07L21.09 9.06L21.09 9.06L21.09 9.05L21.09 9.05L21.09 9.04L20.65 7.62L20.65 7.61L20.65 7.61L20.65 7.60L20.65 7.60L20.64 7.59L20.64 7.58L20.64 7.58L20.64 7.57L20.63 7.57L20.12 6.30L20.12 6.30L20.12 6.29L20.11 6.28L20.11 6.28L20.11 6.27L20.10 6.26L20.10 6.26L20.10 6.25L20.09 6.24L19.51 5.16L19.51 5.15L19.50 5.14L19.50 5.14L19.49 5.13L19.49 5.12L19.48 5.11L19.48 5.10L19.47 5.10L19.46 5.09L18.82 4.21L18.82 4.20L18.81 4.19L18.80 4.18L18.79 4.17L18.79 4.16L18.78 4.15L18.77 4.15L18.76 4.14L18.75 4.13L18.07 3.47L17.89 3.35L17.68 3.30L17.47 3.32L17.27 3.42L17.12 3.57L17.04 3.77L17.02 3.98L17.08 4.19L17.21 4.36L17.89 5.02L17.85 4.98L18.46 5.82L18.44 5.79L19.00 6.83L18.98 6.80L19.49 8.03L19.48 8.01L19.90 9.40L19.89 9.38L20.24 10.91L20.23 10.89L20.48 12.52L20.48 12.50L20.63 14.20L20.63 14.18L20.68 15.92L20.68 15.90L20.63 17.64L20.63 17.62L20.48 19.32L20.48 19.30L20.23 20.93L20.23 20.91L19.89 22.44L19.89 22.42L19.47 23.82L19.48 23.79L18.97 25.03L18.98 25.00L18.42 26.05L18.44 26.01L17.82 26.86L17.85 26.82L17.21 27.44L17.08 27.61L17.02 27.82L17.04 28.03L17.12 28.23L17.27 28.38L17.47 28.48L17.68 28.50L17.89 28.45Z"/><path d="M14.79 27.44L14.11 26.78L14.15 26.82L13.54 25.98L13.56 26.01L13.00 24.97L13.02 25.00L12.51 23.77L12.52 23.79L12.10 22.40L12.11 22.42L11.76 20.89L11.77 20.91L11.52 19.28L11.52 19.30L11.37 17.60L11.37 17.62L11.32 15.88L11.32 15.90L11.37 14.16L11.37 14.18L11.52 12.48L11.52 12.50L11.77 10.87L11.77 10.89L12.11 9.36L12.11 9.38L12.53 7.98L12.52 8.01L13.03 6.77L13.02 6.80L13.58 5.75L13.56 5.79L14.18 4.94L14.15 4.98L14.79 4.36L14.92 4.19L14.98 3.98L14.96 3.77L14.88 3.57L14.73 3.42L14.53 3.32L14.32 3.30L14.11 3.35L13.93 3.47L13.25 4.13L13.24 4.14L13.23 4.15L13.22 4.15L13.21 4.16L13.21 4.17L13.20 4.18L13.19 4.19L13.18 4.20L13.18 4.21L12.54 5.09L12.53 5.10L12.52 5.10L12.52 5.11L12.51 5.12L12.51 5.13L12.50 5.14L12.50 5.14L12.49 5.15L12.49 5.16L11.91 6.24L11.90 6.25L11.90 6.26L11.90 6.26L11.89 6.27L11.89 6.28L11.89 6.28L11.88 6.29L11.88 6.30L11.88 6.30L11.37 7.57L11.36 7.57L11.36 7.58L11.36 7.58L11.36 7.59L11.35 7.60L11.35 7.60L11.35 7.61L11.35 7.61L11.35 7.62L10.91 9.04L10.91 9.05L10.91 9.05L10.91 9.06L10.91 9.06L10.91 9.07L10.90 9.07L10.90 9.08L10.90 9.08L10.90 9.09L10.55 10.64L10.55 10.64L10.55 10.65L10.55 10.65L10.55 10.66L10.55 10.66L10.55 10.67L10.55 10.67L10.55 10.68L10.55 10.68L10.29 12.33L10.29 12.34L10.29 12.34L10.29 12.35L10.29 12.35L10.29 12.35L10.29 12.36L10.29 12.36L10.29 12.37L10.29 12.37L10.13 14.09L10.13 14.10L10.13 14.10L10.13 14.10L10.13 14.11L10.13 14.11L10.13 14.12L10.13 14.12L10.13 14.12L10.13 14.13L10.08 15.88L10.08 15.89L10.08 15.89L10.08 15.89L10.08 15.90L10.08 15.90L10.08 15.91L10.08 15.91L10.08 15.91L10.08 15.92L10.13 17.67L10.13 17.68L10.13 17.68L10.13 17.68L10.13 17.69L10.13 17.69L10.13 17.70L10.13 17.70L10.13 17.70L10.13 17.71L10.29 19.43L10.29 19.43L10.29 19.44L10.29 19.44L10.29 19.45L10.29 19.45L10.29 19.45L10.29 19.46L10.29 19.46L10.29 19.47L10.55 21.12L10.55 21.12L10.55 21.13L10.55 21.13L10.55 21.14L10.55 21.14L10.55 21.15L10.55 21.15L10.55 21.16L10.55 21.16L10.90 22.71L10.90 22.72L10.90 22.72L10.90 22.73L10.91 22.73L10.91 22.74L10.91 22.74L10.91 22.75L10.91 22.75L10.91 22.76L11.35 24.18L11.35 24.19L11.35 24.19L11.35 24.20L11.35 24.20L11.36 24.21L11.36 24.22L11.36 24.22L11.36 24.23L11.37 24.23L11.88 25.50L11.88 25.50L11.88 25.51L11.89 25.52L11.89 25.52L11.89 25.53L11.90 25.54L11.90 25.54L11.90 25.55L11.91 25.56L12.49 26.64L12.49 26.65L12.50 26.66L12.50 26.66L12.51 26.67L12.51 26.68L12.52 26.69L12.52 26.70L12.53 26.70L12.54 26.71L13.18 27.59L13.18 27.60L13.19 27.61L13.20 27.62L13.21 27.63L13.21 27.64L13.22 27.65L13.23 27.65L13.24 27.66L13.25 27.67L13.93 28.33L14.11 28.45L14.32 28.50L14.53 28.48L14.73 28.38L14.88 28.23L14.96 28.03L14.98 27.82L14.92 27.61Z"/><rect x="5.4" y="15.2" width="21.2" height="1.4" rx="0.7"/><rect x="9.0" y="9.2" width="14" height="1.2" rx="0.6"/><rect x="9.0" y="21.6" width="14" height="1.2" rx="0.6"/></g>
+    <g id="bead"><use href="#ball"/></g>
+    <g id="holes"><use href="#grid"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <circle cx="16" cy="15.9" r="12.6" fill="url(#ball)"/>
-
-    <g clip-path="url(#globe-clip)">
-      <!-- Parallels: straight lines seen edge-on, which is what a circle
-           round a sphere is when you are looking at its side. -->
-      <g fill="none" stroke="#a4a4a4" stroke-opacity="0.7" stroke-width="1.1">
-        <path d="M3.4 15.9h25.2"/>
-        <path d="M5.9 8.4h20.2"/>
-        <path d="M5.9 23.4h20.2"/>
-      </g>
-      <g fill="none" stroke="#ffffff" stroke-opacity="0.65" stroke-width="0.7">
-        <path d="M3.4 16.75h25.2"/>
-        <path d="M5.9 9.25h20.2"/>
-        <path d="M5.9 24.25h20.2"/>
-      </g>
-      <!-- Meridians, and the rim of the ball itself as the outermost one. -->
-      <g fill="none" stroke="#a4a4a4" stroke-opacity="0.7" stroke-width="1.1">
-        <ellipse cx="16" cy="15.9" rx="5.3" ry="12.6"/>
-      </g>
-      <ellipse cx="16" cy="15.9" rx="5.3" ry="12.6"
-               fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="0.6"
-               transform="translate(0.55 0)"/>
-      <circle cx="16" cy="15.9" r="12.6" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

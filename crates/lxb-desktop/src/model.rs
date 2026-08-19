@@ -113,6 +113,17 @@ pub enum Action {
     Up,
     Down,
     Launch,
+    /// Start — Accept everywhere except over the on-screen keyboard, where it
+    /// is the one press that finishes typing: Enter, and the board away.
+    ///
+    /// It is folded into [`Action::Launch`] on its way in whenever the board is
+    /// not up (see `Shell::on_action`), because that is the only place the two
+    /// differ and nothing behind the board should have to know there are two.
+    /// A field being typed into ends with Enter and then with the keyboard
+    /// gone, which on a pad is two presses in two different places — the Enter
+    /// key at one end of the board and the key that folds it away at the other
+    /// — and Start is the button every console has already taught for it.
+    Submit,
     /// Step back out of wherever the user is. Never quits on its own: leaving
     /// the session is an explicit choice in the guide menu.
     Back,
@@ -673,6 +684,24 @@ impl Cursor {
         self.level_entries(xmb, level)?.get(self.row_at(level))
     }
 
+    /// Every row the cursor has stepped *into*, outermost first.
+    ///
+    /// Opened rather than standing on, which is the difference this answers: a
+    /// cursor resting on a row has not opened it, and the last column — the one
+    /// the cursor is actually in — was opened from the row before it. So the
+    /// trail is levels `0..open` and stops there.
+    ///
+    /// What wants to know is a page whose being open costs the machine
+    /// something — see [`crate::bluetooth::Bt::watch`], where the answer decides
+    /// whether a radio is told to look around, and where being one column out is
+    /// the difference between scanning because somebody asked and scanning
+    /// because somebody walked past.
+    pub fn opened_rows<'a>(&self, xmb: &'a Xmb) -> Vec<&'a Entry> {
+        (0..self.open)
+            .filter_map(|level| self.level_entries(xmb, level)?.get(self.row_at(level)))
+            .collect()
+    }
+
     /// The rows of the column the cursor is standing in.
     pub fn current_entries<'a>(&self, xmb: &'a Xmb) -> &'a [Entry] {
         self.level_entries(xmb, self.open).unwrap_or_default()
@@ -771,13 +800,29 @@ impl Cursor {
     pub fn choose(&self, xmb: &mut Xmb) -> Option<Setting> {
         let row = self.selected_item();
         let entries = self.level_entries_mut(xmb, self.open)?;
-        let setting = match entries.get(row)? {
-            Entry::Choice(choice) => choice.setting?,
+        let (setting, acts) = match entries.get(row)? {
+            Entry::Choice(choice) => (choice.setting?, choice.acts),
             _ => return None,
         };
+        // A row that acts is not one of the answers this column holds, so the
+        // marks are none of its business — see [`crate::apps::Choice::acts`].
+        // Forgetting a network leaves the column saying exactly what it said;
+        // moving the mark here would put a tick on a press and take it off the
+        // value that is still in force.
+        if acts {
+            return Some(setting);
+        }
         for (index, entry) in entries.iter_mut().enumerate() {
-            if let Entry::Choice(choice) = entry {
-                choice.chosen = index == row;
+            match entry {
+                Entry::Choice(choice) => choice.chosen = index == row,
+                // A subcategory can carry the mark too — see
+                // [`crate::apps::Folder::chosen`] — and it is cleared here for
+                // the same reason every other row's is. The tree these live in
+                // is rebuilt from what a worker reports a moment later and will
+                // say so again if it is still true; what must not happen in
+                // between is a column showing two answers to one question.
+                Entry::Folder(folder) => folder.chosen = false,
+                _ => {}
             }
         }
         Some(setting)
@@ -892,6 +937,118 @@ impl Cursor {
         // Whatever was kept beyond here hung off the row being left, so it is
         // no longer a column anybody can step back into.
         self.stack.truncate(self.open);
+    }
+
+    /// Bring the cursor back inside the columns it is standing in, after the
+    /// tree has been rebuilt underneath it.
+    ///
+    /// The pages that describe hardware are written from what a worker last
+    /// reported and rewritten whenever that changes, so a column can lose rows
+    /// while somebody is standing on one of them: a cable is pulled out, a
+    /// network goes out of range, and — the one that is not an accident — a
+    /// value is cleared and the row that held it is no longer part of the
+    /// question. `Settings > Network > DNS` is where that last one happens.
+    /// Emptying the list of servers hands the question back to the network, and
+    /// the row the field was opened from stops existing on the same frame.
+    ///
+    /// A cursor left pointing past the end of a column is not a cursor on the
+    /// last row: it is a column drawn scrolled off its own bottom, with nothing
+    /// under the highlight and no direction that gets back to the list except
+    /// Up, pressed as many times as the rows that vanished. So every column on
+    /// the path is checked, not only the open one — the trail behind it is on
+    /// screen too, and a subcategory that fell off the end of the column it
+    /// hangs from would take the path with it.
+    ///
+    /// Where the row is gone, the cursor goes to *the value in force* if the
+    /// column has one, and to its last row otherwise. That is the same rule a
+    /// column is opened under — see [`Self::open_entry`] — and it is the right
+    /// one here for the same reason: what is left of a question whose answer
+    /// has just been withdrawn is the answer that is now true.
+    ///
+    /// A column that has emptied altogether is stepped out of. There is no row
+    /// to put the cursor on, and a column with nothing in it is the one shape
+    /// the bar cannot show.
+    ///
+    /// Reports whether anything moved, which is what says a redraw is owed.
+    pub fn keep_in_bounds(&mut self, xmb: &Xmb) -> bool {
+        let mut moved = false;
+        // Outermost first, because a level's own column is reached through the
+        // rows above it: clamping level 2 is only meaningful once level 1 is
+        // pointing at a row that exists.
+        for level in 0..=self.open {
+            // No column here at all — the row this one hung from is not a
+            // subcategory any more — or one with nothing in it. The two are the
+            // same thing to a cursor: everything from here down goes, and it
+            // stands in the last column that is still real.
+            let entries = self.level_entries(xmb, level).unwrap_or_default();
+            if entries.is_empty() {
+                let out = level.saturating_sub(1);
+                // Nothing has moved where the cursor was already outside: a
+                // category with no rows in it is a category the bar is standing
+                // *in front of*, not one it has to be got out of, and saying a
+                // redraw is owed for it would owe one on every rebuild.
+                moved |= out != self.open || self.stack.len() > out;
+                self.open = out;
+                self.stack.truncate(out);
+                break;
+            }
+            let row = self.row_at(level);
+            if row < entries.len() {
+                continue;
+            }
+            let landing = Self::landing(entries);
+            self.set_row_at(level, landing);
+            moved = true;
+        }
+        moved
+    }
+
+    /// Which row a cursor put back inside a column should come to rest on.
+    ///
+    /// The value in force, which is where a column is opened anyway: somebody
+    /// whose row went out from under them is looking at the same question, and
+    /// the answer to it is the least surprising place to be standing.
+    ///
+    /// Failing that, the last row — a column that lost rows off its end has
+    /// most naturally clamped to the end — but never a row that *acts*. That is
+    /// the one hard rule here, and it is worth the extra line: pressing
+    /// Disconnect under a wireless network turns that page into a shorter one,
+    /// and a cursor that clamped to the end of it would leave the user's thumb
+    /// resting on Forget with no press of their own in between. The shell moved
+    /// the cursor; the shell does not get to move it somewhere that deletes
+    /// something.
+    ///
+    /// The first row where every row acts, for the same reason the rest of this
+    /// tree puts the answer that does least at the top.
+    fn landing(entries: &[Entry]) -> usize {
+        if let Some(chosen) = entries.iter().position(Entry::chosen) {
+            return chosen;
+        }
+        entries
+            .iter()
+            .rposition(|entry| !entry.acts())
+            .unwrap_or_default()
+    }
+
+    /// Put the cursor on `row` of the column at `level`, wherever that column
+    /// stands on the path.
+    ///
+    /// Unlike [`Self::select_row`] this keeps what hangs below: it is used
+    /// where a column has been rewritten under a cursor that has not moved, and
+    /// the trail the user opened is still theirs.
+    fn set_row_at(&mut self, level: usize, row: usize) {
+        match level.checked_sub(1) {
+            None => {
+                if let Some(slot) = self.selected_items.get_mut(self.selected_category) {
+                    *slot = row;
+                }
+            }
+            Some(index) => {
+                if let Some(column) = self.stack.get_mut(index) {
+                    column.selected = row;
+                }
+            }
+        }
     }
 
     /// Put the cursor straight on `row` of the column it is standing in.
@@ -1689,7 +1846,22 @@ mod tests {
             icon: None,
             entries,
             place: None,
+            chosen: false,
         })
+    }
+
+    /// A subcategory that is also the answer in force — the one row shape that
+    /// is both. See [`crate::apps::Folder::chosen`].
+    fn chosen_folder(title: &str, entries: Vec<Entry>) -> Entry {
+        let Entry::Folder(mut inner) = folder(title, entries) else {
+            unreachable!("folder builds a folder");
+        };
+        inner.chosen = true;
+        Entry::Folder(inner)
+    }
+
+    fn titles(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(Entry::title).collect()
     }
 
     /// A row that is one of a set of values, `chosen` if it is the one in
@@ -1703,6 +1875,20 @@ mod tests {
             icon: None,
             swatch: None,
             chosen,
+            acts: false,
+            setting: Some(Setting::Accent(title)),
+        })
+    }
+
+    /// A row that does a thing rather than being one of a set of answers.
+    fn acting(title: &'static str) -> Entry {
+        Entry::Choice(crate::apps::Choice {
+            title: title.into(),
+            comment: None,
+            icon: None,
+            swatch: None,
+            chosen: false,
+            acts: true,
             setting: Some(Setting::Accent(title)),
         })
     }
@@ -1715,6 +1901,7 @@ mod tests {
             icon: None,
             swatch: None,
             chosen,
+            acts: false,
             setting: None,
         })
     }
@@ -1801,6 +1988,7 @@ mod tests {
                 icon: None,
                 entries: Vec::new(),
                 place: Some(crate::files::Place::Directory(at.to_path_buf())),
+                chosen: false,
             })
         };
         Xmb::with_wayland_display(
@@ -2536,6 +2724,7 @@ mod tests {
                         found,
                     ),
                     place: None,
+                    chosen: false,
                 })],
             }],
             OsString::from("lxb-test"),
@@ -2765,6 +2954,286 @@ mod tests {
             "still Connected"
         );
         assert!(!on_reading.current_entries(&readings)[1].chosen());
+    }
+
+    /// A subcategory can be one of a set of answers as well as a way further
+    /// in, and where it is, the column opens on it exactly as it opens on a
+    /// chosen value.
+    ///
+    /// The wireless network a radio is on is the one row in the tree like this.
+    /// A Networks column that opened on its first row would open on "Not
+    /// connected" while the machine was connected — the list saying the
+    /// opposite of what is true, on the frame it arrives.
+    #[test]
+    fn a_column_opens_on_a_chosen_subcategory() {
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![folder(
+                    "Networks",
+                    vec![
+                        choice("Not connected", false),
+                        chosen_folder("Upstairs", vec![choice("Automatic", true)]),
+                        choice("The Cafe", false),
+                    ],
+                )],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert_eq!(cursor.selected_item(), 1, "the network it is on");
+        assert!(cursor.current_entry(&xmb).is_some_and(Entry::chosen));
+        // And it is still a way in.
+        assert!(cursor.enter(&xmb));
+        assert_eq!(titles(cursor.current_entries(&xmb)), ["Automatic"]);
+    }
+
+    /// A column rewritten under a standing cursor cannot leave it pointing past
+    /// the end of the list.
+    ///
+    /// This is not a hypothetical. Clearing the DNS servers on a connection
+    /// hands the question back to the network, and the row the field was opened
+    /// from stops existing on the same frame — leaving a column drawn scrolled
+    /// off its own bottom, nothing under the highlight, and no way back to the
+    /// list but Up, pressed once per row that vanished.
+    #[test]
+    fn a_column_that_loses_rows_keeps_the_cursor_on_one() {
+        let page = |rows: Vec<Entry>| {
+            Xmb::with_wayland_display(
+                vec![Category {
+                    id: "a",
+                    title: "A",
+                    icon: "a",
+                    entries: vec![folder("DNS", rows)],
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let xmb = page(vec![
+            choice("Automatic", false),
+            choice("Manual", true),
+            reading("DNS servers", false),
+        ]);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &xmb);
+        assert_eq!(cursor.selected_item(), 2);
+
+        // The field is cleared, so the row it was on is no longer part of the
+        // question and the answer in force has moved.
+        let xmb = page(vec![choice("Automatic", true), choice("Manual", false)]);
+        assert!(cursor.keep_in_bounds(&xmb));
+        assert_eq!(
+            cursor.selected_item(),
+            0,
+            "the value in force, which is the answer that is now true"
+        );
+        assert!(!cursor.keep_in_bounds(&xmb), "and nothing moves twice");
+
+        // With no value in force to fall back on, the last row that exists.
+        let xmb = page(vec![
+            choice("Automatic", false),
+            choice("Manual", false),
+            reading("DNS servers", false),
+        ]);
+        let mut standing = Cursor::new(xmb.categories.len());
+        assert!(standing.enter(&xmb));
+        standing.navigate(Action::Down, &xmb);
+        standing.navigate(Action::Down, &xmb);
+        let xmb = page(vec![choice("Automatic", false)]);
+        assert!(standing.keep_in_bounds(&xmb));
+        assert_eq!(standing.selected_item(), 0);
+    }
+
+    /// A row that acts takes no mark and moves none.
+    ///
+    /// The two halves matter separately. A tick on Forget would be the shell
+    /// claiming a press is a state; a tick taken *off* Automatic because the
+    /// user pressed Forget beside it would be the column telling a lie about
+    /// something else entirely. See [`crate::apps::Choice::acts`].
+    #[test]
+    fn a_row_that_acts_takes_no_mark_and_moves_none() {
+        let mut xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![folder(
+                    "Upstairs",
+                    vec![choice("Automatic", true), acting("Forget")],
+                )],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        cursor.navigate(Action::Down, &xmb);
+
+        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Forget")));
+        let rows = cursor.current_entries(&xmb);
+        assert!(!rows[1].chosen(), "a press is not a state to be in");
+        assert!(
+            rows[0].chosen(),
+            "and the value in force is still the value in force"
+        );
+
+        // The row beside it is an ordinary answer and still behaves like one.
+        cursor.navigate(Action::Up, &xmb);
+        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Automatic")));
+        assert!(cursor.current_entries(&xmb)[0].chosen());
+    }
+
+    /// A cursor the *shell* moves never comes to rest on a row that acts.
+    ///
+    /// The case is real and one press away: Disconnect under a wireless
+    /// network turns a four-row page into a two-row one, and a cursor that
+    /// clamped to the end of what was left would put the user's thumb on
+    /// Forget with no press of their own in between.
+    #[test]
+    fn a_cursor_put_back_in_bounds_lands_short_of_a_row_that_acts() {
+        let page = |rows: Vec<Entry>| {
+            Xmb::with_wayland_display(
+                vec![Category {
+                    id: "a",
+                    title: "A",
+                    icon: "a",
+                    entries: vec![folder("Upstairs", rows)],
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let xmb = page(vec![
+            folder("IP address", vec![entry("x")]),
+            folder("DNS", vec![entry("x")]),
+            acting("Disconnect"),
+            acting("Forget"),
+        ]);
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        for _ in 0..2 {
+            cursor.navigate(Action::Down, &xmb);
+        }
+        assert_eq!(cursor.selected_item(), 2, "on Disconnect");
+
+        // Pressed. The network is off, and the page is the shorter one a
+        // network the radio is not on gets.
+        let xmb = page(vec![acting("Connect"), acting("Forget")]);
+        assert!(cursor.keep_in_bounds(&xmb));
+        assert_eq!(
+            cursor.selected_item(),
+            0,
+            "the first row, because every row here acts and the top of a column \
+             is where this tree puts the one that does least"
+        );
+
+        // Where there is a row that does not act, the last of those.
+        let xmb = page(vec![
+            folder("IP address", vec![entry("x")]),
+            acting("Connect"),
+            acting("Forget"),
+        ]);
+        let mut standing = Cursor::new(xmb.categories.len());
+        assert!(standing.enter(&xmb));
+        for _ in 0..2 {
+            standing.navigate(Action::Down, &xmb);
+        }
+        let xmb = page(vec![
+            folder("IP address", vec![entry("x")]),
+            acting("Forget"),
+        ]);
+        assert!(standing.keep_in_bounds(&xmb));
+        assert_eq!(standing.selected_item(), 0);
+    }
+
+    /// A column that empties altogether is stepped out of. There is no row to
+    /// put the cursor on, and a column with nothing in it is the one shape the
+    /// bar cannot show — [`Cursor::enter`] refuses to open one, and a cursor
+    /// already standing in one has to be got out the same way.
+    #[test]
+    fn a_column_that_empties_is_stepped_out_of() {
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![folder("Wi-Fi", vec![folder("Networks", vec![entry("x")])])],
+            }],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&xmb);
+        assert!(cursor.enter(&xmb));
+        assert!(cursor.enter(&xmb));
+        assert_eq!(cursor.depth(), 2);
+
+        // The radio is switched off: the networks go, and so does the column
+        // they were in.
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![folder("Wi-Fi", vec![folder("Networks", Vec::new())])],
+            }],
+            OsString::from("lxb-test"),
+        );
+        assert!(cursor.keep_in_bounds(&xmb));
+        assert_eq!(cursor.depth(), 1, "back out to the page it hung from");
+        assert_eq!(titles(cursor.current_entries(&xmb)), ["Networks"]);
+
+        // And when the row it hung from goes too, out again — as far as there
+        // is still a column to stand in.
+        let xmb = Xmb::with_wayland_display(
+            vec![Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![folder("Wi-Fi", Vec::new())],
+            }],
+            OsString::from("lxb-test"),
+        );
+        assert!(cursor.keep_in_bounds(&xmb));
+        assert_eq!(cursor.depth(), 0);
+        assert_eq!(titles(cursor.current_entries(&xmb)), ["Wi-Fi"]);
+    }
+
+    /// The trail is checked too, not only the column the cursor is standing in.
+    /// A subcategory that falls off the end of the column it hangs from would
+    /// otherwise take the whole path with it — the cursor left pointing at a
+    /// row that is not there, through a row that is not there either.
+    #[test]
+    fn the_whole_path_is_brought_back_inside_the_tree() {
+        let page = |sockets: Vec<Entry>| {
+            Xmb::with_wayland_display(
+                vec![Category {
+                    id: "a",
+                    title: "A",
+                    icon: "a",
+                    entries: sockets,
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let xmb = page(vec![
+            folder("test-wired0", vec![choice("Off", false)]),
+            folder(
+                "test-wired1",
+                vec![choice("Off", false), choice("On", true)],
+            ),
+        ]);
+        let mut cursor = cursor(&xmb);
+        cursor.navigate(Action::Down, &xmb);
+        assert!(cursor.enter(&xmb));
+        assert_eq!(cursor.selected_item(), 1, "opened on the value in force");
+
+        // The second socket is unplugged and drops out of the listing.
+        let xmb = page(vec![folder("test-wired0", vec![choice("Off", false)])]);
+        assert!(cursor.keep_in_bounds(&xmb));
+        assert_eq!(titles(cursor.current_entries(&xmb)), ["Off"]);
+        assert_eq!(cursor.selected_item(), 0);
     }
 
     /// Neither a subcategory nor a value starts a process, and the shell asks

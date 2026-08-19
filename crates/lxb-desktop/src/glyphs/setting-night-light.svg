@@ -1,104 +1,18 @@
 <!--
-  The Night light row's glyph: a crescent moon, with one star in its hollow.
+  A moon with a star beside it, for the night light rows.
 
-  The counterpart of brightness.svg, which is the sun, and drawn against it on
-  purpose: that one is a lit ball with rays going out of it, this one is the
-  same ball with the light taken off most of it. A screen control that warms a
-  picture for the evening has been a moon for as long as one has existed, and
-  there is nothing else it could be — the half-lit disc that once stood for HDR
-  was retired precisely because it read as this.
+  The shell's other moon — do-not-disturb.svg has the first — and deliberately
+  the same object seen twice. What tells them apart is the star, which is here
+  because this is a warmth laid over the whole display rather than a switch on
+  one thing.
 
-  The crescent is one path, not a disc with a disc punched out of it. Two
-  circles of radius 10.4 and 9.6, their centres 7.2 apart along the up-right
-  diagonal, meet at exactly two points; the outline runs the long way round the
-  first and the short way back along the second, so the horns come to real
-  points rather than to the flat ends a stroked arc would give. The band is 8.0
-  units at its widest, which is a little over a third of the diameter: thin
-  enough to be a crescent and not a bitten ball, thick enough to survive being
-  drawn at 33 px on an ordinary display.
-
-  The star earns its place rather than decorating: a crescent alone at this
-  size is a shape a letter C also has, and something in the hollow is what
-  settles which of the two is meant. It sits in the notch — outside the first
-  circle, inside the second — so it never touches the moon's edge, where two
-  gradients meeting would read as a nick in the rim.
-
-  Lit as the sun is: one lamp for the whole drawing rather than one per mark,
-  and the moon shaded as a ball, so the horn at the top is bright and the belly
-  at the bottom picks up the bounce.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <!-- The lamp, in user space: it is the drawing that is lit, not each mark
-         in it separately. -->
-    <linearGradient id="lit" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="0" y2="28">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.42" stop-color="#f2f2f2"/>
-      <stop offset="0.82" stop-color="#cdcdcd"/>
-      <stop offset="1" stop-color="#e2e2e2"/>
-    </linearGradient>
-
-    <!-- The body of the moon, shaded from where that lamp is. A sphere and not
-         a shell: a hard gloss boundary across a curved band turns it into two
-         crescents of different greys. -->
-    <radialGradient id="body" gradientUnits="userSpaceOnUse"
-                    cx="11.2" cy="10.8" r="19.5">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.4" stop-color="#f4f4f4"/>
-      <stop offset="0.78" stop-color="#d4d4d4"/>
-      <stop offset="1" stop-color="#c4c4c4"/>
-    </radialGradient>
-
-    <!-- The rim where the body turns over: lit along the top, lit again off
-         the bounce underneath, nothing down the sides. -->
-    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="5.4" x2="0" y2="26.6">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.26" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.82" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
-    </linearGradient>
-
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.92"/>
-      <stop offset="0.7" stop-color="#ffffff" stop-opacity="0.4"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-
-    <filter id="drop" x="-35%" y="-35%" width="180%" height="185%">
-      <feDropShadow dx="0.4" dy="0.85" stdDeviation="0.42"
-                    flood-color="#303030" flood-opacity="0.48"/>
-    </filter>
-    <filter id="polish" x="-15%" y="-15%" width="130%" height="130%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Outer circle: centre (16,16), r 10.4. Biting circle: centre
-         (21.091,10.909), r 9.6. They cross at (12.775,6.113) and
-         (25.887,19.225), which are the two horns. -->
-    <path id="moon"
-          d="M12.775 6.113
-             A10.4 10.4 0 1 0 25.887 19.225
-             A9.6 9.6 0 0 1 12.775 6.113 Z"/>
-    <clipPath id="moon-clip"><use href="#moon"/></clipPath>
-
-    <!-- A four-point star, outer radius 2.4 and inner 0.82, in the notch above
-         the upper horn. -->
-    <path id="star"
-          d="M26 7.6 24.18 8.18 23.6 10 23.02 8.18 21.2 7.6 23.02 7.02 23.6 5.2 24.18 7.02 Z"/>
-  </defs>
-
-  <g filter="url(#drop)">
-    <use href="#moon" fill="url(#body)"/>
-    <g clip-path="url(#moon-clip)">
-      <!-- The gloss follows the moon's own curve rather than being a straight
-           band across it: the belly of a crescent is where the light lands. -->
-      <path d="M12.775 6.113A10.4 10.4 0 0 0 6.6 21.9 9.4 9.4 0 0 1 13.9 7.2Z"
-            fill="url(#gloss)" filter="url(#polish)"/>
-      <use href="#moon" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-    </g>
-
-    <use href="#star" fill="url(#lit)"/>
-    <use href="#star" fill="none" stroke="url(#edge)" stroke-width="0.4"
-         stroke-linejoin="round"/>
+  <g fill="#fff">
+    <path d="M12.775 6.113 A10.4 10.4 0 1 0 25.887 19.225 A9.6 9.6 0 0 1 12.775 6.113 Z"/>
+    <path d="M26 7.6 24.18 8.18 23.6 10 23.02 8.18 21.2 7.6 23.02 7.02 23.6 5.2 24.18 7.02 Z"/>
   </g>
 </svg>

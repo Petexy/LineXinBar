@@ -1,126 +1,36 @@
 <!--
-The Application scaling row's glyph: a window, and the larger window it is
-being drawn out to.
+  A frame with a small pane in it and an arrow pulling away, for the scale rows.
 
-  The setting makes what an application draws bigger, and it does that to a
-  *window* rather than to a screen — the shell's own picture is untouched and
-  the display's mode does not move. So the object is a window: a plain pane in
-  the corner, and an open frame around it standing for the size it grows to.
-  Nothing in this set has a bare frame in it, so the pair cannot be read as one
-  of the monitors under Display.
+  The frame's inside is cut by its own path. The pane and the arrow are bodies
+  standing in that hole, and the arrow points away from the pane rather than at
+  it: what this row changes is how big everything is drawn, not where it is.
 
-  Deliberately unlike setting-resolution.svg, which is the other glyph in the
-  tree with dimensions in it. That one is a monitor with its pixels measured
-  across and down: two arrows, both inside a bezel, saying how many pixels the
-  screen has. This one has no bezel and one arrow, along the diagonal, because
-  what changes here is one number and it changes both dimensions together.
+  Drawn a little smaller than the old mark was. A shape has to leave room round
+  itself for the shadow the shader casts beside it, and this one ran to within a
+  unit of the cell's edge; the scale below is what brings it inside. The four
+  rotations all carry the same factor whatever each needs on its own, because
+  they are one object turned and have to stay one size.
 
-  The arrowhead points outward only. The setting cannot go below one to one —
-  an application asked to draw its interface smaller than it chose is not what a
-  screen looked at from a sofa wants — so a second head pointing back inward
-  would offer a direction that does not exist. Compare setting-order.svg, whose
-  arrow does point both ways, because that setting really does exchange two
-  screens in either direction.
-
-  The small pane is solid and the large frame is open on purpose: the pane is
-  the window as it is drawn now, and the frame is where its edge is going. A
-  second solid pane would read as two windows side by side.
-
-  See pointer-stick.svg for what each gradient below is doing, and
-  setting-display.svg for why no part of this may go dark.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!--
-      The frame, as one closed band rather than a stroked rectangle: a band has
-      a width and a height, so the gradients above have a box to run across. A
-      stroke along a straight edge has neither, and an objectBoundingBox
-      gradient laid on one paints nothing at all.
-    -->
     <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
           d="M4.2 3.4h23.6a1.8 1.8 0 0 1 1.8 1.8v21.4a1.8 1.8 0 0 1-1.8 1.8H4.2a1.8 1.8 0 0 1-1.8-1.8V5.2a1.8 1.8 0 0 1 1.8-1.8z
              M4.4 5.2v21.4h23.2V5.2z"/>
-    <clipPath id="frame-clip"><use href="#frame"/></clipPath>
-    <!-- One lamp over the whole drawing, so frame, pane and arrow read as one
-         object under one light. -->
-    <path id="lamp" d="M1 2H31V13.4C25 16.4 7 16.4 1 13.4z"/>
-
-    <!-- The window as it is drawn now: the corner it shares with the frame is
-         the corner both sizes are measured from. -->
     <rect id="pane" x="5.6" y="6.6" width="11.4" height="8.4" rx="1.1"/>
-    <clipPath id="pane-clip"><use href="#pane"/></clipPath>
-
-    <!--
-      The arrow, from the pane's far corner to the frame's. Tail cut square
-      across the diagonal, head 4.8 long and 6.4 across, shaft 2.7 throughout —
-      written out as one closed polygon so the whole arrow takes one gradient.
-    -->
-    <path id="arrow"
-          d="M26.8 24.4 21.09 23.58 22.32 22.2 16.3 16.81 18.1 14.79 24.12 20.19 25.36 18.81z"/>
-    <clipPath id="arrow-clip"><use href="#arrow"/></clipPath>
-    <path id="arrow-gloss" d="M14 13H29V21.5C25 23.5 18 22 14 19z"/>
+    <path id="arrow" d="M26.8 24.4 21.09 23.58 22.32 22.2 16.3 16.81 18.1 14.79 24.12 20.19 25.36 18.81z"/>
+    <g id="bead"><use href="#frame"/><use href="#pane"/><use href="#arrow"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+    </mask>
   </defs>
-
-  <g filter="url(#drop)">
-    <use href="#frame" fill="url(#face)"/>
-    <g clip-path="url(#frame-clip)">
-      <use href="#lamp" fill="url(#gloss)" filter="url(#polish)"/>
+  <g transform="translate(16 16) scale(0.963) translate(-16 -16)">
+  
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
     </g>
-    <use href="#frame" fill="url(#turn)"/>
-
-    <use href="#pane" fill="url(#recess)"/>
-    <g clip-path="url(#pane-clip)">
-      <!-- The lamp across the glass, in one hard diagonal band: the same
-           reflection every sunk face in this set carries. -->
-      <path d="M4.6 14.2 12.2 6.6h2.8L6.8 15.6z" fill="#ffffff" fill-opacity="0.34"
-            filter="url(#polish)"/>
-      <path d="M4.6 10.6 8.6 6.6h1.5L4.6 12.3z" fill="#ffffff" fill-opacity="0.22"
-            filter="url(#polish)"/>
-    </g>
-    <use href="#pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <use href="#arrow" fill="url(#face)"/>
-    <g clip-path="url(#arrow-clip)">
-      <use href="#arrow-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#arrow" fill="url(#turn)"/>
   </g>
 </svg>

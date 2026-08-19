@@ -1,82 +1,20 @@
 <!--
-  The left-hand face button: Xbox's X, PlayStation's Square, Nintendo's Y.
-  Naming any one of those is wrong on the other two — the letters are not
-  merely different, they are *swapped* between Xbox and Nintendo, so a hint
-  reading "press X" sends a Switch Pro user to the button above the one meant.
+  The west face button, as the four of them.
 
-  So the cluster is drawn instead, with the button being asked for filled in
-  and the other three left open. Position is the one thing every gamepad
-  agrees on.
+  Three rings and one bead: the one to press is solid and the others are open.
+  Nothing here is a pad — at the twenty-seven pixels a hint is drawn, four
+  buttons say controller on their own and a body round them would only take
+  room from them.
 
-  White and greys, for the reason given in the other glyphs: the atlas
-  multiplies the quad's colour into the texel, so the greys are not a colour
-  but the shading.
-
-  This is the smallest thing the shell draws — the keyboard hint gives it 27 px
-  on an ordinary display, the height of the line of text beside it. Almost none
-  of the modelling on the quick-settings tiles survives at that size, so what
-  is used here is only the part that does: one lamp, and one shadow.
-
-  The lamp is in user space across the whole cluster rather than per circle,
-  and that single decision is what the glyph is about. Give each ring its own
-  gradient — the obvious way — and all three come out identically shaded, which
-  is four buttons lying on a page. Light them from one lamp above the cluster
-  and the top ring is white, the bottom ring is grey, and each ring is brighter
-  along its own upper edge than its lower one, because it is a raised rim
-  catching the same light. Three rings and a cap, all lit by one thing.
-
-  The cap is filled and larger, as it was before: that is what says "this is
-  the one". Being a ball rather than a flat spot only makes it the one thing in
-  the cluster that is standing up.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <defs>
-    <!-- One lamp, over the whole cluster. -->
-    <linearGradient id="lit" gradientUnits="userSpaceOnUse" x1="0" y1="1.5" x2="0" y2="22.5">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.44" stop-color="#f4f4f4"/>
-      <stop offset="0.82" stop-color="#cfcfcf"/>
-      <stop offset="1" stop-color="#e4e4e4"/>
-    </linearGradient>
-
-    <!-- The pressed cap: a ball, shaded from where the lamp is. -->
-    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.8">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.42" stop-color="#f6f6f6"/>
-      <stop offset="0.8" stop-color="#d6d6d6"/>
-      <stop offset="1" stop-color="#c6c6c6"/>
-    </radialGradient>
-
-    <!-- Its rim: lit on top by the lamp, lit underneath off the bounce. -->
-    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="8.6" x2="0" y2="15.4">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.24" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.84" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
-    </linearGradient>
-
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.28" dy="0.62" stdDeviation="0.34"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-
-    <clipPath id="cap-clip"><circle cx="5.3" cy="12" r="3.4"/></clipPath>
-  </defs>
-
-  <!-- The cluster is drawn a little tighter than it was. It used to reach to
-       within a pixel of the cell on every side, which left the shadow nowhere
-       to fall: a drop shadow the viewBox cuts off has a straight edge, and a
-       straight-edged shadow reads as a clipped drawing rather than as light. -->
-  <g filter="url(#drop)">
-    <g fill="none" stroke="url(#lit)" stroke-width="1.5">
-      <circle cx="12" cy="5.3" r="2.7"/>
-      <circle cx="18.7" cy="12" r="2.7"/>
-      <circle cx="12" cy="18.7" r="2.7"/>
-    </g>
-
-    <circle cx="5.3" cy="12" r="3.4" fill="url(#ball)"/>
-    <g clip-path="url(#cap-clip)">
-      <circle cx="5.3" cy="12" r="3.4" fill="none" stroke="url(#edge)" stroke-width="0.8"/>
-    </g>
+  <g fill="none" stroke="#fff" stroke-width="1.5">
+    <circle cx="12" cy="5.3" r="2.7"/>
+    <circle cx="18.7" cy="12" r="2.7"/>
+    <circle cx="12" cy="18.7" r="2.7"/>
   </g>
+  <circle cx="5.3" cy="12" r="3.4" fill="#fff"/>
 </svg>

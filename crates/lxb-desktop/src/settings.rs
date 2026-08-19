@@ -36,6 +36,14 @@
 //! machine. What this module keeps of them is what it keeps of a display's
 //! modes: the last listing, so the page can be drawn.
 //!
+//! The fourth is Network, and it is the third kind again rather than a new one:
+//! what is on the other end of it is `NetworkManager`, which is neither this
+//! shell nor the compositor and outlives both, so `main` hands the press to
+//! [`crate::network`] and the daemon remembers it. It is only listed separately
+//! because the tree gets more from it than a listing — a press there can come
+//! back wanting a password, which is a question this module publishes and the
+//! shell puts on screen.
+//!
 //! [`Cursor::choose`]: crate::model::Cursor::choose
 
 use std::collections::BTreeMap;
@@ -63,6 +71,18 @@ pub enum Setting {
     /// to the session rather than to a screen — see [`crate::sound`] — so it is
     /// on or off for the whole of it.
     StartMusic(bool),
+    /// Write the battery's charge out in figures beside the clock, or show the
+    /// level and nothing else.
+    ///
+    /// Carries no display, like the music above it: the corner is drawn on
+    /// every screen, and a number that appeared on one of them would be a
+    /// second answer to a question the machine has one of.
+    ///
+    /// Reaches no hardware and is the shell describing itself, which is why it
+    /// is under Appearance and not under System. The row exists only on a
+    /// machine that has a battery — see [`battery_percent_switch`], and
+    /// [`note_battery`], which is what says so.
+    BatteryPercent(bool),
     /// Draw every application this much larger than life, in per cent of its
     /// own size. 100 is one to one, and the least this can be.
     ///
@@ -91,6 +111,35 @@ pub enum Setting {
         /// interned for the reason a connector name is. See [`intern`].
         id: &'static str,
     },
+    /// Change what this machine is on: the radio, a wireless network, or the
+    /// socket in the back.
+    ///
+    /// The second setting in this tree that is not the shell's own and is not
+    /// written down here — see [`Setting::SoundDevice`], which is the first and
+    /// is the same bargain. What is on the other end of it is
+    /// `NetworkManager`, which is what remembers a network once it has been
+    /// joined; a shell that kept its own copy would be a second opinion about
+    /// the machine's network at every login, and every other program on the
+    /// machine would be looking at the first one.
+    ///
+    /// Carried out by the caller for the reason the sound device is: it goes
+    /// over D-Bus to a daemon, and a module that held that connection could not
+    /// be tested on a machine that has none. See [`crate::network`].
+    Network(NetworkValue),
+    /// Change what this machine is paired with: the controller, or one of the
+    /// things it can hear.
+    ///
+    /// The third setting in this tree that is not the shell's own and is not
+    /// written down here, and the same bargain as the two above it. What is on
+    /// the other end of it is BlueZ, which is what remembers a bond once it has
+    /// been made; a shell that kept its own copy would be a second opinion
+    /// about what this machine is paired with, and every other program on it —
+    /// the game reading the controller, the mixer showing the headset — would
+    /// be looking at BlueZ's.
+    ///
+    /// Carried out by the caller for the reason the network is. See
+    /// [`crate::bluetooth`].
+    Bluetooth(BluetoothValue),
     /// Change one display's picture. Carries the connector the change belongs
     /// to, because every one of these is a property of one screen.
     Display {
@@ -139,6 +188,215 @@ pub enum DisplayValue {
     NightLightFrom(u8),
     /// The hour of local time it goes off again, 0 to 23.
     NightLightUntil(u8),
+}
+
+/// One thing that can be changed about what this machine is on.
+///
+/// Every one of these names the device it belongs to, for the reason every
+/// [`DisplayValue`] names a screen: a laptop in a dock has two sockets and a
+/// radio, and "connect" is not a question the machine has one answer to. The
+/// radio switch is the exception and carries no device, because
+/// `NetworkManager` has one switch for every radio in the machine — it is a
+/// property of the manager, not of an interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkValue {
+    /// Turn the wireless radio on, or off.
+    Radio(bool),
+    /// Put this device on the network of this name.
+    ///
+    /// The name in the air rather than the access point it was heard from, and
+    /// deliberately: a house with a repeater in it publishes one name from two
+    /// radios, they are one row on the page, and which of them to use is a
+    /// question the *radio* answers better than the shell does. See
+    /// [`crate::network::Network`].
+    Join {
+        device: &'static str,
+        ssid: &'static str,
+    },
+    /// Take this device off whatever it is on.
+    Leave { device: &'static str },
+    /// Delete the saved profile for this network on this device.
+    ///
+    /// The one row under Network that removes something rather than setting
+    /// something, and the only press in the whole Settings tree that a user
+    /// cannot undo from the page they are standing on: what goes is the key
+    /// this machine got on with. The row it is carried by says so — see
+    /// [`action`] — because there is nothing between the press and the act.
+    Forget {
+        device: &'static str,
+        ssid: &'static str,
+    },
+    /// Bring a wired socket up on a saved profile, or take it down.
+    Wire { device: &'static str, up: bool },
+    /// Take this interface's address from the network, or pin the one it has.
+    Addressing {
+        device: &'static str,
+        automatic: bool,
+    },
+    /// Take its name servers from the network, or use the ones it names.
+    ///
+    /// Spelt as the screen spells it — see [`crate::network::Field::Dns`].
+    Dns {
+        device: &'static str,
+        automatic: bool,
+    },
+}
+
+/// One thing that can be changed about what this machine is paired with.
+///
+/// Every one of these names what it is about, for the reason every
+/// [`NetworkValue`] names a device: a machine with two controllers in it has
+/// two answers to "is Bluetooth on", and a press on a pair of headphones is
+/// about those headphones and nothing else.
+///
+/// Pairing is deliberately not one of them: pressing a device the machine has
+/// never met means *connect to that*, and whether a bond has to be made first
+/// is BlueZ's answer rather than the user's — see
+/// [`crate::bluetooth::Bt::connect`], which is where the two become one press.
+///
+/// Two of them are the shell's own and are written down; the rest are BlueZ's
+/// and are handed over. Which is which is not arbitrary — see [`apply_with`]:
+/// what BlueZ can answer, BlueZ keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BluetoothValue {
+    /// Turn one controller on, or off.
+    Power {
+        /// BlueZ's own handle on it, interned for the reason a connector name
+        /// is — see [`intern`].
+        controller: &'static str,
+        on: bool,
+    },
+    /// Connect to this device, pairing with it first if this machine never has.
+    Connect { device: &'static str },
+    /// Take it off this machine, and keep the pairing.
+    Disconnect { device: &'static str },
+    /// Remove the pairing from the machine.
+    ///
+    /// The second row in this tree that removes something rather than setting
+    /// something — see [`NetworkValue::Forget`], which is the first and is the
+    /// same act on a different object. What goes is the key this machine got on
+    /// with, and the row that carries it says so, because there is nothing
+    /// between the press and the act.
+    Forget { device: &'static str },
+    /// Let anything nearby find this machine, or only what it already knows.
+    Visible { controller: &'static str, on: bool },
+    /// Make this controller the one the machine's Bluetooth *is*.
+    ///
+    /// By address rather than by path, because what is being remembered has to
+    /// survive the kernel renumbering the adapters. See
+    /// [`BLUETOOTH_CONTROLLER`].
+    Use { address: &'static str },
+    /// What happens to Bluetooth when a session starts.
+    Startup(Startup),
+}
+
+/// One of the values in this tree that is typed rather than chosen: which one,
+/// and whose.
+///
+/// Carried by [`Entry::Typed`] rather than by a [`Setting`], because it is not
+/// one: a setting is a thing a press *applies*, and pressing one of these opens
+/// a field. What arrives back is the text, and the shell hands the pair to
+/// whichever module owns it — the same division every other row on these pages
+/// is under, where what this module does is describe the row and somebody else
+/// carries it out.
+///
+/// [`Entry::Typed`]: crate::apps::Entry::Typed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typing {
+    /// One of a network interface's addressing values — an address, a router,
+    /// a list of name servers.
+    Network {
+        /// The interface it belongs to, interned for the reason a connector
+        /// name is — see [`intern`].
+        device: &'static str,
+        field: crate::network::Field,
+    },
+    /// What this machine calls itself over Bluetooth.
+    ///
+    /// The one value in this tree that is typed and is not an address, and the
+    /// only one that anybody but this machine ever sees: it is the name a phone
+    /// looking for something to pair with puts on its own screen. See
+    /// [`crate::bluetooth::Bt::rename`].
+    BluetoothName { controller: &'static str },
+}
+
+impl Typing {
+    /// What to type, for somebody looking at an empty field on a television.
+    pub fn note(self) -> &'static str {
+        match self {
+            Typing::Network { field, .. } => field.note(),
+            Typing::BluetoothName { .. } => {
+                "What other devices call this machine when they look for it."
+            }
+        }
+    }
+
+    /// What is wrong with what was typed, or nothing if it will do.
+    ///
+    /// Asked while the panel is still on screen and can still say so, which is
+    /// the whole reason this is here rather than in the module that carries the
+    /// value out: a field that accepted anything and failed silently a second
+    /// later is a field with no answer to "why did nothing happen".
+    pub fn fault(self, text: &str) -> Option<&'static str> {
+        match self {
+            Typing::Network { field, .. } => crate::network::fault(field, text),
+            Typing::BluetoothName { .. } => crate::bluetooth::fault(text),
+        }
+    }
+}
+
+/// What happens to Bluetooth when a session starts.
+///
+/// Three answers rather than a switch, because "on" and "off" between them
+/// cannot say the thing most people actually want, which is *leave it*. A
+/// machine that is only ever paired with a controller wants it on; a machine
+/// where Bluetooth is a battery cost wants it off; and somebody who turns it on
+/// for an evening and off again wants neither of those decided for them at every
+/// login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Startup {
+    /// Turned on as the session comes up.
+    On,
+    /// Turned off as the session comes up.
+    Off,
+    /// Put back the way the last session left it.
+    ///
+    /// The default, and the only one of the three that changes nothing about a
+    /// machine nobody has been to this page on. What it restores is what *this
+    /// shell* last saw — see [`note_bluetooth_powered`] — rather than what BlueZ
+    /// happens to remember, because a machine where the two disagree is one
+    /// where the user last pressed the switch on this page.
+    #[default]
+    Restore,
+}
+
+impl Startup {
+    /// How the settings file spells it.
+    fn key(self) -> &'static str {
+        match self {
+            Startup::On => "on",
+            Startup::Off => "off",
+            Startup::Restore => "restore",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "on" => Some(Startup::On),
+            "off" => Some(Startup::Off),
+            "restore" => Some(Startup::Restore),
+            _ => None,
+        }
+    }
+
+    /// What the row above the three says.
+    fn title(self) -> &'static str {
+        match self {
+            Startup::On => "On",
+            Startup::Off => "Off",
+            Startup::Restore => "As it was left",
+        }
+    }
 }
 
 /// When a night light burns.
@@ -873,6 +1131,53 @@ pub fn start_music() -> bool {
     *START_MUSIC.lock().unwrap()
 }
 
+/// Whether the battery's charge is written out in figures in the corner.
+///
+/// Off, unlike the music above it, and for the reason that one is on: what a
+/// console does by default is the thing somebody would not have to go looking
+/// for. Music is what the Start screen has always done. A number on the
+/// wallpaper is not — the mark says how much is left, which is what a glance
+/// at a corner asks, and the figures are for somebody who came looking for the
+/// exact charge and will find the row when they do.
+///
+/// Kept here for the reason [`START_MUSIC`] and [`SOUND`] are: the settings
+/// file is built out of the live values at the moment it is written, so a value
+/// the writer cannot see is one the next change to anything else drops.
+static BATTERY_PERCENT: Mutex<bool> = Mutex::new(false);
+
+/// Whether the battery's charge is written out in figures beside the clock.
+pub fn battery_percent() -> bool {
+    *BATTERY_PERCENT.lock().unwrap()
+}
+
+/// What is in this machine's battery, as [`crate::power`] last found it, and
+/// `None` for a machine that has none.
+///
+/// Reported rather than remembered, on exactly the terms [`DEVICES`] and
+/// [`NETWORK`] are: it is a statement about hardware made by something outside
+/// this module, and nothing of it goes into the settings file. A laptop whose
+/// battery has been taken out is a machine with none, and both the row and the
+/// switch under it go away with it — the alternative is a settings page
+/// describing a shell that this machine cannot show.
+static BATTERY: Mutex<Option<crate::power::Charge>> = Mutex::new(None);
+
+/// Record what the battery said. `true` when the column has to be rebuilt to
+/// say so — as [`note_devices`].
+///
+/// Which is *not* every change, unlike the two above it, and this is the one
+/// place that distinction is worth drawing: a discharging battery reports a
+/// different number every time it is read, and rebuilding the Settings column
+/// three times a minute for the length of a session would be a page rebuilt for
+/// a difference it does not show. What the column shows is the row's drawing,
+/// so that is what is compared.
+pub fn note_battery(charge: Option<crate::power::Charge>) -> bool {
+    let mut held = BATTERY.lock().unwrap();
+    let shown = |charge: &Option<crate::power::Charge>| charge.map(crate::ui::battery_glyph);
+    let changed = shown(&held) != shown(&charge);
+    *held = charge;
+    changed
+}
+
 /// How large every application draws its own interface, in per cent of the size
 /// it chose. See [`application_scale`].
 ///
@@ -997,6 +1302,114 @@ pub fn note_devices(reported: Devices) -> bool {
     }
     *held = reported;
     true
+}
+
+/// What this machine is on, as [`crate::network`] last found it.
+///
+/// Reported rather than remembered, on exactly the terms [`DEVICES`] is: it
+/// describes hardware that is plugged in and air that is being listened to at
+/// this moment, it is read by something outside this module, and nothing of it
+/// goes into the settings file. See [`Setting::Network`].
+static NETWORK: Mutex<crate::network::Listing> = Mutex::new(crate::network::Listing::none());
+
+/// Record what the network manager said. `true` when it is a change, and so
+/// when the column has to be rebuilt to say so — as [`note_devices`].
+pub fn note_network(reported: crate::network::Listing) -> bool {
+    let mut held = NETWORK.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
+/// What the Network pages are drawn from.
+pub fn network_listing() -> crate::network::Listing {
+    NETWORK.lock().unwrap().clone()
+}
+
+/// What this machine is paired with, as [`crate::bluetooth`] last found it.
+///
+/// Reported rather than remembered, on the terms [`NETWORK`] is and for the
+/// same reason: it describes a controller that is switched on and air that is
+/// being listened to at this moment, and nothing of it goes into the settings
+/// file. See [`Setting::Bluetooth`].
+static BLUETOOTH: Mutex<crate::bluetooth::Listing> = Mutex::new(crate::bluetooth::Listing::none());
+
+/// Record what BlueZ said. `true` when it is a change, and so when the column
+/// has to be rebuilt to say so — as [`note_network`].
+pub fn note_bluetooth(reported: crate::bluetooth::Listing) -> bool {
+    let mut held = BLUETOOTH.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
+/// What the Bluetooth pages are drawn from.
+pub fn bluetooth_listing() -> crate::bluetooth::Listing {
+    BLUETOOTH.lock().unwrap().clone()
+}
+
+/// Which controller the machine's Bluetooth *is*, by its address.
+///
+/// Three things about Bluetooth are the shell's own and are written down, and
+/// this is the first: a machine with a card on the board and a dongle in the
+/// front has two radios and one of them is the one the user means. BlueZ has no
+/// opinion about that — every adapter is equal to it — so somebody has to keep
+/// the answer, and it has to survive a reboot.
+///
+/// The **address** rather than `hci0`, because the numbering is the order the
+/// kernel happened to probe them in: a dongle plugged in before the machine
+/// booted is `hci0` today and `hci1` tomorrow, and a preference pinned to that
+/// would quietly move to the other radio. An address does not move.
+///
+/// `None` until somebody chooses, which is a machine that uses the first
+/// controller BlueZ lists — see [`chosen_controller`].
+static BLUETOOTH_CONTROLLER: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn bluetooth_controller() -> Option<String> {
+    BLUETOOTH_CONTROLLER.lock().unwrap().clone()
+}
+
+/// What happens to Bluetooth when a session starts. The second of the three
+/// answers BlueZ does not have.
+static BLUETOOTH_STARTUP: Mutex<Startup> = Mutex::new(Startup::Restore);
+
+pub fn bluetooth_startup() -> Startup {
+    *BLUETOOTH_STARTUP.lock().unwrap()
+}
+
+/// Whether Bluetooth was on when this shell last looked. The third, and the one
+/// nothing chooses.
+///
+/// Written by the shell watching rather than by anybody pressing anything,
+/// which makes it the counterpart of [`CONTROLLER_IN_HAND`]: it is a fact about
+/// the last session that the next one needs, and there is no row for it. It is
+/// what [`Startup::Restore`] restores.
+static BLUETOOTH_WAS_ON: Mutex<bool> = Mutex::new(true);
+
+pub fn bluetooth_was_on() -> bool {
+    *BLUETOOTH_WAS_ON.lock().unwrap()
+}
+
+/// Record whether Bluetooth is on, writing the file only when it has moved.
+///
+/// Called from the frame that notices a change rather than on the way out,
+/// because there is no way out to rely on: a session ends by the machine being
+/// switched off at least as often as by anybody signing out, and a value only
+/// written at shutdown is one that is not there after the times it matters
+/// most.
+pub fn note_bluetooth_powered(on: bool) {
+    {
+        let mut held = BLUETOOTH_WAS_ON.lock().unwrap();
+        if *held == on {
+            return;
+        }
+        *held = on;
+    }
+    save(&stored());
 }
 
 /// Set them, and write it down. Reports whether anything moved.
@@ -1189,18 +1602,27 @@ fn offered_by(display: &str) -> Vec<Offered> {
         .unwrap_or_default()
 }
 
-/// Connector and sound-device names, kept alive for as long as the process is.
+/// Connector, sound-device and network names, kept alive for as long as the
+/// process is.
 ///
-/// A [`Setting`] has to name the display or the device it belongs to and stay
-/// `Copy`: every row of the bar carries one by value, and the catalogue holding
-/// those rows is cloned, walked and compared all over the shell, so an owned
-/// `String` in there would ripple out through the model, the layout and the
-/// input path. Both kinds of name are fixed for as long as the thing they name
-/// exists, there are single digits of each, and they are already alive for the
-/// whole session — so they are interned once each and never freed. A headset
-/// plugged in and out all afternoon is one name, not one per plug: the sound
-/// server calls it the same thing every time, which is the same property that
-/// makes the name worth handing back to it.
+/// A [`Setting`] has to name the display, the device or the network it belongs
+/// to and stay `Copy`: every row of the bar carries one by value, and the
+/// catalogue holding those rows is cloned, walked and compared all over the
+/// shell, so an owned `String` in there would ripple out through the model, the
+/// layout and the input path. Every one of these names is fixed for as long as
+/// the thing it names exists, and they are already alive for the whole session
+/// — so they are interned once each and never freed. A headset plugged in and
+/// out all afternoon is one name, not one per plug: the sound server calls it
+/// the same thing every time, which is the same property that makes the name
+/// worth handing back to it.
+///
+/// Connectors and sound devices are single digits of each. Wireless networks
+/// are not, and that is worth being honest about: this table grows by one short
+/// string for every network name that has ever been *drawn* in this session,
+/// which in a café is a few dozen and on a walk through a block of flats could
+/// be a few hundred. It is bounded by somebody standing at the Networks page
+/// watching them arrive, which is a few kilobytes at the outside — and it buys
+/// a `Copy` setting, which is what every other row in the tree is.
 fn intern(name: &str) -> &'static str {
     static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap();
@@ -1346,12 +1768,25 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// them in and the order the two are noticed in. Appearance stands in front of
 /// both because it is the shell describing itself rather than the machine.
 ///
+/// Bluetooth follows Network because the two are one question asked twice — what
+/// is this machine talking to — and because the answer to the second is usually
+/// something the user is holding. It is second of the pair for the reason
+/// Network is fourth: a console can be used without it, and it cannot be used
+/// without a picture.
+///
 /// System comes last because it is the one page about neither: what a display
 /// is doing and what the speakers are doing are things the user can point at,
 /// and how large the programs on the machine draw themselves is a setting they
 /// go looking for.
 pub fn column() -> Vec<Entry> {
-    vec![appearance(), display(), sounds(), system()]
+    vec![
+        appearance(),
+        display(),
+        sounds(),
+        network(),
+        bluetooth(),
+        system(),
+    ]
 }
 
 /// Replace the Settings column in a catalogue with a freshly built one.
@@ -1373,13 +1808,49 @@ pub fn refresh(categories: &mut [Category]) {
     }
 }
 
-/// How the shell looks: for now, the one colour everything chosen is drawn in.
+/// How the shell looks: the colour everything chosen is drawn in, and — on a
+/// machine that has a battery — whether its corner writes the charge out.
+///
+/// The accent first, because it is the whole shell and the other is one mark on
+/// one screen.
 fn appearance() -> Entry {
+    let mut rows = vec![accent_colour()];
+    // Only on a machine that has one. A desktop offered a switch for battery
+    // figures would be offered a setting it can never see the effect of, which
+    // is worse than not being offered it: the user would turn it on and go
+    // looking for what changed.
+    if let Some(charge) = *BATTERY.lock().unwrap() {
+        rows.push(battery_percent_switch(charge));
+    }
     folder(
         "Appearance",
         "How the shell looks",
         icons::SETTING_APPEARANCE,
-        vec![accent_colour()],
+        rows,
+    )
+}
+
+/// The battery's charge in figures, on or off.
+///
+/// Off and On in that order and marked the way every other switch in this tree
+/// is — see [`start_music_switch`], which is the same question asked about the
+/// music.
+///
+/// The row is drawn with the level the machine is actually at, so the list
+/// somebody opens is headed by the mark they are deciding about rather than by
+/// a picture of a full battery this machine may be nowhere near. It is the one
+/// row in this tree whose glyph moves, and it moves for the same reason the
+/// accent rows are each painted in the colour they stand for.
+fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
+    let on = battery_percent();
+    folder(
+        "Battery percentage",
+        "Write the charge out beside the clock",
+        crate::ui::battery_glyph(charge),
+        vec![
+            value("Off", None, !on, Setting::BatteryPercent(false)),
+            value("On", None, on, Setting::BatteryPercent(true)),
+        ],
     )
 }
 
@@ -2844,21 +3315,1497 @@ fn start_music_switch() -> Entry {
     )
 }
 
+/// Network: what this machine is on.
+///
+/// The third of the three things a session does with the world outside itself —
+/// the picture goes out, the sound goes out, and this goes both ways — so it
+/// stands with Display and Sounds rather than under System, and after them
+/// because it is the one of the three a console can be used without.
+///
+/// What is inside depends on what is in the machine, all the way down. A
+/// desktop with no radio in it has no Wi-Fi page; a machine with no socket has
+/// no Wired page; one with neither has a row saying so. That is the same rule
+/// the HDR page is built by — a screen that cannot do it is not listed — and it
+/// matters more here, because a Wi-Fi page on a machine with no wireless card
+/// is not merely useless: it is a page that would have the user turning a radio
+/// on and off looking for a network that was never going to appear.
+///
+/// See [`crate::network`] for why this one page in the tree depends on a daemon
+/// when nothing else does.
+fn network() -> Entry {
+    let listing = network_listing();
+    let radios = listing.of(crate::network::Kind::Wireless);
+    let sockets = listing.of(crate::network::Kind::Wired);
+    let mut rows = Vec::new();
+    if !sockets.is_empty() {
+        rows.push(wired(&sockets));
+    }
+    if !radios.is_empty() {
+        rows.push(wireless(&listing, &radios));
+    }
+    if rows.is_empty() {
+        // Never an empty column: the bar refuses to step into one, so a machine
+        // with nothing to configure would have a row that silently did nothing
+        // when pressed. What it has to say instead is *why* — and the two
+        // reasons are not the same fact. See [`nothing_to_connect_with`].
+        rows.push(nothing_to_connect_with(listing.manager));
+    }
+    folder(
+        "Network",
+        "The socket in the back of the machine, and the air around it",
+        icons::SETTING_NETWORK,
+        rows,
+    )
+}
+
+/// The row that stands in for the pages when there is nothing to put on them.
+///
+/// The two cases are not the same fact and must not read as one, exactly as the
+/// sound device page's two are not: a machine whose network manager lists
+/// nothing has no network hardware in it, and a session with no network manager
+/// is one where nothing is in charge of the question — the machine may well be
+/// on a network, configured by something this shell cannot see. The first is
+/// about the hardware, the second about the session, and a user is entitled to
+/// know which they are looking at.
+fn nothing_to_connect_with(manager: bool) -> Entry {
+    if !manager {
+        return reading(
+            "No network manager is running",
+            "Without NetworkManager nothing here decides what this machine is \
+             on; whatever configured the network did so outside this session",
+        );
+    }
+    reading(
+        "No network hardware",
+        "The network manager lists neither a wired socket nor a wireless radio \
+         on this machine",
+    )
+}
+
+/// Wi-Fi: the radio, the networks it can hear, and what it is on.
+///
+/// The three shapes [`resolution`] has, for the same reason — except that the
+/// radio switch stands above the lot of them rather than inside each. It is one
+/// switch for the whole machine, whatever is in it: `NetworkManager` has a
+/// single `WirelessEnabled`, and a page that offered one per card would be
+/// offering a control that does not exist.
+fn wireless(listing: &crate::network::Listing, radios: &[&crate::network::Device]) -> Entry {
+    let mut rows = vec![radio_switch(listing)];
+    let note = match radios {
+        // One radio, so there is no radio to choose between: its controls take
+        // the place of the list, and the row above them says what it is doing.
+        [only] => {
+            rows.extend(wireless_controls(listing, only));
+            device_note(only)
+        }
+        many => {
+            rows.extend(many.iter().map(|radio| {
+                folder(
+                    &radio.interface,
+                    &device_note(radio),
+                    icons::SETTING_WIFI,
+                    wireless_controls(listing, radio),
+                )
+            }));
+            "The wireless radios in this machine".to_string()
+        }
+    };
+    folder("Wi-Fi", &note, icons::SETTING_WIFI, rows)
+}
+
+/// The radio switch, or the row that says why there is not one.
+///
+/// A switch the machine will not honour is not a switch. A laptop with its
+/// wireless killed by the key above the keyboard reports the radio as
+/// unavailable in *hardware*, and offering On there would be offering something
+/// that cannot happen — the press would be accepted, nothing would change, and
+/// the mark would sit on a row describing a machine that is not this one.
+fn radio_switch(listing: &crate::network::Listing) -> Entry {
+    if !listing.radio_switchable {
+        return reading(
+            "Wi-Fi is off at the machine",
+            "A switch on this machine has the wireless radio off; nothing in \
+             software can turn it back on",
+        );
+    }
+    let on = listing.radio;
+    folder(
+        "Wi-Fi",
+        "Whether the wireless radio is on",
+        icons::SETTING_WIFI,
+        vec![
+            value(
+                "Off",
+                None,
+                !on,
+                Setting::Network(NetworkValue::Radio(false)),
+            ),
+            value("On", None, on, Setting::Network(NetworkValue::Radio(true))),
+        ],
+    )
+}
+
+/// What one radio offers: the networks it can hear, and what it was given.
+///
+/// Nothing at all when the radio is off, and that is the whole of what being
+/// off means on this page: the switch above is the one row left, which is the
+/// honest picture of a card that cannot hear anything.
+///
+/// A radio switched off by a key on the machine is off in exactly the same
+/// sense, and gets exactly the same page. It is asked separately because the
+/// two are separate facts: `WirelessEnabled` can read true on a card whose
+/// hardware switch has it off, and a Networks page built from that one would be
+/// a page that never has anything on it and never says why.
+///
+/// The addressing is not here, and that is the one difference from a socket's
+/// page. An address belongs to a *profile*, and a radio's profile is whichever
+/// network it is on — so a card that has been on four networks this week has
+/// four answers to "what address does this take", and a row here would silently
+/// be about one of them. It lives under the network instead; see
+/// [`network_row`].
+fn wireless_controls(
+    listing: &crate::network::Listing,
+    radio: &crate::network::Device,
+) -> Vec<Entry> {
+    if !listing.radio || !listing.radio_switchable {
+        return Vec::new();
+    }
+    let mut rows = vec![networks_page(listing, radio)];
+    rows.extend(connection_information(radio));
+    rows
+}
+
+/// Every network in the air, with the one this radio is on marked.
+///
+/// The networks and nothing else. This column used to open with a `Not
+/// connected` row — an answer to the question the list asks, for a machine that
+/// is on none of them, and for a while the only way off a network short of
+/// turning the whole radio off. That reason is gone: the network the radio is
+/// on is stepped into now, and `Disconnect` is in there where somebody looking
+/// for a way off this network would look for it. What was left was a row
+/// standing above the list doing the same thing at a distance, which is one row
+/// of ceremony on every visit to the page for a press most people make once.
+///
+/// So on a machine that is on none of them, nothing here is marked, and that is
+/// the honest picture: the question has no answer yet rather than an answer
+/// called none. The column then opens on its first row, which is the strongest
+/// network in the air — which is what somebody who came here to get connected
+/// was reaching for.
+///
+/// A radio that hears nothing gets a line saying so rather than an empty
+/// column. `Networks` says `Nothing in range` before it is stepped into, but a
+/// row that opens onto nothing at all reads as a shell that failed rather than
+/// as an answer — and [`crate::model::Cursor::enter`] will not open an empty
+/// column, so the press would do nothing whatever.
+fn networks_page(listing: &crate::network::Listing, radio: &crate::network::Device) -> Entry {
+    let device = intern(&radio.path);
+    let networks = listing.networks_of(&radio.path);
+    let rows = match networks.is_empty() {
+        true => vec![reading(
+            "Nothing in range",
+            "The radio is on and hearing nothing. Networks appear here as they \
+             are found.",
+        )],
+        false => networks
+            .iter()
+            .map(|network| network_row(device, radio, network))
+            .collect(),
+    };
+    folder(
+        "Networks",
+        &networks_note(radio, networks),
+        icons::SETTING_WIFI,
+        rows,
+    )
+}
+
+/// What the Networks row says before it is stepped into.
+fn networks_note(radio: &crate::network::Device, networks: &[crate::network::Network]) -> String {
+    if let Some(trouble) = radio.trouble.as_deref() {
+        return trouble.to_string();
+    }
+    if let Some(joined) = networks.iter().find(|network| network.joined) {
+        return format!("{} — {}%", joined.ssid, joined.strength);
+    }
+    match networks.len() {
+        0 => "Nothing in range".to_string(),
+        1 => "1 network in range".to_string(),
+        many => format!("{many} networks in range"),
+    }
+}
+
+/// One network's row.
+///
+/// Four shapes, and which one a network gets says what pressing it does.
+///
+/// An enterprise network is a [`reading`] rather than a choice, and that is the
+/// one place on this page where a row the user can see is a row they cannot
+/// press. It is listed at all because leaving it out would answer "my network is
+/// not here" with silence; it carries no setting because joining it needs a user
+/// name, a certificate and a server's agreement, and a shell that took a
+/// password for it would be collecting something nobody asked for.
+///
+/// The one the radio is *on* is a subcategory carrying the tick — see
+/// [`crate::apps::Folder::chosen`] — because it is the only row here whose
+/// press has nothing to do. Joining a network the radio is already on is a
+/// no-op, and behind that press is the one thing this page could not otherwise
+/// say: the address and the name servers this machine takes, which belong to
+/// the profile it is connected by and to no other. So the tick still says which
+/// network is in force, the column still opens on it, and stepping in is where
+/// the addressing lives.
+///
+/// A network this machine has a *profile* for is a subcategory too, without the
+/// tick, and for a reason of the same kind: a saved network is the one other
+/// row here that has more than one thing to do. It can be joined, and it can be
+/// forgotten — and forgetting is not something a list of networks can offer
+/// anywhere else, because there is nowhere else in this shell that knows which
+/// networks the machine remembers. Pressing it no longer joins on the spot; see
+/// [`saved_network`], which says what that costs and why it is worth it.
+///
+/// Every other network is a value: pressing it joins. That is the whole of a
+/// network the machine has never been on — there is nothing saved to remove and
+/// nothing to configure until it has been joined once — so it keeps the single
+/// press, which is what a user picking their own network out of the air wants.
+///
+/// Nothing here is marked on a machine that is on none of them, and that is
+/// deliberate; see [`networks_page`].
+fn network_row(
+    device: &'static str,
+    radio: &crate::network::Device,
+    network: &crate::network::Network,
+) -> Entry {
+    use crate::network::Security;
+    if network.security == Security::Enterprise {
+        return reading(
+            &network.ssid,
+            &format!(
+                "{}% — this network needs a user name and a certificate, which \
+                 have to be set up outside this shell",
+                network.strength
+            ),
+        );
+    }
+    // Whether or not a profile can be read for the device. It used to want one,
+    // because the only thing behind this row was the addressing and there is
+    // none without a profile; now the way off the network is in there too, and
+    // that must not depend on `NetworkManager` having got round to publishing an
+    // active connection for a device whose radio is already associated. See
+    // [`ip_address`], which says so in words where there is nothing to
+    // configure yet.
+    if network.joined {
+        return joined_network(device, radio, network);
+    }
+    if network.saved {
+        return saved_network(device, network);
+    }
+    value(
+        &network.ssid,
+        Some(&network_note_of(network)),
+        network.joined,
+        Setting::Network(NetworkValue::Join {
+            device,
+            ssid: intern(&network.ssid),
+        }),
+    )
+}
+
+/// The network the radio is on: its addressing, and the two ways off it.
+///
+/// The addressing stands above the pair that act, and the order is the whole of
+/// the protection this page gives them. A column opens on the row in force, and
+/// nothing here is in force — so it opens on the first row, and the first row
+/// has to be one that does nothing but open another column. Somebody stepping
+/// into their own network and pressing Accept twice out of habit lands on `IP
+/// address`, not on Forget.
+///
+/// Between the two that act, Disconnect stands first for the reason Off stands
+/// above On in every switch in this tree: it is the one that does less, and it
+/// is the one that can be undone from the page it leaves behind.
+///
+/// Disconnect is the only way off a network in the shell, which is why it is
+/// built for every joined row and not only for one with a profile behind it.
+/// The column this row stands in used to carry a `Not connected` answer that
+/// did the same thing from outside; it does not any more, because a way off
+/// *this* network belongs on the page about this network, where somebody
+/// looking for it will look.
+fn joined_network(
+    device: &'static str,
+    radio: &crate::network::Device,
+    network: &crate::network::Network,
+) -> Entry {
+    let ssid = intern(&network.ssid);
+    let mut rows = vec![ip_address(radio, &network.ssid)];
+    rows.extend(dns_page(radio, &network.ssid));
+    rows.push(action(
+        "Disconnect",
+        "Come off this network, and keep it saved",
+        icons::SETTING_DISCONNECT,
+        Setting::Network(NetworkValue::Leave { device }),
+    ));
+    rows.push(forget(device, ssid));
+    chosen_folder(
+        &network.ssid,
+        &network_note_of(network),
+        icons::SETTING_WIFI,
+        rows,
+    )
+}
+
+/// A network this machine remembers but is not on: joining it again, and
+/// forgetting it.
+///
+/// This costs a press. Joining a saved network used to be one Accept on the
+/// list and is now two, and that is worth saying plainly because it is the one
+/// change on this page that takes something away. What it buys is the only
+/// place in the shell where a saved network can be removed: the list is
+/// otherwise a list of *networks in the air*, where what the machine remembers
+/// is invisible except as one word in a comment, and a user who typed the wrong
+/// password once has no way to make this shell ask again.
+///
+/// Connect stands first, so the column opens on it — that is what stepping into
+/// a network the machine already knows is for, and it keeps the common press to
+/// Accept, Accept from the list.
+///
+/// A network with nothing saved keeps its single press; see [`network_row`].
+fn saved_network(device: &'static str, network: &crate::network::Network) -> Entry {
+    let ssid = intern(&network.ssid);
+    let rows = vec![
+        action(
+            "Connect",
+            "Join this network again",
+            icons::SETTING_CONNECT,
+            Setting::Network(NetworkValue::Join { device, ssid }),
+        ),
+        forget(device, ssid),
+    ];
+    folder(
+        &network.ssid,
+        &network_note_of(network),
+        icons::SETTING_WIFI,
+        rows,
+    )
+}
+
+/// The row that removes a saved network from the machine.
+///
+/// One row written once, because the two pages it appears on must not drift:
+/// what forgetting costs is the same whether the radio is on the network or
+/// not, and it is a sentence a user has one chance to read.
+///
+/// The comment says what goes rather than what happens. "This machine will ask
+/// for the password again" is the consequence somebody needs before they press
+/// it — not that a profile is deleted, which is true and means nothing to
+/// anyone who has not read `NetworkManager`'s manual.
+///
+/// It wears the waste bin the context menu's Uninstall row wears, which is the
+/// only mark in the shell used from two places. See [`icons::UNINSTALL`]: the
+/// bin means *this is taken off the machine*, and that is exactly as true of a
+/// saved network as it is of a program.
+fn forget(device: &'static str, ssid: &'static str) -> Entry {
+    action(
+        "Forget",
+        "Remove this network: the password will be asked for again",
+        icons::UNINSTALL,
+        Setting::Network(NetworkValue::Forget { device, ssid }),
+    )
+}
+
+/// What one network's row says under its name: what joining it takes, how well
+/// it is heard, and which band it was heard on.
+///
+/// "Saved" rather than the protection where there is a profile for it, because
+/// those are the same fact seen from either side and only one of them is what
+/// the user is about to find out: a saved network joins on the press, and an
+/// unsaved secured one asks for a password first.
+fn network_note_of(network: &crate::network::Network) -> String {
+    let what = if network.joined {
+        "Connected"
+    } else if network.saved {
+        "Saved"
+    } else {
+        network.security.title()
+    };
+    match band_of(network.frequency) {
+        Some(band) => format!("{what} — {}% at {band}", network.strength),
+        None => format!("{what} — {}%", network.strength),
+    }
+}
+
+/// Which band a frequency in MHz is in, as a person names it.
+///
+/// The three that are in the air, and nothing for a number in none of them:
+/// a row saying "5745 MHz" would be the shell reading a register out loud.
+fn band_of(frequency: u32) -> Option<&'static str> {
+    match frequency {
+        2401..=2495 => Some("2.4 GHz"),
+        5150..=5895 => Some("5 GHz"),
+        5925..=7125 => Some("6 GHz"),
+        _ => None,
+    }
+}
+
+/// What address this interface takes: asked of the network, or pinned.
+///
+/// The two values it can be pinned to are inside this column rather than beside
+/// it, and that is the one thing about the shape worth arguing over. They could
+/// have been rows of the page above — the night light's hours are — but that
+/// page would then carry five rows about addressing where it now carries two,
+/// and two of the five would be named `Address` under a row named `IP address`.
+/// Inside, the column reads as what it is: here are the two answers, and here is
+/// what the second one is set to.
+///
+/// IPv4 only. See [`crate::network::Ipv4`], which says why, and what a machine
+/// given a static address still gets over IPv6.
+///
+/// `whose` is the connection this addressing belongs to, by the name its owner
+/// would use for it — a network's own name on a radio, a profile's on a socket.
+/// It is not on the rows, which stand under a trail that already says it; it is
+/// carried to the panels the typed rows open, which cover that trail. See
+/// [`crate::apps::Typed::whose`].
+fn ip_address(device: &crate::network::Device, whose: &str) -> Entry {
+    let name = intern(&device.path);
+    let ipv4 = &device.ipv4;
+    if device.profile.is_none() {
+        return folder(
+            "IP address",
+            "Nothing to configure yet",
+            icons::SETTING_ADDRESS,
+            vec![reading(
+                "No connection to configure",
+                "An address belongs to a saved connection rather than to the \
+                 socket; connect this interface once and it can be set here",
+            )],
+        );
+    }
+    let mut rows = vec![value(
+        "Automatic",
+        Some("Asked for from the network"),
+        ipv4.automatic,
+        Setting::Network(NetworkValue::Addressing {
+            device: name,
+            automatic: true,
+        }),
+    )];
+    // Manual needs an address to pin, and where there is none the row says so
+    // instead of being a press that is accepted and does nothing — see
+    // [`crate::network::Ipv4::can_pin`].
+    rows.push(match ipv4.can_pin {
+        true => value(
+            "Manual",
+            Some("Pinned, and kept across reboots"),
+            !ipv4.automatic,
+            Setting::Network(NetworkValue::Addressing {
+                device: name,
+                automatic: false,
+            }),
+        ),
+        false => reading(
+            "Manual",
+            "There is no address to pin yet: connect this interface, and the \
+             one it is given can be kept",
+        ),
+    });
+    if !ipv4.automatic {
+        rows.push(typed(
+            name,
+            crate::network::Field::Address,
+            ipv4.address.as_deref(),
+            whose,
+        ));
+        rows.push(typed(
+            name,
+            crate::network::Field::Router,
+            ipv4.gateway.as_deref(),
+            whose,
+        ));
+    }
+    folder("IP address", &ip_note(ipv4), icons::SETTING_ADDRESS, rows)
+}
+
+/// What the row above the addressing says, so the usual question is answered
+/// without stepping in.
+fn ip_note(ipv4: &crate::network::Ipv4) -> String {
+    match (ipv4.automatic, ipv4.address.as_deref()) {
+        (true, _) => "Automatic — asked for from the network".to_string(),
+        (false, Some(address)) => format!("Manual — {address}"),
+        // A manual profile always has an address; this is the moment between
+        // the method being written and the address arriving, and it is worth a
+        // word rather than an empty line.
+        (false, None) => "Manual — no address set".to_string(),
+    }
+}
+
+/// Where this interface's name servers come from.
+///
+/// Called DNS on screen and nowhere else in this module, because that is the
+/// word every router's own page uses and the one somebody looking for this
+/// setting will look for. See [`crate::network::Field::Dns`].
+///
+/// The choice is offered only under automatic addressing, and that is not a
+/// simplification: a pinned profile runs no DHCP, so there is nothing for its
+/// name servers to be automatic *from*. Under Manual the column is the list and
+/// the reason there is no choice, which is the honest page — offering an
+/// "Automatic" there that quietly meant "none at all" would be the one row in
+/// this tree that says something untrue.
+///
+/// `whose` is what it is for [`ip_address`].
+fn dns_page(device: &crate::network::Device, whose: &str) -> Option<Entry> {
+    let name = intern(&device.path);
+    device.profile.as_ref()?;
+    let ipv4 = &device.ipv4;
+    let mut rows = Vec::new();
+    if ipv4.automatic {
+        rows.push(value(
+            "Automatic",
+            Some("Whatever the network offers"),
+            ipv4.dns_automatic,
+            Setting::Network(NetworkValue::Dns {
+                device: name,
+                automatic: true,
+            }),
+        ));
+        rows.push(value(
+            "Manual",
+            Some("Only the ones named below"),
+            !ipv4.dns_automatic,
+            Setting::Network(NetworkValue::Dns {
+                device: name,
+                automatic: false,
+            }),
+        ));
+    } else {
+        rows.push(reading(
+            "Always manual here",
+            "A pinned address runs no DHCP, so there is nothing to take name \
+             servers from",
+        ));
+    }
+    if !ipv4.automatic || !ipv4.dns_automatic {
+        let named = ipv4.dns.join(", ");
+        rows.push(typed(
+            name,
+            crate::network::Field::Dns,
+            (!named.is_empty()).then_some(named.as_str()),
+            whose,
+        ));
+    }
+    Some(folder(
+        "DNS",
+        &dns_note(ipv4),
+        icons::SETTING_NAME_SERVER,
+        rows,
+    ))
+}
+
+fn dns_note(ipv4: &crate::network::Ipv4) -> String {
+    if ipv4.automatic && ipv4.dns_automatic {
+        return "Automatic — whatever the network offers".to_string();
+    }
+    match ipv4.dns.as_slice() {
+        [] => "None set".to_string(),
+        named => named.join(", "),
+    }
+}
+
+/// One row that is typed into rather than chosen.
+///
+/// The comment is the value itself, which is the one thing a row like this has
+/// to say: the title names what it is for and the value is what it is. A value
+/// nobody has set says so in words rather than leaving the line blank, because
+/// a blank line reads as a row that failed to load.
+fn typed(
+    device: &'static str,
+    field: crate::network::Field,
+    value: Option<&str>,
+    whose: &str,
+) -> Entry {
+    Entry::Typed(crate::apps::Typed {
+        title: field.title().to_string(),
+        whose: whose.to_string(),
+        comment: match value {
+            Some(value) => value.to_string(),
+            None => "Not set".to_string(),
+        },
+        icon: icons::SETTING_TYPED.to_string(),
+        value: value.unwrap_or_default().to_string(),
+        about: Typing::Network { device, field },
+    })
+}
+
+/// Wired: the socket, or one page per socket on a machine with several.
+///
+/// The same three shapes as [`wireless`], without the switch above them: there
+/// is no radio to turn off, and what stands in its place is inside each socket's
+/// own page, because bringing a socket up is a thing done to that socket.
+fn wired(sockets: &[&crate::network::Device]) -> Entry {
+    match sockets {
+        [only] => folder(
+            "Wired",
+            &device_note(only),
+            icons::SETTING_ETHERNET,
+            wired_controls(only),
+        ),
+        many => folder(
+            "Wired",
+            "The sockets in the back of the machine",
+            icons::SETTING_ETHERNET,
+            many.iter()
+                .map(|socket| {
+                    folder(
+                        &socket.interface,
+                        &device_note(socket),
+                        icons::SETTING_ETHERNET,
+                        wired_controls(socket),
+                    )
+                })
+                .collect(),
+        ),
+        // `sockets` is never empty: the caller does not build this page when
+        // there is nothing to put on it. Answered anyway rather than matched
+        // exhaustively away, because a column with no rows in it is the one
+        // shape the bar cannot step into.
+    }
+}
+
+/// What one socket offers.
+fn wired_controls(socket: &crate::network::Device) -> Vec<Entry> {
+    let whose = whose_connection(socket);
+    let mut rows = vec![wired_switch(socket), ip_address(socket, &whose)];
+    rows.extend(dns_page(socket, &whose));
+    rows.extend(connection_information(socket));
+    rows
+}
+
+/// What to call the connection an interface's addressing belongs to.
+///
+/// The profile's own name where there is one — `Wired connection 1`, which is
+/// what `NetworkManager` files it under and what every other tool on the
+/// machine shows. Failing that the interface, which is the only other name the
+/// thing has: a socket with a saved profile it is not running still has an
+/// address to set, and `enp8s0` is a poorer subject than a profile name but a
+/// far better one than nothing.
+///
+/// A wireless network does not come through here. Its name is the network's,
+/// which the row already has in hand — see [`network_row`].
+fn whose_connection(device: &crate::network::Device) -> String {
+    device
+        .connection
+        .clone()
+        .unwrap_or_else(|| device.interface.clone())
+}
+
+/// Whether a socket is up, as a switch.
+///
+/// A socket with no cable in it is not offered the switch: there is nothing for
+/// On to do, and a row that accepted the press and left the mark on Off would be
+/// the page arguing with the user about something they can see by looking at the
+/// back of the machine.
+fn wired_switch(socket: &crate::network::Device) -> Entry {
+    if socket.carrier == Some(false) {
+        return reading(
+            "No cable",
+            "Nothing is plugged into this socket, so there is no connection to \
+             turn on",
+        );
+    }
+    let device = intern(&socket.path);
+    let up = socket.up();
+    folder(
+        "Connection",
+        "Whether this socket is connected",
+        icons::SETTING_ETHERNET,
+        vec![
+            value(
+                "Off",
+                None,
+                !up,
+                Setting::Network(NetworkValue::Wire { device, up: false }),
+            ),
+            value(
+                "On",
+                None,
+                up,
+                Setting::Network(NetworkValue::Wire { device, up: true }),
+            ),
+        ],
+    )
+}
+
+/// What a device was given, as a page to read.
+///
+/// Behind a row rather than on the page above it, and only when there is an
+/// address to report. These are facts, not settings: a page of settings with
+/// four unpressable rows at the bottom of it is a page whose controls are
+/// outnumbered by its footnotes, and a user walking down it has to read past
+/// them to find out there is nothing more to change. It is the same division
+/// the System page makes with [`system_information`], one level in.
+fn connection_information(device: &crate::network::Device) -> Option<Entry> {
+    let address = device.address.as_deref()?;
+    let mut values = vec![("IP address".to_string(), address.to_string())];
+    if let Some(gateway) = device.gateway.as_deref() {
+        values.push(("Router".to_string(), gateway.to_string()));
+    }
+    match device.nameservers.as_slice() {
+        [] => {}
+        // Every one of them, on one line. A machine is given two or three and
+        // they are one answer — which name servers am I using — rather than
+        // three separate facts.
+        servers => values.push(("DNS".to_string(), servers.join(", "))),
+    }
+    values.push(("Interface".to_string(), device.interface.clone()));
+    if let Some(hardware) = device.hardware.as_deref() {
+        values.push(("Hardware address".to_string(), hardware.to_string()));
+    }
+    if device.speed > 0 {
+        values.push(("Link speed".to_string(), format!("{} Mb/s", device.speed)));
+    }
+    Some(Entry::Facts(crate::apps::Facts {
+        title: "Connection information".to_string(),
+        comment: device.interface.clone(),
+        icon: icons::SETTING_INFO.to_string(),
+        about: crate::apps::About::Listed(values),
+    }))
+}
+
+/// What one interface is doing, in the few words a row's comment has room for.
+fn device_note(device: &crate::network::Device) -> String {
+    use crate::network::Link;
+    if let Some(trouble) = device.trouble.as_deref() {
+        return trouble.to_string();
+    }
+    match device.link {
+        Link::Up => match (device.connection.as_deref(), device.speed) {
+            (Some(connection), 0) => connection.to_string(),
+            (Some(connection), speed) => format!("{connection} — {speed} Mb/s"),
+            (None, _) => "Connected".to_string(),
+        },
+        Link::Working => "Connecting…".to_string(),
+        Link::Idle => "Not connected".to_string(),
+        Link::Failed => "Could not connect".to_string(),
+        Link::Unavailable => "Not ready".to_string(),
+    }
+}
+
+/// What the Bluetooth row is called, in the one place that decides it.
+///
+/// Written down rather than spelt twice because something outside this module
+/// has to recognise it: opening this page is part of what sets a radio looking
+/// around, and the shell asks which page is open by name. See
+/// [`crate::bluetooth::Bt::watch`] and [`SEARCH_PAGE`].
+pub const BLUETOOTH_PAGE: &str = "Bluetooth";
+
+/// And the one page inside it that costs the machine something to have open.
+///
+/// The scan runs while this column is open and at no other time — not while the
+/// devices are being read, not while Settings is on screen. See
+/// [`search_page`], which is where the argument for that is.
+pub const SEARCH_PAGE: &str = "Search to pair";
+
+/// Bluetooth: what this machine is paired with.
+///
+/// Three rows, and they are the three questions somebody arrives here with: is
+/// it on, what is it talking to, and what is this machine to everything else.
+/// Underneath the first two it is the Wi-Fi page's shape — a switch, and a
+/// column of things to connect to with the one it is on marked — because a user
+/// who has joined a wireless network on this shell has already learnt how to
+/// connect a pair of headphones.
+///
+/// **There is no page per controller, and that is the point of the third row.**
+/// There used to be: a machine with a card on the board and a dongle in the
+/// front got a column reading `hci0`, `hci1`, which is the kernel's own name for
+/// a thing and says nothing whatever to the person in front of the screen. Which
+/// radio the machine uses is a question with one answer, it is asked once, and
+/// it belongs with the rest of what this machine *is* — so it lives under
+/// Configuration and everything above it is about the one controller in force.
+/// See [`chosen_controller`].
+///
+/// A machine with no controller in it gets one row saying so, rather than the
+/// whole column being left out: a Bluetooth row that is simply missing is
+/// indistinguishable from a shell that does not do Bluetooth.
+///
+/// See [`crate::bluetooth`] for why this is the second page in the tree that
+/// depends on a daemon, and for the one thing it has that its sister does not:
+/// pairing is a conversation, and this session has to be the one that answers.
+fn bluetooth() -> Entry {
+    let listing = bluetooth_listing();
+    let rows = match chosen_controller(&listing) {
+        // Never an empty column: the bar refuses to step into one. See
+        // [`no_bluetooth`], which is also where the two reasons are told apart.
+        None => vec![no_bluetooth(listing.manager)],
+        Some(controller) => {
+            let mut rows = vec![power_switch(controller)];
+            // Nothing to list on a radio that cannot hear anything, which is
+            // the whole of what being off means here — the honest picture, and
+            // the one [`wireless_controls`] draws. Configuration stays: which
+            // radio this machine uses, what it is called and what happens at
+            // startup are all questions with answers while it is off.
+            if controller.powered && controller.switchable {
+                rows.push(devices_page(&listing, controller));
+            }
+            rows.push(configuration(&listing, controller));
+            rows
+        }
+    };
+    folder(
+        BLUETOOTH_PAGE,
+        "The devices this machine pairs with, and the controller it pairs from",
+        icons::SETTING_BLUETOOTH,
+        rows,
+    )
+}
+
+/// Which controller the machine's Bluetooth *is*.
+///
+/// The one the user chose, if it is still in the machine; failing that the
+/// first BlueZ lists. Both halves matter. A dongle that has been unplugged must
+/// not leave the page blank — the card on the board is still there and is still
+/// Bluetooth — and a machine nobody has chosen on has to work without anybody
+/// choosing, which is what every machine with one radio in it is.
+///
+/// Matched by address rather than by path, for the reason the preference is
+/// stored that way: `hci0` is the order the kernel probed them in. See
+/// [`BLUETOOTH_CONTROLLER`].
+pub fn chosen_controller(
+    listing: &crate::bluetooth::Listing,
+) -> Option<&crate::bluetooth::Controller> {
+    let wanted = bluetooth_controller();
+    listing
+        .controllers
+        .iter()
+        .find(|controller| Some(controller.address.as_str()) == wanted.as_deref())
+        .or_else(|| listing.controllers.first())
+}
+
+/// The row that stands in for the pages when there is no controller to draw
+/// them from.
+///
+/// Both cases say the same thing at the top, because it is the same thing to
+/// the user: there is no Bluetooth to be had here. What differs is the line
+/// under it, and that difference is worth keeping for the reason
+/// [`nothing_to_connect_with`] keeps its own — a machine with no controller in
+/// it will never have Bluetooth until somebody plugs one in, and a session
+/// whose Bluetooth service is not running is a machine that has it and has
+/// nothing in charge of it. The first is about the hardware, the second about
+/// the session, and only one of them is worth going to look at.
+fn no_bluetooth(manager: bool) -> Entry {
+    if !manager {
+        return reading(
+            "Bluetooth is not available",
+            "The Bluetooth service is not running, so nothing in this session \
+             is in charge of Bluetooth",
+        );
+    }
+    reading(
+        "Bluetooth is not available",
+        "There is no Bluetooth controller in this machine, so there is nothing \
+         to pair with",
+    )
+}
+
+/// The switch, or the row that says why there is not one.
+///
+/// A switch the machine will not honour is not a switch — see [`radio_switch`],
+/// which is the same argument about the radio beside it. The laptop key that
+/// kills wireless usually kills this too, and the two rows then say so
+/// separately because they are two radios.
+fn power_switch(controller: &crate::bluetooth::Controller) -> Entry {
+    if !controller.switchable {
+        return reading(
+            "Bluetooth is off at the machine",
+            "A switch on this machine has the Bluetooth radio off; nothing in \
+             software can turn it back on",
+        );
+    }
+    let path = intern(&controller.path);
+    let on = controller.powered;
+    folder(
+        "Bluetooth",
+        "Whether the Bluetooth radio is on",
+        icons::SETTING_BLUETOOTH,
+        vec![
+            value(
+                "Off",
+                None,
+                !on,
+                Setting::Bluetooth(BluetoothValue::Power {
+                    controller: path,
+                    on: false,
+                }),
+            ),
+            value(
+                "On",
+                None,
+                on,
+                Setting::Bluetooth(BluetoothValue::Power {
+                    controller: path,
+                    on: true,
+                }),
+            ),
+        ],
+    )
+}
+
+/// What this machine is paired with, and the one way to add to it.
+///
+/// **Only what the machine knows.** Everything in this column is something that
+/// has been paired with — connected or not, in the room or not — and the
+/// stranger a scan turns up is not here. That is the difference from the
+/// wireless page it is otherwise a copy of, and it follows from the difference
+/// underneath: a network in the air is a thing to join, and a Bluetooth device
+/// in the air is a thing to *pair with*, which is a decision, and a list where
+/// the headphones somebody uses every day sit among nine unnamed beacons from
+/// the flat upstairs is a list they have to search every time.
+///
+/// A paired device is listed whether or not it can be heard, which is the other
+/// half of the same argument. A network out of range cannot be listed because
+/// it is not in the air; headphones in a drawer are a thing the machine is still
+/// paired with — and forgetting them is exactly what somebody wants when the
+/// device is not to hand.
+///
+/// So the strangers live one step further in, behind [`search_page`], which is
+/// the row above the list rather than below it: it is what somebody arriving
+/// with a new thing in their hand is looking for, and it is the only row here
+/// that ever costs the radio anything.
+fn devices_page(
+    listing: &crate::bluetooth::Listing,
+    controller: &crate::bluetooth::Controller,
+) -> Entry {
+    let devices = listing.devices_of(&controller.path);
+    let known: Vec<&crate::bluetooth::Device> = devices
+        .iter()
+        .filter(|device| device.paired || device.connected)
+        .collect();
+    let mut rows = vec![search_page(devices)];
+    rows.extend(known.iter().map(|device| device_row(device)));
+    folder(
+        "Devices",
+        &devices_note(&known),
+        icons::SETTING_BLUETOOTH,
+        rows,
+    )
+}
+
+/// What the Devices row says before it is stepped into.
+fn devices_note(known: &[&crate::bluetooth::Device]) -> String {
+    if let Some(connected) = known.iter().find(|device| device.connected) {
+        return connected.name.clone();
+    }
+    match known.len() {
+        0 => "Nothing paired yet".to_string(),
+        1 => "1 device paired".to_string(),
+        many => format!("{many} devices paired"),
+    }
+}
+
+/// Everything in the air that this machine has never been paired with.
+///
+/// **The radio looks around while this column is open and at no other time.**
+/// That is the whole reason this is a page rather than a section of the one
+/// above it, and it is worth being plain about what it buys. A scanning
+/// controller shares its radio with whatever it is already carrying: a pair of
+/// headphones playing through the same adapter can be *heard* to mind, in
+/// dropouts, and on a laptop it is a measurable amount of battery. Tying the
+/// scan to Settings being on screen — which is what this page did before —
+/// meant somebody adjusting the night light with music playing paid for a list
+/// they were not looking at. Tying it to a row they pressed on purpose means
+/// the cost is only ever paid by somebody who came here to pair something.
+///
+/// It is never empty, and it cannot be: [`crate::model::Cursor::enter`] will not
+/// open an empty column, so a scan that only starts on the way in would be one
+/// that could never start at all. The line that stands there instead says what
+/// is happening and the one thing a user has to do at the other end — most
+/// devices have to be put into pairing mode before anything can hear them.
+fn search_page(devices: &[crate::bluetooth::Device]) -> Entry {
+    let strangers: Vec<&crate::bluetooth::Device> = devices
+        .iter()
+        .filter(|device| !device.paired && !device.connected)
+        .collect();
+    let rows = match strangers.is_empty() {
+        true => vec![reading(
+            "Looking for devices…",
+            "Nothing has answered yet. Most devices have to be put into \
+             pairing mode first.",
+        )],
+        false => strangers.iter().map(|device| device_row(device)).collect(),
+    };
+    folder(
+        SEARCH_PAGE,
+        "Look for something new to pair with",
+        icons::SEARCH,
+        rows,
+    )
+}
+
+/// One device's row.
+///
+/// Three shapes, where a network has four, and which one a device gets says
+/// what pressing it does. There is no unpressable row here — nothing in
+/// Bluetooth is the enterprise network's equivalent, a thing that can be seen
+/// and honestly cannot be joined from a console.
+///
+/// The one that is *connected* is a subcategory carrying the tick — see
+/// [`crate::apps::Folder::chosen`] — for the reason the joined network is:
+/// connecting to what is already connected is a no-op, and behind that press is
+/// the way off it. A device that is merely paired is a subcategory without the
+/// tick, because it has two things to do rather than one: come back, or be
+/// removed.
+///
+/// A stranger is a value, and pressing it connects. Whether that means pairing
+/// first is BlueZ's answer rather than this page's — see
+/// [`crate::bluetooth::Bt::connect`] — which is what keeps a device the user
+/// has never met to the single press a list of things to pair with wants.
+fn device_row(device: &crate::bluetooth::Device) -> Entry {
+    let path = intern(&device.path);
+    if device.connected {
+        return connected_device(path, device);
+    }
+    if device.paired {
+        return paired_device(path, device);
+    }
+    value(
+        &device.name,
+        Some(&device_state(device)),
+        false,
+        Setting::Bluetooth(BluetoothValue::Connect { device: path }),
+    )
+}
+
+/// The device this machine is on: what it is, and the two ways off it.
+///
+/// The facts stand above the pair that act, and the order is the whole of the
+/// protection this page gives them — the argument is [`joined_network`]'s,
+/// unchanged. A column opens on the row in force and nothing here is in force,
+/// so it opens on the first row, and the first row has to be one that does
+/// nothing but open something. Somebody stepping into their headphones and
+/// pressing Accept twice out of habit lands on `Device information`, not on
+/// Forget.
+///
+/// Between the two that act, Disconnect stands first because it is the one that
+/// does less and the one that can be undone from the page it leaves behind.
+fn connected_device(path: &'static str, device: &crate::bluetooth::Device) -> Entry {
+    chosen_folder(
+        &device.name,
+        &device_state(device),
+        icons::SETTING_BLUETOOTH,
+        vec![
+            device_information(device),
+            action(
+                "Disconnect",
+                "Come off this device, and keep it paired",
+                icons::SETTING_DISCONNECT,
+                Setting::Bluetooth(BluetoothValue::Disconnect { device: path }),
+            ),
+            unpair(path),
+        ],
+    )
+}
+
+/// A device this machine is paired with but not on: connecting to it again,
+/// what it is, and forgetting it.
+///
+/// Connect stands first, so the column opens on it — that is what stepping into
+/// something the machine already knows is for, and it keeps the common press to
+/// Accept, Accept from the list. The facts stand between the two that act, which
+/// is not tidiness: it means the row a wandering thumb comes to rest on is one
+/// that changes nothing, and it means Forget is never the row beside the one
+/// under the cursor when the column opens.
+fn paired_device(path: &'static str, device: &crate::bluetooth::Device) -> Entry {
+    folder(
+        &device.name,
+        &device_state(device),
+        icons::SETTING_BLUETOOTH,
+        vec![
+            action(
+                "Connect",
+                "Connect to this device again",
+                icons::SETTING_CONNECT,
+                Setting::Bluetooth(BluetoothValue::Connect { device: path }),
+            ),
+            device_information(device),
+            unpair(path),
+        ],
+    )
+}
+
+/// The row that takes a pairing off the machine.
+///
+/// One row written once, for the reason [`forget`] is: what it costs is the
+/// same whether the device is connected or not, and it is a sentence a user has
+/// one chance to read.
+///
+/// The comment says what goes rather than what happens, again as that one does.
+/// "The device will have to be paired with again" is the consequence somebody
+/// needs before they press it — not that a bond is deleted, which is true and
+/// means nothing to anyone who has not read BlueZ's manual.
+///
+/// It wears the same waste bin, which is now the mark of *this is taken off the
+/// machine* in its third place: an application, a saved network, and a pairing.
+fn unpair(device: &'static str) -> Entry {
+    action(
+        "Forget",
+        "Remove this pairing: the device will have to be paired with again",
+        icons::UNINSTALL,
+        Setting::Bluetooth(BluetoothValue::Forget { device }),
+    )
+}
+
+/// What one device's row says under its name.
+///
+/// What it is doing first, because a press that is still being carried out is
+/// the only thing on this page the user is actually waiting on — see
+/// [`crate::bluetooth::Doing`], which exists because BlueZ has no property that
+/// says a pairing is in flight.
+///
+/// Then what it is to this machine, and then the one further fact that is worth
+/// the room: what is left in it while it is connected, and how far off it is
+/// while it is not. A paired device the controller cannot hear at all says so,
+/// which is the answer to "why will it not connect" for a headset that is flat
+/// or in another room.
+fn device_state(device: &crate::bluetooth::Device) -> String {
+    if let Some(doing) = device.doing {
+        return doing.title().to_string();
+    }
+    let what = match (device.connected, device.paired) {
+        (true, _) => "Connected",
+        (_, true) => "Paired",
+        // Nothing to say about a device the machine has never met but what sort
+        // of thing it says it is.
+        _ => device.kind.title().unwrap_or("Bluetooth device"),
+    };
+    let then = match (device.connected, device.paired) {
+        (true, _) => device
+            .battery
+            .map(|left| format!("{left}% battery"))
+            .or_else(|| device.kind.title().map(str::to_lowercase)),
+        (_, true) => match device.strength {
+            None => Some("not in range".to_string()),
+            Some(_) => device.kind.title().map(str::to_lowercase),
+        },
+        _ => nearness(device.strength).map(str::to_string),
+    };
+    match then {
+        Some(then) => format!("{what} — {then}"),
+        None => what.to_string(),
+    }
+}
+
+/// How far off something is, in the words a person would use.
+///
+/// Three of them, out of an RSSI in dBm. The number itself is on the facts page
+/// and not on the row, for the reason a frequency in MHz is not: minus
+/// fifty-eight decibel-milliwatts is the shell reading a register out loud, and
+/// what the user is actually asking is whether the thing they are holding is
+/// the thing at the top of the list.
+fn nearness(strength: Option<i16>) -> Option<&'static str> {
+    let strength = strength?;
+    Some(match strength {
+        strength if strength >= -60 => "close by",
+        strength if strength >= -75 => "nearby",
+        _ => "far away",
+    })
+}
+
+/// What one device is, as a page to read.
+///
+/// Behind a row rather than on the page above it, on the terms
+/// [`connection_information`] is: these are facts and not settings, and a page
+/// whose controls are outnumbered by its footnotes is one a user has to read
+/// past to find out there is nothing more to change.
+fn device_information(device: &crate::bluetooth::Device) -> Entry {
+    let mut values = Vec::new();
+    if let Some(kind) = device.kind.title() {
+        values.push(("Kind".to_string(), kind.to_string()));
+    }
+    values.push(("Address".to_string(), device.address.clone()));
+    if let Some(battery) = device.battery {
+        values.push(("Battery".to_string(), format!("{battery}%")));
+    }
+    // The number itself, here and only here. A row has to say something a
+    // person can act on; a panel of facts is where the reading behind it
+    // belongs, exactly as the link speed is.
+    if let Some(strength) = device.strength {
+        values.push(("Signal".to_string(), format!("{strength} dBm")));
+    }
+    Entry::Facts(crate::apps::Facts {
+        title: "Device information".to_string(),
+        comment: device.address.clone(),
+        icon: icons::SETTING_INFO.to_string(),
+        about: crate::apps::About::Listed(values),
+    })
+}
+
+/// What this machine is, as far as Bluetooth is concerned: which radio it uses,
+/// what it is called to everything else, and what happens to it at startup.
+///
+/// The page that replaced the column of `hci0`, `hci1`. Everything here is about
+/// the machine rather than about anything it is talking to, which is why the
+/// controller belongs in it: choosing between two radios is not a thing anybody
+/// does twice, and putting it at the top of the tree made the first thing a user
+/// saw a question they had no way to answer.
+///
+/// Two of these five are the shell's own and go in the settings file, and three
+/// are BlueZ's. The page does not say which is which and does not need to — see
+/// [`apply_with`], where the line is drawn.
+fn configuration(
+    listing: &crate::bluetooth::Listing,
+    controller: &crate::bluetooth::Controller,
+) -> Entry {
+    let mut rows = Vec::new();
+    rows.extend(controller_choice(listing, controller));
+    rows.push(bluetooth_name(controller));
+    // A fact and not a setting, so a row that cannot be pressed rather than a
+    // panel to open: it is one line, and a door in front of one line is a door
+    // for its own sake. The information mark is the one [`reading`] carries.
+    rows.push(reading("Address", &controller.address));
+    rows.push(visibility(controller));
+    rows.push(startup_row());
+    folder(
+        "Configuration",
+        "What this machine is called over Bluetooth, and how it comes up",
+        icons::SETTING_BLUETOOTH,
+        rows,
+    )
+}
+
+/// Which radio the machine's Bluetooth is — on a machine that has more than
+/// one.
+///
+/// `None` where there is one, which is nearly every machine, and that is the
+/// same rule [`wireless`] and [`wired`] collapse under: a list of one is not a
+/// choice, and a row offering it would be a row that answers a question nobody
+/// asked. What it would have said — the address of the radio in use — is on the
+/// row below it either way.
+///
+/// The controllers are numbered rather than named, and that is not laziness:
+/// BlueZ calls every adapter in a machine after the *machine*, so both of them
+/// answer to the same name, and the only thing that tells them apart is the
+/// address underneath. A number and an address is a row somebody can act on. The
+/// kernel's `hci0` is neither.
+fn controller_choice(
+    listing: &crate::bluetooth::Listing,
+    chosen: &crate::bluetooth::Controller,
+) -> Option<Entry> {
+    if listing.controllers.len() < 2 {
+        return None;
+    }
+    let rows = listing
+        .controllers
+        .iter()
+        .enumerate()
+        .map(|(index, controller)| {
+            value(
+                &format!("Controller {}", index + 1),
+                Some(&controller_note(listing, controller)),
+                controller.path == chosen.path,
+                Setting::Bluetooth(BluetoothValue::Use {
+                    address: intern(&controller.address),
+                }),
+            )
+        })
+        .collect();
+    Some(folder(
+        "Controller",
+        &chosen.address,
+        icons::SETTING_BLUETOOTH,
+        rows,
+    ))
+}
+
+/// What one controller's row says under its number: its address, and what it is
+/// doing.
+///
+/// The address first, because it is the only thing that identifies it. What it
+/// is doing is what makes the choice answerable at all — a machine with two
+/// radios and one pair of headphones connected can be told which is which by
+/// looking.
+fn controller_note(
+    listing: &crate::bluetooth::Listing,
+    controller: &crate::bluetooth::Controller,
+) -> String {
+    let doing = if !controller.switchable {
+        "off at the machine".to_string()
+    } else if !controller.powered {
+        "off".to_string()
+    } else if let Some(connected) = listing
+        .devices_of(&controller.path)
+        .iter()
+        .find(|device| device.connected)
+    {
+        format!("on {}", connected.name)
+    } else {
+        "on".to_string()
+    };
+    format!("{} — {doing}", controller.address)
+}
+
+/// What this machine calls itself over Bluetooth.
+///
+/// The one value in this tree that is typed and is not an address, and the only
+/// setting in the whole of Settings that anybody but this machine's owner ever
+/// sees: it is what a phone looking for something to pair with puts on its own
+/// screen. BlueZ starts it at the machine's host name, which is why it is worth
+/// a row — a living room with two consoles in it has two identical entries on
+/// every phone that looks.
+///
+/// It is the controller's `Alias` rather than its `Name`: the name belongs to
+/// the machine's configuration and BlueZ will not take one over D-Bus, and the
+/// alias is what it publishes when there is one. See
+/// [`crate::bluetooth::Bt::rename`].
+fn bluetooth_name(controller: &crate::bluetooth::Controller) -> Entry {
+    Entry::Typed(crate::apps::Typed {
+        title: "Name".to_string(),
+        // The panel this opens covers the trail that would say what it is the
+        // name *of*. See [`crate::apps::Typed::whose`].
+        whose: "Bluetooth".to_string(),
+        comment: controller.name.clone(),
+        icon: icons::SETTING_TYPED.to_string(),
+        value: controller.name.clone(),
+        about: Typing::BluetoothName {
+            controller: intern(&controller.path),
+        },
+    })
+}
+
+/// Whether anything nearby may find this machine.
+///
+/// Off is the honest default and BlueZ's own: a machine left discoverable is a
+/// machine announcing its name to every radio in the building for as long as it
+/// is switched on. It is on this page at all because there is one thing
+/// that cannot be done without it — pairing *from the other end*, which is how
+/// a phone sends a file to a console and how anything with no screen and no
+/// list of its own pairs at all.
+///
+/// A radio that is off cannot be found, and the row says so rather than
+/// offering a switch that BlueZ would refuse.
+fn visibility(controller: &crate::bluetooth::Controller) -> Entry {
+    if !controller.powered {
+        return reading(
+            "Visibility",
+            "Bluetooth is off, so nothing can find this machine",
+        );
+    }
+    let path = intern(&controller.path);
+    let on = controller.discoverable;
+    folder(
+        "Visibility",
+        match on {
+            true => "Anything nearby can find this machine",
+            false => "Only devices this machine is paired with",
+        },
+        icons::SETTING_BLUETOOTH,
+        vec![
+            value(
+                "Off",
+                Some("Only devices this machine is paired with"),
+                !on,
+                Setting::Bluetooth(BluetoothValue::Visible {
+                    controller: path,
+                    on: false,
+                }),
+            ),
+            value(
+                "On",
+                Some("Anything nearby can find this machine and ask to pair"),
+                on,
+                Setting::Bluetooth(BluetoothValue::Visible {
+                    controller: path,
+                    on: true,
+                }),
+            ),
+        ],
+    )
+}
+
+/// What happens to Bluetooth when a session starts.
+///
+/// Off above On, as every switch in this tree is, and the third answer under
+/// both — because it is not a third state of the radio, it is a refusal to
+/// decide, and a row that refuses to decide belongs after the two that do.
+///
+/// It is [`Startup::Restore`] until somebody says otherwise, which is the one
+/// of the three that changes nothing about a machine whose owner has never been
+/// to this page.
+fn startup_row() -> Entry {
+    let now = bluetooth_startup();
+    folder(
+        "On startup",
+        now.title(),
+        icons::SETTING_BLUETOOTH,
+        vec![
+            value(
+                "Off",
+                Some("Bluetooth is off when the session starts"),
+                now == Startup::Off,
+                Setting::Bluetooth(BluetoothValue::Startup(Startup::Off)),
+            ),
+            value(
+                "On",
+                Some("Bluetooth is on when the session starts"),
+                now == Startup::On,
+                Setting::Bluetooth(BluetoothValue::Startup(Startup::On)),
+            ),
+            value(
+                "As it was left",
+                Some("However the last session left it"),
+                now == Startup::Restore,
+                Setting::Bluetooth(BluetoothValue::Startup(Startup::Restore)),
+            ),
+        ],
+    )
+}
+
 /// System: how the machine behaves, as opposed to what its picture and its
 /// speakers are doing.
 ///
-/// One row so far, and it is the reason the page exists rather than the page
-/// being a place to put things: how large applications draw themselves is
-/// neither a property of a display — the two screens on a desk want the same
-/// answer, because it is the person in front of them who has to read it — nor
-/// anything the shell does to itself, which is what Appearance holds.
+/// The scale is the row the page exists for rather than the page being a place
+/// to put things: how large applications draw themselves is neither a property
+/// of a display — the two screens on a desk want the same answer, because it is
+/// the person in front of them who has to read it — nor anything the shell does
+/// to itself, which is what Appearance holds.
+///
+/// System information is under it and not above it, and that order is the one
+/// thing about this page worth arguing over. The page is a page of settings, so
+/// the setting comes first; the row that changes nothing is the one a user
+/// arrives at last, having read past the one they can use. It is here at all
+/// because there is nowhere else it could be — a fact about the machine is not
+/// about a display and is not about how the shell looks — and because a console
+/// that cannot say what it is is a console nobody can be helped over a
+/// telephone with.
 fn system() -> Entry {
     folder(
         "System",
         "How the machine behaves",
         icons::SETTING_SYSTEM,
-        vec![application_scale(), x11_is_left_alone()],
+        vec![application_scale(), system_information()],
     )
+}
+
+/// System information: what this machine is, as a panel to read.
+///
+/// A door rather than a page of the bar. Everything behind it is a named value
+/// with an answer beside it — nine of them, most too long to be a row's comment
+/// — and a column offering them as rows would be a list the user has to walk
+/// down to read, one fact at a time, in a shell where walking down a list is
+/// how a value is *chosen*. The panel puts the whole of it in front of them at
+/// once and takes one button to leave, which is what the console this bar comes
+/// from did with the same page.
+///
+/// The information mark rather than the chip: the chip is the System page's
+/// own glyph and is on the row this column was opened from, one step to the
+/// left and still on screen. This row is the shell's other read-only mark, the
+/// one [`reading`] carries — see [`icons::SETTING_INFO`].
+///
+/// Nothing is read here. The row is built every time the tree is, which is
+/// often and for reasons that have nothing to do with this page; the facts are
+/// read on the press instead, so what the panel shows is the machine as it is
+/// at the moment it is asked. See [`crate::machine`].
+fn system_information() -> Entry {
+    Entry::Facts(crate::apps::Facts {
+        title: "System information".to_string(),
+        comment: "What this machine is".to_string(),
+        icon: icons::SETTING_INFO.to_string(),
+        about: crate::apps::About::Machine,
+    })
 }
 
 /// Application scaling: how large every application draws its own interface.
@@ -2905,27 +4852,6 @@ fn application_scale() -> Entry {
                 .map(Setting::AppScale)
                 .collect(),
         })],
-    )
-}
-
-/// What this setting does not reach, said on the page rather than left to be
-/// discovered.
-///
-/// A row rather than a footnote in the row above, because it is a fact about
-/// some of the windows on the machine and not about the setting: an application
-/// running under Xwayland has no per-surface scale to be told about, so the only
-/// thing that could be done to its window is to magnify pixels it has already
-/// drawn — and a blurred window is not what somebody asking for a larger one
-/// asked for. Two or three programs on an ordinary machine are in that
-/// position, and a user who scaled everything up and found one of them
-/// unchanged is owed the reason.
-///
-/// It carries no setting, so it cannot be chosen and no mark moves; see
-/// [`reading`].
-fn x11_is_left_alone() -> Entry {
-    reading(
-        "X11 applications",
-        "Drawn at their own size, whatever this is set to",
     )
 }
 
@@ -2988,7 +4914,23 @@ fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry 
         // The settings tree is written here, in full, on every rebuild. Nothing
         // in it comes off the disk, so there is no place for it to come back to.
         place: None,
+        chosen: false,
     })
+}
+
+/// A subcategory that is also one of a set of answers, and is the one in force.
+///
+/// The tick and the way further in on the same row. There is exactly one of
+/// these in the tree — the wireless network a radio is on — and the argument
+/// for it is in [`crate::apps::Folder::chosen`]: that row is an answer to the
+/// question its column asks *and* the only place the values belonging to that
+/// answer can honestly hang.
+fn chosen_folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry {
+    let Entry::Folder(mut inner) = folder(title, comment, icon, entries) else {
+        unreachable!("folder builds a folder");
+    };
+    inner.chosen = true;
+    Entry::Folder(inner)
 }
 
 /// One colour in a list of them: named, drawn in itself, and marked when it is
@@ -3000,6 +4942,7 @@ fn swatch(title: &str, colour: Color, chosen: bool, setting: Setting) -> Entry {
         icon: Some(icons::SWATCH.to_string()),
         swatch: Some(colour),
         chosen,
+        acts: false,
         setting: Some(setting),
     })
 }
@@ -3034,6 +4977,7 @@ fn drawn_value(
         icon: Some(icon.to_string()),
         swatch: None,
         chosen,
+        acts: false,
         setting: Some(setting),
     })
 }
@@ -3050,7 +4994,32 @@ fn reading(title: &str, note: &str) -> Entry {
         icon: Some(icons::SETTING_INFO.to_string()),
         swatch: None,
         chosen: false,
+        acts: false,
         setting: None,
+    })
+}
+
+/// One row that does a thing, in a column whose other rows are answers.
+///
+/// The only shape in this tree that is not a value, a bar, a typed field or a
+/// way further in — see [`crate::apps::Choice::acts`], which says why it takes
+/// no mark and moves none. There are three of them, all under one wireless
+/// network: leaving it, joining it again, and forgetting it.
+///
+/// It wears a drawing rather than the bead, because the bead means *one of
+/// these* and this is not one of anything. The comment carries what pressing it
+/// costs, which is the whole of the warning a row like this gets: there is no
+/// panel between the press and the act, so what Forget removes has to be
+/// legible from the row itself.
+fn action(title: &str, comment: &str, icon: &str, setting: Setting) -> Entry {
+    Entry::Choice(Choice {
+        title: title.to_string(),
+        comment: Some(comment.to_string()),
+        icon: Some(icon.to_string()),
+        swatch: None,
+        chosen: false,
+        acts: true,
+        setting: Some(setting),
     })
 }
 
@@ -3080,6 +5049,13 @@ fn reading(title: &str, note: &str) -> Entry {
 /// film somebody is watching, the call they are on — and walking down a list of
 /// four would do that four times. A user looking for the right output is
 /// looking at the *names* first; the sound follows when they choose.
+///
+/// Nor do the network rows, where it would be worse still. Highlighting one
+/// would take the machine off the network it is on and put it on the one the
+/// cursor happened to be passing — mid-download, mid-call — and on a secured
+/// network it would put a password panel up for a row nobody chose. A list of
+/// networks is a list of *names* to walk down; the radio moves when a row is
+/// pressed.
 pub fn preview(setting: Option<Setting>) {
     match setting {
         Some(Setting::Accent(name)) => {
@@ -3098,7 +5074,10 @@ pub fn preview(setting: Option<Setting>) {
         Some(
             Setting::Display { .. }
             | Setting::StartMusic(_)
+            | Setting::BatteryPercent(_)
             | Setting::SoundDevice { .. }
+            | Setting::Network(_)
+            | Setting::Bluetooth(_)
             | Setting::AppScale(_),
         )
         | None => theme::restore_accent(),
@@ -3196,6 +5175,14 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             *START_MUSIC.lock().unwrap() = playing;
             tracing::info!(playing, "Start music");
         }
+        // Nothing to tell anybody either, and for the plainest reason of the
+        // three: the corner is laid out from this value every time it is drawn,
+        // so the frame this row was pressed on is the frame the figures appear
+        // or go. See [`crate::ui::Corner::percent`].
+        Setting::BatteryPercent(written) => {
+            *BATTERY_PERCENT.lock().unwrap() = written;
+            tracing::info!(written, "battery percentage");
+        }
         // Recorded here and carried out by the compositor, which the caller
         // tells — the same division the Display settings are under, and for the
         // same reason: what an application is configured at is not the shell's
@@ -3234,6 +5221,46 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::SoundDevice { direction, id } => {
             tracing::info!(?direction, id, "sound device chosen");
             tell_the_login_screen(&LOGIN_SCREENS);
+            return true;
+        }
+        // Bluetooth is the one page in this tree that is split down the middle,
+        // and the line is drawn where BlueZ's knowledge ends. What is paired,
+        // what it is called, whether it can be found: BlueZ's, handed to the
+        // caller, written nowhere here. Which of two radios the user means and
+        // what to do at startup: BlueZ has no opinion about either, so the
+        // shell keeps them and they fall through to the file.
+        Setting::Bluetooth(BluetoothValue::Use { address }) => {
+            *BLUETOOTH_CONTROLLER.lock().unwrap() = Some(address.to_string());
+            tracing::info!(address, "Bluetooth controller");
+        }
+        Setting::Bluetooth(BluetoothValue::Startup(startup)) => {
+            *BLUETOOTH_STARTUP.lock().unwrap() = startup;
+            tracing::info!(?startup, "Bluetooth at startup");
+        }
+        // The other row here that is neither carried out nor written down, and
+        // for the same reason: `NetworkManager` is what does it and what
+        // remembers it. The caller hands it over — see [`crate::network`] —
+        // which is what keeps this module free of a D-Bus connection, exactly
+        // as it is free of a Wayland one.
+        //
+        // The login screen is not told, and that is the one thing this row does
+        // differently from the sound device above it. A login screen has to come
+        // out of the same speakers as the session because nothing else could
+        // tell it which; it does not have to be told about the network, because
+        // the network manager it would ask is the same daemon this session just
+        // spoke to and it is running before either of them.
+        Setting::Network(value) => {
+            tracing::info!(?value, "network");
+            return true;
+        }
+        // And the rest of Bluetooth, on exactly the terms the network is under:
+        // BlueZ carries it out and BlueZ remembers it, the caller hands it over
+        // — see [`crate::bluetooth`] — and nothing of it goes into the settings
+        // file. The login screen is not told, for the reason the network does
+        // not tell it: `bluetoothd` is running before either of them and is the
+        // same daemon a login screen would ask.
+        Setting::Bluetooth(value) => {
+            tracing::info!(?value, "bluetooth");
             return true;
         }
         // Bound as `screen`, not `display`: tracing's macros pull their own
@@ -3466,6 +5493,28 @@ fn adopt(stored: Stored) {
     // And the same for the switch that decides whether anything may interrupt.
     if let Some(quiet) = stored.do_not_disturb {
         *DO_NOT_DISTURB.lock().unwrap() = quiet;
+    }
+    // A file that says nothing about the battery's figures leaves them off,
+    // which is where a session that has never been asked has them. Read on
+    // every machine and not only on one with a battery: a laptop's settings
+    // file opened on a desktop and carried back must not have lost the switch
+    // in between.
+    if let Some(written) = stored.battery_percent {
+        *BATTERY_PERCENT.lock().unwrap() = written;
+    }
+    // Which radio the machine's Bluetooth is, what to do with it at startup,
+    // and what it was doing last time. A hand-edited word this shell does not
+    // know is dropped with a warning rather than refused, as a mistyped mode is:
+    // the file is one the user is entitled to open.
+    *BLUETOOTH_CONTROLLER.lock().unwrap() = stored.bluetooth_controller;
+    if let Some(key) = stored.bluetooth_startup.as_deref() {
+        match Startup::from_key(key) {
+            Some(startup) => *BLUETOOTH_STARTUP.lock().unwrap() = startup,
+            None => tracing::warn!(key, "ignoring an unknown Bluetooth startup setting"),
+        }
+    }
+    if let Some(on) = stored.bluetooth_was_on {
+        *BLUETOOTH_WAS_ON.lock().unwrap() = on;
     }
     // And for which control the last session saw in the user's hands, which is
     // the whole point of writing that one down: a file that says nothing leaves
@@ -3705,6 +5754,11 @@ struct Stored {
     /// without a bubble and without a chime. Session-wide, like the three keys
     /// above it and unlike anything in `apps.toml`.
     do_not_disturb: Option<bool>,
+    /// Whether the corner writes the battery's charge out in figures beside
+    /// the level it draws. Session-wide, and written on every machine — a
+    /// desktop has no row for it and no mark to apply it to, and neither is a
+    /// reason to forget what the laptop this file came from was set to.
+    battery_percent: Option<bool>,
     /// How large every application draws its own interface, in per cent of the
     /// size it chose. 100 is one to one and is the least it can be.
     ///
@@ -3742,6 +5796,18 @@ struct Stored {
     /// See [`crate::sun`].
     night_light_latitude: Option<f64>,
     night_light_longitude: Option<f64>,
+    /// Which controller the machine's Bluetooth is, by address, and what
+    /// happens to it when a session starts.
+    ///
+    /// The whole of what this shell writes down about Bluetooth. Everything
+    /// else — what is paired, what it is called, whether it can be found — is
+    /// BlueZ's, and a second copy here would be a second opinion about it at
+    /// every login. These three are the ones BlueZ has no answer to: which of
+    /// two radios the user means, what to do at startup, and what "as it was
+    /// left" refers to.
+    bluetooth_controller: Option<String>,
+    bluetooth_startup: Option<String>,
+    bluetooth_was_on: Option<bool>,
     /// One section per display, by connector name. Sorted, so the file does
     /// not reshuffle itself every time it is written.
     display: BTreeMap<String, StoredDisplay>,
@@ -3899,12 +5965,16 @@ fn stored() -> Stored {
         sound_muted: Some(sound.muted),
         start_music: Some(playing),
         do_not_disturb: Some(do_not_disturb()),
+        battery_percent: Some(battery_percent()),
         controller_in_hand: Some(controller_in_hand()),
         application_scale: Some(app_scale()),
         hdr: Some(inherited.enabled),
         hdr_sdr_brightness: Some(inherited.sdr_brightness),
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
         hdr_peak_brightness: Some(inherited.peak_brightness),
+        bluetooth_controller: bluetooth_controller(),
+        bluetooth_startup: Some(bluetooth_startup().key().to_string()),
+        bluetooth_was_on: Some(bluetooth_was_on()),
         display,
         media_sort: MEDIA_SORT.lock().unwrap().clone(),
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
@@ -4195,6 +6265,13 @@ const PREAMBLE: &str = "\
 # off leaves every other sound the shell makes exactly as loud as it was; how
 # loud that is, the music included, is the two keys above.
 #
+# battery-percent: whether the start screen's corner writes the battery's
+# charge out in figures beside the mark that draws it, which is Settings >
+# Appearance > Battery percentage. Off unless this says true. Both the row and
+# the mark itself exist only on a machine that has a battery — a desktop shows
+# neither, and this key is kept for it anyway so that a file carried between
+# the two does not lose the setting on the way.
+#
 # do-not-disturb: whether anything may interrupt, which is the moon tile at the
 # head of the guide overlay's column rather than a row of the Settings column.
 # On, an announcement is filed without a bubble in the corner and without a
@@ -4415,8 +6492,12 @@ mod tests {
         app_scale: u16,
         start_music: bool,
         do_not_disturb: bool,
+        battery_percent: bool,
+        battery: Option<crate::power::Charge>,
         controller_in_hand: bool,
         devices: Devices,
+        network: crate::network::Listing,
+        bluetooth: crate::bluetooth::Listing,
     }
 
     fn take_settings() -> Saved {
@@ -4435,8 +6516,12 @@ mod tests {
             app_scale: app_scale(),
             start_music: start_music(),
             do_not_disturb: do_not_disturb(),
+            battery_percent: battery_percent(),
+            battery: *BATTERY.lock().unwrap(),
             controller_in_hand: controller_in_hand(),
             devices: DEVICES.lock().unwrap().clone(),
+            network: network_listing(),
+            bluetooth: bluetooth_listing(),
         };
         HDR.lock().unwrap().clear();
         MODE.lock().unwrap().clear();
@@ -4447,6 +6532,9 @@ mod tests {
         note_turned(Vec::new());
         note_places(Vec::new());
         note_devices(Devices::none());
+        note_network(crate::network::Listing::none());
+        note_bluetooth(crate::bluetooth::Listing::none());
+        note_battery(None);
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
     }
@@ -4462,12 +6550,73 @@ mod tests {
         *APP_SCALE.lock().unwrap() = saved.app_scale;
         *START_MUSIC.lock().unwrap() = saved.start_music;
         *DO_NOT_DISTURB.lock().unwrap() = saved.do_not_disturb;
+        *BATTERY_PERCENT.lock().unwrap() = saved.battery_percent;
+        note_battery(saved.battery);
         *CONTROLLER_IN_HAND.lock().unwrap() = saved.controller_in_hand;
         note_support(saved.support);
         note_modes(saved.offered);
         note_turned(saved.reported_turns);
         *PLACED.lock().unwrap() = saved.reported_places;
         note_devices(saved.devices);
+        note_network(saved.network);
+        note_bluetooth(saved.bluetooth);
+    }
+
+    /// Run `body` with the machine reported as having this battery — or none —
+    /// and put back whatever the process had.
+    fn with_battery(reported: Option<crate::power::Charge>, body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_battery(reported);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// The Appearance page, however many rows this machine's hardware puts on
+    /// it.
+    fn appearance_page() -> Vec<Entry> {
+        appearance()
+            .entries()
+            .expect("Appearance opens onto its rows")
+            .to_vec()
+    }
+
+    /// Run `body` with the network manager reported as saying this, and put
+    /// back whatever the process had.
+    fn with_network(reported: crate::network::Listing, body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_network(reported);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// Run `body` with BlueZ reported as saying this, and put back whatever the
+    /// process had.
+    fn with_bluetooth(reported: crate::bluetooth::Listing, body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_bluetooth(reported);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     /// Run `body` with the sound server reported as offering these devices, and
@@ -5315,6 +7464,166 @@ mod tests {
                 |_| {}
             ));
             assert!(start_music());
+        });
+    }
+
+    /// A machine with no battery is offered neither the mark nor the row that
+    /// would turn its figures on, and a machine with one is offered both.
+    ///
+    /// The point of the whole arrangement. A desktop given this switch would be
+    /// given a setting it can never see the effect of, which is worse than not
+    /// being given it: somebody would turn it on and go looking for what
+    /// changed.
+    #[test]
+    fn the_battery_row_stands_only_on_a_machine_that_has_a_battery() {
+        with_battery(None, || {
+            assert_eq!(
+                appearance_page()
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                ["Accent color"],
+                "a machine with no battery is offered a battery setting",
+            );
+        });
+
+        with_battery(
+            Some(crate::power::Charge {
+                percent: 72,
+                charging: false,
+            }),
+            || {
+                let page = appearance_page();
+                assert_eq!(
+                    page.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Accent color", "Battery percentage"],
+                    "the accent first: it is the whole shell, and this is one mark",
+                );
+                // The row is drawn at the level the machine is actually at, so
+                // the list is headed by the mark the user is deciding about.
+                assert_eq!(page[1].icon(), Some(crate::icons::BATTERY_HIGH));
+            },
+        );
+    }
+
+    /// The switch turns the figures over, and highlighting the other row is an
+    /// invitation to look rather than a decision — the boundary every other
+    /// switch in this tree is under.
+    ///
+    /// Never through [`apply`], for the reason the volume test gives: that one
+    /// writes to the config directory of whoever is running the tests.
+    #[test]
+    fn the_battery_percentage_switch_turns_the_figures_over() {
+        with_battery(
+            Some(crate::power::Charge {
+                percent: 96,
+                charging: false,
+            }),
+            || {
+                *BATTERY_PERCENT.lock().unwrap() = false;
+
+                let page = |()| {
+                    appearance_page()[1]
+                        .entries()
+                        .expect("Battery percentage opens onto its two values")
+                        .to_vec()
+                };
+                let rows = page(());
+                assert_eq!(
+                    rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Off", "On"],
+                    "the switch every other switch in this tree is",
+                );
+                assert!(rows[0].chosen(), "a shell nobody has asked opens on Off");
+                assert!(!rows[1].chosen());
+
+                preview(rows[1].setting());
+                assert!(!battery_percent(), "highlighting On is not choosing it",);
+
+                let mut persisted = None;
+                assert!(apply_with(
+                    rows[1].setting().expect("On sets something"),
+                    |stored| persisted = stored.battery_percent,
+                ));
+                assert!(battery_percent());
+                assert_eq!(persisted, Some(true), "and it is written down");
+
+                let rows = page(());
+                assert!(rows[1].chosen(), "the mark has moved with it");
+                assert!(!rows[0].chosen());
+
+                assert!(apply_with(
+                    rows[0].setting().expect("Off sets something"),
+                    |_| {},
+                ));
+                assert!(!battery_percent());
+            },
+        );
+    }
+
+    /// Whether the charge is written out survives a session, and comes back off
+    /// on a machine that has never been asked.
+    ///
+    /// Written on every machine, a desktop included: a file carried from the
+    /// laptop it was set on must not lose the switch on a machine that has no
+    /// row for it. See the `battery-percent` key in [`PREAMBLE`].
+    #[test]
+    fn whether_the_charge_is_written_out_is_remembered() {
+        with_displays(&[], || {
+            *BATTERY_PERCENT.lock().unwrap() = false;
+
+            adopt(Stored {
+                battery_percent: Some(true),
+                ..Stored::default()
+            });
+            assert!(battery_percent());
+
+            let written = stored();
+            assert_eq!(written.battery_percent, Some(true));
+            let body = toml::to_string_pretty(&written).unwrap();
+            assert!(body.contains("battery-percent"), "{body}");
+
+            adopt(toml::from_str(&body).unwrap());
+            assert!(battery_percent(), "and it comes back on");
+
+            adopt(Stored::default());
+            assert!(
+                battery_percent(),
+                "a silent file answers nothing for the user",
+            );
+
+            // And a machine that has never had one written comes up without
+            // figures: the mark says how much is left, which is what a glance
+            // at a corner asks.
+            *BATTERY_PERCENT.lock().unwrap() = false;
+            assert!(!battery_percent());
+        });
+    }
+
+    /// A battery that only moved a point does not rebuild the Settings column,
+    /// and one that crossed into another drawing does.
+    ///
+    /// The reason [`note_battery`] compares what the row *shows* rather than
+    /// what it was told: a discharging battery reports a different number every
+    /// time it is read, and a column rebuilt three times a minute for the
+    /// length of a session would be rebuilt for a difference it does not draw.
+    #[test]
+    fn only_a_battery_that_changed_the_drawing_rebuilds_the_column() {
+        let charge = |percent, charging| Some(crate::power::Charge { percent, charging });
+        with_battery(None, || {
+            assert!(note_battery(charge(72, false)), "a battery arrived");
+            assert!(
+                !note_battery(charge(71, false)),
+                "one point is not a drawing"
+            );
+            assert!(!note_battery(charge(60, false)), "nor is the whole band");
+            assert!(note_battery(charge(59, false)), "but its edge is");
+            assert!(
+                note_battery(charge(59, true)),
+                "and so is being plugged in, at the same charge",
+            );
+            assert!(note_battery(None), "and so is the battery going away");
+            assert!(!note_battery(None));
         });
     }
 
@@ -8087,6 +10396,46 @@ hdr = true
         });
     }
 
+    /// The System page offers the scale and then the page about the machine,
+    /// and the second is a door rather than a setting.
+    ///
+    /// Everything this asserts is something a press depends on. The row carries
+    /// no [`Setting`], so choosing it moves no mark and writes no file; it opens
+    /// no column, so Right and Accept cannot walk into an empty one; and it
+    /// starts nothing, so the bar must not treat it as a tile. What it *does*
+    /// is answered by `Shell::start_selection`, which asks
+    /// [`crate::apps::Entry::facts`] — the one thing here that must keep
+    /// answering with something.
+    #[test]
+    fn the_system_page_ends_with_a_door_rather_than_a_setting() {
+        with_displays(&[], || {
+            let page = system_page();
+            let titles: Vec<&str> = page.iter().map(|entry| entry.title()).collect();
+            assert_eq!(
+                titles,
+                ["Application scaling", "System information"],
+                "the setting comes first and the page to read comes last"
+            );
+
+            let row = page.last().expect("the page has a last row");
+            assert_eq!(
+                row.facts().map(|facts| &facts.about),
+                Some(&crate::apps::About::Machine),
+                "the press is answered by the panel, read at the moment of it"
+            );
+            assert_eq!(row.setting(), None, "there is nothing here to set");
+            assert!(!row.chosen(), "and therefore no mark to carry");
+            assert!(row.entries().is_none(), "it opens no column of the bar");
+            assert!(!row.starts_something(), "and forks nothing");
+            assert_eq!(
+                row.icon(),
+                Some(icons::SETTING_INFO),
+                "the shell's read-only mark, not the System page's own chip"
+            );
+            assert!(row.comment().is_some(), "and it says what is behind it");
+        });
+    }
+
     /// Nothing below the size an application chose for itself.
     ///
     /// The one property of this bar that is not the temperature bar's: that one
@@ -8218,29 +10567,6 @@ hdr = true
             bands.len() >= 5,
             "the range is described, not labelled once"
         );
-    }
-
-    /// The page says what this setting does not reach, and says it as something
-    /// that cannot be chosen.
-    ///
-    /// An application under Xwayland has no per-surface scale to be told about,
-    /// so its window keeps its own size — see the compositor's `scale` module.
-    /// A user who scaled everything up and found one program unchanged is owed
-    /// the reason, and a row that could be *pressed* would be offering to
-    /// change something that is not a setting.
-    #[test]
-    fn the_page_says_which_windows_it_leaves_alone() {
-        with_displays(&[], || {
-            let page = system_page();
-            assert_eq!(
-                page.iter().map(Entry::title).collect::<Vec<_>>(),
-                vec!["Application scaling", "X11 applications"]
-            );
-            let x11 = &page[1];
-            assert_eq!(x11.setting(), None, "it is a reading, not a control");
-            assert!(!x11.chosen(), "and nothing is in force about it");
-            assert_eq!(x11.icon(), Some(icons::SETTING_INFO));
-        });
     }
 
     /// It survives the file, and a file that says nothing about it leaves every
@@ -8406,5 +10732,1789 @@ hdr = true
         // runs the one that is current rather than one left behind by an
         // upgrade.
         assert_eq!(LOGIN_SCREENS.first(), Some(&"cedm"));
+    }
+
+    // -----------------------------------------------------------------------
+    // network
+    // -----------------------------------------------------------------------
+
+    /// Everything below is invented hardware. Nothing this machine is on may
+    /// appear here: an interface name or a network taken off a live scan is a
+    /// test that passes or fails by which desk it was run at.
+    const SOCKET: &str = "/an/invented/socket";
+    const RADIO: &str = "/an/invented/radio";
+
+    fn a_socket() -> crate::network::Device {
+        crate::network::Device {
+            path: SOCKET.to_string(),
+            interface: "test-wired0".to_string(),
+            kind: crate::network::Kind::Wired,
+            link: crate::network::Link::Up,
+            trouble: None,
+            connection: Some("A wired profile".to_string()),
+            address: Some("10.0.0.2/24".to_string()),
+            gateway: Some("10.0.0.1".to_string()),
+            nameservers: vec!["10.0.0.1".to_string(), "10.0.0.9".to_string()],
+            hardware: Some("00:00:5e:00:53:01".to_string()),
+            carrier: Some(true),
+            speed: 1000,
+            profile: Some("/an/invented/profile".to_string()),
+            ipv4: crate::network::Ipv4 {
+                automatic: true,
+                address: None,
+                gateway: None,
+                dns_automatic: true,
+                dns: Vec::new(),
+                can_pin: true,
+            },
+        }
+    }
+
+    fn a_radio() -> crate::network::Device {
+        crate::network::Device {
+            path: RADIO.to_string(),
+            interface: "test-wireless0".to_string(),
+            kind: crate::network::Kind::Wireless,
+            connection: Some("Upstairs".to_string()),
+            carrier: None,
+            speed: 300,
+            ..a_socket()
+        }
+    }
+
+    fn a_network(
+        ssid: &str,
+        strength: u8,
+        security: crate::network::Security,
+        saved: bool,
+        joined: bool,
+    ) -> crate::network::Network {
+        crate::network::Network {
+            ssid: ssid.to_string(),
+            strength,
+            security,
+            saved,
+            joined,
+            frequency: 5180,
+        }
+    }
+
+    /// A listing with whichever halves the test is about, and nothing else.
+    fn reported(
+        devices: Vec<crate::network::Device>,
+        networks: Vec<(String, Vec<crate::network::Network>)>,
+    ) -> crate::network::Listing {
+        crate::network::Listing {
+            manager: true,
+            radio: true,
+            radio_switchable: true,
+            devices,
+            networks,
+            wanted: None,
+        }
+    }
+
+    /// The Network column, wherever it has got to in the tree.
+    fn network_page() -> Vec<Entry> {
+        let column = column();
+        let row = column
+            .iter()
+            .find(|entry| entry.title() == "Network")
+            .expect("Settings has a Network row");
+        row.entries().expect("Network opens a column").to_vec()
+    }
+
+    fn titles(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(Entry::title).collect()
+    }
+
+    fn under<'a>(entries: &'a [Entry], title: &str) -> &'a [Entry] {
+        entries
+            .iter()
+            .find(|entry| entry.title() == title)
+            .unwrap_or_else(|| panic!("{title} is not on this page: {:?}", titles(entries)))
+            .entries()
+            .unwrap_or_else(|| panic!("{title} opens a column"))
+    }
+
+    /// The whole of what the user asked for, in one test: a machine with both
+    /// halves shows both, and a machine with one shows one.
+    ///
+    /// The Wi-Fi page is the one that must not be there. A radio page on a
+    /// desktop with no wireless card is not merely useless — it is a page that
+    /// has the user turning a radio on and off looking for a network that was
+    /// never going to appear, and then wondering what is wrong with the shell.
+    #[test]
+    fn the_network_column_lists_only_what_the_machine_has() {
+        with_network(reported(vec![a_socket(), a_radio()], Vec::new()), || {
+            assert_eq!(
+                titles(&network_page()),
+                ["Wired", "Wi-Fi"],
+                "the socket is the plainer thing and comes first"
+            );
+        });
+        with_network(reported(vec![a_socket()], Vec::new()), || {
+            assert_eq!(titles(&network_page()), ["Wired"]);
+        });
+        with_network(reported(vec![a_radio()], Vec::new()), || {
+            assert_eq!(titles(&network_page()), ["Wi-Fi"]);
+        });
+    }
+
+    /// A machine with nothing to configure still has a row, and it says which
+    /// of the two reasons it is: the hardware, or the session.
+    #[test]
+    fn a_machine_with_no_network_says_which_kind_of_nothing_it_is() {
+        for (listing, expected) in [
+            (reported(Vec::new(), Vec::new()), "No network hardware"),
+            (
+                crate::network::Listing::none(),
+                "No network manager is running",
+            ),
+        ] {
+            let manager = listing.manager;
+            with_network(listing, || {
+                let page = network_page();
+                assert_eq!(titles(&page), [expected], "manager: {manager}");
+                // Never empty — the bar refuses to step into a column with
+                // nothing in it — and never pressable, because a row that
+                // describes something true must not be one the user can
+                // un-choose.
+                assert_eq!(page.len(), 1);
+                assert!(page[0].setting().is_none());
+                assert!(page[0].comment().is_some(), "it has to say why");
+            });
+        }
+    }
+
+    /// The radio switch is the whole of the Wi-Fi page while the radio is off:
+    /// a card that cannot hear anything has nothing to list, and a Networks row
+    /// standing over an empty list would be a way in with nothing behind it.
+    #[test]
+    fn the_wi_fi_page_is_the_switch_alone_while_the_radio_is_off() {
+        let mut listing = reported(vec![a_radio()], Vec::new());
+        listing.radio = false;
+        with_network(listing, || {
+            let wifi = under(&network_page(), "Wi-Fi").to_vec();
+            assert_eq!(titles(&wifi), ["Wi-Fi"]);
+            let switch = under(&wifi, "Wi-Fi");
+            assert_eq!(titles(switch), ["Off", "On"], "Off is above On, as ever");
+            assert!(switch[0].chosen(), "the radio is off and the mark says so");
+            assert_eq!(
+                switch[1].setting(),
+                Some(Setting::Network(NetworkValue::Radio(true)))
+            );
+        });
+    }
+
+    /// A radio the machine has switched off in hardware is not offered a switch
+    /// at all: On would be accepted, nothing would happen, and the mark would
+    /// come to rest on a row describing a machine that is not this one.
+    #[test]
+    fn a_radio_killed_in_hardware_is_explained_rather_than_offered() {
+        let mut listing = reported(vec![a_radio()], Vec::new());
+        listing.radio = false;
+        listing.radio_switchable = false;
+        with_network(listing, || {
+            let wifi = under(&network_page(), "Wi-Fi").to_vec();
+            assert_eq!(titles(&wifi), ["Wi-Fi is off at the machine"]);
+            assert!(wifi[0].setting().is_none());
+        });
+
+        // And the same page when the software switch reads *on* over a hardware
+        // one that is off, which is a state `NetworkManager` really reports: no
+        // networks are going to arrive, so there is no page of them to offer.
+        let mut listing = reported(vec![a_radio()], Vec::new());
+        listing.radio_switchable = false;
+        with_network(listing, || {
+            assert_eq!(
+                titles(under(&network_page(), "Wi-Fi")),
+                ["Wi-Fi is off at the machine"]
+            );
+        });
+    }
+
+    /// The list of networks: what is in the air, and nothing else.
+    ///
+    /// It used to open with a `Not connected` row. The way off a network is
+    /// inside the network now, which is where somebody looking for it looks,
+    /// and a row above the list doing the same thing at a distance was one row
+    /// of ceremony on every visit for a press most people make once.
+    #[test]
+    fn the_networks_page_is_the_air_and_nothing_else() {
+        use crate::network::Security;
+        let networks = vec![
+            a_network("Upstairs", 62, Security::Personal, true, true),
+            a_network("The Cafe", 91, Security::Open, false, false),
+            a_network("The Office", 40, Security::Enterprise, false, false),
+            a_network("Next Door", 30, Security::Modern, false, false),
+        ];
+        with_network(
+            reported(vec![a_radio()], vec![(RADIO.to_string(), networks)]),
+            || {
+                let wifi = under(&network_page(), "Wi-Fi").to_vec();
+                assert_eq!(
+                    titles(&wifi),
+                    ["Wi-Fi", "Networks", "Connection information"],
+                    "the addressing is not here: it belongs to the network"
+                );
+
+                let page = under(&wifi, "Networks").to_vec();
+                assert_eq!(
+                    titles(&page),
+                    ["Upstairs", "The Cafe", "The Office", "Next Door"],
+                    "the one in force first, then the rest by how well they are \
+                     heard"
+                );
+
+                // Exactly one of them is in force, and it is the one that is
+                // joined.
+                assert_eq!(page.iter().filter(|entry| entry.chosen()).count(), 1);
+                assert!(page[0].chosen());
+                // And it is the one row here that is stepped into rather than
+                // pressed: the radio is already on it, so joining it again is
+                // the one press with nothing to do, and behind it is what only
+                // that network has — the addressing of the profile it is on,
+                // and the way off it.
+                assert_eq!(page[0].setting(), None);
+                assert_eq!(
+                    titles(page[0].entries().expect("the joined network opens")),
+                    ["IP address", "DNS", "Disconnect", "Forget"]
+                );
+                assert_eq!(
+                    page[1].setting(),
+                    Some(Setting::Network(NetworkValue::Join {
+                        device: intern(RADIO),
+                        ssid: intern("The Cafe"),
+                    })),
+                    "a network with nothing saved for it is joined by pressing it"
+                );
+
+                // What each row says under its name: what joining it takes,
+                // and how well it is heard.
+                assert_eq!(page[0].comment(), Some("Connected — 62% at 5 GHz"));
+                assert_eq!(page[1].comment(), Some("Open — 91% at 5 GHz"));
+                assert_eq!(page[3].comment(), Some("WPA3 — 30% at 5 GHz"));
+
+                // The one row here that can be read and not pressed. It is
+                // listed so that "my network is not here" has an answer, and it
+                // carries no setting because a password would not get it on.
+                assert_eq!(page[2].title(), "The Office");
+                assert!(page[2].setting().is_none());
+                assert!(page[2]
+                    .comment()
+                    .is_some_and(|note| note.contains("certificate")));
+            },
+        );
+    }
+
+    /// A radio that hears nothing gets a line saying so, not an empty column.
+    ///
+    /// `Not connected` used to guarantee this column a row. With it gone, a
+    /// radio that is on and hearing nothing would leave `Networks` opening onto
+    /// nothing at all — and [`crate::model::Cursor::enter`] will not open an
+    /// empty column, so the press would do nothing whatever, which reads as a
+    /// shell that failed rather than as an answer.
+    #[test]
+    fn a_radio_that_hears_nothing_says_so_rather_than_opening_on_nothing() {
+        with_network(
+            reported(vec![a_radio()], vec![(RADIO.to_string(), Vec::new())]),
+            || {
+                let wifi = under(&network_page(), "Wi-Fi").to_vec();
+                let row = wifi
+                    .iter()
+                    .find(|entry| entry.title() == "Networks")
+                    .expect("the Networks row is there whatever is in the air");
+                assert_eq!(row.comment(), Some("Nothing in range"));
+
+                let page = row.entries().expect("and it still opens");
+                assert_eq!(titles(page), ["Nothing in range"]);
+                assert!(
+                    page[0].setting().is_none(),
+                    "there is nothing here to press"
+                );
+                assert!(!page[0].chosen(), "and nothing to be the answer");
+            },
+        );
+    }
+
+    /// A network the machine remembers is stepped into rather than joined where
+    /// it stands, and behind it are the two things there are to do with one.
+    ///
+    /// The press it costs is the point of the test as much as the rows are. A
+    /// remembered network is the only kind that has more than one thing to do,
+    /// and forgetting has nowhere else in the shell it could live: the list is
+    /// otherwise a list of what is in the *air*, and what the machine remembers
+    /// shows there only as a word in a comment.
+    #[test]
+    fn a_remembered_network_is_stepped_into_rather_than_joined() {
+        use crate::network::Security;
+        with_network(
+            reported(
+                vec![crate::network::Device {
+                    link: crate::network::Link::Idle,
+                    connection: None,
+                    ..a_radio()
+                }],
+                vec![(
+                    RADIO.to_string(),
+                    vec![
+                        a_network("Known", 55, Security::Personal, true, false),
+                        a_network("Unknown", 55, Security::Personal, false, false),
+                    ],
+                )],
+            ),
+            || {
+                let page = under(under(&network_page(), "Wi-Fi"), "Networks").to_vec();
+                assert_eq!(titles(&page), ["Known", "Unknown"]);
+
+                // Remembered: a way in, and no press of its own. Joining is
+                // now one of the things inside rather than the whole row.
+                assert_eq!(page[0].setting(), None);
+                let known = page[0].entries().expect("a remembered network opens");
+                assert_eq!(titles(known), ["Connect", "Forget"]);
+                assert_eq!(
+                    known[0].setting(),
+                    Some(Setting::Network(NetworkValue::Join {
+                        device: intern(RADIO),
+                        ssid: intern("Known"),
+                    }))
+                );
+                assert_eq!(
+                    known[1].setting(),
+                    Some(Setting::Network(NetworkValue::Forget {
+                        device: intern(RADIO),
+                        ssid: intern("Known"),
+                    }))
+                );
+
+                // Never marked, either of them. The mark on this page says
+                // which network the radio is on, and nothing on it is marked
+                // at all while it is on none — the question has no answer yet
+                // rather than an answer called none.
+                assert!(known.iter().all(|row| !row.chosen()));
+                assert!(known.iter().all(Entry::acts));
+                assert_eq!(page.iter().filter(|row| row.chosen()).count(), 0);
+
+                // A network the machine has never been on keeps its single
+                // press: there is nothing saved to remove, and nothing to
+                // configure until it has been joined once.
+                assert!(page[1].entries().is_none());
+                assert_eq!(
+                    page[1].setting(),
+                    Some(Setting::Network(NetworkValue::Join {
+                        device: intern(RADIO),
+                        ssid: intern("Unknown"),
+                    }))
+                );
+            },
+        );
+    }
+
+    /// The network the radio is on carries the same pair, with the way off it
+    /// in place of the way on to it — and both of them under the addressing,
+    /// which is what a column opening on its first row lands on.
+    #[test]
+    fn the_network_in_force_offers_the_way_off_it_and_the_way_to_lose_it() {
+        use crate::network::Security;
+        with_network(
+            reported(
+                vec![a_radio()],
+                vec![(
+                    RADIO.to_string(),
+                    vec![a_network("Upstairs", 62, Security::Personal, true, true)],
+                )],
+            ),
+            || {
+                let page = under(under(&network_page(), "Wi-Fi"), "Networks").to_vec();
+                let joined = page[0].entries().expect("the joined network opens");
+                assert_eq!(
+                    titles(joined),
+                    ["IP address", "DNS", "Disconnect", "Forget"]
+                );
+                assert!(
+                    !joined[0].acts() && !joined[1].acts(),
+                    "the first row a column opens on must not be one that does \
+                     something"
+                );
+                assert!(joined[2].acts() && joined[3].acts());
+
+                // The only way off a network in the shell: the column this row
+                // stands in is the air and nothing else, so there is nowhere
+                // else this could be.
+                assert_eq!(
+                    joined[2].setting(),
+                    Some(Setting::Network(NetworkValue::Leave {
+                        device: intern(RADIO)
+                    }))
+                );
+                assert_eq!(
+                    joined[3].setting(),
+                    Some(Setting::Network(NetworkValue::Forget {
+                        device: intern(RADIO),
+                        ssid: intern("Upstairs"),
+                    }))
+                );
+
+                // The tick is still the folder's own and nothing inside it has
+                // taken one.
+                assert!(page[0].chosen());
+                assert!(joined.iter().all(|row| !row.chosen()));
+
+                // And what Forget costs is on the row, because there is no
+                // panel between the press and the act.
+                assert!(joined[3]
+                    .comment()
+                    .is_some_and(|note| note.contains("password will be asked for again")));
+            },
+        );
+    }
+
+    /// A saved network says so rather than saying what protects it: those are
+    /// the same fact from either side, and only one of them is what the user is
+    /// about to find out — a saved network joins on the press, an unsaved
+    /// secured one asks for a password first.
+    #[test]
+    fn a_saved_network_says_it_will_not_ask() {
+        use crate::network::Security;
+        with_network(
+            reported(
+                vec![a_radio()],
+                vec![(
+                    RADIO.to_string(),
+                    vec![
+                        a_network("Known", 55, Security::Personal, true, false),
+                        a_network("Unknown", 55, Security::Personal, false, false),
+                    ],
+                )],
+            ),
+            || {
+                let page = under(under(&network_page(), "Wi-Fi"), "Networks").to_vec();
+                assert_eq!(page[0].comment(), Some("Saved — 55% at 5 GHz"));
+                assert_eq!(page[1].comment(), Some("WPA2 — 55% at 5 GHz"));
+            },
+        );
+    }
+
+    /// The wired page, and the one thing on it that is not a switch: a socket
+    /// with nothing plugged into it. There is nothing for On to do there, and a
+    /// row that took the press and left the mark on Off would be the page
+    /// arguing with something the user can see from where they are sitting.
+    #[test]
+    fn an_empty_socket_is_explained_rather_than_switched() {
+        with_network(reported(vec![a_socket()], Vec::new()), || {
+            let wired = under(&network_page(), "Wired").to_vec();
+            assert_eq!(
+                titles(&wired),
+                ["Connection", "IP address", "DNS", "Connection information"]
+            );
+            let switch = under(&wired, "Connection");
+            assert_eq!(titles(switch), ["Off", "On"]);
+            assert!(switch[1].chosen(), "it is up, and the mark says so");
+            assert_eq!(
+                switch[0].setting(),
+                Some(Setting::Network(NetworkValue::Wire {
+                    device: intern(SOCKET),
+                    up: false
+                }))
+            );
+        });
+
+        let empty = crate::network::Device {
+            link: crate::network::Link::Unavailable,
+            trouble: Some("No cable".to_string()),
+            connection: None,
+            address: None,
+            gateway: None,
+            nameservers: Vec::new(),
+            carrier: Some(false),
+            speed: 0,
+            ..a_socket()
+        };
+        with_network(reported(vec![empty], Vec::new()), || {
+            let wired = under(&network_page(), "Wired").to_vec();
+            assert_eq!(
+                titles(&wired),
+                ["No cable", "IP address", "DNS"],
+                "a socket with no cable in it still has a profile to configure"
+            );
+            assert!(wired[0].setting().is_none());
+        });
+    }
+
+    /// What a device was given is a panel behind a row, and only when there is
+    /// something to report.
+    ///
+    /// A panel and not a column, for the reason System information is one: a
+    /// column is walked down one row at a time and only the row the cursor is
+    /// on says its value, so a list of five facts would be five presses to
+    /// read — in a shell where walking down a list is how a value is *chosen*.
+    /// And a page of settings whose controls are outnumbered by its footnotes
+    /// is a page the user has to read past to find out there is nothing more to
+    /// change.
+    #[test]
+    fn what_a_device_was_given_is_a_panel_to_read() {
+        with_network(reported(vec![a_socket()], Vec::new()), || {
+            let page = network_page();
+            let row = under(&page, "Wired")
+                .iter()
+                .find(|entry| entry.title() == "Connection information")
+                .expect("a socket with an address says what it was given")
+                .clone();
+            // Nothing about it is a row of the bar: no setting to choose, no
+            // mark to carry, and no column to walk into.
+            assert_eq!(row.setting(), None);
+            assert!(!row.chosen());
+            assert!(row.entries().is_none());
+            assert!(!row.starts_something());
+
+            let Some(crate::apps::About::Listed(values)) =
+                row.facts().map(|facts| facts.about.clone())
+            else {
+                panic!("the values travel with the row rather than being read on the press");
+            };
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "IP address",
+                    "Router",
+                    "DNS",
+                    "Interface",
+                    "Hardware address",
+                    "Link speed"
+                ]
+            );
+            assert_eq!(values[0].1, "10.0.0.2/24");
+            // Every name server on one line: a machine is given two or three
+            // and they are one answer rather than three things to be read one
+            // at a time.
+            assert_eq!(values[2].1, "10.0.0.1, 10.0.0.9");
+        });
+
+        // Nothing to report is no row at all, rather than a page of blanks.
+        let idle = crate::network::Device {
+            link: crate::network::Link::Idle,
+            trouble: None,
+            connection: None,
+            address: None,
+            gateway: None,
+            nameservers: Vec::new(),
+            hardware: None,
+            speed: 0,
+            ..a_socket()
+        };
+        with_network(reported(vec![idle], Vec::new()), || {
+            assert_eq!(
+                titles(under(&network_page(), "Wired")),
+                ["Connection", "IP address", "DNS"],
+                "a device with no address still has addressing to set"
+            );
+        });
+    }
+
+    /// A machine with two of one kind gets a page per device, named by the
+    /// interface — because "connect" is not a question a laptop in a dock has
+    /// one answer to.
+    #[test]
+    fn several_of_one_kind_get_a_page_each() {
+        let second = crate::network::Device {
+            path: "/another/invented/socket".to_string(),
+            interface: "test-wired1".to_string(),
+            ..a_socket()
+        };
+        with_network(reported(vec![a_socket(), second], Vec::new()), || {
+            let wired = under(&network_page(), "Wired").to_vec();
+            assert_eq!(titles(&wired), ["test-wired0", "test-wired1"]);
+            for socket in &wired {
+                assert_eq!(
+                    titles(socket.entries().expect("a socket opens its controls"))[0],
+                    "Connection"
+                );
+            }
+        });
+    }
+
+    /// The two rows at the heads of these pages say what is *inside* them, the
+    /// way every other subcategory in this tree does — not what the machine
+    /// happens to be doing at the moment they were drawn.
+    ///
+    /// They both used to say the second thing, and it was wrong twice over. It
+    /// made these the only two rows in the Settings column that answered a
+    /// question instead of describing a page, so a user reading down the column
+    /// met four descriptions and two status lines. And it meant a row's own
+    /// comment changed under a cursor standing on it: "Connected to Upstairs"
+    /// one second and "Connecting…" the next is not a description of anything,
+    /// it is a status line that has wandered into a menu.
+    ///
+    /// What the machine is doing has not been lost — it is on the rows inside,
+    /// where it is about one socket or one device and can be acted on.
+    #[test]
+    fn the_two_connection_rows_say_what_is_inside_them() {
+        let note = |title: &str| {
+            column()
+                .iter()
+                .find(|entry| entry.title() == title)
+                .and_then(Entry::comment)
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("the {title} row says something"))
+        };
+
+        // Whatever the machine is doing, and whether or not there is anything
+        // to do it with.
+        for listing in [
+            reported(vec![a_socket(), a_radio()], Vec::new()),
+            crate::network::Listing::none(),
+        ] {
+            with_network(listing, || {
+                assert_eq!(
+                    note("Network"),
+                    "The socket in the back of the machine, and the air around it"
+                );
+            });
+        }
+        for listing in [
+            one_controller(vec![a_device(
+                EARS,
+                "Ears",
+                crate::bluetooth::Kind::Headphones,
+                true,
+                true,
+            )]),
+            crate::bluetooth::Listing::none(),
+        ] {
+            with_bluetooth(listing, || {
+                assert_eq!(
+                    note("Bluetooth"),
+                    "The devices this machine pairs with, and the controller it pairs from"
+                );
+            });
+        }
+
+        // And they read like the four that were always right.
+        for (title, note) in [
+            ("Appearance", "How the shell looks"),
+            ("Display", "How the picture reaches the screen"),
+            ("Sounds", "The machine's sound, and the shell's own"),
+            ("System", "How the machine behaves"),
+        ] {
+            assert_eq!(
+                column()
+                    .iter()
+                    .find(|entry| entry.title() == title)
+                    .and_then(Entry::comment),
+                Some(note)
+            );
+        }
+    }
+
+    /// The addressing page, in the two shapes it has.
+    ///
+    /// The values Manual needs are inside its own column rather than beside it,
+    /// which is what keeps the device page two rows longer instead of five and
+    /// keeps a row named `Address` from standing under one named `IP address`.
+    #[test]
+    fn addressing_is_automatic_or_pinned() {
+        let automatic = a_socket();
+        with_network(reported(vec![automatic], Vec::new()), || {
+            let page = network_page();
+            let addressing = under(under(&page, "Wired"), "IP address").to_vec();
+            assert_eq!(
+                titles(&addressing),
+                ["Automatic", "Manual"],
+                "nothing to type until there is something to type it into"
+            );
+            assert!(addressing[0].chosen());
+            assert_eq!(
+                addressing[1].setting(),
+                Some(Setting::Network(NetworkValue::Addressing {
+                    device: intern(SOCKET),
+                    automatic: false
+                }))
+            );
+        });
+
+        let pinned = crate::network::Device {
+            ipv4: crate::network::Ipv4 {
+                automatic: false,
+                address: Some("10.0.0.2/24".to_string()),
+                gateway: Some("10.0.0.1".to_string()),
+                dns_automatic: false,
+                dns: vec!["9.9.9.9".to_string(), "1.1.1.1".to_string()],
+                can_pin: true,
+            },
+            ..a_socket()
+        };
+        with_network(reported(vec![pinned], Vec::new()), || {
+            let page = network_page();
+            let wired = under(&page, "Wired");
+            let addressing = under(wired, "IP address").to_vec();
+            assert_eq!(
+                titles(&addressing),
+                ["Automatic", "Manual", "Address", "Router"]
+            );
+            assert!(addressing[1].chosen());
+
+            // The two values are typed, not chosen: no setting to apply and no
+            // mark to carry, because nothing here is one of a set.
+            for row in &addressing[2..] {
+                assert_eq!(row.setting(), None, "{}", row.title());
+                assert!(!row.chosen(), "{}", row.title());
+                assert!(row.entries().is_none(), "{}", row.title());
+            }
+            assert_eq!(
+                addressing[2].typed().map(|typed| typed.value.as_str()),
+                Some("10.0.0.2/24")
+            );
+            assert_eq!(
+                addressing[2].typed().map(|typed| typed.about),
+                Some(Typing::Network {
+                    device: intern(SOCKET),
+                    field: crate::network::Field::Address
+                })
+            );
+            assert_eq!(addressing[2].comment(), Some("10.0.0.2/24"));
+            assert_eq!(
+                addressing[3].typed().map(|typed| typed.about),
+                Some(Typing::Network {
+                    device: intern(SOCKET),
+                    field: crate::network::Field::Router
+                })
+            );
+            // The row above says what it is set to, so the usual question is
+            // answered without stepping in.
+            assert_eq!(
+                wired
+                    .iter()
+                    .find(|entry| entry.title() == "IP address")
+                    .and_then(Entry::comment),
+                Some("Manual — 10.0.0.2/24")
+            );
+        });
+    }
+
+    /// Manual needs an address to pin, and a machine that has none is told so
+    /// rather than offered a press that `NetworkManager` refuses.
+    #[test]
+    fn manual_is_explained_where_there_is_nothing_to_pin() {
+        let fresh = crate::network::Device {
+            address: None,
+            ipv4: crate::network::Ipv4 {
+                automatic: true,
+                can_pin: false,
+                ..Default::default()
+            },
+            ..a_socket()
+        };
+        with_network(reported(vec![fresh], Vec::new()), || {
+            let page = network_page();
+            let addressing = under(under(&page, "Wired"), "IP address").to_vec();
+            assert_eq!(titles(&addressing), ["Automatic", "Manual"]);
+            assert!(addressing[0].chosen());
+            assert_eq!(
+                addressing[1].setting(),
+                None,
+                "a press NetworkManager would refuse is not offered"
+            );
+            assert!(addressing[1]
+                .comment()
+                .is_some_and(|note| note.contains("no address to pin")));
+        });
+    }
+
+    /// A device with no saved profile has nothing to configure, and the page
+    /// says which of the two nothings that is.
+    #[test]
+    fn addressing_belongs_to_a_profile_rather_than_to_a_socket() {
+        let unsaved = crate::network::Device {
+            profile: None,
+            ipv4: crate::network::Ipv4::default(),
+            ..a_socket()
+        };
+        with_network(reported(vec![unsaved], Vec::new()), || {
+            let page = network_page();
+            let wired = under(&page, "Wired");
+            let addressing = under(wired, "IP address").to_vec();
+            assert_eq!(titles(&addressing), ["No connection to configure"]);
+            assert_eq!(addressing[0].setting(), None);
+            // And no name servers page at all: there is nothing to hang them on
+            // either, and a second row saying the same thing is a second row
+            // saying the same thing.
+            assert_eq!(
+                titles(wired),
+                ["Connection", "IP address", "Connection information"]
+            );
+        });
+    }
+
+    /// The DNS page, and the one place its shape follows the addressing: a
+    /// pinned profile runs no DHCP, so there is nothing for its name servers to
+    /// be automatic *from*.
+    #[test]
+    fn dns_is_only_automatic_where_there_is_something_to_ask() {
+        with_network(reported(vec![a_socket()], Vec::new()), || {
+            let page = network_page();
+            let servers = under(under(&page, "Wired"), "DNS").to_vec();
+            assert_eq!(titles(&servers), ["Automatic", "Manual"]);
+            assert!(servers[0].chosen());
+            assert_eq!(
+                servers[1].setting(),
+                Some(Setting::Network(NetworkValue::Dns {
+                    device: intern(SOCKET),
+                    automatic: false
+                }))
+            );
+        });
+
+        // Chosen manually under automatic addressing: the list appears under
+        // the two answers rather than as a row of the page above them.
+        let named = crate::network::Device {
+            ipv4: crate::network::Ipv4 {
+                automatic: true,
+                dns_automatic: false,
+                dns: vec!["9.9.9.9".to_string(), "1.1.1.1".to_string()],
+                can_pin: true,
+                ..Default::default()
+            },
+            ..a_socket()
+        };
+        with_network(reported(vec![named], Vec::new()), || {
+            let page = network_page();
+            let wired = under(&page, "Wired");
+            let servers = under(wired, "DNS").to_vec();
+            assert_eq!(
+                titles(&servers),
+                ["Automatic", "Manual", "DNS servers"],
+                "the field is named in full, because the panel it opens is"
+            );
+            assert!(servers[1].chosen());
+            assert_eq!(
+                servers[2].typed().map(|typed| typed.value.as_str()),
+                Some("9.9.9.9, 1.1.1.1"),
+                "every one of them in the field, in the order they are asked"
+            );
+            assert_eq!(
+                wired
+                    .iter()
+                    .find(|entry| entry.title() == "DNS")
+                    .and_then(Entry::comment),
+                Some("9.9.9.9, 1.1.1.1")
+            );
+        });
+
+        // And under a pinned address there is no choice to offer, so the page
+        // says why instead of offering an Automatic that would mean none.
+        let pinned = crate::network::Device {
+            ipv4: crate::network::Ipv4 {
+                automatic: false,
+                address: Some("10.0.0.2/24".to_string()),
+                dns_automatic: true,
+                can_pin: true,
+                ..Default::default()
+            },
+            ..a_socket()
+        };
+        with_network(reported(vec![pinned], Vec::new()), || {
+            let page = network_page();
+            let servers = under(under(&page, "Wired"), "DNS").to_vec();
+            assert_eq!(titles(&servers), ["Always manual here", "DNS servers"]);
+            assert_eq!(servers[0].setting(), None);
+            assert_eq!(
+                servers[1].typed().map(|typed| typed.value.as_str()),
+                Some(""),
+                "an empty field rather than no field: none set is a thing to see"
+            );
+        });
+    }
+
+    /// Both halves get the same two pages, which is the whole of what was asked
+    /// for: a static address is not a thing that is true of a cable and false of
+    /// a radio.
+    ///
+    /// They hang in different places, and that is not an inconsistency. A
+    /// socket has one profile and the addressing is a property of the socket as
+    /// far as anybody using it is concerned. A radio has one profile *per
+    /// network* — which is why a laptop keeps a fixed address at the office and
+    /// takes whatever it is given at home — so the only honest place for it is
+    /// under the network it belongs to.
+    #[test]
+    fn a_radio_is_addressed_exactly_as_a_socket_is() {
+        use crate::network::Security;
+        let networks = vec![a_network("Upstairs", 62, Security::Personal, true, true)];
+        with_network(
+            reported(
+                vec![a_socket(), a_radio()],
+                vec![(RADIO.to_string(), networks)],
+            ),
+            || {
+                let page = network_page();
+                let wired = under(&page, "Wired");
+                assert_eq!(
+                    titles(wired),
+                    ["Connection", "IP address", "DNS", "Connection information"]
+                );
+                let joined = under(under(under(&page, "Wi-Fi"), "Networks"), "Upstairs");
+                assert_eq!(
+                    titles(joined),
+                    ["IP address", "DNS", "Disconnect", "Forget"],
+                    "the addressing stands above the two rows that act, so a \
+                     column that opens on its first row opens on one that only \
+                     opens another"
+                );
+
+                // And each names its own device, so setting one does not touch
+                // the other.
+                assert_eq!(
+                    under(wired, "IP address")[1].setting(),
+                    Some(Setting::Network(NetworkValue::Addressing {
+                        device: intern(SOCKET),
+                        automatic: false
+                    }))
+                );
+                assert_eq!(
+                    under(joined, "IP address")[1].setting(),
+                    Some(Setting::Network(NetworkValue::Addressing {
+                        device: intern(RADIO),
+                        automatic: false
+                    }))
+                );
+            },
+        );
+    }
+
+    /// Every field says whose value it is, because the panel it opens covers
+    /// the trail that would otherwise have said so.
+    ///
+    /// `Address` on its own is the same panel whether the user walked in
+    /// through the socket on the back of the machine or through the network the
+    /// radio is on, and those are two different profiles with two different
+    /// addresses. See [`crate::apps::Typed::whose`].
+    #[test]
+    fn a_typed_value_says_which_connection_it_belongs_to() {
+        use crate::network::Security;
+        let pinned = crate::network::Ipv4 {
+            automatic: false,
+            address: Some("10.0.0.2/24".to_string()),
+            gateway: Some("10.0.0.1".to_string()),
+            dns_automatic: false,
+            dns: vec!["9.9.9.9".to_string()],
+            can_pin: true,
+        };
+        let socket = crate::network::Device {
+            ipv4: pinned.clone(),
+            ..a_socket()
+        };
+        let radio = crate::network::Device {
+            ipv4: pinned,
+            ..a_radio()
+        };
+        with_network(
+            reported(
+                vec![socket, radio],
+                vec![(
+                    RADIO.to_string(),
+                    vec![a_network("Upstairs", 62, Security::Personal, true, true)],
+                )],
+            ),
+            || {
+                let page = network_page();
+                let whose = |rows: &[Entry], title: &str| {
+                    under(rows, title)
+                        .iter()
+                        .filter_map(Entry::typed)
+                        .map(|typed| typed.whose.clone())
+                        .collect::<Vec<_>>()
+                };
+                // The socket's is the profile NetworkManager files it under,
+                // which is the name every other tool on the machine shows.
+                let wired = under(&page, "Wired");
+                assert_eq!(
+                    whose(wired, "IP address"),
+                    ["A wired profile", "A wired profile"]
+                );
+                assert_eq!(whose(wired, "DNS"), ["A wired profile"]);
+
+                // The radio's is the network's own name, which is the thing the
+                // user chose and the thing the profile is about.
+                let joined = under(under(under(&page, "Wi-Fi"), "Networks"), "Upstairs");
+                assert_eq!(whose(joined, "IP address"), ["Upstairs", "Upstairs"]);
+                assert_eq!(whose(joined, "DNS"), ["Upstairs"]);
+            },
+        );
+    }
+
+    /// A socket with no profile to file it under is named by its interface,
+    /// which is the only other name the thing has. A field titled `Address`
+    /// with nothing after it would be a field about nothing.
+    #[test]
+    fn a_field_with_no_profile_name_falls_back_to_the_interface() {
+        let unnamed = crate::network::Device {
+            connection: None,
+            ipv4: crate::network::Ipv4 {
+                automatic: false,
+                address: Some("10.0.0.2/24".to_string()),
+                can_pin: true,
+                ..Default::default()
+            },
+            ..a_socket()
+        };
+        with_network(reported(vec![unnamed], Vec::new()), || {
+            let page = network_page();
+            assert_eq!(
+                under(under(&page, "Wired"), "IP address")
+                    .iter()
+                    .filter_map(Entry::typed)
+                    .map(|typed| typed.whose.as_str())
+                    .next(),
+                Some("test-wired0")
+            );
+        });
+    }
+
+    /// A radio that is on nothing has no addressing page anywhere, and that is
+    /// the honest answer rather than an oversight: there is no profile for the
+    /// values to belong to, and a page offering them would be setting an
+    /// address on whichever network the card happened to have saved.
+    #[test]
+    fn a_radio_on_nothing_has_no_addressing_to_offer() {
+        use crate::network::Security;
+        let idle = crate::network::Device {
+            link: crate::network::Link::Idle,
+            connection: None,
+            ..a_radio()
+        };
+        with_network(
+            reported(
+                vec![idle],
+                vec![(
+                    RADIO.to_string(),
+                    vec![a_network("Upstairs", 62, Security::Personal, true, false)],
+                )],
+            ),
+            || {
+                let page = network_page();
+                let wifi = under(&page, "Wi-Fi");
+                assert_eq!(
+                    titles(wifi),
+                    ["Wi-Fi", "Networks", "Connection information"]
+                );
+                let networks = under(wifi, "Networks");
+                assert_eq!(titles(networks), ["Upstairs"]);
+                // Saved, so it opens — but on the two things there are to do
+                // with a network the radio is not on, and neither of them is
+                // an address. The addressing belongs to the profile the radio
+                // is connected *by*, and it is connected by none.
+                let saved = under(networks, "Upstairs");
+                assert_eq!(titles(saved), ["Connect", "Forget"]);
+                assert!(
+                    !networks[0].chosen(),
+                    "a network the machine merely knows is not one it is on"
+                );
+                assert_eq!(
+                    saved[0].setting(),
+                    Some(Setting::Network(NetworkValue::Join {
+                        device: intern(RADIO),
+                        ssid: intern("Upstairs"),
+                    }))
+                );
+            },
+        );
+    }
+
+    /// Highlighting a network must not join it. It would take the machine off
+    /// what it is on and put it on whatever the cursor was passing —
+    /// mid-download, mid-call — and on a secured one it would raise a password
+    /// panel for a row nobody chose.
+    #[test]
+    fn walking_over_a_network_changes_nothing() {
+        theme::with_accent("Purple", || {
+            preview(Some(Setting::Network(NetworkValue::Radio(false))));
+            preview(Some(Setting::Network(NetworkValue::Join {
+                device: intern(RADIO),
+                ssid: intern("Upstairs"),
+            })));
+            preview(Some(Setting::Network(NetworkValue::Wire {
+                device: intern(SOCKET),
+                up: false,
+            })));
+            theme::animate(1.0);
+            assert_eq!(theme::accent().name, "Purple");
+        });
+    }
+
+    /// A network row is `NetworkManager`'s to carry out and to remember, so
+    /// nothing about it reaches the settings file — exactly as nothing about a
+    /// sound device does, and for the same reason.
+    #[test]
+    fn a_network_is_never_written_down() {
+        with_network(reported(vec![a_radio()], Vec::new()), || {
+            let before = stored();
+            let mut written = false;
+            assert!(apply_with(
+                Setting::Network(NetworkValue::Join {
+                    device: intern(RADIO),
+                    ssid: intern("Upstairs"),
+                }),
+                |_| written = true,
+            ));
+            assert!(!written, "a network reached the settings file");
+            assert_eq!(stored(), before);
+        });
+    }
+
+    /// The bands, as a person names them — and nothing at all for a number in
+    /// none of them, because a row reading "5745 MHz" is the shell reading a
+    /// register out loud.
+    #[test]
+    fn which_band_a_network_was_heard_on() {
+        assert_eq!(band_of(2412), Some("2.4 GHz"));
+        assert_eq!(band_of(2484), Some("2.4 GHz"));
+        assert_eq!(band_of(5180), Some("5 GHz"));
+        assert_eq!(band_of(5825), Some("5 GHz"));
+        assert_eq!(band_of(6115), Some("6 GHz"));
+        assert_eq!(band_of(0), None);
+        assert_eq!(band_of(900), None);
+    }
+
+    // --- Bluetooth ---------------------------------------------------------
+
+    /// The handles BlueZ would use, written here rather than taken from
+    /// anything on this machine: a controller path or an address pasted out of
+    /// a live listing is a test that says the page was built for one desk.
+    const HCI: &str = "/org/bluez/hci-test0";
+    const HCI_ADDRESS: &str = "00:00:5E:00:53:00";
+    const PADS: &str = "/org/bluez/hci-test0/dev_00_00_5E_00_53_01";
+    const EARS: &str = "/org/bluez/hci-test0/dev_00_00_5E_00_53_02";
+    const STRANGER: &str = "/org/bluez/hci-test0/dev_00_00_5E_00_53_03";
+
+    fn a_controller() -> crate::bluetooth::Controller {
+        crate::bluetooth::Controller {
+            path: HCI.to_string(),
+            interface: "hci-test0".to_string(),
+            name: "A machine".to_string(),
+            address: HCI_ADDRESS.to_string(),
+            powered: true,
+            switchable: true,
+            discovering: false,
+            discoverable: false,
+        }
+    }
+
+    fn a_device(
+        path: &str,
+        name: &str,
+        kind: crate::bluetooth::Kind,
+        paired: bool,
+        connected: bool,
+    ) -> crate::bluetooth::Device {
+        crate::bluetooth::Device {
+            path: path.to_string(),
+            controller: HCI.to_string(),
+            address: "00:00:5E:00:53:01".to_string(),
+            name: name.to_string(),
+            kind,
+            paired,
+            connected,
+            strength: Some(-55),
+            battery: None,
+            doing: None,
+        }
+    }
+
+    /// A listing with whichever halves the test is about, and nothing else.
+    fn heard(
+        controllers: Vec<crate::bluetooth::Controller>,
+        devices: Vec<(String, Vec<crate::bluetooth::Device>)>,
+    ) -> crate::bluetooth::Listing {
+        crate::bluetooth::Listing {
+            manager: true,
+            controllers,
+            devices,
+            wanted: None,
+        }
+    }
+
+    /// One controller with these devices on it, which is nearly every machine.
+    fn one_controller(devices: Vec<crate::bluetooth::Device>) -> crate::bluetooth::Listing {
+        heard(vec![a_controller()], vec![(HCI.to_string(), devices)])
+    }
+
+    /// The Bluetooth column, wherever it has got to in the tree.
+    fn bluetooth_page() -> Vec<Entry> {
+        let column = column();
+        let row = column
+            .iter()
+            .find(|entry| entry.title() == "Bluetooth")
+            .expect("Settings has a Bluetooth row");
+        row.entries().expect("Bluetooth opens a column").to_vec()
+    }
+
+    /// The whole of what the user asked for when there is nothing to draw: a
+    /// machine with no controller says Bluetooth is not available, in words,
+    /// with the mark every read-only explanation in this tree wears.
+    ///
+    /// Both reasons, because they are not the same fact: a machine with no
+    /// controller in it will never have Bluetooth until somebody plugs one in,
+    /// and a session whose Bluetooth service is not running is a machine that
+    /// has it and has nothing in charge of it.
+    #[test]
+    fn a_machine_with_no_controller_says_bluetooth_is_not_available() {
+        for manager in [false, true] {
+            let mut listing = heard(Vec::new(), Vec::new());
+            listing.manager = manager;
+            with_bluetooth(listing, || {
+                let page = bluetooth_page();
+                assert_eq!(titles(&page), ["Bluetooth is not available"]);
+                // Nothing to choose and no mark to move: this row describes the
+                // machine, and a row describing something true must not be one
+                // the user can un-choose.
+                assert_eq!(page[0].setting(), None);
+                assert!(!page[0].chosen());
+                assert!(page[0].entries().is_none());
+                assert_eq!(page[0].icon(), Some(icons::SETTING_INFO));
+                assert!(
+                    page[0].comment().is_some_and(|why| why.len() > 20),
+                    "and it says why"
+                );
+            });
+        }
+
+        // The two reasons read differently, which is the whole point of asking
+        // separately.
+        let with_service = heard(Vec::new(), Vec::new());
+        let mut without = with_service.clone();
+        without.manager = false;
+        let mut reasons = Vec::new();
+        for listing in [with_service, without] {
+            with_bluetooth(listing, || {
+                reasons.push(bluetooth_page()[0].comment().unwrap().to_string());
+            });
+        }
+        assert_ne!(reasons[0], reasons[1]);
+    }
+
+    /// Three rows and no controller in sight: the page is a switch, what the
+    /// machine is talking to, and what the machine itself is.
+    ///
+    /// The `hci0`, `hci1` column this replaced is the thing being asserted
+    /// against. A machine with two radios in it must not put the kernel's name
+    /// for either of them in front of somebody who came to turn Bluetooth on.
+    #[test]
+    fn the_page_is_a_switch_a_list_and_the_machine_itself() {
+        let second = crate::bluetooth::Controller {
+            path: "/org/bluez/hci-test1".to_string(),
+            interface: "hci-test1".to_string(),
+            address: "00:00:5E:00:53:FF".to_string(),
+            ..a_controller()
+        };
+        with_bluetooth(heard(vec![a_controller(), second], Vec::new()), || {
+            assert_eq!(
+                titles(&bluetooth_page()),
+                ["Bluetooth", "Devices", "Configuration"]
+            );
+        });
+    }
+
+    /// The devices are gone while the controller is off — there is nothing to
+    /// list — but the page is not, because what this machine *is* over
+    /// Bluetooth has an answer whether the radio is on or not.
+    #[test]
+    fn the_devices_are_gone_while_the_controller_is_off() {
+        let mut controller = a_controller();
+        controller.powered = false;
+        with_bluetooth(heard(vec![controller], Vec::new()), || {
+            let page = bluetooth_page();
+            assert_eq!(titles(&page), ["Bluetooth", "Configuration"]);
+            let switch = under(&page, "Bluetooth");
+            assert_eq!(titles(switch), ["Off", "On"], "Off is above On, as ever");
+            assert!(switch[0].chosen(), "it is off and the mark says so");
+            assert_eq!(
+                switch[1].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Power {
+                    controller: intern(HCI),
+                    on: true
+                }))
+            );
+        });
+    }
+
+    /// A controller the machine has switched off in hardware is not offered a
+    /// switch at all — the argument is the wireless radio's, unchanged: On would
+    /// be accepted, nothing would happen, and the mark would come to rest on a
+    /// row describing a machine that is not this one.
+    #[test]
+    fn a_controller_killed_in_hardware_is_explained_rather_than_offered() {
+        let mut controller = a_controller();
+        controller.switchable = false;
+        with_bluetooth(heard(vec![controller], Vec::new()), || {
+            let page = bluetooth_page();
+            assert_eq!(
+                titles(&page),
+                ["Bluetooth is off at the machine", "Configuration"]
+            );
+            assert_eq!(page[0].setting(), None);
+        });
+    }
+
+    /// The Devices column is what the machine knows, with the one way to add to
+    /// it standing above them.
+    ///
+    /// A stranger in the air is **not** in this column. That is the difference
+    /// from the wireless page it is otherwise a copy of, and the reason is that
+    /// the two lists answer different questions: a network in the air is a thing
+    /// to join, and a device in the air is a thing to decide about. A list where
+    /// the headphones somebody uses every day sit among the beacons from the
+    /// flat upstairs is a list they have to search every time.
+    #[test]
+    fn the_devices_column_is_what_the_machine_knows() {
+        let devices = vec![
+            a_device(EARS, "Ears", crate::bluetooth::Kind::Headphones, true, true),
+            a_device(PADS, "Pad", crate::bluetooth::Kind::Controller, true, false),
+            a_device(
+                STRANGER,
+                "Something",
+                crate::bluetooth::Kind::Unknown,
+                false,
+                false,
+            ),
+        ];
+        with_bluetooth(one_controller(devices), || {
+            let page = under(&bluetooth_page(), "Devices").to_vec();
+            assert_eq!(titles(&page), ["Search to pair", "Ears", "Pad"]);
+            // The stranger is one step further in, where the scan is.
+            let searching = under(&page, "Search to pair");
+            assert_eq!(titles(searching), ["Something"]);
+            assert!(matches!(
+                searching[0].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Connect { .. }))
+            ));
+            assert_eq!(
+                searching[0].icon(),
+                Some(icons::SWATCH),
+                "one press, no column"
+            );
+        });
+    }
+
+    /// The search column is never empty, and it cannot be: the bar will not
+    /// step into an empty column, and a scan that only starts on the way in
+    /// would then be one that could never start at all.
+    #[test]
+    fn the_search_column_always_has_something_to_step_into() {
+        with_bluetooth(
+            one_controller(vec![a_device(
+                EARS,
+                "Ears",
+                crate::bluetooth::Kind::Headphones,
+                true,
+                false,
+            )]),
+            || {
+                let page = under(&bluetooth_page(), "Devices").to_vec();
+                let searching = under(&page, "Search to pair");
+                assert_eq!(searching.len(), 1);
+                assert_eq!(searching[0].setting(), None, "and it does nothing");
+                assert!(searching[0].comment().is_some_and(|note| !note.is_empty()));
+                // The row above it invites rather than reports: what is behind
+                // it is not a count of anything until somebody presses it.
+                assert_eq!(
+                    page[0].comment(),
+                    Some("Look for something new to pair with")
+                );
+                assert_eq!(page[0].icon(), Some(icons::SEARCH));
+            },
+        );
+    }
+
+    /// The two shapes a device the machine knows has, and what pressing each of
+    /// them does.
+    #[test]
+    fn a_known_device_is_pressed_according_to_what_it_already_is() {
+        let devices = vec![
+            a_device(EARS, "Ears", crate::bluetooth::Kind::Headphones, true, true),
+            a_device(PADS, "Pad", crate::bluetooth::Kind::Controller, true, false),
+        ];
+        with_bluetooth(one_controller(devices), || {
+            let page = under(&bluetooth_page(), "Devices").to_vec();
+
+            // Connected: the tick, and the way off it behind the row.
+            let ears_row = &page[1];
+            assert!(ears_row.chosen(), "the one it is on carries the mark");
+            assert_eq!(
+                ears_row.setting(),
+                None,
+                "pressing it opens rather than acts"
+            );
+            let ears = under(&page, "Ears");
+            assert_eq!(
+                titles(ears),
+                ["Device information", "Disconnect", "Forget"],
+                "the row a second Accept lands on has to be one that does nothing"
+            );
+            assert_eq!(
+                ears[1].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Disconnect {
+                    device: intern(EARS)
+                }))
+            );
+            assert!(ears[1].acts() && ears[2].acts(), "neither takes a mark");
+
+            // Paired and off: Connect first, so the column opens on it.
+            assert!(!page[2].chosen());
+            let pad = under(&page, "Pad");
+            assert_eq!(titles(pad), ["Connect", "Device information", "Forget"]);
+            assert_eq!(
+                pad[0].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Connect {
+                    device: intern(PADS)
+                }))
+            );
+            assert_eq!(
+                pad[2].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Forget {
+                    device: intern(PADS)
+                }))
+            );
+        });
+    }
+
+    /// A paired device the controller cannot hear is still listed, and says so.
+    ///
+    /// The other half of the argument the search page makes: a network out of
+    /// range cannot be listed because it is not in the air, but headphones in a
+    /// drawer are a thing the machine is still paired with — and forgetting them
+    /// is exactly what somebody wants when the device is not to hand.
+    #[test]
+    fn a_paired_device_out_of_range_is_listed_and_says_so() {
+        let mut ears = a_device(
+            EARS,
+            "Ears",
+            crate::bluetooth::Kind::Headphones,
+            true,
+            false,
+        );
+        ears.strength = None;
+        with_bluetooth(one_controller(vec![ears]), || {
+            let page = under(&bluetooth_page(), "Devices").to_vec();
+            assert_eq!(titles(&page), ["Search to pair", "Ears"]);
+            assert_eq!(page[1].comment(), Some("Paired — not in range"));
+            assert!(
+                under(&page, "Ears")
+                    .iter()
+                    .any(|row| row.title() == "Forget"),
+                "the row somebody came here for is there"
+            );
+        });
+    }
+
+    /// A press that is still being carried out is what the row says, above
+    /// everything else about it: it is the only thing on the page the user is
+    /// actually waiting on.
+    #[test]
+    fn a_device_being_connected_to_says_so() {
+        let mut ears = a_device(
+            EARS,
+            "Ears",
+            crate::bluetooth::Kind::Headphones,
+            true,
+            false,
+        );
+        ears.doing = Some(crate::bluetooth::Doing::Connecting);
+        with_bluetooth(one_controller(vec![ears]), || {
+            let page = under(&bluetooth_page(), "Devices").to_vec();
+            assert_eq!(page[1].comment(), Some("Connecting…"));
+        });
+    }
+
+    /// What a device is, as a page to read — and the reading behind the row's
+    /// word for it, which is where a number in dBm belongs and the only place
+    /// it does.
+    #[test]
+    fn what_a_device_is_is_a_panel_to_read() {
+        let mut ears = a_device(EARS, "Ears", crate::bluetooth::Kind::Headphones, true, true);
+        ears.battery = Some(80);
+        with_bluetooth(one_controller(vec![ears]), || {
+            let page = under(&bluetooth_page(), "Devices").to_vec();
+            assert_eq!(page[1].comment(), Some("Connected — 80% battery"));
+            let row = under(&page, "Ears")[0].clone();
+            assert_eq!(row.setting(), None);
+            assert!(row.entries().is_none());
+            let Some(crate::apps::About::Listed(values)) =
+                row.facts().map(|facts| facts.about.clone())
+            else {
+                panic!("the values travel with the row rather than being read on the press");
+            };
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|(label, value)| (label.as_str(), value.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Kind", "Headphones"),
+                    ("Address", "00:00:5E:00:53:01"),
+                    ("Battery", "80%"),
+                    ("Signal", "-55 dBm"),
+                ]
+            );
+        });
+    }
+
+    /// What the machine itself is: five rows on a machine with two radios, four
+    /// on the ordinary one.
+    ///
+    /// The controller row is the one that comes and goes, and it collapses under
+    /// the same rule the wireless and wired pages collapse under: a list of one
+    /// is not a choice. What it would have said is on the row below it anyway.
+    #[test]
+    fn configuration_is_what_this_machine_is() {
+        with_bluetooth(one_controller(Vec::new()), || {
+            let page = under(&bluetooth_page(), "Configuration").to_vec();
+            assert_eq!(
+                titles(&page),
+                ["Name", "Address", "Visibility", "On startup"]
+            );
+            // The name is typed rather than chosen, and it opens with what it
+            // already is: nobody should have to type a machine's name out again
+            // to change one letter of it.
+            let name = page[0].typed().expect("the name is a typed row");
+            assert_eq!(name.value, "A machine");
+            assert_eq!(name.comment, "A machine");
+            assert_eq!(
+                name.about,
+                Typing::BluetoothName {
+                    controller: intern(HCI)
+                }
+            );
+            // The address is a fact, so a row that shows it rather than a door
+            // in front of one line.
+            assert_eq!(page[1].comment(), Some(HCI_ADDRESS));
+            assert_eq!(page[1].setting(), None);
+            assert_eq!(page[1].icon(), Some(icons::SETTING_INFO));
+        });
+    }
+
+    /// A machine with two radios in it chooses between them here, by address —
+    /// which is the only thing that tells them apart, because BlueZ calls every
+    /// adapter in a machine after the machine.
+    #[test]
+    fn two_controllers_are_chosen_between_by_address() {
+        let second = crate::bluetooth::Controller {
+            path: "/org/bluez/hci-test1".to_string(),
+            interface: "hci-test1".to_string(),
+            address: "00:00:5E:00:53:FF".to_string(),
+            powered: false,
+            ..a_controller()
+        };
+        with_bluetooth(heard(vec![a_controller(), second], Vec::new()), || {
+            let page = under(&bluetooth_page(), "Configuration").to_vec();
+            assert_eq!(
+                titles(&page),
+                ["Controller", "Name", "Address", "Visibility", "On startup"]
+            );
+            let controllers = under(&page, "Controller");
+            assert_eq!(titles(controllers), ["Controller 1", "Controller 2"]);
+            assert!(
+                controllers[0].chosen(),
+                "nothing has been chosen, so the first one is the one in use"
+            );
+            // The address is on the row, because a number on its own would be
+            // asking somebody to pick between two things they cannot tell apart.
+            assert!(controllers[1]
+                .comment()
+                .is_some_and(|note| note.starts_with("00:00:5E:00:53:FF")));
+            assert_eq!(
+                controllers[1].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Use {
+                    address: intern("00:00:5E:00:53:FF")
+                }))
+            );
+        });
+    }
+
+    /// Choosing a controller moves everything above it: the switch, the name and
+    /// the devices are all about the radio in force.
+    ///
+    /// And it is remembered by **address**, so the kernel renumbering the
+    /// adapters cannot quietly move the preference to the other radio.
+    #[test]
+    fn the_chosen_controller_is_the_one_the_whole_page_is_about() {
+        let second = crate::bluetooth::Controller {
+            path: "/org/bluez/hci-test1".to_string(),
+            interface: "hci-test1".to_string(),
+            address: "00:00:5E:00:53:FF".to_string(),
+            name: "The other one".to_string(),
+            ..a_controller()
+        };
+        let listing = heard(vec![a_controller(), second], Vec::new());
+        with_bluetooth(listing, || {
+            let before = stored();
+            assert!(apply_with(
+                Setting::Bluetooth(BluetoothValue::Use {
+                    address: intern("00:00:5E:00:53:FF")
+                }),
+                |_| {},
+            ));
+            let page = bluetooth_page();
+            // The switch now names the other radio's path.
+            assert_eq!(
+                under(&page, "Bluetooth")[1].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Power {
+                    controller: intern("/org/bluez/hci-test1"),
+                    on: true
+                }))
+            );
+            let configuration = under(&page, "Configuration").to_vec();
+            assert_eq!(configuration[2].comment(), Some("00:00:5E:00:53:FF"));
+
+            // Unlike everything else about Bluetooth, this one is written down:
+            // BlueZ has no opinion about which of two radios the user means.
+            assert_ne!(stored(), before);
+            assert_eq!(
+                stored().bluetooth_controller.as_deref(),
+                Some("00:00:5E:00:53:FF")
+            );
+            // And a radio that has been unplugged does not leave the page
+            // blank — the one still in the machine is still Bluetooth.
+            let alone = heard(vec![a_controller()], Vec::new());
+            assert_eq!(
+                chosen_controller(&alone).map(|controller| controller.address.as_str()),
+                Some(HCI_ADDRESS)
+            );
+        });
+    }
+
+    /// Visibility is off by default and says why there is nothing to press when
+    /// the radio is off: a machine nothing can hear cannot be found either.
+    #[test]
+    fn visibility_is_a_switch_unless_the_radio_is_off() {
+        with_bluetooth(one_controller(Vec::new()), || {
+            let page = under(&bluetooth_page(), "Configuration").to_vec();
+            let visibility = under(&page, "Visibility");
+            assert_eq!(titles(visibility), ["Off", "On"]);
+            assert!(visibility[0].chosen(), "off until somebody says otherwise");
+            assert_eq!(
+                visibility[1].setting(),
+                Some(Setting::Bluetooth(BluetoothValue::Visible {
+                    controller: intern(HCI),
+                    on: true
+                }))
+            );
+        });
+
+        let mut controller = a_controller();
+        controller.powered = false;
+        controller.discoverable = false;
+        with_bluetooth(heard(vec![controller], Vec::new()), || {
+            let page = under(&bluetooth_page(), "Configuration").to_vec();
+            let row = page
+                .iter()
+                .find(|entry| entry.title() == "Visibility")
+                .expect("the row is still there");
+            assert_eq!(row.setting(), None, "and there is nothing to press");
+            assert!(row.entries().is_none());
+        });
+    }
+
+    /// What happens at startup is three answers, not two, and the third is the
+    /// default: a machine whose owner has never been to this page is left alone.
+    #[test]
+    fn the_startup_policy_is_remembered() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        note_bluetooth(one_controller(Vec::new()));
+
+        let page = || {
+            let column = column();
+            let row = column
+                .iter()
+                .find(|entry| entry.title() == "Bluetooth")
+                .expect("Settings has a Bluetooth row");
+            row.entries().expect("it opens a column").to_vec()
+        };
+        let startup = |rows: &[Entry]| {
+            rows.iter()
+                .find(|entry| entry.title() == "Configuration")
+                .and_then(Entry::entries)
+                .expect("Configuration opens a column")
+                .iter()
+                .find(|entry| entry.title() == "On startup")
+                .and_then(Entry::entries)
+                .expect("On startup opens a column")
+                .to_vec()
+        };
+
+        let rows = page();
+        let choices = startup(&rows);
+        assert_eq!(titles(&choices), ["Off", "On", "As it was left"]);
+        assert!(
+            choices[2].chosen(),
+            "the one that decides nothing is the default"
+        );
+
+        // Chosen, written down, and read back by the next session.
+        let mut written = None;
+        assert!(apply_with(
+            Setting::Bluetooth(BluetoothValue::Startup(Startup::On)),
+            |stored| written = stored.bluetooth_startup.clone(),
+        ));
+        assert_eq!(written.as_deref(), Some("on"));
+        assert_eq!(bluetooth_startup(), Startup::On);
+        let rows = page();
+        assert!(startup(&rows)[1].chosen());
+
+        // And what "as it was left" refers to is written by the shell watching
+        // rather than by anybody pressing anything.
+        note_bluetooth_powered(false);
+        assert!(!bluetooth_was_on());
+        assert_eq!(stored().bluetooth_was_on, Some(false));
+
+        put_back(saved);
+    }
+
+    /// Nothing about a *pairing* reaches the settings file. BlueZ is what
+    /// remembers one, for the reason the sound server remembers a device and
+    /// `NetworkManager` a network.
+    #[test]
+    fn a_pairing_is_not_written_down() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let before = stored();
+        for value in [
+            BluetoothValue::Connect {
+                device: intern(EARS),
+            },
+            BluetoothValue::Disconnect {
+                device: intern(EARS),
+            },
+            BluetoothValue::Forget {
+                device: intern(EARS),
+            },
+            BluetoothValue::Power {
+                controller: intern(HCI),
+                on: true,
+            },
+            BluetoothValue::Visible {
+                controller: intern(HCI),
+                on: true,
+            },
+        ] {
+            let mut written = false;
+            assert!(apply_with(Setting::Bluetooth(value), |_| written = true));
+            assert!(!written, "{value:?} reached the settings file");
+        }
+        assert_eq!(stored(), before);
+    }
+
+    /// How far off something is, in the words a person would use — and nothing
+    /// at all for a device that has not been heard.
+    #[test]
+    fn how_far_off_a_device_is() {
+        assert_eq!(nearness(Some(-40)), Some("close by"));
+        assert_eq!(nearness(Some(-60)), Some("close by"));
+        assert_eq!(nearness(Some(-61)), Some("nearby"));
+        assert_eq!(nearness(Some(-75)), Some("nearby"));
+        assert_eq!(nearness(Some(-76)), Some("far away"));
+        assert_eq!(nearness(None), None);
     }
 }

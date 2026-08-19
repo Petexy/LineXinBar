@@ -1,176 +1,42 @@
 <!--
-  The per-application volume mixer's glyph: a panel of faders, which is what a
-  mixer has looked like since it was a piece of furniture.
+  The mixer: a frame with three faders in it.
 
-  Faders rather than the speaker the volume bar already carries, because the
-  two rows would otherwise be the same drawing twice: one is how loud the
-  session is, this one is how loud each application in it is. Three of them,
-  for the reason given down where they are drawn: the count is set by what
-  survives being drawn at 42 px, not by what a mixer has.
+  The frame is a body with its middle taken out, which is an opening like any
+  other and gets its ring of displaced water for nothing. The three rods stand
+  inside that opening without touching the frame, and each cap is a separate
+  body sitting on its rod, so each takes a crevice — a cap merged into its rod
+  is a rod with a bulge, and the whole mark is about where the three caps are.
 
-  White and greys for the reason the other built-ins are — see pointer-stick —
-  and lit by the same lamp, out of the same parts: a face that falls away from
-  the light, a polished top whose lower edge is a curve, a rim where the shell
-  turns over, and shadow, so that the pair reads as two objects moulded from
-  one material rather than as two unrelated drawings sharing a row.
-
-  The panel is a frame with the middle open, not a slab. Two reasons, and the
-  first one is a hard limit: a filled faceplate this size covers over half the
-  cell, which is more than a built-in glyph is allowed (see icons.rs), and it
-  would sit in the quick-settings column as a white brick beside a speaker and
-  a sun drawn in outline. The second is that leaving it open keeps the faders
-  the brightest thing inside their own frame, which is what the tile is about.
-
-  A frame is also the one shape where the lighting has to be got right or the
-  whole thing collapses: its inner wall faces the opposite way to its outer
-  face, so under the top of the frame that wall is in shadow while at the
-  bottom it turns up into the light. Run both edges the same way and it stops
-  being a frame with depth and becomes a rectangle with a hole in it.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, before it is polished. Same stops as the stick-pointer
-         glyph's: one lamp, one shell, two drawings. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-
-    <!-- The polish, laid on as its own shape so its lower edge can curve. -->
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-
-    <radialGradient id="spec" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
-      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-
-    <!-- The outer edge, where the frame turns over: lit at the top, lit again
-         off the bounce at the bottom, dark down the sides. -->
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-
-    <!-- The inner wall, running the other way: in shadow under the top of the
-         frame, turned up into the light along the bottom of it. This is the
-         one gradient in the drawing that makes the frame have a thickness. -->
-    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.3"/>
-      <stop offset="0.34" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.8"/>
-    </linearGradient>
-
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-
-    <!-- A rail, seen end-on: a rod, so it is lit across its width rather than
-         along its length. Drawn as a narrow rounded rect rather than a stroked
-         line precisely so that it *has* a width for the gradient to cross. -->
-    <linearGradient id="rod" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#f0f0f0"/>
-      <stop offset="0.32" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#cacaca"/>
-    </linearGradient>
-
-    <!-- A fader cap. Too small to be worth a curved gloss of its own, so the
-         boundary goes in the gradient — at three units across, the eye reads
-         the step and never asks whether it is straight. Put where a fader cap
-         has a moulded line anyway, so it does double duty as the mark that
-         says which way the thing is meant to slide. -->
-    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.46" stop-color="#fbfbfb"/>
-      <stop offset="0.54" stop-color="#d2d2d2"/>
-      <stop offset="0.84" stop-color="#dadada"/>
-      <stop offset="1" stop-color="#f6f6f6"/>
-    </linearGradient>
-
-    <!-- The shadow the panel drops behind itself, matched to the one on the
-         stick-pointer glyph so the two tiles float at the same height. -->
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-
-    <!-- The shadow a cap drops onto the rail it is riding: thrown shorter and
-         blurred tighter, because a cap is sitting on its rail and the panel is
-         standing well clear of whatever is behind it. Getting these two
-         distances the same is what flattens a drawing like this — everything
-         ends up on one plane with a shadow under it. -->
-    <filter id="drop-near" x="-60%" y="-60%" width="220%" height="220%">
-      <feDropShadow dx="0.28" dy="0.6" stdDeviation="0.26"
-                    flood-color="#4a4a4a" flood-opacity="0.5"/>
-    </filter>
-
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- The frame, as the outer shape with the window taken back out of it. A
-         mask rather than an even-odd path because both rectangles then stay
-         legible as rectangles, and because a stroke laid on either boundary
-         gets its outer or inner half trimmed off for free — which is exactly
-         what an edge and an inner wall need. -->
-    <mask id="frame">
-      <rect x="3.4" y="5.2" width="25.2" height="21.6" rx="4.8" fill="#ffffff"/>
-      <rect x="5.7" y="7.5" width="20.6" height="17" rx="2.8" fill="#000000"/>
-    </mask>
-
-    <path id="frame-gloss" d="M2 3h28v9.4c-5.6 2.6-22.4 2.6-28 0z"/>
-  </defs>
-
-  <g filter="url(#drop)">
-    <g mask="url(#frame)">
-      <rect x="3.4" y="5.2" width="25.2" height="21.6" fill="url(#face)"/>
-      <use href="#frame-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <ellipse cx="13" cy="7.6" rx="10" ry="4.2" fill="url(#spec)"/>
-      <rect x="3.4" y="5.2" width="25.2" height="21.6" fill="url(#turn)"/>
-      <rect x="3.4" y="5.2" width="25.2" height="21.6" rx="4.8"
-            fill="none" stroke="url(#edge)" stroke-width="1.1"/>
-      <rect x="5.7" y="7.5" width="20.6" height="17" rx="2.8"
-            fill="none" stroke="url(#wall)" stroke-width="1.3"/>
+    <rect id="shell" x="3.4" y="5.2" width="25.2" height="21.6" rx="4.8"/>
+    <rect id="window" x="5.7" y="7.5" width="20.6" height="17" rx="2.8"/>
+    <g id="rods">
+      <rect x="8.35" y="9.5" width="1.7" height="13.1" rx="0.85"/>
+      <rect x="15.15" y="9.5" width="1.7" height="13.1" rx="0.85"/>
+      <rect x="21.95" y="9.5" width="1.7" height="13.1" rx="0.85"/>
     </g>
-  </g>
-
-  <!-- Three rails, drawn before the caps so that the caps can drop shadows
-       onto them.
-
-       Three and not four. Four fitted, and at the size this is *drawn* — a
-       guide tile gives its glyph 42 px, so each rail lands about two pixels
-       wide with two of air between it and the next — four came out as a grey
-       comb rather than as a bank of faders, and a tile nobody can read is a
-       tile that may as well be blank. Dropping one buys every rail a wider
-       cap and every cap a gap you can see through, which is the whole
-       difference between a mixer and a hatch pattern. -->
-  <g fill="url(#rod)">
-    <rect x="8.35" y="9.5" width="1.7" height="13.1" rx="0.85"/>
-    <rect x="15.15" y="9.5" width="1.7" height="13.1" rx="0.85"/>
-    <rect x="21.95" y="9.5" width="1.7" height="13.1" rx="0.85"/>
-  </g>
-
-  <!-- And a cap on each at a different setting: a mixer with every fader level
-       is a drawing of a mixer nobody has touched. -->
-  <g filter="url(#drop-near)">
-    <g fill="url(#cap)">
+    <g id="caps">
       <rect x="6.5" y="18.2" width="5.4" height="3" rx="1"/>
       <rect x="13.3" y="11.2" width="5.4" height="3" rx="1"/>
       <rect x="20.1" y="14.8" width="5.4" height="3" rx="1"/>
     </g>
+    <g id="bead"><use href="#shell"/><use href="#rods"/><use href="#caps"/></g>
+    <g id="holes"><use href="#window"/></g>
+    <mask id="pierced">
+      <use href="#shell" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#rods" fill="#ffffff"/>
+      <use href="#caps" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#caps" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

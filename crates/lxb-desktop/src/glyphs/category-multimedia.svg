@@ -1,225 +1,53 @@
 <!--
-The Multimedia column's glyph: a note over a strip of film.
+  The Multimedia column's glyph: a strip of film with a pair of notes over it.
 
-  The column is a container, and this is the one mark that says so by being
-  one. The strip is the Video subcategory's glyph and the note is the Music
-  subcategory's, put together in the row above the two of them — so the column
-  heading is not a symbol standing in for its contents, it *is* its contents,
-  and what is inside is answerable before stepping in.
+  Multimedia is the column that has both Video and Audio under it, so its mark
+  has to be both without being either — the two subcategories carry the film and
+  the note on their own.
 
-  Two marks were tried here first and both said something the column does not.
-  A disc named the right pair of subjects but named them through a medium, and
-  a column headed by optical media reads as a column wanting a drive. A
-  television fixed that and traded it for a different overreach: it names the
-  appliance you would play this on, and it made the set's second screen, so
-  most of its drawing went on not being the System column's monitor rather than
-  on being about audio and video. A note and a strip name the two subjects
-  exactly, and nothing else.
+  The sprockets are the openings. They are the one place in the set where a run
+  of small holes is wanted rather than one large one: the eye reads the rhythm
+  before it reads the shape, which is what says film.
 
-  Keeping the two objects apart is the whole problem, and colour is how the
-  icon this follows does it — a green note over a blue film. Not available
-  here: the atlas multiplies the quad's colour into the texel, so every glyph
-  in this set is one grey material and a coloured one could only come out
-  muddier than the label beside it. So the separation is a *gap*. The strip is
-  cut away around the note, a full unit clear of it, and the wallpaper shows
-  through the slot — the same job an outline does in the original, done by
-  removing material instead of adding ink, which is the only version of it this
-  set can hold. It also happens to be what the objects are doing: one is in
-  front of the other, and you can see past the near one to what is behind.
+  The notes lie *over* the strip rather than beside it, and a crevice runs
+  between them: the left head sits mostly on the strip, the left stem straddles
+  its edge and the beam's near cap comes to rest on it. Two pieces standing
+  apart are two marks that have to be read one after the other, and at the size
+  a column is drawn there is not room for two. Crossing them makes one.
 
-  The strip stands portrait here where the Video column's lies landscape, and
-  that is on purpose twice over. A portrait strip leaves the square's right
-  half for the note, which a landscape one does not; and a parent drawn as an
-  exact copy of one of its children would read as a duplicate of that child
-  rather than as the pair.
+  The crevice is cut in the mask and not painted: the whole note is laid down
+  swollen in black and then again at its true size in white, so what is left
+  between it and the strip is a gap in the shape itself. The field cannot tell
+  two touching bodies from one, so the separation has to be real — and then the
+  shader turns the wall over on both sides of it for nothing. Its width is the
+  set's, and the sprocket the left head covers is meant to be covered: the notes
+  are in front.
 
-  Both objects are lit by one lamp: a single face gradient down the height of
-  the whole drawing, one gloss shape spanning both, one fall-away across the
-  full width. Each keeps its own share of them by clipping, not by carrying a
-  copy — a lamp per object puts the gloss boundary at each object's own middle,
-  and two objects with their highlights at different heights are two objects
-  photographed separately and pasted together.
-
-  The strip is coarser than the Video column's: five sprockets a side and three
-  frames, in two thirds of the width that glyph gets. Anything finer closed up
-  into grey mush at the 84 px an unselected column is drawn at, and this one is
-  read at 84 px far more often than at 148 — it is the row's heading, and the
-  row is mostly headings you are not standing on.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- One lamp down the whole drawing and one fall-away across the whole
-         width of it, both in user space so the strip and the note are lit as
-         two parts of one object rather than as two objects. -->
-    <linearGradient id="face" gradientUnits="userSpaceOnUse" x1="0" y1="3.2" x2="0" y2="27.6">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="turn" gradientUnits="userSpaceOnUse" x1="2.4" y1="0" x2="28.2" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <!-- Sprockets and frames, sunk into the strip rather than punched through
-         it. The reasoning is category-video.svg's, and holds harder here where
-         the strip has two thirds of the width to hold them in. -->
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#9a9a9a"/>
-      <stop offset="0.45" stop-color="#b4b4b4"/>
-      <stop offset="1" stop-color="#e2e2e2"/>
-    </linearGradient>
-    <!-- The limb of a note head, lit hard where it faces the lamp. -->
-    <linearGradient id="head-rim" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.34" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.82" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-
-    <rect id="strip" x="2.4" y="3.2" width="13.6" height="24.4" rx="1.6"/>
-    <path id="sheen" d="M1 1H31V15.4C25.4 17.8 6.6 17.8 1 15.4z"/>
-    <clipPath id="strip-clip"><use href="#strip"/></clipPath>
-
-    <!-- The Music column's note, brought down a seventh and set to the
-         right. Written out at its size here rather than scaled by a transform,
-         so that it shares the drawing's user space with the strip and both can
-         be filled from the one lamp above them. -->
-    <path id="beam" d="M14.66 10.31L27.65 7.82v3.1L14.66 13.41z"/>
-    <rect id="stem-l" x="14.66" y="10.31" width="2.06" height="14.19"/>
-    <rect id="stem-r" x="25.58" y="8.33" width="2.06" height="13.76"/>
-    <ellipse id="head-l" cx="13.2" cy="24.16" rx="4.04" ry="3.18"
-             transform="rotate(-20 13.2 24.16)"/>
-    <ellipse id="head-r" cx="24.12" cy="21.75" rx="4.04" ry="3.18"
-             transform="rotate(-20 24.12 21.75)"/>
-
-    <!-- Everything the note is, and everything within a unit of it. The strip
-         is painted through the inverse of this, which is what opens the slot
-         between the two objects. -->
-    <mask id="clear-of-note" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <rect x="0" y="0" width="32" height="32" fill="#ffffff"/>
-      <g fill="#000000" stroke="#000000" stroke-width="2" stroke-linejoin="round">
-        <use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/>
-        <use href="#head-l"/><use href="#head-r"/>
-      </g>
-    </mask>
-    <mask id="note-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <g fill="#ffffff">
-        <use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/>
-        <use href="#head-l"/><use href="#head-r"/>
-      </g>
-    </mask>
-    <mask id="head-rim-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <g fill="#ffffff"><use href="#head-l"/><use href="#head-r"/></g>
-      <g fill="#000000">
-        <use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/>
-      </g>
+    <rect id="strip" x="5.55" y="4.12" width="9.68" height="23.76" rx="1.76"/>
+    <path id="beam" d="M16.06 11.51L25.08 9.75L25.63 9.54L26.08 9.15L26.36 8.63L26.45 8.05L26.34 7.46L26.03 6.96L25.57 6.58L25.01 6.4L24.41 6.41L15.4 8.17L14.85 8.38L14.39 8.77L14.11 9.29L14.02 9.87L14.13 10.46L14.44 10.96L14.9 11.34L15.46 11.52Z"/>
+    <path id="stem-l" d="M14.57 9.84L14.57 21.5L14.64 21.9L14.85 22.24L15.15 22.5L15.53 22.63L15.92 22.63L16.3 22.5L16.61 22.24L16.81 21.9L16.88 21.5L16.88 9.84L16.81 9.44L16.61 9.1L16.3 8.84L15.92 8.71L15.53 8.71L15.15 8.84L14.85 9.1L14.64 9.44Z"/>
+    <path id="stem-r" d="M23.59 8.08L23.59 19.3L23.66 19.7L23.87 20.04L24.17 20.3L24.55 20.43L24.94 20.43L25.32 20.3L25.63 20.04L25.83 19.7L25.9 19.3L25.9 8.08L25.83 7.68L25.63 7.34L25.32 7.08L24.94 6.95L24.55 6.95L24.17 7.08L23.87 7.34L23.66 7.68Z"/>
+    <ellipse id="head-l" cx="13.41" cy="22.82" rx="4.29" ry="3.41" transform="rotate(-20 13.41 22.82)"/>
+    <ellipse id="head-r" cx="22.44" cy="20.73" rx="4.29" ry="3.41" transform="rotate(-20 22.44 20.73)"/>
+    <g id="sprockets"><rect x="6.32" y="6.54" width="1.87" height="1.65" rx="0.55"/><rect x="12.15" y="6.54" width="1.87" height="1.65" rx="0.55"/><rect x="6.32" y="12.04" width="1.87" height="1.65" rx="0.55"/><rect x="12.15" y="12.04" width="1.87" height="1.65" rx="0.55"/><rect x="6.32" y="17.54" width="1.87" height="1.65" rx="0.55"/><rect x="12.15" y="17.54" width="1.87" height="1.65" rx="0.55"/><rect x="6.32" y="23.04" width="1.87" height="1.65" rx="0.55"/><rect x="12.15" y="23.04" width="1.87" height="1.65" rx="0.55"/></g>
+    <g id="note"><use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/><use href="#head-l"/><use href="#head-r"/></g>
+    <g id="bead"><use href="#strip"/><use href="#note"/></g>
+    <g id="holes"><use href="#sprockets"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#note" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#note" fill="#ffffff"/>
     </mask>
   </defs>
 
-  <!-- Two objects side by side come out bigger and further off centre than a
-       single one: this drawing runs 2.4 to 28.2 across and 3.2 to 27.6 down,
-       where the note alone occupies 22 by 22.8 in category-music.svg. Sat in
-       the row untouched it read as the heavy tile, and sat left of the others.
-       So the whole thing is brought to the set's mass and centred on the
-       square here, once, rather than by moving thirty coordinates and letting
-       them drift apart. -->
-  <g transform="translate(2.12 2.03) scale(0.907)">
-  <g filter="url(#drop)">
-    <!-- The film, behind, with the note and its clearance taken out of it. -->
-    <g mask="url(#clear-of-note)">
-      <use href="#strip" fill="url(#face)"/>
-      <g clip-path="url(#strip-clip)">
-        <use href="#sheen" fill="url(#gloss)" filter="url(#polish)"/>
-      </g>
-      <use href="#strip" fill="url(#turn)"/>
-      <g clip-path="url(#strip-clip)">
-        <use href="#strip" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-      </g>
-
-      <!-- Five sprockets a side and three frames between them. Drawn after
-           the fall-away, so a hole near an edge is not deeper than a hole in
-           the middle — see category-video.svg. -->
-      <g fill="url(#recess)">
-        <rect x="3.6" y="4.6" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="9.45" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="14.3" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="19.15" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="24" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="4.6" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="9.45" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="14.3" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="19.15" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="24" width="2" height="2.2" rx="0.55"/>
-        <rect x="6.4" y="4.6" width="5.6" height="6.4" rx="0.8"/>
-        <rect x="6.4" y="12.2" width="5.6" height="6.4" rx="0.8"/>
-        <rect x="6.4" y="19.8" width="5.6" height="6.4" rx="0.8"/>
-      </g>
-      <g fill="none" stroke="url(#edge)" stroke-width="0.5">
-        <rect x="3.6" y="4.6" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="9.45" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="14.3" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="19.15" width="2" height="2.2" rx="0.55"/>
-        <rect x="3.6" y="24" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="4.6" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="9.45" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="14.3" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="19.15" width="2" height="2.2" rx="0.55"/>
-        <rect x="12.8" y="24" width="2" height="2.2" rx="0.55"/>
-      </g>
-      <g fill="none" stroke="url(#edge)" stroke-width="0.65">
-        <rect x="6.4" y="4.6" width="5.6" height="6.4" rx="0.8"/>
-        <rect x="6.4" y="12.2" width="5.6" height="6.4" rx="0.8"/>
-        <rect x="6.4" y="19.8" width="5.6" height="6.4" rx="0.8"/>
-      </g>
-    </g>
-
-    <!-- And the note in front of it, one plate under the same lamp. -->
-    <g mask="url(#note-mask)">
-      <rect x="0" y="0" width="32" height="32" fill="url(#face)"/>
-      <use href="#sheen" fill="url(#gloss)" filter="url(#polish)"/>
-      <rect x="0" y="0" width="32" height="32" fill="url(#turn)"/>
-      <!-- The lit upper edge of the beam and the lit near edge of each stem,
-           each stopping where the head it runs into begins. -->
-      <path d="M14.75 10.48L27.56 8.07" stroke="#ffffff" stroke-opacity="0.9" stroke-width="0.6"/>
-      <path d="M15.09 10.48v10.58" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.6"/>
-      <path d="M26.01 8.68v9.98" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.6"/>
-    </g>
-
-    <!-- The rim round each head, where the plate turns over, stopped at
-         anything standing in front of it. -->
-    <g mask="url(#head-rim-mask)">
-      <g fill="none" stroke="url(#head-rim)" stroke-width="1.55">
-        <use href="#head-l"/>
-        <use href="#head-r"/>
-      </g>
-    </g>
-  </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

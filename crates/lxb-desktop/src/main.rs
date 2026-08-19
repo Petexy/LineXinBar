@@ -7,6 +7,7 @@
 mod appinfo;
 mod apps;
 mod art;
+mod bluetooth;
 mod controller;
 mod dialog;
 mod files;
@@ -15,13 +16,16 @@ mod guide;
 mod icons;
 mod keyboard;
 mod launch;
+mod machine;
 mod media;
 mod menu;
 mod model;
+mod network;
 mod notify;
 mod pad_guard;
 mod pointer;
 mod polkit;
+mod power;
 mod screenshot;
 mod secret;
 mod settings;
@@ -388,8 +392,8 @@ struct Cli {
 
     /// Perform actions at fixed times after start-up, as a comma-separated
     /// list of `seconds:action` (`--debug-actions 2:guide,3:right,4:launch`).
-    /// Actions are `guide`, `keyboard`, `back`, `launch`, `up`, `down`,
-    /// `left`, `right`, `prev-screen`, `next-screen`.
+    /// Actions are `guide`, `keyboard`, `back`, `launch`, `submit`, `up`,
+    /// `down`, `left`, `right`, `prev-screen`, `next-screen`.
     ///
     /// Development aid: most of this shell's design is in its transitions,
     /// and they cannot be inspected — or screenshotted at a chosen moment —
@@ -435,6 +439,19 @@ struct Cli {
     /// of Steam for them and nothing they name can be started.
     #[arg(long, hide = true, value_delimiter = ',', value_parser = parse_debug_game)]
     debug_steam_library: Vec<(String, std::primitive::bool)>,
+
+    /// Read the battery out of this directory instead of the kernel's own
+    /// `/sys/class/power_supply`.
+    ///
+    /// Development aid, and needed for a reason none of the others share:
+    /// this one cannot be looked at on the machine it is written on unless that
+    /// machine is a laptop. It invents nothing — the directory is read exactly
+    /// as the kernel's is, by the same code, so what it is pointed at has to be
+    /// a real `power_supply` layout — but a corner drawn from one is a picture
+    /// of a fixture and not of this machine's hardware, and must never be shown
+    /// as if it were.
+    #[arg(long, hide = true)]
+    debug_power_supply: Option<std::path::PathBuf>,
 }
 
 /// `name[:installed]`, for `--debug-steam-library`.
@@ -706,6 +723,25 @@ fn main() -> anyhow::Result<()> {
         file_orders: media::Orders::default(),
         deleting: None,
         quick: Quick::start(),
+        net: network::Net::start(),
+        network_seen: 0,
+        signal_seen: None,
+        power: match cli.debug_power_supply.clone() {
+            Some(root) => {
+                tracing::warn!(?root, "reading the battery out of a fixture");
+                power::Power::rooted(root)
+            }
+            None => power::Power::start(),
+        },
+        battery_seen: None,
+        network_wanted: None,
+        bt: bluetooth::Bt::start(),
+        bluetooth_seen: 0,
+        bluetooth_wanted: None,
+        bluetooth_settled: false,
+        pairing: None,
+        typing: None,
+        joining: None,
         volume: volume::Overlay::default(),
         steam,
         steam_buttons: Vec::new(),
@@ -1025,11 +1061,54 @@ fn debug_action_is_due(ready: bool, elapsed: f32, deadline: Option<f32>) -> bool
 /// provisional wallpaper-only atlas needs neither these nor catalogue icons;
 /// keeping them here preserves the settled atlas's slot ordering.
 fn load_builtin_icons() -> Vec<(String, icons::Icon)> {
+    // The corner's letters are the same work again — a coverage grid at four
+    // times the cell and one exact distance transform, per character — and they
+    // depend on nothing here, so they are measured beside the glyphs rather than
+    // after them. Ninety milliseconds, which is what the bar's arrival would
+    // otherwise be held by for the sake of a clock.
+    let letters = std::thread::Builder::new()
+        .name("lxb-letters".to_string())
+        .spawn(gpu::letter_fields);
+
     let mut out = Vec::new();
     for (name, drawing) in icons::BUILTIN {
-        match icons::Icon::builtin(drawing, ICON_SIZE) {
+        // Some of them are not pictures. A glyph drawn as a *shape* ships as a
+        // measurement of it — how far every pixel is from the nearest edge —
+        // because the quad shader cuts its own glass to that field rather than
+        // sampling a drawing somebody shaded by hand. `icons::SHAPE_MARK` is
+        // how a drawing says which it is.
+        let decoded = if icons::is_shape(drawing) {
+            icons::builtin_distance_field(drawing, ICON_SIZE)
+        } else {
+            icons::Icon::builtin(drawing, ICON_SIZE)
+        };
+        match decoded {
             Some(icon) => out.push((name.to_string(), icon)),
             None => tracing::warn!(glyph = name, "could not rasterise a built-in glyph"),
+        }
+    }
+    // And the characters the start screen's corner is written in, which are the
+    // same kind of thing arrived at from the other end: cut out of the bundled
+    // face rather than out of an authored drawing, and measured into the same
+    // field so the clock is the same material as the mark beside it. See
+    // [`gpu::letter_fields`].
+    match letters {
+        Ok(thread) => match thread.join() {
+            Ok(letters) => out.extend(letters),
+            // A session that cannot measure them draws no clock in the corner
+            // and everything else as it was. Loud, because it is a thread of
+            // this shell's own having died rather than anything about the
+            // machine.
+            Err(_) => tracing::error!("the thread measuring the clock's letters died"),
+        },
+        // No thread to be had: do the work here rather than lose the clock over
+        // it. The atlas waits the ninety milliseconds.
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "no thread for the clock's letters; measuring them here"
+            );
+            out.extend(gpu::letter_fields());
         }
     }
     out
@@ -1212,6 +1291,100 @@ struct Authenticating {
     /// a helper that failed before it could ask — which is not, and would loop
     /// for ever if it were.
     answered: bool,
+}
+
+/// A value being typed into the panel that one of the tree's typed rows opened.
+///
+/// The text lives here and is put on the panel as it is typed, unlike a
+/// password — see [`dialog::Line::Entry`], which is the difference: an address
+/// that could not be read back is an address nobody can check they typed
+/// correctly, and somebody entering one on a television with a thumbstick needs
+/// to see it more than anyone.
+struct Typing {
+    /// Which value it is, and whose. Taken from the row when the panel went up
+    /// rather than looked up again on the press that finishes it: the tree is
+    /// rebuilt underneath an open panel every time the worker reports anything.
+    about: settings::Typing,
+    /// What the row was called, which is what the panel is titled.
+    title: String,
+    /// And which connection it belongs to, which is the other half of that
+    /// title — see [`apps::Typed::whose`].
+    whose: String,
+    text: String,
+    /// What is wrong with what is in it, once somebody has tried to set it.
+    ///
+    /// `None` until Set is pressed, and `None` again the moment anything is
+    /// typed: a panel still telling somebody off for what they have just
+    /// corrected is a panel arguing with them.
+    fault: Option<&'static str>,
+}
+
+/// The most characters a typed value takes.
+///
+/// Not a policy about addresses — four name servers written out with commas
+/// between them is under seventy — but a bound on what a held key can do to a
+/// field the panel has to draw.
+const LONGEST_VALUE: usize = 128;
+
+/// A wireless network the user has chosen, waiting for its password.
+///
+/// The question is asked by the worker rather than by the press, and that is
+/// the one thing about this worth reading twice. Pressing a network's row is
+/// only ever "join this"; whether that needs anything typed depends on whether
+/// `NetworkManager` already has a profile for it and whether that profile still
+/// works, which is knowledge the worker has and the shell does not. So the
+/// shell presses, the worker answers with a [`network::Wanted`] in the listing,
+/// and this is what goes up in front of it. See [`network`], and
+/// [`Shell::sync_network`], which is where the panel is raised.
+struct Joining {
+    /// The network it is about, which is what the panel is titled after.
+    ssid: String,
+    /// Which ask this panel is up for. Compared against the worker's own count
+    /// so that a password refused *twice* raises the question again rather than
+    /// leaving a panel standing that has already been answered.
+    asked: u64,
+    /// What has been typed.
+    ///
+    /// The password lives here and in no other field of the shell. The panel is
+    /// drawn from a count of characters — see [`dialog::Line::Secret`] — and
+    /// this goes away with the join.
+    password: secret::Secret,
+}
+
+/// A pairing BlueZ has stopped in the middle of, waiting to be told something.
+///
+/// The counterpart of [`Joining`], and the same division: the shell presses,
+/// the worker answers with a [`bluetooth::Wanted`] in the listing, and this is
+/// what goes up in front of it. What differs is that the question is not always
+/// a field. A pairing may want a number compared, a yes, a passkey typed here,
+/// or a passkey typed on the device across the room — see
+/// [`bluetooth::Question`] — and one panel serves all four, because to the user
+/// they are one moment: the thing they pressed is asking them something.
+///
+/// The typed answer is a plain [`String`] and not a [`secret::Secret`], and
+/// that is deliberate rather than an oversight. A wireless password is a thing
+/// the user knows and must not leave a second copy of; a pairing code is a
+/// number the device is *displaying on its own screen* for this purpose and is
+/// worthless a moment later. Drawing it as bullets would hide the one thing the
+/// user is checking as they type it.
+struct Pairing {
+    /// The device it is about, which is what the panel is titled after.
+    name: String,
+    /// Which ask this panel is up for, compared against the worker's own count
+    /// so that a second question in one pairing raises a fresh panel rather
+    /// than leaving a standing one that has already been answered.
+    asked: u64,
+    /// What is being asked.
+    question: bluetooth::Question,
+    /// What has been typed, for the two questions that are typed into.
+    typed: String,
+}
+
+impl Pairing {
+    /// Whether this question is answered by typing rather than by agreeing.
+    fn typed(&self) -> bool {
+        self.question.typed()
+    }
 }
 
 /// A shelf of the user's own files being searched, and what has been typed
@@ -1865,6 +2038,80 @@ struct Shell {
     /// The volume and brightness bars in the guide's sidebar, and the worker
     /// that keeps them true.
     quick: Quick,
+    /// What this machine is on, and the worker that keeps it true. The Network
+    /// pages under Settings are drawn from it — see [`network`].
+    net: network::Net,
+    /// How many listings the network worker had published when this shell last
+    /// looked, so that it can tell a frame with news from the sixty a second
+    /// without. See [`network::Net::published`].
+    network_seen: u64,
+    /// The password the worker is waiting for, as of the last listing.
+    ///
+    /// Held rather than read afresh every frame because the panel it raises may
+    /// have to wait for another one to leave the screen, and the worker will
+    /// not say so again in the meantime.
+    network_wanted: Option<network::Wanted>,
+    /// Which band the wireless mark in the corner is drawn at, as of the last
+    /// frame that looked.
+    ///
+    /// Kept so that a band changing is a reason to draw again. The start screen
+    /// is redrawing anyway while its wallpaper moves, but the mark must not
+    /// depend on that being true: what says something has to be redrawn in this
+    /// shell is the change itself, and nothing else.
+    signal_seen: Option<network::Signal>,
+    /// What is in this machine's battery, and the worker that keeps it true.
+    /// The other mark in the start screen's corner is drawn from it, and the
+    /// row under Appearance that decides whether it carries a number exists
+    /// only when this has found one — see [`power`].
+    power: power::Power,
+    /// What the battery mark in the corner was drawn from, as of the last frame
+    /// that looked.
+    ///
+    /// Kept for the reason [`Self::signal_seen`] is: a charge that has changed
+    /// is a reason to draw again, and what says something has to be redrawn in
+    /// this shell is the change itself and never the fact that the wallpaper
+    /// happens to be moving anyway.
+    battery_seen: Option<power::Charge>,
+    /// What this machine is paired with, and the worker that keeps it true. The
+    /// Bluetooth pages under Settings are drawn from it, and this is also the
+    /// session's pairing agent — see [`bluetooth`].
+    bt: bluetooth::Bt,
+    /// How many listings the Bluetooth worker had published when this shell
+    /// last looked. See [`bluetooth::Bt::published`].
+    bluetooth_seen: u64,
+    /// The question BlueZ is waiting on, as of the last listing.
+    ///
+    /// Held rather than read afresh every frame for the reason
+    /// [`Shell::network_wanted`] is: the panel it raises may have to wait for
+    /// another one to leave the screen, and the worker will not say so again in
+    /// the meantime.
+    bluetooth_wanted: Option<bluetooth::Wanted>,
+    /// Whether the startup policy has been carried out this session.
+    ///
+    /// Once, on the first listing that has a controller in it — see
+    /// [`Shell::settle_bluetooth`]. Before that the shell does not know what is
+    /// in the machine, and after it every change to the switch is the user's
+    /// rather than the policy's.
+    bluetooth_settled: bool,
+    /// The pairing being answered, while the panel asking about it is up.
+    ///
+    /// One at a time, which needs no enforcing for the reason a removal needs
+    /// none: the panel driving it takes every button while it is up.
+    pairing: Option<Pairing>,
+    /// The value being typed, while the panel with the field on it is up.
+    ///
+    /// One at a time, which needs no enforcing for the reason a removal needs
+    /// none: the panel driving it takes every button while it is up.
+    typing: Option<Typing>,
+    /// The wireless network being joined, while the panel asking for its
+    /// password is up.
+    ///
+    /// One at a time, which needs no enforcing for the reason a removal needs
+    /// none: the panel driving it takes every button while it is up. The
+    /// password lives here and in no other field of the shell — the panel is
+    /// drawn from a count of characters, see [`dialog::Line::Secret`] — and it
+    /// goes away with the join.
+    joining: Option<Joining>,
     /// The volume control the keys raise, over whatever is in front of the
     /// user. The value in it is the one above; this is only how long the
     /// picture of it stays on screen. See [`volume`].
@@ -2424,6 +2671,15 @@ impl Shell {
         // And what it can play *through* changes the same way: headphones are
         // plugged in while the page listing them is on screen.
         self.sync_sound_devices();
+        // And what the machine is *on*, on the same terms: a cable pulled out,
+        // a network coming into range, a join finishing. This is also the frame
+        // a password the worker is waiting for reaches the screen on.
+        self.sync_network();
+        self.sync_power();
+        // And the same for what it is paired with, which is the same worker
+        // shape and the same frame — plus the pairing question, which arrives
+        // from BlueZ rather than from anything the shell pressed.
+        self.sync_bluetooth();
         // Which rows the column has. Set from the same answer the bars are
         // drawn from, so a control that goes away cannot leave a row behind.
         self.guide.set_bars(guide::Bars {
@@ -2671,6 +2927,18 @@ impl Shell {
             self.next_frame_deadline = now + FRAME_CALLBACK_WATCHDOG;
             return;
         };
+        let corner = ui::Corner {
+            clock: clock.as_deref(),
+            // The band this frame draws is the one the last sync noticed, not a
+            // fresh read: what is on screen and what asked for a frame have to
+            // be the same answer, or a band that arrived mid-frame would be
+            // drawn without anything having decided to draw it.
+            signal: self.signal_seen,
+            // The charge on exactly the same terms, and read from the same
+            // place for the same reason.
+            battery: self.battery_seen,
+            percent: settings::battery_percent(),
+        };
         // Where each game's cover ended up, and how much colour is in it, for
         // the rows about to be drawn. Bound out here because the panels are
         // borrowed one at a time below and the shell is not reachable from
@@ -2890,7 +3158,7 @@ impl Shell {
                     width as f32,
                     height as f32,
                     focused,
-                    clock.as_deref(),
+                    corner,
                     time,
                     &Slots { gpu, art, drained },
                     // The caret belongs to the display being typed on, which
@@ -3130,14 +3398,16 @@ impl Shell {
                 }
                 scene.fade(1.0 - grown);
 
-                let icon = splash
-                    .icon
-                    .as_deref()
-                    .and_then(|name| Slots { gpu, art, drained }.slot_for(Some(name)));
+                let named = splash.icon.as_deref();
+                let icon = named.and_then(|name| Slots { gpu, art, drained }.slot_for(Some(name)));
                 let over = ui::build_launch(
                     ui::LaunchView {
                         name: &splash.name,
                         icon,
+                        // Whatever it was looked up by. Almost always a theme's
+                        // name for a program, which is a picture; the field is
+                        // here for the case where it is not.
+                        glyph: named,
                         game: splash.game().is_some(),
                         logo: splash.game().and_then(|app_id| gpu.logo(app_id)),
                         doing: splash.doing(),
@@ -3231,6 +3501,20 @@ impl Shell {
                             .icon_name()
                             .and_then(|name| Slots { gpu, art, drained }.glyph(name))
                             .or_else(|| Slots { gpu, art, drained }.glyph(icons::NOTIFICATIONS)),
+                        // And which of those two it ended up being, because the
+                        // bell is one of the marks the shader shades out of its
+                        // own shape and a program's picture is not. Worked out
+                        // the same way round as the line above: the fallback is
+                        // reached exactly when the program's own name did not
+                        // resolve.
+                        glyph: match toast
+                            .about
+                            .icon_name()
+                            .filter(|name| Slots { gpu, art, drained }.glyph(name).is_some())
+                        {
+                            Some(name) => Some(name),
+                            None => Some(icons::NOTIFICATIONS),
+                        },
                         stage: toast.stage(),
                         progress: toast.progress(),
                     })
@@ -3918,6 +4202,9 @@ impl Shell {
     fn type_into_shell(&mut self, stroke: keyboard::Stroke) -> bool {
         self.type_into_password(stroke)
             || self.type_into_authentication(stroke)
+            || self.type_into_network(stroke)
+            || self.type_into_pairing(stroke)
+            || self.type_into_value(stroke)
             || self.type_into_steam(stroke)
             || self.type_into_search(stroke)
     }
@@ -3928,18 +4215,25 @@ impl Shell {
         self.password_wanted() || self.steam.field_wanted() || self.search_wanted()
     }
 
-    /// Whether the panel on screen is waiting for a password to be typed into
-    /// it.
+    /// Whether the panel on screen has a field on it that is being typed into.
     ///
-    /// Either panel that has a field on it, because what this decides is the
-    /// same for both: keys are letters rather than buttons, they repeat, and
-    /// the board must not be taken away by Back — a field with no keyboard on a
-    /// console is a field that cannot be filled in.
+    /// Every panel that has one, because what this decides is the same for all
+    /// of them: keys are letters rather than buttons, they repeat, and the
+    /// board must not be taken away by Back — a field with no keyboard on a
+    /// console is a field that cannot be filled in. Not every one of them is a
+    /// password; an address is one of these too and wants the same three
+    /// answers.
     fn password_wanted(&self) -> bool {
         self.uninstalling
             .as_ref()
             .is_some_and(|state| matches!(state.stage, Stage::Asking { .. }))
             || self.authenticating.is_some()
+            || self.joining.is_some()
+            // Only the two pairing questions that are typed into. The other
+            // three are answered with a button, and a panel that took the
+            // keyboard for one of those would be a panel Escape could not leave.
+            || self.pairing.as_ref().is_some_and(Pairing::typed)
+            || self.typing.is_some()
             || self.steam.password_wanted()
     }
 
@@ -4080,6 +4374,15 @@ impl Shell {
         if !self.startup.ready {
             return;
         }
+        // Start is Accept, and is only ever anything else while the board is
+        // up. Folded here rather than at each of the half-dozen places Accept
+        // is answered — the bar, a menu, a panel, a window card, the guide —
+        // because a button that had to be listed twice everywhere would be
+        // dead wherever somebody forgot to list it a second time.
+        let action = match action {
+            Action::Submit if !self.osk.is_open() => Action::Launch,
+            other => other,
+        };
         self.handle_action(action);
         self.sync_setting_preview();
     }
@@ -4177,7 +4480,7 @@ impl Shell {
             return true;
         };
         settings::apply(step);
-        settings::refresh(&mut self.xmb.categories);
+        self.rebuild_settings();
         // Whichever bar this was: the two of them are the night light's warmth
         // and how large applications draw themselves, and each of these sends
         // only what has actually changed.
@@ -4212,7 +4515,7 @@ impl Shell {
             return;
         };
         settings::apply(setting);
-        settings::refresh(&mut self.xmb.categories);
+        self.rebuild_settings();
         self.sync_night_light();
         self.sync_app_scale();
         self.stepped();
@@ -4400,6 +4703,25 @@ impl Shell {
                     if let settings::Setting::SoundDevice { direction, id } = setting {
                         self.quick.use_device(direction, id);
                     }
+                    // And a network row is NetworkManager's, for exactly the
+                    // same reason. Nothing is drawn differently on the press:
+                    // the mark on the row moves when the *listing* does, which
+                    // is the moment the machine really is on that network —
+                    // unlike a sound device, a join is a thing that can fail,
+                    // and a row marked before it has happened would be the page
+                    // saying something that is not yet true.
+                    if let settings::Setting::Network(value) = setting {
+                        self.carry_out_network(value);
+                    }
+                    // And a Bluetooth row is BlueZ's, on exactly those terms
+                    // again — including the last one, which matters more here
+                    // than anywhere: connecting to a device is a conversation
+                    // with a machine across the room, it takes seconds, and it
+                    // can fail. The row says what is happening while it happens
+                    // and is marked only once it has.
+                    if let settings::Setting::Bluetooth(value) = setting {
+                        self.carry_out_bluetooth(value);
+                    }
                     // The night light is the one page in this tree whose
                     // *shape* depends on what was just chosen: asking it to
                     // keep hours puts two rows on the page that were not there
@@ -4424,7 +4746,7 @@ impl Shell {
                             ..
                         }
                     ) {
-                        settings::refresh(&mut self.xmb.categories);
+                        self.rebuild_settings();
                     }
                     // The accent needs nobody told; a display setting does,
                     // and straight away rather than on the next loop pass —
@@ -4659,20 +4981,28 @@ impl Shell {
     /// second answer to the one question that matters here: what happens when
     /// the application is *already* running.
     fn start_selection(&mut self) {
-        // The two rows Steam put on the bar are answered before anything else:
-        // the service row raises a panel or moves the bar, and an installed
-        // title with no safe native target explains the missing capability.
+        // The rows whose press raises a panel rather than starting anything are
+        // answered before everything else: the Steam service row signs an
+        // account in or moves the bar, an installed title with no safe native
+        // target explains the missing capability, System information puts up
+        // what this machine is, and a typed value opens its field.
         match self.panels.get(self.focused_panel).and_then(|panel| {
-            panel
-                .cursor
-                .current_entry(&self.xmb)
-                .map(|entry| (entry.service().is_some(), entry.game().cloned()))
+            panel.cursor.current_entry(&self.xmb).map(|entry| {
+                (
+                    entry.service().is_some(),
+                    entry.game().cloned(),
+                    entry.facts().cloned(),
+                    entry.typed().cloned(),
+                )
+            })
         }) {
-            Some((true, _)) => return self.press_steam_row(),
+            Some((_, _, Some(facts), _)) => return self.show_facts(&facts),
+            Some((_, _, _, Some(row))) => return self.show_typing(&row),
+            Some((true, ..)) => return self.press_steam_row(),
             // A game the account owns and this machine has not got is a press
             // that means "get it": the one row on the bar whose press is
             // answered by offering rather than by starting.
-            Some((_, Some(game))) if !game.installed => return self.offer_to_install(&game),
+            Some((_, Some(game), ..)) if !game.installed => return self.offer_to_install(&game),
             _ => {}
         }
         // It is come back to, never started a second time. A console has one of
@@ -5672,18 +6002,26 @@ impl Shell {
     /// answered last so that one pass tells them about everything this frame
     /// did, including the announcements it has only just taken.
     fn sync_notifications(&mut self) {
-        let Some(service) = self.notifier.as_ref() else {
-            return;
-        };
         let standing = !self.notifications.toasts().is_empty();
-        let arrived = self.notifications.collect(service);
+        // The bus is one source of announcements and no longer the only one:
+        // the shell says things on its own account too — see
+        // [`notify::Center::announce`] — so the corner has to be advanced and
+        // the programs answered whether or not this session took the name. A
+        // LineXinBar started inside somebody else's desktop has no daemon of
+        // its own and must still be able to say that a device paired.
+        let arrived = match self.notifier.as_ref() {
+            Some(service) => self.notifications.collect(service),
+            None => notify::Arrivals::default(),
+        };
         // Once for the frame, however many came in on it, and only for one
         // that put something in the corner — see `sound::Sounds::notified`.
         if arrived.raised {
             self.sounds.notified();
         }
         let moving = self.notifications.animate();
-        self.notifications.answer(service);
+        if let Some(service) = self.notifier.as_ref() {
+            self.notifications.answer(service);
+        }
         // The first bubble lifts this display's surface to the overlay layer
         // and the last one lets it back down — see `Guide::surface_state`. Only
         // when that changes: the state is applied by comparison, but working
@@ -6323,6 +6661,9 @@ impl Shell {
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
             menu::Command::SubmitPassword => self.submit_password(),
             menu::Command::Authenticate => self.submit_authentication(),
+            menu::Command::JoinNetwork => self.submit_network_password(),
+            menu::Command::PairDevice => self.answer_pairing(),
+            menu::Command::SetValue => self.submit_typing(),
             menu::Command::MoveToNextDisplay => self.move_selected_window(Toward::Next),
             menu::Command::MoveToPreviousDisplay => self.move_selected_window(Toward::Previous),
             menu::Command::Screenshot => self.screenshot_selected_window(from),
@@ -6398,6 +6739,8 @@ impl Shell {
                 // question is a no.
                 self.answer_share(None);
                 self.abandon_authentication("cancelled");
+                self.abandon_network_password();
+                self.abandon_typing();
             }
             menu::Command::ShareDisplay(row) => self.answer_share(Some(row)),
             menu::Command::RefuseShare => self.answer_share(None),
@@ -6469,6 +6812,59 @@ impl Shell {
             vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
             0,
         );
+    }
+
+    /// Put up what this machine is: the panel behind Settings > System >
+    /// System information.
+    ///
+    /// Everything is read here, on the press, rather than kept anywhere — see
+    /// [`machine::Facts::read`], which is a handful of files out of `/proc` and
+    /// costs a fraction of a millisecond. So this panel needs none of the
+    /// second pass [`Self::show_app_information`] has: there is nothing still
+    /// on its way when it opens, and every row is filled in the first time it
+    /// is drawn.
+    ///
+    /// The one thing not read off the disk is which adapter the shell is
+    /// drawing through, which only the renderer can say. `None` before there is
+    /// one, which is a shell that has not drawn a frame and therefore cannot
+    /// have been asked this.
+    fn show_facts(&mut self, row: &apps::Facts) {
+        let (icon, lines) = match &row.about {
+            apps::About::Machine => (
+                // The shell's own mark, over the whole list. Where the
+                // application panel puts the application's picture this puts
+                // the fennec, and for the same reason: the band at the head of
+                // a panel is for whatever the panel is about, and what this one
+                // is about is the machine this shell is running on. See
+                // [`icons::LOGO`], which is drawn untinted like every dialog's
+                // icon.
+                icons::LOGO.to_string(),
+                system_information_lines(&machine::Facts::read(
+                    self.gpu.as_ref().map(gpu::Gpu::graphics),
+                )),
+            ),
+            // The row's own glyph, by the same argument: what this panel is
+            // about is the interface the row named, and the row's mark is what
+            // the user pressed to get here.
+            apps::About::Listed(values) => {
+                (row.icon.clone(), listed_facts_lines(&row.title, values))
+            }
+        };
+        let from = self.dialog_origin();
+        let raised = self.dialog.ask(
+            from,
+            Some(icon),
+            lines,
+            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            0,
+        );
+        if raised {
+            // The press the bar keeps, not the one that hands a display over:
+            // nothing is starting, and what answered the button is a panel of
+            // this shell's own. Only once it is actually up, for the reason the
+            // authentication panel's sound waits for the same answer.
+            self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+        }
     }
 
     /// Ask whether to remove the selected application.
@@ -7296,6 +7692,22 @@ impl Shell {
         self.abandon_uninstall("dismissed");
         self.answer_share(None);
         self.abandon_authentication("dismissed");
+        // And a network join that is waiting to be typed into, which is
+        // waiting on a worker rather than on anything in this process: a panel
+        // dismissed with the worker not told leaves it holding the question for
+        // the rest of the session, and the shell believing there is a field on
+        // screen — keys as letters, and the board standing over a bar with
+        // nothing to type into.
+        self.abandon_network_password();
+        // And a pairing question, which is waiting on a worker in exactly the
+        // same way: BlueZ is holding a `Pair` open on the answer, and a panel
+        // dismissed with nobody told would leave a device stuck half-paired
+        // until it gave up on its own.
+        self.abandon_pairing();
+        // And a field being typed into, for the plainer reason: the board is up
+        // for it, and a panel taken away by Back with nothing told would leave
+        // a keyboard standing over a bar with nothing to type into.
+        self.abandon_typing();
         // A sign-in dismissed by Back is a sign-in given up on: the panel was
         // the whole of it, and one left running behind a bar nobody can see it
         // from would go on polling Steam for a code that is no longer on
@@ -7690,6 +8102,21 @@ impl Shell {
             return;
         }
 
+        // Nothing to fetch it with, so the offer is not made. The menu over a
+        // game has always known this — every row that acts on a game is left
+        // out where there is no client; see [`steam_game_menu_rows`] — but the
+        // press did not, and a press is the likelier way to reach a game.
+        // Offering "It can be fetched from Steam now" on a machine that cannot
+        // fetch it is a promise the next press breaks, and it breaks it after
+        // the user has agreed to a download.
+        //
+        // Before the account, in the order [`Self::ask_steam_before_starting`]
+        // asks in: signing in is worth doing on a machine with no client — the
+        // library still lists — but it is not what stands between this press
+        // and this game.
+        if !game.steam_client {
+            return self.say_no_steam_client(&game.name);
+        }
         if !self.steam.signed_in() {
             return self.say_steam_needs_an_account(&game.name);
         }
@@ -8594,8 +9021,10 @@ impl Shell {
             }
             return;
         }
-        if action == Action::Launch {
-            self.press_key();
+        match action {
+            Action::Launch => self.press_key(),
+            Action::Submit => self.submit_key(),
+            _ => {}
         }
     }
 
@@ -9209,6 +9638,34 @@ impl Shell {
         if press == keyboard::Press::Close {
             self.sync_surface_state();
         }
+        self.flush_keystroke();
+        self.needs_redraw = true;
+    }
+
+    /// Start, pressed over the board: Enter, and the board away with it.
+    ///
+    /// The same shape as [`Self::press_key`], because it is the same press —
+    /// the key it sends is Enter rather than whatever the cursor is standing
+    /// on, and the board does not survive it. See [`keyboard::Osk::submit`],
+    /// which is where the closing happens: it is done before the keystroke is
+    /// acted on here, so that a field which answers Enter by asking for
+    /// something else keeps the board it raises for it.
+    fn submit_key(&mut self) {
+        // A key of the board went down, and the ear should not be able to tell
+        // which button sent it. See the same line in `press_key`.
+        self.sounds.key();
+        let at = self.start.elapsed().as_millis() as u32;
+        // Read before the press: closing the board clears it.
+        let types_here = self.osk.types_here();
+        let press = self.osk.submit(at);
+        // A board typing into the shell's own field sends nothing anywhere —
+        // it hands the keystroke back, and this is where it goes.
+        if types_here {
+            if let keyboard::Press::Type(stroke) = press {
+                self.type_into_shell(stroke);
+            }
+        }
+        self.sync_surface_state();
         self.flush_keystroke();
         self.needs_redraw = true;
     }
@@ -10973,32 +11430,969 @@ impl Shell {
     ///
     /// The listing is only kept fresh while somebody is standing in the
     /// Settings column, because reading it is three subprocesses and nothing
-    /// else in the shell is about it — see [`Quick::watch_devices`]. Any
-    /// display's column: each screen has an XMB of its own and a cursor of its
-    /// own, and the page can be open on the second one while the first shows
-    /// something else entirely.
-    ///
-    /// Only screens that are actually being drawn count. A display with an
-    /// application over the whole of it is a display whose bar is not on
-    /// screen, and a cursor left standing in Settings behind a fullscreen game
-    /// must not have the shell polling the sound server for the length of it.
+    /// else in the shell is about it — see [`Quick::watch_devices`], and
+    /// [`Self::standing_in_settings`] for what "standing in" means and why it
+    /// is not simply where the cursor is.
     fn sync_sound_devices(&mut self) {
-        let (id, ..) = apps::SHELL_SETTINGS;
-        let watching = (0..self.panels.len()).any(|index| {
-            self.panel_is_visible(index)
-                && self.panels[index]
-                    .cursor
-                    .current_category(&self.xmb)
-                    .is_some_and(|category| category.id == id)
-        });
+        let watching = self.standing_in_settings();
         self.quick.watch_devices(watching);
         if !watching {
             return;
         }
         if settings::note_devices(self.quick.devices()) {
-            settings::refresh(&mut self.xmb.categories);
+            self.rebuild_settings();
             self.needs_redraw = true;
         }
+    }
+
+    /// Write the Settings column again from what the shell now knows, and bring
+    /// every cursor standing in it back onto a row that exists.
+    ///
+    /// The one way that column is rebuilt, and the reason it is one way rather
+    /// than eight calls to [`settings::refresh`]: the tree describes hardware,
+    /// hardware changes while somebody is looking at it, and a rebuild is
+    /// therefore something that happens *underneath* a cursor. A column that
+    /// loses rows — a cable pulled out, a network gone out of range, a value
+    /// cleared and the row that held it withdrawn with it — leaves that cursor
+    /// pointing past the end of a list it is standing in. See
+    /// [`model::Cursor::keep_in_bounds`], which is what that costs and what it
+    /// does about it.
+    ///
+    /// Every display, not only the focused one. Each has a cursor of its own
+    /// and the page can be open on the second screen while the first shows
+    /// something else — and a cursor stranded on a screen nobody is driving is
+    /// stranded all the same, waiting for whoever takes that screen next.
+    fn rebuild_settings(&mut self) {
+        settings::refresh(&mut self.xmb.categories);
+        let mut moved = false;
+        for panel in &mut self.panels {
+            moved |= panel.cursor.keep_in_bounds(&self.xmb);
+        }
+        if moved {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Whether any display that is actually being drawn has its cursor standing
+    /// in the Settings column.
+    ///
+    /// What decides whether the workers behind the pages that describe hardware
+    /// are kept turning. Any display's column: each screen has an XMB of its own
+    /// and a cursor of its own, and the page can be open on the second one while
+    /// the first shows something else entirely. Only screens that are actually
+    /// being drawn count — a display with an application over the whole of it is
+    /// a display whose bar is not on screen, and a cursor left standing in
+    /// Settings behind a fullscreen game must not have the shell polling
+    /// anything for the length of it.
+    fn standing_in_settings(&self) -> bool {
+        let (id, ..) = apps::SHELL_SETTINGS;
+        (0..self.panels.len()).any(|index| {
+            self.panel_is_visible(index)
+                && self.panels[index]
+                    .cursor
+                    .current_category(&self.xmb)
+                    .is_some_and(|category| category.id == id)
+        })
+    }
+
+    /// Whether the top corner of the start screen is on screen anywhere.
+    ///
+    /// Not [`Shell::panel_is_visible`], which is a wider question and the wrong
+    /// one here: a display draws for a notification or the volume bar while a
+    /// game covers everything else, and the corner is exactly what a game
+    /// covers. What this asks is the one thing the mark depends on — that the
+    /// wallpaper's own corner is being drawn on some display.
+    fn showing_the_corner(&self) -> bool {
+        self.panels
+            .iter()
+            .any(|panel| !bar_is_covered(panel.width, panel.height, &panel.windows))
+    }
+
+    /// Whether any display that is actually being drawn has the column that
+    /// looks for new devices open.
+    ///
+    /// The narrow question, asked separately from
+    /// [`Self::standing_in_settings`] because it decides something far more
+    /// expensive: whether a radio is told to look around, which costs the
+    /// connection it is already carrying. Opened rather than merely highlighted
+    /// — see [`model::Cursor::opened_rows`] — so walking past the row costs
+    /// nothing, and it is the whole trail rather than one level because the
+    /// column stands two steps inside Bluetooth.
+    fn standing_in_search(&self) -> bool {
+        let (id, ..) = apps::SHELL_SETTINGS;
+        (0..self.panels.len()).any(|index| {
+            self.panel_is_visible(index)
+                && self.panels[index]
+                    .cursor
+                    .current_category(&self.xmb)
+                    .is_some_and(|category| category.id == id)
+                && self.panels[index]
+                    .cursor
+                    .opened_rows(&self.xmb)
+                    .iter()
+                    .any(|row| row.title() == settings::SEARCH_PAGE)
+        })
+    }
+
+    /// Hand the Settings column what this machine is on, rebuild it if that
+    /// changed, and put up the panel when a network wants a password.
+    ///
+    /// Kept fresh on the same terms as the sound devices, and for the same
+    /// reason — a cable is pulled out and a network comes into range while the
+    /// session runs, and the only moment that has to be noticed is while
+    /// somebody is looking at the list. What differs is the last line: this is
+    /// also the frame a question from the worker reaches the screen on, the way
+    /// [`Self::sync_polkit`] is for `polkitd`.
+    fn sync_network(&mut self) {
+        self.net.watch(self.standing_in_settings());
+        // And the corner's own mark, on its own much cheaper terms: it is on
+        // screen whenever no application is covering the start screen, which is
+        // most of a session. See [`network::Net::watch_signal`].
+        self.net.watch_signal(self.showing_the_corner());
+        let signal = self.net.signal();
+        if signal != self.signal_seen {
+            self.signal_seen = signal;
+            self.needs_redraw = true;
+        }
+        // Asked before the listing is copied out, and the copy skipped when the
+        // answer is the same as last frame's — which it is on nearly all of
+        // them. See [`network::Net::published`].
+        let published = self.net.published();
+        if published != self.network_seen {
+            self.network_seen = published;
+            let listing = self.net.listing();
+            self.network_wanted = listing.wanted.clone();
+            if settings::note_network(listing) {
+                self.rebuild_settings();
+                self.needs_redraw = true;
+            }
+        }
+        // Asked every frame even so, and not only when the listing moved: a
+        // question that arrived while another panel was up is one this has to
+        // keep offering to raise until there is room for it.
+        let wanted = self.network_wanted.take();
+        self.ask_for_network_password(wanted.as_ref());
+        self.network_wanted = wanted;
+    }
+
+    /// Hand the Settings column what is in this machine's battery, rebuild it
+    /// if the row it draws would change, and keep the corner's mark true.
+    ///
+    /// The cheapest of these syncs, and the only one whose worker is gated on
+    /// nothing but the corner: there is no page that reads the battery more
+    /// closely than the corner does, so there is no second, faster watch to
+    /// turn on the way [`network::Net::watch`] is turned on beside
+    /// [`network::Net::watch_signal`]. What Settings shows of it is the one row
+    /// under Appearance, and that row is drawn from the same reading the corner
+    /// is.
+    fn sync_power(&mut self) {
+        self.power.watch(self.showing_the_corner());
+        let charge = self.power.charge();
+        if charge != self.battery_seen {
+            self.battery_seen = charge;
+            self.needs_redraw = true;
+        }
+        // Told every frame, and it answers `false` on nearly all of them: a
+        // battery reports a different number every time it is read, and only
+        // the handful of those that change the row's own drawing are worth a
+        // column. See [`settings::note_battery`].
+        if settings::note_battery(charge) {
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Put the password panel up, take it away, or leave it where it is.
+    ///
+    /// Driven off the worker's own question rather than off the press that
+    /// started it, which is what makes one panel serve both cases: a network
+    /// nothing is saved for asks straight away, and a saved network whose
+    /// password has since been changed on the router asks a second or two later,
+    /// after `NetworkManager` has tried the one it had. See [`network::Wanted`].
+    fn ask_for_network_password(&mut self, wanted: Option<&network::Wanted>) {
+        match wanted {
+            // The same question that is already up. Nothing to do — and
+            // emphatically not a redraw: the panel is being typed into.
+            Some(wanted)
+                if self
+                    .joining
+                    .as_ref()
+                    .is_some_and(|joining| joining.asked == wanted.asked) => {}
+            // A question with nowhere to put it waits, exactly as a `polkitd`
+            // one does: the shell asks one thing at a time, and a panel raised
+            // over another would inherit the press meant for it. The worker
+            // holds its question until there is room, which costs nothing —
+            // nothing is happening on the radio until somebody types.
+            Some(_) if self.dialog.is_on_screen() || self.context_menu.is_on_screen() => {}
+            Some(wanted) => {
+                tracing::info!(
+                    ssid = %wanted.ssid,
+                    retry = wanted.retry,
+                    "asking for a network password"
+                );
+                self.joining = Some(Joining {
+                    ssid: wanted.ssid.clone(),
+                    asked: wanted.asked,
+                    password: secret::Secret::default(),
+                });
+                self.show_network_password(&wanted.ssid, wanted.retry);
+            }
+            // The worker has stopped waiting — the password was handed over, or
+            // the join was abandoned — so the panel goes with the question.
+            None if self.joining.is_some() => {
+                self.joining = None;
+                self.close_dialog();
+                self.dismiss_password_board();
+                self.needs_redraw = true;
+            }
+            None => {}
+        }
+    }
+
+    /// Put up the field that collects a wireless password, with the keyboard.
+    fn show_network_password(&mut self, ssid: &str, retry: bool) {
+        let from = self.dialog_origin();
+        let typed = self
+            .joining
+            .as_ref()
+            .map(|joining| joining.password.typed())
+            .unwrap_or(0);
+        // The guide is opened under it only when there is an application to be
+        // over, as an authorisation's panel is and for the same reason — a
+        // refused password arrives a second or two after the press, by which
+        // time the user may have gone off and started something. On the bar
+        // there is nothing to be over, and sliding the sidebar in would be the
+        // shell opening a control nobody asked for.
+        if self.app_running() {
+            self.open_guide();
+        }
+        let raised = self.dialog.ask(
+            from,
+            Some(icons::SETTING_WIFI.to_string()),
+            vec![
+                dialog::Line::Heading(ssid.to_string()),
+                dialog::Line::Note(if retry {
+                    "That password was not accepted. Try again.".to_string()
+                } else {
+                    "Enter this network's password.".to_string()
+                }),
+                dialog::Line::Secret { typed },
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                // Not `grave`: joining a network destroys nothing, and the warm
+                // light is the shell's one mark of a choice there is no coming
+                // back from. Standing on Join, unlike the removal's question,
+                // for the same reason the other way round — this panel went up
+                // because the user pressed a network, so the button that
+                // finishes what they started is the one under their thumb.
+                menu::Entry::new(menu::Command::JoinNetwork, "Join"),
+            ],
+            1,
+        );
+        if !raised {
+            tracing::warn!("the network password panel could not be raised");
+            self.abandon_network_password();
+            return;
+        }
+        // The board comes up with the field, because on a console there is
+        // nothing else to type a password with.
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Redraw the password field after a keystroke.
+    ///
+    /// The panel is rebuilt from the count alone, so this is the whole of what
+    /// typing changes on screen — and the one line of the panel that ever holds
+    /// anything about the password is a number.
+    fn refresh_network_field(&mut self) {
+        let Some(joining) = self.joining.as_ref() else {
+            return;
+        };
+        let typed = joining.password.typed();
+        let lines = self
+            .dialog
+            .lines()
+            .iter()
+            .map(|line| match line {
+                dialog::Line::Secret { .. } => dialog::Line::Secret { typed },
+                other => other.clone(),
+            })
+            .collect();
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Hand what has been typed to the worker.
+    ///
+    /// Taken out whole rather than copied, so the password moves to the worker
+    /// instead of leaving a second copy in a field the panel is still drawing
+    /// from. The panel is not taken away here: the worker clears its own
+    /// question when it has the answer, and [`Self::sync_network`] takes the
+    /// panel away on the frame that reaches the shell — which is also the frame
+    /// that would put it straight back up if the password were refused.
+    fn submit_network_password(&mut self) {
+        let Some(joining) = self.joining.as_mut() else {
+            return;
+        };
+        // Nothing typed is not an answer to send. A network with an empty
+        // password is an open network, and the worker would not have asked.
+        if joining.password.is_empty() {
+            return;
+        }
+        tracing::info!(ssid = %joining.ssid, "joining");
+        self.net.answer(std::mem::take(&mut joining.password));
+        // The field empties and the panel says what is happening, for the few
+        // frames between the password being handed over and the worker taking
+        // its question down. A panel left saying "enter this network's
+        // password" over an empty field would read as a keystroke that went
+        // nowhere.
+        let lines = self
+            .dialog
+            .lines()
+            .iter()
+            .map(|line| match line {
+                dialog::Line::Note(_) => dialog::Line::Note("Joining…".to_string()),
+                dialog::Line::Secret { .. } => dialog::Line::Secret { typed: 0 },
+                other => other.clone(),
+            })
+            .collect();
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Give up on a join that is waiting for a password.
+    ///
+    /// The worker has to be told, and that is the whole reason this is not just
+    /// a field being cleared: it is holding the question open and will hold it
+    /// for the rest of the session. A panel taken away by Back with nobody told
+    /// used to leave the shell with a password field it thought was on screen —
+    /// keys stayed letters, and the on-screen keyboard stood over a bar with
+    /// nothing to type into.
+    fn abandon_network_password(&mut self) {
+        let Some(joining) = self.joining.take() else {
+            return;
+        };
+        tracing::info!(ssid = %joining.ssid, "the network password was not given");
+        self.net.refuse();
+        // And forgotten here as well as there. The cache is what the panel is
+        // raised from — see [`Self::sync_network`] — so leaving the question in
+        // it would put the panel straight back up on the next frame, which is
+        // exactly what a user pressing Cancel has said they do not want.
+        self.network_wanted = None;
+        self.dismiss_password_board();
+    }
+
+    /// Apply one keystroke to a wireless password being typed. Returns whether
+    /// it was this field's to take.
+    fn type_into_network(&mut self, stroke: keyboard::Stroke) -> bool {
+        let done = {
+            let Some(joining) = self.joining.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    joining.password.push(character);
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    joining.password.pop();
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                keyboard::Stroke::ESCAPE => Some(false),
+                // Tab, the arrows, the function keys: a password field has no
+                // use for any of them, and passing them on to the bar
+                // underneath would move the selection this panel is drawn over.
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.submit_network_password(),
+            Some(false) => {
+                self.abandon_network_password();
+                self.close_dialog();
+                self.needs_redraw = true;
+            }
+            None => self.refresh_network_field(),
+        }
+        true
+    }
+
+    /// Hand a chosen network row to the worker.
+    ///
+    /// Everything here is the worker's to carry out, exactly as a display
+    /// setting is the compositor's: `settings` has already recorded that the row
+    /// was pressed, and none of these is a thing this shell does itself.
+    fn carry_out_network(&mut self, value: settings::NetworkValue) {
+        match value {
+            settings::NetworkValue::Radio(on) => self.net.set_radio(on),
+            settings::NetworkValue::Join { device, ssid } => self.net.join(device, ssid),
+            settings::NetworkValue::Leave { device } => self.net.leave(device),
+            settings::NetworkValue::Forget { device, ssid } => self.net.forget(device, ssid),
+            settings::NetworkValue::Wire { device, up } => self.net.set_wired(device, up),
+            settings::NetworkValue::Addressing { device, automatic } => {
+                self.net.set_addressing(device, automatic)
+            }
+            settings::NetworkValue::Dns { device, automatic } => {
+                self.net.set_dns(device, automatic)
+            }
+        }
+    }
+
+    // --- what this machine is paired with -----------------------------------
+
+    /// Hand the Settings column what this machine is paired with, rebuild it if
+    /// that changed, and put up the panel when a pairing wants an answer.
+    ///
+    /// The shape of [`Self::sync_network`], on the same terms, with one
+    /// difference worth naming: the question at the end of it does not come
+    /// from anything the shell pressed. This session is BlueZ's pairing agent,
+    /// so a device whose own button somebody held down asks *here*, and this is
+    /// the frame it reaches the screen on — which makes this the third worker in
+    /// the shell that can raise a panel out of nothing, after `polkitd` and the
+    /// wireless password.
+    fn sync_bluetooth(&mut self) {
+        self.bt
+            .watch(self.standing_in_settings(), self.standing_in_search());
+        // Asked before the listing is copied out, and the copy skipped when the
+        // answer is the same as last frame's. See [`bluetooth::Bt::published`].
+        let published = self.bt.published();
+        if published != self.bluetooth_seen {
+            self.bluetooth_seen = published;
+            let listing = self.bt.listing();
+            self.bluetooth_wanted = listing.wanted.clone();
+            self.settle_bluetooth(&listing);
+            if settings::note_bluetooth(listing) {
+                self.rebuild_settings();
+                self.needs_redraw = true;
+            }
+        }
+        // Asked every frame even so, for the reason the network's is: a question
+        // that arrived while another panel was up is one this has to keep
+        // offering to raise until there is room for it.
+        let wanted = self.bluetooth_wanted.take();
+        self.ask_about_pairing(wanted.as_ref());
+        self.bluetooth_wanted = wanted;
+        self.announce_pairings();
+    }
+
+    /// Say how each pairing that has finished ended.
+    ///
+    /// A pairing is the one press on these pages whose answer the user is not
+    /// necessarily looking at. It takes long enough to walk away from — a
+    /// headset that is asleep is the better part of a minute — and when it
+    /// fails there is nothing left on the page to say so: the row simply stops
+    /// saying "Pairing…" and goes back to being a device in the air, which is
+    /// indistinguishable from a press that never landed.
+    ///
+    /// So it is announced, which is the shell's one way of saying something to
+    /// somebody who has gone somewhere else. It reaches the corner and the
+    /// bell on exactly the terms every other announcement does, do-not-disturb
+    /// included: a shell that overruled its own switch would be the exception
+    /// that made the switch not mean anything.
+    fn announce_pairings(&mut self) {
+        let endings = self.bt.endings();
+        if endings.is_empty() {
+            return;
+        }
+        let mut raised = false;
+        for outcome in endings {
+            let (summary, body) = pairing_words(&outcome);
+            tracing::info!(device = %outcome.name, ending = ?outcome.ending, "announcing a pairing");
+            raised |= self
+                .notifications
+                .announce(&summary, &body, icons::SETTING_BLUETOOTH);
+        }
+        // Once for the frame however many landed on it, which is the rule the
+        // announcements off the bus are already under — see
+        // [`Self::sync_notifications`].
+        if raised {
+            self.sounds.notified();
+        }
+        // The corner has something new in it, and so has the list behind the
+        // bell: the open panel is a list of the very thing that just changed.
+        self.sync_notification_panel();
+        self.needs_redraw = true;
+    }
+
+    /// Carry out the startup policy the first time this session sees a
+    /// controller, and from then on remember what the switch is set to.
+    ///
+    /// Two jobs in one place because they are two halves of one thing, and
+    /// doing them in the wrong order gets both wrong. The policy is applied
+    /// once, against the state the session came up in; everything after that is
+    /// the user pressing the switch, and is what [`settings::Startup::Restore`]
+    /// will put back next time.
+    ///
+    /// The recording is skipped on the pass that applies the policy. What was
+    /// left is the thing being restored, and writing down the state the policy
+    /// is about to change would be the shell overwriting its own answer with
+    /// the question.
+    fn settle_bluetooth(&mut self, listing: &bluetooth::Listing) {
+        let Some(controller) = settings::chosen_controller(listing) else {
+            return;
+        };
+        if !self.bluetooth_settled {
+            self.bluetooth_settled = true;
+            let wanted = match settings::bluetooth_startup() {
+                settings::Startup::On => true,
+                settings::Startup::Off => false,
+                settings::Startup::Restore => settings::bluetooth_was_on(),
+            };
+            if wanted != controller.powered && controller.switchable {
+                tracing::info!(
+                    on = wanted,
+                    startup = ?settings::bluetooth_startup(),
+                    "putting Bluetooth where this session should find it"
+                );
+                self.bt.set_power(&controller.path, wanted);
+            }
+            return;
+        }
+        settings::note_bluetooth_powered(controller.powered);
+    }
+
+    /// Put the pairing question up, take it away, or leave it where it is.
+    fn ask_about_pairing(&mut self, wanted: Option<&bluetooth::Wanted>) {
+        match wanted {
+            // The same question that is already up. Nothing to do — and
+            // emphatically not a redraw: it may be being typed into.
+            Some(wanted)
+                if self
+                    .pairing
+                    .as_ref()
+                    .is_some_and(|pairing| pairing.asked == wanted.asked) => {}
+            // A question with nowhere to put it waits, exactly as a `polkitd`
+            // one does. BlueZ is holding the pairing open in the meantime,
+            // which is what it would be doing anyway while somebody read the
+            // panel in front of this one.
+            Some(_) if self.dialog.is_on_screen() || self.context_menu.is_on_screen() => {}
+            Some(wanted) => {
+                tracing::info!(
+                    device = %wanted.name,
+                    ours = wanted.ours,
+                    "a pairing is asking something"
+                );
+                self.pairing = Some(Pairing {
+                    name: wanted.name.clone(),
+                    asked: wanted.asked,
+                    question: wanted.question.clone(),
+                    typed: String::new(),
+                });
+                self.show_pairing(wanted);
+            }
+            // The worker has stopped waiting — the answer was given, the
+            // pairing finished, or BlueZ took the question back — so the panel
+            // goes with the question.
+            None if self.pairing.is_some() => {
+                self.pairing = None;
+                self.close_dialog();
+                self.dismiss_password_board();
+                self.needs_redraw = true;
+            }
+            None => {}
+        }
+    }
+
+    /// Put up the panel one pairing question is asked on.
+    ///
+    /// One panel for four questions, because to the person in front of it they
+    /// are one moment: the thing they pressed is asking them something. What
+    /// changes between them is the middle line — a code to compare, a field to
+    /// type into, a code to type on the device, or nothing at all — and whether
+    /// there is anything to press but Cancel.
+    fn show_pairing(&mut self, wanted: &bluetooth::Wanted) {
+        let from = self.dialog_origin();
+        // The guide is opened under it only when there is an application to be
+        // over, as the wireless password's panel is and for the same reason.
+        // This one needs it more: a controller pairing itself can arrive in the
+        // middle of a game.
+        if self.app_running() {
+            self.open_guide();
+        }
+        let shown = wanted.question.shown();
+        let mut buttons = vec![menu::Entry::new(menu::Command::Dismiss, "Cancel")];
+        if !shown {
+            // Not `grave`: pairing destroys nothing, and the warm light is the
+            // shell's one mark of a choice there is no coming back from.
+            buttons.push(menu::Entry::new(menu::Command::PairDevice, "Pair"));
+        }
+        // Standing on the button that finishes what the user started — unless
+        // they did not start it. See [`bluetooth::Wanted::ours`]: a question
+        // that appeared out of the air must not be answerable by the press
+        // somebody was already about to make.
+        let standing = match wanted.ours && !shown {
+            true => buttons.len() - 1,
+            false => 0,
+        };
+        let raised = self.dialog.ask(
+            from,
+            Some(icons::SETTING_BLUETOOTH.to_string()),
+            self.pairing_lines(),
+            buttons,
+            standing,
+        );
+        if !raised {
+            tracing::warn!("the pairing panel could not be raised");
+            self.abandon_pairing();
+            return;
+        }
+        // The board comes up with the field, and only with a field: three of
+        // the four questions are answered with a button, and a keyboard over
+        // one of those would be a keyboard with nothing to type into.
+        if wanted.question.typed() {
+            self.osk.open_here();
+            self.sync_surface_state();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// What the pairing panel says, built from the question and whatever has
+    /// been typed so far.
+    ///
+    /// Rebuilt whole on every keystroke, exactly as the wireless password's is,
+    /// because the panel is drawn from this list and nothing else.
+    fn pairing_lines(&self) -> Vec<dialog::Line> {
+        let Some(pairing) = self.pairing.as_ref() else {
+            return Vec::new();
+        };
+        let mut lines = vec![dialog::Line::Heading(pairing.name.clone())];
+        match &pairing.question {
+            bluetooth::Question::Confirm { code } => {
+                lines.push(dialog::Line::Note(
+                    "Check that this code is showing on the device.".to_string(),
+                ));
+                lines.push(dialog::Line::field("Code", code.clone()));
+            }
+            bluetooth::Question::Authorize => {
+                lines.push(dialog::Line::Note(
+                    "This device is asking to pair with the machine.".to_string(),
+                ));
+            }
+            bluetooth::Question::Passkey => {
+                lines.push(dialog::Line::Note(
+                    "Enter the code showing on the device.".to_string(),
+                ));
+                lines.push(dialog::Line::Entry(pairing.typed.clone()));
+            }
+            bluetooth::Question::Pin => {
+                lines.push(dialog::Line::Note(
+                    "Enter this device's PIN — it is usually printed on it, or \
+                     in what came with it."
+                        .to_string(),
+                ));
+                lines.push(dialog::Line::Entry(pairing.typed.clone()));
+            }
+            bluetooth::Question::Show { code } => {
+                lines.push(dialog::Line::Note(
+                    "Type this code on the device, and press enter there.".to_string(),
+                ));
+                lines.push(dialog::Line::field("Code", code.clone()));
+            }
+        }
+        lines.push(dialog::Line::Rule);
+        lines
+    }
+
+    /// Redraw the field after a keystroke.
+    fn refresh_pairing_field(&mut self) {
+        let lines = self.pairing_lines();
+        if lines.is_empty() {
+            return;
+        }
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Answer the question on the panel.
+    ///
+    /// Which of the four it is decides what is sent, and that decision is made
+    /// here rather than in four commands, because it is the same act: the user
+    /// has said yes to this pairing, with a number if the pairing wanted one.
+    fn answer_pairing(&mut self) {
+        let Some(pairing) = self.pairing.as_ref() else {
+            return;
+        };
+        let name = pairing.name.clone();
+        match &pairing.question {
+            // Nothing to answer. This panel has no Pair button, so this cannot
+            // arrive from a press on it — it is here so that a stray command
+            // does nothing rather than agreeing to something on the user's
+            // behalf.
+            bluetooth::Question::Show { .. } => return,
+            question if question.typed() => {
+                // Nothing typed is not an answer to send. An empty passkey is
+                // not the passkey zero, which is a real one.
+                if pairing.typed.trim().is_empty() {
+                    return;
+                }
+                let typed = pairing.typed.clone();
+                tracing::info!(device = %name, "answering a pairing");
+                self.bt.answer(&typed);
+            }
+            _ => {
+                tracing::info!(device = %name, "agreeing to a pairing");
+                self.bt.agree();
+            }
+        }
+        // The panel says what is happening for the few frames between the
+        // answer going out and the worker taking its question down — a panel
+        // left asking a question that has been answered reads as a press that
+        // went nowhere.
+        let lines = self
+            .dialog
+            .lines()
+            .iter()
+            .map(|line| match line {
+                dialog::Line::Note(_) => dialog::Line::Note("Pairing…".to_string()),
+                dialog::Line::Entry(_) => dialog::Line::Entry(String::new()),
+                other => other.clone(),
+            })
+            .collect();
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Give up on a pairing question.
+    ///
+    /// The worker has to be told, and that is the whole reason this is not a
+    /// field being cleared: BlueZ is holding the pairing open on this answer,
+    /// and a panel taken away by Back with nobody told leaves a device stuck
+    /// half-paired until it gives up on its own — and the shell believing there
+    /// is a field on screen.
+    fn abandon_pairing(&mut self) {
+        let Some(pairing) = self.pairing.take() else {
+            return;
+        };
+        tracing::info!(device = %pairing.name, "the pairing question was not answered");
+        self.bt.refuse();
+        // And forgotten here as well as there, for the reason the wireless
+        // password is: the cache is what the panel is raised from, so leaving
+        // the question in it would put the panel straight back up on the next
+        // frame.
+        self.bluetooth_wanted = None;
+        self.dismiss_password_board();
+    }
+
+    /// Apply one keystroke to a pairing code being typed. Returns whether it
+    /// was this field's to take.
+    fn type_into_pairing(&mut self, stroke: keyboard::Stroke) -> bool {
+        let done = {
+            let Some(pairing) = self.pairing.as_mut() else {
+                return false;
+            };
+            if !pairing.question.typed() {
+                return false;
+            }
+            // A passkey is six digits and nothing else — BlueZ takes a number —
+            // so a letter is refused at the field rather than typed, accepted
+            // and then rejected by a daemon a second later. A PIN is up to
+            // sixteen characters and they are not all digits: the old ones are,
+            // but the specification allows any of them, and a device that wants
+            // letters is one this shell would otherwise make impossible.
+            let (room, digits) = match pairing.question {
+                bluetooth::Question::Passkey => (6, true),
+                _ => (16, false),
+            };
+            match stroke {
+                keyboard::Stroke::Char(character)
+                    if pairing.typed.chars().count() < room
+                        && (!digits || character.is_ascii_digit()) =>
+                {
+                    pairing.typed.push(character);
+                    None
+                }
+                // A character that does not fit is still this field's: passing
+                // it on would move the selection the panel is drawn over.
+                keyboard::Stroke::Char(_) => None,
+                keyboard::Stroke::BACKSPACE => {
+                    pairing.typed.pop();
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                keyboard::Stroke::ESCAPE => Some(false),
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.answer_pairing(),
+            Some(false) => {
+                self.abandon_pairing();
+                self.close_dialog();
+                self.needs_redraw = true;
+            }
+            None => self.refresh_pairing_field(),
+        }
+        true
+    }
+
+    /// Hand a chosen Bluetooth row to the worker.
+    ///
+    /// Everything here is the worker's to carry out, exactly as a network row
+    /// is `NetworkManager`'s: `settings` has already recorded that the row was
+    /// pressed, and none of these is a thing this shell does itself.
+    fn carry_out_bluetooth(&mut self, value: settings::BluetoothValue) {
+        match value {
+            settings::BluetoothValue::Power { controller, on } => self.bt.set_power(controller, on),
+            settings::BluetoothValue::Connect { device } => self.bt.connect(device),
+            settings::BluetoothValue::Disconnect { device } => self.bt.disconnect(device),
+            settings::BluetoothValue::Forget { device } => self.bt.forget(device),
+            settings::BluetoothValue::Visible { controller, on } => {
+                self.bt.set_visible(controller, on)
+            }
+            // Nothing to hand over: which controller the machine's Bluetooth is,
+            // and what happens to it at startup, are the two answers BlueZ has
+            // no opinion about. `settings` has already recorded both — the tree
+            // is rebuilt from them on the next frame, and the startup one is
+            // read by the *next* session rather than acted on now.
+            settings::BluetoothValue::Use { .. } | settings::BluetoothValue::Startup(_) => {}
+        }
+    }
+
+    // --- a value that is typed ----------------------------------------------
+
+    /// Put up the field one of the typed rows opens, with the keyboard.
+    ///
+    /// The panel opens with what the value already is in it, rather than empty.
+    /// Somebody changing the last number of an address should not have to type
+    /// the other three again, and on a console that is the difference between a
+    /// setting somebody adjusts and one they set once and never touch.
+    fn show_typing(&mut self, row: &apps::Typed) {
+        self.typing = Some(Typing {
+            about: row.about,
+            title: row.title.clone(),
+            whose: row.whose.clone(),
+            text: row.value.clone(),
+            fault: None,
+        });
+        let from = self.dialog_origin();
+        let raised = self.dialog.ask(
+            from,
+            Some(row.icon.clone()),
+            typing_lines(&row.title, &row.whose, row.about.note(), &row.value),
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(menu::Command::SetValue, "Set"),
+            ],
+            // On Set: this panel went up because the user pressed the row, so
+            // the button that finishes what they started is the one under their
+            // thumb. Nothing here destroys anything.
+            1,
+        );
+        if !raised {
+            tracing::warn!("the field could not be raised");
+            self.typing = None;
+            return;
+        }
+        // The board comes up with the field, because on a console there is
+        // nothing else to type an address with.
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Redraw the field after a keystroke.
+    fn refresh_typing_field(&mut self) {
+        let Some(typing) = self.typing.as_ref() else {
+            return;
+        };
+        let lines = typing_lines(
+            &typing.title,
+            &typing.whose,
+            typing.fault.unwrap_or_else(|| typing.about.note()),
+            &typing.text,
+        );
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Hand what was typed to the worker, or say what is wrong with it.
+    ///
+    /// Checked here, while the panel is still on screen and can still be typed
+    /// into — see [`network::fault`]. The alternative is handing it over and
+    /// reporting what came back, which on a console means the answer arrives a
+    /// second later with the panel gone and the keyboard with it.
+    fn submit_typing(&mut self) {
+        let Some(typing) = self.typing.as_mut() else {
+            return;
+        };
+        if let Some(fault) = typing.about.fault(&typing.text) {
+            typing.fault = Some(fault);
+            self.refresh_typing_field();
+            return;
+        }
+        let (about, text) = (typing.about, std::mem::take(&mut typing.text));
+        tracing::info!(?about, "setting a typed value");
+        // Handed to whichever module owns the value, which is the whole of what
+        // separates these: the panel and the field are one piece of shell, and
+        // what is done with what was typed is not the shell's at all.
+        match about {
+            settings::Typing::Network { device, field } => self.net.write(device, field, &text),
+            settings::Typing::BluetoothName { controller } => {
+                self.bt.rename(controller, text.trim())
+            }
+        }
+        self.typing = None;
+        self.close_dialog();
+        self.dismiss_password_board();
+        self.needs_redraw = true;
+    }
+
+    /// Give up on a field without setting anything.
+    fn abandon_typing(&mut self) {
+        if self.typing.take().is_none() {
+            return;
+        }
+        self.dismiss_password_board();
+    }
+
+    /// Apply one keystroke to a value being typed. Returns whether it was this
+    /// field's to take.
+    fn type_into_value(&mut self, stroke: keyboard::Stroke) -> bool {
+        let done = {
+            let Some(typing) = self.typing.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    // Bounded for the reason a password is: nothing here is
+                    // longer than a list of four addresses, and a field that
+                    // grew without limit would be one a held key could fill
+                    // with a thousand characters the panel then has to draw.
+                    if typing.text.chars().count() < LONGEST_VALUE {
+                        typing.text.push(character);
+                    }
+                    // What was wrong with it a moment ago is not what is wrong
+                    // with it now: the complaint goes as soon as it is being
+                    // answered, so the panel is not still telling somebody off
+                    // for what they have just corrected.
+                    typing.fault = None;
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    typing.text.pop();
+                    typing.fault = None;
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                keyboard::Stroke::ESCAPE => Some(false),
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.submit_typing(),
+            Some(false) => {
+                self.abandon_typing();
+                self.close_dialog();
+                self.needs_redraw = true;
+            }
+            None => self.refresh_typing_field(),
+        }
+        true
     }
 
     /// Hand the Settings column which way up each display is being drawn, and
@@ -11014,7 +12408,7 @@ impl Shell {
             .filter_map(|panel| Some((panel.name.clone(), panel.turned?)))
             .collect();
         if settings::note_turned(reported) {
-            settings::refresh(&mut self.xmb.categories);
+            self.rebuild_settings();
             self.needs_redraw = true;
         }
     }
@@ -11032,7 +12426,7 @@ impl Shell {
             .filter_map(|panel| Some((panel.name.clone(), panel.place?)))
             .collect();
         if settings::note_places(reported) {
-            settings::refresh(&mut self.xmb.categories);
+            self.rebuild_settings();
             self.needs_redraw = true;
         }
     }
@@ -11055,7 +12449,7 @@ impl Shell {
                 .collect(),
         };
         if settings::note_modes(reported) {
-            settings::refresh(&mut self.xmb.categories);
+            self.rebuild_settings();
             self.needs_redraw = true;
         }
     }
@@ -11079,7 +12473,7 @@ impl Shell {
                 .collect(),
         };
         if settings::note_support(reported) {
-            settings::refresh(&mut self.xmb.categories);
+            self.rebuild_settings();
             self.needs_redraw = true;
         }
     }
@@ -11797,6 +13191,108 @@ fn information_lines(app: &apps::App, facts: Option<&appinfo::Facts>) -> Vec<dia
     lines
 }
 
+/// What the System information panel says.
+///
+/// The order is the one the console this bar comes from used, and it is an
+/// order rather than a list: what the machine *is* first — its name, its
+/// version, and the shell's own — then where it is on the network, and then
+/// what it is made of, ending with the two rows that are quantities rather than
+/// names. Somebody reading this out over a telephone reads it downwards.
+///
+/// The version row is the only one that can be absent, and it is absent rather
+/// than empty: a rolling release has no version, and a row saying so would be
+/// the panel inventing a fact to fill a gap. See [`machine::Facts::version`].
+fn system_information_lines(facts: &machine::Facts) -> Vec<dialog::Line> {
+    // The page's own name, not the machine's. The machine's is the first row —
+    // it is one of the facts, and a heading standing in for it would be the one
+    // fact on the panel with no label beside it, read differently from the
+    // eight under it. This says where the user is, which is what the heading of
+    // a panel raised from a row two columns deep is for.
+    let mut lines = vec![
+        dialog::Line::Heading("System information".to_string()),
+        dialog::Line::Rule,
+        dialog::Line::field("System name", facts.name.as_str()),
+    ];
+    if let Some(version) = facts.version.as_deref() {
+        lines.push(dialog::Line::field("System version", version));
+    }
+    // "System software" is the shell, not the system on the disk. The console
+    // this page comes from called its own firmware that, and this is the same
+    // thing in the same place: the software the user is looking at.
+    lines.push(dialog::Line::field(
+        "System software",
+        facts.software.as_str(),
+    ));
+    lines.push(dialog::Line::field("IP address", facts.address.as_str()));
+    lines.push(dialog::Line::field("Kernel", facts.kernel.as_str()));
+    lines.push(dialog::Line::field("Processor", facts.processor.as_str()));
+    lines.push(dialog::Line::field("Graphics", facts.graphics.as_str()));
+    lines.push(dialog::Line::field("Memory", facts.memory.as_str()));
+    lines.push(dialog::Line::field("Disk space", facts.disk.as_str()));
+    lines.push(dialog::Line::Rule);
+    lines
+}
+
+/// What the panel with a field on it says.
+///
+/// The note above the field is the one line that changes: it is what to type
+/// until somebody has tried, and what was wrong with it afterwards. Same place,
+/// same size — a complaint that arrived as an extra line would move the buttons
+/// out from under the thumb about to press them.
+///
+/// The heading names the value *and* the connection it belongs to, because this
+/// panel covers the trail that would otherwise have said so. `Address` on its
+/// own is the same panel whether the user walked in through the socket on the
+/// back of the machine or through the network the radio is on, and those are
+/// two different profiles with two different addresses. See
+/// [`apps::Typed::whose`].
+fn typing_lines(title: &str, whose: &str, note: &str, text: &str) -> Vec<dialog::Line> {
+    let heading = match whose.trim().is_empty() {
+        true => title.to_string(),
+        false => format!("{title} — {whose}"),
+    };
+    let mut lines = vec![dialog::Line::Heading(heading)];
+    // Broken between words rather than left to the drawing, which cuts a line
+    // that overruns — and what runs off the end of these is the example: *as
+    // 192.168.1.50/24* is the whole of what the note is for, and it is the last
+    // thing on the line. Always the same number of lines, filled out with a
+    // blank one where the sentence is short, because the height of this panel
+    // must not depend on which sentence is on it: the complaint that replaces
+    // the instruction arrives under a thumb already on the button below.
+    let mut wrote = wrapped(note, MESSAGE_WIDTH, FIELD_NOTE_LINES);
+    wrote.resize(FIELD_NOTE_LINES, String::new());
+    lines.extend(wrote.into_iter().map(dialog::Line::Note));
+    lines.push(dialog::Line::Entry(text.to_string()));
+    lines.push(dialog::Line::Rule);
+    lines
+}
+
+/// How many lines the sentence above a field gets.
+///
+/// Two, because every sentence this panel says — what to type, and each of the
+/// things that can be wrong with what was typed — is between forty and sixty
+/// characters, which is one line too many at [`MESSAGE_WIDTH`] and never two
+/// too many. See [`crate::network::Field::note`] and [`crate::network::fault`],
+/// which are the whole of what appears here.
+const FIELD_NOTE_LINES: usize = 2;
+
+/// A panel of named values that the row itself carried.
+///
+/// The page's own name at the head of it, exactly as
+/// [`system_information_lines`] puts one there and for the same reason: this is
+/// raised from a row three columns deep, and the heading is what says where the
+/// user has arrived.
+fn listed_facts_lines(title: &str, values: &[(String, String)]) -> Vec<dialog::Line> {
+    let mut lines = vec![dialog::Line::Heading(title.to_string()), dialog::Line::Rule];
+    lines.extend(
+        values
+            .iter()
+            .map(|(label, value)| dialog::Line::field(label.as_str(), value.as_str())),
+    );
+    lines.push(dialog::Line::Rule);
+    lines
+}
+
 /// How wide a sentence on the panel is allowed to be, in characters, and how
 /// many lines of it are shown.
 ///
@@ -12501,6 +13997,40 @@ fn key_repeats(keysym: Keysym, typing: bool) -> bool {
 /// [`steam_game_menu_rows`] is one: the order of these rows is the whole of
 /// what this decides, and a list that can be built without a running shell is
 /// one a test can read back.
+/// What one finished pairing is announced as: the headline, and the line under
+/// it.
+///
+/// The device leads every one of them, because that is the word somebody
+/// glancing up from a game is looking for — they know they pressed something,
+/// and what they do not know is which of the two things they pressed this is
+/// about. The line under it says the consequence rather than repeating the
+/// headline: what state the machine is in now, and whether there is anything
+/// left to do.
+///
+/// A free function so the words can be read in a test. They are the whole of
+/// what this feature is, and a sentence that says the wrong thing about a
+/// machine's own hardware is worse than no sentence.
+fn pairing_words(outcome: &bluetooth::Outcome) -> (String, String) {
+    match outcome.ending {
+        bluetooth::Ending::Connected => (
+            format!("{} is connected", outcome.name),
+            "Paired with this machine.".to_string(),
+        ),
+        // Bonded and not on. Neither of the other two sentences would be true,
+        // and both would send the user to the wrong place: one says there is
+        // nothing left to do, the other says to go and pair something they are
+        // already paired with.
+        bluetooth::Ending::Paired => (
+            format!("{} is paired", outcome.name),
+            "It did not connect.".to_string(),
+        ),
+        bluetooth::Ending::Failed => (
+            format!("{} would not pair", outcome.name),
+            "Nothing has been added to this machine.".to_string(),
+        ),
+    }
+}
+
 fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
     if list.is_empty() {
         // A panel refuses to open with nothing choosable on it, and this one
@@ -13071,6 +14601,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "menu" => Action::Menu,
         "back" => Action::Back,
         "launch" => Action::Launch,
+        "submit" => Action::Submit,
         "up" => Action::Up,
         "down" => Action::Down,
         "left" => Action::Left,
@@ -13199,6 +14730,12 @@ impl SlotLookup for Slots<'_> {
 
     fn glyph(&self, name: &str) -> Option<u32> {
         self.gpu.slot(name)
+    }
+
+    /// The corner's own type, which the renderer cut out of the bundled face
+    /// before the first frame — see [`gpu::letter_fields`].
+    fn letter(&self, letter: char) -> Option<gpu::Letter> {
+        self.gpu.letter(letter)
     }
 
     fn thumbnail(&self, path: &std::path::Path) -> Option<gpu::Thumb> {
@@ -15809,6 +17346,74 @@ mod input_tests {
 /// The menu over one of the user's own files: which rows it has, in what order,
 /// and which of them can be pressed from where.
 ///
+/// What a finished pairing is announced as.
+///
+/// The words are the whole of what that feature is, so they are pinned here: a
+/// sentence that says the wrong thing about a machine's own hardware sends
+/// somebody to do the wrong thing about it.
+#[cfg(test)]
+mod pairing_announcement_tests {
+    use super::*;
+
+    fn ended(ending: bluetooth::Ending) -> (String, String) {
+        pairing_words(&bluetooth::Outcome {
+            name: "WH-1000XM5".to_string(),
+            ending,
+        })
+    }
+
+    /// Three endings, three different things to say — and the device leads all
+    /// three, because that is the word somebody glancing up from a game is
+    /// looking for.
+    #[test]
+    fn each_ending_says_a_different_thing() {
+        let (summary, body) = ended(bluetooth::Ending::Connected);
+        assert_eq!(summary, "WH-1000XM5 is connected");
+        assert_eq!(body, "Paired with this machine.");
+
+        // Bonded and not on, which is neither of the other two: saying it
+        // worked would be a lie, and saying it failed would send the user off
+        // to pair something they are already paired with.
+        let (summary, body) = ended(bluetooth::Ending::Paired);
+        assert_eq!(summary, "WH-1000XM5 is paired");
+        assert_eq!(body, "It did not connect.");
+
+        let (summary, body) = ended(bluetooth::Ending::Failed);
+        assert_eq!(summary, "WH-1000XM5 would not pair");
+        assert_eq!(body, "Nothing has been added to this machine.");
+
+        // And no two of them read alike, which is the point of having three.
+        let all: Vec<String> = [
+            bluetooth::Ending::Connected,
+            bluetooth::Ending::Paired,
+            bluetooth::Ending::Failed,
+        ]
+        .into_iter()
+        .map(|ending| {
+            let (summary, body) = ended(ending);
+            format!("{summary}\n{body}")
+        })
+        .collect();
+        for (index, one) in all.iter().enumerate() {
+            for other in all.iter().skip(index + 1) {
+                assert_ne!(one, other);
+            }
+        }
+    }
+
+    /// A device that never said what it is called is announced by whatever the
+    /// page called it, which is its address. What must not happen is a sentence
+    /// with a hole where the name should be.
+    #[test]
+    fn a_device_with_no_name_is_still_named() {
+        let (summary, _) = pairing_words(&bluetooth::Outcome {
+            name: "00:00:5E:00:53:01".to_string(),
+            ending: bluetooth::Ending::Failed,
+        });
+        assert_eq!(summary, "00:00:5E:00:53:01 would not pair");
+    }
+}
+
 /// How a row says when something arrived.
 ///
 /// The question a reader is asking of that line is *did I miss this, or has it
@@ -16180,6 +17785,79 @@ mod authentication_tests {
         assert_eq!(notes[notes.len() - 1], "Enter your password.");
     }
 
+    /// Every sentence the field panel can say fits it, whole.
+    ///
+    /// This is the one panel in the shell whose sentences are all written here,
+    /// so nothing has to be cut — and cutting one is worse than usual: what
+    /// runs off the end of *This machine's address and the size of the network,
+    /// as 192.168.1.50/24* is the example, which is the whole of what the note
+    /// was for. It shipped that way once. The panel is a fixed height whichever
+    /// of them is on it, because the sentence that replaces the instruction
+    /// arrives under a thumb already reaching for the button below.
+    #[test]
+    fn every_sentence_the_field_panel_says_fits_on_it() {
+        let typed = [
+            "",
+            "1",
+            "192.168.1.50",
+            "nonsense",
+            "9.9.9.9, nonsense",
+            "//",
+        ];
+        let mut said = 0;
+        for field in [
+            network::Field::Address,
+            network::Field::Router,
+            network::Field::Dns,
+        ] {
+            let sentences = std::iter::once(field.note())
+                .chain(typed.iter().filter_map(|text| network::fault(field, text)));
+            for sentence in sentences {
+                said += 1;
+                let lines = typing_lines(field.title(), "Upstairs", sentence, "");
+                let notes: Vec<&str> = lines
+                    .iter()
+                    .filter_map(|line| match line {
+                        dialog::Line::Note(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    notes.len(),
+                    FIELD_NOTE_LINES,
+                    "the panel changes height for {sentence:?}"
+                );
+                assert!(
+                    !notes.iter().any(|note| note.ends_with('…')),
+                    "{sentence:?} does not fit: {notes:?}"
+                );
+                assert_eq!(
+                    notes.join(" ").trim(),
+                    sentence,
+                    "every word survives, in order"
+                );
+            }
+        }
+        assert!(said >= 6, "only {said} sentences were checked");
+    }
+
+    /// The heading says which value *and* whose, because the panel covers the
+    /// trail that would otherwise have said so — `Address` on its own is the
+    /// same panel for the socket and for the network the radio is on.
+    #[test]
+    fn a_field_is_titled_by_its_value_and_its_connection() {
+        let heading =
+            |whose: &str| match typing_lines("Address", whose, "Type it.", "10.0.0.2/24").first() {
+                Some(dialog::Line::Heading(text)) => text.clone(),
+                other => panic!("the heading comes first, not {other:?}"),
+            };
+        assert_eq!(heading("Upstairs"), "Address — Upstairs");
+        // And nothing trailing where there is no name to give: a heading ending
+        // in a dash would read as a value that failed to load.
+        assert_eq!(heading(""), "Address");
+        assert_eq!(heading("   "), "Address");
+    }
+
     /// A message longer than the panel says so rather than stopping mid
     /// sentence as though that were all of it.
     #[test]
@@ -16235,6 +17913,109 @@ mod authentication_tests {
         assert_eq!(
             prompt_note("Verification code", &theirs),
             "Verification code"
+        );
+    }
+}
+
+#[cfg(test)]
+mod system_information_tests {
+    use super::*;
+
+    /// A machine nobody has. Every value here is invented and obviously so:
+    /// what this panel says is read off whatever machine is running it, and a
+    /// fixture carrying this desk's processor, address or disk would be a test
+    /// that passed or failed by which box the suite was run on.
+    fn facts(version: Option<&str>) -> machine::Facts {
+        machine::Facts {
+            name: "Test System".to_string(),
+            version: version.map(str::to_string),
+            software: "Version 9.9.9".to_string(),
+            address: "203.0.113.9".to_string(),
+            kernel: "Linux 9.0.0-test".to_string(),
+            processor: "Test Core X9-9000".to_string(),
+            graphics: "Test Adapter 9000".to_string(),
+            memory: "6.0 GiB free of 8.0 GiB".to_string(),
+            disk: "40 GiB free of 100 GiB".to_string(),
+        }
+    }
+
+    fn fields(lines: &[dialog::Line]) -> Vec<(&str, &str)> {
+        lines
+            .iter()
+            .filter_map(|line| match line {
+                dialog::Line::Field { label, value } => Some((label.as_str(), value.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The panel is a table of named facts, in one settled order, with the page
+    /// named at its head — not the machine, which is the first of the facts and
+    /// is read with a label beside it like the eight under it.
+    #[test]
+    fn the_panel_names_the_page_and_then_lists_what_the_machine_is() {
+        let lines = system_information_lines(&facts(Some("9")));
+        assert_eq!(
+            lines.first(),
+            Some(&dialog::Line::Heading("System information".to_string())),
+        );
+        assert_eq!(
+            fields(&lines),
+            [
+                ("System name", "Test System"),
+                ("System version", "9"),
+                ("System software", "Version 9.9.9"),
+                ("IP address", "203.0.113.9"),
+                ("Kernel", "Linux 9.0.0-test"),
+                ("Processor", "Test Core X9-9000"),
+                ("Graphics", "Test Adapter 9000"),
+                ("Memory", "6.0 GiB free of 8.0 GiB"),
+                ("Disk space", "40 GiB free of 100 GiB"),
+            ]
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&dialog::Line::Rule),
+            "the list is closed off the way the application panel's is"
+        );
+    }
+
+    /// A rolling release has no version, and the row goes rather than standing
+    /// there empty. Nothing else about the panel moves with it.
+    #[test]
+    fn a_system_with_no_version_loses_the_row_and_nothing_else() {
+        let without = system_information_lines(&facts(None));
+        let with = system_information_lines(&facts(Some("9")));
+        let rolling = fields(&without);
+        let numbered = fields(&with);
+        assert!(
+            !rolling.iter().any(|(label, _)| *label == "System version"),
+            "{rolling:?}"
+        );
+        assert_eq!(
+            rolling.len() + 1,
+            numbered.len(),
+            "exactly one row is the difference"
+        );
+        assert_eq!(
+            rolling.first(),
+            Some(&("System name", "Test System")),
+            "and the machine is still named first"
+        );
+    }
+
+    /// Nothing on this panel can be pressed except the way out of it. It is a
+    /// thing to read: a button that changed something here would be a setting
+    /// on a page that has none.
+    #[test]
+    fn the_only_button_is_the_way_out() {
+        let lines = system_information_lines(&facts(Some("9")));
+        assert!(
+            !lines.iter().any(|line| matches!(
+                line,
+                dialog::Line::Secret { .. } | dialog::Line::Entry(_) | dialog::Line::Waiting
+            )),
+            "there is nothing here to type into and nothing still on its way"
         );
     }
 }

@@ -1,0 +1,20 @@
+<!--
+  Three arcs over a bead, for the wireless rows.
+
+  The arcs are strokes and stand clear of one another and of the bead. Their
+  width is about one bevel, so each comes out as a run of water with a round
+  top rather than a flat ribbon, which is what keeps three of them apart at a
+  settings row's size.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.05" stroke-linecap="round">
+    <path d="M5.2 13.4a15.3 15.3 0 0 1 21.6 0"/>
+    <path d="M8.7 16.9a10.3 10.3 0 0 1 14.6 0"/>
+    <path d="M12.2 20.4a5.3 5.3 0 0 1 7.6 0"/>
+  </g>
+  <circle cx="16" cy="24.2" r="2.5" fill="#fff"/>
+</svg>

@@ -482,6 +482,18 @@ impl Board {
         }
     }
 
+    /// Press Enter without the cursor being on it — the board's half of what
+    /// Start does. See [`Osk::submit`].
+    ///
+    /// It spends the latches exactly as pressing the key itself would: a Ctrl
+    /// the user has left armed is armed for the next keystroke, whichever key
+    /// sends it. The cursor is deliberately left where it was, because the
+    /// board is going away and where it stood is where it should come back.
+    pub fn submit(&mut self) -> Press {
+        self.spend();
+        Press::Type(Stroke::ENTER)
+    }
+
     /// Every latch armed for one key falls away with the key it was armed for.
     /// A locked one does not, which is the whole difference between them.
     fn spend(&mut self) {
@@ -1397,6 +1409,36 @@ impl Osk {
         }
         press
     }
+
+    /// Finish the typing: Enter, and then the board away. What the Start
+    /// button does while the board is up — see [`crate::model::Action::Submit`].
+    ///
+    /// The two keys it stands for are at opposite ends of the board — Enter on
+    /// the right of the home row, the way out down in the corner — and a field
+    /// that has been filled in is nearly always finished with both. Sent as
+    /// though Enter's own key had been pressed, latches and all, so that a
+    /// board holding Ctrl means the same thing whichever button sends the
+    /// keystroke.
+    ///
+    /// Returns what was typed, on the same terms as [`Self::press`]: a board
+    /// typing into the shell sends nothing anywhere and hands the stroke back
+    /// for the caller to put where it belongs. It is closed either way before
+    /// this returns, which is what lets the caller act on that stroke freely —
+    /// a network address accepted here answers with a password field and a
+    /// board of its own, and that board must not be the one this press was
+    /// putting away.
+    pub fn submit(&mut self, at: u32) -> Press {
+        // Read before the press, as in `press`: it spends what was armed.
+        let modifiers = self.board.modifiers();
+        let press = self.board.submit();
+        if let (false, Press::Type(stroke)) = (self.here, press) {
+            if !self.type_stroke(stroke, modifiers, at) {
+                tracing::warn!(?stroke, "nothing typed: no virtual keyboard");
+            }
+        }
+        self.close();
+        press
+    }
 }
 
 // The manager globals have no events; the objects are kept only so the
@@ -1792,6 +1834,31 @@ mod tests {
         board.press();
         assert!(board.shifted());
         assert_eq!(board.modifiers() & 0x1, 0);
+    }
+
+    /// Start types Enter from wherever the cursor is standing, and is a
+    /// keystroke like any other while it does: an armed modifier is spent on
+    /// it, a locked one is not, and the cursor stays where it was.
+    #[test]
+    fn start_types_enter_without_the_cursor_being_on_it() {
+        const CTRL: (usize, usize) = (ROW_COUNT - 1, 0);
+
+        let mut board = at(HOME.0, HOME.1);
+        assert_eq!(key_at(&board), Key::Char('a', 'A'));
+        assert_eq!(board.submit(), Press::Type(Stroke::ENTER));
+        assert_eq!(
+            board.selected(),
+            HOME,
+            "the board is going away; where it stood is where it comes back"
+        );
+
+        // A latch armed for the next key is armed for this one.
+        (board.row, board.column) = CTRL;
+        board.press();
+        assert_eq!(board.modifiers(), MOD_CONTROL);
+        (board.row, board.column) = HOME;
+        assert_eq!(board.submit(), Press::Type(Stroke::ENTER));
+        assert_eq!(board.modifiers(), 0, "the armed Ctrl outlived its key");
     }
 
     #[test]

@@ -1,0 +1,27 @@
+<!--
+  The rune, for the Bluetooth rows.
+
+  One unbroken stroke: up the left, over the top, down the middle, and back out
+  the same way on the other side. Drawn as a single polyline rather than as a
+  vertical bar with four wings, because the mark is one object and a shape made
+  of two bodies that touch has no gap between them for the field to find — see
+  category-games.svg, which is where that trap is written down.
+
+  Its width is the wireless arcs' width, so a settings column with Wi-Fi above
+  Bluetooth reads as two marks of one set rather than as a thin one beside a
+  fat one. Round joins, so the four turns come out as beads of water meeting
+  rather than as mitred points, which at 84 px are what a spike is made of.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path
+    d="M10 21.6 L21.8 10.6 L16 5 L16 27 L21.8 21.4 L10 10.4"
+    fill="none"
+    stroke="#fff"
+    stroke-width="2.05"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>

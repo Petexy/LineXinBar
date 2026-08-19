@@ -1,0 +1,16 @@
+<!--
+  A luggage tag, for a network address.
+
+  The eyelet is cut by the tag's own path — it winds twice and the fill rule is
+  even-odd, so the hole comes out of the same shape rather than out of a mask.
+  Worth doing wherever a drawing allows it: a bore that lives in the path it
+  belongs to cannot drift away from it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path fill="#fff" fill-rule="evenodd" clip-rule="evenodd"
+        d="M4.2 16 12.5 6.6h13a2 2 0 0 1 2 2v14.8a2 2 0 0 1-2 2h-13z M9.4 16a2 2 0 1 0 4 0 2 2 0 1 0-4 0z"/>
+</svg>

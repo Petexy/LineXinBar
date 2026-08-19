@@ -1,88 +1,34 @@
 <!--
-The Utilities column's glyph: a toolbox.
+  The Utilities column's glyph: a toolbox.
 
-  Calculators, archivers, terminals, text editors — small tools rather than the
-  machine's own controls, which are the cog two columns back. A toolbox says
-  "a box of small tools" where a single wrench says "one tool", and the column
-  is a box.
+  The toolbox the real XMB put on its settings column, kept for the column that
+  actually collects tools. The seam along the lid is an opening and the catch
+  under it is another, which is as much detail as an object this size will hold.
 
-  It is also the mark the console this borrows its look from used for its own
-  Settings column, which is worth saying out loud so the resemblance is read as
-  deliberate rather than as a mistake about which column it belongs to.
+  The handle stands behind the box, so a crevice is cut round the box: without
+  it the two would merge and the handle would read as a bite out of the top
+  rather than as a thing to pick the box up by.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <filter id="crevice" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="0.55" result="soft"/>
-      <feFlood flood-color="#4a4a4a" flood-opacity="0.55" result="ink"/>
-      <feComposite in="ink" in2="soft" operator="in"/>
-    </filter>
-
-    <path id="box-gloss" d="M2 10H30V19.6C25.24 21.47 6.76 21.47 2 19.6z"/>
-    <clipPath id="box-clip"><rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6"/></clipPath>
+    <path id="handle" d="M10.65 13.20L10.65 11.90L10.65 12.26L12.26 9.66L11.97 10.13L16.23 9.33L16.00 9.37L20.57 10.23L20.03 10.13L21.54 12.56L21.35 12.26L21.35 13.20L21.43 13.63L21.64 14.00L21.98 14.28L22.38 14.43L22.82 14.43L23.23 14.28L23.56 14.00L23.77 13.63L23.85 13.20L23.85 11.90L23.85 11.82L23.84 11.75L23.83 11.67L23.81 11.59L23.79 11.52L23.77 11.45L23.74 11.38L23.70 11.31L23.66 11.24L21.86 8.34L21.80 8.25L21.72 8.16L21.64 8.08L21.55 8.00L21.46 7.94L21.36 7.88L21.25 7.83L21.14 7.80L21.03 7.77L16.23 6.87L16.18 6.86L16.13 6.86L16.08 6.85L16.03 6.85L15.97 6.85L15.92 6.85L15.87 6.86L15.82 6.86L15.77 6.87L10.97 7.77L10.86 7.80L10.75 7.83L10.64 7.88L10.54 7.94L10.45 8.00L10.36 8.08L10.28 8.16L10.20 8.25L10.14 8.34L8.34 11.24L8.30 11.31L8.26 11.38L8.23 11.45L8.21 11.52L8.19 11.59L8.17 11.67L8.16 11.75L8.15 11.82L8.15 11.90L8.15 13.20L8.23 13.63L8.44 14.00L8.78 14.28L9.18 14.43L9.62 14.43L10.03 14.28L10.36 14.00L10.57 13.63Z"/>
+    <rect id="box" x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6"/>
+    <g id="seam"><rect x="5.6" y="17.0" width="8.2" height="1" rx="0.5"/><rect x="18.2" y="17.0" width="8.2" height="1" rx="0.5"/><rect x="14.4" y="15.4" width="3.2" height="4.2" rx="1.1"/></g>
+    <g id="bead"><use href="#handle"/><use href="#box"/></g>
+    <g id="holes"><use href="#seam"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#box" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#box" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <!-- The handle, behind the box so the box's shadow falls across its feet. -->
-    <path d="M9.4 13.6v-1.7a8 8 0 0 1 13.2 0v1.7" fill="none" stroke="url(#face)"
-          stroke-width="2.5"/>
-    <path d="M9.4 12.6v-0.7a8 8 0 0 1 13.2 0v0.7" fill="none" stroke="#ffffff"
-          stroke-opacity="0.6" stroke-width="0.85"/>
-
-    <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6" fill="url(#face)"/>
-    <g clip-path="url(#box-clip)">
-      <use href="#box-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <!-- The lid's part line, and the shadow under its overhang. -->
-      <path d="M3.6 17.4h24.8" stroke="#9c9c9c" stroke-opacity="0.6" stroke-width="0.5"
-            transform="translate(0 0.22)"/>
-      <path d="M3.6 17.4h24.8" stroke="#ffffff" stroke-opacity="0.85" stroke-width="0.42"
-            transform="translate(0 -0.26)"/>
-    </g>
-    <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6" fill="url(#turn)"/>
-    <g clip-path="url(#box-clip)">
-      <rect x="3.6" y="12.6" width="24.8" height="14.4" rx="2.6"
-            fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-    </g>
-
-    <!-- The catch. -->
-    <rect x="14.3" y="15.6" width="3.4" height="4.2" rx="1" fill="url(#face)"/>
-    <rect x="14.3" y="15.6" width="3.4" height="4.2" rx="1"
-          fill="none" stroke="url(#edge)" stroke-width="0.6"/>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

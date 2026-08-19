@@ -24,6 +24,7 @@ use crate::icons;
 use crate::keyboard;
 use crate::menu::{Entry as MenuEntry, Menu};
 use crate::model::{Cursor, Standing, Xmb};
+use crate::network::Signal;
 use crate::system::Level;
 use crate::theme::theme;
 use lxb_protocol::overview;
@@ -125,6 +126,24 @@ const ITEM_DISC: f32 = std::f32::consts::SQRT_2 * 1.04;
 /// row and the light still reaches round it.
 const ITEM_PREVIEW: f32 = ITEM_DISC * 0.8;
 const CATEGORY_DISC: f32 = 1.30;
+/// How deep a glyph shaded out of its own shape is, as a fraction of the size
+/// it is drawn at — which is also how wide its bevel is, since on a real edge
+/// those are one number.
+///
+/// A share rather than a number of pixels, because a bevel is a *shape*: the
+/// same mark at 148 pixels in a category row and at 20 in a settings row has to
+/// be the same object seen from further away, not a thicker rim on a smaller
+/// drawing.
+///
+/// Deep enough that a mark is a bead and not a plate, and no deeper. A bevel is
+/// only as sharp as the narrowest part it has to turn over in: at a tenth, the
+/// teeth of the Settings cog are thinner than the wall is deep and come out
+/// melted, with no flat face anywhere to say how big the object is.
+///
+/// The shadow the shader casts is kept inside nine tenths of it, and the margin
+/// every glyph leaves round its mark is what it fits in — see the built-in
+/// glyph test, which measures that margin.
+const GLYPH_DEPTH: f32 = 0.075;
 /// What says where the next letter will land, in the one row of the bar that
 /// can be typed into.
 ///
@@ -206,6 +225,93 @@ fn gap_below(cards: Option<Cards>) -> f32 {
 fn gap_above(cards: Option<Cards>) -> f32 {
     CATEGORY_HALF + CATEGORY_AIR_ABOVE + cards.map_or(ITEM_ICON, |cards| cards.height) / 2.0
 }
+
+/// The corner of the wallpaper: the edge the clock is aligned against, the top
+/// of the line it is on, and how big it is drawn.
+///
+/// The whole cluster is laid out from the right edge leftwards, because that is
+/// what a clock in a corner is: the time hugs the edge whatever the hour is
+/// spelled with, and the mark beside it is pushed along by however wide the
+/// letters came out. Nothing here is positioned from the left.
+const CORNER_INSET: f32 = 48.0;
+const CORNER_TOP: f32 = 36.0;
+const CORNER_CLOCK: f32 = 24.0;
+/// Where the letters stand on that line: the baseline, as a multiple of the
+/// type's size below [`CORNER_TOP`].
+///
+/// The corner's clock is drawn letter by letter as its own material — see
+/// [`crate::gpu::letter_fields`] — so the baseline is this layout's to place
+/// rather than something the text pipeline decides. It is deliberately the
+/// number that pipeline would have arrived at: a line box of 1.25 times the
+/// type, with the face's own ascent and descent centred in it. That is what
+/// keeps the corner exactly where it has always been, and what would keep a run
+/// drawn beside it in the ordinary way on the same line.
+/// `the_clock_sits_on_the_line_the_text_pipeline_would_have_put_it_on` holds it
+/// to the shaping.
+pub(crate) const CORNER_CLOCK_BASELINE: f32 = 0.9668;
+/// The wireless mark beside it: how big, and the air between it and the first
+/// letter of the time.
+///
+/// Larger than the type it stands next to, and it has to be. The clock is
+/// letters, which are read; this is a fan of three arcs with gaps between them,
+/// which is *looked at* — drawn at the clock's own size each arc would be under
+/// two pixels wide, which is thinner than the bevel the shader gives it and is
+/// how a run of water comes out melted. See signal-strong.svg.
+const CORNER_MARK: f32 = 32.0;
+const CORNER_MARK_GAP: f32 = 12.0;
+/// And the battery's cell, which is larger again — a quarter larger than the
+/// fan's.
+///
+/// Not because it is more important, but because a square cell is a poor fit
+/// for it. The fan fills its cell in both directions; the battery is a shape
+/// lying across the middle of one, less than half as tall as it is wide, so at
+/// the same cell it comes out visibly the lighter of the two and shorter than
+/// the digits it stands beside. A quarter more cell brings the shell up to the
+/// height of the figures on the clock's line, which is what makes the three
+/// read as one cluster.
+///
+/// The size a handheld decides. A 1280x800 screen — a Steam Deck — scales this
+/// corner by three quarters, and at the fan's own cell the battery arrived
+/// there under fifteen pixels tall with a wall of one: below what this material
+/// can hold a face on at all. What is drawn on a console has to survive the
+/// smallest screen a console comes on.
+const CORNER_BATTERY: f32 = 40.0;
+/// How solid the corner is: the letters and the mark together, and the one
+/// number for both because they are one cluster. Short of full, because the
+/// corner is written on the wallpaper and not on a pane that could hold it up.
+const CORNER_INK: f32 = 0.85;
+/// The battery's charge in figures, above its mark: how big they are drawn, and
+/// how far above the middle of the mark their baseline stands.
+///
+/// Smaller than the clock, and above the mark rather than beside it, because it
+/// is a caption on the mark and not a second thing in the corner. On the line
+/// it would read as part of the time; at the clock's own size it would compete
+/// with it, and what the corner is for is the hour.
+///
+/// It is nonetheless *type in this material*, so it cannot be shrunk without
+/// limit: at the reference size the clock's own stems are already thin — see
+/// [`CORNER_CLOCK`] — and this is about three fifths of that. Three figures and
+/// a sign is as small as the water goes and still reads as writing rather than
+/// as wire.
+///
+/// The lift clears the *drawing* rather than the cell, and it is a share of
+/// that cell rather than a number of pixels so that the two cannot drift apart.
+/// A mark's quad is square and the battery lies across the middle of it: figures
+/// placed off the cell's edge would float with a gap of nothing under them, and
+/// figures placed a fixed distance up would be swallowed the moment the mark
+/// grew. This clears the shell's own top by about an eighth of the cell,
+/// whatever the cell is.
+const CORNER_PERCENT: f32 = 18.0;
+const CORNER_PERCENT_LIFT: f32 = 0.36;
+
+/// Where the middle of the mark sits on the clock's line, as a share of the
+/// type's size measured from the top of its box.
+///
+/// Not half, which would be the middle of the *line* — a line box is a little
+/// taller than the letters in it and carries all of that below the baseline, so
+/// a mark centred on the box hangs low against digits that have no descenders
+/// at all. This is the middle of the digits themselves.
+const CORNER_MARK_LINE: f32 = 0.60;
 
 /// Where the cross's arms meet, as a share of the display. The focused entry
 /// sits here, so it is also where a launch opens from.
@@ -1154,6 +1260,16 @@ pub trait SlotLookup {
         self.slot_for(Some(name))
     }
 
+    /// One of the characters the corner's clock is written in: the cell holding
+    /// the measurement of its shape, and how far the pen moves after it.
+    ///
+    /// `None` for anything that is not one of them, and for one whose cell is
+    /// not in the atlas yet — see [`crate::gpu::Gpu::letter`]. A layout given
+    /// `None` for any character of the time draws no time at all.
+    fn letter(&self, _letter: char) -> Option<crate::gpu::Letter> {
+        None
+    }
+
     /// The picture of one of the user's own files, if one has been made and is
     /// still in the atlas.
     ///
@@ -1355,6 +1471,153 @@ fn round_crop(aspect: f32) -> [f32; 4] {
     [edge_x, edge_y, 1.0 - edge_x, 1.0 - edge_y]
 }
 
+/// What the wallpaper's own corner says, on every display: the time, and how
+/// strong this machine's wireless link is.
+///
+/// One argument rather than three because they are one cluster on screen — the
+/// mark is placed from the clock's letters, so neither can be laid out without
+/// the other.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Corner<'a> {
+    /// The time, in the corner's short form, or `None` when local time could
+    /// not be worked out — the corner then says nothing rather than a wrong
+    /// hour. See `crate::wall_clock`.
+    pub clock: Option<&'a str>,
+    /// Which band the wireless link is in, or `None` for a machine that is on
+    /// no wireless network — which draws no mark at all. A corner that showed
+    /// an empty fan would be saying there is a connection with nothing coming
+    /// through it, and what is true is that there is no connection.
+    pub signal: Option<Signal>,
+    /// What is left in the battery, or `None` for a machine that has none —
+    /// which draws no mark at all, on exactly the terms `signal` does. A
+    /// desktop is not a laptop that is permanently plugged in, and a corner
+    /// that said so would be inventing hardware. See [`crate::power`], which is
+    /// also where the cell in a wireless mouse is refused.
+    pub battery: Option<crate::power::Charge>,
+    /// Whether the charge is written out in figures above that mark.
+    ///
+    /// Off unless somebody asked for it, under Settings > Appearance. The mark
+    /// is the answer to *how much is left*, which is what a glance at a corner
+    /// is for; the number is for somebody who wants to know whether it is 61 or
+    /// 68, and a console that put a number on the wallpaper by default would be
+    /// asking everybody to read one.
+    pub percent: bool,
+}
+
+/// Draw one run of the corner's own letters, and answer with how wide it came
+/// out.
+///
+/// `at` is `[right, top, size]`: the edge the run is aligned against, the top of
+/// the line it is on, and the type's size — all in this display's pixels.
+///
+/// Two runs use it: the time, and the battery's charge in figures above the
+/// mark that draws it. Both are the corner, both are this material, and neither
+/// is an invitation to a third — see [`crate::gpu::LETTER_SET`], which is the
+/// whole alphabet either of them may be written in.
+///
+/// The letters are quads and not a text run, which is the whole point of them:
+/// each is a cell of the atlas holding a *measurement* of the character's shape,
+/// so the quad shader models it as the same bead of water it models a glyph
+/// with, lit by the same lamp. See [`crate::gpu::letter_fields`], where they are
+/// cut, and [`crate::gpu::LETTER_BOX`], which is the square of the text each
+/// cell covers.
+///
+/// The width is the sum of the advances, which is what shaping would have
+/// answered: there is no kerning between any pair of characters either run is
+/// written in. Nothing is drawn at all unless *every* character resolves — a
+/// time with a letter missing out of the middle of it would be a worse answer
+/// than the wallpaper, and on the first frames of a session the atlas is still
+/// the provisional one.
+fn corner_run(
+    quads: &mut Vec<Quad>,
+    run: impl Iterator<Item = char>,
+    at: [f32; 3],
+    colour: [f32; 4],
+    slots: &impl SlotLookup,
+) -> f32 {
+    let [right, top, size] = at;
+    let letters: Option<Vec<crate::gpu::Letter>> = run.map(|c| slots.letter(c)).collect();
+    let Some(letters) = letters else {
+        return 0.0;
+    };
+
+    let ink = letters.iter().map(|letter| letter.advance).sum::<f32>() * size;
+    let side = crate::gpu::LETTER_BOX * size;
+    // Every letter is drawn in a square of the same size, so the bevel the
+    // shader gives each of them is the same depth — a colon in a box its own
+    // size would be modelled twice as deeply as the digits beside it. What
+    // moves per letter is only where that square is centred.
+    let middle = top + CORNER_CLOCK_BASELINE * size - crate::gpu::LETTER_MIDDLE * size;
+    let mut pen = right - ink;
+    for letter in letters {
+        if let Some(cell) = letter.cell {
+            quads.push(shaded_shape(Quad {
+                x: pen + letter.advance * size * 0.5 - side * 0.5,
+                y: middle - side * 0.5,
+                w: side,
+                h: side,
+                slot: cell,
+                color: colour,
+                ..Quad::default()
+            }));
+        }
+        pen += letter.advance * size;
+    }
+    ink
+}
+
+/// Which of the three fans a band is drawn with.
+fn signal_glyph(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Weak => icons::SIGNAL_WEAK,
+        Signal::Fair => icons::SIGNAL_FAIR,
+        Signal::Strong => icons::SIGNAL_STRONG,
+    }
+}
+
+/// Which of the six batteries a charge is drawn with.
+///
+/// Filling outranks the level, and it is the one place this mark says less than
+/// it knows: a bolt small enough to stand beside a bar would be thinner than
+/// its own bevel at the size the corner draws this. battery-charging.svg argues
+/// the trade out. Whoever wants both turns the figures on.
+pub fn battery_glyph(charge: crate::power::Charge) -> &'static str {
+    use crate::power::Level;
+    if charge.charging {
+        return icons::BATTERY_CHARGING;
+    }
+    match Level::of(charge.percent) {
+        Level::Empty => icons::BATTERY_EMPTY,
+        Level::Low => icons::BATTERY_LOW,
+        Level::Half => icons::BATTERY_HALF,
+        Level::High => icons::BATTERY_HIGH,
+        Level::Full => icons::BATTERY_FULL,
+    }
+}
+
+/// The charge as the characters it is written in, longest first: `100%`.
+///
+/// Built into the array rather than formatted into a `String` because this is
+/// a frame path and the answer is four characters — the corner is drawn on
+/// every display, on every frame, for the whole of a session.
+fn charge_figures(percent: u8) -> ([char; 4], usize) {
+    let percent = percent.min(100);
+    let digit = |value: u8| char::from(b'0' + value);
+    let mut written = [' '; 4];
+    let mut length = 0;
+    if percent >= 100 {
+        written[length] = '1';
+        length += 1;
+    }
+    if percent >= 10 {
+        written[length] = digit((percent / 10) % 10);
+        length += 1;
+    }
+    written[length] = digit(percent % 10);
+    written[length + 1] = '%';
+    (written, length + 2)
+}
+
 /// Lay out one display's bar.
 ///
 /// `focused` is whether this is the display the controller and keyboard are
@@ -1376,7 +1639,7 @@ pub fn build(
     width: f32,
     height: f32,
     focused: bool,
-    clock: Option<&str>,
+    corner: Corner<'_>,
     time: f32,
     slots: &impl SlotLookup,
     typing: bool,
@@ -1394,22 +1657,111 @@ pub fn build(
 
     // The clock lives on every display; it is part of the wallpaper more than
     // part of the controls.
-    if let Some(clock) = clock {
-        let clock_size = 24.0 * scale;
-        let box_w = 360.0 * scale;
-        texts.push(Text {
-            content: clock.to_string(),
-            x: width - 48.0 * scale - box_w,
-            y: 36.0 * scale,
-            size: clock_size,
-            color: theme.text_soft.a(0.85 * attention),
-            bold: false,
-            max_width: box_w,
-            align: TextAlign::Right,
-            clip: None,
-            halo: 0.0,
-            lines: 1,
-        });
+    let clock_size = CORNER_CLOCK * scale;
+    let clock_top = CORNER_TOP * scale;
+    let mark = CORNER_MARK * scale;
+    let ink = theme.text_soft.a(CORNER_INK * attention);
+    // The middle of the line every mark in the corner is centred on. Not the
+    // middle of the line *box*, which hangs below the digits; see
+    // [`CORNER_MARK_LINE`].
+    let mark_middle = clock_top + clock_size * CORNER_MARK_LINE;
+
+    // What is left in the battery, on the far side of the time from the
+    // wireless fan.
+    //
+    // Outside the clock rather than between the two marks, and that is the one
+    // thing about this corner that is not laid out by taste. The cluster is
+    // built from the right edge leftwards, so whatever stands nearest that edge
+    // is what the eye finds first — and a machine running on a battery is the
+    // one thing here that can end the session. The time keeps the middle it has
+    // always had; the two marks stand either side of it, each on the side of
+    // the thing it is about.
+    //
+    // Nothing at all on a machine with no battery: not an outline, not a
+    // greyed-out one. See [`Corner::battery`].
+    let mut clock_right = width - CORNER_INSET * scale;
+    if let Some(charge) = corner.battery {
+        let name = battery_glyph(charge);
+        if let Some(slot) = slots.glyph(name) {
+            let cell = CORNER_BATTERY * scale;
+            quads.push(shaded(
+                Quad {
+                    x: clock_right - cell,
+                    y: mark_middle - cell * 0.5,
+                    w: cell,
+                    h: cell,
+                    slot,
+                    color: ink,
+                    ..Quad::default()
+                },
+                Some(name),
+            ));
+            // And the figures over it, for somebody who asked to be told the
+            // number rather than shown the level. Aligned against the same
+            // right edge the whole cluster is, so a charge that falls from 100
+            // to 99 does not slide the mark under it.
+            if corner.percent {
+                let size = CORNER_PERCENT * scale;
+                let (written, length) = charge_figures(charge.percent);
+                corner_run(
+                    &mut quads,
+                    written[..length].iter().copied(),
+                    [
+                        clock_right,
+                        mark_middle - CORNER_PERCENT_LIFT * cell - CORNER_CLOCK_BASELINE * size,
+                        size,
+                    ],
+                    ink,
+                    slots,
+                );
+            }
+            clock_right -= cell + CORNER_MARK_GAP * scale;
+        }
+    }
+
+    let clock_ink = match corner.clock {
+        Some(clock) => corner_run(
+            &mut quads,
+            clock.chars(),
+            [clock_right, clock_top, clock_size],
+            ink,
+            slots,
+        ),
+        None => 0.0,
+    };
+
+    // And beside it, what the machine is on the air through — three arcs of it,
+    // two, or one. Left of the time, which is where it has always been: the
+    // time is what the corner is *for*, and a mark on each side of it leaves it
+    // the middle of the cluster rather than pushing it about.
+    //
+    // On a machine with a battery it is no longer the outermost thing here, and
+    // the clock is no longer against the display's own edge. That is the one
+    // place either of them gives way, and it gives way to the only thing in
+    // this corner that can end the session.
+    //
+    // In the clock's own colour rather than the white a mark on a lit tile is
+    // drawn in, because this mark is not on a tile: the corner is writing on the
+    // wallpaper, and a fan that came out white beside letters that are lavender
+    // would read as two different things put in the same place. What that colour
+    // *is* moves with the accent — every palette has its own cast of it, see
+    // [`crate::theme`] — so the corner follows the shell.
+    if let Some(signal) = corner.signal {
+        let name = signal_glyph(signal);
+        if let Some(slot) = slots.glyph(name) {
+            quads.push(shaded(
+                Quad {
+                    x: clock_right - clock_ink - CORNER_MARK_GAP * scale - mark,
+                    y: mark_middle - mark * 0.5,
+                    w: mark,
+                    h: mark,
+                    slot,
+                    color: ink,
+                    ..Quad::default()
+                },
+                Some(name),
+            ));
+        }
     }
 
     // Nothing found to launch. Said at the foot of the display rather than in
@@ -1869,6 +2221,7 @@ pub fn build(
                 // a film strip stamped over the frame it stands for.
                 let mut icon = icon_quad(
                     entry_slot(entry, slots),
+                    entry_glyph(entry),
                     x - icon_size / 2.0,
                     y - icon_size / 2.0,
                     icon_size,
@@ -1876,7 +2229,9 @@ pub fn build(
                     tint.unwrap_or_else(|| theme.accent_deep.a(alpha * 0.75)),
                 );
                 if let Some(tint) = tint {
-                    icon.color = tint;
+                    // The alpha stays where `shaded` put it: on a material
+                    // glyph `color` is the stain and `fade` is how solid it is.
+                    icon.color = [tint[0], tint[1], tint[2], icon.color[3]];
                 }
                 quads.push(icon);
             }
@@ -1889,6 +2244,7 @@ pub fn build(
                 let badge = icon_size * CHOSEN_BADGE;
                 quads.push(icon_quad(
                     slots.glyph(icons::CHOSEN),
+                    Some(icons::CHOSEN),
                     x + icon_size * CHOSEN_BADGE_AT - badge / 2.0,
                     y + icon_size * CHOSEN_BADGE_AT - badge / 2.0,
                     badge,
@@ -2139,6 +2495,7 @@ pub fn build(
 
         quads.push(icon_quad(
             slots.slot_for(Some(category.icon)),
+            Some(category.icon),
             x - icon_size / 2.0,
             cross_y - icon_size / 2.0,
             icon_size,
@@ -2972,15 +3329,18 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     // height this button wants is that height divided back
                     // out again.
                     let cell = glyph * 2.32 / SHUTDOWN_INK;
-                    quads.push(Quad {
-                        x: sidebar_x + rx + (rw - cell) * 0.5 + drift,
-                        y: ry + (rh - cell) * 0.5,
-                        w: cell,
-                        h: cell,
-                        slot,
-                        color: [1.0, 1.0, 1.0, lit],
-                        ..Quad::default()
-                    });
+                    quads.push(shaded(
+                        Quad {
+                            x: sidebar_x + rx + (rw - cell) * 0.5 + drift,
+                            y: ry + (rh - cell) * 0.5,
+                            w: cell,
+                            h: cell,
+                            slot,
+                            color: [1.0, 1.0, 1.0, lit],
+                            ..Quad::default()
+                        },
+                        Some(icons::SHUTDOWN),
+                    ));
                 }
                 None => quads.extend(power_glyph(
                     sidebar_x + rx + rw * 0.5 + drift,
@@ -4420,20 +4780,25 @@ fn mixer_row(
     // could not produce starts at its name instead of leaving a hole.
     let icon = h * MIXER_ICON;
     let mut text_x = x + padding;
-    if let Some(slot) = entry
-        .icon
-        .as_deref()
-        .and_then(|name| slots.slot_for(Some(name)))
-    {
-        scene.quads.push(Quad {
-            x: text_x,
-            y: y + (h - icon) * 0.5,
-            w: icon,
-            h: icon,
-            slot,
-            color: [1.0, 1.0, 1.0, 1.0],
-            ..Quad::default()
-        });
+    let named = entry.icon.as_deref();
+    if let Some(slot) = named.and_then(|name| slots.slot_for(Some(name))) {
+        // Shaded when the row turned out to be wearing one of the shell's own
+        // marks rather than an application's picture, which on this list is the
+        // System row and only that one — everything above it is something the
+        // machine is playing. A no-op for the pictures, so the two kinds of row
+        // are drawn by one call.
+        scene.quads.push(shaded(
+            Quad {
+                x: text_x,
+                y: y + (h - icon) * 0.5,
+                w: icon,
+                h: icon,
+                slot,
+                color: [1.0, 1.0, 1.0, 1.0],
+                ..Quad::default()
+            },
+            own_mark(named, slots),
+        ));
         text_x += icon + MIXER_ICON_GAP * scale;
     }
     let text_w = (x + w - padding - text_x).max(0.0);
@@ -4459,15 +4824,18 @@ fn mixer_row(
     let glyph = h * MIXER_GLYPH;
     let middle = y + h * MIXER_TRACK_LINE;
     if let Some(slot) = slots.glyph(mixer_glyph(level)) {
-        scene.quads.push(Quad {
-            x: text_x,
-            y: middle - glyph * 0.5,
-            w: glyph,
-            h: glyph,
-            slot,
-            color: [1.0, 1.0, 1.0, if level.muted { 0.55 } else { 0.9 }],
-            ..Quad::default()
-        });
+        scene.quads.push(shaded(
+            Quad {
+                x: text_x,
+                y: middle - glyph * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                color: [1.0, 1.0, 1.0, if level.muted { 0.55 } else { 0.9 }],
+                ..Quad::default()
+            },
+            Some(mixer_glyph(level)),
+        ));
     }
     scene.quads.extend(track(
         mixer_track_line(chip, entry, level, scale, slots),
@@ -4833,20 +5201,23 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
                 // that has opened out with a paragraph would be an inch of
                 // dustbin.
                 let mark = bw * CONTEXT_ASIDE_GLYPH;
-                inside.quads.push(Quad {
-                    x: bx + (bw - mark) * 0.5,
-                    y: by + (bh - mark) * 0.5,
-                    w: mark,
-                    h: mark,
-                    slot,
-                    // Brighter under the highlight than beside it, which is the
-                    // only thing on the row that says which of the two the next
-                    // press will reach. The two are a label's own two weights,
-                    // and for the same reason: quieter must still be legible,
-                    // and this glass has the wallpaper coming through it.
-                    color: [1.0, 1.0, 1.0, if on_it { 1.0 } else { 0.82 }],
-                    ..Quad::default()
-                });
+                inside.quads.push(shaded(
+                    Quad {
+                        x: bx + (bw - mark) * 0.5,
+                        y: by + (bh - mark) * 0.5,
+                        w: mark,
+                        h: mark,
+                        slot,
+                        // Brighter under the highlight than beside it, which is the
+                        // only thing on the row that says which of the two the next
+                        // press will reach. The two are a label's own two weights,
+                        // and for the same reason: quieter must still be legible,
+                        // and this glass has the wallpaper coming through it.
+                        color: [1.0, 1.0, 1.0, if on_it { 1.0 } else { 0.82 }],
+                        ..Quad::default()
+                    },
+                    Some(aside.glyph),
+                ));
             }
         }
 
@@ -4870,22 +5241,27 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         // The line stops where the button starts, not where the chip does.
         let mut label_x = chip[0] + label_padding;
         let mut label_w = aside_end - label_padding - label_x;
-        let pictured = entry
-            .icon
-            .as_deref()
-            .and_then(|name| view.slots.slot_for(Some(name)));
+        let named = entry.icon.as_deref();
+        let pictured = named.and_then(|name| view.slots.slot_for(Some(name)));
         if let Some(slot) = pictured {
             let icon = settled * CONTEXT_ICON;
             let top = chip[1] + (settled - icon) * 0.5;
-            inside.quads.push(Quad {
-                x: label_x,
-                y: top,
-                w: icon,
-                h: icon,
-                slot,
-                color: [1.0, 1.0, 1.0, if entry.enabled { 1.0 } else { 0.4 }],
-                ..Quad::default()
-            });
+            // Shaded when what the row named is one of the shell's own marks,
+            // which is how the announcements behind the bell wear the bell — and
+            // now the Bluetooth rune, on a row this shell announced itself. Left
+            // alone for a program's picture, which is a drawing and stays one.
+            inside.quads.push(shaded(
+                Quad {
+                    x: label_x,
+                    y: top,
+                    w: icon,
+                    h: icon,
+                    slot,
+                    color: [1.0, 1.0, 1.0, if entry.enabled { 1.0 } else { 0.4 }],
+                    ..Quad::default()
+                },
+                own_mark(named, view.slots),
+            ));
             // A row with a picture *and* a mark wears the mark as a badge on
             // the corner of it — the tick on the value in force, exactly as the
             // Settings column draws it, and for the same reason: the mark is
@@ -4893,29 +5269,35 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             // it.
             if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
                 let badge = icon * CHOSEN_BADGE;
-                inside.quads.push(Quad {
-                    x: label_x + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
-                    y: top + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
-                    w: badge,
-                    h: badge,
-                    slot,
-                    color: theme.rim.a(if entry.enabled { 1.0 } else { 0.4 }),
-                    ..Quad::default()
-                });
+                inside.quads.push(shaded(
+                    Quad {
+                        x: label_x + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
+                        y: top + icon * (0.5 + CHOSEN_BADGE_AT) - badge * 0.5,
+                        w: badge,
+                        h: badge,
+                        slot,
+                        color: theme.rim.a(if entry.enabled { 1.0 } else { 0.4 }),
+                        ..Quad::default()
+                    },
+                    entry.glyph,
+                ));
             }
             label_x += icon + label_padding * 0.5;
             label_w -= icon + label_padding * 0.5;
         } else if let Some(slot) = entry.glyph.and_then(|name| view.slots.glyph(name)) {
             let glyph = settled * CONTEXT_GLYPH;
-            inside.quads.push(Quad {
-                x: label_x,
-                y: chip[1] + (settled - glyph) * 0.5,
-                w: glyph,
-                h: glyph,
-                slot,
-                color: [1.0, 1.0, 1.0, if entry.enabled { 0.9 } else { 0.35 }],
-                ..Quad::default()
-            });
+            inside.quads.push(shaded(
+                Quad {
+                    x: label_x,
+                    y: chip[1] + (settled - glyph) * 0.5,
+                    w: glyph,
+                    h: glyph,
+                    slot,
+                    color: [1.0, 1.0, 1.0, if entry.enabled { 0.9 } else { 0.35 }],
+                    ..Quad::default()
+                },
+                entry.glyph,
+            ));
             label_x += glyph + label_padding * 0.5;
             label_w -= glyph + label_padding * 0.5;
         }
@@ -5059,15 +5441,18 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
         let Some(slot) = showing.then(|| view.slots.glyph(name)).flatten() else {
             continue;
         };
-        inside.quads.push(Quad {
-            x: panel_x + (panel_w - arrow) * 0.5,
-            y,
-            w: arrow,
-            h: arrow,
-            slot,
-            color: [1.0, 1.0, 1.0, 0.55],
-            ..Quad::default()
-        });
+        inside.quads.push(shaded(
+            Quad {
+                x: panel_x + (panel_w - arrow) * 0.5,
+                y,
+                w: arrow,
+                h: arrow,
+                slot,
+                color: [1.0, 1.0, 1.0, 0.55],
+                ..Quad::default()
+            },
+            Some(name),
+        ));
     }
 
     // Out of the anchor, both halves on the one factor, so the panel and what
@@ -5112,6 +5497,18 @@ const DIALOG_NOTE: f32 = 36.0;
 const DIALOG_FIELD: f32 = 42.0;
 const DIALOG_SECRET: f32 = 78.0;
 const DIALOG_RULE: f32 = 24.0;
+/// How much of a field's width the name on the left may take, the answer on the
+/// right getting the rest.
+///
+/// Not half. Both are set on one line and cut where they run out of room, and
+/// the two halves of a field are not the same size of thing: a name is written
+/// by this shell and is two words — `Disk space`, `System software` — while an
+/// answer is written by the machine and can be `Some Card (SOMEDRV CHIP)`. An
+/// even split spends room on the half that never needs it and takes the end off
+/// the half that does. Every name the shell writes still fits inside this, and
+/// nothing on the right moves: the answer is set against the right-hand edge,
+/// so widening its box only lets a long one start further left.
+const FIELD_LABEL_SHARE: f32 = 0.42;
 /// The mark one typed character is drawn as, and how far apart they sit.
 const SECRET_MARK: f32 = 10.0;
 const SECRET_MARK_GAP: f32 = 8.0;
@@ -5411,6 +5808,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
     if let Some([ix, iy, iw, ih]) = layout.icon {
         inside.quads.push(icon_quad(
             view.slots.slot_for(dialog.icon()),
+            dialog.icon(),
             ix,
             iy,
             iw.min(ih),
@@ -5462,6 +5860,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                 let size = 21.0 * scale;
                 let y = ly + (lh - size) * 0.5 - size * 0.12;
                 let inner = (lw - label_padding * 2.0).max(0.0);
+                let label_w = inner * FIELD_LABEL_SHARE;
                 inside.texts.push(Text {
                     content: label.clone(),
                     x: lx + label_padding,
@@ -5469,7 +5868,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     size,
                     color: theme.text_soft.a(0.68),
                     bold: false,
-                    max_width: inner * 0.5,
+                    max_width: label_w,
                     align: TextAlign::Left,
                     clip: None,
                     halo: 0.0,
@@ -5477,12 +5876,12 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                 });
                 inside.texts.push(Text {
                     content: value.clone(),
-                    x: lx + label_padding + inner * 0.5,
+                    x: lx + label_padding + label_w,
                     y,
                     size,
                     color: theme.text.a(0.94),
                     bold: false,
-                    max_width: inner * 0.5,
+                    max_width: inner - label_w,
                     align: TextAlign::Right,
                     clip: None,
                     halo: 0.0,
@@ -5595,7 +5994,16 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                 let size = 26.0 * scale;
                 let inset = well_h * 0.5;
                 inside.texts.push(Text {
-                    content: text.clone(),
+                    // What was typed, with the caret on the end of it as a
+                    // character of the same run — see [`CARET`], which is the
+                    // rule the column's own field is drawn under and the reason
+                    // it is one. Nothing on this side of the wire knows how
+                    // wide a word comes out: a bar placed after a *guess* at
+                    // the run's width sits a finger's breadth past the last
+                    // character on anything with narrow glyphs in it, and an
+                    // address is nothing but narrow glyphs. Shaped with the
+                    // text, it lands where the next character will.
+                    content: format!("{text}{CARET}"),
                     x: well[0] + inset,
                     y: well[1] + (well[3] - size) * 0.5 - size * 0.12,
                     size,
@@ -5606,24 +6014,6 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
-                });
-
-                // The caret, after what has been typed. Placed from an
-                // estimate of the run's width for the reason the keyboard
-                // hint's chip is sized from one — the shell cannot measure a
-                // run before the GPU shapes it — and clamped inside the well,
-                // so an estimate that drifts on a long name puts the caret at
-                // the end of the field rather than outside it.
-                let run = text.chars().count() as f32 * size * HINT_ADVANCE;
-                let caret_h = well[3] * 0.46;
-                inside.quads.push(Quad {
-                    x: (well[0] + inset + run).min(well[0] + well[2] - inset),
-                    y: well[1] + (well[3] - caret_h) * 0.5,
-                    w: (2.0 * scale).max(1.0),
-                    h: caret_h,
-                    slot: SOLID_SLOT,
-                    color: theme.text.a(0.35 + 0.45 * pulse),
-                    ..Quad::default()
                 });
             }
             // The sign-in code, on a white card.
@@ -6092,15 +6482,18 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
             if let Some(name) = key.glyph() {
                 if let Some(slot) = view.slots.glyph(name) {
                     let mark = h * 0.46;
-                    quads.push(Quad {
-                        x: x + w * 0.5 - mark * 0.5,
-                        y: y + h * 0.5 - mark * 0.5,
-                        w: mark,
-                        h: mark,
-                        slot,
-                        color: theme.text.a(if focused { 1.0 } else { 0.82 }),
-                        ..Quad::default()
-                    });
+                    quads.push(shaded(
+                        Quad {
+                            x: x + w * 0.5 - mark * 0.5,
+                            y: y + h * 0.5 - mark * 0.5,
+                            w: mark,
+                            h: mark,
+                            slot,
+                            color: theme.text.a(if focused { 1.0 } else { 0.82 }),
+                            ..Quad::default()
+                        },
+                        Some(name),
+                    ));
                 }
                 continue;
             }
@@ -6242,15 +6635,18 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
         // fallback application icon, which in a row like this would read as
         // "press the app".
         if let Some(slot) = view.slots.glyph(name) {
-            quads.push(Quad {
-                x: at,
-                y: middle - glyph * 0.5,
-                w: glyph,
-                h: glyph,
-                slot,
-                color: theme.text.a(0.95 * fade),
-                ..Quad::default()
-            });
+            quads.push(shaded(
+                Quad {
+                    x: at,
+                    y: middle - glyph * 0.5,
+                    w: glyph,
+                    h: glyph,
+                    slot,
+                    color: theme.text.a(0.95 * fade),
+                    ..Quad::default()
+                },
+                Some(name),
+            ));
         }
         at += glyph + gap;
     }
@@ -6416,15 +6812,18 @@ fn tile(
             (_, false, true) => 0.95,
             _ => 0.82,
         };
-        quads.push(Quad {
-            x: x + (w - glyph) * 0.5,
-            y: y + (h - glyph) * 0.5,
-            w: glyph,
-            h: glyph,
-            slot,
-            color: [1.0, 1.0, 1.0, lit * alpha],
-            ..Quad::default()
-        });
+        quads.push(shaded(
+            Quad {
+                x: x + (w - glyph) * 0.5,
+                y: y + (h - glyph) * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                color: [1.0, 1.0, 1.0, lit * alpha],
+                ..Quad::default()
+            },
+            item.glyph(),
+        ));
     }
 
     // Last, so it is over the glyph rather than under it: it is a thing sitting
@@ -6523,15 +6922,18 @@ fn quick_bar(
         (Bar::Brightness, _) => icons::BRIGHTNESS,
     };
     if let Some(slot) = slots.glyph(name) {
-        quads.push(Quad {
-            x: glyph_x,
-            y: y + (h - glyph) * 0.5,
-            w: glyph,
-            h: glyph,
-            slot,
-            color: [1.0, 1.0, 1.0, alpha],
-            ..Quad::default()
-        });
+        quads.push(shaded(
+            Quad {
+                x: glyph_x,
+                y: y + (h - glyph) * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                color: [1.0, 1.0, 1.0, alpha],
+                ..Quad::default()
+            },
+            Some(name),
+        ));
     }
 
     let [track_x, middle, track_w, _] = bar_track_line(chip, scale);
@@ -6705,6 +7107,41 @@ fn entry_slot(entry: &Entry, slots: &impl SlotLookup) -> Option<u32> {
         Entry::App(app) => slots.slot_for(app.icon.as_deref()),
         _ => entry.icon().and_then(|name| slots.glyph(name)),
     }
+}
+
+/// The name of the shell's own glyph a row is drawn with, if it is one of those
+/// rather than an application's icon.
+///
+/// The pair of [`entry_slot`], and the same split: what is on an application's
+/// row came out of a theme and is a picture of whatever that theme draws, and
+/// what is on one of the shell's own rows is a mark it drew itself and so may
+/// be a shape for the shader to stand a bead of water in.
+fn entry_glyph(entry: &Entry) -> Option<&str> {
+    match entry {
+        Entry::App(_) => None,
+        _ => entry.icon(),
+    }
+}
+
+/// The name a row's picture was found under, but only when the atlas really
+/// answered to that name — which is the only form [`shaded`] may be handed.
+///
+/// The other half of the trap [`icon_quad`] describes, arrived at from the far
+/// side. A row's `icon` is one name for two kinds of thing: an application's
+/// picture out of the icon theme, and one of the shell's own marks, which for
+/// rows that can hold either — a mixer's, an announcement's — is decided per
+/// row rather than per list. [`SlotLookup::slot_for`] stands the generic
+/// application picture in for a name it cannot find, so asking it about a mark
+/// the atlas has not got hands back a *drawing*; shading that out of a distance
+/// field it does not contain is the same pale smear, made by believing a name
+/// instead of a slot.
+///
+/// So the name survives only if [`SlotLookup::glyph`] — which has no fallback
+/// behind it — knows it. Whether it is then a shape at all is [`shaded`]'s own
+/// question, and an application's picture passes through here untouched to be
+/// told no.
+fn own_mark<'a>(name: Option<&'a str>, slots: &dyn SlotLookup) -> Option<&'a str> {
+    name.filter(|name| slots.glyph(name).is_some())
 }
 
 /// The vertical bar a value on a scale is set on, in the room a row's icon
@@ -6896,17 +7333,37 @@ fn column_bar(
 
 /// A square icon, or a tinted placeholder when the theme had no such icon —
 /// which keeps rows aligned instead of leaving a hole.
-fn icon_quad(slot: Option<u32>, x: f32, y: f32, size: f32, alpha: f32, missing: [f32; 4]) -> Quad {
+/// A quad that draws one icon, shaded out of its own shape if it is one of the
+/// shell's own glyphs.
+///
+/// `name` is what the slot was looked up by, and it is not optional-for-
+/// convenience: it is how this decides whether the cell holds a picture or a
+/// measurement, and a caller that has a slot without a name has to go and find
+/// one. Getting that wrong draws a distance field as though it were a drawing,
+/// which comes out as a pale blur — see the fennec at the head of the System
+/// information panel, which is how it was found.
+fn icon_quad(
+    slot: Option<u32>,
+    name: Option<&str>,
+    x: f32,
+    y: f32,
+    size: f32,
+    alpha: f32,
+    missing: [f32; 4],
+) -> Quad {
     match slot {
-        Some(slot) => Quad {
-            x,
-            y,
-            w: size,
-            h: size,
-            slot,
-            color: [1.0, 1.0, 1.0, alpha],
-            ..Quad::default()
-        },
+        Some(slot) => shaded(
+            Quad {
+                x,
+                y,
+                w: size,
+                h: size,
+                slot,
+                color: [1.0, 1.0, 1.0, alpha],
+                ..Quad::default()
+            },
+            name,
+        ),
         None => Quad {
             x,
             y,
@@ -6917,6 +7374,44 @@ fn icon_quad(slot: Option<u32>, x: f32, y: f32, size: f32, alpha: f32, missing: 
             ..Quad::default()
         },
     }
+}
+
+/// Turn a quad that points at one of the shell's own glyphs into one the quad
+/// shader shades out of the glyph's own shape.
+///
+/// A no-op for anything else, which is what lets it be called wherever a glyph
+/// is drawn without every caller having to know which glyphs have been redrawn
+/// as shapes: the drawing says so — see [`icons::SHAPE_MARK`] — and the answer
+/// moves with the file rather than with a list here.
+///
+/// The alpha moves as well as the depth, and it has to. On a picture, `color`
+/// is multiplied into the texel and its alpha is how solid the drawing comes
+/// out; on a material it is the *stain*, and how solid the mark is is `fade`.
+/// A glyph that kept its alpha in `color` would be a mark that faded by
+/// becoming clearer instead of by becoming fainter.
+fn shaded(quad: Quad, name: Option<&str>) -> Quad {
+    // Nothing to shade out of the shape of, if the atlas could not produce the
+    // drawing: what stands in for it is [`icon_quad`]'s flat tint, and a tint
+    // shaded as a slab of glass would be a missing icon pretending to be one.
+    if quad.slot == SOLID_SLOT || !name.is_some_and(icons::shaped) {
+        return quad;
+    }
+    shaded_shape(quad)
+}
+
+/// The same, for a cell the layout already knows holds a shape.
+///
+/// One caller: the corner's letters, which are cut out of the shell's own face
+/// into distance fields at startup and are never a drawing — so there is no name
+/// to ask about, and asking one would mean [`icons`] carrying a list of every
+/// character the clock can contain. The material itself is decided here, in the
+/// one place, whichever way the caller knew.
+fn shaded_shape(mut quad: Quad) -> Quad {
+    quad.thickness = quad.w.min(quad.h) * GLYPH_DEPTH;
+    quad.gloss = GLOSS_FULL;
+    quad.fade *= quad.color[3];
+    quad.color[3] = 1.0;
+    quad
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -7001,6 +7496,10 @@ pub struct LaunchView<'a> {
     pub name: &'a str,
     /// The application's icon, already resolved to a texture slot.
     pub icon: Option<u32>,
+    /// The name it was looked up by, if it is one of the shell's own marks
+    /// rather than a program's picture — see [`ToastCard::glyph`], which is the
+    /// same field for the same reason.
+    pub glyph: Option<&'a str>,
     /// Whether this is a game opening out of the Steam library, which is drawn
     /// a different way entirely — see [`build_launch`].
     pub game: bool,
@@ -7132,6 +7631,15 @@ pub struct ToastCard<'a> {
     pub title: &'a str,
     pub body: &'a str,
     pub icon: Option<u32>,
+    /// The name `icon` was looked up by, when it is one of the shell's own
+    /// marks rather than a program's picture.
+    ///
+    /// A bubble whose program named no icon wears the bell, and the bell is one
+    /// of the glyphs the shader shades out of its own shape — so without this
+    /// the fallback would be drawn as a picture of a distance field, which is a
+    /// pale smear. `None` for a program's own icon, which is a picture and stays
+    /// one.
+    pub glyph: Option<&'a str>,
     pub stage: crate::notify::Stage,
     pub progress: f32,
 }
@@ -7200,6 +7708,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
         let icon_x = rect[0] + pad;
         scene.quads.push(icon_quad(
             card.icon,
+            card.glyph,
             icon_x,
             rect[1] + (rect[3] - icon) * 0.5,
             icon,
@@ -7460,6 +7969,7 @@ pub fn build_launch(view: LaunchView, width: f32, height: f32) -> Scene {
     });
     scene.quads.push(icon_quad(
         view.icon,
+        view.glyph,
         icon_x - icon_size * 0.5,
         icon_y - icon_size * 0.5,
         icon_size,
@@ -7796,10 +8306,25 @@ mod tests {
         }
     }
 
-    /// An icon, as opposed to the glass it stands on or the bloom behind it:
-    /// icons are drawn square and unlit, everything else is material.
+    /// How solid a drawn mark actually comes out, whichever kind of quad it is.
+    ///
+    /// On a picture the alpha lives in `color`, which is multiplied into the
+    /// texel. On one of the glyphs the shader shades out of its own shape it
+    /// lives in `fade`, because there `color`'s alpha means how strongly the
+    /// mark stains rather than how solid it is — see [`shaded`]. The product is
+    /// the same number either way, so it is the one to compare.
+    fn ink(quad: &Quad) -> f32 {
+        quad.color[3] * quad.fade
+    }
+
+    /// An icon, as opposed to the glass it stands on or the bloom behind it.
+    ///
+    /// Square-cornered, and either unlit — a picture out of a theme, or one of
+    /// the shell's own glyphs that is still a picture — or one of the glyphs the
+    /// shader shades out of its own shape, which is lit and has a depth but is
+    /// still a drawing in a cell rather than a pane the layout drew.
     fn is_icon(quad: &Quad) -> bool {
-        quad.slot != GLOW_SLOT && quad.gloss == 0.0 && quad.radius == 0.0
+        quad.slot != GLOW_SLOT && quad.radius == 0.0 && (quad.gloss == 0.0 || quad.glyph_material())
     }
 
     struct NoSlots;
@@ -7816,6 +8341,30 @@ mod tests {
         fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
             Some(7)
         }
+
+        fn letter(&self, letter: char) -> Option<crate::gpu::Letter> {
+            letter_fixture(letter, 7)
+        }
+    }
+
+    /// One of the corner's characters as the renderer would answer for it.
+    ///
+    /// The advances are Roboto's own, so a run measured in a test is as wide as
+    /// the run on screen; `cell` is what tells the letters apart in a scene. The
+    /// space has an advance and no cell, exactly as it does in the atlas.
+    fn letter_fixture(letter: char, cell: u32) -> Option<crate::gpu::Letter> {
+        let advance = match letter {
+            '0'..='9' => 0.562,
+            ':' => 0.2422,
+            '/' => 0.4126,
+            '%' => 0.7324,
+            ' ' => 0.24805,
+            _ => return None,
+        };
+        Some(crate::gpu::Letter {
+            cell: (letter != ' ').then_some(cell),
+            advance,
+        })
     }
 
     /// A distinct slot per name, so a test can tell *which* drawing the layout
@@ -7840,6 +8389,28 @@ mod tests {
                 icons::SETTING_ACCENT => 24,
                 icons::SWATCH => 25,
                 icons::CHOSEN => 26,
+                // The two marks that turn up where a row's *picture* goes —
+                // an announcement the shell made itself, and the mixer's own
+                // row — so a test can tell one of those from the application
+                // icon beside it, which is the whole of what those rows get
+                // wrong when they get it wrong.
+                icons::SETTING_BLUETOOTH => 27,
+                icons::CATEGORY_SYSTEM => 28,
+                // The corner's three fans, so a test can tell which band the
+                // mark beside the clock is drawn at rather than only that
+                // something was drawn there.
+                icons::SIGNAL_WEAK => 29,
+                icons::SIGNAL_FAIR => 30,
+                icons::SIGNAL_STRONG => 31,
+                // And the corner's six batteries, for the same reason: which
+                // drawing the charge picked is the whole of what that mark
+                // says.
+                icons::BATTERY_EMPTY => 32,
+                icons::BATTERY_LOW => 33,
+                icons::BATTERY_HALF => 34,
+                icons::BATTERY_HIGH => 35,
+                icons::BATTERY_FULL => 36,
+                icons::BATTERY_CHARGING => 37,
                 _ => 13,
             }
         }
@@ -7850,6 +8421,11 @@ mod tests {
         }
         fn glyph(&self, name: &str) -> Option<u32> {
             Some(Self::slot_of(name))
+        }
+        /// A cell of its own per character, so a test can say which letter a
+        /// quad is and in what order the run drew them.
+        fn letter(&self, letter: char) -> Option<crate::gpu::Letter> {
+            letter_fixture(letter, 40 + letter as u32)
         }
     }
 
@@ -7976,6 +8552,7 @@ mod tests {
             icon: Some("folder".into()),
             entries,
             place: None,
+            chosen: false,
         })
     }
 
@@ -8011,6 +8588,7 @@ mod tests {
             icon: Some(icons::SWATCH.into()),
             swatch: Some(crate::theme::Color(0x8B5CF6)),
             chosen,
+            acts: false,
             setting: None,
         })
     }
@@ -8029,11 +8607,642 @@ mod tests {
         focused: bool,
         slots: &impl SlotLookup,
     ) -> Scene {
-        build(xmb, cursor, width, height, focused, None, 0.0, slots, false)
+        build(
+            xmb,
+            cursor,
+            width,
+            height,
+            focused,
+            Corner::default(),
+            0.0,
+            slots,
+            false,
+        )
     }
 
     fn settle(cursor: &mut Cursor) {
         while cursor.animate(1.0 / 60.0) {}
+    }
+
+    /// The clock in the corner is drawn as the same material as the mark beside
+    /// it: one quad per letter, each shaded out of a measurement of the
+    /// character's shape rather than sampled as a picture of one.
+    ///
+    /// This is the whole of what the corner's type is for, and the mistake it
+    /// would fail as is the one a slot handed in from outside always makes —
+    /// the shader would sample a distance field as a drawing and the time would
+    /// come out as a row of pale smears.
+    #[test]
+    fn the_time_is_drawn_in_the_same_water_as_the_mark_beside_it() {
+        let scene = corner_scene(
+            Corner {
+                clock: Some("8/19 10:02"),
+                signal: Some(Signal::Strong),
+                ..Corner::default()
+            },
+            1920.0,
+            1080.0,
+        );
+        let letters = letter_quads(&scene);
+        assert_eq!(
+            letters.len(),
+            9,
+            "nine letters have ink; the space has none: {letters:?}",
+        );
+        for letter in &letters {
+            assert!(
+                letter.glyph_material(),
+                "a letter is drawn as a picture: {letter:?}",
+            );
+        }
+        // One square per letter, all the same size — which is what makes the
+        // bevel the same depth across the run.
+        let side = letters[0].w;
+        for letter in &letters {
+            assert!(
+                (letter.w - side).abs() < 1e-3 && (letter.h - side).abs() < 1e-3,
+                "the letters are not one size: {} against {side}",
+                letter.w,
+            );
+        }
+        // And nothing is drawn as a text run any more: a corner that drew both
+        // would be the time printed twice, once in each material.
+        assert!(
+            !scene
+                .texts
+                .iter()
+                .any(|text| text.content.contains("10:02")),
+            "the time is still going through the text pipeline",
+        );
+    }
+
+    /// The corner is a cluster: the wireless mark stands beside the time, clear
+    /// of its letters and inside the display, at every size a display comes in.
+    ///
+    /// The run is right-aligned against the edge of the screen, and its width is
+    /// the sum of the advances of the letters in it — so where the first letter
+    /// falls depends on the letters themselves, and the mark has to be placed
+    /// from that rather than from any box the run was given.
+    #[test]
+    fn the_wireless_mark_stands_beside_the_time() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = (height / REFERENCE_HEIGHT).clamp(0.6, 2.5);
+            let scene = corner_scene(
+                Corner {
+                    clock: Some("8/19 10:02"),
+                    signal: Some(Signal::Strong),
+                    ..Corner::default()
+                },
+                width,
+                height,
+            );
+            let mark = scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(icons::SIGNAL_STRONG))
+                .expect("the corner draws the fan it was given a band for");
+            // The leftmost letter's square, which is what the mark stands clear
+            // of. Its own left edge is inside the square by the margin the cell
+            // leaves round the character.
+            let first = letter_quads(&scene)
+                .iter()
+                .map(|quad| quad.x)
+                .fold(f32::MAX, f32::min);
+
+            let gap = first - (mark.x + mark.w);
+            let squares = crate::gpu::LETTER_BOX * CORNER_CLOCK * scale;
+            let advance = 0.562 * CORNER_CLOCK * scale;
+            // The air the layout asks for, less the half-square of empty cell
+            // the first letter's own box hangs to the left of its advance.
+            let asked = CORNER_MARK_GAP * scale - (squares - advance) * 0.5;
+            assert!(
+                (gap - asked).abs() < 0.5,
+                "{width}x{height}: {gap} of air between the mark and the time, not {asked}",
+            );
+            assert!(
+                mark.x > 0.0 && mark.y > 0.0 && mark.x + mark.w < width,
+                "{width}x{height}: the mark at {:?} is not on the display",
+                [mark.x, mark.y, mark.w, mark.h],
+            );
+            // And on the clock's line: the middle of the mark against the
+            // middle of the digits, not the middle of the line box they sit in.
+            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * CORNER_MARK_LINE;
+            assert!(
+                ((mark.y + mark.h * 0.5) - middle).abs() < 0.5,
+                "{width}x{height}: the mark's middle is at {}, the digits' at {middle}",
+                mark.y + mark.h * 0.5,
+            );
+        }
+    }
+
+    /// The time stands on the baseline, right-aligned against the corner's own
+    /// inset, and the letters follow one another by the advances the face gives
+    /// them — which is what a clock has to do to keep its digits from shuffling
+    /// as the minute changes.
+    #[test]
+    fn the_time_is_laid_out_letter_by_letter_from_the_edge() {
+        let (width, height) = (1920.0, 1080.0);
+        let scene = corner_scene(
+            Corner {
+                clock: Some("8/19 10:02"),
+                signal: None,
+                ..Corner::default()
+            },
+            width,
+            height,
+        );
+        let scale = height / REFERENCE_HEIGHT;
+        let size = CORNER_CLOCK * scale;
+        let side = crate::gpu::LETTER_BOX * size;
+        let mut letters = letter_quads(&scene);
+        letters.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+        // Every square is centred on the baseline the text pipeline would have
+        // used, at the height a letter's cell puts its middle.
+        let middle =
+            CORNER_TOP * scale + CORNER_CLOCK_BASELINE * size - crate::gpu::LETTER_MIDDLE * size;
+        for letter in &letters {
+            assert!(
+                ((letter.y + letter.h * 0.5) - middle).abs() < 1e-3,
+                "a letter sits at {}, off the baseline's line at {middle}",
+                letter.y + letter.h * 0.5,
+            );
+        }
+
+        // "8/19 10:02" is nine marks and one space; the run ends at the inset,
+        // and the last letter's square is centred half an advance short of it.
+        let right = width - CORNER_INSET * scale;
+        let last = letters.last().expect("the run drew something");
+        let expected = right - 0.562 * size * 0.5 - side * 0.5;
+        assert!(
+            (last.x - expected).abs() < 1e-3,
+            "the run ends at {}, not against the corner's inset at {expected}",
+            last.x,
+        );
+
+        // And the pen moved by each letter's own advance, never by a fixed
+        // step: the colon in the middle is narrower than the digits round it.
+        let steps: Vec<f32> = letters
+            .windows(2)
+            .map(|pair| pair[1].x - pair[0].x)
+            .collect();
+        let digit = 0.562 * size;
+        assert!(
+            steps.iter().any(|step| (step - digit).abs() > 1.0),
+            "every letter advanced by the same amount: {steps:?}",
+        );
+    }
+
+    /// A machine on no wireless network draws no mark at all — not an empty fan,
+    /// which would say there is a connection with nothing coming through it.
+    ///
+    /// And the clock stays exactly where it was: the time is what the corner is
+    /// for, and it must not move about as a mark comes and goes beside it.
+    #[test]
+    fn a_machine_on_no_network_says_nothing_about_one() {
+        let clock = |signal| {
+            let scene = corner_scene(
+                Corner {
+                    clock: Some("8/19 10:02"),
+                    signal,
+                    ..Corner::default()
+                },
+                1920.0,
+                1080.0,
+            );
+            let letters: Vec<[f32; 4]> = letter_quads(&scene)
+                .iter()
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+                .collect();
+            let fans =
+                [icons::SIGNAL_WEAK, icons::SIGNAL_FAIR, icons::SIGNAL_STRONG].map(Named::slot_of);
+            let marks = scene
+                .quads
+                .iter()
+                .filter(|quad| fans.contains(&quad.slot))
+                .count();
+            (letters, marks)
+        };
+
+        let (quiet_letters, quiet_marks) = clock(None);
+        assert_eq!(
+            quiet_marks, 0,
+            "nothing wireless is drawn for a machine that is on nothing",
+        );
+        let (lit_letters, lit_marks) = clock(Some(Signal::Strong));
+        assert_eq!(lit_marks, 1, "and exactly one fan when it is on something");
+        assert_eq!(
+            quiet_letters, lit_letters,
+            "the time does not move to make room for the mark",
+        );
+    }
+
+    /// A character the atlas has no cell for takes the whole clock with it.
+    ///
+    /// The alternative is a run that closes up over the letter it could not
+    /// draw — "8/19 1002", a time that is wrong rather than absent — and on the
+    /// first frames of a session, before the completed atlas is installed, that
+    /// is every letter.
+    #[test]
+    fn a_time_with_a_letter_missing_is_not_drawn_at_all() {
+        struct NoColon;
+        impl SlotLookup for NoColon {
+            fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
+                Some(7)
+            }
+            fn letter(&self, letter: char) -> Option<crate::gpu::Letter> {
+                (letter != ':').then(|| letter_fixture(letter, 40 + letter as u32))?
+            }
+        }
+
+        let xmb = corner_xmb();
+        let cursor = Cursor::new(xmb.categories.len());
+        let scene = build(
+            &xmb,
+            &cursor,
+            1920.0,
+            1080.0,
+            true,
+            Corner {
+                clock: Some("8/19 10:02"),
+                signal: Some(Signal::Strong),
+                ..Corner::default()
+            },
+            0.0,
+            &NoColon,
+            false,
+        );
+        assert!(
+            letter_quads(&scene).is_empty(),
+            "a run drew around the letter it was missing",
+        );
+    }
+
+    /// Each band draws its own fan, and each is the drawing the shader shades
+    /// out of a shape rather than a picture of one — the trap a slot handed in
+    /// from outside always falls into. It is also drawn in the clock's colour,
+    /// which is what carries the accent into the corner.
+    #[test]
+    fn each_band_draws_its_own_fan_in_the_clocks_colour() {
+        for (band, name) in [
+            (Signal::Weak, icons::SIGNAL_WEAK),
+            (Signal::Fair, icons::SIGNAL_FAIR),
+            (Signal::Strong, icons::SIGNAL_STRONG),
+        ] {
+            let scene = corner_scene(
+                Corner {
+                    clock: Some("8/19 10:02"),
+                    signal: Some(band),
+                    ..Corner::default()
+                },
+                1920.0,
+                1080.0,
+            );
+            let mark = scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(name))
+                .unwrap_or_else(|| panic!("{band:?} draws {name}"));
+            assert!(
+                mark.glyph_material(),
+                "{band:?} draws a distance field as a picture",
+            );
+            let clock = theme().text_soft.a(1.0);
+            assert_eq!(
+                &mark.color[..3],
+                &clock[..3],
+                "{band:?} is not the colour the time beside it is",
+            );
+            // The letters beside it are the same colour, because the mark is
+            // part of the writing rather than a mark standing next to it.
+            let letter = scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == 40 + '8' as u32)
+                .expect("the time is drawn too");
+            assert_eq!(letter.color[..3], mark.color[..3]);
+        }
+    }
+
+    /// The battery stands on the far side of the time from the wireless fan,
+    /// hard against the corner's own inset — and the time steps aside for it by
+    /// exactly the mark and the air the layout asks for.
+    ///
+    /// Which is the one thing about this cluster that is not taste. It is built
+    /// from the right edge leftwards, so what is nearest that edge is found
+    /// first, and on a machine running on a battery that is the thing which can
+    /// end the session.
+    #[test]
+    fn the_battery_stands_on_the_far_side_of_the_time() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = (height / REFERENCE_HEIGHT).clamp(0.6, 2.5);
+            let corner = |battery| {
+                corner_scene(
+                    Corner {
+                        clock: Some("8/19 10:02"),
+                        signal: Some(Signal::Strong),
+                        battery,
+                        ..Corner::default()
+                    },
+                    width,
+                    height,
+                )
+            };
+
+            let scene = corner(Some(crate::power::Charge {
+                percent: 72,
+                charging: false,
+            }));
+            let mark = scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_HIGH))
+                .expect("72 per cent is drawn three quarters full");
+
+            // Hard against the inset the whole cluster is aligned to.
+            let right = width - CORNER_INSET * scale;
+            assert!(
+                ((mark.x + mark.w) - right).abs() < 0.5,
+                "{width}x{height}: the battery ends at {}, not at the inset {right}",
+                mark.x + mark.w,
+            );
+            // And on the clock's line, with the fan on the other side of it.
+            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * CORNER_MARK_LINE;
+            assert!(
+                ((mark.y + mark.h * 0.5) - middle).abs() < 0.5,
+                "{width}x{height}: the battery's middle is at {}, the digits' at {middle}",
+                mark.y + mark.h * 0.5,
+            );
+            let fan = scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(icons::SIGNAL_STRONG))
+                .expect("the fan is still drawn");
+            assert!(
+                fan.x + fan.w < mark.x,
+                "{width}x{height}: the two marks are on the same side of the time",
+            );
+
+            // The time moved left by the mark and its air, and by nothing else.
+            let last = |scene: &Scene| {
+                letter_quads(scene)
+                    .iter()
+                    .map(|quad| quad.x)
+                    .fold(f32::MIN, f32::max)
+            };
+            let stepped = last(&corner(None)) - last(&scene);
+            let asked = CORNER_BATTERY * scale + CORNER_MARK_GAP * scale;
+            assert!(
+                (stepped - asked).abs() < 0.5,
+                "{width}x{height}: the time stepped {stepped} aside, not {asked}",
+            );
+        }
+    }
+
+    /// A machine with no battery draws no mark at all — not an outline, not a
+    /// greyed-out one — and the clock stands exactly where it always has.
+    ///
+    /// The same rule the wireless fan is under, and here it is the stronger
+    /// claim of the two: a desktop is not a laptop that is permanently plugged
+    /// in, and a corner that drew a battery for one would be inventing
+    /// hardware. See `power::is_system`, which is where a wireless mouse's own
+    /// cell is refused.
+    #[test]
+    fn a_machine_with_no_battery_says_nothing_about_one() {
+        let scene = corner_scene(
+            Corner {
+                clock: Some("8/19 10:02"),
+                signal: Some(Signal::Strong),
+                // And asking for the figures changes nothing either: there is
+                // nothing for them to be the figures of.
+                percent: true,
+                ..Corner::default()
+            },
+            1920.0,
+            1080.0,
+        );
+        let batteries = [
+            icons::BATTERY_EMPTY,
+            icons::BATTERY_LOW,
+            icons::BATTERY_HALF,
+            icons::BATTERY_HIGH,
+            icons::BATTERY_FULL,
+            icons::BATTERY_CHARGING,
+        ]
+        .map(Named::slot_of);
+        assert_eq!(
+            scene
+                .quads
+                .iter()
+                .filter(|quad| batteries.contains(&quad.slot))
+                .count(),
+            0,
+            "a battery was drawn for a machine that has none",
+        );
+
+        // The time is where it is with nothing beside it at all.
+        let bare = corner_scene(
+            Corner {
+                clock: Some("8/19 10:02"),
+                signal: Some(Signal::Strong),
+                ..Corner::default()
+            },
+            1920.0,
+            1080.0,
+        );
+        let laid_out = |scene: &Scene| -> Vec<[f32; 4]> {
+            letter_quads(scene)
+                .iter()
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+                .collect()
+        };
+        assert_eq!(laid_out(&scene), laid_out(&bare));
+    }
+
+    /// The charge in figures is the corner's own material too — one quad per
+    /// character, shaded out of a measurement of its shape — and it is off
+    /// unless it was asked for.
+    ///
+    /// The same mistake the clock would fail as: a number drawn through the
+    /// text pipeline would be flat coverage sitting over a bead of water.
+    #[test]
+    fn the_charge_is_written_in_the_same_water_as_the_time() {
+        let (width, height) = (1920.0, 1080.0);
+        let scale = height / REFERENCE_HEIGHT;
+        let corner = |percent| {
+            corner_scene(
+                Corner {
+                    clock: Some("8/19 10:02"),
+                    signal: Some(Signal::Strong),
+                    battery: Some(crate::power::Charge {
+                        percent: 96,
+                        charging: false,
+                    }),
+                    percent,
+                },
+                width,
+                height,
+            )
+        };
+
+        // The two runs are told apart by the square each is drawn in: the
+        // clock's letters are the type's own size and the charge's are smaller.
+        let figures = |scene: &Scene| -> Vec<[f32; 4]> {
+            let side = crate::gpu::LETTER_BOX * CORNER_PERCENT * scale;
+            let mut found: Vec<[f32; 4]> = letter_quads(scene)
+                .iter()
+                .filter(|quad| (quad.w - side).abs() < 1e-3)
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+                .collect();
+            found.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            found
+        };
+
+        let quiet = corner(false);
+        assert!(
+            figures(&quiet).is_empty(),
+            "the charge was written out without being asked for",
+        );
+
+        let scene = corner(true);
+        let written = figures(&scene);
+        // "96%" — three characters, every one of them with ink.
+        assert_eq!(written.len(), 3, "{written:?}");
+        for quad in letter_quads(&scene) {
+            assert!(
+                quad.glyph_material(),
+                "a figure is drawn as a picture: {quad:?}",
+            );
+        }
+
+        // Right-aligned against the same inset the mark under it is, so a
+        // charge falling from 100 to 99 does not slide the mark about.
+        let right = width - CORNER_INSET * scale;
+        let last = written.last().expect("the run drew something");
+        let size = CORNER_PERCENT * scale;
+        let expected = right - 0.7324 * size * 0.5 - crate::gpu::LETTER_BOX * size * 0.5;
+        assert!(
+            (last[0] - expected).abs() < 1e-3,
+            "the figures end at {}, not against the inset at {expected}",
+            last[0],
+        );
+
+        // Above the mark, clear of it.
+        let mark = scene
+            .quads
+            .iter()
+            .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
+            .expect("96 per cent is drawn full");
+        let foot = written
+            .iter()
+            .map(|quad| quad[1] + quad[3])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            foot < mark.y + mark.h * 0.5,
+            "the figures reach {foot}, past the middle of the mark at {}",
+            mark.y + mark.h * 0.5,
+        );
+
+        // And the mark itself has not moved to make room for them: the figures
+        // are a caption on it, not a second thing in the row.
+        let placed = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+        };
+        assert_eq!(placed(&scene), placed(&quiet));
+    }
+
+    /// Every charge has a drawing, and being on the mains outranks all five of
+    /// them.
+    #[test]
+    fn filling_outranks_the_level_it_is_filling_from() {
+        use crate::power::Charge;
+        for (percent, name) in [
+            (0, icons::BATTERY_EMPTY),
+            (9, icons::BATTERY_EMPTY),
+            (10, icons::BATTERY_LOW),
+            (34, icons::BATTERY_LOW),
+            (35, icons::BATTERY_HALF),
+            (59, icons::BATTERY_HALF),
+            (60, icons::BATTERY_HIGH),
+            (84, icons::BATTERY_HIGH),
+            (85, icons::BATTERY_FULL),
+            (100, icons::BATTERY_FULL),
+        ] {
+            let charge = Charge {
+                percent,
+                charging: false,
+            };
+            assert_eq!(battery_glyph(charge), name, "{percent} per cent");
+            assert_eq!(
+                battery_glyph(Charge {
+                    charging: true,
+                    ..charge
+                }),
+                icons::BATTERY_CHARGING,
+                "{percent} per cent, filling",
+            );
+        }
+    }
+
+    /// The charge as characters, at every length it comes in.
+    #[test]
+    fn the_charge_is_written_out_without_a_leading_nothing() {
+        let written = |percent| {
+            let (figures, length) = charge_figures(percent);
+            figures[..length].iter().collect::<String>()
+        };
+        assert_eq!(written(0), "0%");
+        assert_eq!(written(7), "7%");
+        assert_eq!(written(10), "10%");
+        assert_eq!(written(96), "96%");
+        assert_eq!(written(100), "100%");
+        // A hand-edited file cannot reach this, and a driver that reports a
+        // hundred and eight per cent is a driver, not a battery.
+        assert_eq!(written(255), "100%");
+    }
+
+    /// The quads the corner's letters drew, in no particular order.
+    ///
+    /// `Named` files each character in a cell of its own — see
+    /// [`letter_fixture`] — so this is every letter in the scene and nothing
+    /// else. Named here rather than taken as a range of code points, because
+    /// the set stopped being contiguous when the per cent sign joined it: it is
+    /// the one character of the corner's alphabet that is not the time's.
+    ///
+    /// The corner draws two runs when a battery is being written out in
+    /// figures, and both are in here. What tells them apart is the square each
+    /// is drawn in — see
+    /// [`the_charge_is_written_in_the_same_water_as_the_time`].
+    fn letter_quads(scene: &Scene) -> Vec<&Quad> {
+        let cells: Vec<u32> = "0123456789:/%".chars().map(|c| 40 + c as u32).collect();
+        scene
+            .quads
+            .iter()
+            .filter(|quad| cells.contains(&quad.slot))
+            .collect()
+    }
+
+    /// One column with one row in it, which is all the corner's tests need
+    /// behind them.
+    fn corner_xmb() -> Xmb {
+        Xmb::new(vec![Category {
+            id: "dev",
+            title: "Development",
+            icon: "dev",
+            entries: vec![app("first")],
+        }])
+    }
+
+    fn corner_scene(corner: Corner<'_>, width: f32, height: f32) -> Scene {
+        let xmb = corner_xmb();
+        let cursor = Cursor::new(xmb.categories.len());
+        build(
+            &xmb, &cursor, width, height, true, corner, 0.0, &Named, false,
+        )
     }
 
     /// The selected category's name goes under its button, and under means
@@ -8229,6 +9438,7 @@ mod tests {
             build_launch(
                 LaunchView {
                     name: "Celeste",
+                    glyph: None,
                     icon: Some(7),
                     game: false,
                     logo: None,
@@ -8290,6 +9500,7 @@ mod tests {
             build_launch(
                 LaunchView {
                     name: "Hollow Knight",
+                    glyph: None,
                     icon: Some(7),
                     game: true,
                     logo,
@@ -8413,6 +9624,7 @@ mod tests {
             build_launch(
                 LaunchView {
                     name: "Hollow Knight",
+                    glyph: None,
                     icon: Some(7),
                     game: true,
                     logo: Some(crate::gpu::Thumb {
@@ -8467,6 +9679,7 @@ mod tests {
             build_launch(
                 LaunchView {
                     name: "Hollow Knight",
+                    glyph: None,
                     icon: Some(7),
                     game: true,
                     logo: None,
@@ -8527,6 +9740,7 @@ mod tests {
             build_launch(
                 LaunchView {
                     name: "Hollow Knight",
+                    glyph: None,
                     icon: Some(7),
                     game: true,
                     logo: None,
@@ -8582,6 +9796,7 @@ mod tests {
         let scene = build_launch(
             LaunchView {
                 name: "Hollow Knight",
+                glyph: None,
                 icon: Some(7),
                 game: true,
                 logo: None,
@@ -9756,7 +10971,15 @@ mod tests {
         settle(&mut cursor);
         let says = |typing: bool| {
             build(
-                &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, typing,
+                &xmb,
+                &cursor,
+                1920.0,
+                1080.0,
+                true,
+                Corner::default(),
+                0.0,
+                &AllSlots,
+                typing,
             )
             .texts
             .into_iter()
@@ -9798,7 +11021,15 @@ mod tests {
         while cursor.navigate(Action::Up, &xmb) {}
         settle(&mut cursor);
         let said: Vec<String> = build(
-            &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, true,
+            &xmb,
+            &cursor,
+            1920.0,
+            1080.0,
+            true,
+            Corner::default(),
+            0.0,
+            &AllSlots,
+            true,
         )
         .texts
         .into_iter()
@@ -10543,7 +11774,15 @@ mod tests {
 
         let glow_alpha = |time: f32| {
             let scene = build(
-                &xmb, &cursor, 1920.0, 1080.0, true, None, time, &AllSlots, false,
+                &xmb,
+                &cursor,
+                1920.0,
+                1080.0,
+                true,
+                Corner::default(),
+                time,
+                &AllSlots,
+                false,
             );
             scene
                 .quads
@@ -11299,7 +12538,7 @@ mod tests {
         // On: a second pane fills the chip, and the glyph is at full strength.
         assert_eq!(panes(&scene(true, true)), 2, "the fill, over the chip");
         assert_eq!(panes(&scene(false, true)), 1, "off, the chip alone");
-        assert!(glyph(&scene(true, true)).color[3] > glyph(&scene(false, true)).color[3]);
+        assert!(ink(&glyph(&scene(true, true))) > ink(&glyph(&scene(false, true))));
 
         // And with nothing in front to be about, the tile is not a chip at
         // all: no glass, a hairline where the chip would be, and a ghost of
@@ -11314,7 +12553,7 @@ mod tests {
             .find(in_tile)
             .expect("the outline standing in for the chip");
         assert_eq!(outline.thickness, 0.0, "an outline is not a slab");
-        assert!(glyph(&scene(false, false)).color[3] < glyph(&scene(false, true)).color[3]);
+        assert!(ink(&glyph(&scene(false, false))) < ink(&glyph(&scene(false, true))));
     }
 
     /// The second switch on the line says which state it is in the same way
@@ -11391,7 +12630,7 @@ mod tests {
 
         assert_eq!(panes(&scene(true)), 2, "on: the fill, over the chip");
         assert_eq!(panes(&scene(false)), 1, "off: the chip alone");
-        assert!(glyph(&scene(true)).color[3] > glyph(&scene(false)).color[3]);
+        assert!(ink(&glyph(&scene(true))) > ink(&glyph(&scene(false))));
         // Never the hairline the pointer tile is drawn as when it has nothing
         // to act on: there is always a session to quieten.
         assert!(
@@ -12517,6 +13756,240 @@ mod tests {
         }
     }
 
+    /// A glyph the shell has drawn as a shape is handed to the shader as a slab
+    /// of glass cut to that shape, and one it has not is handed over as a
+    /// picture — in the same row, from the same call.
+    ///
+    /// Which is what let the redraw be done a glyph at a time — the drawing says
+    /// which it is, so a file becoming a shape was the whole of the change and
+    /// every place in the shell that draws it followed. Every one of the shell's
+    /// own glyphs has now crossed over, so what the other half of this test
+    /// pins down is the *other* case: an application's icon, which comes out of
+    /// a theme, is a picture and always will be.
+    #[test]
+    fn a_glyph_drawn_as_a_shape_is_shaded_as_one() {
+        let size = 96.0;
+        let picture = Quad {
+            w: size,
+            h: size,
+            slot: 7,
+            color: [1.0, 1.0, 1.0, 0.6],
+            ..Quad::default()
+        };
+
+        let untouched = |name: Option<&str>| {
+            let out = shaded(picture, name);
+            assert!(!out.glyph_material(), "{name:?} was shaded");
+            assert_eq!(out.thickness, 0.0);
+            assert_eq!(out.gloss, 0.0);
+            assert_eq!(out.color[3], picture.color[3]);
+            assert_eq!(out.fade, picture.fade);
+        };
+
+        // Anything the shell did not draw itself: a theme's icon for an
+        // application, and a row with no icon at all. Neither is a shape and
+        // neither can become one.
+        untouched(Some("some-application"));
+        untouched(None);
+
+        // And every glyph the shell *did* draw itself is one, which is the end
+        // of the redraw. Named here rather than counted, so that a drawing
+        // quietly losing its mark is a failure and not a smaller number.
+        for name in [
+            icons::VOLUME,
+            icons::ARROW_LEFT,
+            icons::SHUTDOWN,
+            icons::CATEGORY_GAMES,
+            icons::SETTING_WIFI,
+            icons::LOGO,
+        ] {
+            assert!(icons::shaped(name), "{name} is still a picture");
+        }
+        let glass = shaded(picture, Some(icons::CATEGORY_GAMES));
+        assert!(glass.glyph_material(), "the shader would sample it flat");
+        assert_eq!(glass.thickness, size * GLYPH_DEPTH);
+        assert_eq!(glass.gloss, GLOSS_FULL);
+        // The alpha has moved out of the stain and into the opacity. Left in
+        // `color`, it would make the mark fade by becoming clearer.
+        assert_eq!(glass.color[3], 1.0);
+        assert_eq!(glass.fade, 0.6);
+
+        // And a drawing the atlas could not produce stays the flat tint that
+        // stands in for it.
+        let missing = shaded(
+            Quad {
+                slot: SOLID_SLOT,
+                ..picture
+            },
+            Some(icons::CATEGORY_GAMES),
+        );
+        assert!(!missing.glyph_material(), "a placeholder became glass");
+        assert_eq!(missing.color[3], picture.color[3]);
+    }
+
+    /// Wherever a slot is handed to a quad from outside the layout, the name it
+    /// was looked up by comes with it — because the slot alone cannot say
+    /// whether the cell holds a picture or a measurement of a shape.
+    ///
+    /// This is the bug this test exists for, and it was found on screen: the
+    /// fennec at the head of the System information panel came out as a pale
+    /// blur, because the panel's head drew its icon without saying what the
+    /// icon was and the shader sampled a distance field as though it were a
+    /// drawing. Two more places had the same shape of mistake — the bubble that
+    /// falls back to the bell when a program names no icon, and the launch
+    /// splash — and all three were checked here rather than only the one that
+    /// was noticed.
+    ///
+    /// It was found on screen a second time, in the rows that hold a *picture*:
+    /// the Bluetooth rune on an announcement this shell had made itself came
+    /// out as the same smear behind the bell. Those rows were written for an
+    /// application's icon and drew whatever they were given as one, which is
+    /// right until the row turns out to be about the shell — and there are two
+    /// such lists, the announcements and the mixer, so both are here.
+    #[test]
+    fn a_slot_handed_in_from_outside_still_says_what_it_is() {
+        let (width, height) = (1920.0, 1080.0);
+
+        // The panel that describes something, wearing the shell's own mark. The
+        // System information panel is this with the fennec on it.
+        let mut dialog = Dialog::default();
+        assert!(dialog.ask(
+            [0.0, 0.0, 100.0, 100.0],
+            Some(icons::LOGO.to_string()),
+            vec![Line::Heading("System information".to_string())],
+            vec![MenuEntry::new(Command::Dismiss, "Close")],
+            0,
+        ));
+        while dialog.buttons.animate(0.05) < 1.0 {}
+        let head = dialog_scene(&dialog, width, height)
+            .quads
+            .into_iter()
+            .find(|q| q.slot == Named::slot_of(icons::LOGO))
+            .expect("the mark at the head of the panel");
+        assert!(head.glyph_material(), "the fennec is drawn as a picture");
+
+        // The bubble a program with no icon of its own gets.
+        let bell = build_toasts(
+            &[ToastCard {
+                title: "Something happened",
+                body: "and here is what",
+                icon: Named.glyph(icons::NOTIFICATIONS),
+                glyph: Some(icons::NOTIFICATIONS),
+                stage: crate::notify::Stage::Sitting,
+                progress: 1.0,
+            }],
+            width,
+            height,
+            0.0,
+        )
+        .quads
+        .into_iter()
+        .find(|q| q.slot == Named::slot_of(icons::NOTIFICATIONS))
+        .expect("the bell on the bubble");
+        assert!(bell.glyph_material(), "the bell is drawn as a picture");
+
+        // And an application's icon, which is a picture and must stay one
+        // wherever it is drawn — the same call, answering the other way.
+        let app = build_toasts(
+            &[ToastCard {
+                title: "Something happened",
+                body: "and here is what",
+                icon: Named.slot_for(Some("an-application")),
+                glyph: Some("an-application"),
+                stage: crate::notify::Stage::Sitting,
+                progress: 1.0,
+            }],
+            width,
+            height,
+            0.0,
+        )
+        .quads
+        .into_iter()
+        .find(|q| q.slot == Named::slot_of("an-application"))
+        .expect("the program's own picture");
+        assert!(!app.glyph_material(), "a theme's icon became glass");
+
+        // A row in the panel behind the bell, wearing a mark of the shell's
+        // own. This is what an announcement the shell made itself looks like —
+        // a finished pairing — and what any announcement from a program that
+        // named no icon has always looked like, since the bell stands in.
+        let mut menu = Menu::default();
+        assert!(menu.open_at(
+            [200.0, 400.0, 160.0, 160.0],
+            Some(Title::new("Notifications")),
+            vec![
+                MenuEntry::new(Command::Placeholder("row"), "Thor is connected")
+                    .icon(icons::SETTING_BLUETOOTH),
+                MenuEntry::new(Command::Placeholder("row"), "A program said something")
+                    .icon("an-application"),
+            ],
+            context_menu_rows_that_fit(1080.0),
+        ));
+        while menu.animate(0.05) < 1.0 {}
+        let rows = context_scene(&menu, 1920.0, 1080.0).quads;
+        let rune = rows
+            .iter()
+            .find(|q| q.slot == Named::slot_of(icons::SETTING_BLUETOOTH))
+            .expect("the mark on the announcement");
+        assert!(rune.glyph_material(), "the rune is drawn as a picture");
+        // And the row beside it, which named a program's icon, is untouched by
+        // the same call — the two kinds of row share one drawing path and the
+        // name is the whole of what tells them apart.
+        let theirs = rows
+            .iter()
+            .find(|q| q.slot == Named::slot_of("an-application"))
+            .expect("the program's own picture on its row");
+        assert!(!theirs.glyph_material(), "a theme's icon became glass");
+
+        // And the mixer's own row, which is the same mistake in the other list:
+        // every row above it is something the machine is playing, and this one
+        // is the shell.
+        let mut mixer = Scene::default();
+        mixer_row(
+            &mut mixer,
+            [0.0, 0.0, 400.0, 80.0],
+            &MenuEntry::new(Command::MuteShell, "System").icon(icons::CATEGORY_SYSTEM),
+            Level {
+                value: 0.5,
+                muted: false,
+            },
+            1.0,
+            false,
+            &Named,
+        );
+        let system = mixer
+            .quads
+            .iter()
+            .find(|q| q.slot == Named::slot_of(icons::CATEGORY_SYSTEM))
+            .expect("the mark on the mixer's own row");
+        assert!(system.glyph_material(), "the shell's row is drawn flat");
+    }
+
+    /// And the row itself asks for it, so that the two halves cannot be right
+    /// separately and wrong together.
+    #[test]
+    fn the_category_row_asks_for_the_material() {
+        let xmb = Xmb::new(vec![Category {
+            id: "a",
+            title: "Games",
+            icon: icons::CATEGORY_GAMES,
+            entries: vec![app("first")],
+        }]);
+        let cursor = Cursor::new(1);
+        let (width, height) = (1920.0, 1080.0);
+        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+
+        let cross_y = height * 0.30;
+        let marks: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|q| is_icon(q) && (q.y + q.h / 2.0 - cross_y).abs() < 1.0)
+            .collect();
+        assert_eq!(marks.len(), 1, "one mark on the row");
+        assert!(marks[0].glyph_material(), "drawn as a picture of itself");
+        assert_eq!(marks[0].thickness, marks[0].w * GLYPH_DEPTH);
+    }
+
     /// Nothing else moved. A corner norm is the sort of thing that is easy to
     /// set once and then find on every shape in the interface.
     #[test]
@@ -12846,7 +14319,15 @@ mod tests {
         assert!(on_screen.len() > 1, "the bar should have icons to shrink");
 
         let mut mini = build(
-            &xmb, &cursor, 1920.0, 1080.0, true, None, 0.0, &AllSlots, false,
+            &xmb,
+            &cursor,
+            1920.0,
+            1080.0,
+            true,
+            Corner::default(),
+            0.0,
+            &AllSlots,
+            false,
         );
         // A card a quarter of the display's width, at its aspect ratio.
         let card = [1200.0, 300.0, 480.0, 270.0];
@@ -14281,6 +15762,7 @@ mod tests {
     fn bubble(stage: crate::notify::Stage, progress: f32) -> ToastCard<'static> {
         ToastCard {
             title: "Download finished",
+            glyph: None,
             body: "linux-6.9.tar.xz",
             icon: None,
             stage,
@@ -16351,7 +17833,10 @@ mod tests {
             .iter()
             .map(|text| text.content.as_str())
             .collect();
-        assert!(said.contains(&"someone"), "{said:?}");
+        // With the caret on the end of it, as one run: the mark that says
+        // where the next character lands is a character, not a bar drawn after
+        // a guess at how wide the word came out. See [`CARET`].
+        assert!(said.contains(&"someone|"), "{said:?}");
     }
 
     /// The password field, and the one rule that matters about it: what is

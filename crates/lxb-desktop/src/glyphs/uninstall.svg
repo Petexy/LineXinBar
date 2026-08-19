@@ -1,86 +1,42 @@
 <!--
-  The context menu's Uninstall row: a waste bin, lid and all.
+  The bin, on the context menu row that removes an application.
 
-  Drawn from the same material as every other built-in — see pointer-stick.svg
-  for what each gradient in the block below is doing — but with the modelling
-  cut back to what survives the size it is used at. A menu row gives its glyph
-  about 25 px, and at that size the grooves down the front of a bin are three
-  grey pixels of smudge if they are drawn as seams. They are here as two very
-  soft slots instead, which read as shading rather than as lines, and the only
-  real relief left is the lid standing off the body.
+  Three bodies stacked: the handle at the back, the lid bar over it and the bin
+  under that, each taking a crevice against what is behind it. Stacked and not
+  merged, because a bin whose lid has run into its body is a bucket.
+
+  The two slots down the bin are openings. They were shading in the old drawing
+  and they are the one thing that says which way up this is.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f8f8f8"/>
-      <stop offset="0.32" stop-color="#ececec"/>
-      <stop offset="0.58" stop-color="#d5d5d5"/>
-      <stop offset="0.8" stop-color="#e0e0e0"/>
-      <stop offset="1" stop-color="#f7f7f7"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#383838" flood-opacity="0.5"/>
-    </filter>
-    <filter id="lift" x="-45%" y="-45%" width="200%" height="210%">
-      <feDropShadow dx="0.25" dy="0.5" stdDeviation="0.2"
-                    flood-color="#282828" flood-opacity="0.46"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-    <!-- The slots down the front, blurred so they are shading and not seams. -->
-    <filter id="soften" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="0.3"/>
-    </filter>
-
-    <!-- The body, tapering the way a moulded bin does, with the bottom
-         corners taken off so it sits rather than ends. -->
-    <path id="body"
-          d="M8.1 12.6h15.8l-1.42 13.3a2.3 2.3 0 0 1-2.29 2.05h-8.38
-             a2.3 2.3 0 0 1-2.29-2.05z"/>
-    <path id="body-gloss" d="M7 11h18v8.6c-4.6 2-13.4 2-18 0z"/>
-    <clipPath id="body-clip"><use href="#body"/></clipPath>
+    <path id="handle" d="M13 4.1h6a1.7 1.7 0 0 1 1.7 1.7V9h-2.6V6.7h-4.2V9H11.3V5.8
+                         A1.7 1.7 0 0 1 13 4.1z"/>
+    <rect id="lid" x="5.6" y="8.5" width="20.8" height="3.5" rx="1.75"/>
+    <path id="bin" d="M8.1 12.6h15.8l-1.42 13.3a2.3 2.3 0 0 1-2.29 2.05h-8.38
+                      a2.3 2.3 0 0 1-2.29-2.05z"/>
+    <g id="slots">
+      <rect x="12.5" y="15.4" width="1.5" height="9.2" rx="0.75"/>
+      <rect x="18" y="15.4" width="1.5" height="9.2" rx="0.75"/>
+    </g>
+    <g id="front"><use href="#lid"/><use href="#bin"/></g>
+    <g id="bead"><use href="#handle"/><use href="#front"/></g>
+    <g id="holes"><use href="#slots"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+      <use href="#bin" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#bin" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <use href="#body" fill="url(#face)"/>
-    <g clip-path="url(#body-clip)">
-      <use href="#body-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <g fill="#000000" fill-opacity="0.16" filter="url(#soften)">
-        <rect x="12.5" y="15.4" width="1.5" height="9.2" rx="0.75"/>
-        <rect x="18" y="15.4" width="1.5" height="9.2" rx="0.75"/>
-      </g>
-    </g>
-    <use href="#body" fill="url(#turn)"/>
-    <use href="#body" fill="none" stroke="url(#edge)" stroke-width="1"/>
-  </g>
-
-  <!-- The strap and the lid over it, raised together off the body. The strap
-       is drawn first so its foot tucks under the lid rather than butting
-       against it. -->
-  <g filter="url(#lift)">
-    <path d="M13 4.1h6a1.7 1.7 0 0 1 1.7 1.7V9h-2.6V6.7h-4.2V9H11.3V5.8
-             A1.7 1.7 0 0 1 13 4.1z" fill="url(#face)"/>
-    <rect x="5.6" y="8.5" width="20.8" height="3.5" rx="1.75" fill="url(#face)"/>
-    <rect x="5.6" y="8.5" width="20.8" height="3.5" rx="1.75"
-          fill="none" stroke="url(#edge)" stroke-width="0.7"/>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

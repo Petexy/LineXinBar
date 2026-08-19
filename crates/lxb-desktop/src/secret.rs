@@ -84,16 +84,37 @@ impl Secret {
 
     /// Write it down `sink` as one line, and say whether that worked.
     ///
-    /// The one way out of this type, and deliberately the only one: both things
-    /// that ask for a password hand it to a program on the other end of a pipe
-    /// or a socket, both terminate it with a newline, and neither has any use
-    /// for a `String` it would then have to remember to overwrite. There is no
-    /// accessor for the bytes because there is nothing left that would want
-    /// one.
+    /// The way out for the two that hand a password to a *program*: both write
+    /// it to the other end of a pipe or a socket, both terminate it with a
+    /// newline, and neither has any use for a `String` it would then have to
+    /// remember to overwrite.
     pub fn hand_to(&self, sink: &mut impl Write) -> std::io::Result<()> {
         sink.write_all(&self.bytes)?;
         sink.write_all(b"\n")?;
         sink.flush()
+    }
+
+    /// Show it to one closure as text, and give back whatever that said.
+    ///
+    /// The other way out, for the one caller that is not writing to a pipe: a
+    /// wireless password goes into a D-Bus message as a string, because a
+    /// pre-shared key is the one shape `NetworkManager` will take it in. See
+    /// [`crate::network`].
+    ///
+    /// A closure rather than an accessor, and that is the whole of the care
+    /// this can still take: the borrow ends when the closure returns, so the
+    /// only text there ever is points into the same buffer [`Drop`] overwrites,
+    /// and nothing can hold it afterwards. What the caller must not do — and
+    /// the reason this is not `as_str` — is copy it into a `String` inside the
+    /// closure; the whole message is built in there instead.
+    ///
+    /// `None` if the bytes are not text, which nothing that went through
+    /// [`Secret::push`] can be: characters are encoded whole and
+    /// [`Secret::pop`] takes them off whole. It is checked rather than assumed
+    /// because a type that looks after a password should not be the one place
+    /// in the shell that trusts its own invariants without saying so.
+    pub fn as_text<T>(&self, with: impl FnOnce(&str) -> T) -> Option<T> {
+        Some(with(std::str::from_utf8(&self.bytes).ok()?))
     }
 }
 

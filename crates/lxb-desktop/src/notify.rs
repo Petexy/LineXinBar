@@ -740,7 +740,7 @@ impl Toast {
 /// timed out in the corner, withdrawn by the program that sent it — all have
 /// to reach both presentations. Two structures would mean three chances for
 /// them to disagree.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Center {
     /// Newest first. The order the panel wants, and the order the corner wants
     /// too, so it is the order they are kept in rather than one either of them
@@ -785,6 +785,38 @@ pub struct Center {
     /// from the top. `None` is a badge that has never moved.
     badge_from: f32,
     badge_at: Option<Instant>,
+    /// The number the shell's *own* next announcement takes.
+    ///
+    /// Counting **down** from the top, where every program on the machine
+    /// counts up from one — see [`Listener::next`]. That is the whole of how
+    /// the two are kept apart, and it is worth having rather than sharing one
+    /// counter for two reasons. The daemon may not exist at all: another
+    /// desktop's holds the bus name and this session has no [`Service`], and
+    /// the shell must still be able to say something about the machine it is
+    /// running. And an id that collided with a program's would be worse than
+    /// untidy — [`Center::arrived`] treats a number it has seen as a
+    /// *replacement*, so the shell would silently overwrite somebody's
+    /// download.
+    ///
+    /// They would meet after four billion announcements between them, which is
+    /// a session nobody has ever had.
+    ours: u32,
+}
+
+impl Default for Center {
+    fn default() -> Self {
+        Self {
+            list: Vec::new(),
+            toasts: Vec::new(),
+            outbox: Vec::new(),
+            invoked: Vec::new(),
+            quiet: false,
+            unseen: std::collections::HashSet::new(),
+            badge_from: 0.0,
+            badge_at: None,
+            ours: u32::MAX,
+        }
+    }
 }
 
 /// How long the unread mark takes to grow onto the bell, and to go out again,
@@ -931,6 +963,55 @@ impl Center {
             .iter()
             .filter(|toast| toast.stage != Stage::Out)
             .count()
+    }
+
+    /// Say something on the shell's own account.
+    ///
+    /// The one way anything reaches this list that did not come over the bus,
+    /// and it exists because some of what a console has to announce is about
+    /// the *session* rather than about a program in it: a device that has just
+    /// been paired with, and one that would not pair. There is no program to
+    /// send those — the shell is what did the thing — and a desktop's answer,
+    /// "have some daemon call `notify-send`", is a process this session does
+    /// not have and a round trip through the bus to talk to itself.
+    ///
+    /// It goes through [`Center::arrived`] like everything else, so it is
+    /// filed, it gets a bubble, it lights the bell, and it is silenced by
+    /// do-not-disturb on exactly the same terms as an announcement from a chat
+    /// client. The shell overruling its own switch would be the one exception
+    /// that made the switch not mean anything.
+    ///
+    /// `icon` is one of the shell's own glyph names — see [`crate::icons`] —
+    /// which is already in the atlas, so unlike a program's picture this one
+    /// never costs a look through the icon theme.
+    ///
+    /// Returns whether a bubble went up, which is what the caller asks before
+    /// making a noise.
+    pub fn announce(&mut self, summary: &str, body: &str, icon: &str) -> bool {
+        // Down, and never through zero: zero is what a program passes to mean
+        // "a new one", so it is not a number an announcement may have.
+        let id = self.ours;
+        self.ours = self.ours.saturating_sub(1).max(1);
+        self.arrived(Notification {
+            id,
+            app: "LineXinBar".to_string(),
+            app_icon: icon.to_string(),
+            image_path: None,
+            image: None,
+            image_key: None,
+            desktop_entry: None,
+            summary: summary.to_string(),
+            body: body.to_string(),
+            actions: Vec::new(),
+            urgency: Urgency::Normal,
+            // Kept, not transient. What this says is the answer to something
+            // the user pressed and may well have walked away from — the whole
+            // reason it is announced rather than drawn on the row is that they
+            // are not necessarily looking at the row — so it has to be there
+            // to be found behind the bell.
+            transient: false,
+            arrived: Instant::now(),
+        })
     }
 
     /// Take everything the bus has said and file it.
@@ -1173,6 +1254,70 @@ impl Center {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shell can say something itself, and what it says is an announcement
+    /// like any other: filed, bubbled, and counted against the bell.
+    ///
+    /// It has to be a real one rather than a special case drawn somewhere else,
+    /// because the two presentations are the same object seen twice — a bubble
+    /// the list did not know about would be a thing the user saw and could
+    /// never find again.
+    #[test]
+    fn the_shell_can_announce_something_of_its_own() {
+        let mut center = Center::default();
+        assert!(center.announce("Ears is connected", "Paired.", "lxb:x"));
+        assert_eq!(center.list().len(), 1);
+        assert_eq!(center.toasts().len(), 1);
+        assert!(center.unread(), "and the bell says so");
+        assert_eq!(center.list()[0].title(), "Ears is connected");
+        assert_eq!(center.list()[0].body, "Paired.");
+        assert_eq!(center.list()[0].icon_name(), Some("lxb:x"));
+        // Kept rather than transient: the whole reason it is announced is that
+        // the user may not be looking at the page, so it has to be findable
+        // afterwards.
+        assert!(!center.list()[0].transient);
+    }
+
+    /// The shell's numbers count down from the top and a program's count up
+    /// from one, which is the whole of how the two are kept apart.
+    ///
+    /// Not tidiness: [`Center::arrived`] treats a number it has seen before as
+    /// a *replacement*, so a collision would have the shell silently overwrite
+    /// somebody's download with a word about a headset.
+    #[test]
+    fn the_shells_own_numbers_cannot_collide_with_a_programs() {
+        let mut center = Center::default();
+        center.announce("One", "", "lxb:x");
+        center.announce("Two", "", "lxb:x");
+        let ours: Vec<u32> = center.list().iter().map(|held| held.id).collect();
+        assert_eq!(
+            ours,
+            [u32::MAX - 1, u32::MAX],
+            "newest first, counting down"
+        );
+        // Two announcements, two rows: the second did not replace the first.
+        assert_eq!(center.list().len(), 2);
+        // And a program's number is nowhere near them. The daemon hands those
+        // out from one — see `Listener::next`.
+        assert!(ours.iter().all(|id| *id > 1));
+    }
+
+    /// Do-not-disturb silences the shell exactly as it silences everything
+    /// else. The one exception that let the shell through would be the
+    /// exception that made the switch not mean anything.
+    #[test]
+    fn the_shells_own_announcement_obeys_do_not_disturb() {
+        let mut center = Center::new(true);
+        assert!(
+            !center.announce("Ears would not pair", "", "lxb:x"),
+            "nothing in the corner and nothing to hear"
+        );
+        assert!(center.toasts().is_empty());
+        // Filed all the same, which is what the switch means: not shouted, not
+        // thrown away.
+        assert_eq!(center.list().len(), 1);
+        assert!(center.unread());
+    }
 
     /// The picture the announcement wears is the most specific one its sender
     /// gave, and the sender's identity is only the last resort.

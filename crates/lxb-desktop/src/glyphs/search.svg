@@ -1,75 +1,22 @@
 <!--
-  The field at the head of a shelf of the user's own files: a magnifier.
+  The magnifier at the head of a shelf that can be searched.
 
-  The one mark in this set that is not argued for, because there is nothing to
-  argue: a ring on a stick has meant "look for something" on every screen the
-  user has ever seen, and a shell that invented its own sign for it would be
-  asking them to learn a word that already exists.
+  Ring and handle are one object. The lens is an opening cut by the ring's own
+  path — `fill-rule="evenodd"` on a shape that winds twice, which is the one
+  place in the set a hole is made without a mask, and it is worth it: the ring
+  and its bore stay one path, so they cannot drift apart if the mark is
+  resized.
 
-  Drawn as a hollow ring rather than a filled lens, and the hole is the whole
-  point of the shape — a solid disc on a stick is a spoon. The ring is thick
-  enough that the drop shadow does not close the gap at the size a column row
-  gives it, which is what a thinner, more elegant ring would do.
-
-  The handle leaves the ring at forty-five degrees and stops well short of the
-  corner: it is the shorter of the two forms, so the eye reads the circle
-  first. See pointer-stick.svg for what each gradient below is doing. The gloss
-  is one band across the top of the group rather than a highlight per form,
-  because the ring and the handle are one object under one lamp.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f9f9f9"/>
-      <stop offset="0.34" stop-color="#eeeeee"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.8" stop-color="#e1e1e1"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="0.3" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.8" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.1"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.76" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#383838" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
 
-    <!-- The handle first, so the ring covers the joint: the two are one
-         object, and a seam across it would make them two. -->
-    <g id="glass">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
       <rect x="0" y="-2.1" width="11.3" height="4.2" rx="2.1"
             transform="translate(18.6 18.2) rotate(45)"/>
       <path fill-rule="evenodd"
             d="M13.6 4.4a8.8 8.8 0 1 0 0 17.6 8.8 8.8 0 1 0 0-17.6z
                m0 3.1a5.7 5.7 0 1 1 0 11.4 5.7 5.7 0 1 1 0-11.4z"/>
-    </g>
-    <path id="glass-gloss" d="M2 2h28v9.4c-8.4 3-19.6 3-28 0z"/>
-    <clipPath id="glass-clip"><use href="#glass"/></clipPath>
-  </defs>
-
-  <g filter="url(#drop)">
-    <use href="#glass" fill="url(#face)"/>
-    <g clip-path="url(#glass-clip)">
-      <use href="#glass-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#glass" fill="url(#turn)"/>
-    <use href="#glass" fill="none" stroke="url(#edge)" stroke-width="0.8"/>
   </g>
 </svg>

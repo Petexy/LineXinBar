@@ -156,6 +156,24 @@ pub const STEAM: &str = "lxb:steam";
 pub const REFRESH: &str = "lxb:refresh";
 pub const SIGN_OUT: &str = "lxb:sign-out";
 
+/// The shell's own mark at the head of the System information
+/// panel.
+///
+/// The one glyph in this set that stands for *this software* rather than for
+/// something the user can do, which is why it has exactly one place to be. That
+/// panel is where the machine says what it is, and the top line of what it is
+/// running is this shell — so the mark belongs over the list in the way a
+/// letterhead belongs over a letter, and not in a row of a column, where a row
+/// carrying it would look like something to press.
+///
+/// Drawn untinted, unlike every other glyph here. A dialog's icon is the one
+/// drawing in the shell the atlas is not asked to multiply an accent into — see
+/// [`crate::ui`]'s `icon_quad`, where a slot that resolved is drawn white — and
+/// the mark is authored in the same polished neutral material the rest of this
+/// set is, so it comes out as itself over the glass rather than as a logo in
+/// whichever colour the shell happens to be set to.
+pub const LOGO: &str = "lxb:logo";
+
 /// The shell's own rows in the Settings column, and the two marks a list of
 /// values is made of.
 ///
@@ -205,6 +223,84 @@ pub const SETTING_SCHEDULE: &str = "lxb:setting-schedule";
 /// the shell to borrow, and an input device drawn as a speaker would be saying
 /// the wrong thing rather than repeating a right one.
 pub const SETTING_MICROPHONE: &str = "lxb:setting-microphone";
+/// The Network page and its two halves.
+///
+/// The parent is deliberately none of the things inside it, and deliberately
+/// not the globe [`CATEGORY_INTERNET`] already is: that column is the programs
+/// a user reaches the world with, and this row is the machine's own connection.
+/// See setting-network.svg for what it is instead and why.
+pub const SETTING_NETWORK: &str = "lxb:setting-network";
+pub const SETTING_WIFI: &str = "lxb:setting-wifi";
+pub const SETTING_ETHERNET: &str = "lxb:setting-ethernet";
+/// The one mark this shell wears outside a page: how strong the wireless link
+/// is, beside the clock in the start screen's corner.
+///
+/// Three drawings of one object, each lighting one more arc of the same fan —
+/// see [`crate::network::Signal`], which is what says which of them the corner
+/// is showing. They are deliberately a second fan and not [`SETTING_WIFI`]: a
+/// settings row draws that one at sixty-four pixels and needs one state, this
+/// is drawn at thirty and needs three, and the sweep and the bead are what had
+/// to give to make three of them tell each other apart at that size.
+/// signal-strong.svg carries the whole of that reasoning.
+pub const SIGNAL_WEAK: &str = "lxb:signal-weak";
+pub const SIGNAL_FAIR: &str = "lxb:signal-fair";
+pub const SIGNAL_STRONG: &str = "lxb:signal-strong";
+/// The second mark this shell wears outside a page: what is left in the
+/// battery, beside the clock and on the far side of it.
+///
+/// Six drawings of one object, on exactly the terms the fan above is three of
+/// them — one shell with a different amount of water standing in it, so the
+/// mark keeps its size and its place as the charge falls. Five levels rather
+/// than the fan's three because the range is worth more steps: a battery is
+/// read as *how much is left*, where a link is read as good or bad. See
+/// [`crate::power::Level`], which is what says which of them the corner shows,
+/// and battery-full.svg, which carries the geometry.
+///
+/// [`BATTERY_CHARGING`] is the sixth and stands outside the five: it is not a
+/// level at all but the shell with a bolt in it, shown while the battery is
+/// filling. What it costs is the level, and why that is the right trade at this
+/// size is in battery-charging.svg.
+pub const BATTERY_EMPTY: &str = "lxb:battery-empty";
+pub const BATTERY_LOW: &str = "lxb:battery-low";
+pub const BATTERY_HALF: &str = "lxb:battery-half";
+pub const BATTERY_HIGH: &str = "lxb:battery-high";
+pub const BATTERY_FULL: &str = "lxb:battery-full";
+pub const BATTERY_CHARGING: &str = "lxb:battery-charging";
+/// The Bluetooth column, and every row under it.
+///
+/// The rune, which is the one mark in this whole set that was not drawn for
+/// this shell: it is what is printed on the side of every device the page is
+/// about, and a shell that invented a better one would be asking the user to
+/// learn a symbol in order to find the symbol they already know.
+///
+/// One mark for the column, the switch, the list and every device in it — the
+/// way [`SETTING_WIFI`] serves the radio and each network under it. What tells
+/// two pairs of headphones apart is their names.
+pub const SETTING_BLUETOOTH: &str = "lxb:setting-bluetooth";
+/// The two halves of what an interface is configured with, and they are a pair
+/// that must not be confused: a tag *is* an address, a signpost is the thing
+/// that knows where one leads. See setting-address.svg.
+pub const SETTING_ADDRESS: &str = "lxb:setting-address";
+pub const SETTING_NAME_SERVER: &str = "lxb:setting-name-server";
+/// The mark on every row in the tree that is typed into rather than chosen —
+/// the third way a value is set here, after the bead and the bar.
+pub const SETTING_TYPED: &str = "lxb:setting-typed";
+/// The three rows under one wireless network that do a thing rather than being
+/// one of a set of answers — see [`crate::settings::action`].
+///
+/// The first two are one drawing in two states: two links of a chain, hooked
+/// and snapped. They are of no particular medium, which is what a row under a
+/// *wireless* network needs — a plug would be a picture of the wire this
+/// connection has not got — and being the same object twice is what lets a
+/// user read the second having seen the first.
+///
+/// The third — Forget — wears the waste bin [`UNINSTALL`] rather than a mark of
+/// its own, because it is the same act on a different object: something the
+/// machine was keeping is taken off it. One bin, wherever the shell removes
+/// something, is worth more than two drawings that would each have to be
+/// learnt.
+pub const SETTING_CONNECT: &str = "lxb:setting-connect";
+pub const SETTING_DISCONNECT: &str = "lxb:setting-disconnect";
 
 /// The four turns under Settings > Display > Orientation, drawn as what they
 /// are: one monitor, stood four ways, its stand saying which way up.
@@ -248,6 +344,12 @@ pub const CHOSEN: &str = "lxb:chosen";
 /// the third reason the category row gives: `edit-delete` and
 /// `media-playback-start` come from however many hands drew whatever theme is
 /// installed, and the menu they sit in has one lamp over it.
+///
+/// [`UNINSTALL`] is the one mark in this set used from two places. Settings >
+/// Network > Wi-Fi > Networks > *a saved network* > Forget wears it too, and
+/// deliberately: what the bin means is *this is taken off the machine*, which
+/// is as true of a network's saved profile as it is of a program. A second
+/// drawing for the same act would be a second thing to learn.
 pub const UNINSTALL: &str = "lxb:uninstall";
 pub const LAUNCH: &str = "lxb:launch";
 
@@ -312,7 +414,7 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 66] = [
+pub const BUILTIN: [(&str, &str); 85] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -417,6 +519,39 @@ pub const BUILTIN: [(&str, &str); 66] = [
         SETTING_MICROPHONE,
         include_str!("glyphs/setting-microphone.svg"),
     ),
+    (SETTING_NETWORK, include_str!("glyphs/setting-network.svg")),
+    (SETTING_ADDRESS, include_str!("glyphs/setting-address.svg")),
+    (
+        SETTING_NAME_SERVER,
+        include_str!("glyphs/setting-name-server.svg"),
+    ),
+    (SETTING_TYPED, include_str!("glyphs/setting-typed.svg")),
+    (SETTING_CONNECT, include_str!("glyphs/setting-connect.svg")),
+    (
+        SETTING_DISCONNECT,
+        include_str!("glyphs/setting-disconnect.svg"),
+    ),
+    (SETTING_WIFI, include_str!("glyphs/setting-wifi.svg")),
+    (
+        SETTING_ETHERNET,
+        include_str!("glyphs/setting-ethernet.svg"),
+    ),
+    (SIGNAL_WEAK, include_str!("glyphs/signal-weak.svg")),
+    (SIGNAL_FAIR, include_str!("glyphs/signal-fair.svg")),
+    (SIGNAL_STRONG, include_str!("glyphs/signal-strong.svg")),
+    (BATTERY_EMPTY, include_str!("glyphs/battery-empty.svg")),
+    (BATTERY_LOW, include_str!("glyphs/battery-low.svg")),
+    (BATTERY_HALF, include_str!("glyphs/battery-half.svg")),
+    (BATTERY_HIGH, include_str!("glyphs/battery-high.svg")),
+    (BATTERY_FULL, include_str!("glyphs/battery-full.svg")),
+    (
+        BATTERY_CHARGING,
+        include_str!("glyphs/battery-charging.svg"),
+    ),
+    (
+        SETTING_BLUETOOTH,
+        include_str!("glyphs/setting-bluetooth.svg"),
+    ),
     (SETTING_SYSTEM, include_str!("glyphs/setting-system.svg")),
     (SETTING_SCALE, include_str!("glyphs/setting-scale.svg")),
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
@@ -437,6 +572,8 @@ pub const BUILTIN: [(&str, &str); 66] = [
     (STEAM, include_str!("glyphs/steam.svg")),
     (REFRESH, include_str!("glyphs/refresh.svg")),
     (SIGN_OUT, include_str!("glyphs/sign-out.svg")),
+    // The shell's own mark, which is about none of the above.
+    (LOGO, include_str!("glyphs/logo.svg")),
 ];
 
 /// A decoded icon, always square RGBA8.
@@ -686,6 +823,187 @@ fn load_path(path: &Path, size: u32) -> Option<Icon> {
         fit_raster(image, size)
     };
     Some(Icon { size, rgba })
+}
+
+/// The word a glyph writes in its own source to say that it ships as the
+/// *shape* of a mark rather than as a picture of one.
+///
+/// A glyph that carries it is rasterised into a signed distance field by
+/// [`builtin_distance_field`] and shaded by the quad shader — see
+/// `glyph_material` in shaders.wgsl. One that does not is rasterised as it was
+/// drawn, and the atlas hands the shader its pixels.
+///
+/// In the drawing rather than in a list here, because the two facts are the
+/// same fact: a file that paints no rim, no ridge and no sheen *is* a shape,
+/// and a list would be a second place for that to be true or false. The whole
+/// set is meant to end up on this side of the line; until it does, which glyph
+/// is which is written where a person editing one can see it.
+pub const SHAPE_MARK: &str = "lxb:shape";
+
+/// Whether this drawing is a shape to be shaded rather than a picture to be
+/// sampled. See [`SHAPE_MARK`].
+pub fn is_shape(drawing: &str) -> bool {
+    drawing.contains(SHAPE_MARK)
+}
+
+/// The same question by name, for a layout deciding whether the quad it is
+/// about to push wants the material — [`crate::ui`] cannot see the drawing,
+/// only what it is called.
+pub fn shaped(name: &str) -> bool {
+    static SHAPES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    SHAPES
+        .get_or_init(|| {
+            BUILTIN
+                .iter()
+                .filter(|(_, drawing)| is_shape(drawing))
+                .map(|(name, _)| *name)
+                .collect()
+        })
+        .contains(&name)
+}
+
+/// Half the range a glyph's distance field spans, as a fraction of the cell.
+///
+/// The field is stored in eight bits of alpha, so range and precision trade
+/// against each other: this is a quarter of the cell end to end, which is
+/// wider than any bevel wants and still resolves an eighth of a pixel at the
+/// size a category is drawn. The shader undoes it with the same constant.
+pub const SDF_RANGE: f32 = 0.125;
+
+/// How much finer than the cell the shape is measured before the field is
+/// reduced to it. Distance is a continuous quantity being sampled on a grid,
+/// and a grid the size of the cell can only ever answer in whole pixels —
+/// which comes out of the shader as a bevel with steps in it.
+pub const SDF_SUPERSAMPLE: u32 = 4;
+
+/// Rasterise a glyph as a *measurement of its shape* rather than as a picture:
+/// alpha carries how far each pixel is from the nearest edge, negative inside.
+///
+/// This is what lets the quad shader treat a glyph as a slab of glass — see
+/// `fs_quad` in shaders.wgsl. Colour is left white throughout; nothing samples
+/// it, and white is what the multiply expects if anything ever does.
+pub fn builtin_distance_field(drawing: &str, size: u32) -> Option<Icon> {
+    let fine = size.checked_mul(SDF_SUPERSAMPLE)?;
+    let coverage = rasterise_svg(drawing.as_bytes(), None, fine)?;
+    let inside: Vec<bool> = coverage.chunks_exact(4).map(|px| px[3] >= 128).collect();
+    distance_field(&inside, fine, size)
+}
+
+/// The same measurement, taken of coverage somebody else rasterised.
+///
+/// `inside` is a `fine`-by-`fine` grid of whether each pixel is within the
+/// shape, and `fine` must be [`SDF_SUPERSAMPLE`] times `size` — see
+/// [`builtin_distance_field`], which is this with a drawing on the front of it.
+/// The other caller is the shell's own type: the corner's letters are cut out of
+/// the bundled font and measured here, so a letter and a glyph are the same kind
+/// of thing to the shader and there is one transform rather than two.
+pub fn distance_field(inside: &[bool], fine: u32, size: u32) -> Option<Icon> {
+    if inside.len() != (fine as usize).pow(2) || fine != size.checked_mul(SDF_SUPERSAMPLE)? {
+        return None;
+    }
+
+    // Two transforms: how far each pixel outside the shape is from it, and how
+    // far each pixel inside it is from getting out. Their difference is the
+    // signed field, and it crosses zero on the boundary between the two.
+    let out = euclidean_distance(inside, fine, false);
+    let within = euclidean_distance(inside, fine, true);
+
+    let block = SDF_SUPERSAMPLE as usize;
+    let cell = size as usize;
+    let mut rgba = vec![255u8; cell * cell * 4];
+    for y in 0..cell {
+        for x in 0..cell {
+            // The mean over the block the output pixel covers. A distance
+            // field is smooth, so averaging it is a reduction rather than the
+            // aliasing the same average would be on a picture.
+            let mut sum = 0.0f32;
+            for dy in 0..block {
+                for dx in 0..block {
+                    let i = (y * block + dy) * fine as usize + x * block + dx;
+                    sum += out[i] - within[i];
+                }
+            }
+            let fine_px = sum / (block * block) as f32;
+            // Into fractions of the cell, then into the stored range.
+            let cell_fraction = fine_px / fine as f32;
+            let stored = 0.5 + cell_fraction / (2.0 * SDF_RANGE);
+            rgba[(y * cell + x) * 4 + 3] = (stored.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    Some(Icon { size, rgba })
+}
+
+/// Exact Euclidean distance to the nearest pixel of the given kind, by
+/// Felzenszwalb and Huttenlocher's two-pass transform: the lower envelope of
+/// one parabola per seed, taken along the columns and then along the rows.
+///
+/// Exact rather than the usual chamfer approximation because the error in a
+/// chamfer field is largest along the diagonals, and a bevel computed from it
+/// has visible flats at forty-five degrees.
+fn euclidean_distance(inside: &[bool], size: u32, seed_outside: bool) -> Vec<f32> {
+    let n = size as usize;
+    let far = f32::MAX / 4.0;
+    let mut grid: Vec<f32> = inside
+        .iter()
+        .map(|&i| if i == seed_outside { far } else { 0.0 })
+        .collect();
+
+    let mut line = vec![0.0f32; n];
+    for x in 0..n {
+        for y in 0..n {
+            line[y] = grid[y * n + x];
+        }
+        let done = envelope(&line);
+        for y in 0..n {
+            grid[y * n + x] = done[y];
+        }
+    }
+    for y in 0..n {
+        let done = envelope(&grid[y * n..(y + 1) * n]);
+        grid[y * n..(y + 1) * n].copy_from_slice(&done);
+    }
+    grid.iter().map(|d| d.max(0.0).sqrt()).collect()
+}
+
+/// The lower envelope of the parabolas `f[q] + (x - q)^2`, sampled back onto
+/// the same grid. One dimension of the transform above.
+fn envelope(f: &[f32]) -> Vec<f32> {
+    let n = f.len();
+    let mut out = vec![0.0f32; n];
+    if n == 0 {
+        return out;
+    }
+    let mut vertex = vec![0usize; n];
+    let mut cross = vec![0.0f32; n + 1];
+    let mut k = 0usize;
+    cross[0] = f32::MIN;
+    cross[1] = f32::MAX;
+    let sq = |v: usize| (v * v) as f32;
+
+    for q in 1..n {
+        loop {
+            let s = ((f[q] + sq(q)) - (f[vertex[k]] + sq(vertex[k])))
+                / (2.0 * q as f32 - 2.0 * vertex[k] as f32);
+            if s <= cross[k] && k > 0 {
+                k -= 1;
+            } else {
+                k += 1;
+                vertex[k] = q;
+                cross[k] = s;
+                cross[k + 1] = f32::MAX;
+                break;
+            }
+        }
+    }
+
+    k = 0;
+    for (q, slot) in out.iter_mut().enumerate() {
+        while cross[k + 1] < q as f32 {
+            k += 1;
+        }
+        *slot = (q as f32 - vertex[k] as f32).powi(2) + f[vertex[k]];
+    }
+    out
 }
 
 pub fn rasterise_svg(data: &[u8], resources_dir: Option<&Path>, size: u32) -> Option<Vec<u8>> {
@@ -1191,6 +1509,104 @@ mod tests {
         assert!(Icon::from_pixels(2, 2, 8, 2, &padded, 2).is_none());
     }
 
+    /// Every one of the shell's own glyphs that has been drawn as a shape
+    /// ships as a measurement of that shape rather than as a picture of one,
+    /// which is what lets the quad shader cut its own glass to it — see
+    /// `glyph_material` in shaders.wgsl.
+    ///
+    /// Three properties, and the drawing is unusable without all three.
+    ///
+    /// It has to be *signed*: inside the mark is one side of zero and the air
+    /// round it the other, or there is no surface to stand a wall up on. An
+    /// opening is air, exactly as the room outside is, and that is the whole
+    /// of how a hole gets a ring round it for nothing.
+    ///
+    /// It has to leave a *margin*. The shader draws the mark's own shadow on
+    /// the flat space beside it, and can only draw it where the quad reaches;
+    /// a mark running out to the edge of its cell would have its shadow end in
+    /// a straight cut.
+    ///
+    /// And it has to be a *distance*, which is the last assertion and the one
+    /// that separates a field from a blurred silhouette: it may not change by
+    /// more than a pixel per pixel, anywhere. A chamfer approximation fails
+    /// that along the diagonals and a blur fails it everywhere — and either
+    /// one produces a bevel that is visibly not a bevel, which is the sort of
+    /// thing that gets noticed on screen and nowhere else.
+    #[test]
+    fn a_glyph_can_ship_as_the_shape_of_itself() {
+        let shapes: Vec<&str> = BUILTIN
+            .iter()
+            .filter(|(_, drawing)| is_shape(drawing))
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            shapes.len(),
+            BUILTIN.len(),
+            "every glyph the shell draws itself is a shape now, and these are \
+             not: {:?}",
+            BUILTIN
+                .iter()
+                .filter(|(_, d)| !is_shape(d))
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+        );
+
+        let size = 128usize;
+        for (name, drawing) in BUILTIN.iter().filter(|(_, d)| is_shape(d)) {
+            let icon = builtin_distance_field(drawing, size as u32)
+                .unwrap_or_else(|| panic!("{name} did not measure"));
+            assert_eq!(icon.rgba.len(), size * size * 4);
+
+            // Back out of the encoding, into pixels of the cell.
+            let at = |x: usize, y: usize| {
+                let stored = f32::from(icon.rgba[(y * size + x) * 4 + 3]) / 255.0;
+                (stored - 0.5) * 2.0 * SDF_RANGE * size as f32
+            };
+
+            // Signed: some of the cell is mark and some of it is air, and
+            // neither is a sliver. A drawing that came out entirely one way is
+            // a mask that did not apply or a shape that missed its viewBox.
+            let inside = (0..size * size)
+                .filter(|i| at(i % size, i / size) < 0.0)
+                .count();
+            let share = inside as f32 / (size * size) as f32;
+            assert!(
+                (0.05..0.60).contains(&share),
+                "{name} is {share:.3} mark, which is not a mark on a space"
+            );
+
+            // The margin the shadow is drawn in: two of the drawing's
+            // thirty-two units, which is what the shader's shadow was tuned to
+            // reach inside of. Measured as a ring round the cell being air.
+            let edge = size / 16;
+            for i in 0..size {
+                for (x, y) in [
+                    (i, edge),
+                    (i, size - 1 - edge),
+                    (edge, i),
+                    (size - 1 - edge, i),
+                ] {
+                    assert!(
+                        at(x.min(size - 1), y.min(size - 1)) > 0.0,
+                        "{name} reaches its own edge at {x},{y}"
+                    );
+                }
+            }
+
+            // And it is a distance: one pixel of travel can only ever be one
+            // pixel of distance. The stored range saturates far from the edge,
+            // which can only make a step smaller, never larger.
+            for y in 1..size - 1 {
+                for x in 1..size - 1 {
+                    let step = (at(x, y) - at(x + 1, y))
+                        .abs()
+                        .max((at(x, y) - at(x, y + 1)).abs());
+                    assert!(step <= 1.35, "{name} steps {step} at {x},{y}");
+                }
+            }
+        }
+    }
+
     /// A machine with no desktop on it still gets a theme, because hicolor is
     /// not a working default — it is where a program puts its own icon, and it
     /// has never carried the standard names an announcement asks for.
@@ -1397,7 +1813,7 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            66,
+            85,
             "a speaker, a struck-out one, a sun, a stick pointer, a mixer, a \
              moon, a \
              bell, two \
@@ -1406,13 +1822,20 @@ mod tests {
              Multimedia is divided into and the one under Graphics, the two \
              folders that stand for System's Files with the folder, page, drum \
              and house its own rows are drawn with, the \
-             sixteen marks the Settings column is drawn from plus its four \
-             turns of a monitor, the context menu's bin, play mark, ellipsis, sort bars \
+             twenty-two marks the Settings column is drawn from plus its four \
+             turns of a monitor, the two links of a chain, hooked and \
+             snapped, that a network is joined and left by and the rune \
+             everything Bluetooth is reached through wears, the three \
+             strengths of the wireless fan the corner of the start screen \
+             draws with the six drawings of the battery on the other side of \
+             its clock — five levels and the bolt that means filling, \
+             the context menu's bin, play mark, ellipsis, sort bars \
              and camera, the magnifier at the head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
              that asks for a password, and the Steam column with the mark every \
              row that came out of it wears, the cycle that asks for the library \
-             again and the door its account is left by"
+             again and the door its account is left by, and the shell's own \
+             fennec at the head of the System information panel"
         );
 
         for (name, drawing) in BUILTIN {
@@ -1511,6 +1934,24 @@ mod tests {
                 SETTING_SCHEDULE,
                 SETTING_HDR,
                 SETTING_MICROPHONE,
+                SETTING_NETWORK,
+                SETTING_ADDRESS,
+                SETTING_NAME_SERVER,
+                SETTING_TYPED,
+                SETTING_CONNECT,
+                SETTING_DISCONNECT,
+                SETTING_WIFI,
+                SETTING_ETHERNET,
+                SIGNAL_WEAK,
+                SIGNAL_FAIR,
+                SIGNAL_STRONG,
+                BATTERY_EMPTY,
+                BATTERY_LOW,
+                BATTERY_HALF,
+                BATTERY_HIGH,
+                BATTERY_FULL,
+                BATTERY_CHARGING,
+                SETTING_BLUETOOTH,
                 SETTING_SYSTEM,
                 SETTING_SCALE,
                 SETTING_INFO,
@@ -1527,7 +1968,8 @@ mod tests {
                 CATEGORY_STEAM,
                 STEAM,
                 REFRESH,
-                SIGN_OUT
+                SIGN_OUT,
+                LOGO
             ]
         );
         let drawn: Vec<Vec<u8>> = BUILTIN

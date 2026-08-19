@@ -1,122 +1,35 @@
 <!--
-A volume: the machine's own disk, and every drive plugged into it.
+  The drum a disk is drawn as, at the head of the file explorer's device rows.
 
-  A drum with two bands turned into it. Not a hard disk seen from above, not a
-  memory card, not a stick with a cap: those are drawings of one *product*, and
-  the row this stands on is a filesystem — which might be an NVMe partition, a
-  card in a reader, an optical disc or a share on somebody else's machine three
-  rooms away. The drum is the one mark that is about capacity rather than about
-  hardware, which is exactly what a mounted volume is, and it is what the line
-  under the row goes on to measure: "18.2 GiB free of 119.4 GiB".
+  A cylinder seen a little from above: two ellipses and the wall between them,
+  one body. The two ribs round its waist are openings and not lines — the old
+  drawing ruled them on as a pair of strokes, a light one under a dark one, and
+  a rule is exactly what the material cannot be told about. Cut through, each
+  gets its own ring of displaced water and reads as a groove turned in the
+  drum, which is what a rib is.
 
-  Root and a plugged-in drive share it deliberately. They are the same kind of
-  object and the row already says which is which — one is called Root and the
-  others are called whatever is written on them. A second, subtly different
-  drum for the machine's own disk would be a distinction the user has to learn
-  to read, standing in for one they can already read in words.
-
-  It is one plate, not three. The lid, the body and the foot are painted into a
-  single mask and the material poured through in one piece, so the lamp runs
-  down the whole drum; the lid is then lifted back out with a fill of its own
-  because it is the one face pointing *up* at that lamp. Everything else here
-  is the same trick category-music.svg uses on the note.
-
-  The two bands are drawn as the lower half of an ellipse each, which is what a
-  groove around a cylinder looks like from in front: the near side of the
-  groove is all that shows. Each is a dark stroke with a pale one under it — a
-  cut into the face, lit on its lower wall, the same way the rules are sunk
-  into file-page.svg.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
     <ellipse id="lid" cx="16" cy="8.4" rx="9.8" ry="3.8"/>
     <ellipse id="foot" cx="16" cy="23.2" rx="9.8" ry="3.8"/>
-    <rect id="body" x="6.2" y="8.4" width="19.6" height="14.8"/>
-    <mask id="drum-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <g fill="#ffffff"><use href="#lid"/><use href="#body"/><use href="#foot"/></g>
+    <rect id="wall" x="6.2" y="8.4" width="19.6" height="14.8"/>
+    <g id="ribs" fill="none" stroke-width="0.9" stroke-linecap="round">
+      <path d="M6.9 14a9.1 3.4 0 0 0 18.2 0"/>
+      <path d="M6.9 18.4a9.1 3.4 0 0 0 18.2 0"/>
+    </g>
+    <g id="bead"><use href="#lid"/><use href="#wall"/><use href="#foot"/></g>
+    <g id="holes"><use href="#ribs" stroke="#000000"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes"/>
     </mask>
-    <!-- One lamp down the whole drum, lid to foot, in user space. -->
-    <linearGradient id="drum-face" gradientUnits="userSpaceOnUse" x1="0" y1="4.6" x2="0" y2="27">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="drum-turn" gradientUnits="userSpaceOnUse" x1="6.2" y1="0" x2="25.8" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <!-- The lid, which faces the lamp squarely and is the brightest thing in
-         the drawing. Across rather than down: it is a disc seen at a slant,
-         so what shades it is the near edge falling away, not height. -->
-    <linearGradient id="lid-face" gradientUnits="userSpaceOnUse" x1="0" y1="4.6" x2="0" y2="12.2">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.6" stop-color="#f4f4f4"/>
-      <stop offset="1" stop-color="#e2e2e2"/>
-    </linearGradient>
-    <path id="drum-gloss" d="M4.4 6H27.6V16.4C22.6 18.4 9.4 18.4 4.4 16.4z"/>
   </defs>
 
-  <g filter="url(#drop)">
-    <g mask="url(#drum-mask)">
-      <rect x="0" y="0" width="32" height="32" fill="url(#drum-face)"/>
-      <use href="#drum-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <rect x="0" y="0" width="32" height="32" fill="url(#drum-turn)"/>
-      <!-- Where the drum turns over at the foot, lit from underneath the way
-           every other plate in the set is at its far edge. -->
-      <path d="M6.2 23.2a9.8 3.8 0 0 0 19.6 0" fill="none"
-            stroke="#ffffff" stroke-opacity="0.45" stroke-width="1"/>
-    </g>
-
-    <use href="#lid" fill="url(#lid-face)"/>
-    <use href="#lid" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="0.7"/>
-
-    <!-- The two bands. -->
-    <g fill="none" stroke-linecap="round">
-      <path d="M6.2 13.6a9.8 3.8 0 0 0 19.6 0" stroke="#9a9a9a" stroke-opacity="0.7" stroke-width="1"/>
-      <path d="M6.2 14.4a9.8 3.8 0 0 0 19.6 0" stroke="#ffffff" stroke-opacity="0.65" stroke-width="0.5"/>
-      <path d="M6.2 18.2a9.8 3.8 0 0 0 19.6 0" stroke="#9a9a9a" stroke-opacity="0.7" stroke-width="1"/>
-      <path d="M6.2 19a9.8 3.8 0 0 0 19.6 0" stroke="#ffffff" stroke-opacity="0.65" stroke-width="0.5"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

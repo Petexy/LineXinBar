@@ -1,0 +1,20 @@
+<!--
+  The wireless fan with its outer arc gone: a link that works and is not the
+  best this machine has had.
+
+  The middle state of the three. Everything about how it is drawn, and why the
+  missing arc is missing rather than drawn faint, is in signal-strong.svg — this
+  file is that one with the outermost path deleted and nothing else touched, so
+  the bead and the two arcs left stand exactly where they stand there.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M7.45 14.06A13.3 13.3 0 0 1 24.55 14.06"/>
+    <path d="M10.99 18.28A7.8 7.8 0 0 1 21.01 18.28"/>
+  </g>
+  <circle cx="16" cy="24.25" r="3.6" fill="#fff"/>
+</svg>

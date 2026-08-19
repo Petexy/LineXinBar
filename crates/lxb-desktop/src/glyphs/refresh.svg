@@ -1,109 +1,23 @@
 <!--
-  The Steam menu's "Refresh the library" row: two arrows chasing each other
-  round a circle.
+  The cycle, on the row that asks Steam for the library again.
 
-  A cycle rather than one arrow returning to its start, because that is the
-  honest picture of what the row does — the library is asked for again and
-  comes back, which is two journeys and not one. It is also what keeps this
-  apart from setting-refresh.svg, the display's refresh rate, which is a single
-  three-quarter ring redrawing itself *inside a monitor*. The two are never on
-  screen together, but they are four rows apart in the same shell and a user who
-  has learnt one should not have to look twice at the other.
+  Two arms, each an arrowhead on the end of an arc, the second the first turned
+  half a revolution. They do not meet, and the gaps are the mark: a closed ring
+  says nothing about direction, and it is direction this row is about.
 
-  An arm is ONE outline: out along the outer radius, out again to the barb, in
-  to the point, back to the other barb, and home along the inner radius. It was
-  a stroked arc with a triangle laid over the end of it before, and every way of
-  arranging those two was wrong. Set the triangle's base a little back down the
-  band and the band's own corner stands out past it, which reads as an arrow
-  bent on crooked. Set the base exactly on the band's end and it joins, but the
-  base is then square to the tangent while the point is wherever it was put —
-  and a triangle whose base is square to one line and whose point is off another
-  is not an arrowhead, it is a wedge. As one outline the question never arises:
-  the barbs are on the radius through the band's end, the point is up the
-  tangent from it, and there is no join to get wrong because there is no join.
-
-  The head is 8 across the barbs against the band's 4.6, and 6.4 long, and its
-  point sits at radius 10.7 against the band's outer 10.9 — so it rides the
-  outer edge of the ring rather than flying off it, without the base having to
-  be skewed to get it there.
-
-  The other thing this has to buy is the *gap*. An arm that runs on until its
-  point nearly touches the next tail closes the circle: the eye joins them up,
-  and two arrows going round become one ring with a nick in it. So each arm is
-  115 degrees of band and stops, leaving a clear run of empty circle in front of
-  its point about as wide as the band is thick.
-
-  See pointer-stick.svg for the material and what each gradient is doing. The
-  face, the polish and the turn are laid across the cell and clipped to the two
-  arms; the lit rim is that same outline, stroked — which is why the outline had
-  to come out right before anything else could.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f7f7f7"/>
-      <stop offset="0.35" stop-color="#eaeaea"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#efefef"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <!-- In the cell's own coordinates rather than each arm's, so both arms are
-         lit by the one lamp. Per-arm bounds would run a bright rim along the
-         top of the lower arm, which is the middle of the drawing. -->
-    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="2" x2="0" y2="30">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.14"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.76" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#3a3a3a" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- One arm, drawn once and turned half a circle for the other, so the two
-         cannot drift apart. The band lies between radius 6.3 and 10.9 about the
-         centre and runs from a tail cut square across it at 170 degrees to the
-         head's barbs at 55; the barbs are at radius 4.6 and 12.6 on that same
-         radius, and the point is up the tangent from the band's middle. -->
     <path id="arm"
           d="M5.27 14.11A10.9 10.9 0 0 1 22.25 7.07L23.23 5.68 26.18 12.63
              18.64 12.23 19.61 10.84A6.3 6.3 0 0 0 9.8 14.91z"/>
-    <clipPath id="arms">
-      <use href="#arm"/>
-      <use href="#arm" transform="rotate(180 16 16)"/>
-    </clipPath>
-
-    <!-- The polish, laid across the whole cell and cut to the arms by that
-         clip. Its lower edge curves, so the band comes out domed rather than
-         sawn flat where the shine stops. -->
-    <path id="crest" d="M2 2H30V15.1C24.6 18.3 7.4 18.3 2 15.1z"/>
   </defs>
 
-  <g filter="url(#drop)">
-    <g clip-path="url(#arms)">
-      <rect x="1" y="1" width="30" height="30" fill="url(#face)"/>
-      <use href="#crest" fill="url(#gloss)" filter="url(#polish)"/>
-      <rect x="1" y="1" width="30" height="30" fill="url(#turn)"/>
-    </g>
-    <g fill="none" stroke="url(#edge)" stroke-width="0.9" stroke-linejoin="round">
-      <use href="#arm"/>
-      <use href="#arm" transform="rotate(180 16 16)"/>
-    </g>
+  <g fill="#fff">
+    <use href="#arm"/>
+    <use href="#arm" transform="rotate(180 16 16)"/>
   </g>
 </svg>

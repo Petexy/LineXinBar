@@ -1,105 +1,33 @@
 <!--
-  The context menu's Screenshot row: a camera.
+  The camera, on the context menu row that photographs the screen.
 
-  A camera rather than a picture frame or a screen with a mark on it, because
-  the row beside it already has arrows moving the window between screens and a
-  second rectangle-with-a-thing-in-it would be two glyphs telling the same
-  story. A camera is the one object in the room that means "keep this".
+  Hump and body are one object — the hump is the housing rising over the lens,
+  not a lid on it — and the lens and the flash beside it are openings. A lens
+  drawn as a disc laid on the body would be a sticker; cut through, it is a
+  barrel with a ring of displaced water standing round its mouth.
 
-  Drawn on the same terms as the rest of the set (see pointer-stick.svg for what
-  each gradient is doing): one lamp above, a gloss across the upper half of the
-  body, the turn of the sides darkened, and a lit rim along the top and bottom
-  edges. The lens is the display glyph's recess — nothing here may go dark,
-  because the atlas multiplies the quad's colour into the texel and a near-black
-  mark comes back as a hole punched in the drawing — with a highlight sitting
-  where the lamp would land on curved glass, which is what separates a lens from
-  a hole.
+  The body is pulled in from the old drawing's, which ran to within a unit of
+  the cell's edge and left the shadow nowhere to fall.
 
-  The body is broad and short: the cell is square, and a correctly proportioned
-  camera leaves the drawing floating in a band of nothing. Everything is kept
-  within about 3px of the edges so the mark still reads at the 27px the guide's
-  smallest row gives it.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f7f7f7"/>
-      <stop offset="0.35" stop-color="#ebebeb"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dedede"/>
-      <stop offset="0.92" stop-color="#ededed"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- The barrel of the lens, sunk into the body: darkest under the near
-         wall, returning the lamp off the far one. -->
-    <radialGradient id="recess" cx="0.5" cy="0.32" r="0.78">
-      <stop offset="0" stop-color="#9a9a9a"/>
-      <stop offset="0.55" stop-color="#adadad"/>
-      <stop offset="1" stop-color="#dcdcdc"/>
-    </radialGradient>
-
-    <path id="body" d="M3.1 9.6h25.8a2.3 2.3 0 0 1 2.3 2.3v12.2a2.3 2.3 0 0 1-2.3 2.3H3.1a2.3 2.3 0 0 1-2.3-2.3V11.9a2.3 2.3 0 0 1 2.3-2.3z"/>
-    <path id="hump" d="M12.2 6.1h7.6a1.5 1.5 0 0 1 1.5 1.5v2.9h-10.6V7.6a1.5 1.5 0 0 1 1.5-1.5z"/>
-    <path id="body-gloss" d="M0 5h32v10.6C22.4 18.4 9.6 18.4 0 15.6z"/>
-    <clipPath id="body-clip"><use href="#body"/></clipPath>
-    <circle id="lens" cx="16" cy="18" r="5.5"/>
-    <clipPath id="lens-clip"><use href="#lens"/></clipPath>
+    <path id="shell" d="M5.1 10.3h21.8a2.3 2.3 0 0 1 2.3 2.3v11.2a2.3 2.3 0 0 1-2.3 2.3H5.1a2.3 2.3 0 0 1-2.3-2.3V12.6a2.3 2.3 0 0 1 2.3-2.3z"/>
+    <path id="hump" d="M12.2 6.6h7.6a1.5 1.5 0 0 1 1.5 1.5v2.9h-10.6V8.1a1.5 1.5 0 0 1 1.5-1.5z"/>
+    <circle id="lens" cx="16" cy="18.2" r="5.3"/>
+    <circle id="flash" cx="25.2" cy="13.9" r="1.15"/>
+    <g id="bead"><use href="#hump"/><use href="#shell"/></g>
+    <g id="holes"><use href="#lens"/><use href="#flash"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <!-- The viewfinder housing first, so the body stands in front of the
-         block it grows out of rather than being cut by it. -->
-    <use href="#hump" fill="url(#face)"/>
-    <use href="#hump" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <use href="#body" fill="url(#face)"/>
-    <g clip-path="url(#body-clip)">
-      <use href="#body-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#body" fill="url(#turn)"/>
-
-    <!-- The shutter light, on the far side of the body from the lens so the
-         two never crowd each other at small sizes. -->
-    <circle cx="26.4" cy="13.3" r="1.15" fill="url(#recess)"/>
-
-    <use href="#lens" fill="url(#recess)"/>
-    <g clip-path="url(#lens-clip)">
-      <!-- Where the lamp lands on curved glass: a crescent up and left of
-           centre, which is what tells a lens from a hole. -->
-      <path d="M11.6 15.4a5.6 5.6 0 0 1 8.4-1.7c-2.7-0.6-6.2 0.5-8.4 1.7z"
-            fill="#ffffff" fill-opacity="0.62" filter="url(#polish)"/>
-      <circle cx="13.9" cy="20.4" r="2.1" fill="#ffffff" fill-opacity="0.16"
-              filter="url(#polish)"/>
-    </g>
-    <use href="#lens" fill="none" stroke="url(#edge)" stroke-width="0.9"/>
-
-    <g clip-path="url(#body-clip)">
-      <use href="#body" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

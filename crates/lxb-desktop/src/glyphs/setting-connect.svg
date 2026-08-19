@@ -1,0 +1,30 @@
+<!--
+  Two links of a chain, hooked: the row that joins a network.
+
+  Each link is a ring cut by its own path. The far link stands in front of the
+  near one and takes a crevice, which is what says they are hooked rather than
+  drawn on top of one another — a chain whose links have merged is a figure of
+  eight.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="near" fill-rule="evenodd" clip-rule="evenodd"
+          d="M18.4 16A7 7 0 1 1 4.4 16A7 7 0 1 1 18.4 16ZM14.9 16A3.5 3.5 0 1 0 7.9 16A3.5 3.5 0 1 0 14.9 16Z"/>
+    <path id="far" fill-rule="evenodd" clip-rule="evenodd"
+          d="M27.6 16A7 7 0 1 1 13.6 16A7 7 0 1 1 27.6 16ZM24.1 16A3.5 3.5 0 1 0 17.1 16A3.5 3.5 0 1 0 24.1 16Z"/>
+    <g id="bead"><use href="#near"/><use href="#far"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#far" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#far" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

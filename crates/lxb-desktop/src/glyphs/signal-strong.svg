@@ -1,0 +1,38 @@
+<!--
+  The wireless fan beside the clock, with every arc it has: a link there is
+  nothing wrong with.
+
+  **One object in three states.** signal-fair.svg and signal-weak.svg are this
+  drawing with the outer arc, and then the outer two, taken away. All three sit
+  on the same cell and share the same centre — the bead at (16, 24.25), which
+  every arc here is struck about — so the mark is anchored at its foot: the bead
+  stays exactly where it is as the fan grows and shrinks over it, which is what
+  lets the three be drawn in one place beside the time without the corner
+  shifting under them.
+
+  **The arcs that are not lit are absent, not faint.** A ghost of them would be
+  the honest picture and this material has no faint version of itself: the
+  shader gives a mark a depth of 0.075 of its drawn size, so a hairline arc in a
+  corner mark thirty pixels across is thinner than its own bevel and dissolves
+  into a smudge. What is left that reads at that size is the fan being shorter,
+  which is how a signal was drawn before anybody had a ghost to spare.
+
+  **Not setting-wifi.** That fan is drawn for a settings row at sixty-four
+  pixels and is one state; this is drawn for the corner at thirty and is three,
+  and the two differ where the size demands it — a sweep of eighty degrees
+  rather than ninety, so the legs of one arc do not crowd the crown of the next
+  at the smaller size, and a bead heavy enough to hold the mark up on its own
+  when the fan above it is down to a single arc.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M3.92 9.85A18.8 18.8 0 0 1 28.08 9.85"/>
+    <path d="M7.45 14.06A13.3 13.3 0 0 1 24.55 14.06"/>
+    <path d="M10.99 18.28A7.8 7.8 0 0 1 21.01 18.28"/>
+  </g>
+  <circle cx="16" cy="24.25" r="3.6" fill="#fff"/>
+</svg>

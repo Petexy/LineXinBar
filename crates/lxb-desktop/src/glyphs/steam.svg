@@ -1,93 +1,33 @@
 <!--
-The Steam mark used by the sign-in row and every game in the Steam column.
+  The mark every row that came out of Steam wears.
 
-  It is the same mechanical linkage as the Steam category glyph, not a second
-  abstraction of it: the large upper-right ring and boss, the smaller lower
-  joint, the diagonal link, and the broad arm entering from the left. The row
-  already stands on its own circular glass tile, just as the category stands
-  on a squircle, so the SVG carries the mark rather than another backplate.
+  Valve's own path, exactly as category-steam.svg carries it and for the same
+  reason: this is a mark that has to be recognised rather than read, so its
+  geometry is not something to have an opinion about. The transform differs
+  because this cell is not that cell — a badge sits on a row and wants a little
+  more air than a column head does — but the `d` attributes are the same four
+  strings, and they should stay that way.
 
-  The lower crescent is constructed from two equal circles. One cuts the joint
-  open; the other is shifted along the incoming arm's centre line and restores
-  the arm's round end. Their intersections mirror one another around that
-  line, which keeps the familiar Steam joint exact at both row sizes.
-
-  Rows start at 64 px where categories start at 84 px, so this version is
-  uniformly enlarged by six percent around the linkage's optical centre. That
-  changes no joint or angle; it only gives the two circular gaps enough pixels
-  to remain open in the smaller atlas sample.
-
-  Every game wears this mark rather than its own cover art because the shell's
-  icon atlas is built from bundled SVGs and installed icon themes, while a
-  game's artwork is a JPEG on Steam's content network. Fetching and maintaining
-  that separate cache is future work; until then, a game carries the mark of
-  the library it came from.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-35%" y="-35%" width="180%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-    <filter id="lip" x="-20%" y="-20%" width="140%" height="140%">
-      <feOffset in="SourceAlpha" dx="0.32" dy="0.42" result="shift"/>
-      <feComposite in="SourceAlpha" in2="shift" operator="out" result="rim"/>
-      <feFlood flood-color="#ffffff" flood-opacity="0.72" result="light"/>
-      <feComposite in="light" in2="rim" operator="in"/>
-    </filter>
-
-    <mask id="mark-mask" maskUnits="userSpaceOnUse" x="-2" y="3" width="31" height="25">
-      <rect x="-2" y="3" width="31" height="25" fill="#000000"/>
-      <g fill="#ffffff">
-        <path d="M1.2 14.1 12.8 18.4c1.55.58 2.34 2.31 1.76 3.86-.59 1.56-2.32 2.34-3.87 1.76L1.2 20z"/>
-        <path d="M14.35 18.95 17.65 14.95" fill="none" stroke="#ffffff"
-              stroke-width="4.6" stroke-linecap="round"/>
-        <circle cx="12.25" cy="20.95" r="4.3"/>
-        <circle cx="20.65" cy="12.25" r="5.55"/>
-      </g>
-      <circle cx="20.65" cy="12.25" r="3.52" fill="#000000"/>
-      <circle cx="20.65" cy="12.25" r="2.25" fill="#ffffff"/>
-      <circle cx="12.25" cy="20.95" r="2.83" fill="#000000"/>
-      <circle cx="11.4" cy="20.65" r="2.83" fill="#ffffff"/>
+    <path id="valve" transform="translate(3.400 0.912) scale(0.45699)" d="M30.31 23.985l.003.158-7.83 11.375c-1.268-.058-2.54.165-3.748.662a8.14 8.14 0 0 0-1.498.8L.042 29.893s-.398 6.546 1.26 11.424l12.156 5.016c.6 2.728 2.48 5.12 5.242 6.27a8.88 8.88 0 0 0 11.603-4.782 8.89 8.89 0 0 0 .684-3.656L42.18 36.16l.275.005c6.705 0 12.155-5.466 12.155-12.18s-5.44-12.16-12.155-12.174c-6.702 0-12.155 5.46-12.155 12.174z"/>
+    <path id="nock-bore" transform="translate(3.400 0.912) scale(0.45699)" d="M28.43 47.035c-1.454 3.5-5.466 5.147-8.953 3.694a6.84 6.84 0 0 1-3.524-3.362l3.957 1.64a5.04 5.04 0 0 0 6.591-2.719 5.05 5.05 0 0 0-2.715-6.601l-4.1-1.695c1.578-.6 3.372-.62 5.05.077 1.7.703 3 2.027 3.696 3.72s.692 3.56-.01 5.246"/>
+    <path id="ring-bore" transform="translate(3.400 0.912) scale(0.45699)" d="M42.466 32.1a8.12 8.12 0 0 1-8.098-8.113 8.12 8.12 0 0 1 8.098-8.111 8.12 8.12 0 0 1 8.1 8.111 8.12 8.12 0 0 1-8.1 8.113"/>
+    <path id="ring-boss" transform="translate(3.400 0.912) scale(0.45699)" d="M36.398 23.974a6.09 6.09 0 0 1 6.08-6.095c3.355 0 6.084 2.73 6.084 6.095a6.09 6.09 0 0 1-6.084 6.093 6.09 6.09 0 0 1-6.081-6.093z"/>
+    <g id="bead"><use href="#valve"/></g>
+    <g id="holes"><use href="#nock-bore"/><use href="#ring-bore"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#ring-boss" fill="#ffffff"/>
     </mask>
-
-    <path id="mark-gloss" d="M-1 3H29V14.8C23.4 17.05 6.4 17.05-1 14.8z"/>
   </defs>
 
-  <g transform="translate(-0.84 -0.96) scale(1.06)">
-    <g filter="url(#drop)">
-      <g mask="url(#mark-mask)">
-        <rect x="-2" y="3" width="31" height="25" fill="url(#face)"/>
-        <use href="#mark-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-        <rect x="-2" y="3" width="31" height="25" fill="url(#turn)"/>
-      </g>
-      <g filter="url(#lip)">
-        <g mask="url(#mark-mask)">
-          <rect x="-2" y="3" width="31" height="25" fill="#ffffff"/>
-        </g>
-      </g>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

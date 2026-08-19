@@ -5,13 +5,19 @@
 
 PACKAGING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$PACKAGING_DIR/.." && pwd)"
+# The one number this project releases under. It lives at the root of the
+# checkout rather than in here because it is not a packaging detail: the
+# compositor and the shell both read the same file while they build, and refuse
+# to build against a manifest that has drifted from it. See scripts/bump-version.sh.
+#
 # `read` reports failure on a final line with no newline, which under `set -e`
 # would end the caller with no explanation. Take the value either way and let
 # the pattern below be the one thing that rejects it.
-IFS= read -r PACKAGE_VERSION < "$PACKAGING_DIR/VERSION" || true
+PACKAGE_VERSION_FILE="$PROJECT_ROOT/VERSION"
+IFS= read -r PACKAGE_VERSION < "$PACKAGE_VERSION_FILE" || true
 
 if [[ ! "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "invalid package version in $PACKAGING_DIR/VERSION: $PACKAGE_VERSION" >&2
+    echo "invalid package version in $PACKAGE_VERSION_FILE: $PACKAGE_VERSION" >&2
     exit 1
 fi
 

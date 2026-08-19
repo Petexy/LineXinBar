@@ -6,8 +6,8 @@ Section: x11
 Priority: optional
 Depends: @SHLIB_DEPENDS@, lxb-compositor (= @VERSION@-1), dbus,
  libwayland-client0, libwayland-egl1, libegl1, libxkbcommon0
-Recommends: wireplumber, pulseaudio-utils, hicolor-icon-theme, sudo, pipewire,
- xdg-desktop-portal
+Recommends: network-manager, wireplumber, pulseaudio-utils, hicolor-icon-theme,
+ sudo, pipewire, xdg-desktop-portal
 Suggests: alsa-utils, ddcutil, mesa-vulkan-drivers
 Installed-Size: @INSTALLED_SIZE@
 Homepage: https://github.com/Petexy/LineXinBar

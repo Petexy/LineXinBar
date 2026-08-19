@@ -1,18 +1,24 @@
 <!--
-  The way out of the on-screen keyboard: a keyboard folding down out of sight.
+  The key that folds the on-screen keyboard away: a keyboard, and a chevron
+  pointing down out of it.
 
-  A word would have done — this key said "Close" until it did not — but the
-  word is the only thing on the board that has to be read rather than
-  recognised, and at the distance a console is used from, from across a room,
-  reading is the expensive part. Every phone has taught this picture.
+  The board is an outline and the keys inside it are filled, which is the one
+  place in the set where that way round is right. Twenty-seven pixels is what a
+  keyboard hint gets, and at that size a solid slab with eight key-shaped holes
+  in it is a slab: the holes would be two pixels across. An outline keeps the
+  board's shape at any size, and the shader runs a bead of water along it
+  exactly as it does along the edge of a filled thing.
 
-  Drawn as an outline with the keys punched through it rather than as a filled
-  slab, because the atlas multiplies the quad's colour into the texel: nothing
-  here can be darker than the label beside it, so a "dark" keycap can only be
-  an absence of ink.
+  The board is a little smaller than the old drawing's. A stroke straddles the
+  line it is on, so half its width hangs outside the rectangle given here, and
+  that half was eating into the margin the shadow needs.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <rect x="2.4" y="3.4" width="19.2" height="10.8" rx="1.8"
+  <rect x="2.95" y="3.6" width="18.1" height="10.4" rx="1.7"
         fill="none" stroke="#fff" stroke-width="1.5"/>
   <g fill="#fff">
     <rect x="5.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
@@ -20,12 +26,9 @@
     <rect x="11.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
     <rect x="14.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
     <rect x="17.1" y="6.0" width="1.8" height="1.7" rx="0.5"/>
-    <!-- A short second rank and a space bar, which is as much of a keyboard
-         as survives being drawn at the height of a keycap. -->
     <rect x="5.1" y="9.0" width="1.8" height="1.7" rx="0.5"/>
     <rect x="17.1" y="9.0" width="1.8" height="1.7" rx="0.5"/>
     <rect x="8.1" y="9.0" width="7.8" height="1.7" rx="0.6"/>
   </g>
-  <!-- Down, and out. -->
-  <path fill="#fff" d="M12 22.1 7.7 16.6h8.6z"/>
+  <path fill="#fff" d="M12 21.6 7.9 16.4h8.2z"/>
 </svg>

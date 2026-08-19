@@ -1,0 +1,37 @@
+<!--
+  The battery beside the clock, low: one short bar left against the near wall.
+
+  The shortest bar in the set, and it is deliberately not shorter. A bar drawn
+  at the true fraction of a tenth would be under two units and would melt into
+  its own bevel — what the corner has to say here is *nearly empty*, and it says
+  it with a bar that can still be seen.
+
+  **One object in six states.** battery-empty, -low, -half, -high, -full and
+  -charging are this same shell with a different thing standing inside it. They
+  share the cell and the shell exactly, so the mark does not move or change size
+  as the charge falls — what changes is only how much water is in it. That is
+  the same bargain the signal fan makes; see signal-strong.svg.
+
+  **The wall is 2.4 units, and the water inside it clears that wall by 1.6.**
+  The shader gives a mark a bevel of 0.075 of its drawn size, which at the
+  thirty-two pixels the corner draws this at is 2.4 pixels. A wall thinner than
+  that has no flat face and comes out as a smudge, and a gap narrower than it
+  closes up — so the cavity is a real crevice at every level, and the shortest
+  bar here is still nearly twice the bevel wide.
+
+  **The terminal is part of the shell, not a second body beside it.** It
+  overlaps the right wall rather than standing off it: the field cannot tell two
+  touching bodies from one, and here they *are* one — a battery is a single
+  piece of metal with a nub on the end.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linejoin="round">
+    <rect x="3.4" y="9.8" width="21.8" height="12.4" rx="3.2"/>
+  </g>
+  <rect x="25.6" y="13.4" width="3" height="5.2" rx="1.4" fill="#fff"/>
+  <rect x="6.2" y="12.6" width="4.6" height="6.8" rx="1.6" fill="#fff"/>
+</svg>

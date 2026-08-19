@@ -191,6 +191,7 @@ fn place(title: &str, at: &Path, glyph: &'static str, fallback: Option<String>) 
         icon: Some(glyph.to_string()),
         entries: Vec::new(),
         place: Some(Place::Directory(at.to_path_buf())),
+        chosen: false,
     })
 }
 
@@ -294,6 +295,7 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort) -> Shown {
                 icon: Some(crate::icons::FILE_FOLDER.to_string()),
                 entries: Vec::new(),
                 place: Some(Place::Directory(path.clone())),
+                chosen: false,
             })
         } else {
             let (mime, glyph) = described(&path);
@@ -465,7 +467,7 @@ fn date(when: SystemTime) -> Option<String> {
 ///
 /// `None` where the question cannot be asked at all, which is what a path that
 /// has gone away between being mounted and being looked at comes back as.
-fn room(at: &Path) -> Option<String> {
+pub fn room(at: &Path) -> Option<String> {
     let path = std::ffi::CString::new(at.as_os_str().as_encoded_bytes()).ok()?;
     let mut facts: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `path` is a valid NUL-terminated string for the length of the

@@ -1,0 +1,24 @@
+<!--
+  Three nodes and the links between them.
+
+  The links are strokes running from centre to centre, so each disappears under
+  the beads at its ends and what shows is only the span between them. Drawn to
+  the edges instead they would need a join at every node, and a join is where a
+  field of this kind goes wrong.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round">
+    <path d="M16 7.9 8 23.2"/>
+    <path d="M16 7.9 24 23.2"/>
+    <path d="M8 23.2h16"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="16" cy="7.9" r="3.5"/>
+    <circle cx="8" cy="23.2" r="3.5"/>
+    <circle cx="24" cy="23.2" r="3.5"/>
+  </g>
+</svg>

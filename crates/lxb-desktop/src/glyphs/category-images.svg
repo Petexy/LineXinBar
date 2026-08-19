@@ -1,127 +1,34 @@
 <!--
-The Images subcategory's glyph: two prints, one behind the other.
+  The Images subcategory's glyph: two mounts, one behind the other.
 
-  The column above it is a picture in a mount — the thing graphics *tools* are
-  about, one artwork presented. This row is not about a picture, it is about
-  the user's pictures, all of them, and a stack is what a quantity of
-  photographs looks like. So the two are told apart on the same terms
-  Multimedia's rows are: not by redrawing the subject, but by what is beside
-  it. One mounted picture there, a pile of prints here.
+  Under Graphics, and the plural of it: where the parent column carries one
+  landscape, this carries a stack of them, which is what a folder of images is.
 
-  They are prints rather than mounts, which is the second half of the same
-  distinction and the one that carries at 84 px. A mount is a wide even border
-  with a small window sunk in the middle of it; a print is the picture running
-  almost to the paper's edge. Held next to each other in one column the
-  proportion reads before the count does, and the count reads before either is
-  identified. See category-graphics.svg, whose window and landscape this one
-  is a scaled copy of — deliberately, so the two are the same photograph seen
-  two ways rather than two different pictures.
+  The scene in the front mount is the opening. The back mount is a second body
+  standing behind the front one, so a crevice is cut between them — the field
+  cannot tell two overlapping bodies from one, and without the gap the pair
+  would come out as a single L-shaped blob with one rim round the outside.
 
-  The back print is a bare plate: no window, no landscape. Everything drawn on
-  it would fall behind the front one anyway, and the two millimetres of it
-  that show would then be a strip of something unidentifiable rather than the
-  corner of a card. It is also darkened a little, because it is behind.
-
-  Each print carries the drop shadow separately rather than the pair carrying
-  one between them. That is what puts the front print *in front*: the shadow
-  it casts lands on the card behind it, which is the only depth cue in a
-  drawing made of one white plastic under one lamp. A single shadow around the
-  outside of both would have made them one flat cut-out shaped like two cards.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- The picture sunk into the front print, and the land inside it. Both
-         are category-graphics.svg's, scaled to the smaller window a print
-         leaves. -->
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-    <linearGradient id="hills" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fafafa"/>
-      <stop offset="0.55" stop-color="#e4e4e4"/>
-      <stop offset="1" stop-color="#cdcdcd"/>
-    </linearGradient>
-
-    <rect id="back" x="4.2" y="6.6" width="20.4" height="16.2" rx="2.4"
-          transform="rotate(-10 14.4 14.7)"/>
+    <rect id="back" x="4.2" y="6.6" width="20.4" height="16.2" rx="2.4" transform="rotate(-10 14.4 14.7)"/>
     <rect id="front" x="8.2" y="10.4" width="20.4" height="16.2" rx="2.4"/>
-    <path id="front-gloss" d="M6.8 8.6H30V18.4C25.5 20.2 11.3 20.2 6.8 18.4z"/>
-    <clipPath id="back-clip"><use href="#back"/></clipPath>
-    <clipPath id="front-clip"><use href="#front"/></clipPath>
-    <clipPath id="window-clip">
-      <rect x="9.7" y="11.9" width="17.4" height="13.2" rx="1.2"/>
-    </clipPath>
+    <g id="scene"><circle cx="13.4" cy="15.4" r="1.85"/><path d="M11.0 24.3L16.0 16.5l3.6 4.8 2.9-3.8 4.3 6.8z"/></g>
+    <g id="bead"><use href="#back"/><use href="#front"/></g>
+    <g id="holes"><use href="#scene"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
 
-  <!-- The print behind, held back by a shade over the whole of it rather than
-       by a gradient of its own: it is the same plate as the one in front,
-       further from the lamp. -->
-  <g filter="url(#drop)">
-    <use href="#back" fill="url(#face)"/>
-    <use href="#back" fill="url(#turn)"/>
-    <use href="#back" fill="#000000" fill-opacity="0.1"/>
-    <g clip-path="url(#back-clip)">
-      <use href="#back" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-    </g>
-  </g>
-
-  <g filter="url(#drop)">
-    <use href="#front" fill="url(#face)"/>
-    <g clip-path="url(#front-clip)">
-      <use href="#front-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#front" fill="url(#turn)"/>
-    <g clip-path="url(#front-clip)">
-      <use href="#front" fill="none" stroke="url(#edge)" stroke-width="1.2"/>
-    </g>
-
-    <!-- The photograph, running almost to the paper's edge. -->
-    <rect x="9.7" y="11.9" width="17.4" height="13.2" rx="1.2" fill="url(#recess)"/>
-    <g clip-path="url(#window-clip)">
-      <circle cx="13.32" cy="15.11" r="1.75" fill="#ffffff" fill-opacity="0.92"/>
-      <path d="M9.7 25.1L15.68 16.24l3.81 4.86 3.08-3.82 4.53 7.82z" fill="url(#hills)"/>
-      <path d="M15.68 16.24l3.81 4.86 3.08-3.82 4.53 7.82" fill="none" stroke="#ffffff"
-            stroke-opacity="0.75" stroke-width="0.65" stroke-linejoin="round"/>
-      <rect x="9.7" y="11.9" width="17.4" height="13.2" rx="1.2"
-            fill="none" stroke="url(#edge)" stroke-width="0.8"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

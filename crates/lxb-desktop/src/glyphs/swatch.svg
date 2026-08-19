@@ -1,56 +1,15 @@
 <!--
-One colour in a list of them: a bead of it.
+  The disc a colour is shown on, in the accent rows.
 
-  The only drawing in the set that is not finished when it is rasterised. The
-  atlas multiplies a quad's colour into the texel it samples, so this is drawn
-  in white and comes out as whatever colour the row stands for — one drawing
-  for every colour a list can hold, and no way for a swatch to disagree with
-  the shell it is describing.
+  The plainest shape in the set: a bead of water and nothing else. What it is
+  for is to be tinted — the quad's colour is what says which accent this row
+  offers — so anything drawn into it would be a second thing competing with the
+  one thing it has to say.
 
-  Which is why nothing here is grey. A shade painted into this would tint along
-  with everything else and come back as a *different colour* rather than as
-  shadow: mid grey under a purple wash is a dull purple, not a dark one. What
-  is left to model with is lightness alone, so the ball is shaded from white at
-  the lamp down to the deepest value the drawing may reach, and the rim
-  underneath — light coming back up off whatever the bead is standing on — is
-  the one mark that keeps it from reading as a flat circle once tinted.
-
-  Round, like the disc a chosen row stands on and unlike the squircles of the
-  category row. A colour has no orientation to line up with, and the bead is
-  the one shape that says so.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <!-- The lamp, over a sphere: the same one lighting every other glyph in
-         the set, with the shading confined to lightness so the tint survives
-         it. See category-other.svg for the untinted version of this ball. -->
-    <radialGradient id="ball" cx="0.37" cy="0.29" r="0.82">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.38" stop-color="#f4f4f4"/>
-      <stop offset="0.78" stop-color="#d8d8d8"/>
-      <stop offset="1" stop-color="#c4c4c4"/>
-    </radialGradient>
-    <!-- Bounce off the surface below, which is what turns a lit circle into a
-         ball sitting on something. -->
-    <linearGradient id="bounce" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.62" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.75"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-  </defs>
 
-  <g filter="url(#drop)">
-    <circle cx="16" cy="15.9" r="11.4" fill="url(#ball)"/>
-    <circle cx="16" cy="15.9" r="11.4" fill="none" stroke="url(#bounce)" stroke-width="1.4"/>
-    <!-- The specular, where the lamp is. Small and hard: a bead is polished. -->
-    <ellipse cx="11.9" cy="10.6" rx="3.1" ry="2.2" transform="rotate(-28 11.9 10.6)"
-             fill="#ffffff" fill-opacity="0.85" filter="url(#polish)"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="15.9" r="11.4" fill="#fff"/>
 </svg>

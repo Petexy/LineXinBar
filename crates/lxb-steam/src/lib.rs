@@ -304,6 +304,33 @@ impl Steam {
         self.client_at.as_ref()
     }
 
+    /// Ask the machine again, and say whether the answer moved.
+    ///
+    /// The answer is read once at startup because the shell asks it while
+    /// building a menu, and a `PATH` walk per row of a library is a `PATH`
+    /// walk per row of a library. What that misses is somebody removing Steam
+    /// while the session runs: every worker path finds out at once, because
+    /// each looks the client up for itself, but the rows and the menus went on
+    /// offering Play until the shell was restarted. The offers were answered
+    /// honestly when pressed — nothing here was ever silent — and they were
+    /// still offers for something that had gone.
+    ///
+    /// Never on a handle with no worker: [`Steam::settled`] is a session that
+    /// has turned Steam off and the library fixtures behind `--debug-steam-library`,
+    /// and neither may acquire a client from the machine it happens to run on.
+    pub fn recheck_client(&mut self) -> bool {
+        if self.asks.is_none() {
+            return false;
+        }
+        let now = client::Where::find();
+        if now == self.client_at {
+            return false;
+        }
+        tracing::info!(before = ?self.client_at, after = ?now, "Valve's client has come or gone");
+        self.client_at = now;
+        true
+    }
+
     /// Ask Valve's client for one thing to be done to one title, as a `steam:`
     /// URL.
     ///
@@ -767,13 +794,19 @@ fn answer(
                 // The client is signed out with the shell. Leaving it signed in
                 // would hand the next person at this machine an account the
                 // shell has just said nobody is signed in to.
-                if let Some(options) = client::Options::found() {
-                    let where_it_is = client::Where::find();
-                    if client::state(where_it_is.as_ref(), &options).running() {
-                        if let Some(where_it_is) = where_it_is {
-                            let _ = client::stop(&where_it_is);
-                        }
+                if let Some(where_it_is) = client::Where::find() {
+                    if client::Options::for_client(&where_it_is).is_some_and(|options| {
+                        client::state(Some(&where_it_is), &options).running()
+                    }) {
+                        let _ = client::stop(&where_it_is);
                     }
+                }
+                // Wherever a client on this machine keeps it, and whether or
+                // not there is one to keep it: this is about the files, not
+                // about the client, and the machine this matters most on is
+                // the one Steam has been taken off. See
+                // [`client::Options::every_layout`].
+                for options in client::Options::every_layout() {
                     client::autologin::stop(&options.root, &options.home, &stored.account);
                 }
             }
@@ -921,7 +954,8 @@ fn in_the_background(
     worker: &Sender<WorkerMessage>,
     work: impl FnOnce(Result<(), String>) -> Finished + Send + 'static,
 ) {
-    let there = client::Options::found().zip(client::Where::find());
+    let there =
+        client::Where::find().and_then(|found| Some((client::Options::for_client(&found)?, found)));
     let account = stored.account.clone();
     let refresh_token = stored.refresh_token.clone();
     let worker = worker.clone();
@@ -1047,10 +1081,11 @@ fn hand_over(url: String, events: &Sender<Event>) {
             return;
         };
         // Its directories are how a running client is told from none, and a
-        // machine that has never started one has none of them. Not being able
-        // to say is not a failure — see [`client::open`], which then starts one
-        // rather than waiting on a courier that may not be one.
-        let options = client::Options::found();
+        // machine that has never started one has nothing in them yet. That is
+        // not a failure — see [`client::open`], which finds nothing running
+        // and then starts one with the URL already in hand, rather than
+        // waiting on a courier that may not be one.
+        let options = client::Options::for_client(&where_it_is);
         if let Err(why) = client::open(&where_it_is, options.as_ref(), &url) {
             tracing::warn!(%url, %why, "Valve's client would not take that");
             let _ = events.send(Event::Client(ClientReport::Unavailable(why.to_string())));
@@ -1069,17 +1104,20 @@ fn wake_the_client(stored: &session::Stored, waking: &Arc<AtomicBool>, events: &
     if waking.swap(true, Ordering::SeqCst) {
         return;
     }
-    let Some(options) = client::Options::found() else {
+    let Some(where_it_is) = client::Where::find() else {
         waking.store(false, Ordering::SeqCst);
         let _ = events.send(Event::Client(ClientReport::Unavailable(
             "There is no Steam client installed on this machine.".to_string(),
         )));
         return;
     };
-    let Some(where_it_is) = client::Where::find() else {
+    // Asked of the client that was found rather than of the disk, so that a
+    // client which has never been run is started a first time instead of being
+    // reported missing. See [`client::Options::for_client`].
+    let Some(options) = client::Options::for_client(&where_it_is) else {
         waking.store(false, Ordering::SeqCst);
         let _ = events.send(Event::Client(ClientReport::Unavailable(
-            "There is no Steam client installed on this machine.".to_string(),
+            "Steam's directories could not be found on this machine.".to_string(),
         )));
         return;
     };

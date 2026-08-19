@@ -1,0 +1,21 @@
+<!--
+  The bead and one arc: on a network, and only just.
+
+  The weakest of the three, and the one the bead was made heavy for. What is
+  left here is a low mark in the bottom third of its cell, so the dot has to
+  carry it: too small a one and the corner would show a dash over a speck and
+  read as something half drawn rather than as a signal that is nearly gone.
+
+  How it is drawn, and why the two missing arcs are missing rather than drawn
+  faint, is in signal-strong.svg.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M10.99 18.28A7.8 7.8 0 0 1 21.01 18.28"/>
+  </g>
+  <circle cx="16" cy="24.25" r="3.6" fill="#fff"/>
+</svg>

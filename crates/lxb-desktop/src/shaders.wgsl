@@ -706,6 +706,214 @@ fn environment(mirrored: vec3<f32>, key_strength: f32) -> vec3<f32> {
     return ambient + vec3<f32>(1.0, 0.98, 0.93) * key * 26.0 * key_strength;
 }
 
+// --- a glyph shaded out of its own shape -----------------------------------
+//
+// Every one of the shell's own glyphs ships as a *measurement* rather than a
+// picture: its cell holds how far each pixel is from the nearest edge of the
+// mark, negative inside it. See `icons::builtin_distance_field`, which makes
+// the field, and the head of category-games.svg, which is the drawing the
+// language was settled on.
+//
+// What that buys is one piece of code arriving at an edge. A hole's edge is an
+// edge like any other, so the ring standing round every opening in a glyph —
+// the displaced volume, the most expensive thing to draw by hand and the thing
+// that was redrawn most often — falls out of the same three lines as the outer
+// rim, and nothing below knows the mark has holes in it at all.
+//
+// One thing a pane does that a glyph deliberately does not: refract. A pane
+// reads the frame beneath it, which costs a snapshot and a blur chain, and
+// `Quad::reads_backdrop` will not hand one to a glyph — a settings panel draws
+// a dozen of them over surfaces drawn moments earlier in the same run, and
+// every one would want a snapshot of its own. Past the batch budget they would
+// share an older one instead and refract the *wallpaper* into a rim that is
+// lying on a pane, which is worse than not refracting: a mark with the wrong
+// room in its edge. So a glyph is lit and reflective, and what it transmits is
+// its own colour.
+
+// Half the range a glyph's distance field spans, as a fraction of its atlas
+// cell. `icons::SDF_RANGE` encodes it and this undoes it; the two are one
+// number and have to move together.
+const GLYPH_SDF_RANGE: f32 = 0.125;
+
+// Edge of one atlas cell in texels, which is `gpu::CELL`. The shader needs it
+// to know what a slope of one looks like in the field it is reading.
+const GLYPH_CELL: f32 = 128.0;
+
+// Where the light is, for every glyph in the shell at once — up and to the
+// left, tilted towards the viewer. Not `KEY_LIGHT`, which is aimed across a
+// whole display and would walk over a mark as its column scrolled: a glyph is
+// an object held up to be looked at, and the light on it stays put.
+//
+// Written out rather than normalised at run time so that the shadow and the
+// highlight below cannot drift apart.
+const GLYPH_LAMP: vec3<f32> = vec3<f32>(-0.4915, -0.7078, 0.5069);
+
+// How dark the mark's own shadow is where it meets the flat space.
+const GLYPH_SHADOW: f32 = 0.30;
+
+// How far this pixel is from the nearest edge of the glyph, in cell fractions.
+// Negative inside it.
+//
+// `textureSampleLevel` rather than `textureSample`: this is read inside a
+// branch, and a sample that works out its own level of detail may not be.
+fn glyph_distance(uv: vec2<f32>) -> f32 {
+    let stored = textureSampleLevel(atlas_texture, atlas_sampler, uv, 0.0).a;
+    return (stored - 0.5) * 2.0 * GLYPH_SDF_RANGE;
+}
+
+// The same, held inside one cell of the atlas.
+//
+// Every read below is offset from the pixel being drawn — the gradient looks a
+// texel either side, and the shadow looks a good deal further than that — so a
+// pixel near the edge of a mark reads past the edge of its own cell and finds
+// the glyph stored next to it. What that looks like is a hairline of somebody
+// else's shadow ruled along the top and left of every glyph in the shell, which
+// is how it was found. Half a texel in from the boundary, because the sampler
+// is bilinear and would otherwise still blend in the neighbour.
+fn glyph_at(uv: vec2<f32>, cell: vec4<f32>) -> f32 {
+    return glyph_distance(clamp(uv, cell.xy, cell.zw));
+}
+
+fn glyph_material(in: QuadOut) -> vec4<f32> {
+    let size = in.half_size * 2.0;
+    let texel = 1.0 / vec2<f32>(textureDimensions(atlas_texture));
+    // One pixel of the drawn glyph, in the atlas coordinates it is sampled by.
+    // The cell is drawn across the whole quad, so this is the conversion that
+    // makes a bevel the same width at 84 pixels and at 148.
+    let per_pixel = GLYPH_CELL * texel / max(size, vec2<f32>(1.0));
+
+    // Which cell of the atlas this glyph is in, worked back out of what the
+    // vertex stage handed over: the pixel's place inside the quad says how far
+    // into the cell its sample is, and the whole cell is drawn across the whole
+    // quad. Half a texel in on each side, for the sampler.
+    let half_texel = texel * 0.5;
+    let corner = in.uv - in.local * per_pixel;
+    let cell = vec4<f32>(corner + half_texel, corner + size * per_pixel - half_texel);
+
+    // How far into the mark this pixel is, in pixels of the drawn glyph.
+    let d = glyph_at(in.uv, cell) * size.x;
+    let coverage = 1.0 - smoothstep(-0.75, 0.75, d);
+
+    // Which way the surface faces: the gradient of the field, which for a
+    // distance field points straight out of the nearest edge wherever it is
+    // read. Central differences, so a wall reads the same from either side.
+    //
+    // Read a texel and a half out rather than one, and the sampler interpolates
+    // the half for nothing. The field is eight bits over a quarter of the cell,
+    // so one texel of travel is about eight levels of it and a difference taken
+    // that close is a tenth quantisation noise — which arrives as mottling
+    // across the face of a mark, since a bevel this deep leaves most of a small
+    // one *in* the bevel. The wider arm doubles the signal against the same
+    // noise, and it also softens the medial ridge below into something that
+    // falls off over a few pixels instead of switching.
+    let arm = texel * 1.5;
+    let east = glyph_at(in.uv + vec2<f32>(arm.x, 0.0), cell);
+    let west = glyph_at(in.uv - vec2<f32>(arm.x, 0.0), cell);
+    let south = glyph_at(in.uv + vec2<f32>(0.0, arm.y), cell);
+    let north = glyph_at(in.uv - vec2<f32>(0.0, arm.y), cell);
+    let gradient = vec2<f32>(east - west, south - north);
+    let outward = normalize(gradient + vec2<f32>(1e-6, 0.0));
+
+    // How much of a slope the field actually has here. A distance field rises
+    // at exactly one per pixel everywhere *except* along the skeleton of the
+    // shape — the ridge equidistant from two edges — where two slopes meet
+    // head on and cancel. Every part of a mark narrower than twice the bevel
+    // has that ridge running down the middle of it, and a surface built from
+    // the field alone creases along it: thin parts come out faceted, which is
+    // the one artefact that says "computed" rather than "wet".
+    //
+    // The cancellation is also how to find it. Where the slope falls away the
+    // surface is flattened towards level, which is what the middle of a narrow
+    // run of water does anyway.
+    let slope = clamp(length(gradient) / (2.0 * 1.5 / GLYPH_CELL), 0.0, 1.0);
+    let ridge = smoothstep(0.20, 0.80, slope);
+
+    let slab = max(in.material.x, 0.5);
+    // Where in the rounding-over this pixel is: 0 at the outer lip, 1 where
+    // the flat face begins. A part of the mark thinner than twice the slab
+    // never reaches 1 and is therefore all bevel — which is correct, and is
+    // the thing a hand-drawn rim has to be told one shape at a time.
+    let inset = clamp(-d / slab, 0.0, 1.0);
+    let surface = normalize(vec3<f32>(outward * bevel_slope(inset) * ridge, 1.0));
+
+    // The one thing the field cannot know: which way is up. A bead of water
+    // stands its wall up at the crown, where it is nearly edge-on and hands
+    // over the room behind it, and lays it down at the foot, where the whole
+    // lamp arrives at once. So the mark is taken on down its own height rather
+    // than evenly across it — the same fall the authored drawings paint, as
+    // one line instead of a gradient with five stops.
+    let foot = clamp(in.local.y / max(size.y, 1.0), 0.0, 1.0);
+    var glass = in.color.rgb * mix(0.50, 1.0, foot * foot);
+    // Alpha follows the same fall: the crown is where a bead lets the room
+    // through, and the foot is where it has gathered enough of itself to be
+    // solid.
+    var alpha = mix(0.52, 0.94, foot * foot);
+
+    // Where the wall is turned into the lamp and where it is turned away,
+    // which is the whole of the modelling and the one thing the fall above
+    // cannot say: a bead's crown is dark because its wall stands up *there*,
+    // not because it is high up.
+    let facing = clamp(dot(surface, GLYPH_LAMP), 0.0, 1.0);
+    glass = glass * mix(0.70, 1.26, facing);
+
+    // A thick edge splits what passes through it into colour. There is nothing
+    // behind this mark to split, so the same thing is done to its own light:
+    // the two ends of the spectrum are pushed a little way apart along the
+    // outward normal, which puts warmth on one side of a rim and cold on the
+    // other exactly where the wall is steepest. Small, because it is a cue and
+    // not a prism.
+    let edge = (1.0 - inset) * (1.0 - inset) * ridge;
+    let split = GLASS_DISPERSION * edge * outward.x;
+    glass = glass * vec3<f32>(1.0 + split, 1.0, 1.0 - split);
+
+    let gloss = in.material.z;
+    if (gloss > 0.0) {
+        let fresnel = 0.04 + 0.96 * pow(1.0 - clamp(surface.z, 0.0, 1.0), 5.0);
+        let lit = fresnel * gloss;
+        // A sky with no horizon in it. `environment` has one — a bright band
+        // where its two halves meet — which a pane wants and a mark cannot
+        // afford: reflected in a small curved shape it lands as a straight
+        // line across the middle of the drawing and reads as a crack. Its
+        // colour belongs to the panes too; a glyph is tinted by whatever asked
+        // for it, so only the brightness of the reflection is kept.
+        let mirrored = reflect(vec3<f32>(0.0, 0.0, -1.0), surface);
+        let value = mix(0.42, 1.15, 0.5 + 0.5 * dot(mirrored, -GLYPH_LAMP));
+        glass = mix(glass, in.color.rgb * value, lit);
+        // And the specular proper: a small hard reflection of the lamp itself,
+        // which on a curved wall lies along the curve and is the mark of a wet
+        // surface rather than a matte one.
+        let half_way = normalize(GLYPH_LAMP + vec3<f32>(0.0, 0.0, 1.0));
+        let spec = pow(clamp(dot(surface, half_way), 0.0, 1.0), 42.0);
+        glass = glass + in.color.rgb * spec * gloss * 0.9;
+        alpha = max(alpha, max(lit, spec));
+    }
+
+    // The mark on the flat space it is standing on, which is the last thing
+    // the authored drawings paint by hand and the first thing that says the
+    // glyph is an object rather than a hole. The occluder is up-light of the
+    // shadow, so the field is read once in the lamp's direction: wherever
+    // *that* is inside the mark, this pixel is in its shade.
+    //
+    // Tight, and it has to be: the shadow can only be drawn where the quad
+    // reaches, and what it has to fit inside is the margin every glyph leaves
+    // round its mark — two of the drawing's thirty-two units, which the
+    // built-in glyph test measures. Offset and penumbra together come to under
+    // five hundredths of the mark's own size, so nothing ends in a straight
+    // cut at the edge of the cell. Which is also the right shadow: a bead is
+    // *on* the surface, not floating over it.
+    let toward_lamp = normalize(GLYPH_LAMP.xy) * slab * 0.22;
+    let occluder = glyph_at(in.uv + toward_lamp * per_pixel, cell) * size.x;
+    let blocked = 1.0 - smoothstep(-slab * 0.1, slab * 0.4, occluder);
+    let shade = blocked * GLYPH_SHADOW * (1.0 - coverage);
+
+    // The mark composited over its own shadow, in straight alpha because that
+    // is what the pipeline blends with.
+    let mark = alpha * coverage;
+    let total = mark + shade * (1.0 - mark);
+    let rgb = max(glass, vec3<f32>(0.0)) * mark / max(total, 1e-4);
+    return vec4<f32>(rgb, total * in.material.w);
+}
+
 @fragment
 fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
     // What something in front cut away, or what a display cut off its own
@@ -715,6 +923,19 @@ fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
     if (in.clip.x < in.cut.x || in.clip.y < in.cut.y
         || in.clip.x > in.cut.z || in.clip.y > in.cut.w) {
         discard;
+    }
+
+    // A cell that holds the shape of a glyph rather than a picture of one, to
+    // be shaded as a bead of water standing on the surface below it.
+    //
+    // Nothing else in the shell asks for a square-cornered quad with a depth:
+    // a pane that wants the material is rounded, and a picture that wants the
+    // atlas sampled straight carries no depth. So the pair is how a caller
+    // says which kind of cell it is pointing at, without a field of its own —
+    // and `Quad::glyph_material` is the same test, written once on the other
+    // side so the two cannot drift.
+    if (in.shape.x <= 0.0 && in.material.x > 0.0) {
+        return glyph_material(in);
     }
 
     let texel = textureSample(atlas_texture, atlas_sampler, in.uv);

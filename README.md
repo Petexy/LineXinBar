@@ -164,6 +164,13 @@ disagrees. The shell also wants a Vulkan driver at runtime where one exists
 (`vulkan-radeon`, `vulkan-intel`, `mesa-vulkan-drivers`), and falls back to GL
 where it does not.
 
+Everything built here reports one version, and it is the single line in
+[`VERSION`](VERSION) at the root of the checkout: every package definition
+reads that file, and the compositor and the shell both refuse to build against
+a manifest that has drifted away from it. `./scripts/bump-version.sh 0.2.0`
+moves it, along with the two places that have to carry the number as a literal;
+[`packaging/README.md`](packaging/README.md) says which and why.
+
 ## Running
 
 ### Nested, for development
@@ -770,6 +777,38 @@ What is left is the client, run as a **background process nobody sees**:
 - `-nocrashdialog`, because a client that has fallen over must not put a dialog
   in front of a game.
 
+**Whether there is a client at all** is asked of two things, and neither of
+them is a directory somebody's data lives in. A native client is a `steam` on
+`PATH`. The Flatpak is a *deployed commit* — `app/com.valvesoftware.Steam/current/active`,
+in any installation Flatpak would look in: the user's, the system's, or one
+named in `/etc/flatpak/installations.d`. It used to be asked of
+`~/.var/app/com.valvesoftware.Steam`, which is the one thing about a Flatpak
+that reliably outlives it, since `flatpak uninstall` keeps an application's
+data unless it is asked for `--delete-data`. A machine that had Steam and
+removed it therefore looked exactly like one that has it, and every row needing
+a client was offered against a `flatpak run` that could only fail — silently,
+because a `spawn` that succeeds says nothing about the process that exits a
+moment later, and then loudly three minutes on, about a debugging port.
+
+**A client that has never been run is still a client**, and the shell starts it
+a first time rather than reporting it missing. The package installs a launcher;
+the client unpacks itself into `~/.local/share/Steam` on its first start, so
+until somebody has run it there is no directory to read a state out of — and
+that absence is what this used to report as "there is no Steam client installed
+on this machine", from the very paths that could have started one. A first
+press now makes that directory, puts the marker in it and starts the client. If
+that outlasts the wait, what is said is what is true: Steam is setting itself
+up, which it does once, and will be ready in a few minutes. It goes on doing it
+in the background, so the next press is an ordinary one.
+
+The two kinds of client are also asked separately where their directories are.
+The Flatpak runs with its home remapped into `~/.var/app/com.valvesoftware.Steam`,
+so its pipe and its registry are in there beside its library, and the native
+client's are in the real home. Asking the disk which of them exists — which is
+what this did — pairs whichever is found first with whichever client was found,
+and on a machine that has had both that is one client's log read for another
+client's state.
+
 It is started when there is Steam work to do and not before, and whether it is
 running is asked of the FIFO it holds open rather than of its pid file — that
 file looks like the obvious answer and is a trap, since every `steam`
@@ -983,6 +1022,8 @@ is every one of them.
 
 ### Appearance
 
+#### Accent color
+
 `Settings > Appearance > Accent color` is the shell's own colour: **Purple**,
 which is what it comes up in, plus **Blue**, **Green**, **Yellow**, and **Red**.
 Each is drawn in itself, and the one in force carries a tick.
@@ -1003,6 +1044,42 @@ accent = "Blue"
 ```
 
 An unknown name there is reported and ignored, and the shell comes up violet.
+
+#### Battery percentage
+
+`Settings > Appearance > Battery percentage` decides whether the start screen's
+corner writes the charge out in figures over the mark that draws it. **Off**,
+until somebody asks for it.
+
+**The row is there only on a machine with a battery**, and so is the mark. What
+counts as one is the kernel's own answer, read from `/sys/class/power_supply`:
+a supply of type `Battery` whose `scope` is not `Device` and which is actually
+in its bay. That last pair of conditions is doing real work — a desktop with a
+wireless mouse on it lists a battery, and it is the mouse's; a laptop with the
+battery taken out still lists the bay it came from. Neither is a machine this
+corner has anything to say about, and on both it says nothing rather than
+drawing an outline or greying a row out. No daemon is involved: UPower is what
+a desktop environment would ask, it may not be installed, and what it reads is
+this same directory.
+
+The mark itself is not the setting. It is one of six drawings of the same
+shell — empty, low, half, high, full, and a bolt for a battery that is filling
+— and it is drawn whenever there is a battery, in the same water as the clock
+beside it. Being on the mains outranks the level: while it is filling, the bolt
+is what is shown, and the level it is filling from is what the figures are for.
+Sitting plugged in at full is not filling, and shows a full battery.
+
+The figures are off by default because the mark already answers the question a
+glance at a corner asks, which is *how much is left*. A number is for somebody
+who wants to know whether it is 61 or 68, and a console that put one on the
+wallpaper for everybody would be asking everybody to read it.
+
+```toml
+battery-percent = true
+```
+
+The key is written on every machine, a desktop included, so that a file carried
+between one and a laptop does not lose the setting on the way.
 
 Entries are read directly rather than through the XDG menu files, so the
 `.menu` layouts a desktop ships (Plasma's vendor submenus, its Lost & Found, and
@@ -1458,15 +1535,258 @@ over, which is not what the setting sounds like. It is written to
 start-music = false
 ```
 
+### Network
+
+`Settings > Network` is the third of the three pages about what a session does
+with the world outside itself — the picture goes out, the sound goes out, and
+this goes both ways. It is after the other two because it is the one of the
+three a console can be used without.
+
+```
+Settings > Network > Wired  >  Connection             >  On
+                               IP address             >  Automatic / Manual
+                               DNS                    >  Automatic / Manual
+                               Connection information >  IP address, router, …
+                     Wi-Fi  >  Wi-Fi                  >  On
+                               Networks               >  the air, strongest first
+                                   Upstairs        ✓  >  IP address, DNS,
+                                                         Disconnect, Forget
+                                   The Cafe           >  Connect, Forget
+                                   Next Door             (joins on the press)
+                               Connection information >  IP address, router, …
+```
+
+The Networks column is the air and nothing else. It used to open with a **Not
+connected** row, which was the answer to *which network is this radio on* for a
+machine on none — and for a while the only way off a network short of turning
+the whole radio off. That reason is gone: the way off a network is inside the
+network now, where somebody looking for it looks. What was left was a row above
+the list doing the same thing at a distance, one row of ceremony on every visit
+to the page for a press most people make once. On a machine that is on none of
+them nothing here is marked at all, which is the honest picture — the question
+has no answer yet rather than an answer called none — and the column opens on
+the strongest network in the air, which is what somebody who came here to get
+connected was reaching for. A radio that hears nothing gets a line saying so
+rather than a row that opens onto nothing.
+
+**What is on the page depends on what is in the machine.** A desktop with no
+wireless card has no Wi-Fi page at all; a machine with no socket has no Wired
+page; one with neither has a single row saying so. That is the same rule the HDR
+page is built by, and it matters more here: a Wi-Fi page on a machine with no
+radio in it is not merely useless, it is a page that has somebody turning a
+switch on and off looking for networks that were never going to appear.
+
+The row at the head of it says what the machine is on — `Connected by cable —
+1000 Mb/s`, `Connected to Upstairs`, `Not connected` — so the question people
+actually come to this page with is answered without stepping into it. The cable
+wins where both are up, because that is the one the machine is really sending
+over.
+
+**Wired** is a switch and the facts behind it. A socket with nothing plugged into
+it is not offered the switch: there is nothing for On to do, and a row that took
+the press and left the mark on Off would be the page arguing with something the
+user can see from where they are sitting. Bringing a socket up with no profile
+saved for it asks NetworkManager for the obvious thing — a wired connection that
+takes its address from the network — rather than putting a form in front of
+somebody who plugged a cable in.
+
+**Wi-Fi** is the radio switch, then the air. The switch is one switch for the
+whole machine however many cards are in it, because that is what NetworkManager
+has; a radio switched off by a key on the machine reports as much, and the page
+says so instead of offering an On that cannot happen. **Networks** lists what is
+in range, the one in force first and the rest strongest first — by the five bars
+a signal is drawn with rather than by the per cent, so a list somebody is
+standing in reorders only when something really moved and not every time the
+radio breathes — one row per name: a house with a repeater in it publishes the
+same network from two radios, and they are one thing to join. Each row says what joining it takes and how well it
+is heard: `Saved — 62% at 5 GHz` for one there is already a profile for, `WPA2 —
+55% at 5 GHz` for one that will ask for a password, `Open — 91% at 2.4 GHz` for
+one that will not.
+
+**The network the radio is on is stepped into rather than pressed.** It is the
+one row in that list whose press has nothing to do — joining a network the radio
+is already on is a no-op — and it is the only row that has anything more to say,
+because a wireless profile belongs to a *network*: a laptop keeps a fixed address
+at the office and takes whatever it is given at home, and those are two profiles.
+So that row carries the tick every value in force carries, and behind it are its
+own **IP address** and **DNS** pages, then **Disconnect** and **Forget**.
+
+That is also why the addressing is not on the Wi-Fi page itself. A card that has
+been on four networks this week has four answers to *what address does this
+take*, and a row up there would silently be about one of them.
+
+**A network the machine remembers is stepped into too.** It has two things to do
+rather than one — join it again, or forget it — and forgetting has nowhere else
+in the shell it could live: the list is otherwise a list of what is in the *air*,
+where what the machine remembers shows only as the word `Saved` in a comment. So
+a remembered network opens on **Connect**, with **Forget** under it. That costs a
+press, and it is the one thing on this page that takes something away; what it
+buys is that somebody who typed the wrong password once has a way to make the
+shell ask again. A network the machine has *never* been on keeps its single
+press: there is nothing saved to remove and nothing to configure until it has
+been joined once.
+
+**Forget removes the network from the machine, not from the shell.** What goes is
+NetworkManager's profile — the key that got the machine on, and any address
+pinned on that network — so it goes for every program on the machine, which is
+the only version of forgetting that is not a second opinion. There is no panel
+between the press and the act, so the row itself carries what it costs: *Remove
+this network: the password will be asked for again*. It wears the same waste bin
+the context menu's Uninstall row wears, because it is the same act on a different
+object.
+
+Two things about where those rows stand. **Disconnect and Forget come after the
+addressing**, because a column opens on its first row and the first row has to be
+one that only opens another column — somebody stepping into their own network and
+pressing Accept twice out of habit lands on `IP address`. And **a cursor the
+shell moves never comes to rest on a row that acts**: pressing Disconnect turns a
+four-row page into the two-row one a network the radio is off gets, and a cursor
+that simply clamped to the end of what was left would put a thumb on Forget with
+no press of its own in between.
+
+**Disconnect is built for every joined network**, whether or not a profile can
+yet be read for the device. It is the only way off a network in the shell, and it
+must not depend on NetworkManager having got round to publishing an active
+connection for a radio that is already associated.
+
+**A password is asked for by the worker, not by the press.** Pressing a network —
+its own row where nothing is saved for it, **Connect** where something is — only
+ever means *join this*. Whether that needs anything typed depends on
+whether NetworkManager already has a profile and whether that profile still
+works, which is something it knows and the shell does not — so the press goes
+down, and the panel comes back up if one is wanted, with the on-screen keyboard
+under it. The same panel answers the case people actually hit: a network whose
+password was changed on the router is one NetworkManager has a profile for and
+cannot use, and a second or two after the press it comes back asking, with *That
+password was not accepted*. Typing a new one corrects the saved profile in place
+rather than replacing it, so a fixed address or a name server set on that network
+somewhere else survives.
+
+An **enterprise** network — 802.1X, the kind a university or an office runs — is
+listed and cannot be pressed. It needs a user name, a certificate and a server's
+agreement rather than a password, and this shell will not collect the first thing
+and pretend. It is listed at all because leaving it out answers *my network is
+not here* with silence.
+
+Nothing about the page previews. Highlighting a network would take the machine
+off what it is on and put it on whatever the cursor was passing — mid-download,
+mid-call — and on a secured one it would raise a password panel for a row nobody
+chose.
+
+#### A static address, and where the name servers come from
+
+Both halves get the same two pages, because a fixed address is not a thing that
+is true of a cable and false of a radio. They hang in different places, and that
+is not an inconsistency: a socket has one profile, so its addressing is a
+property of the socket as far as anybody using it is concerned, while a radio has
+one profile per network.
+
+```
+Settings > Network > Wired            > IP address  >  Automatic
+                                                       Manual         ✓
+                                                       Address           192.168.1.50/24
+                                                       Router            192.168.1.1
+                                        DNS         >  Automatic
+                                                       Manual         ✓
+                                                       DNS servers       9.9.9.9, 1.1.1.1
+
+                     Wi-Fi > Networks > Upstairs ✓  >  IP address
+                                                       DNS
+                                                       Disconnect
+                                                       Forget
+```
+
+It is called **DNS** on screen because that is what every router's own page calls
+it and what anybody looking for the setting will look for. The prose here goes on
+saying *name servers*, which is what the three letters stand for.
+
+The values Manual needs are *inside* its own column rather than beside it. They
+could have been rows of the page above — the night light's hours are — but that
+page would then carry five rows about addressing where it now carries two, and
+two of the five would be a row called `Address` standing under one called `IP
+address`. Inside, each column reads as what it is: here are the two answers, and
+here is what the second one is set to.
+
+**Manual pins what the machine already has.** NetworkManager refuses a manual
+profile with no address in it, so switching to Manual has to supply one, and the
+only address that is not an invention is the one the interface was given — which
+is also what somebody means by the press: *keep this*. A socket that has never
+been up has nothing to pin, and the row says so instead of being a press that is
+accepted and silently fails. Going back to Automatic changes nothing but the
+method: the pinned address stays in the profile, so turning DHCP on to see
+whether it works does not throw away the static settings.
+
+**Every field says whose value it is.** The panel a typed row opens covers the
+trail that would otherwise have said — so the heading names the connection as
+well as the value: `Address — Upstairs`, `DNS servers — Wired connection 1`.
+`Address` on its own is the same panel whether somebody walked in through the
+socket on the back of the machine or through the network the radio is on, and
+those are two different profiles with two different addresses.
+
+**Name servers are only offered a choice where there is one.** Under automatic
+addressing, `Automatic` takes what DHCP hands over and `Manual` uses only the
+ones named below it. Under a pinned address there is no DHCP running, so there
+is nothing for them to be automatic *from* — the page says that and offers the
+list, rather than an `Automatic` that would quietly mean *none at all*.
+
+**The three values are typed, and that is a third kind of row.** A colour
+temperature is a scale, which is what a bar is for; an IP address is neither a
+scale nor a set — it is four numbers and a prefix, of which every one is as
+likely as any other, and no list anybody could write would have the user's on
+it. So pressing one opens a panel with a field and the on-screen keyboard under
+it, holding what the value already is: changing the last number of an address
+should not mean typing the other three again.
+
+What is typed is **checked before it is handed over**, while the panel is still
+on screen and can still be corrected. `192.168.1.50` with no `/24` after it is
+the thing everybody types and is not an address a profile can use — nothing in
+it says how much of the network is local — so it is answered with *add the size
+of the network*, in the same line, in the same place, with what was typed still
+in the field. Clearing a field is always allowed and always means something:
+clearing the address hands the connection back to DHCP, and clearing the name
+servers hands the question back to the network.
+
+Setting one **does not take the link down**. The profile is written and the
+interface is brought into line with it through NetworkManager's own `Reapply`,
+which is the call that exists for exactly this. Where that is refused the
+profile has still been written and comes into force the next time the interface
+comes up.
+
+**IPv4 only**, and that is a stated limit rather than an oversight: what people
+mean by "give this machine a static address" is an IPv4 address, and IPv6
+addressing is a form with a great deal more in it. IPv6 is left exactly as
+NetworkManager had it, so a machine given a static IPv4 address still gets
+whatever the network offers it over IPv6.
+
+**None of it is written down by the shell.** This is the second setting in the
+column that is not, for the same reason the sound device is not: NetworkManager
+is what remembers a network once it has been joined, every other program on the
+machine reads that, and a shell with its own copy would be a second opinion about
+it at every login.
+
+**It is also the one page in the column that needs a daemon.** Everything else
+the shell reaches for it reaches for directly — the kernel's backlight, whatever
+sound server the session has, the connector's own colour pipeline. Wireless
+cannot be: joining a network means speaking the four-way handshake against an
+access point, which is a supplicant, and nothing in the kernel does it. A shell
+that wanted Wi-Fi without depending on anything would have to become one, and
+would then be fighting the one the machine already has running. So this page
+talks to NetworkManager, and a session without it gets one row saying so —
+exactly as a session with no sound server does on the page above.
+
+Proxies, VPNs, hotspots and enterprise credentials are deliberately absent.
+Those are not one press and a value, they are forms, and a console shell
+offering half a form would be worse than one that says plainly that the network
+it cannot join has to be set up elsewhere.
+
 ### System
 
 `Settings > System` is the page about neither the picture nor the sound. It holds
-one row, and that row is the reason it exists: **Application scaling**, how large
-every application draws its own interface.
+two rows: **Application scaling**, which is the reason it exists, and **System
+information**, which is the page a console needs to be able to say what it is.
 
 ```
 Settings > System > Application scaling  >  150%
-                    X11 applications         (why this does not reach them)
 ```
 
 It is a bar, not a list, and the same object the night light's colour temperature
@@ -1497,11 +1817,10 @@ the display it was given, so the bar, the guide and this very page stay exactly
 where they are at any setting — which is the whole reason this is done per window
 instead of by moving the output's own scale.
 
-**Neither is anything under Xwayland**, and the page says so in a row that cannot
-be pressed. X11 has no per-surface scale to tell a client about, so the only
-thing that could be done to those windows is to magnify pixels they have already
-drawn, and a blurred window is not what somebody asking for a larger one asked
-for.
+**Neither is anything under Xwayland.** X11 has no per-surface scale to tell a
+client about, so the only thing that could be done to those windows is to
+magnify pixels they have already drawn, and a blurred window is not what
+somebody asking for a larger one asked for.
 
 One number for the session rather than one per display, unlike everything under
 Display: the two screens on a desk are looked at by the same pair of eyes from
@@ -1519,6 +1838,46 @@ lights the displays a second before the shell can speak and being corrected
 afterwards costs a black screen; here there is nothing on screen to correct —
 every application is started *by* the shell, always after it has said what this
 is.
+
+#### System information
+
+The second row of the page opens a panel rather than a column: the shell's own
+fennec mark over nine named facts about the machine, read at the moment it is
+pressed and dismissed with `Close`.
+
+```
+Settings > System > System information
+
+    System name        Some System
+    System version     9
+    System software    Version 0.1.0
+    IP address         192.0.2.17
+    Kernel             Linux 6.6.0-generic
+    Processor          Some Core X9-9000 6-Core
+    Graphics           Some Radeon X9000
+    Memory             20 GiB free of 30 GiB
+    Disk space         120 GiB free of 233 GiB
+```
+
+**System name** and **System version** are `NAME` and `VERSION_ID` out of
+`/etc/os-release`; a rolling release publishes no version, and that row is left
+off rather than shown empty. **System software** is this shell's own version —
+the `VERSION` file at the root of the checkout, which both halves are built
+against. **IP address** is the first ordinary address on an interface that is up
+and is not the loopback, asked of the kernel rather than of a network manager,
+since a session with no desktop in it has nobody to ask; a machine on no network
+reads `Not connected`. **Kernel**, **Processor** and **Memory** come from
+`/proc`, and **Disk space** from the filesystem the system is installed on.
+**Graphics** is the adapter the shell itself is drawing through, which is the one
+thing here no file on the disk knows.
+
+Nothing on the page can be changed, and nothing is invented: a value the machine
+will not give reads `Unknown` rather than something derived from the value beside
+it. The processor and the adapter are named as their vendors name them, less the
+`(R)` and `(TM)` marks. Two more words come off, both of them a label repeating
+itself at the cost of the end of the row: a trailing `Processor` on the CPU, and
+the trailing bracket in which Mesa writes the driver and chip codename rather
+than the card.
 
 ### Several displays
 
@@ -2934,6 +3293,9 @@ crates/lxb-desktop/
                   real keyboard drive it
   system.rs       volume, per-application volume and brightness, off the
                   main thread
+  power.rs        what is left in the battery, out of the kernel's own
+                  power_supply directory, and which supplies are this
+                  machine's rather than a peripheral's
   volume.rs       how long the control a volume key raises stays on screen
   sound.rs        the ten effects and Start music, and the output and focus
                   transitions they go through

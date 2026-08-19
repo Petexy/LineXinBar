@@ -1,70 +1,17 @@
 <!--
-  The file menu's Sort row: three bars, each shorter than the one above it.
+  The three bars a shelf's order is changed by.
 
-  A list mark on its own would say "list", which is what the whole panel is. The
-  lengths are what make it say *order*: they step down evenly, so the shape is
-  read as sorted before any of the three bars is read as a bar. That is the only
-  cue there is room for — a menu row gives its glyph about 25 px, and an arrow
-  beside the bars, which is how this mark is usually drawn, is four grey pixels
-  at that size and reads as a smudge on the end of the top line.
+  Three separate bodies with air between them, which is all this mark is. The
+  gaps are wider than the bars are thick, so nothing merges.
 
-  See pointer-stick.svg for what each gradient below is doing. This is the
-  reduced set: three flat bars with nothing to model but the lamp above them,
-  so the gloss is one band laid across the top of the group rather than one per
-  bar — three separate highlights at this size would read as three different
-  materials.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f9f9f9"/>
-      <stop offset="0.34" stop-color="#eeeeee"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.8" stop-color="#e1e1e1"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="0.3" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.8" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.1"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.76" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#383838" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Left edges aligned, so the step down is in the ends alone: bars that
-         narrowed from both sides would read as a funnel rather than a list. -->
-    <g id="bars">
-      <rect x="5.6" y="8.2" width="20.8" height="3.9" rx="1.95"/>
-      <rect x="5.6" y="14.05" width="14.6" height="3.9" rx="1.95"/>
-      <rect x="5.6" y="19.9" width="8.4" height="3.9" rx="1.95"/>
-    </g>
-    <path id="bars-gloss" d="M4 6h24v6.6c-6 1.5-18 1.5-24 0z"/>
-    <clipPath id="bars-clip"><use href="#bars"/></clipPath>
-  </defs>
-
-  <g filter="url(#drop)">
-    <use href="#bars" fill="url(#face)"/>
-    <g clip-path="url(#bars-clip)">
-      <use href="#bars-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#bars" fill="url(#turn)"/>
-    <use href="#bars" fill="none" stroke="url(#edge)" stroke-width="0.8"/>
+  <g fill="#fff">
+    <rect x="5.6" y="8.2" width="20.8" height="3.9" rx="1.95"/>
+    <rect x="5.6" y="14.05" width="14.6" height="3.9" rx="1.95"/>
+    <rect x="5.6" y="19.9" width="8.4" height="3.9" rx="1.95"/>
   </g>
 </svg>

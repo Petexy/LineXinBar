@@ -1,102 +1,55 @@
 <!--
-The Games column's glyph: a gamepad.
+  The Games column's glyph, and the drawing the rest of the set is measured
+  against: a bead of water standing on a flat space, sculpted into a controller.
 
-  This is the third pad the shell draws, and the three have to be told apart at
-  a glance, because two of them can be on screen at once — the guide's sidebar
-  overlays the start screen. They are distinguished by how much of a controller
-  each one is, which follows from what each is being asked:
+  lxb:shape — this file is a *shape*, and not a picture of one. Nothing in it is
+  shaded and nothing in it should be. The atlas measures how far every pixel is
+  from the nearest edge of the mark, and the quad shader builds the water out of
+  that field: `icons::SHAPE_MARK` is the marker, `icons::builtin_distance_field`
+  takes the measurement, and `glyph_material` in shaders.wgsl is the material.
 
-    pointer-stick  a bare shell with one stick sunk in it, and nothing else,
-                   because the question is *which stick*.
-    pad-select     an outline with two buttons in the middle of it, one filled,
-                   because the question is *which button*.
-    this one       the whole object — solid, with a d-pad and four face
-                   buttons — because the question is only "games".
+  What the material makes of a shape, so that one can be judged before it is
+  looked at:
 
-  So this is the one that gets to be a controller rather than a diagram of one,
-  and the only one with anything on it that is not being pointed at. The d-pad
-  and the buttons are sunk into the shell rather than standing proud of it: at
-  84 px, which is what this row gives an unselected column, a raised white cap
-  on a white shell is carried entirely by its own shadow, and a recess has the
-  shadow on the inside where the shell cannot lose it.
+    * The wall. The field's gradient points straight out of the nearest edge, so
+      wherever the mark ends its surface turns over and stands up. That is the
+      whole of the bead — dark at the crown, where the wall is edge-on to the
+      light and hands over the room behind it, and bright at the foot, where the
+      wall has laid down and the whole lamp arrives at once.
+    * The openings. A hole's edge is an edge like any other, so the ring of
+      displaced volume standing round each one is that same wall arriving from
+      the other side, and nothing has to be drawn for it. This is what used to
+      cost five hand-tuned passes per opening, and it is why the set was redrawn.
+    * The shadow. The field reaches out past the mark, so the shader can ask
+      what is up-light of a pixel *outside* it and darken the flat space there.
+
+  Which leaves three ways for a drawing here to go wrong, all of them geometry:
+  a mark with no margin round it for its shadow, a part narrower than the bevel
+  is deep, and two bodies overlapping with no gap between them — the field
+  cannot tell that from one body, so a seam has to be cut as a real crevice.
+
+  The controller: the shell of the pad is the bead, and the controls are taken
+  out of it rather than laid on top of it. Raised droplets on a droplet were the
+  first attempt and read as a pile of blobs; water pulled off a surface leaves a
+  clean hole, and a hole is what the eye resolves at the size a column is drawn.
+  The d-pad is one cross and the four face buttons are four pips, none of them
+  quite regular — a bead is not a moulding, and the small irregularities are
+  what keep it from looking pressed out of plastic.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-
-    <path id="pad" d="M11 6.8h10a8 8 0 0 1 6.9 6.6l1 7.4a3.5 3.5 0 0 1-5.8 3.2l-2.4-4h-9.4l-2.4 4a3.5 3.5 0 0 1-5.8-3.2l1-7.4a8 8 0 0 1 6.9-6.6z"/>
-    <path id="dpad" d="M9.85 10.9h1.9v1.55h1.55v1.9h-1.55v1.55h-1.9v-1.55H8.3v-1.9h1.55z"/>
-    <path id="pad-gloss" d="M2 3H30V16.8C25.24 18.53 6.76 18.53 2 16.8z"/>
-    <clipPath id="pad-clip"><use href="#pad"/></clipPath>
+    <path id="bead" d="M3.4 13.4C4.4 9.5 8 7.6 12.4 7.4C13.6 7.32 14.7 7.3 16 7.3C17.3 7.3 18.5 7.3 20.2 7.35C24.6 7.5 27.7 9.5 28.5 13.4C29 16.2 29 19.4 27.6 22.6C26.9 24.2 25.4 25.4 23.8 25C22.2 24.6 21.2 23 20.4 21.4C19.6 19.8 18.2 19.2 16 19.2C13.8 19.2 12.4 19.8 11.6 21.4C10.8 23 9.8 24.6 8.2 25C6.6 25.4 5.1 24.2 4.4 22.6C3 19.4 2.9 16.2 3.4 13.4Z"/>
+    <path id="plus" d="M10.2 10.75C10.75 10.67 11.25 10.67 11.8 10.75A0.75 0.75 0 0 1 12.55 11.5V12.15A0.75 0.75 0 0 0 13.3 12.9H13.95A0.75 0.75 0 0 1 14.7 13.65C14.8 14.15 14.8 14.75 14.7 15.25A0.75 0.75 0 0 1 13.95 16H13.3A0.75 0.75 0 0 0 12.55 16.75V17.4A0.75 0.75 0 0 1 11.8 18.15C11.25 18.23 10.75 18.23 10.2 18.15A0.75 0.75 0 0 1 9.45 17.4V16.75A0.75 0.75 0 0 0 8.7 16H8.05A0.75 0.75 0 0 1 7.3 15.25C7.2 14.75 7.2 14.15 7.3 13.65A0.75 0.75 0 0 1 8.05 12.9H8.7A0.75 0.75 0 0 0 9.45 12.15V11.5A0.75 0.75 0 0 1 10.2 10.75Z"/>
+    <g id="pips"><ellipse cx="21.7" cy="11.1" rx="1.38" ry="1.31" transform="rotate(-14 21.7 11.1)"/><ellipse cx="24.45" cy="13.85" rx="1.32" ry="1.37" transform="rotate(20 24.45 13.85)"/><ellipse cx="21.7" cy="16.6" rx="1.37" ry="1.32" transform="rotate(8 21.7 16.6)"/><ellipse cx="19" cy="13.85" rx="1.31" ry="1.36" transform="rotate(-6 19 13.85)"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#plus" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <use href="#pad" fill="url(#face)"/>
-    <g clip-path="url(#pad-clip)">
-      <use href="#pad-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#pad" fill="url(#turn)"/>
-    <g clip-path="url(#pad-clip)">
-      <use href="#pad" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
-    </g>
-
-    <!-- The d-pad, cut into the left of the face. -->
-    <use href="#dpad" fill="url(#recess)"/>
-    <use href="#dpad" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <!-- And the four on the right, in the diamond every pad agrees on even
-         when it cannot agree what to print on them. -->
-    <g fill="url(#recess)">
-      <circle cx="21.4" cy="10.9" r="1.2"/>
-      <circle cx="23.9" cy="13.4" r="1.2"/>
-      <circle cx="21.4" cy="15.9" r="1.2"/>
-      <circle cx="18.9" cy="13.4" r="1.2"/>
-    </g>
-    <g fill="none" stroke="url(#edge)" stroke-width="0.6">
-      <circle cx="21.4" cy="10.9" r="1.2"/>
-      <circle cx="23.9" cy="13.4" r="1.2"/>
-      <circle cx="21.4" cy="15.9" r="1.2"/>
-      <circle cx="18.9" cy="13.4" r="1.2"/>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

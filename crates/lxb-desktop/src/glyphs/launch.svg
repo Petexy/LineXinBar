@@ -1,66 +1,17 @@
 <!--
-  The context menu's Launch row: the play mark.
+  The play mark, on the context menu row that starts something.
 
-  Written as a filled path with its three corners already rounded, rather than
-  as a sharp triangle stroked with a round join. The stroking trick is shorter
-  but it makes the silhouette a property of the stroke, and everything else
-  here — the gloss clip, the lit rim along the bottom edge — has to follow that
-  silhouette exactly. One path that all three can refer to is worth the six
-  numbers.
+  One shape with three round corners, and nothing else needed. A triangle is
+  where the material does most for the least: its three corners are the only
+  places on it where the wall turns through anything, so the light gathers there
+  and the flat between them stays flat.
 
-  See pointer-stick.svg for the gradients. This is the reduced set: the mark is
-  a solid wedge with nothing on it to model but the lamp above.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f9f9f9"/>
-      <stop offset="0.34" stop-color="#eeeeee"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.8" stop-color="#e1e1e1"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="0.22" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.1"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.72" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.18"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#383838" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Apex right at (23, 16), back edge at x = 9, corners taken off with a
-         1.8 radius: the run-in distance differs per corner because the point
-         is much sharper than the two square-ish ones behind it. -->
-    <path id="play"
-          d="M11.69 9.54 20.27 14.44a1.8 1.8 0 0 1 0 3.12L11.69 22.46
-             a1.8 1.8 0 0 1-2.69-1.56V11.1a1.8 1.8 0 0 1 2.69-1.56z"/>
-    <path id="play-gloss" d="M7 6h19v8.1c-4.4 2-14.6 2-19 0z"/>
-    <clipPath id="play-clip"><use href="#play"/></clipPath>
-  </defs>
-
-  <g filter="url(#drop)">
-    <use href="#play" fill="url(#face)"/>
-    <g clip-path="url(#play-clip)">
-      <use href="#play-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#play" fill="url(#turn)"/>
-    <use href="#play" fill="none" stroke="url(#edge)" stroke-width="1"/>
-  </g>
+  <path fill="#fff"
+        d="M11.69 9.54 20.27 14.44a1.8 1.8 0 0 1 0 3.12L11.69 22.46
+           a1.8 1.8 0 0 1-2.69-1.56V11.1a1.8 1.8 0 0 1 2.69-1.56z"/>
 </svg>

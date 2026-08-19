@@ -1,116 +1,41 @@
 <!--
-The Appearance subcategory's glyph: a palette.
+  A painter's palette, at the head of the appearance rows.
 
-  The Settings column's rows are drawn as objects, like the category row above
-  them and for the same reason: they are lit by one lamp and read as a set.
+  The thumb hole is in the palette's own path and the three wells are openings
+  cut through it. In the old drawing the wells were sunk and shaded; as holes
+  they read at a settings row's size, which the sunk ones did not.
 
-  A palette rather than a brush, which is what this was first. A brush is a
-  narrow upright thing — a handle, a band, a tuft — and this set is drawn in
-  white on a purple wallpaper at 64 px for a row that is not the chosen one.
-  At that size the band and the tuft merge into one ribbed collar under a pale
-  stalk, and what the drawing says is "spark plug". The palette has the shape
-  the cell wants: wide, closed, and recognisable from its outline alone before
-  any of the modelling inside it is resolved. Its outline is deliberately
-  uneven and its wells are an irregular arc: a perfect oval with four even
-  circles reads as a gamepad at row size.
+  Drawn a little smaller than the old mark was. A shape has to leave room round
+  itself for the shadow the shader casts beside it, and this one ran to within a
+  unit of the cell's edge; the scale below is what brings it inside. The four
+  rotations all carry the same factor whatever each needs on its own, because
+  they are one object turned and have to stay one size.
 
-  The thumb hole is a hole rather than a dark disc. Nothing in this set may go
-  dark — the atlas multiplies the quad's colour into the texel, so a near-black
-  mark comes back as a hole punched in the drawing — which here is exactly what
-  is wanted, so it is punched properly, with the even-odd rule, and the
-  wallpaper shows through it.
-
-  The wells are sunk with the same gradient the cog's bore uses: lightest at
-  the bottom, where a well returns the lamp off its far wall. They are what
-  makes it a palette rather than a leaf, and they are deliberately empty —
-  there is no paint in them, because the colour this subcategory leads to is
-  one step further in, on a swatch drawn in itself.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5" result="shadow"/>
-      <!-- Keep the shadow outside the silhouette. Filtering a cutout path
-           darkens the opening too, making a transparent thumb hole look like
-           a purple analogue stick against the wallpaper. -->
-      <feComposite in="shadow" in2="SourceGraphic" operator="out"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- A well, sunk into the face. The same gradient the cog's bore uses:
-         darkest under the near wall, lightest at the bottom of the far one. -->
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-
-    <!-- The outer silhouette casts the shadow. The face and thumb hole are one
-         even-odd path, so the opening stays properly transparent. Unequal
-         shoulders and the small lower-left notch keep it from becoming the
-         oval body of a controller. -->
-    <path id="palette-outline"
-          d="M15.7 3.8C22.5 3.8 28.1 7.7 29 12.9C30 18.3 26.1 23.8 20.6 26.1C18.3 27.1 15.9 27.2 14.4 25.8C13.2 24.6 14 22.9 13.9 21.4C13.8 19.9 12.6 18.8 10.9 18.8C9.6 18.8 8.7 19.5 7.3 19.5C3.8 19.5 1.8 16.8 2.5 13.3C3.5 7.9 9.1 3.8 15.7 3.8z"/>
     <path id="palette" fill-rule="evenodd"
           d="M15.7 3.8C22.5 3.8 28.1 7.7 29 12.9C30 18.3 26.1 23.8 20.6 26.1C18.3 27.1 15.9 27.2 14.4 25.8C13.2 24.6 14 22.9 13.9 21.4C13.8 19.9 12.6 18.8 10.9 18.8C9.6 18.8 8.7 19.5 7.3 19.5C3.8 19.5 1.8 16.8 2.5 13.3C3.5 7.9 9.1 3.8 15.7 3.8z
              M21.4 16.1C19.65 16.1 18.35 17.65 18.35 19.7C18.35 21.75 19.65 23.3 21.4 23.3C23.15 23.3 24.45 21.75 24.45 19.7C24.45 17.65 23.15 16.1 21.4 16.1z"/>
-    <path id="palette-gloss" d="M1 2H31V13.5C24.2 17.1 8.3 17.3 1 14.1z"/>
-    <clipPath id="palette-clip"><use href="#palette"/></clipPath>
+    <g id="wells">
+      <circle cx="8.7" cy="11.7" r="1.9"/>
+      <circle cx="13.6" cy="8.4" r="1.9"/>
+      <circle cx="19.6" cy="9.3" r="1.9"/>
+    </g>
+    <g id="bead"><use href="#palette"/></g>
+    <g id="holes"><use href="#wells"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
-
-  <use href="#palette-outline" fill="#ffffff" filter="url(#drop)"/>
-
-  <g>
-    <use href="#palette" fill="url(#face)"/>
-    <g clip-path="url(#palette-clip)">
-      <use href="#palette-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#palette" fill="url(#turn)"/>
-    <g clip-path="url(#palette-clip)">
-      <use href="#palette" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
-    </g>
-
-    <!-- Three wells, following the uneven sweep of the palette's own edge. -->
-    <g fill="url(#recess)">
-      <circle cx="8.7" cy="11.7" r="1.9"/>
-      <circle cx="13.6" cy="8.4" r="1.9"/>
-      <circle cx="19.6" cy="9.3" r="1.9"/>
-    </g>
-    <g fill="none" stroke="url(#edge)" stroke-width="0.7">
-      <circle cx="8.7" cy="11.7" r="1.9"/>
-      <circle cx="13.6" cy="8.4" r="1.9"/>
-      <circle cx="19.6" cy="9.3" r="1.9"/>
+  <g transform="translate(16 16) scale(0.963) translate(-16 -16)">
+  
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
     </g>
   </g>
 </svg>

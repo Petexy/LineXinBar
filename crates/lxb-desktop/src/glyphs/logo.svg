@@ -1,135 +1,48 @@
 <!--
-  LineXinBar's rabbit mark, made from the same polished white material as the
-  shell's other glyphs.
+  LineXinBar's fennec mark.
 
-  The silhouette is the original logo geometry, only scaled down enough to
-  leave room for the shadow that every object in this set casts.  Its ears can
-  carry the complete treatment: a moulded face, a curved gloss boundary, side
-  falloff, a bright inner rim, and a small reflection from the lamp above and
-  to the left.  The eyes, muzzle, whiskers, and chin are already only a few
-  pixels across at glyph size, so they share one simpler gradient instead of
-  acquiring a separate rim each and turning into grey noise.
+  lxb:shape — a shape and not a picture of one. Nothing here is shaded and
+  nothing here should be: `icons::builtin_distance_field` measures how far every
+  pixel is from the nearest edge, and `glyph_material` in shaders.wgsl stands the
+  water up out of that. See category-games.svg, which carries the recipe.
 
-  All shading is neutral.  The atlas multiplies a glyph by the UI colour, so
-  coloured glass here would muddy every tint the shell applies to the mark.
+  Ears, muzzle, whiskers, eyes and chin, all one material and all bodies in their
+  own right. They were tried as openings first, on the rule the rest of the set
+  follows — and that is wrong here, because the face does not lie inside the
+  ears: cut as holes it fell outside them and simply disappeared. An opening
+  needs something to be an opening in.
+
+  Drawn in Inkscape on a page of its own, so the geometry arrives here in that
+  page's coordinates and the two groups below are the whole of the conversion.
+  The inner matrix is the page mapped into the 32-unit cell; the outer scale is
+  the margin, and it is the only number in this file worth revisiting.
+
+  The margin is 3.2 units at the ear tips, which is where the drawing was widest
+  and where it ran out to the very edge of its page. It is not slack: the shader
+  draws the mark's own shadow on the flat space beside it and can only draw it
+  where the quad reaches, so a mark touching its cell edge has its shadow end in
+  a straight cut. 0.8 is what puts the ears where the wide marks in the rest of
+  the set stand — category-system's box is x 3.19..28.81 and this one's is the
+  same to the pixel — and it lands the fennec exactly where the drawing it
+  replaces stood, which is the other thing that had to stay true.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <!-- One lamp over the complete mark.  These stops are shared with the
-         larger glyphs; user-space coordinates keep disconnected pieces under
-         the same light rather than giving every path its own tiny gradient. -->
-    <linearGradient id="face" gradientUnits="userSpaceOnUse"
-                    x1="0" y1="5" x2="0" y2="27">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="lit" gradientUnits="userSpaceOnUse"
-                    x1="0" y1="5" x2="0" y2="27">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.44" stop-color="#f4f4f4"/>
-      <stop offset="0.82" stop-color="#cfcfcf"/>
-      <stop offset="1" stop-color="#e4e4e4"/>
-    </linearGradient>
-    <linearGradient id="gloss" gradientUnits="userSpaceOnUse"
-                    x1="0" y1="4" x2="0" y2="15">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" gradientUnits="userSpaceOnUse"
-                    x1="2" y1="0" x2="30" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <radialGradient id="spec" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.72"/>
-      <stop offset="0.56" stop-color="#ffffff" stop-opacity="0.25"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
 
-    <filter id="drop" x="-35%" y="-35%" width="180%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Original logo paths, kept in their authoring coordinates. -->
-    <path id="ears-source"
-          d="m87.364822 120.87492c3.836176 7.07312 18.601688 26.83717 19.717598 7.87401.0497-10.02409-.85762-9.44118-7.873961-15.45519C89.312293 104.2147 74.987569 91.493392 68.94882 86.125136 44.18932 71.522225 63.740455 145.32594 84.566698 142.34948 51.060244 105.48625 61.034864 67.347 87.364822 120.87492Zm43.544598 0c-3.83618 7.07312-18.60169 26.83717-19.7176 7.87401-.0497-10.02409.85762-9.44118 7.87396-15.45519 9.89617-9.07904 24.22089-21.800348 30.25964-27.168604 24.7595-14.602911 5.20836 59.200804-15.61788 56.224344 33.50646-36.86323 23.53184-75.00248-2.79812-21.47456Z"/>
-    <path id="muzzle-source"
-          d="m142.15128 198.63862c6.83114 5.47333 13.11959 5.83335 14.73491 7.86498-4.82795-.69463-10.11546-.77315-14.71685.0444-4.60139-.81761-9.55044-.72522-14.37839-.0306 1.61532-2.03163 7.52893-2.40499 14.36033-7.87887Z"
-          transform="matrix(-1 0 0 1 251.28937 -47.804896)"/>
-    <path id="whiskers-source"
-          d="m83.125226 148.90568 10.925589 3.91489-11.538637.34774 11.558084.78066-10.800109 4.0376 12.246606-3.27453-.46488-1.17239.0065-.46534.424133-1.14877Zm52.023874 0-12.1577 3.01986.20975 1.25249-.0417.40607-.40191 1.12794 12.24661 3.27453-10.80011-4.0376 11.55808-.78066-11.53863-.34774Z"/>
-    <path id="eyes-source"
-          d="m104.57859 147.92813c-3.63865-8.96971-5.275827-1.19057-10.077201-7.59241-1.081836 8.83493 6.287821 13.05903 10.077201 7.59241Zm9.11706 0c3.63865-8.96971 5.27583-1.19057 10.0772-7.59241 1.08184 8.83493-6.28782 13.05903-10.0772 7.59241Z"/>
-    <path id="chin-source"
-          d="m94.489301 158.84919 14.644159 3.92184 14.28022-3.9098c-5.30751-.23135-8.61292-.17582-14.27744.24401-5.66453-.41978-9.339432-.48741-14.646939-.25605Z"/>
-
-    <!-- The original document filled its 115.56-unit viewBox exactly.  This
-         transform centres it at 28 units wide, leaving a two-unit gutter for
-         the cast shadow. -->
-    <g id="ears" transform="matrix(.270419 0 0 .270419 -13.5128 -17.2587)">
-      <use href="#ears-source"/>
-    </g>
-    <g id="details" transform="matrix(.270419 0 0 .270419 -13.5128 -17.2587)">
-      <use href="#muzzle-source"/>
-      <use href="#whiskers-source"/>
-      <use href="#eyes-source"/>
-      <use href="#chin-source"/>
-    </g>
-    <g id="mark">
-      <use href="#ears"/>
-      <use href="#details"/>
-    </g>
-
-    <mask id="ears-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <use href="#ears" fill="#ffffff"/>
-    </mask>
-    <mask id="details-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <use href="#details" fill="#ffffff"/>
-    </mask>
-    <clipPath id="ears-clip">
-      <use href="#ears"/>
-    </clipPath>
-  </defs>
-
-  <!-- One shadow holds the disconnected paths on the same depth plane. -->
-  <g>
-    <use href="#mark" fill="#ffffff" filter="url(#drop)"/>
-
-    <!-- The ears are broad enough to show the full moulded-glass stack. -->
-    <g mask="url(#ears-mask)">
-      <rect width="32" height="32" fill="url(#face)"/>
-      <path d="M0 2h32v11.1c-7.4 2.45-24.6 2.45-32 0Z"
-            fill="url(#gloss)" filter="url(#polish)"/>
-      <ellipse cx="8.7" cy="7.4" rx="5.2" ry="3.1"
-               transform="rotate(-24 8.7 7.4)"
-               fill="url(#spec)" filter="url(#polish)"/>
-      <rect width="32" height="32" fill="url(#turn)"/>
-    </g>
-    <g clip-path="url(#ears-clip)">
-      <use href="#ears" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
-    </g>
-
-    <!-- At 32 px these are wires and small caps, so one shared lit gradient
-         survives better than five independent gloss-and-rim treatments. -->
-    <g mask="url(#details-mask)">
-      <rect width="32" height="32" fill="url(#lit)"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"
+     fill="#ffffff" stroke="none">
+  <!-- The margin the shadow is drawn in. -->
+  <g transform="translate(16 16) scale(0.8) translate(-16 -16)">
+    <!-- The page the mark was drawn on, into the cell. -->
+    <g transform="matrix(0.309050375,0,0,0.309147589,-17.728868,-22.176826)">
+      <path
+            d="m 87.364822,120.87492 c 3.836176,7.07312 18.601688,26.83717 19.717598,7.87401 0.0497,-10.02409 -0.85762,-9.44118 -7.873961,-15.45519 C 89.312293,104.2147 74.987569,91.493392 68.94882,86.125136 44.18932,71.522225 63.740455,145.32594 84.566698,142.34948 51.060244,105.48625 61.034864,67.347 87.364822,120.87492 Z m 43.544598,0 c -3.83618,7.07312 -18.60169,26.83717 -19.7176,7.87401 -0.0497,-10.02409 0.85762,-9.44118 7.87396,-15.45519 9.89617,-9.07904 24.22089,-21.800348 30.25964,-27.168604 24.7595,-14.602911 5.20836,59.200804 -15.61788,56.224344 33.50646,-36.86323 23.53184,-75.00248 -2.79812,-21.47456 z" />
+      <path transform="matrix(-1,0,0,1,251.28937,-47.804896)"
+            d="m 142.15128,198.63862 c 6.83114,5.47333 13.11959,5.83335 14.73491,7.86498 -4.82795,-0.69463 -10.11546,-0.77315 -14.71685,0.0444 -4.60139,-0.81761 -9.55044,-0.72522 -14.37839,-0.0306 1.61532,-2.03163 7.52893,-2.40499 14.36033,-7.87887 z" />
+      <path
+            d="m 83.125226,148.90568 10.925589,3.91489 -11.538637,0.34774 11.558084,0.78066 -10.800109,4.0376 12.246606,-3.27453 -0.46488,-1.17239 0.0065,-0.46534 0.424133,-1.14877 z m 52.023874,0 -12.1577,3.01986 0.20975,1.25249 -0.0417,0.40607 -0.40191,1.12794 12.24661,3.27453 -10.80011,-4.0376 11.55808,-0.78066 -11.53863,-0.34774 z" />
+      <path
+            d="m 104.57859,147.92813 c -3.63865,-8.96971 -5.275827,-1.19057 -10.077201,-7.59241 -1.081836,8.83493 6.287821,13.05903 10.077201,7.59241 z m 9.11706,0 c 3.63865,-8.96971 5.27583,-1.19057 10.0772,-7.59241 1.08184,8.83493 -6.28782,13.05903 -10.0772,7.59241 z" />
+      <path
+            d="m 94.489301,158.84919 14.644159,3.92184 14.28022,-3.9098 c -5.30751,-0.23135 -8.61292,-0.17582 -14.27744,0.24401 -5.66453,-0.41978 -9.339432,-0.48741 -14.646939,-0.25605 z" />
     </g>
   </g>
 </svg>

@@ -66,6 +66,7 @@ Requires:       mesa-libEGL
 Requires:       libxkbcommon
 Requires:       systemd
 Requires:       pipewire
+Recommends:     NetworkManager
 Recommends:     xdg-desktop-portal
 Recommends:     wireplumber
 Recommends:     pulseaudio-utils

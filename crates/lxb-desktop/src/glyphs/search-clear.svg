@@ -1,59 +1,17 @@
 <!--
-  The row under the field that empties it: the same magnifier, with a cross in
-  the glass.
+  The magnifier with a cross in it, on the row that empties a search.
 
-  A variation rather than a mark of its own, and deliberately so. These two
-  rows sit one above the other and are about one thing — the search this column
-  is under — so a second, unrelated drawing would read as a second subject.
-  What tells them apart is inside the ring, which is exactly where the eye is
-  already looking, and the cross is what "clear this" has been drawn as for as
-  long as there have been fields to clear.
+  search.svg's mark exactly, with the cross laid into the lens. The cross is
+  part of the same body rather than a separate one, so it reads as a bar welded
+  across the glass rather than as something floating in the hole — at the size
+  a shelf head is drawn there is no room for a crevice inside a lens.
 
-  It is not the cross that closes a window, and the difference is the arms: this
-  one is short enough to sit inside the lens with daylight all round it, so it
-  is read as something *in* the glass rather than as a mark stamped over the
-  whole row. Nothing here deletes a file, and a glyph that suggested it did
-  would be the worst mark in the shell.
-
-  See search.svg for the forms and pointer-stick.svg for the gradients. The
-  cross carries the group's gloss like the rest of it: it is a piece of the same
-  object under the same lamp, not a label stuck on top.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f9f9f9"/>
-      <stop offset="0.34" stop-color="#eeeeee"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.8" stop-color="#e1e1e1"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="0.3" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.8" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.58"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.1"/>
-      <stop offset="0.24" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.76" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.2" stdDeviation="0.48"
-                    flood-color="#383838" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-12%" y="-12%" width="124%" height="124%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
 
-    <g id="glass">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
       <rect x="0" y="-2.1" width="11.3" height="4.2" rx="2.1"
             transform="translate(18.6 18.2) rotate(45)"/>
       <path fill-rule="evenodd"
@@ -63,17 +21,5 @@
             transform="translate(13.6 13.2) rotate(45)"/>
       <rect x="-3.4" y="-1.1" width="6.8" height="2.2" rx="1.1"
             transform="translate(13.6 13.2) rotate(-45)"/>
-    </g>
-    <path id="glass-gloss" d="M2 2h28v9.4c-8.4 3-19.6 3-28 0z"/>
-    <clipPath id="glass-clip"><use href="#glass"/></clipPath>
-  </defs>
-
-  <g filter="url(#drop)">
-    <use href="#glass" fill="url(#face)"/>
-    <g clip-path="url(#glass-clip)">
-      <use href="#glass-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#glass" fill="url(#turn)"/>
-    <use href="#glass" fill="none" stroke="url(#edge)" stroke-width="0.8"/>
   </g>
 </svg>

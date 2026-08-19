@@ -39,12 +39,20 @@
 //! whose whole job is to overwrite itself afterwards.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use lxb_steam::{Confirmation, Doing, Event, Game, Stopped};
 
 use crate::dialog;
 use crate::menu;
 use crate::secret::Secret;
+
+/// How often the machine is asked whether Valve's client is still installed.
+///
+/// Ten seconds because that is the rate the library already refreshes at, and
+/// because the thing being watched for is somebody at a terminal removing a
+/// package. Nothing waits on this: every press looks the client up for itself.
+const AFTER_THE_CLIENT: Duration = Duration::from_secs(10);
 
 /// Steam as one field of the shell.
 pub struct Steam {
@@ -76,6 +84,13 @@ pub struct Steam {
     /// game is quick but it is not instant, and a row that said nothing while
     /// it happened would be a row somebody pressed again.
     removing: BTreeSet<u32>,
+    /// When the machine was last asked whether Valve's client is still there.
+    ///
+    /// Asked on an interval rather than per row: it is a `PATH` walk, the
+    /// library is rebuilt whole, and what this is watching for — somebody
+    /// removing Steam from under a running session — is not something that
+    /// happens between two frames. See [`lxb_steam::Steam::recheck_client`].
+    asked_after_the_client: Instant,
     /// Whether this session drives Valve's client itself.
     ///
     /// False in a session started with `--no-steam` and in one showing an
@@ -206,6 +221,7 @@ impl Steam {
             signing_in: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
+            asked_after_the_client: Instant::now(),
             driving: true,
         }
     }
@@ -221,6 +237,7 @@ impl Steam {
             signing_in: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
+            asked_after_the_client: Instant::now(),
             driving: false,
         }
     }
@@ -311,6 +328,14 @@ impl Steam {
     /// Take in everything the worker has said. Returns what has to be redrawn.
     pub fn sync(&mut self) -> Changed {
         let mut changed = Changed::default();
+        // A client that has been installed or removed since the last look
+        // changes every row in the column — whether it can be played, whether
+        // it can be fetched — so the column is rebuilt for it exactly as it is
+        // for a library that arrived.
+        if self.asked_after_the_client.elapsed() >= AFTER_THE_CLIENT {
+            self.asked_after_the_client = Instant::now();
+            changed.library |= self.client.recheck_client();
+        }
         for event in self.client.take() {
             let one = self.apply(event);
             changed.library |= one.library;
@@ -561,7 +586,7 @@ impl Steam {
         let Some(where_it_is) = lxb_steam::client::Where::find() else {
             return Err("There is no Steam client installed on this machine.".to_string());
         };
-        let options = lxb_steam::client::Options::found();
+        let options = lxb_steam::client::Options::for_client(&where_it_is);
         lxb_steam::client::open(
             &where_it_is,
             options.as_ref(),

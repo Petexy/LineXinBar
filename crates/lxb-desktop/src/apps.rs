@@ -220,6 +220,100 @@ pub enum Entry {
     /// manager's, and half of them are not on the disk at all. What it shares
     /// with an application is only that pressing it starts something.
     Game(Game),
+    /// The row under Settings > System that puts up what this machine is.
+    ///
+    /// Its own kind of row because the three it might have been are each
+    /// wrong in the same way. A [`Choice`] carrying a setting would move a
+    /// mark and write a file, and there is nothing here to set. A `Choice`
+    /// carrying none is inert on purpose — that is the row for a value the
+    /// shell can show but not change, and it must stay unpressable. And a
+    /// [`Folder`] opens a column, which is a list of answers; what is behind
+    /// this is a panel of facts, which is not a list of anything.
+    ///
+    /// So what it is, is a door: it carries what the row itself says, and what
+    /// is behind it. See [`Facts`], and `Shell::show_facts`.
+    Facts(Facts),
+    /// A value that is *typed* rather than picked off a list or slid along a
+    /// bar.
+    ///
+    /// The third way a value is set in this tree, and it exists for the same
+    /// reason [`Bar`] does: there are values a column of alternatives cannot
+    /// hold. A colour temperature is a scale, which is what a bar is for; an
+    /// IP address is neither a scale nor a set — it is four numbers and a
+    /// prefix, of which every one is as likely as any other, and no list
+    /// anybody could write would have the user's on it.
+    ///
+    /// So it is a door too, like [`Entry::Facts`]: the press raises a panel
+    /// with a field on it and the on-screen keyboard under that, because on a
+    /// console there is nothing else to type with. What comes back does not go
+    /// through [`crate::model::Cursor::choose`] — nothing here is chosen and no
+    /// mark moves — which is also why it is not a [`Choice`] carrying a
+    /// setting: choosing one of those clears the mark off every other `Choice`
+    /// in the column, and a row that is pressed to open a field would take the
+    /// tick off the value that really is in force.
+    Typed(Typed),
+}
+
+/// A value that is typed into, as the tree writes the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Typed {
+    pub title: String,
+    /// Which connection this value belongs to, in the name its owner would use
+    /// for it — a wireless network's own name, or what a wired profile is
+    /// filed under.
+    ///
+    /// On the panel and nowhere else. A field raised over the bar covers the
+    /// trail that would otherwise say whose value it is, and "Address" on its
+    /// own is the same panel whether the user walked in through Wi-Fi or
+    /// through the socket on the back of the machine. Addressing belongs to a
+    /// profile rather than to the shell, so which profile is not a detail —
+    /// it is the whole of what the value is about.
+    pub whose: String,
+    /// What it is set to now, or that it is not set to anything.
+    pub comment: String,
+    pub icon: String,
+    /// What is in it, which is what the field opens with. Empty for a value
+    /// nobody has set.
+    pub value: String,
+    /// Which value it is, and whose. Carried rather than looked up on the
+    /// press, because by then the panel is what is on screen and the row it
+    /// grew out of may have been rebuilt underneath it.
+    pub about: crate::settings::Typing,
+}
+
+/// A row that opens onto a panel of values to read rather than onto a column.
+///
+/// Two of them today — what this machine is, and what a network interface was
+/// given — and they are one kind of row rather than two because the argument
+/// for them is the same argument twice. What differs is only where the values
+/// come from, which is [`About`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Facts {
+    pub title: String,
+    pub comment: String,
+    pub icon: String,
+    /// What the panel says, and where it comes from.
+    pub about: About,
+}
+
+/// Where the values behind one of these rows come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum About {
+    /// This machine, read from `/proc` at the moment the row is pressed.
+    ///
+    /// Read on the press rather than carried here, because it is read from
+    /// files that change under the shell: a memory total kept in the bar would
+    /// go stale in a tree that is rebuilt for every other reason but this one,
+    /// and reading it costs a fraction of a millisecond. See [`crate::machine`].
+    Machine,
+    /// A list of named values, gathered where the row was built.
+    ///
+    /// Carried rather than read on the press, and that is the honest division
+    /// between the two: what is behind this one is not a file the shell can go
+    /// and read, it is the answer a worker last got from somewhere else — so
+    /// the row is rebuilt when *that* changes, which is the same moment every
+    /// other row of its page is. See [`crate::network`].
+    Listed(Vec<(String, String)>),
 }
 
 /// The Steam row, as the head of the Games column.
@@ -410,6 +504,22 @@ pub struct Folder {
     /// away when the user walks past it. See [`crate::files`], and
     /// [`crate::model::Cursor::open_place`] for where the reading happens.
     pub place: Option<crate::files::Place>,
+    /// Whether this is the one in force, where the column it stands in is a set
+    /// of alternatives and this one has more inside it.
+    ///
+    /// The one row shape in the tree that is both an answer and a way further
+    /// in, and it exists because a wireless network is both. The column under
+    /// Networks asks which network this radio is on; the network it is on is
+    /// also the only one whose address and name servers there is anything to
+    /// say about, because those belong to the profile it is connected by. So
+    /// that row carries the tick every other value in force carries — see
+    /// [`Entry::chosen`], which is what draws it and what opens a column on it
+    /// — and stepping into it is what the press does instead of joining a
+    /// network the radio is already on.
+    ///
+    /// `false` everywhere else, which is every subcategory in the shell but
+    /// that one: a folder in a list of folders is not an answer to anything.
+    pub chosen: bool,
 }
 
 /// One of a set of alternatives, exactly one of which is in force.
@@ -428,6 +538,21 @@ pub struct Choice {
     pub swatch: Option<Color>,
     /// Whether this is the one currently in force.
     pub chosen: bool,
+    /// Whether pressing this row *does* something rather than answering the
+    /// question its column asks.
+    ///
+    /// Almost nothing in the tree is one of these. A settings column is a set
+    /// of alternatives and every row in it is an answer, which is what makes
+    /// the mark meaningful: it is on the answer in force, and pressing another
+    /// row moves it. A row that acts is not in that set — Forget removes a
+    /// saved network, and nothing about the column is different afterwards
+    /// except that the row is gone.
+    ///
+    /// So it never takes the mark, and pressing it never takes the mark off
+    /// whatever is holding it — see [`crate::model::Cursor::choose`]. Without
+    /// this, pressing Forget would put a tick on a press, which is not a state
+    /// anything can be in, and would silently un-mark the value beside it.
+    pub acts: bool,
     /// What choosing this row does. `None` for a value the shell can show but
     /// not change, which stays inert rather than taking the mark off a row
     /// that describes something true.
@@ -651,6 +776,7 @@ fn subcategories(id: &str) -> Vec<Entry> {
                 icon: Some(kind.glyph().to_string()),
                 entries: Vec::new(),
                 place: None,
+                chosen: false,
             })
         })
         .collect()
@@ -675,6 +801,7 @@ fn files_row() -> Entry {
         icon: Some(crate::icons::CATEGORY_FILES.to_string()),
         entries: Vec::new(),
         place: Some(crate::files::Place::Volumes),
+        chosen: false,
     })
 }
 
@@ -1279,6 +1406,8 @@ impl Entry {
             Entry::Search(search) => search.label(),
             Entry::Steam(_) => "Steam",
             Entry::Game(game) => &game.name,
+            Entry::Facts(facts) => &facts.title,
+            Entry::Typed(typed) => &typed.title,
         }
     }
 
@@ -1299,6 +1428,8 @@ impl Entry {
             Entry::Search(search) => Some(&search.note),
             Entry::Steam(service) => Some(&service.comment),
             Entry::Game(game) => Some(&game.note),
+            Entry::Facts(facts) => Some(&facts.comment),
+            Entry::Typed(typed) => Some(&typed.comment),
         }
     }
 
@@ -1315,6 +1446,8 @@ impl Entry {
             Entry::Bar(_) => None,
             Entry::Search(search) => Some(search.icon()),
             Entry::Steam(_) | Entry::Game(_) => Some(crate::icons::STEAM),
+            Entry::Facts(facts) => Some(&facts.icon),
+            Entry::Typed(typed) => Some(&typed.icon),
         }
     }
 
@@ -1431,13 +1564,61 @@ impl Entry {
 
     /// Whether this row is the value its column is currently set to.
     pub fn chosen(&self) -> bool {
-        matches!(self, Entry::Choice(choice) if choice.chosen)
+        match self {
+            Entry::Choice(choice) => choice.chosen,
+            // A subcategory that is also one of a set of answers — see
+            // [`Folder::chosen`]. It is asked here rather than only where the
+            // tick is drawn so that the two things being chosen means happen
+            // for it as well: the mark on the row, and the column opening on it
+            // rather than on its first row.
+            Entry::Folder(folder) => folder.chosen,
+            _ => false,
+        }
+    }
+
+    /// Whether pressing this row does a thing rather than answering the
+    /// question its column asks — see [`Choice::acts`].
+    ///
+    /// Read in two places, and they are the two places the shell decides
+    /// something on the user's behalf: which row a press marks, and which row
+    /// the cursor is put on when a column is rewritten under it. Neither may
+    /// land on one of these.
+    pub fn acts(&self) -> bool {
+        match self {
+            Entry::Choice(choice) => choice.acts,
+            _ => false,
+        }
     }
 
     /// The setting this value would apply, if it is an editable value.
     pub fn setting(&self) -> Option<crate::settings::Setting> {
         match self {
             Entry::Choice(choice) => choice.setting,
+            _ => None,
+        }
+    }
+
+    /// What this row puts on screen, if it is one of the rows that opens onto
+    /// a panel of values rather than onto a column.
+    ///
+    /// Asked where a press is being answered, alongside [`Entry::service`] and
+    /// [`Entry::game`]: these are the rows of the bar whose press raises a
+    /// panel rather than starting a process. See `Shell::start_selection`.
+    pub fn facts(&self) -> Option<&Facts> {
+        match self {
+            Entry::Facts(facts) => Some(facts),
+            _ => None,
+        }
+    }
+
+    /// The value this row is typed into, if it is one of the rows that is.
+    ///
+    /// Asked where a press is being answered, beside [`Entry::facts`] and for
+    /// the same reason: both raise a panel rather than starting a process, and
+    /// neither goes through the choosing that moves a mark.
+    pub fn typed(&self) -> Option<&Typed> {
+        match self {
+            Entry::Typed(typed) => Some(typed),
             _ => None,
         }
     }
@@ -2253,6 +2434,7 @@ mod tests {
                     parse("[Desktop Entry]\nType=Application\nName=X\nExec=x\n").unwrap(),
                 )],
                 place: None,
+                chosen: false,
             })],
         };
         assert!(buried.has_launchable());
@@ -2265,6 +2447,7 @@ mod tests {
                 icon: None,
                 entries: Vec::new(),
                 place: None,
+                chosen: false,
             })],
             ..buried.clone()
         };

@@ -1,154 +1,38 @@
 <!--
-The Music subcategory's glyph: two notes under one beam.
+  The Music subcategory's glyph: a pair of beamed notes.
 
-  Drawn for the Multimedia column itself, back when that column was the whole
-  of audio and video and a note had to cover both — which it never quite did.
-  It now names the half a note was always the right mark for.
+  Under Multimedia, beside Video. Beamed rather than single because two notes
+  joined by a beam is the mark that means *music* rather than *a note*, and
+  because the beam gives the shape a top edge to stand its wall up on.
 
-  The column above still carries this drawing, at six sevenths of its size and
-  with a strip of film behind it: a heading made of the two rows under it, so
-  that what is in the column is answerable from outside it. Which means this
-  glyph is read twice on the same screen, once as itself and once as half of
-  its parent, and the pair have to stay apart at a glance. They do it on what
-  is beside the note rather than on the note: alone here, over film there. See
-  category-multimedia.svg.
+  No openings at all, which makes this the mark that tests the other half of the
+  material: a body of water with nothing taken out of it is carried entirely by
+  its own outline. The beam, the stems and the two heads are one object and no
+  crevice is cut between them — a seam along a join would be a line ruled across
+  a solid.
 
-  A beamed pair rather than a single quaver with a flag. The flag is a ribbon
-  and reads as one at 148 px and as a smudge on the stem at 84; the beam is a
-  slab, which is a thing this material knows how to be.
+  The stems are the thinnest parts in the set. A part narrower than twice the
+  bevel is all bevel, which is correct for a run of water that thin, and the
+  shader flattens the crease that would otherwise run down the middle of it.
 
-  Beam, stems and heads are one flat plate and are shaded as one. All five
-  shapes are painted into a single mask and the material is poured through it
-  in one piece: one face gradient down the whole drawing, one gloss, one
-  fall-away across the full width. Nothing here carries shading of its own.
-
-  The heads were spheres for a while, each shaded from its own centre, and it
-  was wrong twice over. A sphere put next to a flat plate is a different object
-  bolted on, and it came out white where the plate around it had already fallen
-  to grey — so the note read as two eggs stuck to a stick. What makes them
-  round now is the same thing that makes the rest of the plate solid: a lit rim
-  where the material turns over, which is the plate's own edge and not a second
-  lamp. The rim is masked away where a stem crosses a head, because a seam
-  there would say they were two pieces again.
-
-  Both ends of every stem have to clear something, and both got it wrong once.
-  At the top, the beam's edge is slanted, so a stem squared off at the height
-  of the beam's high corner sticks out above that edge by the time you cross
-  the stem's own width; the right stem now starts below it. At the bottom, a
-  stem set flush with the head's widest point is *tangent* to it — the head
-  curves away below that point while the stem's edge stays straight, so the
-  bottom corner ends up outside the head and shows as a couple of stray pixels
-  hanging off it. Real notation does set the stem flush; a drawing cannot, so
-  the stems are half a unit narrower than the head is wide and run further down
-  into it, clearing the boundary by about fifteen per cent.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <!-- The material, and the lamp above it. Identical in every glyph of
-         this set on purpose: see pointer-stick.svg, which explains what each
-         of these is doing and why the gloss is a shape rather than a stop. -->
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- One lamp down the whole plate, and one fall-away across the whole
-         width of it — heads included. Both in user space: a copy per shape is
-         what put a bright rectangle at every join in the first two versions,
-         and white eggs on the end of a grey stem in the third. -->
-    <linearGradient id="note" gradientUnits="userSpaceOnUse" x1="0" y1="5.6" x2="0" y2="28.4">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="note-turn" gradientUnits="userSpaceOnUse" x1="4.7" y1="0" x2="26.6" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <!-- The limb of a head, lit hard where it faces the lamp. -->
-    <linearGradient id="head-rim" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.34" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.82" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <path id="beam" d="M11 8.5L26.1 5.6v3.6L11 12.1z"/>
-    <rect id="stem-l" x="11" y="8.5" width="2.4" height="16.5"/>
-    <rect id="stem-r" x="23.7" y="6.2" width="2.4" height="16"/>
-    <ellipse id="head-l" cx="9.3" cy="24.6" rx="4.7" ry="3.7"
-             transform="rotate(-20 9.3 24.6)"/>
-    <ellipse id="head-r" cx="22" cy="21.8" rx="4.7" ry="3.7"
-             transform="rotate(-20 22 21.8)"/>
-    <path id="note-gloss" d="M3 3H29V15.6C24.58 17.73 7.42 17.73 3 15.6z"/>
-    <mask id="note-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <g fill="#ffffff">
-        <use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/>
-        <use href="#head-l"/><use href="#head-r"/>
-      </g>
-    </mask>
-    <mask id="head-rim-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
-      <g fill="#ffffff"><use href="#head-l"/><use href="#head-r"/></g>
-      <g fill="#000000">
-        <use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/>
-      </g>
+    <path id="beam" d="M12.54 11.72L25.24 9.32L25.84 9.09L26.33 8.67L26.65 8.11L26.75 7.48L26.63 6.85L26.30 6.29L25.81 5.89L25.20 5.67L24.56 5.68L11.86 8.08L11.26 8.31L10.77 8.73L10.45 9.29L10.35 9.92L10.47 10.55L10.80 11.11L11.29 11.51L11.90 11.73Z"/>
+    <path id="stem-l" d="M11.00 9.90L11.00 23.40L11.07 23.81L11.28 24.17L11.60 24.44L11.99 24.58L12.41 24.58L12.80 24.44L13.12 24.17L13.33 23.81L13.40 23.40L13.40 9.90L13.33 9.49L13.12 9.13L12.80 8.86L12.41 8.72L11.99 8.72L11.60 8.86L11.28 9.13L11.07 9.49Z"/>
+    <path id="stem-r" d="M23.70 7.50L23.70 20.60L23.77 21.01L23.98 21.37L24.30 21.64L24.69 21.78L25.11 21.78L25.50 21.64L25.82 21.37L26.03 21.01L26.10 20.60L26.10 7.50L26.03 7.09L25.82 6.73L25.50 6.46L25.11 6.32L24.69 6.32L24.30 6.46L23.98 6.73L23.77 7.09Z"/>
+    <ellipse id="head-l" cx="9.3" cy="24.6" rx="4.7" ry="3.7" transform="rotate(-20 9.3 24.6)"/>
+    <ellipse id="head-r" cx="22.0" cy="21.8" rx="4.7" ry="3.7" transform="rotate(-20 22.0 21.8)"/>
+    <g id="bead"><use href="#beam"/><use href="#stem-l"/><use href="#stem-r"/><use href="#head-l"/><use href="#head-r"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
     </mask>
   </defs>
 
-  <g filter="url(#drop)">
-    <g mask="url(#note-mask)">
-      <rect x="0" y="0" width="32" height="32" fill="url(#note)"/>
-      <use href="#note-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-      <rect x="0" y="0" width="32" height="32" fill="url(#note-turn)"/>
-      <!-- The lit upper edge of the beam, and the lit near edge of each stem.
-           Each stops where the head it runs into begins: past that point the
-           stem is inside the plate rather than at the edge of it, and a rim
-           drawn there is a line ruled across the middle of a solid. -->
-      <path d="M11.1 8.7L26 5.9" stroke="#ffffff" stroke-opacity="0.9" stroke-width="0.7"/>
-      <path d="M11.5 8.7v12.3" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.7"/>
-      <path d="M24.2 6.6v11.6" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.7"/>
-    </g>
-
-    <!-- The rim round each head, which is where the plate turns over. Masked
-         to the heads with the beam and stems taken back out, so it follows the
-         outer silhouette and stops at anything standing in front of it. -->
-    <g mask="url(#head-rim-mask)">
-      <g fill="none" stroke="url(#head-rim)" stroke-width="1.8">
-        <use href="#head-l"/>
-        <use href="#head-r"/>
-      </g>
-    </g>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
   </g>
 </svg>

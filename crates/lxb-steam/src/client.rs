@@ -113,16 +113,7 @@ impl Where {
         if let Some(path) = on_path("steam") {
             return Some(Where::Native(path));
         }
-        // The Flatpak, checked by its data directory rather than by asking
-        // `flatpak list`, which is a process to start and half a second to
-        // wait for on every session.
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let flatpak = home.map(|home| {
-            home.join(".var")
-                .join("app")
-                .join("com.valvesoftware.Steam")
-        });
-        if flatpak.is_some_and(|path| path.is_dir()) && on_path("flatpak").is_some() {
+        if flatpak_deployed() && on_path("flatpak").is_some() {
             return Some(Where::Flatpak);
         }
         None
@@ -275,13 +266,78 @@ pub struct Options {
 }
 
 impl Options {
-    /// Where this machine keeps them.
-    pub fn found() -> Option<Options> {
+    /// Where *this* client keeps them.
+    ///
+    /// Asked of a [`Where`] rather than of the machine, because the two kinds
+    /// of client keep them in two different places and a machine may have the
+    /// leavings of both. The Flatpak runs with its home remapped into
+    /// `~/.var/app/com.valvesoftware.Steam`, so its pipe and its registry are
+    /// in there with its library; the native client uses the real home. Asking
+    /// the disk which of them exists — which is what this used to do — pairs
+    /// whichever it finds first with whichever client was found, and on a
+    /// machine that has had both that is one client's log read for another
+    /// client's state.
+    ///
+    /// `None` only where there is no home directory to build them out of.
+    /// Where a client has been installed and never run there is nothing on the
+    /// disk yet, and this answers with the places it *will* keep them, so the
+    /// shell can start it a first time rather than reporting it missing. See
+    /// [`wake`], which creates the root it is about to write the marker into.
+    pub fn for_client(client: &Where) -> Option<Options> {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        Some(Options {
-            root: crate::library::root()?,
-            home: home.join(".steam"),
-        })
+        Some(Options::in_home(client, &home))
+    }
+
+    /// Both layouts, whether or not either client is installed.
+    ///
+    /// For the one job that is about what a client left on the disk rather
+    /// than about a client: clearing the automatic sign-in when somebody signs
+    /// out. That has to work on a machine whose Steam has been *removed* —
+    /// otherwise a reinstall months later comes up signed in to an account the
+    /// shell has since said nobody is signed in to — and it has to reach the
+    /// Flatpak's registry as well as the native one, which asking for a single
+    /// layout could not: whichever was asked for, the other went untouched.
+    pub fn every_layout() -> Vec<Options> {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        Options::every_layout_in(&home)
+    }
+
+    /// The same, below a given home directory. The native client is named with
+    /// an empty path because there is no client here to name: what is being
+    /// asked for is a layout, and [`Options::in_home`] reads only which of the
+    /// two it is.
+    fn every_layout_in(home: &Path) -> Vec<Options> {
+        vec![
+            Options::in_home(&Where::Native(PathBuf::new()), home),
+            Options::in_home(&Where::Flatpak, home),
+        ]
+    }
+
+    /// The same, below a given home directory, so a test can put the whole of
+    /// it somewhere harmless.
+    fn in_home(client: &Where, home: &Path) -> Options {
+        match client {
+            // The two symbolic links the client maintains come first, since
+            // those follow a Steam that has been moved, then the directory it
+            // unpacks into — which is also where a client that has never run
+            // will put itself, and so is the fallback.
+            Where::Native(_) => Options {
+                root: crate::library::native_roots(home)
+                    .into_iter()
+                    .find(|path| crate::library::looks_like_a_root(path))
+                    .unwrap_or_else(|| crate::library::unpacks_into(home)),
+                home: home.join(".steam"),
+            },
+            Where::Flatpak => {
+                let sandbox = crate::library::flatpak_home(home);
+                Options {
+                    root: crate::library::unpacks_into(&sandbox),
+                    home: sandbox.join(".steam"),
+                }
+            }
+        }
     }
 }
 
@@ -539,6 +595,14 @@ pub fn wake(
     // `in_this_session`.
     let elsewhere = state(Some(client), options).running() && !in_this_session(options);
 
+    // Whether this client has ever been run. Read before anything here touches
+    // the disk, because the first thing this does to it is make the root.
+    //
+    // It is not "does the directory exist": a first start that ran out of
+    // patience leaves the empty directory this made behind, and a second press
+    // is still the first run. What ends it is Valve's own furniture arriving.
+    let first_run = !crate::library::looks_like_a_root(&options.root);
+
     if !elsewhere && met(need, client, options) {
         return Ok(());
     }
@@ -582,6 +646,24 @@ pub fn wake(
             fresh,
             &mut ours,
         )
+        // A client being run for the first time is not a client that failed.
+        // What it does with its first start is fetch and unpack Valve's
+        // bootstrap, which is minutes of somebody's connection and none of it
+        // visible from here, so it reliably outlasts the patience above. It
+        // goes on doing it — it was started detached and nothing here stops it
+        // — so what this says is what is true and what to do about it, rather
+        // than the symptom, which is that a client that does not exist yet did
+        // not sign in.
+        .map_err(|why| {
+            if first_run {
+                tracing::info!(%why, "Valve's client is still installing itself");
+                "Steam is setting itself up on this machine, which it does once. \
+                 It will be ready in a few minutes."
+                    .to_string()
+            } else {
+                why
+            }
+        })
     });
 
     // Whatever happened, the marker is spent: it is read as the client starts
@@ -597,7 +679,27 @@ pub fn wake(
 /// Tell the client to expose its interface, saying whether the marker had to be
 /// made, and putting Valve's own wording on a Steam directory that will not
 /// take one.
+///
+/// The directory is made where it is not there yet, which is the whole of what
+/// a first start needs of this shell. A client installed and never run has no
+/// root — it unpacks itself into one on its first start — and the marker has
+/// to be down *before* that start, because the client reads it as it comes up
+/// and never looks again. Making it is safe in both directions: this is the
+/// path the client would have made itself, and a Steam that then unpacks into
+/// it finds one empty directory and its own marker.
 fn expose(options: &Options) -> Result<bool, String> {
+    if !options.root.is_dir() {
+        std::fs::create_dir_all(&options.root).map_err(|error| {
+            format!(
+                "Steam's directory could not be made at {}: {error}",
+                options.root.display()
+            )
+        })?;
+        tracing::info!(
+            root = %options.root.display(),
+            "made the directory Valve's client will unpack itself into"
+        );
+    }
     crate::webui::expose(&options.root)
         .map_err(|error| format!("{}: {error}", crate::webui::Problem::NotExposed))
 }
@@ -1013,6 +1115,104 @@ fn stamped(line: &str) -> Option<(&str, u32)> {
     Some((state, account))
 }
 
+/// Valve's Flatpak, which is the name of everything it puts on the disk:
+/// its deployment, its exported launcher, and the home directory it runs with.
+pub(crate) const FLATPAK_APP: &str = "com.valvesoftware.Steam";
+
+/// Whether Valve's Flatpak is *deployed*, rather than merely remembered.
+///
+/// This used to ask whether `~/.var/app/com.valvesoftware.Steam` was a
+/// directory, and that is the one question about a Flatpak whose answer
+/// outlives the application. `flatpak uninstall` keeps the application's data
+/// unless it is asked for `--delete-data`, on purpose — somebody who removes a
+/// launcher does not thereby mean to throw away their saves — so a machine
+/// that had the Flatpak and removed it looks exactly like one that has it. The
+/// shell then offered every row that needs a client, and each ran
+/// `flatpak run` against nothing: `spawn` succeeds, Flatpak fails a moment
+/// later where nobody is reading, and the press ended in three minutes of
+/// loading screen and a sentence about a debugging port.
+///
+/// What is asked instead is whether a commit is deployed, which is the file
+/// Flatpak itself removes on uninstall. Still no process started: `flatpak
+/// list` is half a second, and this is four `stat` calls on the session's way
+/// up.
+fn flatpak_deployed() -> bool {
+    deployed_in(&flatpak_roots(), FLATPAK_APP)
+}
+
+/// Whether any of these installations has a commit of this application
+/// deployed. Split out so a test can point it at a scratch directory rather
+/// than at whatever this machine happens to have installed.
+fn deployed_in(roots: &[PathBuf], app: &str) -> bool {
+    roots.iter().any(|root| {
+        root.join("app")
+            .join(app)
+            .join("current")
+            .join("active")
+            .exists()
+    })
+}
+
+/// Every installation Flatpak would look in, in its own order of preference.
+///
+/// The user's and the system's, and then any the administrator has defined —
+/// a custom installation only exists by being named in `installations.d`, so
+/// reading that file is what makes this complete rather than merely usual. A
+/// Steam deployed into one of those is a Steam `flatpak run` will find, and so
+/// is one this must not call missing.
+fn flatpak_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    // The same three places Flatpak itself would take the user installation
+    // from, in the same order. `XDG_DATA_HOME` matters here: a session that
+    // sets it moves the user installation with it, and looking only below
+    // `~/.local/share` would call a Steam that is installed missing.
+    let user = std::env::var_os("FLATPAK_USER_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|data| data.join("flatpak"))
+        })
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("flatpak")
+            })
+        });
+    roots.extend(user);
+    roots.push(PathBuf::from("/var/lib/flatpak"));
+
+    let Ok(entries) = std::fs::read_dir("/etc/flatpak/installations.d") else {
+        return roots;
+    };
+    for entry in entries.flatten() {
+        if entry.path().extension().is_none_or(|end| end != "conf") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(entry.path()) {
+            roots.extend(installations_in(&text));
+        }
+    }
+    roots
+}
+
+/// The installations one `installations.d` file defines.
+///
+/// A small INI of `[Installation "name"]` sections, of which one key matters.
+/// Read by hand rather than parsed: a key this misreads costs one installation
+/// almost nobody has, and a dependency costs everybody.
+fn installations_in(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("Path="))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 /// Look one program up on `PATH`, the way a shell would.
 fn on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -1070,10 +1270,18 @@ pub mod autologin {
     /// say to somebody about a file they have never heard of. Whatever could
     /// be cleared is cleared.
     pub fn stop(root: &Path, home: &Path, account: &str) {
+        // Whether there was anything here to clear. Asked because this is run
+        // once per layout a client could have used — see
+        // [`crate::client::Options::every_layout`] — and a line saying the
+        // client will not sign itself back in, said of a directory where no
+        // client has ever been, is a line that would send somebody looking in
+        // the wrong place.
+        let mut cleared = false;
         let registry = home.join("registry.vdf");
         if let Some(mut node) = read(&registry) {
             if node.set(&AUTO_LOGIN_USER, "") {
                 write(&registry, &vdf::text(&node));
+                cleared = true;
             }
         }
 
@@ -1098,9 +1306,16 @@ pub mod autologin {
             }
             if touched {
                 write(&users, &vdf::text(&node));
+                cleared = true;
             }
         }
-        tracing::info!(account, "Valve's client will not sign itself back in");
+        if cleared {
+            tracing::info!(
+                root = %root.display(),
+                account,
+                "Valve's client will not sign itself back in"
+            );
+        }
     }
 
     fn read(path: &Path) -> Option<Node> {
@@ -1373,6 +1588,202 @@ mod tests {
             displays_in(plasma),
             vec![Some("wayland-0".to_string()), Some(":1".to_string())]
         );
+    }
+
+    /// A scratch directory of this test's own, removed first so a run that
+    /// died halfway leaves nothing behind for the next one to read.
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("lxb-client-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("a scratch directory");
+        path
+    }
+
+    /// The bug this is here for: `flatpak uninstall` keeps the application's
+    /// data, so the directory the shell used to look for outlives the
+    /// application by design. A machine that had Steam and removed it looked
+    /// exactly like one that has it, and every row that needs a client was
+    /// offered against a `flatpak run` that could only fail — after three
+    /// minutes of loading screen, because nothing reads the exit status of a
+    /// process that spawned successfully.
+    ///
+    /// What is asked now is what Flatpak itself removes.
+    #[test]
+    fn a_removed_flatpak_is_not_a_deployed_one() {
+        let scratch = scratch("flatpak");
+        let installation = scratch.join("var-lib-flatpak");
+        let leftovers = scratch
+            .join("home")
+            .join(".var")
+            .join("app")
+            .join(FLATPAK_APP);
+        // Somebody's saves and configuration, which is the whole reason
+        // Flatpak leaves them: the application is gone and these are not.
+        std::fs::create_dir_all(&leftovers).expect("a scratch directory");
+        assert!(leftovers.is_dir(), "the data outlives the application");
+        assert!(!deployed_in(
+            std::slice::from_ref(&installation),
+            FLATPAK_APP
+        ));
+
+        // And with a commit deployed, which is what an installed one has.
+        std::fs::create_dir_all(installation.join("app").join(FLATPAK_APP).join("current"))
+            .expect("a scratch directory");
+        std::fs::write(
+            installation
+                .join("app")
+                .join(FLATPAK_APP)
+                .join("current")
+                .join("active"),
+            b"",
+        )
+        .expect("a scratch file");
+        assert!(deployed_in(&[installation], FLATPAK_APP));
+    }
+
+    /// Every installation Flatpak would look in is looked in, because a Steam
+    /// deployed into one of them is a Steam `flatpak run` finds — and so is one
+    /// this must not call missing.
+    #[test]
+    fn a_flatpak_in_any_installation_counts() {
+        let scratch = scratch("installations");
+        let elsewhere = scratch.join("srv").join("flatpak");
+        std::fs::create_dir_all(elsewhere.join("app").join(FLATPAK_APP).join("current"))
+            .expect("a scratch directory");
+        std::fs::write(
+            elsewhere
+                .join("app")
+                .join(FLATPAK_APP)
+                .join("current")
+                .join("active"),
+            b"",
+        )
+        .expect("a scratch file");
+
+        assert!(!deployed_in(
+            &[scratch.join("var-lib-flatpak")],
+            FLATPAK_APP
+        ));
+        assert!(deployed_in(
+            &[scratch.join("var-lib-flatpak"), elsewhere.clone()],
+            FLATPAK_APP
+        ));
+
+        // Which is where the definitions come from.
+        assert_eq!(
+            installations_in(&format!(
+                "[Installation \"extra\"]\nPath={}\nDisplayName=Extra\n",
+                elsewhere.display()
+            )),
+            vec![elsewhere]
+        );
+        assert!(installations_in("[Installation \"broken\"]\nPath=\n").is_empty());
+        assert!(installations_in("").is_empty());
+    }
+
+    /// The two clients keep their directories in two different places, and a
+    /// machine may hold the leavings of both. Asking the disk which of them
+    /// exists — which is what this used to do — pairs whichever is found first
+    /// with whichever client was found, and for the Flatpak that meant looking
+    /// for its pipe in the real home, where it never is.
+    #[test]
+    fn each_client_is_asked_for_its_own_directories() {
+        let scratch = scratch("directories");
+        let native = Where::Native(PathBuf::from("/usr/bin/steam"));
+
+        // Nothing on the disk at all: the answer is where each *will* put
+        // itself, so a client that has never been run can be started rather
+        // than reported missing.
+        let fresh = Options::in_home(&native, &scratch);
+        assert_eq!(
+            fresh.root,
+            scratch.join(".local").join("share").join("Steam")
+        );
+        assert_eq!(fresh.home, scratch.join(".steam"));
+        assert!(!crate::library::looks_like_a_root(&fresh.root));
+
+        let sandbox = scratch.join(".var").join("app").join(FLATPAK_APP);
+        let flatpak = Options::in_home(&Where::Flatpak, &scratch);
+        assert_eq!(
+            flatpak.root,
+            sandbox.join(".local").join("share").join("Steam")
+        );
+        assert_eq!(flatpak.home, sandbox.join(".steam"));
+
+        // With a Flatpak's library on the disk and no native one, the native
+        // client still gets the native paths: the two answers never cross.
+        std::fs::create_dir_all(flatpak.root.join("steamapps")).expect("a scratch directory");
+        assert_eq!(Options::in_home(&native, &scratch).root, fresh.root);
+        assert!(crate::library::looks_like_a_root(&flatpak.root));
+
+        // And the link the native client maintains wins over the directory it
+        // unpacks into, since that link follows a Steam that has been moved.
+        let moved = scratch.join(".steam").join("steam");
+        std::fs::create_dir_all(moved.join("steamapps")).expect("a scratch directory");
+        assert_eq!(Options::in_home(&native, &scratch).root, moved);
+    }
+
+    /// A client that has never been run has no directory to be told anything
+    /// in, and the marker has to be down *before* it starts — the client reads
+    /// it as it comes up and never looks again. So the first start makes the
+    /// directory the client would have made itself, which is the whole of what
+    /// this shell does about a first run.
+    ///
+    /// Before this, a machine with Steam installed and never started reported
+    /// that Steam was not installed, and every path that could have started it
+    /// was the path that said so.
+    #[test]
+    fn a_first_start_makes_the_directory_it_needs() {
+        let scratch = scratch("first-run");
+        let options = Options::in_home(&Where::Native(PathBuf::from("/usr/bin/steam")), &scratch);
+        assert!(!options.root.exists(), "nothing has been run here");
+
+        assert_eq!(expose(&options), Ok(true), "the marker had to be made");
+        assert!(options.root.is_dir(), "and the directory to put it in");
+        assert!(crate::webui::available(&options.root));
+
+        // Made, and no more than made: an empty directory is not a Steam, so a
+        // second press is still the first run and still starts the client.
+        assert!(!crate::library::looks_like_a_root(&options.root));
+
+        // And it is given back, so a Steam somebody starts for themselves is
+        // not left exposing a debugging port this shell asked for.
+        crate::webui::withdraw(&options.root);
+        assert!(!crate::webui::available(&options.root));
+        assert_eq!(expose(&options), Ok(true), "and can be made again");
+    }
+
+    /// Signing out has to reach both, because it is about what is left on the
+    /// disk rather than about a client that is running: the registry that
+    /// would sign the client straight back in outlives the client, so a
+    /// machine whose Steam has been removed — and reinstalled a year later —
+    /// must not come up signed in to an account this shell has since said
+    /// nobody is signed in to.
+    ///
+    /// It reached one of them before, whichever the disk happened to answer
+    /// with, which for a Flatpak user was the native registry it does not use.
+    #[test]
+    fn signing_out_clears_the_automatic_sign_in_of_both_layouts() {
+        let scratch = scratch("layouts");
+        let layouts = Options::every_layout_in(&scratch);
+        let homes: Vec<&PathBuf> = layouts.iter().map(|options| &options.home).collect();
+
+        assert_eq!(homes.len(), 2, "a native client's and the Flatpak's");
+        assert!(homes.contains(&&scratch.join(".steam")));
+        assert!(homes.contains(
+            &&scratch
+                .join(".var")
+                .join("app")
+                .join(FLATPAK_APP)
+                .join(".steam")
+        ));
+
+        // Every one of them is cleared, and clearing a layout no client has
+        // ever used writes nothing and says nothing.
+        for options in &layouts {
+            autologin::stop(&options.root, &options.home, "someone");
+            assert!(!options.home.join("registry.vdf").exists());
+        }
     }
 
     /// A session with no Xwayland sets no `DISPLAY`, and that is not the same

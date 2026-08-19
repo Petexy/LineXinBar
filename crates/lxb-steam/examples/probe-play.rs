@@ -29,12 +29,12 @@ fn main() {
         println!("usage: probe-play <app id>");
         return;
     };
-    let Some(options) = client::Options::found() else {
-        println!("there is no Steam installation on this machine");
-        return;
-    };
     let Some(where_it_is) = client::Where::find() else {
         println!("there is no Steam client on this machine");
+        return;
+    };
+    let Some(options) = client::Options::for_client(&where_it_is) else {
+        println!("there is no home directory to find Steam's own in");
         return;
     };
 

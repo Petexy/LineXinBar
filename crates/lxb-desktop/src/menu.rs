@@ -79,6 +79,36 @@ pub enum Command {
     /// one mis-routed press away from answering the wrong question with a
     /// password meant for the other.
     Authenticate,
+    /// The same again, for the field on the panel that collects a wireless
+    /// network's password — see [`crate::network`].
+    ///
+    /// Its own command for the reason [`Command::Authenticate`] is its own: the
+    /// three panels hand what was typed to three different places, one of them
+    /// being a daemon that will put it on the air, and a single name for all of
+    /// them would be one mis-routed press away from broadcasting the password
+    /// that proves who is at the machine.
+    JoinNetwork,
+    /// Answer the question BlueZ has stopped a pairing on — see
+    /// [`crate::bluetooth`].
+    ///
+    /// One command for four questions, where the three above it are one command
+    /// each, and the difference is the one this list is sorted by: what a panel
+    /// *does with the answer*. Those three hand what was typed to three
+    /// different places — `sudo`, PAM, and a daemon that will put it on the air
+    /// — so a single name for them would be one mis-routed press away from
+    /// broadcasting the password that proves who is at the machine. These four
+    /// all hand their answer to the same agent, about the same pairing, in the
+    /// same moment; whether it is a yes or six digits is a property of the
+    /// question and not of where it goes.
+    PairDevice,
+    /// Put what was typed into the value the field on this panel is for — an
+    /// address, a router, a list of name servers. See [`crate::network`].
+    ///
+    /// Its own command for the reason every other field's is: what a panel does
+    /// with what was typed is the whole of what separates these, and one name
+    /// for all of them would be one mis-routed press away from writing an IP
+    /// address where a password was asked for.
+    SetValue,
     /// Start it — or come back to it, if it is already running.
     Launch,
     /// Send the selected window to the display after this one, or the one

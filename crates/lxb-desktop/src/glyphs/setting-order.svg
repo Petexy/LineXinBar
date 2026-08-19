@@ -1,131 +1,40 @@
 <!--
-The Display order row's glyph: two screens side by side, and one arrow under
-them pointing both ways.
+  Two panes side by side with an arrow under them: the row that changes which
+  display is on which side.
 
-  The page it stands on is the only one under Display that is about the
-  screens rather than about a screen, so it is the only glyph in the set with
-  two of them in it. That is the whole idea: everything else in this column
-  wears one monitor because it configures one monitor, and a user scanning the
-  column sees at a glance that this row is about the pair.
+  The panes are openings in nothing — each is a body with its screen taken out —
+  and the arrow below is a third. Nothing touches, so nothing needs a crevice.
 
-  The arrow points both ways because the setting does: a list of screens has no
-  empty places, so putting one screen where another is exchanges them. A
-  single-headed arrow would say "move it along", which is the thing that cannot
-  happen here.
+  Drawn a little smaller than the old mark was. A shape has to leave room round
+  itself for the shadow the shader casts beside it, and this one ran to within a
+  unit of the cell's edge; the scale below is what brings it inside. The four
+  rotations all carry the same factor whatever each needs on its own, because
+  they are one object turned and have to stay one size.
 
-  The panels are drawn without stands. At 64 px two necks and two feet are four
-  grey smudges under two rectangles, and the stand is what a screen has when
-  there is room to say so — here the pair is what has to read, and the arrow
-  under them needs the height the feet would have taken. See
-  setting-display.svg for the full drawing, and pointer-stick.svg for what each
-  gradient below is doing.
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6f6f6"/>
-      <stop offset="0.35" stop-color="#e9e9e9"/>
-      <stop offset="0.58" stop-color="#d6d6d6"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="0.92" stop-color="#eeeeee"/>
-      <stop offset="1" stop-color="#f8f8f8"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.72" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.9" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.12"/>
-      <stop offset="0.22" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.78" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8e8e8e"/>
-      <stop offset="0.45" stop-color="#a8a8a8"/>
-      <stop offset="1" stop-color="#dedede"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="190%" height="190%">
-      <feDropShadow dx="0.5" dy="1.25" stdDeviation="0.5"
-                    flood-color="#3c3c3c" flood-opacity="0.5"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.16"/>
-    </filter>
-
-    <!-- Two bezels of one size: neither screen is the important one, which is
-         the point of a setting that exchanges them. -->
-    <path id="left"
-          d="M2.9 3.4h10.7a1.5 1.5 0 0 1 1.5 1.5v8.6a1.5 1.5 0 0 1-1.5 1.5H2.9a1.5 1.5 0 0 1-1.5-1.5V4.9a1.5 1.5 0 0 1 1.5-1.5z"/>
-    <path id="right"
-          d="M18.4 3.4h10.7a1.5 1.5 0 0 1 1.5 1.5v8.6a1.5 1.5 0 0 1-1.5 1.5H18.4a1.5 1.5 0 0 1-1.5-1.5V4.9a1.5 1.5 0 0 1 1.5-1.5z"/>
-    <clipPath id="left-clip"><use href="#left"/></clipPath>
-    <clipPath id="right-clip"><use href="#right"/></clipPath>
-    <path id="left-pane" d="M2.8 4.8h10.9v8.8H2.8z"/>
-    <path id="right-pane" d="M18.3 4.8h10.9v8.8H18.3z"/>
-    <clipPath id="left-pane-clip"><use href="#left-pane"/></clipPath>
-    <clipPath id="right-pane-clip"><use href="#right-pane"/></clipPath>
-    <!-- One lamp over both, so the pair reads as one object under one light
-         rather than as two glyphs that happen to be next to each other. -->
-    <path id="lamp" d="M0 2H32V10.2C26 13.2 6 13.2 0 10.2z"/>
-
-    <!--
-      The arrow: tips at x=3.2 and x=28.8, so it is centred on 16 like the pair
-      above it. The heads are 6.6 wide and 7.6 tall, the shaft is 2.8
-      throughout, and both are centred on y=23.6.
-    -->
-    <path id="arrow"
-          d="M3.2 23.6 9.8 19.8V22.2H22.2V19.8L28.8 23.6 22.2 27.4V25H9.8V27.4Z"/>
-    <clipPath id="arrow-clip"><use href="#arrow"/></clipPath>
-    <path id="arrow-gloss" d="M2 19H30V23.6C24 25 8 25 2 23.6z"/>
+    <path id="left" d="M2.9 3.4h10.7a1.5 1.5 0 0 1 1.5 1.5v8.6a1.5 1.5 0 0 1-1.5 1.5H2.9a1.5 1.5 0 0 1-1.5-1.5V4.9a1.5 1.5 0 0 1 1.5-1.5z"/>
+    <path id="right" d="M18.4 3.4h10.7a1.5 1.5 0 0 1 1.5 1.5v8.6a1.5 1.5 0 0 1-1.5 1.5H18.4a1.5 1.5 0 0 1-1.5-1.5V4.9a1.5 1.5 0 0 1 1.5-1.5z"/>
+    <path id="arrow" d="M3.2 23.6 9.8 19.8V22.2H22.2V19.8L28.8 23.6 22.2 27.4V25H9.8V27.4Z"/>
+    <g id="panes">
+      <rect x="3.5" y="5.5" width="9.5" height="7.4" rx="0.6"/>
+      <rect x="19" y="5.5" width="9.5" height="7.4" rx="0.6"/>
+    </g>
+    <g id="bead"><use href="#left"/><use href="#right"/><use href="#arrow"/></g>
+    <g id="holes"><use href="#panes"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
   </defs>
-
-  <g filter="url(#drop)">
-    <use href="#left" fill="url(#face)"/>
-    <g clip-path="url(#left-clip)">
-      <use href="#lamp" fill="url(#gloss)" filter="url(#polish)"/>
+  <g transform="translate(16 16) scale(0.8966) translate(-16 -16)">
+  
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
     </g>
-    <use href="#left" fill="url(#turn)"/>
-    <use href="#left-pane" fill="url(#recess)"/>
-    <g clip-path="url(#left-pane-clip)">
-      <path d="M2.8 12.6 9.4 4.8h3.4L4.7 13.6z" fill="#ffffff" fill-opacity="0.34"
-            filter="url(#polish)"/>
-      <path d="M2.8 9 6.6 4.8h1.5L2.8 10.5z" fill="#ffffff" fill-opacity="0.22"
-            filter="url(#polish)"/>
-    </g>
-    <use href="#left-pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-    <g clip-path="url(#left-clip)">
-      <use href="#left" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
-    </g>
-
-    <use href="#right" fill="url(#face)"/>
-    <g clip-path="url(#right-clip)">
-      <use href="#lamp" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#right" fill="url(#turn)"/>
-    <use href="#right-pane" fill="url(#recess)"/>
-    <g clip-path="url(#right-pane-clip)">
-      <path d="M18.3 12.6 24.9 4.8h3.4L20.2 13.6z" fill="#ffffff" fill-opacity="0.34"
-            filter="url(#polish)"/>
-      <path d="M18.3 9 22.1 4.8h1.5L18.3 10.5z" fill="#ffffff" fill-opacity="0.22"
-            filter="url(#polish)"/>
-    </g>
-    <use href="#right-pane" fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-    <g clip-path="url(#right-clip)">
-      <use href="#right" fill="none" stroke="url(#edge)" stroke-width="1.3"/>
-    </g>
-
-    <use href="#arrow" fill="url(#face)"/>
-    <g clip-path="url(#arrow-clip)">
-      <use href="#arrow-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#arrow" fill="url(#turn)"/>
   </g>
 </svg>

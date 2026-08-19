@@ -1,106 +1,54 @@
 <!--
-The Resolution row's glyph: a monitor whose pixel width and height are
-measured.
+  A display with a grid of pixels in it and two arrows measuring it.
 
-  The old drawing put the measurements in a thick rounded rectangle. Without
-  a stand that silhouette was a generic panel or window rather than the screen
-  whose mode is being changed. This uses the same monitor grammar as Display:
-  a widescreen pane, a short neck and a broad foot. The six pixel cells and the
-  two dimension arrows stay inside the pane, where they describe resolution
-  without obscuring the hardware silhouette.
+  The screen is an opening and everything inside it — six pixels, an arrow
+  across and an arrow down — stands in that hole as bodies of their own. The
+  pixels are the smallest shapes in the set and they are square on purpose: at
+  this size a rounded one is a dot, and six dots are not a raster.
 
-  The opening remains transparent. The shell's dark wallpaper supplies its
-  contrast while all authored ink stays neutral enough to take the atlas tint.
+  Drawn a little smaller than the old mark was. A shape has to leave room round
+  itself for the shadow the shader casts beside it, and this one ran to within a
+  unit of the cell's edge; the scale below is what brings it inside. The four
+  rotations all carry the same factor whatever each needs on its own, because
+  they are one object turned and have to stay one size.
+
+  The screen is cut before what stands in it is laid down. Painted the other way
+  round the hole takes the contents with it, which is a monitor showing nothing
+  and looks exactly like a monitor meant to show nothing.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
 -->
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f8f8f8"/>
-      <stop offset="0.3" stop-color="#eeeeee"/>
-      <stop offset="0.56" stop-color="#d4d4d4"/>
-      <stop offset="0.78" stop-color="#dfdfdf"/>
-      <stop offset="1" stop-color="#fafafa"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.75" stop-color="#ffffff" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.86"/>
-    </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
-      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="0.86" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.62"/>
-    </linearGradient>
-    <linearGradient id="turn" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#000000" stop-opacity="0.11"/>
-      <stop offset="0.2" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="0.8" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.15"/>
-    </linearGradient>
-    <filter id="drop" x="-25%" y="-25%" width="160%" height="165%">
-      <feDropShadow dx="0.35" dy="0.75" stdDeviation="0.35"
-                    flood-color="#303030" flood-opacity="0.44"/>
-    </filter>
-    <filter id="lift" x="-35%" y="-35%" width="180%" height="190%">
-      <feDropShadow dx="0.22" dy="0.42" stdDeviation="0.18"
-                    flood-color="#252525" flood-opacity="0.46"/>
-    </filter>
-    <filter id="polish" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="0.15"/>
-    </filter>
-
-    <path id="bezel-outline"
-          d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z"/>
-    <path id="bezel" fill-rule="evenodd" clip-rule="evenodd"
-          d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z
-             M4.2 6h23.6v14.7H4.2z"/>
-    <path id="bezel-gloss" d="M0 1h32v10.2c-7.8 2.5-24.2 2.5-32 0z"/>
-    <clipPath id="bezel-clip"><use href="#bezel"/></clipPath>
+    <path id="bezel" d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z"/>
     <rect id="pane" x="4.2" y="6" width="23.6" height="14.7" rx="0.45"/>
-    <!-- The marks clear the pane geometrically. This inset clip is the final
-         guard for the soft lift shadow, which must never wash over the bezel. -->
-    <clipPath id="content-clip">
-      <rect x="4.95" y="6.8" width="22.1" height="13.1" rx="0.2"/>
-    </clipPath>
     <rect id="pixel" width="3.3" height="2.55" rx="0.2"/>
-  </defs>
-
-  <!-- Stand first, so the bezel grows cleanly out of its neck. -->
-  <g filter="url(#drop)">
-    <path d="M13.4 22.4h5.2v3.8h-5.2z" fill="url(#face)"/>
-    <path d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
-          fill="url(#face)"/>
-    <path d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"
-          fill="none" stroke="url(#edge)" stroke-width="0.7"/>
-
-    <use href="#bezel" fill="url(#face)"/>
-    <g clip-path="url(#bezel-clip)">
-      <use href="#bezel-gloss" fill="url(#gloss)" filter="url(#polish)"/>
-    </g>
-    <use href="#bezel" fill="url(#turn)"/>
-    <use href="#bezel-outline" fill="none" stroke="url(#edge)" stroke-width="1.15"/>
-    <use href="#pane" fill="none" stroke="#ffffff" stroke-opacity="0.28"
-         stroke-width="0.5"/>
-  </g>
-
-  <g clip-path="url(#content-clip)">
-    <!-- Six literal pixel cells establish what the dimensions are measuring. -->
-    <g fill="url(#face)" stroke="url(#edge)" stroke-width="0.45"
-       filter="url(#lift)">
+    <g id="content">
       <use href="#pixel" x="5.6" y="7.35"/>
       <use href="#pixel" x="9.55" y="7.35"/>
       <use href="#pixel" x="13.5" y="7.35"/>
       <use href="#pixel" x="5.6" y="10.55"/>
       <use href="#pixel" x="9.55" y="10.55"/>
       <use href="#pixel" x="13.5" y="10.55"/>
-    </g>
-
-    <!-- One broad double arrow for each dimension, kept clear of the bezel. -->
-    <g fill="url(#face)" stroke="url(#edge)" stroke-width="0.6"
-       stroke-linejoin="round" filter="url(#lift)">
       <path d="m23.8 7.35 2.35 2.65h-1.45v3.4h1.45l-2.35 2.65-2.35-2.65h1.45V10H21.45z"/>
       <path d="m5.65 17.2 2.9-2.05v1.2h8.2v-1.2l2.9 2.05-2.9 2.05v-1.2h-8.2v1.2z"/>
+    </g>
+    <path id="neck" d="M13.4 22.4h5.2v3.8h-5.2z"/>
+    <path id="foot" d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"/>
+    <g id="bead"><use href="#bezel"/><use href="#neck"/><use href="#foot"/><use href="#content"/></g>
+    <g id="holes"><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#content" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <g transform="translate(16 16) scale(0.8667) translate(-16 -16)">
+  
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
     </g>
   </g>
 </svg>

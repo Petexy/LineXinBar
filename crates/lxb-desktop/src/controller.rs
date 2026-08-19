@@ -525,7 +525,9 @@ const PAD_ACTIONS: &[(Buttons, Action)] = &[
     (Buttons::A, Action::Launch),
     (Buttons::B, Action::Back),
     (Buttons::Y, Action::Menu),
-    (Buttons::MENU, Action::Launch),
+    // The pad's own Start, and the same button as every other pad's: Accept,
+    // except over the on-screen keyboard. See [`Action::Submit`].
+    (Buttons::MENU, Action::Submit),
     (Buttons::L1, Action::PrevScreen),
     (Buttons::R1, Action::NextScreen),
 ];
@@ -937,7 +939,11 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
         Button::South => return Some(Action::Launch),
         // Xbox B / PlayStation Circle / Nintendo A / Steam Deck B.
         Button::East => return Some(Action::Back),
-        Button::Start => return Some(Action::Launch),
+        // Start — Xbox Menu, the PlayStation Options button, Steam Deck's own
+        // `≡`. Accept, like `A`, everywhere but over the on-screen keyboard,
+        // where it is Enter and the way out of the board in one press. See
+        // [`Action::Submit`].
+        Button::Start => return Some(Action::Submit),
         // Select is missing on purpose: it is the keyboard chord's modifier
         // and nothing else. See [`chord_action`].
         //
@@ -954,7 +960,8 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
     }
 
     match code {
-        evdev::BTN_SOUTH | evdev::BTN_START | evdev::BTN_TRIGGER => Some(Action::Launch),
+        evdev::BTN_SOUTH | evdev::BTN_TRIGGER => Some(Action::Launch),
+        evdev::BTN_START => Some(Action::Submit),
         evdev::BTN_EAST | evdev::BTN_THUMB => Some(Action::Back),
         evdev::BTN_TL => Some(Action::PrevScreen),
         evdev::BTN_TR => Some(Action::NextScreen),
@@ -1207,6 +1214,41 @@ mod tests {
                 "the top face button on a mapped pad, code {code:#x}"
             );
         }
+    }
+
+    /// Start is its own action rather than a second `A`, under both namings
+    /// and on the pad with no mapping at all.
+    ///
+    /// The shell folds it back into Accept everywhere the board is not up —
+    /// see `Shell::on_action` — so what this is really asserting is that the
+    /// one place they differ can still tell them apart. A Start that arrived
+    /// as [`Action::Launch`] would press whichever letter the cursor happened
+    /// to be standing on and leave the board up.
+    #[test]
+    fn start_is_not_the_same_button_as_accept() {
+        assert_eq!(
+            action_for_button(Button::Start, 0, Layout::Mapped),
+            Some(Action::Submit)
+        );
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_START, Layout::Guessed),
+            Some(Action::Submit)
+        );
+        assert_eq!(pad_action(Buttons::MENU), Some(Action::Submit));
+        // And the buttons it is not: `A` and a joystick-numbered pad's first
+        // button are still Accept, which is what the fold makes Start look
+        // like everywhere but the board.
+        assert_eq!(
+            action_for_button(Button::South, 0, Layout::Mapped),
+            Some(Action::Launch)
+        );
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_TRIGGER, Layout::Guessed),
+            Some(Action::Launch)
+        );
+        // Start is nobody's pointer button either: it closes a board rather
+        // than clicking anything.
+        assert_eq!(pointer_button(Button::Start, evdev::BTN_START), None);
     }
 
     /// The bug this was written for: the context menu could not be raised from
@@ -1704,7 +1746,7 @@ mod tests {
         // is answered when it comes back up, so that holding it can spell the
         // screenshot chord. See [`is_guide`].
         assert_eq!(pad_action(Buttons::STEAM), None);
-        assert_eq!(pad_action(Buttons::MENU), Some(Action::Launch));
+        assert_eq!(pad_action(Buttons::MENU), Some(Action::Submit));
         assert_eq!(pad_action(Buttons::L1), Some(Action::PrevScreen));
         assert_eq!(pad_action(Buttons::R1), Some(Action::NextScreen));
     }
