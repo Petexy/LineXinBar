@@ -45,31 +45,77 @@ pub enum Style {
     /// glass-silk lines, which is what this shell drew before the band, and
     /// glyphs as their own flat shapes.
     Simple,
+    /// Not a material at all: a picture or a film of the user's own, standing
+    /// where the scene would be drawn.
+    ///
+    /// The wallpaper's value only — see [`WALLPAPER_STYLES`]. There is nothing
+    /// for it to mean about a mark, and the one place it is offered is the one
+    /// place there is a file to answer with.
+    ///
+    /// Every reader of this setting but the shell draws [`Style::analytic`]
+    /// instead, and none of them is being short-changed: the file is under the
+    /// user's home, and the two readers are a compositor bridging the start of a
+    /// session and a login screen standing in front of every account on the
+    /// machine. Neither is in a position to open it.
+    Custom,
 }
 
-/// Every style the shell offers, in the order Settings lists them — the same two
-/// under Wallpaper as under Icons. The first is what an unreadable or
-/// unrecognised setting falls back to.
+/// Every style the shell offers *either* half of itself, in the order Settings
+/// lists them. The first is what an unreadable or unrecognised setting falls
+/// back to.
 pub const STYLES: [&str; 2] = ["Default", "Simple"];
 
+/// What the wallpaper may be set to, which is those two and the user's own
+/// picture.
+///
+/// A separate list rather than a third entry in [`STYLES`], because the Theme
+/// page asks one question about two things and only one of them has an answer
+/// of this kind. "Custom wallpaper" under Icons would be a row offering to draw
+/// every mark in the shell out of somebody's holiday photograph.
+pub const WALLPAPER_STYLES: [&str; 3] = ["Default", "Simple", CUSTOM];
+
+/// The name the user's own picture is written down and listed under.
+///
+/// Spelled out in full rather than as `Custom`, because the row it names stands
+/// in a column with Default and Simple in it and has to say what it is a custom
+/// *of*.
+pub const CUSTOM: &str = "Custom wallpaper";
+
 /// The style of that name, matched exactly, case-sensitively, the way
-/// [`palette`] matches an accent: the two names are the whole of either
+/// [`palette`] matches an accent: the three names are the whole of either
 /// setting's domain and quietly accepting `simple` would make two spellings of
 /// one value.
 pub fn style(name: &str) -> Style {
     match name {
         "Simple" => Style::Simple,
+        CUSTOM => Style::Custom,
         _ => Style::Default,
     }
 }
 
 impl Style {
     /// The name this style is written down as, which is also what Settings
-    /// shows. The same two names under either half of the Theme row.
+    /// shows.
     pub fn name(self) -> &'static str {
         match self {
             Self::Default => STYLES[0],
             Self::Simple => STYLES[1],
+            Self::Custom => CUSTOM,
+        }
+    }
+
+    /// The material to *draw* the scene in, for anything that draws the scene.
+    ///
+    /// [`Style::Custom`] is an answer that replaces the scene with a file rather
+    /// than one that changes what the scene is made of, so every reader that has
+    /// only the scene — this crate's own [`sample`], the compositor's bridge
+    /// frame, the login screen in front of an account it cannot read — asks for
+    /// this first and gets the shell's own material back. One place says so, so
+    /// that no reader has to decide it again.
+    pub fn analytic(self) -> Self {
+        match self {
+            Self::Custom => Self::Default,
+            other => other,
         }
     }
 }
@@ -347,9 +393,11 @@ pub fn sample(sky: &Sky, uv: [f32; 2], aspect: f32, t: f32, footprint: [f32; 2])
 
     // The current: the moving thing in the middle of the picture, in
     // whichever material this shell is set to draw it in.
-    color = match sky.style {
-        Style::Default => water(sky, color, [u, v], aspect, t, footprint),
+    color = match sky.style.analytic() {
         Style::Simple => silk(sky, color, [u, v], aspect, t),
+        // Default, and the user's own picture, which nothing that draws this
+        // function has open. See [`Style::analytic`].
+        _ => water(sky, color, [u, v], aspect, t, footprint),
     };
 
     // Two aurora veils sweep through different thirds of the display.
@@ -1061,6 +1109,49 @@ mod tests {
         assert_eq!(palette("Green").name, "Green");
         assert_eq!(palette("green").name, PALETTES[0].name);
         assert_eq!(palette("").name, PALETTES[0].name);
+    }
+
+    /// The name every reader of the setting has to agree on, and the one thing
+    /// this crate promises about it: that a reader with no file to open draws
+    /// the shell's own scene rather than nothing.
+    #[test]
+    fn a_custom_wallpaper_is_named_here_and_drawn_as_the_default_one() {
+        assert_eq!(style(CUSTOM), Style::Custom);
+        assert_eq!(Style::Custom.name(), CUSTOM);
+        assert_eq!(Style::Custom.analytic(), Style::Default);
+        assert_eq!(Style::Simple.analytic(), Style::Simple);
+        // Offered under the wallpaper and nowhere else: a mark drawn out of
+        // somebody's photograph is not a thing this setting can mean.
+        assert!(WALLPAPER_STYLES.contains(&CUSTOM));
+        assert!(!STYLES.contains(&CUSTOM));
+        for name in STYLES {
+            assert!(WALLPAPER_STYLES.contains(&name), "{name}");
+        }
+    }
+
+    /// A bridge frame is drawn by a compositor that cannot read the user's
+    /// picture, so the two settings it *can* draw are the whole of what it
+    /// distinguishes — and a custom wallpaper has to land on one of them rather
+    /// than on a frame of its own.
+    #[test]
+    fn the_bridge_frame_of_a_custom_wallpaper_is_the_default_one() {
+        let palette = palette("Purple");
+        let custom = Sky::styled(palette, Style::Custom);
+        let default = Sky::styled(palette, Style::Default);
+        let simple = Sky::styled(palette, Style::Simple);
+        let mut anywhere_the_material_shows = false;
+        for row in 0..24 {
+            for column in 0..24 {
+                let uv = [column as f32 / 23.0, row as f32 / 23.0];
+                let at = |sky: &Sky| sample(sky, uv, 16.0 / 9.0, 3.5, PIXEL);
+                assert_eq!(at(&custom), at(&default), "{uv:?}");
+                anywhere_the_material_shows |= at(&custom) != at(&simple);
+            }
+        }
+        // And the comparison means something: the two materials do part company
+        // somewhere on the screen, so the equality above is not two identical
+        // pictures agreeing about nothing.
+        assert!(anywhere_the_material_shows);
     }
 
     #[test]

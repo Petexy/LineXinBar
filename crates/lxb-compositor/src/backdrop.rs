@@ -733,6 +733,23 @@ mod tests {
         );
     }
 
+    /// A user whose shell stands their own picture behind everything has one
+    /// thing this compositor has not: the file. It is under their home, and the
+    /// bridge frame is drawn before any of that is open — by a process that is
+    /// deliberately not in the business of reading a user's pictures.
+    ///
+    /// So the key is read, recognised, and drawn as the shell's own scene. What
+    /// must not happen is the frame coming up in `Simple`, or the key being
+    /// refused and the whole record with it.
+    #[test]
+    fn a_custom_wallpaper_bridges_with_the_shells_own_scene() {
+        let look = |settings: &str| look_in(&settings.parse().expect("a settings file"));
+
+        let style = look(&format!("theme-wallpaper = \"{}\"", wallpaper::CUSTOM)).1;
+        assert_eq!(style, wallpaper::Style::Custom);
+        assert_eq!(style.analytic(), wallpaper::Style::Default);
+    }
+
     /// A display manager on the older wallpaper is handing over a phase of a
     /// picture nothing here draws any more. The shell refuses that record, so
     /// the bridge frame in front of it has to refuse it too — the two of them

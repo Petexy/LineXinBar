@@ -623,11 +623,20 @@ fn ancestry(from: &Path) -> Vec<Level> {
 /// for this listing to refuse in advance.
 fn listing(at: &Path) -> Vec<Row> {
     let mut rows = vec![Row::Paste];
-    let shown = crate::files::listing(at, "", crate::media::Sort::NameAscending);
+    // Everything: the picker's own rows are folders, and what it does with the
+    // files is drop them a line below — this walk is a path, not a choice
+    // between the things in a folder. See [`crate::files::Shows`], whose other
+    // value is for the column that *is* one.
+    let shown = crate::files::listing(
+        at,
+        "",
+        crate::media::Sort::NameAscending,
+        crate::files::Shows::Everything,
+    );
     for entry in shown.rows.into_iter() {
         match entry {
             crate::apps::Entry::Folder(folder) => {
-                let Some(crate::files::Place::Directory(at)) = folder.place else {
+                let Some(crate::files::Place::Directory(at, _)) = folder.place else {
                     continue;
                 };
                 rows.push(Row::Folder {

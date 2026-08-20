@@ -486,8 +486,12 @@ pub fn commit_accent(name: &str) -> bool {
 /// everything below takes one of these rather than existing twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
-    /// The picture behind everything: the band of water, or the glass-silk
-    /// ribbons this shell drew before it.
+    /// The picture behind everything: the band of water, the glass-silk ribbons
+    /// this shell drew before it, or a picture or film of the user's own put
+    /// there instead of either.
+    ///
+    /// The one half with a third answer, and it is a third answer of a different
+    /// kind — see [`Part::styles`].
     Wallpaper,
     /// Every mark the shell draws itself: a bead of water shaded out of its own
     /// distance field, or the flat shape of one.
@@ -516,6 +520,21 @@ impl Part {
         match self {
             Self::Wallpaper => "theme-wallpaper",
             Self::Icons => "theme-icons",
+        }
+    }
+
+    /// The values this half may be set to, in the order Settings lists them.
+    ///
+    /// The two materials for either of them, and one more for the wallpaper:
+    /// the user's own picture, which is not a material at all but a file
+    /// standing where the scene would be. There is nothing it could mean about
+    /// a mark — see [`wallpaper::WALLPAPER_STYLES`] — and this is the one place
+    /// that says so, so that setting, previewing and saving cannot each come to
+    /// their own conclusion about what the domain is.
+    pub fn styles(self) -> &'static [&'static str] {
+        match self {
+            Self::Wallpaper => &wallpaper::WALLPAPER_STYLES,
+            Self::Icons => &wallpaper::STYLES,
         }
     }
 }
@@ -576,16 +595,22 @@ pub fn style_flag(part: Part) -> f32 {
     match style(part) {
         Style::Default => 0.0,
         Style::Simple => 1.0,
+        // The one value that is not a material: the shader stops drawing the
+        // scene at all and reads the picture the shell put in front of it. The
+        // wallpaper's lane only — nothing ever sets this half for the marks; see
+        // [`Part::styles`].
+        Style::Custom => 2.0,
     }
 }
 
 /// Set a material outright, applied and shown together. The startup path,
 /// where the saved setting is read before there is a frame to answer with.
 ///
-/// Names are matched exactly, as [`wallpaper::style`] matches them: the two
-/// spellings are the whole of the setting's domain.
+/// Names are matched exactly, as [`wallpaper::style`] matches them, and against
+/// the values *this half* offers: the spellings [`Part::styles`] lists are the
+/// whole of the setting's domain, and Custom wallpaper is not one of the marks'.
 pub fn set_style(part: Part, name: &str) -> bool {
-    let known = wallpaper::STYLES.contains(&name);
+    let known = part.styles().contains(&name);
     let style = wallpaper::style(name);
     let mut material = lock_material();
     let chosen = material.part(part);
@@ -596,7 +621,7 @@ pub fn set_style(part: Part, name: &str) -> bool {
 
 /// Draw in a material without choosing it, for a highlighted row.
 pub fn preview_style(part: Part, name: &str) -> bool {
-    if !wallpaper::STYLES.contains(&name) {
+    if !part.styles().contains(&name) {
         return false;
     }
     lock_material().part(part).shown = wallpaper::style(name);
@@ -605,7 +630,7 @@ pub fn preview_style(part: Part, name: &str) -> bool {
 
 /// Choose the material the shell is showing for that half.
 pub fn commit_style(part: Part, name: &str) -> bool {
-    if !wallpaper::STYLES.contains(&name) {
+    if !part.styles().contains(&name) {
         return false;
     }
     let style = wallpaper::style(name);

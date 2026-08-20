@@ -47,6 +47,13 @@ struct Globals {
 @group(3) @binding(0) var scenery_texture: texture_2d_array<f32>;
 @group(3) @binding(1) var scenery_sampler: sampler;
 
+// The wallpaper the user chose, where they chose one: a picture of theirs, or
+// the newest frame of a film of theirs, with the same chain of ever-smaller
+// copies under it that everything else behind the glass has. Read only when
+// `globals.style.x` says so — see `paper()` — and pointing at a single
+// transparent texel on every machine that has never set one.
+@group(3) @binding(2) var paper_texture: texture_2d<f32>;
+
 // The shape a picture is kept at — `art::HERO_WIDTH` over `art::HERO_HEIGHT` —
 // and the deepest rung of halvings it carries, one less than `HERO_LEVELS`.
 // Both have to agree with Rust: a wrong shape squeezes every game's artwork,
@@ -253,6 +260,37 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     return vec4<f32>(color / covered, min(total, 1.0) * covered / total);
+}
+
+// The user's own wallpaper at `uv`, cropped to fill the display.
+//
+// Cropped rather than squeezed, exactly as a game's key art is and for the same
+// reason: a picture has a shape of its own, and the one thing that must not
+// happen to somebody's photograph is being stretched into the shape of their
+// monitor. What is given up is the sides of a picture wider than the screen, or
+// the top and bottom of a taller one.
+//
+// `lod` is the rung of the blur chain frost and the guide ask for, which is why
+// the copies exist at all: the analytic scene answers "softer, please" by
+// drawing itself wider and dimmer, and a photograph can only answer it by
+// having smaller copies to be read from.
+fn paper(uv: vec2<f32>, aspect: f32, lod: f32) -> vec3<f32> {
+    let shape = globals.style.z;
+    var window = vec2<f32>(1.0, 1.0);
+    if (aspect < shape) {
+        window.x = aspect / shape;
+    } else {
+        window.y = shape / aspect;
+    }
+    let cropped = (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
+    let sampled = textureSampleLevel(paper_texture, scenery_sampler, cropped, lod);
+    // A drawing on nothing at all — an SVG, a PNG with a transparent
+    // background — shows the shell's own dark ground through it rather than
+    // black, which is the same bargain `scenery` strikes with the same kind of
+    // file. The ground is the theme's own gradient at its darkest, so a picture
+    // with a hole in it still sits in this shell rather than on a void.
+    let ground = mix(globals.sky[0].rgb, globals.sky[1].rgb, uv.y) * 0.42;
+    return mix(ground, sampled.rgb, sampled.a);
 }
 
 // The current as the shell's own material: one band of water, three ribbons
@@ -615,6 +653,21 @@ fn wallpaper(
     lod: f32,
     footprint: vec2<f32>,
 ) -> vec3<f32> {
+    // A wallpaper of the user's own replaces the scene rather than being drawn
+    // over it: none of the lights, currents, veils or ribbons below is
+    // evaluated, and this is where that stops. It is inside this function
+    // rather than at the two places that call it because *everything* asks the
+    // wallpaper what is at a point — the pane of glass bending it, the guide
+    // softening it, the overview drawing all of it inside a card — and a branch
+    // taken anywhere else would leave one of them showing a picture the rest of
+    // the screen is not.
+    //
+    // Two, and never two by accident: the flag is only written while there is
+    // really a picture on the GPU to read. See `Gpu::wallpaper_flag`.
+    if (globals.style.x > 1.5) {
+        return paper_wallpaper(uv, aspect, lod, soften);
+    }
+
     // The mood drifts slowly between the theme's two gradients — indigo to
     // violet and back over a couple of minutes, like the original bar's
     // changing months.
@@ -724,6 +777,26 @@ fn wallpaper(
         + globals.accent[0].rgb * lower_crest * 0.028)
         * lower_sheen * veil_strength;
 
+    return over_the_wallpaper(color, uv, aspect, lod, soften);
+}
+
+// Everything that happens to a wallpaper once it has been drawn, whichever of
+// the three it is.
+//
+// Its own function because there are two wallpapers now — the shell's scene and
+// the user's own picture — and these three steps are true of both. A picture
+// that skipped them would be the one thing on the display not behaving like
+// everything else on it: no game's key art over it, no vignette at the edges,
+// and full brightness behind a guide that has dimmed everything else.
+fn over_the_wallpaper(
+    into: vec3<f32>,
+    uv: vec2<f32>,
+    aspect: f32,
+    lod: f32,
+    soften: f32,
+) -> vec3<f32> {
+    var color = into;
+
     // The game under the cursor, over everything the shell paints for itself.
     //
     // Over rather than through: the lights, the currents and the silk are the
@@ -745,6 +818,16 @@ fn wallpaper(
     // over it read as the lit layer — but not so far that the glass laid over
     // it has nothing left to refract.
     return color * mix(1.0, 0.55, soften);
+}
+
+// The wallpaper where it is one of the user's own files.
+//
+// The picture, and then exactly what happens to the shell's own scene: a game's
+// key art still lies over it, the edges still fall away, and the guide still
+// dims it. What does *not* happen to it is any of the scene — see `wallpaper`,
+// which is where this is branched to.
+fn paper_wallpaper(uv: vec2<f32>, aspect: f32, lod: f32, soften: f32) -> vec3<f32> {
+    return over_the_wallpaper(paper(uv, aspect, lod), uv, aspect, lod, soften);
 }
 
 @fragment

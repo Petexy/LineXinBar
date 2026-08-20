@@ -20,6 +20,7 @@ license=('GPL-3.0-only' 'Apache-2.0' 'MIT')
 depends=(
     'alsa-lib'
     'dbus'
+    'ffmpeg'
     'glibc'
     'libgcc'
     'libdrm'
@@ -39,8 +40,8 @@ depends=(
 )
 # Arch's rust package provides the cargo name without a versioned provide.
 # The build wrapper checks rustc/cargo >= 1.89 before invoking makepkg.
-# clang is bindgen's, which the PipeWire bindings the portal is built on run
-# at compile time.
+# clang is bindgen's, which the PipeWire bindings the portal is built on and
+# FFmpeg's bindings the shell is built on both run at compile time.
 makedepends=('cargo' 'clang' 'gcc' 'pkgconf')
 # makepkg.conf ships `lto` in OPTIONS, which appends -flto=auto to CFLAGS and
 # LDFLAGS. Those are read by the `cc` crate, so the C and assembly that ring
@@ -145,6 +146,9 @@ package_lxb-desktop() {
         "lxb-compositor=$pkgver-$pkgrel"
         'alsa-lib'
         'dbus'
+        # libavcodec, libavformat, libavutil and libswscale: a wallpaper of the
+        # user's own, under Settings > Appearance > Theme > Wallpaper.
+        'ffmpeg'
         'glibc'
         'libgcc'
         'libglvnd'

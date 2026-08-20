@@ -828,7 +828,9 @@ fn files_row() -> Entry {
         comment: Some("Your folder, this machine, and anything plugged in".to_string()),
         icon: Some(crate::icons::CATEGORY_FILES.to_string()),
         entries: Vec::new(),
-        place: Some(crate::files::Place::Volumes),
+        place: Some(crate::files::Place::Volumes(
+            crate::files::Shows::Everything,
+        )),
         chosen: false,
         over_the_list: false,
     })
@@ -2662,7 +2664,9 @@ mod tests {
             assert_eq!(files.icon.as_deref(), Some(crate::icons::CATEGORY_FILES));
             assert_eq!(
                 files.place,
-                Some(crate::files::Place::Volumes),
+                Some(crate::files::Place::Volumes(
+                    crate::files::Shows::Everything
+                )),
                 "it is read on the press that opens it, not now"
             );
             assert!(files.entries.is_empty(), "and it holds nothing until then");

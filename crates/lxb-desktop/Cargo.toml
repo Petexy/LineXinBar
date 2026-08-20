@@ -100,3 +100,25 @@ image = { version = "0.25", default-features = false, features = [
     "tiff",
 ] }
 resvg = { version = "0.48", default-features = false, features = ["raster-images"] }
+
+# The user's own wallpaper: a picture or a film of theirs standing where the
+# shell's own scene would be drawn. See `src/paper.rs`.
+#
+# Cut to three of its features, and the cut is the feature: `codec` and `format`
+# open a file and decode its video stream, `software-scaling` turns what comes
+# out into the RGBA the texture wants. There is deliberately no
+# `software-resampling` and no `device`, so nothing this crate exposes here can
+# turn a soundtrack into samples or open anything to play them on — which is one
+# of the three reasons a film used as a wallpaper is silent. The other two are in
+# `src/paper.rs`: its audio stream is never opened, and the only thing in this
+# shell that makes a noise is `src/sound.rs` and its own embedded clips.
+#
+# One decoder for both kinds of file rather than the `image` crate for pictures
+# and this for films: it is the wider of the two by a long way — an `.avif` and
+# a `.heic` are listed as pictures by this shell and `image` is built here
+# without either — and one path is one thing to be right about.
+ffmpeg-next = { version = "9", default-features = false, features = [
+    "codec",
+    "format",
+    "software-scaling",
+] }

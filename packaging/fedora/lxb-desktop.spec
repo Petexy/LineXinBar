@@ -48,6 +48,16 @@ BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xcursor)
 BuildRequires:  pkgconfig(xi)
 BuildRequires:  pkgconfig(libpipewire-0.3)
+# A wallpaper of the user's own: their picture decoded, or their film played.
+# See Settings > Appearance > Theme > Wallpaper > Custom wallpaper. RPM's ELF
+# dependency generator finds these again at install time, so they are not
+# repeated under Requires.
+BuildRequires:  pkgconfig(libavcodec)
+BuildRequires:  pkgconfig(libavformat)
+BuildRequires:  pkgconfig(libavutil)
+BuildRequires:  pkgconfig(libswscale)
+# bindgen's, for the PipeWire bindings the portal is built on and the FFmpeg
+# bindings the shell is built on.
 BuildRequires:  clang
 
 # Wayland, EGL/Vulkan and the nested X libraries are loaded dynamically, so

@@ -53,10 +53,17 @@ kernel interfaces underneath it have no portable substitute.
 | `libEGL` (+ a GLES driver)                | The compositor's renderer                  | compositor |
 | `libvulkan` **or** `libEGL`               | The shell's renderer, whichever is present | shell      |
 | `libasound`                                | The shell's effects and Start music         | shell      |
+| `libavcodec` / `libavformat` / `libavutil` / `libswscale` | A wallpaper of the user's own: [Custom wallpaper](#custom-wallpaper) decodes their picture or plays their film | shell |
 | `libpipewire-0.3`                          | The frames a shared screen is carried on    | portal     |
 
-`libpipewire`'s Rust bindings are generated at build time, so building the
-portal also wants **`clang`** for `bindgen`.
+`libpipewire`'s and FFmpeg's Rust bindings are both generated at build time, so
+building the portal or the shell also wants **`clang`** for `bindgen`.
+
+FFmpeg is linked for pictures and films and for nothing else. A film used as a
+wallpaper is silent, and cannot be anything else: its audio stream is never
+opened and no audio decoder is ever made, the crate is built without
+`software-resampling` and without `device`, and the only thing in this shell
+that makes a noise at all is its own handful of embedded clips.
 
 The X libraries — `libX11`, `libxcb`, `libXcursor`, `libXi`,
 `libxkbcommon-x11` — are pulled in by the nested `winit` and `x11` backends
@@ -135,28 +142,30 @@ cargo build --release
 Arch (headers ship in the same packages):
 
 ```sh
-pacman -S --needed rust pkgconf wayland libinput seatd systemd-libs libdrm \
+pacman -S --needed rust pkgconf clang wayland libinput seatd systemd-libs libdrm \
     mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11 \
-    alsa-lib
+    alsa-lib ffmpeg
 pacman -S --needed xorg-xwayland dbus wireplumber ddcutil   # optional
 ```
 
 Debian and Ubuntu:
 
 ```sh
-apt install build-essential pkg-config cargo libwayland-dev libinput-dev \
+apt install build-essential pkg-config cargo clang libwayland-dev libinput-dev \
     libseat-dev libudev-dev libdrm-dev libgbm-dev libxkbcommon-dev \
     libegl1-mesa-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
-    libxkbcommon-x11-dev libasound2-dev
+    libxkbcommon-x11-dev libasound2-dev libavcodec-dev libavformat-dev \
+    libavutil-dev libswscale-dev
 ```
 
 Fedora:
 
 ```sh
-dnf install cargo pkgconf-pkg-config wayland-devel libinput-devel \
+dnf install cargo pkgconf-pkg-config clang wayland-devel libinput-devel \
     libseat-devel systemd-devel libdrm-devel mesa-libgbm-devel \
     libxkbcommon-devel mesa-libEGL-devel libX11-devel libxcb-devel \
-    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel
+    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel \
+    ffmpeg-free-devel
 ```
 
 Package names drift; the library list above is the thing to match if yours
@@ -1204,7 +1213,8 @@ An unknown name there is reported and ignored, and the shell comes up violet.
 
 `Settings > Appearance > Theme` is what the shell is *made of*, and it is a page
 rather than a list: **Wallpaper** and **Icons**, each offering **Default** and
-**Simple**.
+**Simple** — and the wallpaper one thing more, [a picture or a film of your
+own](#custom-wallpaper).
 
 Under `Default` the wallpaper's current is a band of water three sheets thick,
 lit as bodies, and every one of the shell's own marks is a bead of water shaded
@@ -1239,6 +1249,60 @@ The login screen reads both keys and the compositor reads the wallpaper's, so a
 machine set to `Simple` is in `Simple` from the moment the greeter appears and
 never changes material in front of you. A file from before the setting was split
 carries one `theme` key; it is still read, and both halves take it.
+
+#### Custom wallpaper
+
+`Settings > Appearance > Theme > Wallpaper > Custom wallpaper` is the third
+answer under Wallpaper, and it is not a material: it is a picture or a film of
+your own, standing where the shell's scene would be. Choosing it stops the
+background shader drawing a scene at all — no gradient, no lights, no aurora, no
+band of water — and puts your file there instead.
+
+The row opens the shell's own file browser, on the same three places Files opens
+on: your home directory, the machine from `/`, and every drive that is mounted.
+It lists **only what could stand behind a screen** — the folders to keep walking
+through, pictures, and films — and pictures show themselves on their rows, as
+they do everywhere else in the shell. There is no context menu in there: the file
+is the answer to a question, not something to be copied, renamed or thrown away
+from a column you opened to choose a wallpaper. Press one and the bar comes back
+out to the Wallpaper column with Custom wallpaper ticked and the file's name
+under it.
+
+**It is the wallpaper, not a layer over it.** Glass panes refract it, the guide
+blurs it behind the overlay, the overview draws it inside the start screen's
+card, and a game's key art still lies over it exactly as it lies over the scene.
+The picture is cropped to fill the display rather than stretched into its shape.
+
+**A film plays silently, and cannot do otherwise.** Its audio stream is never
+opened, no audio decoder is ever made, and the only thing in this shell that
+makes a noise is its own embedded clips — see [Libraries](#libraries). It loops,
+it is decoded at its own frame rate and no faster, and it stops dead when nothing
+is drawing it: an application filling the screen, or a display that has gone to
+rest, costs one sleeping thread.
+
+The file you choose is **copied into `~/.local/share/linexinbar/`**, and it is
+that copy the shell reads from then on. Tidying your Downloads folder, renaming
+the picture or unplugging the stick it came off does not take your wallpaper with
+it. The copy happens on a thread — a film can be several gigabytes — while the
+picture you chose is already on screen.
+
+```toml
+theme-wallpaper = "Custom wallpaper"
+wallpaper-file = "/home/you/.local/share/linexinbar/wallpaper.jpg"
+```
+
+If that file is not there when the session starts — a drive not plugged in this
+morning — the shell draws its own wallpaper for the session and **leaves the
+setting alone**, so plugging the drive back in brings it back. A file that
+nothing here can decode, pressed just now, puts the setting back to `Default` in
+front of you.
+
+The login screen and the compositor both draw the shell's own scene for this
+setting rather than your picture, and neither is being lazy: the file is under
+your home directory, and both of them run before your session does — the greeter
+as its own user, in front of every account on the machine. So the frame that
+bridges the start of the session is the water, in your accent, and your own
+wallpaper appears with the shell.
 
 #### Battery percentage
 

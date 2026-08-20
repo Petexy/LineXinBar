@@ -1055,8 +1055,16 @@ struct Globals {
     /// Theme. `x` is the wallpaper — the band of water against the glass-silk
     /// ribbons — and `y` is every mark the shell draws, beaded out of its own
     /// shape against the flat shape itself. Two numbers rather than one because
-    /// the two are separate settings, and the pair costs nothing here: a uniform
-    /// block is laid out in sixteen-byte lots, so the other two are spare.
+    /// the two are separate settings.
+    ///
+    /// `x` has a third value, 2, which is not a material: the user's own picture
+    /// or film, drawn instead of the scene. It is written only while there is
+    /// really a picture in [`Gpu::paper`] — see [`Gpu::wallpaper_flag`] — so the
+    /// shader never has to ask whether the texture it is about to read holds
+    /// anything. `z` is that picture's own shape, width over height, which is
+    /// what the crop to the display is worked out from; it is nought when there
+    /// is none. `w` is spare, and a uniform block is laid out in sixteen-byte
+    /// lots, so it costs nothing to leave it there.
     style: [f32; 4],
 }
 
@@ -1071,6 +1079,164 @@ pub const MAX_COVERS: usize = 6;
 /// less than this, and the two have to agree: a pane asking for a rung that
 /// was never rendered samples whatever the last frame left there.
 const BACKDROP_MIPS: u32 = 5;
+
+/// How many rungs the user's own wallpaper carries, counting the sharp copy.
+///
+/// The same five as the backdrop and the scenery, and for the same reason: the
+/// wallpaper is asked for softened — behind the guide, and through every frosted
+/// pane in the shell — and an analytic scene answers that by drawing itself
+/// dimmer and wider, where a photograph can only answer it by having smaller
+/// copies to be read from. A file smaller than 32 pixels down its shorter edge
+/// gets fewer, because there is nowhere to halve to.
+const PAPER_MIPS: u32 = 5;
+
+/// What the user's own wallpaper is held in.
+///
+/// Not the surface's format, which is the display's business and is BGRA on
+/// nearly every machine. This one is what a decoded frame *is* — see
+/// [`crate::paper`], where `libswscale` is asked for `RGBA` — and holding it in
+/// anything else would mean swapping two bytes of every pixel of every frame of
+/// a film on the way to the GPU. sRGB, because a picture is authored in sRGB and
+/// the sampler is what converts it to the linear light the shell mixes in.
+const PAPER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// The user's own wallpaper on the GPU: one picture, or the newest frame of one
+/// film, and the chain of halvings frost reads.
+///
+/// The halvings are rendered here rather than made on the CPU as the scenery's
+/// are, and the difference is the film: a still picture's chain is built once
+/// and a film's is built for every frame that reaches the screen, which is sixty
+/// times a second. Four passes over ever-smaller textures is a few tenths of a
+/// millisecond on the GPU that is about to draw the frame anyway; the same
+/// arithmetic on the thread that draws would be milliseconds taken out of it.
+struct Paper {
+    texture: wgpu::Texture,
+    /// One view per rung. The first is what a frame is written into; the rest
+    /// are rendered from the rung above.
+    rungs: Vec<wgpu::TextureView>,
+    /// One bind group per rung, for reading it while the next is drawn.
+    sources: Vec<wgpu::BindGroup>,
+    width: u32,
+    height: u32,
+}
+
+impl Paper {
+    /// A texture of this size, with as many halvings as it has room for, and
+    /// everything needed to render them.
+    fn new(
+        device: &wgpu::Device,
+        sample_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        width: u32,
+        height: u32,
+    ) -> Paper {
+        // As many halvings as the picture has room for, so a small drawing does
+        // not ask for a rung no pixels wide.
+        let levels = PAPER_MIPS.min(width.min(height).ilog2().max(1));
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("custom wallpaper"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PAPER_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let rungs: Vec<wgpu::TextureView> = (0..levels)
+            .map(|level| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("custom wallpaper rung"),
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let sources = rungs
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("custom wallpaper rung"),
+                    layout: sample_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
+        Paper {
+            texture,
+            rungs,
+            sources,
+            width,
+            height,
+        }
+    }
+}
+
+/// Bind the pictures behind the shell: Steam's, the user's own file thumbnails
+/// blown up to a display, and the wallpaper somebody chose.
+///
+/// One function because the group is built twice — once with nothing in the
+/// wallpaper's slot, and again each time a wallpaper of a new *size* arrives,
+/// which is a new texture and therefore a new view to point at. A frame of a
+/// film that is the same size as the last one changes nothing here.
+fn scenery_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    scenery: &wgpu::Texture,
+    sampler: &wgpu::Sampler,
+    paper: Option<&wgpu::Texture>,
+    blank: &wgpu::Texture,
+) -> wgpu::BindGroup {
+    let scenery_view = scenery.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("scenery"),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let paper_view = paper
+        .unwrap_or(blank)
+        .create_view(&wgpu::TextureViewDescriptor {
+            label: Some("custom wallpaper"),
+            ..Default::default()
+        });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scenery"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&scenery_view),
+            },
+            // The frame sampler, because it is the one that clamps at the
+            // edges and reads down the blur chain — which is exactly what
+            // a picture cropped to a display and softened behind the guide
+            // needs. Both textures here want precisely that, so they share it.
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&paper_view),
+            },
+        ],
+    })
+}
 
 /// How a surface's backdrop pass should be drawn.
 #[derive(Debug, Clone, Copy)]
@@ -1171,6 +1337,9 @@ pub struct Gpu {
     background_pipeline: wgpu::RenderPipeline,
     /// One rung of the backdrop's blur chain from the one above it.
     downsample_pipeline: wgpu::RenderPipeline,
+    /// And the same for the user's own wallpaper, which is the one texture here
+    /// that is not in the surface's format. See [`PAPER_FORMAT`].
+    paper_downsample_pipeline: wgpu::RenderPipeline,
     /// The finished frame, from the texture it was built in onto the display.
     blit_pipeline: wgpu::RenderPipeline,
     globals_layout: wgpu::BindGroupLayout,
@@ -1232,6 +1401,27 @@ pub struct Gpu {
     scenery_texture: wgpu::Texture,
     scenery_bind_group: wgpu::BindGroup,
     scenery_layers: Vec<Option<crate::art::Sight>>,
+    scenery_layout: wgpu::BindGroupLayout,
+
+    /// The user's own wallpaper: one picture, or the newest frame of one film,
+    /// with a chain of ever-smaller copies under it.
+    ///
+    /// Beside the scenery rather than in it, although both are pictures behind
+    /// the shell, because they are different shapes and are asked different
+    /// questions. Every layer of the scenery is a hero — 1920 by 620, Valve's
+    /// shape, cropped to the middle of the display — and a wallpaper is whatever
+    /// shape the file is, held at whatever size it came at. Squeezing one into
+    /// the other would either letterbox somebody's photograph or throw two
+    /// thirds of it away.
+    ///
+    /// `None` until the first frame arrives, which is the state a session
+    /// spends its first moments in and the state a file that cannot be read
+    /// stays in for good. Nothing has to test for it downstream — see
+    /// [`Gpu::wallpaper_flag`], which is what the shader is told instead.
+    paper: Option<Paper>,
+    /// One transparent texel, so the wallpaper's binding has something to point
+    /// at on a machine that has not set one. See where it is made.
+    blank_paper: wgpu::Texture,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -1476,6 +1666,20 @@ impl Gpu {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // The user's own wallpaper, in the same group as the pictures
+                // that stand *in front of* it: one group, because the wallpaper
+                // is one function and both passes that draw it need everything
+                // that function reads.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let scenery_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1492,30 +1696,32 @@ impl Gpu {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let scenery_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scenery"),
-            layout: &scenery_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&scenery_texture.create_view(
-                        &wgpu::TextureViewDescriptor {
-                            label: Some("scenery"),
-                            dimension: Some(wgpu::TextureViewDimension::D2Array),
-                            ..Default::default()
-                        },
-                    )),
-                },
-                // The frame sampler, because it is the one that clamps at the
-                // edges and reads down the blur chain — which is exactly what
-                // a picture cropped to a display and softened behind the guide
-                // needs.
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&frame_sampler),
-                },
-            ],
+        // Something for the wallpaper's binding to point at before there is a
+        // wallpaper — and on every machine that never sets one, which is most of
+        // them. A bind group has to be complete whether or not the shader will
+        // read it, and one transparent texel is the cheapest complete answer.
+        let blank_paper = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("no custom wallpaper"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PAPER_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
+        let scenery_bind_group = scenery_group(
+            &device,
+            &scenery_layout,
+            &scenery_texture,
+            &frame_sampler,
+            None,
+            &blank_paper,
+        );
 
         // --- pipelines ---------------------------------------------------
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1570,7 +1776,7 @@ impl Gpu {
             bind_group_layouts: &[Some(&sample_layout)],
             immediate_size: 0,
         });
-        let offscreen_pipeline = |label: &str, entry: &str| {
+        let offscreen_pipeline = |label: &str, entry: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&offscreen_layout),
@@ -1600,8 +1806,16 @@ impl Gpu {
                 cache: None,
             })
         };
-        let downsample_pipeline = offscreen_pipeline("downsample", "fs_downsample");
-        let blit_pipeline = offscreen_pipeline("blit", "fs_blit");
+        let downsample_pipeline = offscreen_pipeline("downsample", "fs_downsample", format);
+        let blit_pipeline = offscreen_pipeline("blit", "fs_blit", format);
+        // The same halving again, for the one texture in the shell that is not
+        // in the surface's own format: the user's own wallpaper, which arrives
+        // as decoded RGBA. A pipeline's colour target has to be the format it
+        // will really be drawn into — a display whose surface is BGRA refuses
+        // the pass outright — and converting every frame of a film on the way
+        // in would be a pass over eight megabytes to save one pipeline.
+        let paper_downsample_pipeline =
+            offscreen_pipeline("custom wallpaper downsample", "fs_downsample", PAPER_FORMAT);
 
         let quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad layout"),
@@ -1690,6 +1904,7 @@ impl Gpu {
                 quad_pipeline,
                 background_pipeline,
                 downsample_pipeline,
+                paper_downsample_pipeline,
                 blit_pipeline,
                 globals_layout,
                 atlas_layout,
@@ -1708,6 +1923,9 @@ impl Gpu {
                 scenery_texture,
                 scenery_bind_group,
                 scenery_layers: vec![None; HERO_LAYERS as usize],
+                scenery_layout,
+                paper: None,
+                blank_paper,
                 atlas_texture: atlas.texture,
                 slots: atlas.slots,
                 late_slots: HashMap::new(),
@@ -2189,6 +2407,152 @@ impl Gpu {
         true
     }
 
+    /// What the shader is told the wallpaper is: nought or one for the shell's
+    /// own two materials, two for the user's own picture.
+    ///
+    /// Two only while there is really a picture to read. The setting can say
+    /// Custom for a whole session in which no frame ever arrives — a file on a
+    /// drive that is not plugged in, a format nothing on this machine decodes,
+    /// or simply the first tenth of a second while it is being opened — and the
+    /// honest thing to draw in the meantime is the shell's own wallpaper rather
+    /// than an empty texture. Deciding it here means the shader never has to ask
+    /// and neither does anything else.
+    fn wallpaper_flag(&self) -> f32 {
+        let flag = crate::theme::style_flag(crate::theme::Part::Wallpaper);
+        if flag > 1.5 && self.paper.is_none() {
+            return 0.0;
+        }
+        flag
+    }
+
+    /// The shape of the picture behind everything — its width over its height —
+    /// which is what the crop to a display of another shape is worked out from.
+    /// Nought where there is no picture, which is a shape the shader never asks
+    /// about because it is only read on the branch [`Gpu::wallpaper_flag`]
+    /// opens.
+    fn paper_shape(&self) -> f32 {
+        self.paper
+            .as_ref()
+            .map(|paper| paper.width as f32 / paper.height.max(1) as f32)
+            .unwrap_or(0.0)
+    }
+
+    /// Put one frame of the user's own wallpaper on the GPU, with its chain of
+    /// halvings, and hand back the buffer it came in.
+    ///
+    /// The buffer is returned rather than dropped because a film hands over one
+    /// of these every frame: the decoder fills it again instead of allocating
+    /// eight megabytes sixty times a second. See [`crate::paper::Paper::take`].
+    ///
+    /// A frame of a different size to the last one is a new texture and a new
+    /// bind group — which is what a wallpaper being *changed* is, and what a
+    /// film's first frame is. Every frame after that writes into the texture
+    /// already there.
+    pub fn put_paper(&mut self, frame: crate::paper::Frame) -> Option<Vec<u8>> {
+        let (width, height) = (frame.width.max(1), frame.height.max(1));
+        if frame.pixels.len() < (width * height * 4) as usize {
+            tracing::warn!(
+                width,
+                height,
+                "that wallpaper frame is not the size it says"
+            );
+            return Some(frame.pixels);
+        }
+        if !self
+            .paper
+            .as_ref()
+            .is_some_and(|paper| paper.width == width && paper.height == height)
+        {
+            self.paper = Some(Paper::new(
+                &self.device,
+                &self.sample_layout,
+                &self.sampler,
+                width,
+                height,
+            ));
+            self.scenery_bind_group = scenery_group(
+                &self.device,
+                &self.scenery_layout,
+                &self.scenery_texture,
+                &self.sampler,
+                self.paper.as_ref().map(|paper| &paper.texture),
+                &self.blank_paper,
+            );
+        }
+        let paper = self.paper.as_ref()?;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &paper.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &frame.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // The halvings, off the rung above each time — the same chain the
+        // backdrop's frost reads, drawn by the same pipeline.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("custom wallpaper blur"),
+            });
+        for rung in 1..paper.rungs.len() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("custom wallpaper blur"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &paper.rungs[rung],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.paper_downsample_pipeline);
+            pass.set_bind_group(0, &paper.sources[rung - 1], &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Some(frame.pixels)
+    }
+
+    /// Stop drawing the user's own wallpaper: the setting has been changed back
+    /// to one of the shell's own materials, or the file turned out not to be one
+    /// this shell can draw.
+    ///
+    /// The texture goes with it rather than being kept in case it is wanted
+    /// again — it is a display's worth of pixels, and getting it back costs one
+    /// upload of a file that is on the disk.
+    pub fn drop_paper(&mut self) {
+        if self.paper.take().is_none() {
+            return;
+        }
+        self.scenery_bind_group = scenery_group(
+            &self.device,
+            &self.scenery_layout,
+            &self.scenery_texture,
+            &self.sampler,
+            None,
+            &self.blank_paper,
+        );
+    }
+
     /// Give up every layer whose picture no display is showing.
     ///
     /// The same policy as the thumbnails, and it has to be: what these hold is
@@ -2269,9 +2633,9 @@ impl Gpu {
                 covers: params.covers,
                 hero: hero.packed(),
                 style: [
-                    crate::theme::style_flag(crate::theme::Part::Wallpaper),
+                    self.wallpaper_flag(),
                     crate::theme::style_flag(crate::theme::Part::Icons),
-                    0.0,
+                    self.paper_shape(),
                     0.0,
                 ],
             }),

@@ -23,6 +23,7 @@ mod model;
 mod network;
 mod notify;
 mod pad_guard;
+mod paper;
 mod playing;
 mod pointer;
 mod polkit;
@@ -861,6 +862,9 @@ fn main() -> anyhow::Result<()> {
         // screenshot of a library nobody owns.
         art: art::Art::start(steam_is_real),
         thumbs: thumbs::Thumbs::start(),
+        paper: paper::Paper::new(),
+        paper_spare: None,
+        paper_chosen: None,
         drained: Drained::default(),
         leaving: None,
         exit: false,
@@ -1082,6 +1086,14 @@ fn main() -> anyhow::Result<()> {
         // And its neighbour, which is the same shape of answer about
         // applications rather than screens, and moves on its own clock too.
         shell.sync_media_awake(now);
+        // And the wallpaper the user chose, if they chose one — which is here
+        // rather than inside the drawing for two reasons. A frame of a film
+        // arriving is a reason to draw, and a flag set inside `draw` would be
+        // cleared by the very pass it was meant to ask for; and the decoder's
+        // whole pacing hangs on this being reached once a pass whether or not
+        // anything is drawn, since what parks it is nobody saying they want a
+        // frame. See [`paper::Paper::wanted`].
+        shell.sync_wallpaper();
         if now >= shell.next_frame_deadline {
             shell.needs_redraw = true;
         }
@@ -2585,6 +2597,39 @@ struct Shell {
     /// it is kept beside the catalogue: what is on the disk is not the shell's
     /// to rebuild when something is installed.
     thumbs: thumbs::Thumbs,
+    /// The wallpaper the user chose, where they chose one: which file, and the
+    /// frames coming out of it. Beside the thumbnailer because it is the same
+    /// kind of thing — one of the user's own files being turned into pixels on
+    /// a thread of its own — and separate from it because it is one file that
+    /// stays, rather than a queue of rows the cursor is passing.
+    paper: paper::Paper,
+    /// A frame buffer the GPU has finished with, on its way back to the decoder
+    /// to be filled again. A film hands over one of these sixty times a second
+    /// and they are eight megabytes each; passing the same one round is the
+    /// difference between that and a wallpaper that allocates half a gigabyte a
+    /// second.
+    paper_spare: Option<Vec<u8>>,
+    /// The file somebody pressed a moment ago, until it has shown that it can be
+    /// drawn. `None` at every other moment, the whole of a session that never
+    /// changes its wallpaper included.
+    ///
+    /// It answers two questions, and they are the same question: *has anybody
+    /// been shown this yet*.
+    ///
+    /// The first is what to do about a file that turns out not to be drawable,
+    /// and the two cases want opposite things. A press is answered — the setting
+    /// goes back to what it was and the column says so — because somebody is
+    /// standing there waiting to see what they chose. A session starting up says
+    /// nothing and draws the shell's own wallpaper: the file may be on a drive
+    /// that is not plugged in this morning, and a login that undid the setting
+    /// over that would be a login that lost the user's wallpaper for them.
+    ///
+    /// The second is when to copy it into the shell's own directory, which is
+    /// **once the first frame is on screen** and not before. A file that nothing
+    /// here can decode is never copied at all, which matters most for the case
+    /// where it would cost most: four gigabytes of film in a format this machine
+    /// has no decoder for.
+    paper_chosen: Option<PathBuf>,
     /// And the workers that fetch Steam's own pictures of a game — the cover
     /// on its row and the picture behind the display while it is chosen.
     /// Beside the library rather than in it for the same reason again: the
@@ -5140,6 +5185,14 @@ impl Shell {
                     self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                     return;
                 }
+                // A file pressed in the wallpaper picker is a value being
+                // chosen, not a file being opened — the one place in the shell
+                // where those two look identical and mean opposite things. It is
+                // answered before the launch below for exactly that reason.
+                if self.press_wallpaper_pick() {
+                    self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+                    return;
+                }
                 if let Some(setting) = chosen {
                     settings::apply(setting);
                     // A sound device is the sound server's to carry out, as a
@@ -5680,6 +5733,15 @@ impl Shell {
     /// music has no package to remove and the only thing the row could mean is
     /// deleting it.
     fn bar_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        // Not while the disk is being walked to answer a question. Every row of
+        // that menu is about *having* a file — copy it, move it, rename it,
+        // throw it away, open it in something — and none of those is what the
+        // column is for: the user is choosing a wallpaper, and the file is the
+        // answer rather than the subject. Sort is the same story from the other
+        // end; it belongs to a listing somebody is browsing.
+        if self.choosing_a_wallpaper() {
+            return None;
+        }
         if self.selected_media().is_some() {
             return self.media_entry_menu();
         }
@@ -5878,7 +5940,7 @@ impl Shell {
         let apps::Entry::Folder(folder) = cursor.current_entry(&self.lattice)? else {
             return None;
         };
-        matches!(folder.place, Some(files::Place::Directory(_))).then_some(folder)
+        matches!(folder.place, Some(files::Place::Directory(..))).then_some(folder)
     }
 
     /// Whether the column the cursor is standing in is the listing of a real
@@ -5902,8 +5964,81 @@ impl Shell {
         matches!(
             panel.cursor.open_from(&self.lattice),
             Some(apps::Entry::Folder(under))
-                if matches!(under.place, Some(files::Place::Directory(_)))
+                if matches!(under.place, Some(files::Place::Directory(..)))
         )
+    }
+
+    /// Whether the column the cursor is standing in is one of the disk being
+    /// walked to choose a wallpaper.
+    ///
+    /// Asked of the row the column hangs under, exactly as [`Self::inside_a_folder`]
+    /// asks: what a listing is *for* travels with the place it was opened from —
+    /// see [`files::Shows`] — and the rows themselves cannot tell you, because a
+    /// photograph in a picker and the same photograph in Files are the same row.
+    fn choosing_a_wallpaper(&self) -> bool {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        matches!(
+            panel.cursor.open_from(&self.lattice),
+            Some(apps::Entry::Folder(under))
+                if under.place.as_ref().map(files::Place::shows)
+                    == Some(files::Shows::Scenery)
+        )
+    }
+
+    /// A press on a row of the wallpaper picker: this file, behind everything,
+    /// from now on.
+    ///
+    /// Everything about it is the same press that chooses any other value —
+    /// it writes the setting down, it rebuilds the column so the mark moves, and
+    /// it is answered with the sound a kept press makes. What is different is
+    /// that the value is a file and the column it was chosen from is somewhere
+    /// the user walked to, so the press also has to bring them back out: the
+    /// question was asked in the Wallpaper column and that is where an answer
+    /// belongs, however many folders deep it was found.
+    ///
+    /// `false` for every other row in the shell, including a folder *inside* the
+    /// picker — that one is a step further in and the bar has already taken it.
+    fn press_wallpaper_pick(&mut self) -> bool {
+        if !self.choosing_a_wallpaper() {
+            return false;
+        }
+        let Some(file) = self.selected_file().map(|file| file.path.clone()) else {
+            return false;
+        };
+        settings::choose_custom_wallpaper(&file);
+        // Held until it has been drawn: it is what says a file that turns out
+        // not to be drawable should be answered rather than logged, and what
+        // says which file to copy into the shell's own directory once it has
+        // proved that it can be. See [`Shell::paper_chosen`].
+        self.paper_chosen = Some(file);
+        self.rebuild_settings();
+        self.leave_the_wallpaper_picker();
+        true
+    }
+
+    /// Come back out of however many folders the picker was walked into, as far
+    /// as the column that asked the question.
+    ///
+    /// Step by step through the same exit every Left uses, rather than by
+    /// reaching into the cursor: coming out of a column is a thing the model
+    /// already knows how to do, and the columns behind have to be left holding
+    /// the rows they were opened from. The count is bounded by the depth so
+    /// that a picker which somehow could not be left cannot spin here.
+    fn leave_the_wallpaper_picker(&mut self) {
+        for _ in 0..self.column_depth() {
+            if !self.choosing_a_wallpaper() {
+                break;
+            }
+            let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+                return;
+            };
+            if !panel.cursor.navigate(Action::Left, &self.lattice) {
+                break;
+            }
+        }
+        self.needs_redraw = true;
     }
 
     /// The Open with list: every application that says it opens this kind of
@@ -6556,7 +6691,7 @@ impl Shell {
             return Some(start(&file.path, file.name.clone(), None, false));
         }
         let folder = self.folder_row()?;
-        let files::Place::Directory(at) = folder.place.clone()? else {
+        let files::Place::Directory(at, _) = folder.place.clone()? else {
             return None;
         };
         Some(start(&at, folder.title.clone(), None, false))
@@ -6837,7 +6972,7 @@ impl Shell {
     /// over — a file in a folder, or a folder in one.
     fn carried_source(&self) -> Option<transfer::Source> {
         if let Some(folder) = self.folder_row() {
-            let files::Place::Directory(at) = folder.place.clone()? else {
+            let files::Place::Directory(at, _) = folder.place.clone()? else {
                 return None;
             };
             return Some(transfer::Source {
@@ -13472,6 +13607,115 @@ impl Shell {
     /// and the page can be open on the second screen while the first shows
     /// something else — and a cursor stranded on a screen nobody is driving is
     /// stranded all the same, waiting for whoever takes that screen next.
+    /// Keep the wallpaper the user chose in step with the setting, and keep its
+    /// frames arriving.
+    ///
+    /// Three things, once a frame, and they belong together because each of them
+    /// is about the same one fact — which file, if any, is standing behind
+    /// everything:
+    ///
+    /// * The reel follows the *applied* setting rather than the previewed one.
+    ///   A cursor resting on Simple draws the ribbons without choosing them, and
+    ///   a decoder stopped and restarted by somebody walking down a list of
+    ///   three rows would open the file again for every row they passed.
+    /// * A frame that has arrived goes to the GPU, and the buffer it came in
+    ///   goes back to the decoder to be filled again.
+    /// * A file that turns out not to be drawable is answered — loudly if
+    ///   somebody has just pressed it, quietly if it came out of the settings at
+    ///   startup. See [`Shell::paper_pressed`].
+    fn sync_wallpaper(&mut self) {
+        let custom = lxb_protocol::wallpaper::Style::Custom;
+        let wanted = (theme::applied_style(theme::Part::Wallpaper) == custom)
+            .then(settings::custom_wallpaper)
+            .flatten();
+        match (wanted, self.paper.showing()) {
+            (Some(file), Some(showing)) if file == showing => {}
+            (Some(file), _) => {
+                tracing::debug!(file = %file.display(), "the wallpaper is this file now");
+                self.paper.show(&file);
+            }
+            (None, Some(_)) => {
+                self.paper.stop();
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.drop_paper();
+                }
+                self.paper_chosen = None;
+                self.needs_redraw = true;
+            }
+            (None, None) => {}
+        }
+
+        if self.paper.trouble() {
+            self.wallpaper_cannot_be_drawn();
+            return;
+        }
+        // The copy landing is the moment the setting stops naming a file in
+        // somebody's Pictures folder and starts naming one the shell owns.
+        // Nothing on screen changes — it is the same picture.
+        if let Some(kept) = self.paper.kept() {
+            settings::note_custom_wallpaper(kept);
+        }
+        // Wanted only where somebody could see it: a display resting or covered
+        // by an application draws nothing, and a film going on decoding behind
+        // one would be the one part of this that costs something and shows
+        // nothing. The same rule the start screen's own animation follows — see
+        // [`Shell::panel_is_visible`].
+        if (0..self.panels.len()).any(|index| self.panel_is_visible(index)) {
+            self.paper.wanted();
+        }
+        let Some(frame) = self.paper.take(self.paper_spare.take()) else {
+            return;
+        };
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        self.paper_spare = gpu.put_paper(frame);
+        // The first frame is a change of what the whole screen is made of, and
+        // it can arrive on a frame nothing else asked to be drawn.
+        self.needs_redraw = true;
+        // And it is the moment the file has proved it is one this shell can
+        // draw, which is when it is worth copying and not before. See
+        // [`Shell::paper_chosen`].
+        if let Some(chosen) = self.paper_chosen.take() {
+            self.paper.keep_later(&chosen);
+        }
+    }
+
+    /// A file chosen as the wallpaper that this shell cannot draw: it has gone,
+    /// nothing here decodes it, or there is no picture in it.
+    ///
+    /// What happens next depends on whether anybody is standing there. A press
+    /// is answered — the setting goes back to the shell's own material, the
+    /// column says so, and the refusal is the sound the shell makes when it
+    /// cannot do what was asked. Anything else is left alone and written to the
+    /// log: the commonest reason a wallpaper cannot be read at startup is that
+    /// the drive it is on has not been plugged in yet, and a session that threw
+    /// the setting away over that would be a session that lost somebody's
+    /// wallpaper for them.
+    fn wallpaper_cannot_be_drawn(&mut self) {
+        let file = self.paper.showing().map(Path::to_path_buf);
+        if self.paper_chosen.take().is_none() {
+            return;
+        }
+        tracing::warn!(
+            file = ?file.as_ref().map(|file| file.display().to_string()),
+            "that file cannot be a wallpaper, so the setting goes back"
+        );
+        self.paper.stop();
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.drop_paper();
+        }
+        settings::forget_custom_wallpaper();
+        self.rebuild_settings();
+        // No sound. The shell has two screens with voices of their own and a
+        // fixed set of clips between them — see the sound contract — and this is
+        // not one of the things any of them says. What answers the press is the
+        // column itself: the mark comes off Custom wallpaper and goes back on to
+        // the material that is really being drawn, in front of the user who is
+        // standing there looking at it.
+        self.needs_redraw = true;
+    }
+
     fn rebuild_settings(&mut self) {
         settings::refresh(&mut self.lattice.categories);
         let mut moved = false;
@@ -15110,7 +15354,7 @@ fn row_is_at(row: &apps::Entry, path: &Path) -> bool {
         apps::Entry::Media(file) => file.path == path,
         apps::Entry::File(file) => file.path == path,
         apps::Entry::Folder(folder) => {
-            matches!(&folder.place, Some(files::Place::Directory(at)) if at == path)
+            matches!(&folder.place, Some(files::Place::Directory(at, _)) if at == path)
         }
         _ => false,
     }

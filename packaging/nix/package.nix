@@ -21,6 +21,7 @@
   pulseaudio,
   alsa-lib,
   alsa-utils,
+  ffmpeg,
   ddcutil,
   pipewire,
   src ? ../..,
@@ -102,6 +103,9 @@ rustPlatform.buildRustPackage {
     makeWrapper
     patchelf
     addDriverRunpath
+    # FFmpeg's Rust bindings are generated at build time, and bindgen needs to
+    # be told where libclang and the C headers are. The hook is what does that.
+    rustPlatform.bindgenHook
   ];
   buildInputs = [
     alsa-lib
@@ -119,6 +123,9 @@ rustPlatform.buildRustPackage {
     xorg.libXi
     vulkan-loader
     pipewire
+    # A wallpaper of the user's own: their picture decoded, or their film
+    # played, under Settings > Appearance > Theme > Wallpaper.
+    ffmpeg
   ];
 
   # cargoInstallHook knows buildRustPackage's target-triple output directory

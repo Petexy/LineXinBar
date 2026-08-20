@@ -86,9 +86,61 @@ pub const WHAT_FILES_ARE: &str = "Your folder, this machine, and anything plugge
 pub enum Place {
     /// The Files row itself: the disks there are to look in, worked out when
     /// it is opened rather than when the shell started.
-    Volumes,
+    Volumes(Shows),
     /// One directory, listed when it is stepped into.
-    Directory(PathBuf),
+    Directory(PathBuf, Shows),
+}
+
+impl Place {
+    /// What of a directory is listed, wherever this place is on the disk.
+    pub fn shows(&self) -> Shows {
+        match self {
+            Self::Volumes(shows) | Self::Directory(_, shows) => *shows,
+        }
+    }
+}
+
+/// How much of a folder a column of it lists.
+///
+/// The disk is walked for two different reasons now, and the second one is not
+/// browsing: choosing the picture that stands behind the whole shell, under
+/// Settings > Appearance > Theme > Wallpaper. A column opened for that is
+/// answering a question rather than showing what is there, and everything the
+/// answer cannot be is noise in it — a wallpaper column that listed somebody's
+/// tax return would be offering it.
+///
+/// It travels on [`Place`] rather than on the row, because it is a fact about
+/// the walk and not about the folder: every column reached from a wallpaper
+/// picker is one, all the way down, and it is the place a step opens that
+/// carries it there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shows {
+    /// The disk as it is — the file explorer under Files.
+    #[default]
+    Everything,
+    /// Only what could stand behind a screen: the folders to keep walking
+    /// through, the pictures, and the films. See [`worth_showing`].
+    Scenery,
+}
+
+/// Whether this entry belongs in a column listed as `shows`.
+///
+/// Folders always: a picture is somewhere further down, and a picker that hid
+/// the folders would be one nobody could walk. Beyond that it is the two kinds
+/// of file that can be drawn — which is [`crate::media::Kind`]'s own table, so
+/// that a column offering to make a wallpaper of a file and the thumbnailer
+/// asked to draw one cannot disagree about what a picture is.
+fn worth_showing(shows: Shows, path: &Path, leads_to_a_folder: bool) -> bool {
+    match shows {
+        Shows::Everything => true,
+        Shows::Scenery => {
+            leads_to_a_folder
+                || matches!(
+                    crate::media::kind_of(path),
+                    Some(crate::media::Kind::Image | crate::media::Kind::Video)
+                )
+        }
+    }
 }
 
 /// One file, as a row of a directory's column.
@@ -140,7 +192,7 @@ pub struct Shown {
 /// for them, and "the machine" does not belong under D for disk. They are
 /// searchable all the same, because the field is at the head of every column
 /// this module builds and a machine can have a dozen shares mounted on it.
-pub fn volumes(query: &str) -> Shown {
+pub fn volumes(query: &str, shows: Shows) -> Shown {
     let mut places = Vec::new();
     if let Some(home) = home() {
         places.push(place(
@@ -148,6 +200,7 @@ pub fn volumes(query: &str) -> Shown {
             &home,
             crate::icons::FILE_HOME,
             Some(crate::screenshot::abbreviated(&home)),
+            shows,
         ));
     }
     places.push(place(
@@ -155,6 +208,7 @@ pub fn volumes(query: &str) -> Shown {
         Path::new("/"),
         crate::icons::FILE_DRIVE,
         None,
+        shows,
     ));
     for drive in drives(&read_mounts()) {
         places.push(place(
@@ -162,6 +216,7 @@ pub fn volumes(query: &str) -> Shown {
             &drive.at,
             crate::icons::FILE_DRIVE,
             Some(drive.at.display().to_string()),
+            shows,
         ));
     }
 
@@ -183,14 +238,20 @@ pub fn volumes(query: &str) -> Shown {
 /// The room rather than the path, where there is a filesystem to ask: "18.2 GiB
 /// free of 119.4 GiB" is the question somebody actually has about a drive, and
 /// a row that could not be asked says where it is instead.
-fn place(title: &str, at: &Path, glyph: &'static str, fallback: Option<String>) -> Entry {
+fn place(
+    title: &str,
+    at: &Path,
+    glyph: &'static str,
+    fallback: Option<String>,
+    shows: Shows,
+) -> Entry {
     let note = room(at).or(fallback);
     Entry::Folder(Folder {
         title: title.to_string(),
         comment: note,
         icon: Some(glyph.to_string()),
         entries: Vec::new(),
-        place: Some(Place::Directory(at.to_path_buf())),
+        place: Some(Place::Directory(at.to_path_buf(), shows)),
         chosen: false,
         over_the_list: false,
     })
@@ -216,7 +277,7 @@ fn place(title: &str, at: &Path, glyph: &'static str, fallback: Option<String>) 
 ///
 /// An unreadable directory comes back empty, and the note above says so rather
 /// than the column pretending the folder had nothing in it.
-pub fn listing(at: &Path, query: &str, sort: crate::media::Sort) -> Shown {
+pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -> Shown {
     let Ok(reading) = std::fs::read_dir(at) else {
         return Shown {
             rows: Vec::new(),
@@ -261,6 +322,13 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort) -> Shown {
             Ok(kind) => kind.is_dir(),
             Err(_) => false,
         };
+        // Before it is counted, because the count is what the row above the
+        // column says and that row is about the column somebody is looking at.
+        // A picker saying "3 folders, 412 files" over a listing of four
+        // photographs would be describing a different folder.
+        if !worth_showing(shows, &path, leads_to_a_folder) {
+            continue;
+        }
         if leads_to_a_folder {
             folders += 1;
         } else {
@@ -295,7 +363,7 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort) -> Shown {
                 comment: modified.and_then(date),
                 icon: Some(crate::icons::FILE_FOLDER.to_string()),
                 entries: Vec::new(),
-                place: Some(Place::Directory(path.clone())),
+                place: Some(Place::Directory(path.clone(), shows)),
                 chosen: false,
                 over_the_list: false,
             })
@@ -860,7 +928,69 @@ mod tests {
     /// The rows a folder comes back with, unsearched and in the order every
     /// column opens in.
     fn shown(at: &Path) -> Shown {
-        listing(at, "", crate::media::Sort::NameAscending)
+        listing(at, "", crate::media::Sort::NameAscending, Shows::Everything)
+    }
+
+    /// A column opened to choose a wallpaper lists the folders to keep walking
+    /// through and the two kinds of file that can be drawn, and nothing else.
+    ///
+    /// The row above it counts what it is showing rather than what is in the
+    /// folder, because that row is a description of the column somebody is
+    /// looking at.
+    #[test]
+    fn a_wallpaper_column_lists_only_what_could_stand_behind_a_screen() {
+        let Some(dir) = scratch("scenery") else {
+            return;
+        };
+        std::fs::create_dir(dir.join("Albums")).unwrap();
+        for name in [
+            "sunset.jpg",
+            "drawing.svg",
+            "holiday.mp4",
+            "notes.txt",
+            "song.flac",
+            "archive.tar.zst",
+            "unknowable",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        let picking = listing(&dir, "", crate::media::Sort::NameAscending, Shows::Scenery);
+        assert_eq!(
+            titles(&picking.rows),
+            ["Albums", "drawing.svg", "holiday.mp4", "sunset.jpg"],
+            "a folder to walk into, a film, and two pictures"
+        );
+        assert_eq!(
+            picking.note, "1 folder, 3 files",
+            "and the count is of the column, not of the directory"
+        );
+
+        // The same folder under Files is the folder as it really is: this is a
+        // property of the walk, not a filter somebody turned on everywhere.
+        assert_eq!(titles(&shown(&dir).rows).len(), 8);
+
+        // And stepping further in keeps choosing rather than browsing — the
+        // whole walk is one question. See `Shows`.
+        let Some(Entry::Folder(folder)) = picking
+            .rows
+            .iter()
+            .find(|row| row.title() == "Albums")
+            .cloned()
+        else {
+            panic!("the folder is a way further in");
+        };
+        assert_eq!(
+            folder.place.as_ref().map(Place::shows),
+            Some(Shows::Scenery)
+        );
+
+        // As do the three disks the picker opens on, which are the same three
+        // Files opens on.
+        for row in volumes("", Shows::Scenery).rows {
+            let Entry::Folder(place) = row else { continue };
+            assert_eq!(place.place.as_ref().map(Place::shows), Some(Shows::Scenery));
+        }
     }
 
     #[test]
@@ -894,7 +1024,7 @@ mod tests {
         match &rows[0] {
             Entry::Folder(folder) => assert_eq!(
                 folder.place,
-                Some(Place::Directory(dir.join("inside"))),
+                Some(Place::Directory(dir.join("inside"), Shows::Everything)),
                 "a folder is stepped into"
             ),
             other => panic!("expected a folder, got {other:?}"),
@@ -984,7 +1114,12 @@ mod tests {
         for file in ["report.pdf", "notes.txt", "REPORT-2.pdf"] {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
-        let found = listing(&dir, "report", crate::media::Sort::NameAscending);
+        let found = listing(
+            &dir,
+            "report",
+            crate::media::Sort::NameAscending,
+            Shows::Everything,
+        );
         assert_eq!(
             titles(&found.rows),
             ["Reports", "REPORT-2.pdf", "report.pdf"],
@@ -1014,7 +1149,12 @@ mod tests {
             return;
         };
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let found = listing(&dir, "zzz", crate::media::Sort::NameAscending);
+        let found = listing(
+            &dir,
+            "zzz",
+            crate::media::Sort::NameAscending,
+            Shows::Everything,
+        );
         assert!(titles(&found.rows).is_empty());
         assert_eq!(crate::apps::head_rows(&found.rows), 2);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1035,7 +1175,7 @@ mod tests {
         std::fs::write(dir.join("big.bin"), vec![0u8; 4096]).unwrap();
         std::fs::write(dir.join("small.txt"), b"x").unwrap();
 
-        let order = |sort| titles(&listing(&dir, "", sort).rows).join(" ");
+        let order = |sort| titles(&listing(&dir, "", sort, Shows::Everything).rows).join(" ");
         assert_eq!(order(Sort::NameAscending), "Ada zebra big.bin small.txt");
         assert_eq!(order(Sort::NameDescending), "zebra Ada small.txt big.bin");
         assert_eq!(
@@ -1055,13 +1195,23 @@ mod tests {
             return;
         };
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let found = listing(&dir, "", crate::media::Sort::NameAscending);
+        let found = listing(
+            &dir,
+            "",
+            crate::media::Sort::NameAscending,
+            Shows::Everything,
+        );
         assert!(
             found.orders.modified,
             "every Unix filesystem keeps a modification time"
         );
 
-        let empty = listing(&dir, "zzz", crate::media::Sort::NameAscending);
+        let empty = listing(
+            &dir,
+            "zzz",
+            crate::media::Sort::NameAscending,
+            Shows::Everything,
+        );
         assert_eq!(
             empty.orders,
             crate::media::Orders::default(),

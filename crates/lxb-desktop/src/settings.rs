@@ -47,7 +47,7 @@
 //! [`Cursor::choose`]: crate::model::Cursor::choose
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -1153,6 +1153,79 @@ pub fn sound() -> Level {
 /// writer cannot see is one the next change to anything else drops.
 static START_MUSIC: Mutex<bool> = Mutex::new(true);
 
+/// The file standing behind everything, where the wallpaper is one of the
+/// user's own rather than the shell's scene.
+///
+/// The shell's own copy of it — see [`crate::paper::keep`] — because that is
+/// what the setting has to name if it is to mean anything a week later: the file
+/// the user pressed may be on a stick, in a folder they are about to tidy, or in
+/// a download they are about to clear out.
+///
+/// Kept whatever the Theme setting says, and deliberately. Somebody who stands
+/// the wallpaper down to Simple for an evening's game has not thrown their
+/// picture away, and the shell that comes up in Custom tomorrow reads this to
+/// know what to draw. It is the *style* that says whether it is on screen.
+static CUSTOM_WALLPAPER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The picture or film the wallpaper is set to, if the user has chosen one.
+///
+/// Says nothing about whether it is being drawn: that is
+/// `theme::applied_style(theme::Part::Wallpaper)`, and the two are separate
+/// answers on purpose.
+pub fn custom_wallpaper() -> Option<PathBuf> {
+    CUSTOM_WALLPAPER.lock().unwrap().clone()
+}
+
+/// Draw this picture or film behind everything from now on.
+///
+/// Both halves of the answer at once, because they have to be one answer: the
+/// setting points at the file, and the Theme setting is turned to Custom. A
+/// shell that had done one of the two would come up next time drawing a scene
+/// with a photograph ticked in its Settings column, or the other way about.
+///
+/// The file the user pressed, and only for as long as it takes to copy it: the
+/// copy is made on a thread — see [`crate::paper::Paper::keep_later`] — and
+/// [`note_custom_wallpaper`] points this at it when it lands. Which means a
+/// session that ends in between names a file that is still on the disk and comes
+/// back up drawing it, and that is the honest state to be caught in.
+pub fn choose_custom_wallpaper(source: &Path) {
+    *CUSTOM_WALLPAPER.lock().unwrap() = Some(source.to_path_buf());
+    theme::commit_style(theme::Part::Wallpaper, wallpaper::CUSTOM);
+    save(&stored());
+    tracing::info!(file = %source.display(), "custom wallpaper");
+}
+
+/// The copy has landed: from now on it is the file the setting names.
+///
+/// Nothing else changes and nothing is redrawn. It is the same picture under
+/// another name — what it buys is the next session, and every session after the
+/// user has moved or deleted what they chose.
+pub fn note_custom_wallpaper(kept: PathBuf) {
+    let mut file = CUSTOM_WALLPAPER.lock().unwrap();
+    if file.as_ref() == Some(&kept) {
+        return;
+    }
+    *file = Some(kept);
+    drop(file);
+    save(&stored());
+}
+
+/// Stop claiming to have a wallpaper of the user's own.
+///
+/// One caller: a file that turns out not to be one this shell can draw, pressed
+/// a moment ago. It puts the material back to the shell's own and forgets the
+/// file, which is what the column has to show — the alternative is a row ticked
+/// for a picture nobody can see.
+///
+/// Deliberately not what choosing Default or Simple does. That is somebody
+/// saying which of the three they want on screen, and their picture is still
+/// their picture.
+pub fn forget_custom_wallpaper() {
+    *CUSTOM_WALLPAPER.lock().unwrap() = None;
+    theme::commit_style(theme::Part::Wallpaper, wallpaper::STYLES[0]);
+    save(&stored());
+}
+
 /// Whether the Start screen's background music plays.
 ///
 /// On, until somebody says otherwise: it is what the shell has always come up
@@ -1886,7 +1959,48 @@ pub fn column() -> Vec<Entry> {
 pub fn refresh(categories: &mut [Category]) {
     let (id, ..) = crate::apps::SHELL_SETTINGS;
     if let Some(settings) = categories.iter_mut().find(|category| category.id == id) {
-        settings.entries = column();
+        let mut worn = std::mem::take(&mut settings.entries);
+        let mut fresh = column();
+        carry_over_listings(&mut worn, &mut fresh);
+        settings.entries = fresh;
+    }
+}
+
+/// Move whatever came off the disk out of the column about to be thrown away.
+///
+/// One row in this tree is not the tree's to rebuild: the wallpaper picker,
+/// whose columns are a `readdir` of wherever the user has walked to rather than
+/// something [`column`] can write. Everything else here is rebuilt from the live
+/// settings several times a minute — a network appearing, a device pairing, the
+/// battery moving — and a rebuild that dropped those rows would empty the column
+/// somebody is standing in and throw the cursor back out of it, in the middle of
+/// choosing a picture.
+///
+/// The same lift [`crate::apps::carried_media`] does for the shelves when the
+/// catalogue is rescanned, and for the same reason. Matched by title, because
+/// that is what a row of this tree is: the shape of the page can change between
+/// two rebuilds — a battery row appears, a network goes — and the position of a
+/// row cannot be relied on where the position is the thing that moved.
+///
+/// The *note* is deliberately not carried. It is rebuilt from the setting, which
+/// is where the name of the chosen file comes from, and taking the old one would
+/// mean a row that went on describing a listing after the choice was made.
+fn carry_over_listings(worn: &mut [Entry], fresh: &mut [Entry]) {
+    for entry in fresh.iter_mut() {
+        let Entry::Folder(folder) = entry else {
+            continue;
+        };
+        let Some(Entry::Folder(same)) = worn
+            .iter_mut()
+            .find(|worn| worn.title() == folder.title.as_str())
+        else {
+            continue;
+        };
+        if folder.place.is_some() {
+            folder.entries = std::mem::take(&mut same.entries);
+        } else {
+            carry_over_listings(&mut same.entries, &mut folder.entries);
+        }
     }
 }
 
@@ -1961,10 +2075,17 @@ fn theme_row() -> Entry {
 
 /// One half of the theme: the wallpaper, or every mark the shell draws.
 ///
-/// Two values each, and the second exists for one reason above all others — a
+/// Two materials each, and the second exists for one reason above all others — a
 /// machine that cannot afford the first. So the comments say what each *costs*
 /// as well as what it looks like: a user who is here is here because something
 /// is slow, and "the shell's own look" tells them nothing they can act on.
+///
+/// The wallpaper has a third row, and it is not a material at all: a picture or
+/// a film of the user's own, standing where the scene would be. It is last
+/// because it is the one answer that is not about this shell — the two above it
+/// are what LineXinBar looks like, and this is what somebody's own screen looks
+/// like — and because it is the only one that asks a further question. See
+/// [`custom_wallpaper_row`].
 ///
 /// The row marked is the applied one rather than the one being previewed, like
 /// every other list of values in this tree: what is drawn on screen while the
@@ -1989,21 +2110,70 @@ fn material_row(part: theme::Part) -> Entry {
         part.title(),
         comment,
         icon,
-        wallpaper::STYLES
+        part.styles()
             .iter()
-            .map(|name| {
-                value(
+            .map(|name| match wallpaper::style(name) {
+                wallpaper::Style::Custom => custom_wallpaper_row(*name == in_force),
+                style => value(
                     name,
-                    Some(match wallpaper::style(name) {
-                        wallpaper::Style::Default => of_default,
+                    Some(match style {
                         wallpaper::Style::Simple => of_simple,
+                        _ => of_default,
                     }),
                     *name == in_force,
                     Setting::Style(part, name),
-                )
+                ),
             })
             .collect(),
     )
+}
+
+/// The third answer under Wallpaper: one of the user's own pictures or films,
+/// drawn instead of the shell's scene.
+///
+/// A subcategory that is also the answer — the second row in the shell built
+/// that way, after the wireless network a radio is on, and for the same reason
+/// [`crate::apps::Folder::chosen`] gives. It is an answer to the question its
+/// column asks, and it is also the only honest place to ask *which* picture:
+/// the value is a file, there is no list of files to put in the column
+/// beforehand, and a row that opened a picker without being markable would leave
+/// the column with nothing ticked while a photograph was on the screen.
+///
+/// What hangs under it is the disk itself — the same explorer as Files, walked
+/// the same way, listing only what could stand behind a screen. See
+/// [`crate::files::Shows`].
+///
+/// The note is the file that is being shown, where there is one: somebody
+/// coming back to this row a month later wants to know which picture they
+/// chose, and the row above it in the column already says what the alternative
+/// is.
+fn custom_wallpaper_row(chosen: bool) -> Entry {
+    let comment = custom_wallpaper()
+        .and_then(|file| {
+            file.file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "A picture or a film of your own".to_string());
+    let Entry::Folder(mut inner) = folder(
+        wallpaper::CUSTOM,
+        &comment,
+        // The mark of a picture, which is the mark every photograph on this bar
+        // already wears — a wallpaper of somebody's own is one of those rather
+        // than a sixth kind of setting. Nothing new is drawn for it, which is
+        // also what keeps one object looking like itself across the shell.
+        icons::CATEGORY_IMAGES,
+        Vec::new(),
+    ) else {
+        unreachable!("folder builds a folder");
+    };
+    inner.chosen = chosen;
+    // Read on the press that opens it rather than now: what is on somebody's
+    // disk is a question about the moment they ask it, and building this
+    // column with the rest of the settings tree would walk their home directory
+    // every time any setting anywhere changed.
+    inner.place = Some(crate::files::Place::Volumes(crate::files::Shows::Scenery));
+    Entry::Folder(inner)
 }
 
 /// The accent: the colour of the selection glow, the lit rim of a chosen pane,
@@ -5747,6 +5917,23 @@ pub fn load() {
 /// [`load`] so that can be exercised without a file, which is the only way to
 /// hold the fallback without writing into the developer's own home directory.
 fn adopt_theme(stored: &Stored) {
+    // The file first, because the material is what says whether it is drawn and
+    // a Custom wallpaper with nothing to draw is the one combination this must
+    // not put into force. A path that names nothing is dropped here rather than
+    // further down: `Custom` then falls back to the shell's own scene by the
+    // same route a file that turns out to be undecodable does, and the Settings
+    // row goes back to saying what it can honestly offer.
+    match stored.wallpaper_file.as_ref().map(PathBuf::from) {
+        Some(file) if file.is_file() => *CUSTOM_WALLPAPER.lock().unwrap() = Some(file),
+        Some(file) => {
+            tracing::warn!(
+                file = %file.display(),
+                "the wallpaper this shell was set to is not there, so it draws its own"
+            );
+        }
+        None => {}
+    }
+
     for (part, named) in [
         (theme::Part::Wallpaper, &stored.theme_wallpaper),
         (theme::Part::Icons, &stored.theme_icons),
@@ -5754,6 +5941,16 @@ fn adopt_theme(stored: &Stored) {
         let Some(named) = named.as_ref().or(stored.theme.as_ref()) else {
             continue;
         };
+        // A machine whose file has gone is put back to the shell's own scene,
+        // rather than left set to a picture it has not got. The key itself is
+        // untouched — see [`Stored::wallpaper_file`] — so a drive plugged back
+        // in tomorrow brings the wallpaper back with it.
+        if part == theme::Part::Wallpaper
+            && named == wallpaper::CUSTOM
+            && custom_wallpaper().is_none()
+        {
+            continue;
+        }
         if !theme::set_style(part, named) {
             // Named by the key rather than by the row, because this is about
             // what is in the file and the reader is looking at the file.
@@ -6080,6 +6277,25 @@ struct Stored {
     /// machine somebody deliberately set to `Simple` coming back up in the water
     /// after an update.
     theme: Option<String>,
+    /// The picture or film standing behind everything, where `theme-wallpaper`
+    /// is `Custom wallpaper`.
+    ///
+    /// The shell's own copy of what the user chose, under
+    /// `$XDG_DATA_HOME/linexinbar` — not the file they pressed. See
+    /// [`crate::paper::keep`]: a setting that named somebody's Downloads folder
+    /// would be a wallpaper that disappeared the next time they tidied it.
+    ///
+    /// Written whatever the theme says, so that a machine stood down to Simple
+    /// for a while has its picture back when it is asked for. Read by this shell
+    /// alone: the compositor's bridge frame and the login screen both draw the
+    /// shell's own scene here — see [`wallpaper::Style::analytic`] — because
+    /// neither of them is in a position to open a file under somebody's home.
+    ///
+    /// A file that is not there when the session starts is not an error and does
+    /// not clear the key: the shell draws its own wallpaper for that session and
+    /// says so in the log. A drive that was not plugged in this morning is the
+    /// case that rule is for.
+    wallpaper_file: Option<String>,
     /// What a display with no section of its own is set to.
     ///
     /// These four are where the first, single-display version of this page
@@ -6335,6 +6551,7 @@ fn stored() -> Stored {
                 .to_string(),
         ),
         theme_icons: Some(theme::applied_style(theme::Part::Icons).name().to_string()),
+        wallpaper_file: custom_wallpaper().map(|file| file.display().to_string()),
         // Never written. See [`Stored::theme`]: this is the key the two above
         // replaced, and writing it as well would be a third opinion about a
         // setting that now has two.
@@ -6635,6 +6852,18 @@ const PREAMBLE: &str = "\
 # and either may be either way round. Settings > Appearance > Theme. An unknown
 # name is read as Default. The login screen reads both keys, and the compositor
 # reads the wallpaper's for the frame it opens the session with.
+#
+# wallpaper-file: the picture or film standing behind everything, where
+# theme-wallpaper says Custom wallpaper. It is the shell's own copy of what was
+# chosen, under $XDG_DATA_HOME/linexinbar, so that moving or deleting the
+# original does not take the wallpaper with it — choose the file again from
+# Settings > Appearance > Theme > Wallpaper > Custom wallpaper to replace it. A
+# film is drawn without its sound, which is not a setting: nothing in this shell
+# decodes audio. A file that is not there when the session starts is not an
+# error; the shell draws its own wallpaper and leaves this key alone, because
+# the drive it is on may be plugged in later. The login screen and the
+# compositor both ignore this and draw the shell's own scene — neither of them
+# can read a file under your home.
 #
 # theme: what those two were before they were two settings. Read where a half
 # says nothing of its own, never written, and replaced by the pair at the next
@@ -7604,6 +7833,8 @@ mod tests {
     /// exists for, a row under one half leaves the other half exactly as it was.
     #[test]
     fn the_theme_rows_change_the_material_and_only_then_write_it_down() {
+        let _held = WALLPAPER.lock().unwrap_or_else(|held| held.into_inner());
+        let _put_back = WallpaperRestore::taken();
         let halves = || {
             appearance_page()[1]
                 .entries()
@@ -7639,8 +7870,17 @@ mod tests {
             let rows = values(half);
             assert_eq!(
                 rows.iter().map(Entry::title).collect::<Vec<_>>(),
-                wallpaper::STYLES.to_vec(),
+                part.styles().to_vec(),
                 "the rows are the styles themselves, in the order the crate lists them"
+            );
+            assert_eq!(
+                rows.len(),
+                match part {
+                    // The user's own picture, which is offered for the picture
+                    // behind everything and has no meaning for a mark.
+                    theme::Part::Wallpaper => 3,
+                    theme::Part::Icons => 2,
+                }
             );
             assert!(
                 rows[0].chosen(),
@@ -7699,6 +7939,165 @@ mod tests {
 
             assert!(theme::set_style(part, "Default"));
         }
+    }
+
+    /// The wallpaper half of the Theme setting is process-wide, and so is the
+    /// file behind Custom wallpaper. Every test that moves either of them holds
+    /// this, or two of them running at once would each be asserting about the
+    /// other's shell.
+    ///
+    /// The same bargain [`theme::with_accent`] strikes for the accent, and taken
+    /// through its own poison for the same reason: a test that panicked while
+    /// holding it has already reported the failure that matters.
+    static WALLPAPER: Mutex<()> = Mutex::new(());
+
+    /// Put the wallpaper back the way the test found it, whatever happens in
+    /// between.
+    struct WallpaperRestore(Option<PathBuf>, wallpaper::Style);
+
+    impl WallpaperRestore {
+        fn taken() -> WallpaperRestore {
+            WallpaperRestore(
+                custom_wallpaper(),
+                theme::applied_style(theme::Part::Wallpaper),
+            )
+        }
+    }
+
+    impl Drop for WallpaperRestore {
+        fn drop(&mut self) {
+            *CUSTOM_WALLPAPER.lock().unwrap() = self.0.take();
+            theme::set_style(theme::Part::Wallpaper, self.1.name());
+        }
+    }
+
+    /// The wallpaper's third row: the user's own picture.
+    ///
+    /// Four things, and each of them is a way this row is unlike every other
+    /// value in the tree: it is offered for the wallpaper and never for the
+    /// marks, it opens onto the disk instead of onto a list, it is markable all
+    /// the same, and what it says under its title is which file was chosen.
+    #[test]
+    fn the_wallpaper_can_be_one_of_the_users_own_files() {
+        let _held = WALLPAPER.lock().unwrap_or_else(|held| held.into_inner());
+        let _put_back = WallpaperRestore::taken();
+        let rows = || {
+            appearance_page()[1].entries().expect("the two halves")[0]
+                .entries()
+                .expect("the wallpaper's values")
+                .to_vec()
+        };
+        let custom = || {
+            rows()
+                .into_iter()
+                .find(|row| row.title() == wallpaper::CUSTOM)
+        };
+
+        // Nothing chosen: the row invites rather than reports, and it is not
+        // the one in force.
+        *CUSTOM_WALLPAPER.lock().unwrap() = None;
+        assert!(theme::set_style(theme::Part::Wallpaper, "Default"));
+        let row = custom().expect("the wallpaper offers the user's own picture");
+        assert!(!row.chosen());
+        assert_eq!(row.comment(), Some("A picture or a film of your own"));
+        assert_eq!(
+            row.setting(),
+            None,
+            "there is no value here to apply; the file under it is the value"
+        );
+
+        // It opens on to the disk, walked to choose rather than to browse — the
+        // same three places Files opens on.
+        let Entry::Folder(folder) = &row else {
+            panic!("the row is a way further in");
+        };
+        assert_eq!(
+            folder.place,
+            Some(crate::files::Place::Volumes(crate::files::Shows::Scenery))
+        );
+
+        // Chosen: marked, and saying which file.
+        choose_custom_wallpaper_without_writing(Path::new("/home/somebody/Pictures/Sunset.jpg"));
+        let row = custom().expect("still offered");
+        assert!(row.chosen(), "the row a setting is set to carries the mark");
+        assert_eq!(row.comment(), Some("Sunset.jpg"));
+        assert_eq!(
+            theme::applied_style(theme::Part::Wallpaper),
+            wallpaper::Style::Custom
+        );
+        assert_eq!(
+            theme::style_flag(theme::Part::Wallpaper),
+            2.0,
+            "and the shader is told to read the picture rather than draw a scene"
+        );
+
+        // The marks are never asked this question: there is nothing a
+        // photograph could mean about the shape of an icon.
+        let icons = appearance_page()[1].entries().expect("the two halves")[1]
+            .entries()
+            .expect("the marks' values")
+            .to_vec();
+        assert!(icons.iter().all(|row| row.title() != wallpaper::CUSTOM));
+        assert!(!theme::set_style(theme::Part::Icons, wallpaper::CUSTOM));
+        assert!(!theme::preview_style(theme::Part::Icons, wallpaper::CUSTOM));
+        assert!(!theme::commit_style(theme::Part::Icons, wallpaper::CUSTOM));
+    }
+
+    /// Choosing a wallpaper without letting the test write the developer's own
+    /// settings file. The two lines this leaves out are the save and the copy,
+    /// and neither is what the rows above are about.
+    fn choose_custom_wallpaper_without_writing(file: &Path) {
+        *CUSTOM_WALLPAPER.lock().unwrap() = Some(file.to_path_buf());
+        assert!(theme::commit_style(
+            theme::Part::Wallpaper,
+            wallpaper::CUSTOM
+        ));
+    }
+
+    /// The file is written down beside the material, read back, and — the case
+    /// this exists for — a file that is not there any more leaves the shell
+    /// drawing its own wallpaper rather than nothing.
+    #[test]
+    fn a_wallpaper_that_is_not_there_falls_back_without_being_forgotten() {
+        let _held = WALLPAPER.lock().unwrap_or_else(|held| held.into_inner());
+        let _put_back = WallpaperRestore::taken();
+        let kept = Stored {
+            theme_wallpaper: Some(wallpaper::CUSTOM.to_string()),
+            wallpaper_file: Some("/nowhere/at/all/sunset.jpg".to_string()),
+            ..Stored::default()
+        };
+        *CUSTOM_WALLPAPER.lock().unwrap() = None;
+        adopt_theme(&kept);
+        assert_eq!(
+            theme::applied_style(theme::Part::Wallpaper),
+            wallpaper::Style::Default,
+            "a picture that cannot be found is not a picture that can be drawn"
+        );
+        assert_eq!(custom_wallpaper(), None);
+
+        // But the key itself survives the session, so a drive plugged back in
+        // tomorrow brings the wallpaper with it. What is written is what the
+        // file said, not what this shell could make of it.
+        let written = toml::to_string(&kept).expect("the settings are writable as TOML");
+        assert!(written.contains("wallpaper-file = \"/nowhere/at/all/sunset.jpg\""));
+
+        // A file that is there is adopted, material and all.
+        let dir = std::env::temp_dir().join(format!("lxb-wallpaper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let file = dir.join("wallpaper.png");
+        std::fs::write(&file, b"x").expect("a file to point at");
+        adopt_theme(&Stored {
+            theme_wallpaper: Some(wallpaper::CUSTOM.to_string()),
+            wallpaper_file: Some(file.display().to_string()),
+            ..Stored::default()
+        });
+        assert_eq!(custom_wallpaper().as_deref(), Some(file.as_path()));
+        assert_eq!(
+            theme::applied_style(theme::Part::Wallpaper),
+            wallpaper::Style::Custom
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The two keys the halves are written under, spelled once and asserted

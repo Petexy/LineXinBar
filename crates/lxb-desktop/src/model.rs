@@ -252,8 +252,8 @@ fn read_into(
     };
     let place = folder.place.clone()?;
     let shown = match place {
-        crate::files::Place::Volumes => crate::files::volumes(query),
-        crate::files::Place::Directory(at) => crate::files::listing(&at, query, sort),
+        crate::files::Place::Volumes(shows) => crate::files::volumes(query, shows),
+        crate::files::Place::Directory(at, shows) => crate::files::listing(&at, query, sort, shows),
     };
     folder.entries = shown.rows;
     // What was found, in place of the date the row was carrying: "14 folders,
@@ -2100,7 +2100,10 @@ mod tests {
                 comment: None,
                 icon: None,
                 entries: Vec::new(),
-                place: Some(crate::files::Place::Directory(at.to_path_buf())),
+                place: Some(crate::files::Place::Directory(
+                    at.to_path_buf(),
+                    crate::files::Shows::Everything,
+                )),
                 chosen: false,
                 over_the_list: false,
             })
