@@ -1,0 +1,17 @@
+<!--
+  The media card's next button: media-previous.svg turned about.
+
+  Written out rather than mirrored with a transform, because a transform on the
+  whole drawing turns the stroke's joins with it and the two marks then bevel
+  differently along their long edges — which shows at a guide row's size as one
+  of the pair sitting a shade heavier than the other.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path d="M6 6.5L18.6 16L6 25.5Z" fill="#ffffff" stroke="#ffffff" stroke-width="2.6"
+        stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="22" y="6" width="4" height="20" rx="2" fill="#ffffff"/>
+</svg>

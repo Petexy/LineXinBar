@@ -38,7 +38,8 @@ last. Both used to be this colour, and this colour is very nearly black — a
 login screen handing over to a black screen and a logout starting with one.
 The palette comes from `~/.config/lxb/shell.toml`, or from a display manager
 that hands the session its wallpaper clock; see `LXB_BACKGROUND_HANDOFF`
-below.
+below. So does the material it is drawn in — the `theme-wallpaper` key, below
+that.
 
 The resolved cursor theme, size, and search path are exported as
 `XCURSOR_THEME`, `XCURSOR_SIZE`, and `XCURSOR_PATH` to every child process, so
@@ -107,14 +108,30 @@ later — and an inherited copy is removed at every one of those boundaries.
 The record is `key=value` pairs joined by `;`, ASCII, at most 1024 bytes:
 
 ```text
-v=1;visual=lxb-wallpaper-v1;clock=linux-monotonic;boot=<boot id>;sample-ns=<n>;scene-ns=<n>;accent=<palette>
+v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;boot=<boot id>;sample-ns=<n>;scene-ns=<n>;accent=<palette>[;theme=<Default|Simple>]
 ```
 
 `sample-ns` is `CLOCK_MONOTONIC` when the record was written and `scene-ns` is
 the wallpaper clock at that instant, so the far end advances one by the
 difference to recover the other. `boot` is `/proc/sys/kernel/random/boot_id`,
 which is what makes a monotonic sample meaningful to another process. `accent`
-is one of the palette names Settings offers. Bump `visual` if the wallpaper
+is one of the palette names Settings offers.
+
+`theme` is the one optional field, and the one field whose absence means
+something: it names the material the wallpaper was being drawn in — see the
+`theme-wallpaper` key below — for the benefit of a reader that cannot consult the
+account's own settings. Only the wallpaper's half of that setting; the marks the
+shell draws are no part of a wallpaper, so the reader this is written for has no
+use for them and the record has never carried them. The compositor drawing a bridge frame in front of a *login screen*
+is that reader: it runs as the greeter's own account, and the settings of the
+person whose wallpaper is on the screen are in somebody else's home directory.
+Where the field is absent, or names a material this build does not have, the
+reader falls back to the settings it can read. The session shell ignores it
+outright — the shell is the account and has already read its own file — but it
+accepts a record carrying one rather than refusing the phase over a field that
+is none of its business.
+
+Bump `visual` if the wallpaper
 changes in a way that would draw a different frame at the same clock:
 LineXinBar's own consumer refuses a visual it does not know, which is a
 session that starts its animation from zero rather than one that jumps.
@@ -165,6 +182,50 @@ picture over the console a user is expecting back.
 Holding the picture is necessary and is not sufficient. What the compositor that
 follows does with the display it was handed decides whether anybody sees a black
 screen — see below.
+
+## `theme-wallpaper` and `theme-icons`, in `shell.toml`
+
+`~/.config/lxb/shell.toml`, top level, beside `accent`:
+
+```toml
+accent = "Purple"
+theme-wallpaper = "Default"
+theme-icons = "Default"
+```
+
+How much material each half of the shell is drawn with. `Default` is its own
+look: the wallpaper's current is a band of water three sheets thick, lit as
+bodies, and every one of the shell's own marks is a bead of water shaded out of
+its own distance field. `Simple` stands that down — the current becomes the three
+fine glass-silk ribbons the shell drew before the band, and a mark becomes the
+flat shape of itself in white, tinted with the accent. The *drawings* do not
+change; only what they are made of does.
+
+Two keys rather than one, and either may be either way round. They are separate
+settings because they are separate expenses and separate tastes: the wallpaper is
+one evaluation of a long function for every pixel of every screen on every frame,
+and a mark is a few dozen pixels of a settings row. Measured on an RX 9060 XT,
+one full-screen evaluation of the wallpaper is **0.38 ms** at 1080p in `Default`
+and **0.20 ms** in `Simple`, and a mark goes from six reads of its distance field
+to one. A machine that cannot pay for the first can very well pay for the second.
+
+They are written from Settings > Appearance > Theme, which is a page with a row
+for each. An unknown name is read as `Default`.
+
+A file written before the setting was split carries a single `theme` key, which
+said one thing about the whole shell. It is still read, and read as what it
+meant — both halves take it where they have no key of their own — so a machine
+deliberately stood down to `Simple` stays there across an update. It is never
+written: the first save afterwards replaces it with the pair.
+
+Both halves of a hand-over read these keys. The compositor reads
+`theme-wallpaper` for the bridge frame it draws before the shell's first frame —
+that frame is a wallpaper and nothing else, so `theme-icons` is none of its
+business — and the display manager reads both for the login screen, which draws
+its own marks. So a machine set to `Simple` is in `Simple` from the moment the
+greeter appears, and never changes material in front of the user. A greeter
+drawing for somebody else's account passes the wallpaper's answer along in the
+hand-over record; see `theme` under `LXB_BACKGROUND_HANDOFF`.
 
 ## What the displays were last set to
 

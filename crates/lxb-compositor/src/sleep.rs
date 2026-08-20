@@ -39,6 +39,14 @@
 //! * **Anything sharing a process tree with a window that is on screen.** Two
 //!   windows of one program can carry different pids, and a tree that reaches
 //!   one somebody is looking at is not a tree to stop.
+//! * **An application the shell says is playing something.** The complaint
+//!   above is a game going on playing its music into the room; the answer to it
+//!   must not also stop the music somebody *put on*. A player is a program
+//!   whose whole purpose is what it is doing out of sight, and stopping one is
+//!   the same fault as not stopping the game — the same silence, arrived at
+//!   from the other side. Which of the two a sound is cannot be seen from here,
+//!   so the shell is asked: see [`LxbState::keep_application_awake`] and
+//!   `lxb_shell_v1.keep_awake`.
 //!
 //! And nothing stays stopped through a teardown: see
 //! [`LxbState::wake_every_sleeping_application`], which the session's own exit
@@ -111,6 +119,12 @@ impl LxbState {
             .into_iter()
             .filter(|window| !self.lxb.space.outputs_for_element(window).is_empty())
             .filter(|window| !self.lxb.out_of_sight(window))
+            // Left out rather than refused, so that one filter does both
+            // halves: an application that starts playing while it is stopped
+            // drops out of `hidden` here and is continued below by
+            // `wake_what_can_be_seen_again`, which is the same thing that
+            // happens when its window comes back on screen.
+            .filter(|window| !self.lxb.media_is_playing(window))
             .filter_map(|window| Some((self.window_pid(&window)?, window)))
             .filter(|(pid, _)| !shown.contains(pid))
             .collect();
@@ -211,6 +225,44 @@ impl LxbState {
                 },
             );
         }
+    }
+
+    /// The shell says an application is playing something, or has stopped.
+    ///
+    /// The one exception to all of this, and the only one there can be: what
+    /// separates an album from a game's soundtrack is not in the window, the
+    /// process tree or the audio device, and nothing this process can see
+    /// tells the two apart. It is on the session bus — see
+    /// `lxb_shell_v1.keep_awake` — so the shell works it out and this obeys.
+    ///
+    /// Both directions are the same question asked again, so both run the
+    /// whole rule: an application that has just started playing is continued
+    /// by [`LxbState::wake_what_can_be_seen_again`], because it has just
+    /// dropped out of what counts as hidden, and one that has stopped is put
+    /// to sleep by the same pass if it is still out of sight.
+    pub(crate) fn keep_application_awake(&mut self, app_id: &str, awake: bool) {
+        // Folded the way the window's own name will be, for the reason
+        // `keep_out_of_sight` folds it. An empty name is refused rather than
+        // stored: in the set it would spare every window whose client never
+        // said what it was, which on an X11-heavy session is most of them.
+        let Some(name) = crate::state::folded_app_id(app_id) else {
+            tracing::debug!("the shell named an application with no name as playing");
+            return;
+        };
+        let changed = if awake {
+            self.lxb.playing.insert(name.clone())
+        } else {
+            self.lxb.playing.remove(&name)
+        };
+        if !changed {
+            return;
+        }
+        tracing::info!(
+            app_id = %name,
+            awake,
+            "the shell changed what may be stopped while nobody is looking"
+        );
+        self.refresh_application_sleep();
     }
 
     /// Start one application again because it is about to be asked to do

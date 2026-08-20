@@ -6,7 +6,7 @@
 //! games somebody owns. The cover says which one each row *is*, from across a
 //! room, before the name has been read — which is the whole reason a console
 //! shows covers and a file manager shows names. And the picture behind it is
-//! what the cross media bar always did with the thing under the cursor: the
+//! what the lattice always does with the thing under the cursor: the
 //! screen becomes about the game you are looking at.
 //!
 //! ## Where the pictures come from, in order
@@ -57,6 +57,17 @@
 //! matter for the session. Each conclusion is kept with the path it was reached
 //! from, and a game whose published path turns out to be another one is asked
 //! once more.
+//!
+//! ## The one thing here that is not Steam's
+//!
+//! A game is not the only thing that can stand behind a display. A photograph
+//! the user is standing on in Files puts itself there too, and that picture is
+//! read off their own disk by [`crate::thumbs`] rather than fetched from
+//! anybody. What the two share is the far end and only the far end: the box in
+//! [`HERO_WIDTH`], the crop, the chain of halvings, and the layer of the
+//! texture it all ends up in. So the box and [`scenery_from`] are declared
+//! here, where the shape of a picture behind the bar is settled, and [`Sight`]
+//! is what everything downstream holds instead of an app id.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -150,6 +161,40 @@ impl Scenery {
     /// The size of one level, as the GPU counts them.
     pub fn size(level: u32) -> (u32, u32) {
         ((HERO_WIDTH >> level).max(1), (HERO_HEIGHT >> level).max(1))
+    }
+}
+
+/// What the picture standing behind a display is *of*.
+///
+/// Two things put one there and they arrive by different routes — Steam's key
+/// art for the game under the cursor, fetched by this module, and one of the
+/// user's own photographs under the cursor in Files, decoded off their disk by
+/// [`crate::thumbs`]. Past the moment it is made, nothing cares which: a layer
+/// is a layer, a crossfade is a crossfade, and the renderer is handed the same
+/// two numbers either way.
+///
+/// So this is the key everything downstream holds — which display is looking
+/// at what, which layer is holding which picture, and what may be let go of.
+/// An app id would have meant a second set of all three, and two crossfades on
+/// one display that could each believe they owned the wallpaper.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Sight {
+    /// A Steam title, by the id its pictures are published under.
+    Game(u32),
+    /// One of the user's own pictures, by the file it is in. The file rather
+    /// than a name or an index: it is what the shell asked for the picture by,
+    /// what it is handed back under, and what says two photographs called
+    /// `IMG_0001.jpg` in two folders are not the same photograph.
+    Picture(PathBuf),
+}
+
+impl Sight {
+    /// The game this is about, if it is about one.
+    pub fn game(&self) -> Option<u32> {
+        match self {
+            Sight::Game(app_id) => Some(*app_id),
+            Sight::Picture(_) => None,
+        }
     }
 }
 
@@ -586,7 +631,18 @@ fn logo(bytes: &[u8]) -> Option<Picture> {
 
 /// A hero, cropped to fill the box and reduced to its chain of halvings.
 fn hero(bytes: &[u8]) -> Option<Scenery> {
-    let image = decode(bytes)?;
+    Some(scenery_from(decode(bytes)?))
+}
+
+/// One decoded picture, made into the picture behind a display.
+///
+/// Split from [`hero`] so that a photograph of the user's own can become one
+/// without coming through Steam: what a picture behind the bar *is* — the box,
+/// the crop, the rungs — is settled here, and where the bytes came from is the
+/// caller's business. [`crate::thumbs`] reads them off the disk with its own
+/// ceiling on what a decode may cost, which is a different ceiling from the one
+/// this module puts on a file arriving over the wire.
+pub fn scenery_from(image: image::DynamicImage) -> Scenery {
     // Fill and crop rather than fit: see [`HERO_WIDTH`]. `resize_to_fill`
     // keeps the middle, which is where Valve's guidance puts a hero's subject
     // precisely because everything that shows one crops it.
@@ -605,7 +661,7 @@ fn hero(bytes: &[u8]) -> Option<Scenery> {
         rung = image::imageops::resize(&rung, width, height, image::imageops::FilterType::Triangle);
         levels.push(rung.as_raw().clone());
     }
-    Some(Scenery { levels })
+    Scenery { levels }
 }
 
 /// Decode a picture Steam sent, with a ceiling on what it may cost.

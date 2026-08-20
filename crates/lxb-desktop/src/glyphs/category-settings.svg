@@ -1,8 +1,8 @@
 <!--
   The Settings column's glyph: a cog.
 
-  This column is the shell's own settings and is always first, the way the real
-  XMB opens on Settings. A cog rather than the toolbox that console used,
+  This column is the shell's own settings and is always first, the way a
+  console shell opens on Settings. A cog rather than the toolbox those used,
   because the toolbox is wanted two columns along for Utilities.
 
   The bore is the opening, and it is the one hole in the set that was already a

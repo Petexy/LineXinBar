@@ -1,0 +1,36 @@
+<!--
+  The media volume bar's glyph: one note.
+
+  One rather than the beamed pair category-music.svg draws. That mark means
+  *music* — a shelf of it, a category of it — and this bar is not about music
+  in general but about the one thing the session is playing right now. A single
+  note with its flag is the mark for a sound rather than for a library of them,
+  and beside the speaker on the bar above it the two read as what they are: the
+  whole session, and the thing playing inside it.
+
+  Head, stem and flag are one object with no crevice cut between them, exactly
+  as the pair is. The stem is the thinnest part in the drawing and is the width
+  category-music.svg settled on, so both notes bevel alike.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="stem" x="15.6" y="5.0" width="2.4" height="17.8" rx="1.2"/>
+    <ellipse id="head" cx="13.0" cy="23.0" rx="4.7" ry="3.7" transform="rotate(-20 13 23)"/>
+    <path id="flag" d="M16.8 5.4C20.9 7.2 23.1 9.6 22.6 13.6" fill="none"
+          stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+    <g id="bead"><use href="#stem"/><use href="#head"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#flag"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+    <use href="#flag"/>
+  </g>
+</svg>

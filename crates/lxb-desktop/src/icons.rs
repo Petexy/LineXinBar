@@ -185,11 +185,24 @@ pub const LOGO: &str = "lxb:logo";
 /// colour a list of them can hold.
 pub const SETTING_APPEARANCE: &str = "lxb:setting-appearance";
 pub const SETTING_ACCENT: &str = "lxb:setting-accent";
+pub const SETTING_THEME: &str = "lxb:setting-theme";
+pub const SETTING_WALLPAPER: &str = "lxb:setting-wallpaper";
+pub const SETTING_ICONS: &str = "lxb:setting-icons";
 pub const SETTING_DISPLAY: &str = "lxb:setting-display";
 pub const SETTING_RESOLUTION: &str = "lxb:setting-resolution";
 pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
 pub const SETTING_ORIENTATION: &str = "lxb:setting-orientation";
 pub const SETTING_HDR: &str = "lxb:setting-hdr";
+
+/// Settings > Display > OLED protection: resting a screen nobody is watching.
+///
+/// A display with a moon standing in its screen — [`SETTING_DISPLAY`]'s own
+/// monitor with the shell's moon inside it, which is the object the page is
+/// about doing the thing the page does. It goes on that folder and on the
+/// switch inside it, the way the night light's moon is kept to the night light;
+/// the screens listed under it wear [`SETTING_DISPLAY`], as they do everywhere
+/// else in that tree.
+pub const SETTING_SCREEN_REST: &str = "lxb:setting-screen-rest";
 
 /// Settings > Display > Display order: which screen the compositor puts first.
 ///
@@ -364,6 +377,30 @@ pub const LAUNCH: &str = "lxb:launch";
 pub const OPEN_WITH: &str = "lxb:open-with";
 pub const SORT: &str = "lxb:sort";
 
+/// The two rows of that menu that carry the file somewhere else, and the row
+/// the journey ends on — see [`crate::transfer`].
+///
+/// Three marks rather than two because the third is not in the menu at all: it
+/// stands at the head of every column of the folder the user is choosing, where
+/// there is no list of commands round it to say what it is for. It has to say
+/// so by itself, and a clipboard is what says it on every desktop there is.
+///
+/// [`COPY`] and [`MOVE`] sit two rows apart in one panel, so they are drawn as
+/// unlike each other as the pair above them: two sheets against one sheet with
+/// an arrow leaving it. What they have in common is the sheet, which is the
+/// thing being carried, and that is the only thing they should have in common.
+pub const COPY: &str = "lxb:copy";
+pub const MOVE: &str = "lxb:move";
+pub const PASTE: &str = "lxb:paste";
+
+/// The row that changes what a file is called.
+///
+/// A pencil, and lying at an angle, which is the only mark in the set that
+/// does: it sits two rows below the sheet with an arrow leaving it, and two
+/// upright marks that far apart in one panel are two rows the eye has to read
+/// rather than recognise.
+pub const RENAME: &str = "lxb:rename";
+
 /// The two rows at the head of a column of the user's own files: the field
 /// that searches it, and the row that empties the field.
 ///
@@ -397,6 +434,22 @@ pub const SCREENSHOT: &str = "lxb:screenshot";
 /// same one, is the honest answer.
 pub const AUTHENTICATE: &str = "lxb:authenticate";
 
+/// The three transport buttons on the guide's media card, and the two faces of
+/// the middle one.
+///
+/// Four marks for three buttons: the button in the middle is the one control in
+/// the shell whose glyph says what pressing it will *do* rather than what it
+/// is, so it carries whichever of play and pause the player is not already.
+pub const MEDIA_PREVIOUS: &str = "lxb:media-previous";
+pub const MEDIA_PLAY: &str = "lxb:media-play";
+pub const MEDIA_PAUSE: &str = "lxb:media-pause";
+pub const MEDIA_NEXT: &str = "lxb:media-next";
+
+/// The bar that sets how loud the thing being played is, as against how loud
+/// the session is. A single note; the beamed pair means a shelf of music — see
+/// [`CATEGORY_MUSIC`].
+pub const MEDIA_VOLUME: &str = "lxb:media-volume";
+
 /// The power button at the foot of the guide's sidebar.
 ///
 /// The shell used to assemble this out of two solid quads — a ring with a
@@ -407,6 +460,84 @@ pub const AUTHENTICATE: &str = "lxb:authenticate";
 /// label to fall back on.
 pub const SHUTDOWN: &str = "lxb:shutdown";
 
+/// What every cell cut from the shell's own type is filed under.
+///
+/// A prefix rather than a list, because what is behind one of these names is
+/// decided by how it was made and not by which name it is: a letter cell is a
+/// *measurement* of a character's shape — see [`distance_field`], and
+/// `gpu::letter_fields`, which is the only thing that puts one in the atlas. So
+/// [`shaped`] can answer for the whole family at once, and a name filed here
+/// that nothing cut is simply a name the atlas has not got.
+pub const LETTER_PREFIX: &str = "lxb:letter-";
+
+/// The characters a long list can be indexed by, and the cell each is cut into.
+///
+/// The Latin alphabet and one heap for everything else, which is a bounded set
+/// on purpose. These are cut from the bundled face at startup, one exact
+/// distance transform each, and drawn as marks — so the set is a fixed cost the
+/// shell pays once and not a way of turning any string into a picture. The
+/// corner's clock is the same argument with thirteen characters in it; see
+/// `gpu::LETTER_SET`, which is deliberately still its own list because a clock
+/// and an index share no character but their material.
+///
+/// Uppercase, because a heading is a capital. `#` is where a name that starts
+/// with anything else goes — a digit, a bracket, an alphabet this set has no
+/// letter of — and it is one row rather than an alphabet per script for the
+/// same reason the set is bounded at all.
+pub const INDEX_LETTERS: [(char, &str); 27] = [
+    ('#', "lxb:letter-hash"),
+    ('A', "lxb:letter-a"),
+    ('B', "lxb:letter-b"),
+    ('C', "lxb:letter-c"),
+    ('D', "lxb:letter-d"),
+    ('E', "lxb:letter-e"),
+    ('F', "lxb:letter-f"),
+    ('G', "lxb:letter-g"),
+    ('H', "lxb:letter-h"),
+    ('I', "lxb:letter-i"),
+    ('J', "lxb:letter-j"),
+    ('K', "lxb:letter-k"),
+    ('L', "lxb:letter-l"),
+    ('M', "lxb:letter-m"),
+    ('N', "lxb:letter-n"),
+    ('O', "lxb:letter-o"),
+    ('P', "lxb:letter-p"),
+    ('Q', "lxb:letter-q"),
+    ('R', "lxb:letter-r"),
+    ('S', "lxb:letter-s"),
+    ('T', "lxb:letter-t"),
+    ('U', "lxb:letter-u"),
+    ('V', "lxb:letter-v"),
+    ('W', "lxb:letter-w"),
+    ('X', "lxb:letter-x"),
+    ('Y', "lxb:letter-y"),
+    ('Z', "lxb:letter-z"),
+];
+
+/// The mark on the row an index hangs under: the alphabet named by its two
+/// ends, cut from the same face as the headings inside it.
+///
+/// A row's mark says what is behind the row, and what is behind this one is
+/// [`INDEX_LETTERS`] — so the honest mark is the letters themselves, in the
+/// material every heading in that column is written in. The Steam mark stood
+/// here first and said the wrong thing twice over: every row in that column
+/// came from Steam, so it distinguished nothing, and the column it opens is
+/// the one place in the shell where the marks *are* the reading order.
+///
+/// Three characters in one cell rather than three cells, because this is one
+/// mark and a row has one. It is therefore cut in a box wide enough to hold the
+/// run, which leaves it shorter than a single heading beside it — see
+/// `gpu::INDEX_MARK_BOX`.
+pub const INDEX_MARK: &str = "lxb:letter-az";
+
+/// The cell one of the index's headings is drawn from, if it is one of them.
+pub fn letter_mark(letter: char) -> Option<&'static str> {
+    INDEX_LETTERS
+        .iter()
+        .find(|(heading, _)| *heading == letter)
+        .map(|(_, name)| *name)
+}
+
 /// Every built-in, as `(name, drawing)`, for the atlas to load at startup.
 ///
 /// Compiled into the binary from files in the tree, the way the font and the
@@ -414,10 +545,15 @@ pub const SHUTDOWN: &str = "lxb:shutdown";
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 85] = [
+pub const BUILTIN: [(&str, &str); 98] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
+    (MEDIA_VOLUME, include_str!("glyphs/media-volume.svg")),
+    (MEDIA_PREVIOUS, include_str!("glyphs/media-previous.svg")),
+    (MEDIA_PLAY, include_str!("glyphs/media-play.svg")),
+    (MEDIA_PAUSE, include_str!("glyphs/media-pause.svg")),
+    (MEDIA_NEXT, include_str!("glyphs/media-next.svg")),
     (POINTER_STICK, include_str!("glyphs/pointer-stick.svg")),
     (VOLUME_MIXER, include_str!("glyphs/volume-mixer.svg")),
     (DO_NOT_DISTURB, include_str!("glyphs/do-not-disturb.svg")),
@@ -479,6 +615,12 @@ pub const BUILTIN: [(&str, &str); 85] = [
         include_str!("glyphs/setting-appearance.svg"),
     ),
     (SETTING_ACCENT, include_str!("glyphs/setting-accent.svg")),
+    (SETTING_THEME, include_str!("glyphs/setting-theme.svg")),
+    (
+        SETTING_WALLPAPER,
+        include_str!("glyphs/setting-wallpaper.svg"),
+    ),
+    (SETTING_ICONS, include_str!("glyphs/setting-icons.svg")),
     (SETTING_DISPLAY, include_str!("glyphs/setting-display.svg")),
     (
         SETTING_RESOLUTION,
@@ -515,6 +657,10 @@ pub const BUILTIN: [(&str, &str); 85] = [
         include_str!("glyphs/setting-schedule.svg"),
     ),
     (SETTING_HDR, include_str!("glyphs/setting-hdr.svg")),
+    (
+        SETTING_SCREEN_REST,
+        include_str!("glyphs/setting-screen-rest.svg"),
+    ),
     (
         SETTING_MICROPHONE,
         include_str!("glyphs/setting-microphone.svg"),
@@ -562,6 +708,10 @@ pub const BUILTIN: [(&str, &str); 85] = [
     (LAUNCH, include_str!("glyphs/launch.svg")),
     (OPEN_WITH, include_str!("glyphs/open-with.svg")),
     (SORT, include_str!("glyphs/sort.svg")),
+    (COPY, include_str!("glyphs/copy.svg")),
+    (MOVE, include_str!("glyphs/move.svg")),
+    (PASTE, include_str!("glyphs/paste.svg")),
+    (RENAME, include_str!("glyphs/rename.svg")),
     (SCREENSHOT, include_str!("glyphs/screenshot.svg")),
     // The rows a column of the user's own files carries above the files.
     (SEARCH, include_str!("glyphs/search.svg")),
@@ -850,6 +1000,12 @@ pub fn is_shape(drawing: &str) -> bool {
 /// about to push wants the material — [`crate::ui`] cannot see the drawing,
 /// only what it is called.
 pub fn shaped(name: &str) -> bool {
+    // Everything cut from the shell's own type is a measurement by
+    // construction, whether it is a digit of the clock or a heading of an
+    // index. See [`LETTER_PREFIX`].
+    if name.starts_with(LETTER_PREFIX) {
+        return true;
+    }
     static SHAPES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     SHAPES
         .get_or_init(|| {
@@ -1813,8 +1969,10 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            85,
-            "a speaker, a struck-out one, a sun, a stick pointer, a mixer, a \
+            98,
+            "a speaker, a struck-out one, a sun, a note, the three transport \
+             buttons and the second face of the middle one, a stick pointer, a \
+             mixer, a \
              moon, a \
              bell, two \
              controller buttons, four arrows, a keyboard folding away, a power \
@@ -1822,7 +1980,10 @@ mod tests {
              Multimedia is divided into and the one under Graphics, the two \
              folders that stand for System's Files with the folder, page, drum \
              and house its own rows are drawn with, the \
-             twenty-two marks the Settings column is drawn from plus its four \
+             twenty-six marks the Settings column is drawn from — the brush at \
+             the head of its Theme page, and under it the wave for the \
+             wallpaper's own material and four of the shell's marks in one \
+             cell for the material of the marks — plus its four \
              turns of a monitor, the two links of a chain, hooked and \
              snapped, that a network is joined and left by and the rune \
              everything Bluetooth is reached through wears, the three \
@@ -1830,7 +1991,10 @@ mod tests {
              draws with the six drawings of the battery on the other side of \
              its clock — five levels and the bolt that means filling, \
              the context menu's bin, play mark, ellipsis, sort bars \
-             and camera, the magnifier at the head of a shelf with the \
+             and camera, its two sheets and its sheet with an arrow leaving \
+             it with the clipboard the folder they are carried to is chosen \
+             under and the pencil a name is changed with, the magnifier at the \
+             head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
              that asks for a password, and the Steam column with the mark every \
              row that came out of it wears, the cycle that asks for the library \
@@ -1888,6 +2052,11 @@ mod tests {
                 VOLUME,
                 VOLUME_MUTED,
                 BRIGHTNESS,
+                MEDIA_VOLUME,
+                MEDIA_PREVIOUS,
+                MEDIA_PLAY,
+                MEDIA_PAUSE,
+                MEDIA_NEXT,
                 POINTER_STICK,
                 VOLUME_MIXER,
                 DO_NOT_DISTURB,
@@ -1921,6 +2090,9 @@ mod tests {
                 FILE_HOME,
                 SETTING_APPEARANCE,
                 SETTING_ACCENT,
+                SETTING_THEME,
+                SETTING_WALLPAPER,
+                SETTING_ICONS,
                 SETTING_DISPLAY,
                 SETTING_RESOLUTION,
                 SETTING_REFRESH,
@@ -1933,6 +2105,7 @@ mod tests {
                 SETTING_NIGHT_LIGHT,
                 SETTING_SCHEDULE,
                 SETTING_HDR,
+                SETTING_SCREEN_REST,
                 SETTING_MICROPHONE,
                 SETTING_NETWORK,
                 SETTING_ADDRESS,
@@ -1961,6 +2134,10 @@ mod tests {
                 LAUNCH,
                 OPEN_WITH,
                 SORT,
+                COPY,
+                MOVE,
+                PASTE,
+                RENAME,
                 SCREENSHOT,
                 SEARCH,
                 SEARCH_CLEAR,

@@ -266,6 +266,10 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
     let draw_cursor = state.lxb.config.general.draw_cursor;
     backend.cursor.status = state.lxb.cursor_status.clone();
 
+    // Which is also the moment this frame's curtain was decided: read before
+    // the elements are built, so a frame counted as black had the black over
+    // every element in it. See [`crate::curtain::Curtain::a_frame_was_drawn`].
+    let frame_started = std::time::Instant::now();
     let elements = {
         let WinitBackend {
             backend: winit,
@@ -311,6 +315,7 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("submit failed: {e}"))?;
 
     let time = state.lxb.start_time.elapsed();
+    state.lxb.curtain.a_frame_was_drawn(&output, frame_started);
     post_repaint(
         &state.lxb,
         &output,

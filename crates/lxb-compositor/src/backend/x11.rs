@@ -361,6 +361,10 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
         age as usize
     };
 
+    // Which is also the moment this frame's curtain was decided: read before
+    // the elements are built, so a frame counted as black had the black over
+    // every element in it. See [`crate::curtain::Curtain::a_frame_was_drawn`].
+    let frame_started = std::time::Instant::now();
     let elements = output_elements(renderer, &state.lxb, &output, draw_cursor.then_some(cursor));
 
     let mut framebuffer = renderer
@@ -381,6 +385,7 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
     virtual_output.full_redraw = false;
 
     let time = state.lxb.start_time.elapsed();
+    state.lxb.curtain.a_frame_was_drawn(&output, frame_started);
     post_repaint(
         &state.lxb,
         &output,

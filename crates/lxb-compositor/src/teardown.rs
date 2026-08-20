@@ -264,6 +264,56 @@ pub fn application_root(processes: &Processes, pid: i32, boundary: Boundary) -> 
     Some(root)
 }
 
+/// Whether this window belongs to something a supervisor is running *for* the
+/// user, rather than to the supervisor itself.
+///
+/// The same tree [`application_root`] walks, asked the plainer question: is a
+/// game being played here. What makes the answer possible at all is that a
+/// supervisor is where one application ends and the next begins — so a window
+/// with a supervisor above it and a name that is not the supervisor's own
+/// interface is something that supervisor started, which for Valve's client
+/// means a game.
+///
+/// Asked of the process rather than of the `app_id`, because the `app_id` is
+/// exactly what cannot be relied on: a game reaches the screen as
+/// `steam_app_…` under Proton, as its own name when it speaks Wayland for
+/// itself, and as nothing at all often enough. Which client is running it is
+/// the one thing every one of them has in common.
+///
+/// False for anything this session did not start — see [`inside_the_session`],
+/// which is asked here for the reason it is asked before a signal: a client
+/// that connected to the socket from outside has no ancestor here, and a walk
+/// up from it runs out of tree into somebody else's login.
+pub fn supervised_application(processes: &Processes, pid: i32, boundary: Boundary) -> bool {
+    let Some(window) = processes.get(pid) else {
+        return false;
+    };
+    if !inside_the_session(processes, pid, boundary) {
+        return false;
+    }
+    let mut at = window.parent;
+    for _ in 0..MAX_DEPTH {
+        if boundary.stops_at(at) {
+            // The walk reached the session without passing a supervisor, so
+            // whatever this is, the shell started it directly.
+            return false;
+        }
+        let Some(process) = processes.get(at) else {
+            return false;
+        };
+        let supervisor = SUPERVISORS
+            .iter()
+            .find(|supervisor| supervisor.processes.contains(&process.name.as_str()));
+        if let Some(supervisor) = supervisor {
+            // The first supervisor above the window decides. Its own interface
+            // is the client, and everything else under it is somebody playing.
+            return !supervisor.interface.contains(&window.name.as_str());
+        }
+        at = process.parent;
+    }
+    false
+}
+
 /// What Close does to one window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ending {
@@ -506,6 +556,45 @@ mod tests {
         ] {
             assert!(doomed.contains(&pid), "{pid} would have been left running");
         }
+    }
+
+    /// A game under the client is somebody playing; the client's own windows
+    /// are not, however far up the same tree they sit.
+    #[test]
+    fn a_game_under_the_client_is_the_only_thing_that_is_being_played() {
+        let processes = steam();
+        assert!(
+            supervised_application(&processes, 200001, boundary()),
+            "the game"
+        );
+        for interface in [148158, 148166, 148161] {
+            assert!(
+                !supervised_application(&processes, interface, boundary()),
+                "the client's own interface, at {interface}"
+            );
+        }
+        assert!(
+            !supervised_application(&processes, 147893, boundary()),
+            "the client itself"
+        );
+    }
+
+    /// And nothing else is. An application the shell started walks up to the
+    /// shell without passing a supervisor, and a stranger's process is not this
+    /// session's to have an opinion about.
+    #[test]
+    fn nothing_the_shell_started_itself_is_a_game() {
+        let processes = Processes::from_list([
+            process(100, 1, 100, "lxb-desktop"),
+            process(900, 100, 900, "bash"),
+            process(901, 900, 900, "firefox"),
+            // Somebody else's login entirely.
+            process(902, 1, 902, "sshd"),
+            process(903, 902, 902, "htop"),
+        ]);
+        assert!(!supervised_application(&processes, 901, boundary()));
+        assert!(!supervised_application(&processes, 903, boundary()));
+        assert!(!supervised_application(&processes, 999_999, boundary()));
     }
 
     /// And the thing that must not follow from it: a game is its own

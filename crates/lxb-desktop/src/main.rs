@@ -1,4 +1,4 @@
-//! LineXinBar Desktop — a cross-media-bar style shell for the LineXinBar compositor.
+//! LineXinBar Desktop — the lattice shell for the LineXinBar compositor.
 //!
 //! It is an ordinary Wayland client that binds `zwlr_layer_shell_v1`, so it
 //! runs on LineXinBar as well as any other compositor implementing layer-shell.
@@ -23,6 +23,7 @@ mod model;
 mod network;
 mod notify;
 mod pad_guard;
+mod playing;
 mod pointer;
 mod polkit;
 mod power;
@@ -36,6 +37,7 @@ mod sun;
 mod system;
 mod theme;
 mod thumbs;
+mod transfer;
 mod trash;
 mod ui;
 mod uninstall;
@@ -45,7 +47,7 @@ mod wallpaper_clock;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -80,7 +82,7 @@ use crate::controller::ControllerInput;
 use crate::gpu::Gpu;
 use crate::guide::{Guide, Item, Mode};
 use crate::icons::IconLoader;
-use crate::model::{Action, Cursor, Xmb};
+use crate::model::{Action, Cursor, Lattice};
 use crate::pointer::{Prefs, Stick};
 use crate::system::{Knob, Quick};
 use crate::ui::SlotLookup;
@@ -247,13 +249,43 @@ const PRESSED_SHELL_VERSION: u32 = 23;
 /// counts on such a compositor; there is simply less of it.
 const TYPED_SHELL_VERSION: u32 = 24;
 
-/// First version that can be asked to draw applications larger than life. The
-/// highest this shell asks for.
+/// First version that can be asked to draw applications larger than life.
 ///
 /// Below it the Application scaling page still remembers what it was set to —
 /// the file is read by whichever compositor comes next — but nothing is sent and
 /// every window is the size of the display it is on.
 const APP_SCALE_SHELL_VERSION: u32 = 25;
+
+/// First version that can fade every display to black and say when the black is
+/// on screen.
+///
+/// Below it there is nothing the shell can put over a session that is about to
+/// end — its own surfaces are behind whatever application is in front — so
+/// turning the machine off does what it always did: the command runs, and the
+/// picture stops wherever the kernel catches it. See [`Shell::activate_power`].
+const CURTAIN_SHELL_VERSION: u32 = 26;
+
+/// First version that can rest one display behind black while a game is played
+/// on another, and that says which display has a game in front of it and which
+/// has anything still painting. The highest this shell asks for.
+///
+/// Below it the OLED protection page says so and offers nothing: the sheet is
+/// drawn over the whole of a display, the cursor and any application on it
+/// included, and the shell owns none of that. What it *does* keep doing below
+/// this version is remembering the setting, because the file is read by
+/// whichever compositor comes next.
+const RESTING_SHELL_VERSION: u32 = 27;
+
+/// First version that can be told an application is playing something and must
+/// go on running with nothing of it on screen. The highest this shell asks for.
+///
+/// Below it there is nothing to say it to: an application nobody can see is
+/// stopped, which is right for a game's soundtrack and wrong for the album
+/// somebody put on, and the shell has no way to tell that compositor the
+/// difference. Nothing is gated on it beyond the request itself — the bus is
+/// still watched, because the same answer is worth having the moment a newer
+/// compositor is underneath.
+const MEDIA_SHELL_VERSION: u32 = 28;
 
 /// First version that names the application behind every window rather than
 /// only the one in front.
@@ -275,6 +307,42 @@ const FALLBACK_APP_ICON: &str = "application-x-executable";
 /// a watchdog for compositors/backends that fail to deliver one; without it a
 /// single lost callback would freeze both the easing and animated backdrop.
 const FRAME_CALLBACK_WATCHDOG: Duration = Duration::from_millis(24);
+
+/// How long a display is left alone before OLED protection rests it.
+///
+/// Five seconds, which is the length the user asked for and is short on
+/// purpose: the whole of what this protects against is a still picture kept on
+/// a panel, and the picture starts being kept the moment it stops moving. It is
+/// cheap to be wrong in this direction — the screen comes back in a quarter of
+/// a second the instant the pointer touches it — and expensive in the other,
+/// because the damage does not undo.
+const REST_AFTER: Duration = Duration::from_secs(5);
+
+/// How long an application goes on being spared the sleeper after the last time
+/// it was heard playing something.
+///
+/// Thirty seconds, and every one of them is about a gap rather than an ending.
+/// The silence between two tracks is not the end of the music; nor is a
+/// crossfade the sound server sees as one stream ending before the next begins,
+/// nor a browser changing videos, nor the two seconds this shell may take to
+/// look again. An application stopped in one of those gaps never reaches the
+/// next track — a stopped process advances no clock and reads no socket — and
+/// what the user sees is music that ended for no reason and cannot be started
+/// again from where they are.
+///
+/// So the cost of being wrong is lopsided, and the number is picked from the
+/// cheap side: half a minute of a paused player going on running, against an
+/// album that stops for good.
+const MEDIA_GRACE: Duration = Duration::from_secs(30);
+
+/// How long the compositor takes to draw the black all the way down.
+///
+/// Written down here as well because the shell has to know when the display has
+/// stopped showing anything: past this there is nothing of its picture left on
+/// screen, so it stops drawing one. It is the compositor's number and is stated
+/// in `lxb_shell_v1.cover_output_in_black` — a second down, a quarter of a
+/// second back — which is what makes it safe to keep a copy of.
+const REST_FADE: Duration = Duration::from_secs(1);
 
 /// How often to look up while every display is hidden behind an application.
 /// Nothing is being drawn, so this only has to be often enough to notice a
@@ -670,8 +738,7 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=APP_SCALE_SHELL_VERSION, ())
-    {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=MEDIA_SHELL_VERSION, ()) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -722,6 +789,8 @@ fn main() -> anyhow::Result<()> {
         file_sort: settings::file_sort().unwrap_or_default(),
         file_orders: media::Orders::default(),
         deleting: None,
+        renaming: None,
+        carrying: None,
         quick: Quick::start(),
         net: network::Net::start(),
         network_seen: 0,
@@ -745,6 +814,9 @@ fn main() -> anyhow::Result<()> {
         volume: volume::Overlay::default(),
         steam,
         steam_buttons: Vec::new(),
+        playing: playing::Watch::start(),
+        media_since: HashMap::new(),
+        media_awake: HashSet::new(),
         sounds: sound::Sounds::new(),
         osk: keyboard::Osk::default(),
         menu_frame_drawn: false,
@@ -777,7 +849,11 @@ fn main() -> anyhow::Result<()> {
         stick_keys: Vec::new(),
         gpu: None,
         startup,
-        xmb: Xmb::with_session_displays(categories, child_wayland_display, child_xwayland_display),
+        lattice: Lattice::with_session_displays(
+            categories,
+            child_wayland_display,
+            child_xwayland_display,
+        ),
         media,
         // Only a real library has real artwork. An invented one — see
         // `--debug-steam-library` — numbers its games from one, and app 10 is
@@ -786,6 +862,7 @@ fn main() -> anyhow::Result<()> {
         art: art::Art::start(steam_is_real),
         thumbs: thumbs::Thumbs::start(),
         drained: Drained::default(),
+        leaving: None,
         exit: false,
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
@@ -834,11 +911,23 @@ fn main() -> anyhow::Result<()> {
     // screen is the same arrangement the worker would have produced.
     if !cli.debug_steam_library.is_empty() {
         let account = shell.steam.account().map(str::to_string);
-        let shifted = apps::offer_steam(&mut shell.xmb.categories, account);
+        let shifted = apps::offer_steam(&mut shell.lattice.categories, account);
         shell.absorb(shifted);
         let rows = shell.steam.rows();
         shell.shelve_games(rows);
     }
+
+    // And whether a screen can be rested at all, which is a fact about the
+    // compositor on the other end rather than about any display. Said once:
+    // the answer is fixed for the life of the connection, and it is what
+    // decides whether the OLED protection page offers a switch or an
+    // explanation.
+    settings::note_screen_rest(
+        shell
+            .shell_control
+            .as_ref()
+            .is_some_and(|control| control.version() >= RESTING_SHELL_VERSION),
+    );
 
     // The screen lists under Settings > Display are built from what the
     // displays report. Seed them before the first frame so the pages are right
@@ -853,7 +942,7 @@ fn main() -> anyhow::Result<()> {
 
     while !shell.exit {
         event_queue.dispatch_pending(&mut shell)?;
-        shell.xmb.reap_children();
+        shell.lattice.reap_children();
 
         let now = Instant::now();
         // The full atlas lands before any worker is polled below, since those
@@ -862,6 +951,11 @@ fn main() -> anyhow::Result<()> {
         shell.finish_startup_icons();
         shell.present_deferred_share();
         shell.poll_controller(now);
+        // And the session's own exit, which is on a clock rather than on a
+        // frame: the machine is told to go when the screen is black, and this
+        // is what covers a compositor that never says so — and a machine that
+        // was told and is still here. See [`Shell::advance_leaving`].
+        shell.advance_leaving(now);
         // And the keyboard on the same clock: a held arrow is as much an
         // input still happening as a held D-pad is, and neither of them is a
         // Wayland event that would have woken this loop by itself.
@@ -886,6 +980,10 @@ fn main() -> anyhow::Result<()> {
         // terms and for the same reason: the bar can move underneath a board
         // by routes that never touch the field itself.
         shell.sync_search();
+        // And a name being changed, which is the same question about the same
+        // board — with the difference that walking away from a name is giving
+        // up on it. See [`Shell::sync_rename`].
+        shell.sync_rename();
         // A package manager answering is not a Wayland event and cannot wake
         // this loop, but the loop wakes anyway to poll the controller — which
         // is the only reason a worker can hand its answer to a frame at all.
@@ -920,6 +1018,10 @@ fn main() -> anyhow::Result<()> {
         // is a Wayland event, so the frame this loop was going to draw anyway is
         // what carries their answers on to the screen.
         shell.advance_uninstall();
+        // And for a file being carried to another folder, which is the same
+        // shape again: a copy on a worker thread, answering on whichever frame
+        // the disk is done.
+        shell.advance_transfer();
         // The same again for an authorisation this session has been asked to
         // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
         // answers on another.
@@ -943,13 +1045,17 @@ fn main() -> anyhow::Result<()> {
         // outside individual foreground and guide handlers: changing display,
         // choosing the Start card, launching, restoring and an application
         // exiting are different routes to the same ownership transition.
-        let music_wanted = xmb_music_wanted(
-            !shell.panels.is_empty(),
-            shell.any_app_open(),
-            // Wherever it is happening: an application taking either display is
-            // an application taking the session's sound with it.
-            !shell.launching.is_empty() || shell.restoring.is_some(),
-        );
+        // Silence is part of leaving. The music fades out over about the time
+        // the screen takes to go black, so the session goes quiet with the
+        // picture rather than being cut off mid-bar by the machine.
+        let music_wanted = !shell.is_leaving()
+            && lattice_music_wanted(
+                !shell.panels.is_empty(),
+                shell.any_app_open(),
+                // Wherever it is happening: an application taking either display is
+                // an application taking the session's sound with it.
+                !shell.launching.is_empty() || shell.restoring.is_some(),
+            );
         shell.sounds.sync_music(music_wanted, now);
         shell.sync_launch_output(shell.launch_display());
         shell.sync_overview();
@@ -969,6 +1075,13 @@ fn main() -> anyhow::Result<()> {
         // it is how a compositor that has just come up at one to one is told
         // what the last session was left set to.
         shell.sync_app_scale();
+        // And the one whose answer moves with nothing pressed at all, which is
+        // why it is last and why it takes the clock this pass was started with:
+        // a display rests because five seconds have gone by.
+        shell.sync_screen_rest(now);
+        // And its neighbour, which is the same shape of answer about
+        // applications rather than screens, and moves on its own clock too.
+        shell.sync_media_awake(now);
         if now >= shell.next_frame_deadline {
             shell.needs_redraw = true;
         }
@@ -1489,6 +1602,33 @@ struct Panel {
     /// though a move takes two of them: each is told where *it* should stand,
     /// and the compositor does the trading.
     applied_place: Option<u32>,
+    /// Whether a game is being played on this display, as the compositor works
+    /// it out from the process behind the window in front. See
+    /// `lxb_shell_v1.output_game`.
+    ///
+    /// Per display, like everything else here: with two screens the answer is
+    /// two answers, and the whole of what OLED protection does is rest the ones
+    /// this is false on while it is true somewhere.
+    game: bool,
+    /// Whether anything on this display is still painting — a film playing, a
+    /// game between levels. False for a display showing nothing but the start
+    /// screen, and false for one showing an application that has stopped.
+    ///
+    /// It is what tells a screen that can be rested from one somebody is
+    /// watching, and the shell cannot see it for itself: the frames go from the
+    /// client to the compositor. See `lxb_shell_v1.output_drawing`.
+    drawing: bool,
+    /// When the user was last doing something on this display: moving the
+    /// pointer over it, taking it over, or pressing something on it.
+    ///
+    /// The clock OLED protection counts from. It starts at the moment the
+    /// display appears, so a screen plugged in mid-game gets its full idle
+    /// before it is rested rather than going black as it arrives.
+    attention: Instant,
+    /// Whether this display was last asked to rest, so an unchanged answer is
+    /// not resent every frame — and when it was asked, which is what says
+    /// whether the black has finished coming down.
+    resting: Option<(bool, Instant)>,
     /// The windows on this display, topmost first, as the compositor lists
     /// them for the overview. Empty on compositors without the protocol.
     windows: Vec<WindowCard>,
@@ -1597,27 +1737,43 @@ struct Panel {
     scenery: Scenery,
 }
 
+impl Panel {
+    /// Whether the compositor's black is all the way down over this display.
+    ///
+    /// The fade is the compositor's to draw and the shell never sees it, so
+    /// this is worked out from when the sheet was asked for and how long one
+    /// takes — see [`REST_FADE`]. Erring late costs a frame of the start screen
+    /// drawn behind a black sheet; erring early would freeze the picture the
+    /// sheet is still fading over.
+    fn is_rested(&self, now: Instant) -> bool {
+        self.resting.is_some_and(|(resting, since)| {
+            resting && now.saturating_duration_since(since) >= REST_FADE
+        })
+    }
+}
+
 /// One display's crossfade between the pictures behind it.
 ///
-/// Held as *which games*, not as which layers of the texture: a picture that
-/// has not been fetched yet has no layer, and the whole point of this is to
-/// keep the last one on screen until the next one is ready rather than dipping
-/// through the wallpaper in between.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+/// Held as *which pictures* — a game, or one of the user's own photographs —
+/// and not as which layers of the texture: a picture that has not been made yet
+/// has no layer, and the whole point of this is to keep the last one on screen
+/// until the next one is ready rather than dipping through the wallpaper in
+/// between. See [`art::Sight`].
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Scenery {
-    /// The game being faded away from.
-    from: Option<u32>,
-    /// The game being faded to, which is the one under this display's cursor.
-    /// `None` while the cursor is anywhere but a game, which fades the picture
-    /// out to the shell's own wallpaper.
-    to: Option<u32>,
+    /// The picture being faded away from.
+    from: Option<art::Sight>,
+    /// The picture being faded to, which is what this display's cursor is
+    /// standing on. `None` while the cursor is on anything that is not a
+    /// picture of something, which fades back out to the shell's own wallpaper.
+    to: Option<art::Sight>,
     /// How far across, 0 to 1, in linear time — [`ui::ease`] shapes it. At 1
     /// the fade is over and `from` no longer matters.
     across: f32,
 }
 
 impl Scenery {
-    /// Point this display at a game, or at none.
+    /// Point this display at a picture, or at none.
     ///
     /// Interrupting a fade is the whole difficulty here: what is on screen
     /// mid-fade is two pictures at once, and there is nowhere to keep the sum
@@ -1632,21 +1788,20 @@ impl Scenery {
     ///   screen, so that stays, and the newcomer takes over the fade at the
     ///   point the picture it replaces had reached. What goes is whatever was
     ///   faintest, which is the least there is to see going.
-    fn look_at(&mut self, game: Option<u32>) {
-        if self.to == game {
+    fn look_at(&mut self, sight: Option<art::Sight>) {
+        if self.to == sight {
             return;
         }
-        if self.from == game {
-            self.from = self.to;
-            self.to = game;
+        if self.from == sight {
+            std::mem::swap(&mut self.from, &mut self.to);
             self.across = 1.0 - self.across;
             return;
         }
         if self.across >= 0.5 {
-            self.from = self.to;
+            self.from = self.to.take();
             self.across = 0.0;
         }
-        self.to = game;
+        self.to = sight;
     }
 
     /// Move the fade on by `step` of its length.
@@ -1669,22 +1824,22 @@ impl Scenery {
 
     /// What the renderer draws for it this frame.
     ///
-    /// A game whose picture has not arrived resolves to no layer at all, which
-    /// is what leaves the one being faded from at full strength: the fade is
-    /// not advancing either, so the two agree.
+    /// A picture that has not arrived resolves to no layer at all, which is
+    /// what leaves the one being faded from at full strength: the fade is not
+    /// advancing either, so the two agree.
     fn showing(&self, gpu: &gpu::Gpu) -> gpu::Hero {
         let across = ui::ease(self.across);
         gpu::Hero {
-            from: self.from.and_then(|app_id| gpu.scenery(app_id)),
+            from: self.from.as_ref().and_then(|of| gpu.scenery(of)),
             leaving: 1.0 - across,
-            to: self.to.and_then(|app_id| gpu.scenery(app_id)),
+            to: self.to.as_ref().and_then(|of| gpu.scenery(of)),
             arriving: across,
         }
     }
 
-    /// The games whose pictures this display needs kept.
-    fn wanted(&self) -> impl Iterator<Item = u32> + '_ {
-        self.from.into_iter().chain(self.to)
+    /// The pictures this display needs kept.
+    fn wanted(&self) -> impl Iterator<Item = &art::Sight> + '_ {
+        self.from.iter().chain(self.to.as_ref())
     }
 }
 
@@ -1794,6 +1949,106 @@ struct Restore {
     /// the way it does when an application is started.
     from: [f32; 4],
     started: Instant,
+}
+
+/// The session on its way out, from the moment the user chose to turn the
+/// machine off or restart it.
+///
+/// Two things are true while this exists. The shell takes no input at all —
+/// see [`Shell::is_leaving`] — and the compositor is fading every display to
+/// black over everything, this shell's own surfaces included. What it is
+/// waiting for is `screen_is_black`: the machine is told to go once, and only
+/// once nothing that happens after it can be seen.
+struct Leaving {
+    /// When the black was asked for, which both patiences below are measured
+    /// from.
+    asked: Instant,
+    /// Whether the machine has been told to go, so that a late answer — or the
+    /// backstop below it — cannot tell it twice.
+    gone: bool,
+    /// Which way it was told to go. Chosen when the black is asked for and not
+    /// looked at again until it is up, so the two answers cannot diverge from
+    /// the row the user pressed.
+    ending: Ending,
+}
+
+/// What the machine is being asked to do once the screen is black.
+///
+/// Both are the same session leaving behind the same curtain; they differ only
+/// in the word at the end of it, and in what the user is left looking at
+/// afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    /// Off, and staying off until somebody presses the button.
+    Off,
+    /// Off and straight back on again.
+    Restart,
+}
+
+impl Ending {
+    /// What to run, and what to call it in the log.
+    ///
+    /// One place, so that a change to how the machine is told cannot be made
+    /// for one of them and forgotten for the other.
+    fn command(self) -> (&'static str, [&'static str; 2]) {
+        match self {
+            Ending::Off => ("systemctl poweroff", ["systemctl", "poweroff"]),
+            Ending::Restart => ("systemctl reboot", ["systemctl", "reboot"]),
+        }
+    }
+}
+
+/// How long the shell waits for the screen to go black before ending the
+/// machine anyway.
+///
+/// A backstop and nothing else: the fade is half a second and the answer
+/// arrives on the frame after it, while a compositor too old to be asked never
+/// gets here at all. What it covers is one that was asked, said nothing, and
+/// would otherwise leave the user looking at a session they have already told
+/// to go. Ending the machine a beat early is the lesser of the two, since by
+/// then the screen has been black for over a second either way.
+const BLACK_PATIENCE: Duration = Duration::from_secs(2);
+
+/// And how long it then waits for the machine to actually go, before putting
+/// the session back on screen.
+///
+/// The one way out of a curtain drawn for a shutdown, or a restart, that never
+/// happened. `systemctl poweroff` can be refused by a policy this process
+/// cannot argue with, `systemctl reboot` by the same one, and what that used to
+/// leave was a working session; it must not now leave a black one nobody can
+/// drive, since the compositor holds the session's input for as long as the
+/// black is up — the keys that would leave for a console included.
+///
+/// Long, because a machine that is genuinely going takes its time: systemd
+/// waits out anything that ignores a `SIGTERM`, and the compositor is drawing
+/// throughout. The cost of being early is the session reappearing for a moment
+/// before it dies; the cost of being late is nothing at all.
+const SHUTDOWN_PATIENCE: Duration = Duration::from_secs(30);
+
+/// What a session on its way out does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leave {
+    /// Nothing yet: either the screen is still going black, or the machine is
+    /// going down and taking its time about it.
+    Wait,
+    /// Tell the machine to go without having been told the screen is black.
+    EndTheMachine,
+    /// Put the session back on screen: it was told to go and it is still here.
+    StayAfterAll,
+}
+
+/// The two waits of [`Leaving`], as one answer.
+///
+/// `gone` is whether the machine has already been told to turn off, and
+/// `waited` how long it is since the black was asked for — both patiences are
+/// measured from the same moment, because the second only ever begins once the
+/// first is over.
+fn waited_long_enough(gone: bool, waited: Duration) -> Leave {
+    match (gone, waited) {
+        (false, waited) if waited >= BLACK_PATIENCE => Leave::EndTheMachine,
+        (true, waited) if waited >= SHUTDOWN_PATIENCE => Leave::StayAfterAll,
+        _ => Leave::Wait,
+    }
 }
 
 /// A press on a Steam game, waiting for Valve's client to be ready for it.
@@ -2035,6 +2290,26 @@ struct Shell {
     /// of a folder, and is deliberately *not* a borrow of either: the listing a
     /// file row lives in is thrown away and rebuilt while the panel is up.
     deleting: Option<Doomed>,
+    /// The name the user is in the middle of changing.
+    ///
+    /// Held here rather than written into the row as it is typed, which is the
+    /// difference between this and the search field. A search *is* the row —
+    /// what is typed narrows the column under the user's eyes, so there is
+    /// nothing left to put back and Escape does not try. A name is a fact about
+    /// a file: nothing on the disk has changed until the name is accepted, so
+    /// what is being typed lives here, the row goes on saying what the file is
+    /// really called, and giving up costs nothing but this.
+    renaming: Option<Renaming>,
+    /// The transfer the user is in the middle of arranging: what is being
+    /// carried, where they have walked to, and — once they have pressed Paste —
+    /// the worker doing it.
+    ///
+    /// One for the shell rather than one per display, unlike the cursor and
+    /// like the context menu that raises it: it is about one file on one
+    /// screen, and there is nothing for a copy of it on the next display to be
+    /// about. Moving control to another screen takes it away for the same
+    /// reason a menu is taken away.
+    carrying: Option<Carrying>,
     /// The volume and brightness bars in the guide's sidebar, and the worker
     /// that keeps them true.
     quick: Quick,
@@ -2182,6 +2457,21 @@ struct Shell {
     /// session that tagged the *class* would be claiming every later window of
     /// that name was a game somebody launched here.
     steam_windows: HashMap<u32, u32>,
+    /// The bus watch that says what the session is playing, where there is a
+    /// bus to watch. See [`crate::playing`].
+    playing: Option<playing::Watch>,
+    /// When each application the compositor has been told to keep awake was
+    /// last heard playing something, keyed by the name its *window* goes by —
+    /// which is the name the compositor matches, and the only one of the three
+    /// spellings of an application that it knows.
+    ///
+    /// The clock behind [`MEDIA_GRACE`], and the reason this is a map rather
+    /// than a set: the answer for one application must not be restarted by
+    /// another one still playing.
+    media_since: HashMap<String, Instant>,
+    /// What the compositor has actually been told, so that a session where the
+    /// answer holds still sends nothing. Diffed against the map above.
+    media_awake: HashSet<String>,
     /// Windows the shell itself has just done away with: killed from the
     /// guide's Close, or sent to another display.
     ///
@@ -2283,7 +2573,7 @@ struct Shell {
     /// thumbnail, cover or logo that arrived during startup.
     startup: StartupIcons,
 
-    xmb: Xmb,
+    lattice: Lattice,
     /// The user's own music, films and photographs, and the walk over their
     /// home directory that keeps finding them. Held beside the catalogue
     /// rather than in it:
@@ -2307,6 +2597,9 @@ struct Shell {
     /// are rebuilt from the library several times a second while a game is
     /// being fetched, and a fade held in one of them would restart on each.
     drained: Drained,
+    /// Set from the moment the user chose to turn the machine off: the screen
+    /// is going black, and nothing the user does reaches anything until it has.
+    leaving: Option<Leaving>,
     exit: bool,
     needs_redraw: bool,
     next_frame_deadline: Instant,
@@ -2409,12 +2702,19 @@ impl Shell {
             backdrop,
             target: None,
             backdrop_target: None,
-            cursor: Cursor::for_model(&self.xmb),
+            cursor: Cursor::for_model(&self.lattice),
             foreground: None,
             app_id: None,
             hdr: settings::Support::default(),
             applied_hdr: None,
             applied_night_light: None,
+            game: false,
+            drawing: false,
+            // A display arriving has just been looked at, whether or not
+            // anybody has touched it: it is new, and a screen that went black
+            // as it was plugged in would look like one that had failed.
+            attention: Instant::now(),
+            resting: None,
             modes: Vec::new(),
             pending_modes: Vec::new(),
             applied_mode: None,
@@ -2502,6 +2802,11 @@ impl Shell {
         let Some(index) = self.panels.iter().position(|panel| &panel.output == output) else {
             return;
         };
+        // Whether or not it moves control: a press on the display already being
+        // driven moves nothing, and it is still somebody at that screen. This
+        // is the only sign the shell gets of a game being played at all — every
+        // other press inside one is delivered to the game and to nobody else.
+        self.the_user_is_on(index, Instant::now());
         if self.focus_panel(index) {
             tracing::debug!(
                 display = %self.panels[index].name,
@@ -2520,6 +2825,9 @@ impl Shell {
             return false;
         }
         self.focused_panel = next;
+        // Control arriving is the user arriving, which is what a display
+        // resting behind black is waiting for.
+        self.the_user_is_on(next, Instant::now());
         tracing::debug!(display = %self.panels[next].name, "control moved to a display");
         // The menu does not travel onto a launch, and this is the whole of
         // that rule: control moves, the menu does not come with it.
@@ -2618,8 +2926,20 @@ impl Shell {
         // frames have to keep coming until it has settled. The context menu's
         // growth is the same kind of thing: a menu dismissed with one press
         // still has to be watched falling back into the control it came from.
-        let pressing =
-            self.guide.pressing() || self.context_menu.is_animating() || self.dialog.is_animating();
+        // The media card is the same kind of thing arrived at from the other
+        // end: it opens because a track started rather than because anything
+        // was pressed, so without this it would have no frames to open in.
+        let pressing = self.guide.pressing()
+            || self.guide.media_is_moving()
+            || self.context_menu.is_animating()
+            || self.dialog.is_animating()
+            // The picker is the same kind of thing again: it comes in from the
+            // right on its own ramp and its columns ride the bar's own springs,
+            // so it needs frames of its own to arrive and to settle in.
+            || self
+                .carrying
+                .as_ref()
+                .is_some_and(|carrying| carrying.picker.is_animating());
         let keyboard_visible = self.keyboard_visible();
         let keyboard_overlay = self.keyboard_overlay();
         // Whether the board on screen is typing into a panel this surface is
@@ -2699,23 +3019,19 @@ impl Shell {
             .map(|index| self.panel_is_visible(index))
             .collect();
 
-        // The game each display is looking at, if it is looking at one.
+        // What each display is looking at, if it is looking at anything with a
+        // picture behind it.
         //
-        // Worked out here rather than in the loop below, which cannot reach
-        // the catalogue: by then every panel is borrowed for drawing. A game
-        // Steam has no picture of is not one of these — the shell stops
-        // waiting for a picture that is never coming and lets the wallpaper
-        // back in, which is the honest answer for a title with no artwork.
-        let chosen: Vec<Option<u32>> = self
+        // Worked out here rather than in the loop below, which cannot reach the
+        // catalogue: by then every panel is borrowed for drawing. A picture
+        // that is known not to exist is not one of these — the shell stops
+        // waiting for one that is never coming and lets the wallpaper back in,
+        // which is the honest answer both for a title with no artwork and for a
+        // file nothing on this machine can decode.
+        let chosen: Vec<Option<art::Sight>> = self
             .panels
             .iter()
-            .map(|panel| {
-                let game = panel.cursor.current_entry(&self.xmb)?.game()?;
-                if self.art.hopeless(game.app_id, art::Piece::Hero) {
-                    return None;
-                }
-                Some(game.app_id)
-            })
+            .map(|panel| self.sight_of(panel.cursor.current_entry(&self.lattice)?))
             .collect();
 
         // The guide view belongs to the focused display. Assembled before the
@@ -2830,12 +3146,27 @@ impl Shell {
             .then(|| {
                 let panel = self.panels.get(focused_panel)?;
                 let items = self.guide.items(closable);
+                let selected = self.guide.selected_index(closable);
                 let row = ui::menu_item_rect(
                     &items,
-                    self.guide.selected_index(closable),
+                    selected,
                     panel.width as f32,
                     panel.height as f32,
+                    self.guide.media(),
                 );
+                // The media card is the one entry the selection does not take
+                // the whole of. It is a well with three buttons in it, and
+                // lighting the well lights everything standing in it — three
+                // controls at once, none of them distinguishable from the
+                // others, which is the opposite of what a highlight is for. So
+                // the light goes to the button the highlight is *on*, exactly
+                // as it goes to one tile of the tile line rather than to the
+                // line. It glides between them for free: this is the same
+                // eased rectangle that carries it down the column.
+                let row = match items.get(selected) {
+                    Some(Item::Media) => ui::transport_rects(row)[self.guide.transport().column()],
+                    _ => row,
+                };
                 Some(self.guide.animate_menu_highlight(row, dt))
             })
             .flatten();
@@ -2846,6 +3177,11 @@ impl Shell {
         // continues from where the panel is instead of from where a restarted
         // curve would put it.
         let power_open = ui::ease(self.guide.animate_power(dt));
+        // And the rows that come and go with what is playing. Eased where the
+        // dialog's is — the position is linear so a movement turned round
+        // half-way carries on from where it was, and the easing is put on it
+        // at the point it becomes a picture.
+        self.guide.animate_media(dt);
         // The board's rise and fall, on the same terms and for the same
         // reason: it is drawn on the display being driven, and the others must
         // not run its clock on.
@@ -2914,6 +3250,32 @@ impl Shell {
             })
             .flatten();
         let dialog_on_screen = self.dialog.is_on_screen();
+
+        // And the picker's own arrival, and the springs its columns ride.
+        // Advanced once for the frame rather than once per display, because
+        // there is one of it: it belongs to the screen that raised it, and on a
+        // machine with two screens a clock run per panel would take it at twice
+        // the speed.
+        let transfer_arrived = match self.carrying.as_mut() {
+            Some(carrying) => {
+                carrying.picker.animate(dt);
+                carrying.picker.arrived()
+            }
+            None => 0.0,
+        };
+        let transfer_on_screen = self.transfer_on_screen();
+
+        // What the keyboard is going into, which the bar draws a caret for.
+        // Taken by value rather than borrowed across the loop below, which
+        // holds the panels mutably: it is a name being typed, so it is never
+        // more than a filename long, and it is only cloned at all on the frames
+        // somebody is actually typing on.
+        let renamed = self.renaming.as_ref().map(|renaming| renaming.text.clone());
+        let typing = match renamed.as_deref() {
+            Some(name) => ui::Typing::Name(name),
+            None if self.searching.is_some() => ui::Typing::Search,
+            None => ui::Typing::Nothing,
+        };
 
         // The colour coming back into a cover whose game has just landed on the
         // disk, or leaving one that has gone off it. Advanced once for the
@@ -2989,7 +3351,9 @@ impl Shell {
             // thing being stood over — with the guide up it is a miniature in a
             // frame of the guide's own, and a card that shrank out of its frame
             // would read as a mistake rather than as depth.
-            let panel_over_bar = focused && !menu_here && (context_on_screen || dialog_on_screen);
+            let panel_over_bar = focused
+                && !menu_here
+                && (context_on_screen || dialog_on_screen || transfer_on_screen);
             let depth_target = if panel_over_bar { 1.0 } else { 0.0 };
             panel.depth_linear = approach(panel.depth_linear, depth_target, dt / menu::FLIGHT);
 
@@ -3013,11 +3377,12 @@ impl Shell {
             // the shell in the middle of a move between two of somebody's
             // titles. It never waits to leave: fading out has everything it
             // needs already.
-            panel.scenery.look_at(chosen[index]);
+            panel.scenery.look_at(chosen[index].clone());
             let arriving = panel
                 .scenery
                 .to
-                .is_none_or(|app_id| gpu.scenery(app_id).is_some());
+                .as_ref()
+                .is_none_or(|of| gpu.scenery(of).is_some());
             if arriving {
                 panel.scenery.advance(dt / SCENERY_FADE);
             }
@@ -3153,7 +3518,7 @@ impl Shell {
                 ui::Scene::default()
             } else {
                 ui::build(
-                    &self.xmb,
+                    &self.lattice,
                     &panel.cursor,
                     width as f32,
                     height as f32,
@@ -3163,7 +3528,7 @@ impl Shell {
                     &Slots { gpu, art, drained },
                     // The caret belongs to the display being typed on, which
                     // is the one holding the keyboard.
-                    focused && self.searching.is_some(),
+                    if focused { typing } else { ui::Typing::Nothing },
                 )
             };
             // Before anything else is done to it: the arrival is where the
@@ -3232,6 +3597,11 @@ impl Shell {
                         stick_pointer,
                         do_not_disturb: self.notifications.quiet(),
                         unread: self.notifications.badge(),
+                        // The same reading the corner is drawn from, and the
+                        // same setting: the guide is over the start screen, and
+                        // a machine cannot be at two charges at once.
+                        battery: self.battery_seen,
+                        battery_percent: settings::battery_percent(),
                         app: app_label.as_deref(),
                         close_target: close_target.as_deref(),
                         screen: screen_label.as_deref(),
@@ -3279,6 +3649,37 @@ impl Shell {
                 );
                 scene.quads.extend(over.quads);
                 scene.texts.extend(over.texts);
+            }
+
+            // The folder a file is being carried to, over the menu whose Copy
+            // or Move row asked for it — which is still on screen, folding back
+            // into the row it came out of.
+            //
+            // Everything of the start screen behind it goes: the whole point of
+            // this screen is that the one thing left on the left of it is the
+            // file being carried, and the picker draws that itself out of what
+            // it was handed rather than trusting a bar that is still live.
+            if focused && transfer_on_screen {
+                if let Some(carrying) = self.carrying.as_ref() {
+                    ui::recede_behind_transfer(
+                        &mut scene,
+                        width as f32,
+                        height as f32,
+                        transfer_arrived,
+                    );
+                    let over = ui::build_transfer(
+                        ui::TransferView {
+                            transfer: &carrying.picker,
+                            arrived: transfer_arrived,
+                            time,
+                            slots: &Slots { gpu, art, drained },
+                        },
+                        width as f32,
+                        height as f32,
+                    );
+                    scene.quads.extend(over.quads);
+                    scene.texts.extend(over.texts);
+                }
             }
 
             // The centred panel, over the menu that raised it — which is still
@@ -3737,6 +4138,9 @@ impl Shell {
     /// have. The loop wakes for the controller often enough that a step is
     /// never more than a poll late.
     fn repeat_held_key(&mut self, now: Instant) {
+        if self.is_leaving() {
+            return;
+        }
         if !self.key_repeat_on {
             return;
         }
@@ -3758,6 +4162,11 @@ impl Shell {
     }
 
     fn poll_controller(&mut self, now: Instant) {
+        // The one input the compositor cannot refuse on this shell's behalf: a
+        // pad is read straight from `/dev/input` and is nobody's seat device.
+        if self.is_leaving() {
+            return;
+        }
         // Being driven is not the same as holding the keyboard, and the
         // on-screen keyboard is the case that separates them: it is up, the
         // user is picking out letters on it with the stick, and it has
@@ -4059,7 +4468,7 @@ impl Shell {
     /// thing it and its sound have in common.
     fn in_front(&self) -> Option<system::InFront> {
         let id = self.pointer_app()?.to_string();
-        let installed = self.xmb.app_for_window(&id);
+        let installed = self.lattice.app_for_window(&id);
         let game = id
             .strip_prefix("steam_app_")
             .and_then(|app_id| app_id.parse().ok())
@@ -4156,6 +4565,11 @@ impl Shell {
     }
 
     fn on_key(&mut self, keysym: Keysym) {
+        // Nothing typed reaches a session on its way out — not even a field,
+        // which is below the line every action passes through.
+        if self.is_leaving() {
+            return;
+        }
         // Whatever the key turns out to mean here, it was pressed on a
         // keyboard. On a compositor that forwards `typed` this is the same news
         // arriving by a shorter route; on any other one it is the only route
@@ -4207,12 +4621,16 @@ impl Shell {
             || self.type_into_value(stroke)
             || self.type_into_steam(stroke)
             || self.type_into_search(stroke)
+            || self.type_into_rename(stroke)
     }
 
     /// Whether something the shell has drawn is waiting to be typed into, and
     /// so whether keys are letters rather than buttons.
     fn field_wanted(&self) -> bool {
-        self.password_wanted() || self.steam.field_wanted() || self.search_wanted()
+        self.password_wanted()
+            || self.steam.field_wanted()
+            || self.search_wanted()
+            || self.rename_wanted()
     }
 
     /// Whether the panel on screen has a field on it that is being typed into.
@@ -4277,7 +4695,7 @@ impl Shell {
                 .iter()
                 .any(|panel| panel.foreground.is_some() || !panel.windows.is_empty());
         }
-        self.foreground.is_some() || self.xmb.running_app().is_some()
+        self.foreground.is_some() || self.lattice.running_app().is_some()
     }
 
     /// Whether the compositor reports the foreground application per display.
@@ -4303,7 +4721,7 @@ impl Shell {
         // and the only thing it could act on anyway.
         self.foreground
             .as_deref()
-            .or_else(|| self.xmb.running_app())
+            .or_else(|| self.lattice.running_app())
     }
 
     /// What to call the application a window belongs to, for a button that
@@ -4332,7 +4750,7 @@ impl Shell {
     fn window_app_name(&self, window: &WindowCard) -> String {
         window_name(
             window,
-            self.xmb
+            self.lattice
                 .app_for_window(&window.app_id)
                 .map(|app| app.name.as_str()),
             self.steam_windows.contains_key(&window.id),
@@ -4372,6 +4790,12 @@ impl Shell {
         // to act on. A button pressed over the handoff wallpaper must not
         // launch whichever invisible row happened to start selected.
         if !self.startup.ready {
+            return;
+        }
+        // And after the machine has been told to go there is no control at all:
+        // the screen is going black over everything and the session is not
+        // coming back. See [`Shell::is_leaving`].
+        if self.is_leaving() {
             return;
         }
         // Start is Accept, and is only ever anything else while the board is
@@ -4464,7 +4888,7 @@ impl Shell {
         };
         let Some(bar) = panel
             .cursor
-            .current_entry(&self.xmb)
+            .current_entry(&self.lattice)
             .and_then(apps::Entry::bar)
         else {
             return false;
@@ -4508,7 +4932,7 @@ impl Shell {
         let Some(setting) = self
             .panels
             .get(self.focused_panel)
-            .and_then(|panel| panel.cursor.current_entry(&self.xmb))
+            .and_then(|panel| panel.cursor.current_entry(&self.lattice))
             .and_then(apps::Entry::bar)
             .and_then(|bar| bar.at(level))
         else {
@@ -4565,7 +4989,7 @@ impl Shell {
         } else {
             self.panels
                 .get(self.focused_panel)
-                .and_then(|panel| panel.cursor.current_setting(&self.xmb))
+                .and_then(|panel| panel.cursor.current_setting(&self.lattice))
         };
         settings::preview(setting);
     }
@@ -4593,11 +5017,17 @@ impl Shell {
                 // another screen, drawn over the whole of the space the board
                 // would have been travelling through.
                 self.osk.dismiss_at_once();
+                // And the name that board was typing into, which the press has
+                // just taken the keyboard away from. Dropped rather than given
+                // up on out loud: the guide's own sound is what answers this
+                // press, and nothing was written to the disk to be undone.
+                self.renaming = None;
                 // A context menu is about something on the screen the guide is
                 // replacing, so it cannot outlive the press either — nor can
-                // the panel it raised.
+                // the panel it raised, nor a folder somebody was choosing.
                 self.context_menu.close();
                 self.close_dialog();
+                self.cancel_transfer();
                 if self.guide.toggle() {
                     // The one sound in the shell that belongs to a button
                     // rather than to a screen, and it is spent here rather than
@@ -4631,6 +5061,15 @@ impl Shell {
             Action::VolumeDown => self.change_volume(-1),
             Action::VolumeMute => self.mute_volume(),
             Action::Back => self.on_back(),
+            // The button that raises a menu about whatever is selected, and the
+            // right button with it. There is nothing on a row being typed into
+            // for a menu to be about — the row is a field for as long as the
+            // caret is on it — so it means the other thing a press outside a
+            // journey means: give up on it. The same answer the folder picker
+            // gives, for the same reason.
+            Action::Menu if self.renaming.is_some() => {
+                self.cancel_rename();
+            }
             // Ahead of the menu, not behind it: the guide is where the user is
             // told the shoulder buttons move between displays, so that is the
             // last place they may stop working. The menu travels with them.
@@ -4640,11 +5079,13 @@ impl Shell {
             Action::PrevScreen => {
                 self.context_menu.close();
                 self.close_dialog();
+                self.cancel_transfer();
                 self.focus_screen(-1);
             }
             Action::NextScreen => {
                 self.context_menu.close();
                 self.close_dialog();
+                self.cancel_transfer();
                 self.focus_screen(1);
             }
             // The board is the innermost thing on screen while it is up, and
@@ -4656,6 +5097,11 @@ impl Shell {
             // has taken the screen, and the button that raises a menu about
             // something on that screen has nothing left to be about.
             _ if self.dialog.is_open() => self.on_dialog_action(action),
+            // The picker is behind the panel a name already taken raises, and
+            // in front of everything else on the start screen: the bar under it
+            // is holding the very file being carried, and a direction that
+            // reached it would move the selection the transfer is about.
+            _ if self.carrying.is_some() => self.on_transfer_action(action),
             Action::Menu => self.toggle_context_menu(),
             _ if self.context_menu.is_open() => self.on_context_menu_action(action),
             _ if self.guide.is_menu() => self.on_menu_action(action),
@@ -4672,7 +5118,7 @@ impl Shell {
                 // that swallowed the button because it starts no process would
                 // be the one row in the shell that nothing opens.
                 if let Some(panel) = self.panels.get_mut(self.focused_panel) {
-                    if panel.cursor.enter(&self.xmb) {
+                    if panel.cursor.enter(&self.lattice) {
                         self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                         return;
                     }
@@ -4685,7 +5131,7 @@ impl Shell {
                 let chosen = match self.panels.get(self.focused_panel) {
                     // Disjoint fields: this display's cursor reads the shared
                     // catalogue while the catalogue itself is written.
-                    Some(panel) => panel.cursor.choose(&mut self.xmb),
+                    Some(panel) => panel.cursor.choose(&mut self.lattice),
                     None => None,
                 };
                 // A search is neither opened nor launched: the field takes the
@@ -4783,7 +5229,7 @@ impl Shell {
                     self.read_selected_place();
                 }
                 let moved = match self.panels.get_mut(self.focused_panel) {
-                    Some(panel) => panel.cursor.navigate(action, &self.xmb),
+                    Some(panel) => panel.cursor.navigate(action, &self.lattice),
                     None => false,
                 };
                 if moved {
@@ -4807,7 +5253,7 @@ impl Shell {
         let Some(panel) = self.panels.get_mut(focused) else {
             return;
         };
-        let Some(orders) = panel.cursor.open_place(&mut self.xmb, sort) else {
+        let Some(orders) = panel.cursor.open_place(&mut self.lattice, sort) else {
             return;
         };
         self.file_orders = orders;
@@ -4824,7 +5270,7 @@ impl Shell {
         };
         // Disjoint fields, the other way round from the read above: the cursor
         // is only read here, since narrowing a column moves nothing.
-        if let Some(orders) = panel.cursor.search_here(&mut self.xmb, query, sort) {
+        if let Some(orders) = panel.cursor.search_here(&mut self.lattice, query, sort) {
             self.file_orders = orders;
         }
         self.needs_redraw = true;
@@ -4835,7 +5281,7 @@ impl Shell {
     fn folder_query(&self) -> String {
         self.panels
             .get(self.focused_panel)
-            .map(|panel| panel.cursor.current_entries(&self.xmb))
+            .map(|panel| panel.cursor.current_entries(&self.lattice))
             .and_then(|entries| entries.first().and_then(apps::Entry::search))
             .map(|search| search.query.clone())
             .unwrap_or_default()
@@ -4850,6 +5296,12 @@ impl Shell {
         // told how it went. The guide still opens over it, which is the
         // shell's standing promise about being able to get out of anything.
         if self.removal_running() {
+            return;
+        }
+        // And a transfer that is running, for exactly the same reason: it is
+        // disk that cannot be undone half done, and the panel over it is the
+        // only place the user will be told how it went.
+        if self.transfer_running() {
             return;
         }
         // One layer at a time, from the top down. A panel raised by a menu row
@@ -4869,6 +5321,26 @@ impl Shell {
             if !self.context_menu.back() {
                 self.context_menu.close();
             }
+            self.needs_redraw = true;
+            return;
+        }
+        // The picker, which is a screen of its own over the bar: Back from it
+        // is out of the whole journey rather than one folder back up it. Right
+        // is the way back up, because the columns are mirrored — see
+        // [`Shell::on_transfer_action`] — so a Back that walked out one level
+        // would be a second, slower way of doing what a direction already does
+        // and no way at all of giving up.
+        if self.cancel_transfer() {
+            self.needs_redraw = true;
+            return;
+        }
+        // A name being changed goes back to what it was, board and all. Ahead
+        // of the plain "put the board away" below, because those are not the
+        // same act: a search field keeps what was typed and this must not —
+        // Back on a name is the whole of how a rename is given up on, and the
+        // row has been showing what was typed rather than what the file is
+        // called.
+        if self.cancel_rename() {
             self.needs_redraw = true;
             return;
         }
@@ -4987,7 +5459,7 @@ impl Shell {
         // target explains the missing capability, System information puts up
         // what this machine is, and a typed value opens its field.
         match self.panels.get(self.focused_panel).and_then(|panel| {
-            panel.cursor.current_entry(&self.xmb).map(|entry| {
+            panel.cursor.current_entry(&self.lattice).map(|entry| {
                 (
                     entry.service().is_some(),
                     entry.game().cloned(),
@@ -5052,7 +5524,7 @@ impl Shell {
         let foreground = panel.foreground.clone().unwrap_or_default();
         // Disjoint fields, so the shared catalogue can be mutated while this
         // display's cursor is read.
-        match self.xmb.launch_selected(&panel.cursor) {
+        match self.lattice.launch_selected(&panel.cursor) {
             Some(pid) => {
                 self.needs_redraw = true;
                 // Something is starting. Here rather than beside the splash,
@@ -5086,7 +5558,7 @@ impl Shell {
         }
         // A launched application takes the screen, so step back out of the way
         // and let it have the keyboard.
-        if self.xmb.running_app().is_some() {
+        if self.lattice.running_app().is_some() {
             self.guide.close();
         }
     }
@@ -5104,7 +5576,7 @@ impl Shell {
             .panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?
+            .current_entry(&self.lattice)?
         {
             apps::Entry::App(app) => Some((app.name.clone(), app.icon.clone())),
             apps::Entry::Media(file) => {
@@ -5125,7 +5597,7 @@ impl Shell {
             .panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?;
+            .current_entry(&self.lattice)?;
         let game = entry.game().map(|game| game.app_id);
         let name = self.selected_opening()?.0;
         self.launching
@@ -5214,6 +5686,15 @@ impl Shell {
         if self.selected_file().is_some() {
             return self.folder_entry_menu();
         }
+        // A folder standing in a listing is a fourth kind of thing, and it gets
+        // a menu of its own because two of the file's rows are as true of it as
+        // they are of a file: a folder can be carried somewhere else. The rest
+        // of that list is not — see [`Shell::directory_entry_menu`] — and every
+        // other row in the shell that happens to be a `Folder` gets no menu at
+        // all, which is what `folder_row` is for.
+        if self.folder_row().is_some() {
+            return self.directory_entry_menu();
+        }
         // Steam's two rows are two more kinds of thing, and neither shares a
         // row with the other two: nothing on this machine installed a game in
         // somebody's Steam library, so there is no package to survey and no
@@ -5238,7 +5719,7 @@ impl Shell {
     /// nothing is running yet, so there is nothing here for a Close to end.
     fn application_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
-        let app = panel.cursor.current_app(&self.xmb)?;
+        let app = panel.cursor.current_app(&self.lattice)?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
         Some((
             anchor,
@@ -5268,15 +5749,27 @@ impl Shell {
 
     /// The menu for a song, a film or a photograph on the bar.
     ///
-    /// Five rows in two bands. The first three act on the file itself, in the
+    /// Six rows in two bands. The first four act on the file itself, in the
     /// order somebody reaches for them — open it, open it in something else,
-    /// get rid of it. The last two are not about the file at all: Sort is about
-    /// the *column*, and Cancel is about the menu. That is what the rule between
-    /// them is saying, and it is why Sort is below it rather than up with the
-    /// commands it is nothing like.
+    /// get rid of it, call it something else. The last two are not about the
+    /// file at all: Sort is about the *column*, and Cancel is about the menu.
+    /// That is what the rule between them is saying, and it is why Sort is
+    /// below it rather than up with the commands it is nothing like.
     ///
-    /// Two of the five can be unavailable, and both are drawn greyed rather
-    /// than left out, so the panel keeps its shape wherever it is raised:
+    /// **Copy and Move are not here at all**, and are left out rather than
+    /// greyed — the one place in the shell where a row that exists elsewhere
+    /// simply is not drawn. A shelf is a library rather than a folder: it
+    /// gathers one kind of file from everywhere the user keeps them, so there
+    /// is no column for the picker to open in and none for the file to appear
+    /// in when it lands. A greyed row is the shell saying "this is the wrong
+    /// moment", and the user is expected to be able to work out what would make
+    /// it the right one — a file gets a handler, a file turns out to be theirs.
+    /// There is nothing here anybody could do: the answer would be "go and find
+    /// this song in Files", which is a different column about a different
+    /// thing, and two dead rows on every song, film and photograph is a high
+    /// price for the panel keeping one shape.
+    ///
+    /// Two of the six can still be unavailable, and those *are* drawn greyed:
     ///
     /// * **Open with**, when nothing installed says it handles this type. There
     ///   is then nothing to choose *between* — Open would fall through to
@@ -5291,20 +5784,36 @@ impl Shell {
             anchor,
             Some(file.title.clone()),
             media_rows(
-                !media::handlers(file.mime, &self.xmb.categories).is_empty(),
+                !media::handlers(file.mime, &self.lattice.categories).is_empty(),
                 trash::is_the_users_own(&file.path),
+                false,
             ),
         ))
     }
 
     /// The menu for a file the explorer found, wherever on the disk it is.
     ///
-    /// The same five rows in the same two bands as the shelf menu, and Sort
-    /// means the same thing on both: the column rather than the file. Delete is
-    /// greyed for anything outside the user's home directory, which in this
-    /// column is most of what can be reached — somebody standing in `/usr/lib`
-    /// is looking at the machine's own files, and the shell will show them
-    /// without ever offering to destroy them.
+    /// The shelf's six rows in the same two bands, with **Copy and Move added
+    /// between Delete and Rename** — this column is the one place they mean
+    /// anything, because a row in it stands in a folder rather than in a
+    /// library, and there is somewhere for the picker to open and somewhere for
+    /// the file to appear when it lands. Sort means what it means on a shelf:
+    /// the column rather than the file. Delete is greyed for anything outside
+    /// the user's home directory, which in this column is most of what can be
+    /// reached — somebody standing in `/usr/lib` is looking at the machine's
+    /// own files, and the shell will show them without ever offering to destroy
+    /// them.
+    ///
+    /// Copy and Move are not greyed with it, and that is deliberate. Delete is
+    /// about destroying something that is not the user's; these two are about
+    /// taking a copy of it, or carrying it, and whether the folder they choose
+    /// will have it is a question for the filesystem to answer at the moment
+    /// the transfer runs. What the shell must not do is refuse in advance on a
+    /// guess about permissions it has not asked for.
+    ///
+    /// They go missing rather than grey in the one case they cannot be
+    /// offered — a file row that is somehow not standing in a listing — for the
+    /// reason [`Shell::media_entry_menu`] gives at length.
     fn folder_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
         let file = self.selected_file()?;
@@ -5313,10 +5822,88 @@ impl Shell {
             anchor,
             Some(file.name.clone()),
             media_rows(
-                !media::handlers(file.mime, &self.xmb.categories).is_empty(),
+                !media::handlers(file.mime, &self.lattice.categories).is_empty(),
                 trash::is_the_users_own(&file.path),
+                self.inside_a_folder(),
             ),
         ))
+    }
+
+    /// The menu for a folder the explorer found: the two rows that carry it
+    /// somewhere else, and the two that are about the column and the menu.
+    ///
+    /// A short list, and short for a reason rather than by omission. A folder
+    /// is not opened by a program, so there is no Open and nothing to choose
+    /// between; and Delete is not offered, because a folder is however many
+    /// files deep and the one question the shell asks before destroying
+    /// something ("do you want to delete *this*?") cannot honestly be asked
+    /// about a name standing for a thousand things the user cannot see.
+    ///
+    /// Carrying one is a different matter: nothing is lost, and what arrives is
+    /// what was there.
+    fn directory_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let folder = self.folder_row()?;
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((
+            anchor,
+            Some(folder.title.clone()),
+            vec![
+                transfer_row(menu::Command::Copy, "Copy", icons::COPY),
+                transfer_row(menu::Command::Move, "Move", icons::MOVE),
+                menu::Entry::new(menu::Command::Rename, "Rename").glyph(icons::RENAME),
+                menu::Entry::new(menu::Command::Sort, "Sort")
+                    .glyph(icons::SORT)
+                    .group(1),
+                menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+            ],
+        ))
+    }
+
+    /// The selected row, when it is a folder standing *inside a listing* — a
+    /// real directory on the disk that can be carried somewhere else.
+    ///
+    /// The second half is the whole of what this asks, and it is why the row's
+    /// own `place` is not enough on its own. Home, Root and every mounted drive
+    /// are rows of exactly the same kind, carrying exactly the same kind of
+    /// path, and none of them is a folder anybody may pick up: they are the
+    /// three answers to "which disk". What separates them is where they stand —
+    /// a listing hangs under a row that is itself a directory, and the volumes
+    /// hang under the Files row, which is not.
+    fn folder_row(&self) -> Option<&apps::Folder> {
+        if !self.inside_a_folder() {
+            return None;
+        }
+        let cursor = &self.panels.get(self.focused_panel)?.cursor;
+        let apps::Entry::Folder(folder) = cursor.current_entry(&self.lattice)? else {
+            return None;
+        };
+        matches!(folder.place, Some(files::Place::Directory(_))).then_some(folder)
+    }
+
+    /// Whether the column the cursor is standing in is the listing of a real
+    /// directory.
+    ///
+    /// What makes a row in it a thing that can be carried somewhere else: it
+    /// came off a `readdir`, so it has a folder to be taken out of and a folder
+    /// to be put back into. A column that is not one — the three volumes, a
+    /// settings page, a shelf, a category — holds rows that stand for
+    /// somewhere rather than rows that are *in* somewhere.
+    ///
+    /// Asked of the row the column hangs under rather than of the rows
+    /// themselves, because that is the only thing that separates the two cases
+    /// that look alike: Home and a folder inside Home are the same kind of row
+    /// carrying the same kind of path, and what says which is which is what
+    /// they are listed under.
+    fn inside_a_folder(&self) -> bool {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        matches!(
+            panel.cursor.open_from(&self.lattice),
+            Some(apps::Entry::Folder(under))
+                if matches!(under.place, Some(files::Place::Directory(_)))
+        )
     }
 
     /// The Open with list: every application that says it opens this kind of
@@ -5337,7 +5924,7 @@ impl Shell {
         let Some(mime) = self.selected_mime() else {
             return Vec::new();
         };
-        self.open_with = media::handlers(mime, &self.xmb.categories)
+        self.open_with = media::handlers(mime, &self.lattice.categories)
             .into_iter()
             .filter_map(|app| media::handler_row(mime, app))
             .collect();
@@ -5372,7 +5959,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)
+            .current_entry(&self.lattice)
             .and_then(apps::Entry::media)
     }
 
@@ -5382,7 +5969,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)
+            .current_entry(&self.lattice)
             .and_then(apps::Entry::file)
     }
 
@@ -5393,7 +5980,7 @@ impl Shell {
             .panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?;
+            .current_entry(&self.lattice)?;
         match entry {
             apps::Entry::Media(file) => Some(file.mime),
             apps::Entry::File(file) => Some(file.mime),
@@ -5406,7 +5993,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)
+            .current_entry(&self.lattice)
             .and_then(apps::Entry::search)
     }
 
@@ -5513,21 +6100,36 @@ impl Shell {
         true
     }
 
-    /// Put what has been typed on the field, and narrow the shelf to it.
-    ///
-    /// Two different speeds on purpose. The letter is written onto the row
-    /// here, so it is on the next frame; the shelf is narrowed on the worker
-    /// and its rows arrive when they are ready. See
-    /// [`media::Library::set_search`].
+    /// Put what has been typed on the field, and narrow what it stands over.
     fn refresh_search(&mut self) {
         let Some(searching) = self.searching.as_ref() else {
             return;
         };
         let (of, text) = (searching.of, searching.text.clone());
-        match of.shelf() {
-            Some(kind) => {
-                apps::set_search_text(&mut self.xmb.categories, kind, &text);
-                self.media.set_search(kind, &text);
+        self.narrow_to(of, &text);
+    }
+
+    /// Narrow a search without a board being up: the Clear row, and anything
+    /// else that changes a search outright rather than a letter at a time.
+    fn set_search(&mut self, of: apps::Searched, query: String) {
+        if let Some(searching) = self.searching.as_mut().filter(|open| open.of == of) {
+            searching.text = query.clone();
+        }
+        self.narrow_to(of, &query);
+    }
+
+    /// Narrow one of the three things a field can stand over. The one place
+    /// that knows which of them answers where; see [`apps::Searched`].
+    ///
+    /// A shelf is two different speeds on purpose. The letter is written onto
+    /// the row here, so it is on the next frame; the shelf is narrowed on the
+    /// worker and its rows arrive when they are ready. See
+    /// [`media::Library::set_search`].
+    fn narrow_to(&mut self, of: apps::Searched, query: &str) {
+        match of {
+            apps::Searched::Shelf(kind) => {
+                apps::set_search_text(&mut self.lattice.categories, kind, query);
+                self.media.set_search(kind, query);
                 self.needs_redraw = true;
             }
             // A folder answers on this thread and on this frame. It can afford
@@ -5535,27 +6137,32 @@ impl Shell {
             // query is cheaper than reading it without — only the rows the
             // query keeps cost a `stat`. The field is rebuilt with the rest of
             // the column, carrying what has just been typed.
-            None => self.search_here(&text),
+            apps::Searched::Folder => self.search_here(query),
+            apps::Searched::Library => self.search_library(query),
         }
     }
 
-    /// Narrow a shelf without a board being up: the Clear row, and anything
-    /// else that changes a search outright rather than a letter at a time.
-    fn set_search(&mut self, of: apps::Searched, query: String) {
-        if let Some(searching) = self.searching.as_mut().filter(|open| open.of == of) {
-            searching.text = query.clone();
+    /// Narrow the Steam library to what is being typed, on this frame.
+    ///
+    /// It can afford that for the reason a folder can, and more cheaply: the
+    /// library is a few hundred titles the shell is already holding, so a
+    /// letter costs a `contains` per game and a column rebuilt out of what is
+    /// left. Nothing is asked of Valve — a field that went to the network for
+    /// each letter would be a field that answered a word behind the typing.
+    ///
+    /// The column is rebuilt through the same door a delivered library comes
+    /// in by, so every display's cursor is put back on the game it was standing
+    /// on and none of them is left pointing past the end of a narrowed list.
+    /// See [`Self::shelve_games`].
+    fn search_library(&mut self, query: &str) {
+        if !self.steam.set_search(query) {
+            return;
         }
-        match of.shelf() {
-            Some(kind) => {
-                apps::set_search_text(&mut self.xmb.categories, kind, &query);
-                self.media.set_search(kind, &query);
-                self.needs_redraw = true;
-            }
-            None => self.search_here(&query),
-        }
+        self.shelve_games(self.steam.rows());
+        self.needs_redraw = true;
     }
 
-    /// Put this display's cursor on the first file the search found.
+    /// Put this display's cursor on the first thing the search found.
     ///
     /// The rows it lands among are the ones the *last* delivery brought, which
     /// while a large shelf is still being narrowed may not be the final answer.
@@ -5566,22 +6173,23 @@ impl Shell {
         let Some(panel) = self.panels.get(self.focused_panel) else {
             return;
         };
-        let first = panel
-            .cursor
-            .current_entries(&self.xmb)
-            .iter()
-            .position(|entry| entry.search().is_none());
+        // The head of the list rather than the first row that is not a field:
+        // a library carries its index over the games as well, and somebody who
+        // has just typed a name is asking for the game and not for the letter
+        // it is filed under. See [`apps::head_rows`].
+        let entries = panel.cursor.current_entries(&self.lattice);
+        let first = apps::head_rows(entries);
         // Nothing matched, so there is nowhere to go and the field keeps the
         // cursor — which is where the user will want it, since the next thing
         // to do with a search that found nothing is change it.
-        let Some(first) = first else {
+        if first >= entries.len() {
             return;
-        };
+        }
         // Disjoint fields: this display's cursor is moved while the catalogue
         // it is being moved through is read.
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         if let Some(panel) = self.panels.get_mut(self.focused_panel) {
-            if panel.cursor.point_at_row(first, xmb) {
+            if panel.cursor.point_at_row(first, lattice) {
                 self.needs_redraw = true;
             }
         }
@@ -5637,7 +6245,7 @@ impl Shell {
     /// What the row the cursor is standing inside is called.
     fn open_column_title(&self) -> Option<String> {
         let panel = self.panels.get(self.focused_panel)?;
-        Some(panel.cursor.open_from(&self.xmb)?.title().to_string())
+        Some(panel.cursor.open_from(&self.lattice)?.title().to_string())
     }
 
     /// Make the application the Open with list offered at `index` the one that
@@ -5725,9 +6333,9 @@ impl Shell {
         // At the top of it, on the display that asked, for the reason a
         // reordered shelf goes there: somebody who has just said "newest first"
         // is asking to be shown the newest.
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         if let Some(panel) = self.panels.get_mut(self.focused_panel) {
-            panel.cursor.rest_on_first_row(xmb);
+            panel.cursor.rest_on_first_row(lattice);
         }
         if self
             .context_menu
@@ -5768,9 +6376,9 @@ impl Shell {
         self.sorting = Some((kind, self.focused_panel));
         // Disjoint fields: this display's cursor is moved while the catalogue
         // it is being moved through is read.
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         if let Some(panel) = self.panels.get_mut(self.focused_panel) {
-            panel.cursor.rest_on_first_row(xmb);
+            panel.cursor.rest_on_first_row(lattice);
         }
         self.needs_redraw = true;
     }
@@ -5782,7 +6390,7 @@ impl Shell {
             .panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?;
+            .current_entry(&self.lattice)?;
         match entry {
             apps::Entry::Media(file) => Some(Doomed {
                 name: file.title.clone(),
@@ -5864,8 +6472,8 @@ impl Shell {
                 // was on a shelf a moment ago, and a bar still offering to play
                 // it there is a bar that has not understood.
                 self.media.forget(&file.path);
-                let xmb = &mut self.xmb;
-                if apps::forget_file(&mut xmb.categories, &file.path) {
+                let lattice = &mut self.lattice;
+                if apps::forget_file(&mut lattice.categories, &file.path) {
                     self.needs_redraw = true;
                 }
             }
@@ -5890,6 +6498,725 @@ impl Shell {
         }
     }
 
+    // --- changing a name ---------------------------------------------------
+
+    /// Put the caret on the selected row's name and raise the board.
+    ///
+    /// The same act as pressing a search field, and deliberately so: what a
+    /// press means there is "I am about to type", the answer to that is a
+    /// keyboard, and the row itself is what is typed into. Nothing about the
+    /// file changes until the name is accepted — see [`Renaming`].
+    fn begin_rename(&mut self) {
+        let Some(renaming) = self.rename_of_selection() else {
+            return;
+        };
+        // Nothing else may be waiting on the row, or on the board.
+        self.app_facts = None;
+        self.removal_plan = None;
+        self.deleting = None;
+        self.searching = None;
+        tracing::debug!(path = ?renaming.path, "changing a name");
+        self.renaming = Some(renaming);
+        // It types *here* rather than through the virtual keyboard, for the
+        // reason the search field does: what is being typed belongs to the
+        // shell, and a letter sent the other way would go to whichever client
+        // is holding the keys.
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// What renaming the selected row would be about, whichever of the three
+    /// kinds of row it is.
+    ///
+    /// A shelf's song, a folder's file, and a folder itself. What differs
+    /// between them is only what the row was showing — a shelf drops the
+    /// extension and the other two do not — and that is the whole of why the
+    /// extension is carried separately.
+    fn rename_of_selection(&self) -> Option<Renaming> {
+        let start = |path: &Path, was: String, extension: Option<String>, shelved: bool| Renaming {
+            path: path.to_path_buf(),
+            text: was.clone(),
+            was,
+            extension,
+            shelved,
+        };
+        if let Some(file) = self.selected_media() {
+            return Some(start(
+                &file.path,
+                file.title.clone(),
+                file.path
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(str::to_string),
+                true,
+            ));
+        }
+        if let Some(file) = self.selected_file() {
+            return Some(start(&file.path, file.name.clone(), None, false));
+        }
+        let folder = self.folder_row()?;
+        let files::Place::Directory(at) = folder.place.clone()? else {
+            return None;
+        };
+        Some(start(&at, folder.title.clone(), None, false))
+    }
+
+    /// Whether the cursor is standing on a name that is being typed into.
+    ///
+    /// Not merely that a rename was opened: the bar can be walked out from
+    /// under the board — a pointer resting on the category row is enough — and
+    /// a letter that went on being filed into a row nobody is looking at would
+    /// be the shell typing somewhere the user cannot see. The same question
+    /// [`Shell::search_wanted`] asks, and asked of the path rather than of the
+    /// row, because a rebuilt listing is a different row for the same file.
+    fn rename_wanted(&self) -> bool {
+        let Some(renaming) = self.renaming.as_ref() else {
+            return false;
+        };
+        self.rename_of_selection()
+            .is_some_and(|under| under.path == renaming.path)
+    }
+
+    /// Apply one keystroke to the name being typed. Returns whether there was a
+    /// name for it to go into.
+    fn type_into_rename(&mut self, stroke: keyboard::Stroke) -> bool {
+        if !self.rename_wanted() {
+            return false;
+        }
+        // What the key did, decided with only the name borrowed: the two keys
+        // that finish typing need the whole shell afterwards.
+        let done = {
+            let Some(renaming) = self.renaming.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    renaming.text.push(character);
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    renaming.text.pop();
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                // And the one thing a search field does not do: put back what
+                // was there. A search has been narrowing the column with every
+                // letter and there is no earlier list left to return to; a name
+                // has changed nothing at all until it is accepted, so giving up
+                // costs the user nothing and must therefore be free.
+                keyboard::Stroke::ESCAPE => Some(false),
+                // Tab, the arrows, the function keys. A field of one line has
+                // no use for any of them, and letting them past to the bar
+                // underneath would move the cursor off the row being typed
+                // into.
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.commit_rename(),
+            Some(false) => {
+                self.cancel_rename();
+            }
+            None => self.needs_redraw = true,
+        }
+        true
+    }
+
+    /// Give up on the name being typed and put back the one that was there.
+    ///
+    /// Putting it back costs nothing, which is the point: the row has gone on
+    /// saying what the file is really called the whole time, so all this does
+    /// is stop drawing the caret over it. `true` if there was one to give up
+    /// on, which is what tells a caller the press was spent here.
+    fn cancel_rename(&mut self) -> bool {
+        if self.renaming.take().is_none() {
+            return false;
+        }
+        self.close_the_board();
+        // The same click a step back out of a column makes, because that is
+        // what this is: nothing was destroyed and nothing has changed.
+        self.stepped_back();
+        true
+    }
+
+    /// Accept what has been typed.
+    ///
+    /// Four answers, and only the last of them touches the disk:
+    ///
+    /// * a name that has not changed, which is somebody who opened the field
+    ///   and thought better of it — the same as giving up, and answered the
+    ///   same way;
+    /// * a name that is not one — empty, or with a `/` in it, which is the one
+    ///   character a filename cannot hold. The field stays open with what they
+    ///   typed still in it, because the answer to "that cannot be a name" is a
+    ///   chance to write another one;
+    /// * a name something else in the folder already has, which is a panel and
+    ///   the end of the rename. `rename(2)` would replace that file without a
+    ///   word, and unlike a copy there is no "keep both" to offer — the user
+    ///   asked for *this* name. The field goes with the panel rather than
+    ///   waiting behind it: a board still typing into a row under a modal is a
+    ///   caret in two places at once, and pressing Y again is the whole cost of
+    ///   trying another name;
+    /// * and the rename itself.
+    ///
+    /// The second of those is the one case that says nothing out loud, and it
+    /// is the one case that does not need to: what is wrong with the name is on
+    /// the row, under the caret, in the user's own letters.
+    fn commit_rename(&mut self) {
+        let Some(renaming) = self.renaming.as_ref() else {
+            return;
+        };
+        let wanted = renaming.text.trim().to_string();
+        if wanted == renaming.was {
+            self.cancel_rename();
+            return;
+        }
+        let Some(name) = renamed_to(&wanted, renaming.extension.as_deref()) else {
+            return;
+        };
+        let Some(to) = renaming.path.parent().map(|at| at.join(&name)) else {
+            return;
+        };
+        if to.symlink_metadata().is_ok() {
+            let origin = self.dialog_origin();
+            let glyph = self.selected_glyph();
+            self.renaming = None;
+            self.close_the_board();
+            self.say_about_the_transfer(
+                origin,
+                glyph,
+                vec![
+                    dialog::Line::Note("Something called".to_string()),
+                    dialog::Line::Heading(name),
+                    dialog::Line::Note("is already in that folder.".to_string()),
+                    dialog::Line::Rule,
+                ],
+            );
+            return;
+        }
+        let from = renaming.path.clone();
+        let shelved = renaming.shelved;
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                tracing::info!(?from, ?to, "renamed");
+                self.renaming = None;
+                self.close_the_board();
+                self.name_changed(&from, &to, shelved);
+                // The press that finished it, in the voice the start screen
+                // answers every other press in.
+                self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+            }
+            Err(err) => {
+                let why = transfer::said(&err);
+                tracing::warn!(?from, ?to, %err, "could not rename it");
+                let origin = self.dialog_origin();
+                let glyph = self.selected_glyph();
+                self.renaming = None;
+                self.close_the_board();
+                self.say_about_the_transfer(
+                    origin,
+                    glyph,
+                    vec![
+                        dialog::Line::Heading(name),
+                        dialog::Line::Note(why),
+                        dialog::Line::Rule,
+                    ],
+                );
+            }
+        }
+    }
+
+    /// The mark the selected row is drawn with, for a panel about it.
+    fn selected_glyph(&self) -> &'static str {
+        if let Some(file) = self.selected_media() {
+            return file.kind.glyph();
+        }
+        if let Some(file) = self.selected_file() {
+            return file.glyph;
+        }
+        icons::FILE_FOLDER
+    }
+
+    /// Put the bar right after a name has changed on the disk.
+    ///
+    /// The row goes and comes back rather than being edited in place, and for
+    /// the reason a deleted file's row goes at once: what the bar holds is what
+    /// was on the disk when it was read, and the shell has just changed the
+    /// disk. A folder is read again on the spot, which is one `readdir`; a
+    /// shelf is half a million files on a worker, so the worker is told the one
+    /// thing it needs — this path is gone, that one has arrived — and the rows
+    /// arrive on the frame it has them.
+    fn name_changed(&mut self, from: &Path, to: &Path, shelved: bool) {
+        apps::forget_file(&mut self.lattice.categories, from);
+        if shelved {
+            self.media.forget(from);
+            self.media.found(to);
+            self.needs_redraw = true;
+            return;
+        }
+        self.reread_the_open_folder();
+        // And the cursor back onto the row, which the listing has very likely
+        // put somewhere else: the columns are alphabetical, and a name is
+        // exactly what that order is on.
+        let at = self
+            .panels
+            .get(self.focused_panel)
+            .map(|panel| panel.cursor.current_entries(&self.lattice))
+            .and_then(|rows| rows.iter().position(|row| row_is_at(row, to)));
+        if let Some(at) = at {
+            let lattice = &self.lattice;
+            if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+                panel.cursor.point_at_row(at, lattice);
+            }
+        }
+    }
+
+    /// Take the board away, wherever the name being typed had raised it.
+    fn close_the_board(&mut self) {
+        if self.osk.close() {
+            self.sync_surface_state();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The other end of [`Shell::rename_wanted`], asked once a frame after
+    /// every source of input has settled — exactly as the search field's is,
+    /// and for exactly the same reason: the bar can be walked out from under
+    /// the board by routes that never touch the row.
+    ///
+    /// What was typed goes with it. The name has changed nothing on the disk,
+    /// so leaving is giving up, and a half-typed name kept for a row the user
+    /// has walked away from is a rename waiting to happen to whatever they walk
+    /// back onto.
+    fn sync_rename(&mut self) {
+        if self.renaming.is_none() || self.rename_wanted() {
+            return;
+        }
+        tracing::debug!("the cursor left the name it was changing");
+        self.renaming = None;
+        self.close_the_board();
+    }
+
+    // --- carrying one of the user's own things to another folder -----------
+
+    /// Open the picker on whatever the menu was raised over.
+    ///
+    /// The subject is taken here, once, and held: the bar underneath goes on
+    /// living while the picker is up — a folder's listing is thrown away the
+    /// moment the cursor walks out of it — and a transfer that read its own
+    /// subject back off the selection when Paste was pressed would be one that
+    /// could act on the wrong file.
+    fn begin_transfer(&mut self, kind: transfer::Kind, from: [f32; 4]) {
+        let Some(source) = self.carried_source() else {
+            return;
+        };
+        // The folder it is in, which is where the picker opens. A thing with no
+        // parent is `/` itself, which is not something anybody is carrying.
+        let Some(here) = source.path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(picker) = transfer::Transfer::begin(kind, source, &here) else {
+            return;
+        };
+        // Nothing else may be waiting on the panel this raises.
+        self.app_facts = None;
+        self.removal_plan = None;
+        self.deleting = None;
+        tracing::debug!(?kind, folder = ?here, "choosing where to put it");
+        self.carrying = Some(Carrying {
+            picker,
+            run: None,
+            started: None,
+            from,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// What is being carried, out of whichever kind of row the menu was raised
+    /// over — a file in a folder, or a folder in one.
+    fn carried_source(&self) -> Option<transfer::Source> {
+        if let Some(folder) = self.folder_row() {
+            let files::Place::Directory(at) = folder.place.clone()? else {
+                return None;
+            };
+            return Some(transfer::Source {
+                path: at,
+                name: folder.title.clone(),
+                // What the row said about it, which for a folder already
+                // opened is what was found in it and otherwise is when it was
+                // last written. Either is more use than nothing under a name.
+                note: folder.comment.clone().unwrap_or_default(),
+                glyph: icons::FILE_FOLDER,
+                folder: true,
+            });
+        }
+        let file = self.selected_file()?;
+        Some(transfer::Source {
+            path: file.path.clone(),
+            name: file.name.clone(),
+            note: file.note.clone(),
+            glyph: file.glyph,
+            folder: false,
+        })
+    }
+
+    /// Drive the picker: the mirror of driving the bar.
+    ///
+    /// Left steps into the folder the highlight is on and Right steps back out
+    /// of it, which is the one thing on this screen that is not the same as
+    /// everywhere else in the shell — and it is not the same because the
+    /// columns run the other way. See [`crate::transfer`].
+    ///
+    /// Everything else is swallowed. The picker is modal in the way the centred
+    /// panel is: the bar behind it is still holding the very file being carried,
+    /// and a direction that reached it would move the selection out from under a
+    /// transfer that is about that row.
+    fn on_transfer_action(&mut self, action: Action) {
+        // Not while the copy itself is running. It is disk that cannot be
+        // undone half done and the panel over it is the only place the user
+        // will be told how it went — the same rule a removal under way keeps.
+        if self.transfer_running() {
+            return;
+        }
+        match action {
+            Action::Up | Action::Down => {
+                let delta = if action == Action::Up { -1 } else { 1 };
+                if self.drive_picker(|picker| picker.move_selection(delta)) {
+                    self.stepped();
+                }
+            }
+            Action::Left => {
+                if self.drive_picker(transfer::Transfer::step_in) {
+                    self.stepped();
+                }
+            }
+            Action::Right => {
+                if self.drive_picker(transfer::Transfer::step_out) {
+                    self.stepped_back();
+                }
+            }
+            Action::Launch => self.press_transfer_row(),
+            // The button that raises a menu about whatever is selected, and a
+            // right click, which is the same button. There is nothing on this
+            // screen for a menu to be about — every row of it is a folder being
+            // considered — so it means the other thing a press outside a
+            // journey means: give up on it.
+            Action::Menu => {
+                self.cancel_transfer();
+            }
+            _ => {}
+        }
+    }
+
+    /// Do one thing to the picker, if there is one. `false` where there is
+    /// none, and where the move it was asked for did not land.
+    ///
+    /// A borrow that ends before the answer is spent, which is the whole of
+    /// why it exists: every one of these moves is followed by a sound, and a
+    /// sound is the shell's to make rather than the picker's.
+    fn drive_picker(&mut self, drive: impl FnOnce(&mut transfer::Transfer) -> bool) -> bool {
+        let moved = self
+            .carrying
+            .as_mut()
+            .is_some_and(|carrying| drive(&mut carrying.picker));
+        if moved {
+            self.needs_redraw = true;
+        }
+        moved
+    }
+
+    /// Press the row the picker is standing on: step into a folder, or end the
+    /// journey.
+    ///
+    /// Accept is the way *in* as much as Left is, exactly as it is on the bar,
+    /// so a folder under the highlight opens rather than swallowing the button.
+    fn press_transfer_row(&mut self) {
+        if self.drive_picker(transfer::Transfer::step_in) {
+            self.stepped();
+            return;
+        }
+        let Some(carrying) = self.carrying.as_ref() else {
+            return;
+        };
+        let Some(into) = carrying.picker.chosen() else {
+            // Paste in a folder it cannot go in, which the row already says
+            // under itself. Nothing happens and nothing is said about it — the
+            // answer an edge of the bar gives somebody pushing into it.
+            return;
+        };
+        // Asked again here rather than trusted from the row that was drawn,
+        // because between the frame that drew it and this press the disk is
+        // anybody's.
+        let ready = transfer::ready(carrying.picker.source(), &into);
+        let from = carrying.from;
+        let glyph = carrying.picker.source().glyph;
+        match ready {
+            // The name is free, so there is nothing to ask, and the answer to a
+            // question nobody asked is the one that cannot destroy anything.
+            transfer::Ready::Clear => self.start_transfer(transfer::Settle::KeepBoth),
+            transfer::Ready::Taken { folder } => self.ask_about_the_name(folder),
+            transfer::Ready::Refused(why) => {
+                self.say_about_the_transfer(from, glyph, vec![dialog::Line::Note(why)])
+            }
+        }
+    }
+
+    /// Something of that name is already in the folder. Ask.
+    ///
+    /// Three answers, and the order is the order of how much they can cost:
+    /// keep both first and under the highlight, because it is the only one of
+    /// the three that cannot lose anything; then replace, drawn grave and in
+    /// the fixed red, because it writes over one of the user's own files; then
+    /// the way out.
+    ///
+    /// The panel says what is in the way — a file or a folder — because they
+    /// are the same obstacle and very different news: replacing a folder takes
+    /// everything that was inside it.
+    fn ask_about_the_name(&mut self, folder: bool) {
+        let Some(carrying) = self.carrying.as_ref() else {
+            return;
+        };
+        let source = carrying.picker.source();
+        let name = source.name.clone();
+        let glyph = source.glyph.to_string();
+        let from = carrying.from;
+        let there = if folder { "A folder" } else { "A file" };
+        self.dialog.ask(
+            from,
+            Some(glyph),
+            vec![
+                dialog::Line::Note(format!("{there} called")),
+                dialog::Line::Heading(name),
+                dialog::Line::Note("is already in that folder.".to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::KeepBothFiles, "Keep both"),
+                menu::Entry::new(menu::Command::ReplaceFile, "Replace").grave(),
+                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+            ],
+            // On the answer that cannot destroy anything, which is also the one
+            // drawn first — the same rule the two questions that remove things
+            // keep.
+            0,
+        );
+    }
+
+    /// Start the copy, the folder having been chosen and any question about the
+    /// name having been answered.
+    ///
+    /// The picker goes now rather than when the copy finishes: the journey is
+    /// over, the user has said where, and a mirrored bar left standing over a
+    /// transfer that is already running would be a screen still asking a
+    /// question that has been answered.
+    fn start_transfer(&mut self, settle: transfer::Settle) {
+        // The panel that asked about the name is not closed here. It was
+        // answered by one of its own buttons, and a button is watched going
+        // down before the panel it is on folds away — closing it from under
+        // that press would be the one control in the shell that vanishes
+        // before its own transition has ended.
+        let Some(carrying) = self.carrying.as_mut() else {
+            return;
+        };
+        let Some(into) = carrying.picker.chosen() else {
+            return;
+        };
+        let kind = carrying.picker.kind();
+        let source = carrying.picker.source().clone();
+        tracing::info!(?kind, from = ?source.path, into = ?into, ?settle, "carrying it over");
+        carrying.picker.close();
+        carrying.started = Some(Instant::now());
+        carrying.run = Some(transfer::Run::start(kind, source, into, settle));
+        // The press that ends the journey, in the voice the start screen
+        // answers every other press in.
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+    }
+
+    /// Give up on the whole thing. `true` if there was one to give up on.
+    fn cancel_transfer(&mut self) -> bool {
+        // A copy that is already running is not cancelled by this and must not
+        // be: the disk is half way through it. What Back and every other way
+        // out are refused by is [`Shell::transfer_running`].
+        let Some(carrying) = self.carrying.as_mut() else {
+            return false;
+        };
+        if carrying.run.is_some() {
+            return false;
+        }
+        if !carrying.picker.close() {
+            return false;
+        }
+        // Nothing is destroyed and nothing has moved, so this is the same move
+        // as stepping back out of a column — which is what it is.
+        self.stepped_back();
+        true
+    }
+
+    /// Whether a transfer is actually under way, which is the one thing on this
+    /// surface that must not be interrupted by a stray press of Back.
+    fn transfer_running(&self) -> bool {
+        self.carrying
+            .as_ref()
+            .is_some_and(|carrying| carrying.run.is_some())
+    }
+
+    /// Whether there is anything of the picker left to draw.
+    fn transfer_on_screen(&self) -> bool {
+        self.carrying
+            .as_ref()
+            .is_some_and(|carrying| carrying.picker.is_on_screen())
+    }
+
+    /// Give the running copy a frame: put a panel up if it is taking long
+    /// enough to be worth one, and answer it when it ends.
+    ///
+    /// The copy runs on a thread and a thread finishing is not a Wayland event,
+    /// so this is the frame its answer reaches the screen on — the same shape
+    /// as [`Shell::advance_uninstall`], and called from the same loop.
+    fn advance_transfer(&mut self) {
+        let Some(carrying) = self.carrying.as_mut() else {
+            return;
+        };
+        // The picker having finished sliding out, with no copy behind it: the
+        // user gave up, and there is nothing left to hold. Nothing vanishes
+        // before its transition ends, which is what the second half is for.
+        if carrying.run.is_none() {
+            if !carrying.picker.is_on_screen() {
+                self.carrying = None;
+            }
+            return;
+        }
+        let outcome = carrying.run.as_ref().and_then(transfer::Run::outcome);
+        let Some(outcome) = outcome else {
+            // Still going. Say so, once it has been going long enough to be
+            // worth saying — and only once, which is what the second half of
+            // this test asks: the panel is already the thing on screen.
+            let waited = carrying
+                .started
+                .is_some_and(|started| started.elapsed() >= TRANSFER_PATIENCE);
+            if waited && !self.dialog.is_open() {
+                self.say_transfer_is_running();
+            }
+            return;
+        };
+        let Some(carrying) = self.carrying.take() else {
+            return;
+        };
+        self.finish_transfer(&carrying, outcome);
+    }
+
+    /// Put up a panel with nothing to press, because the disk is busy behind it
+    /// and there is nothing useful to offer until it is not.
+    fn say_transfer_is_running(&mut self) {
+        let Some(carrying) = self.carrying.as_ref() else {
+            return;
+        };
+        let source = carrying.picker.source();
+        let doing = carrying.picker.kind().doing();
+        let name = source.name.clone();
+        let glyph = source.glyph.to_string();
+        let from = carrying.from;
+        self.dialog.wait(
+            from,
+            Some(glyph),
+            vec![
+                dialog::Line::Note(doing.to_string()),
+                dialog::Line::Heading(name),
+            ],
+        );
+    }
+
+    /// The copy has ended, one way or the other.
+    ///
+    /// A success says nothing and shows nothing: the user watched themselves
+    /// choose a folder, and a panel telling them it worked would be a button
+    /// that has to be pressed to get back to the screen they were already on.
+    /// What they get instead is the column, read again, with the file in it or
+    /// gone from it.
+    ///
+    /// A failure is a panel, for the reason a failed delete is one — a command
+    /// that silently either worked or did not is a command nobody trusts twice
+    /// — and it carries what the filesystem actually said.
+    fn finish_transfer(&mut self, carrying: &Carrying, outcome: transfer::Outcome) {
+        let source = carrying.picker.source();
+        match outcome {
+            transfer::Outcome::Done(landed) => {
+                // A moved file is not where the bar says it is any more, and
+                // the shelves that gathered it are as wrong as the folder it
+                // came out of. Told rather than rebuilt: one row has changed,
+                // and walking the home directory again to notice it would be
+                // the whole collection's worth of work for it.
+                if carrying.picker.kind() == transfer::Kind::Move {
+                    self.media.forget(&source.path);
+                    apps::forget_file(&mut self.lattice.categories, &source.path);
+                }
+                tracing::info!(at = ?landed, "it is there");
+                self.close_dialog();
+                self.reread_the_open_folder();
+            }
+            transfer::Outcome::Failed(why) => {
+                let name = source.name.clone();
+                let glyph = source.glyph;
+                self.say_about_the_transfer(
+                    carrying.from,
+                    glyph,
+                    vec![
+                        dialog::Line::Heading(name),
+                        dialog::Line::Note(why),
+                        dialog::Line::Rule,
+                    ],
+                );
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Put up a panel about a transfer that is not going to happen, with one
+    /// button to say it has been read.
+    ///
+    /// The mark comes in rather than being read back off the transfer, because
+    /// half of what raises this has already let go of it: a failure is
+    /// answered after the picker is gone, and a panel about a file that had
+    /// lost the file's own mark would be the shell forgetting what it was
+    /// talking about at the one moment it has bad news.
+    fn say_about_the_transfer(
+        &mut self,
+        from: [f32; 4],
+        glyph: &'static str,
+        mut lines: Vec<dialog::Line>,
+    ) {
+        // Whatever was asked for, the panel is the thing on screen now, and it
+        // ends in the rule every panel with a button under it has.
+        if !matches!(lines.last(), Some(dialog::Line::Rule)) {
+            lines.push(dialog::Line::Rule);
+        }
+        self.dialog.ask(
+            from,
+            Some(glyph.to_string()),
+            lines,
+            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            0,
+        );
+    }
+
+    /// Read the folder the cursor is standing in again, because what is in it
+    /// has just changed.
+    ///
+    /// Keeping whatever the field has been narrowed to, and keeping the cursor
+    /// inside the column it comes back as: a move takes a row out from under
+    /// the selection, and a copy into the folder somebody is standing in puts
+    /// one in.
+    fn reread_the_open_folder(&mut self) {
+        let query = self.folder_query();
+        self.search_here(&query);
+        let lattice = &self.lattice;
+        if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+            panel.cursor.keep_in_bounds(lattice);
+        }
+        self.needs_redraw = true;
+    }
+
     // --- the volume mixer --------------------------------------------------
 
     /// Raise the mixer out of the tile in the guide's column: the application
@@ -5908,7 +7235,7 @@ impl Shell {
         let Some(index) = items.iter().position(|item| *item == Item::Mixer) else {
             return;
         };
-        let anchor = ui::menu_item_rect(&items, index, width, height);
+        let anchor = ui::menu_item_rect(&items, index, width, height, self.guide.media());
         let entries = self.mixer_entries();
         // No title. Every other menu is raised over something whose name the
         // user needs saying — an application, a window — and this one is a
@@ -5959,8 +7286,8 @@ impl Shell {
                 let installed = stream
                     .binary
                     .as_deref()
-                    .and_then(|binary| self.xmb.app_for_window(binary))
-                    .or_else(|| self.xmb.app_for_window(&stream.name));
+                    .and_then(|binary| self.lattice.app_for_window(binary))
+                    .or_else(|| self.lattice.app_for_window(&stream.name));
                 let name = installed
                     .map(|app| app.name.clone())
                     .unwrap_or_else(|| stream.name.clone());
@@ -6168,7 +7495,7 @@ impl Shell {
         let Some(index) = items.iter().position(|item| *item == Item::Notifications) else {
             return;
         };
-        let anchor = ui::menu_item_rect(&items, index, width, height);
+        let anchor = ui::menu_item_rect(&items, index, width, height, self.guide.media());
         let entries = self.notification_entries();
         // A title, unlike the mixer's. The mixer is a column of applications
         // each carrying its own name and picture, so a header would be telling
@@ -6658,6 +7985,17 @@ impl Shell {
             menu::Command::SortBy(sort) => self.sort_selection(sort),
             menu::Command::Delete => self.ask_to_delete(from),
             menu::Command::ConfirmDelete => self.delete_the_file(from),
+            // These two do not act either: they open the picker, and what acts
+            // is Paste at the head of whichever column the user walks to.
+            menu::Command::Copy => self.begin_transfer(transfer::Kind::Copy, from),
+            menu::Command::Move => self.begin_transfer(transfer::Kind::Move, from),
+            // And these two are the answers to the one question the picker can
+            // raise: something of that name is already there.
+            menu::Command::KeepBothFiles => self.start_transfer(transfer::Settle::KeepBoth),
+            menu::Command::ReplaceFile => self.start_transfer(transfer::Settle::Replace),
+            // And this one opens a field on the row the menu was raised over,
+            // which is the same thing pressing a search field does.
+            menu::Command::Rename => self.begin_rename(),
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
             menu::Command::SubmitPassword => self.submit_password(),
             menu::Command::Authenticate => self.submit_authentication(),
@@ -7639,7 +8977,7 @@ impl Shell {
         // Asked of the bar as it stands rather than of a flag, because that is
         // the same question in every session that has one: `--no-steam` never
         // put a row up, and must not be given one here.
-        if apps::steam_offered(&self.xmb.categories) {
+        if apps::steam_offered(&self.lattice.categories) {
             apps::hide_steam_client(&mut categories);
             apps::offer_steam(&mut categories, self.steam.account().map(str::to_string));
         }
@@ -7647,11 +8985,11 @@ impl Shell {
         // the disk, and a package coming off the machine has not changed that.
         // So they are carried across to the columns that were just rebuilt
         // rather than asked for again — see [`apps::carried_media`].
-        let carried = apps::carried_media(&mut self.xmb.categories);
-        self.xmb.categories = categories;
+        let carried = apps::carried_media(&mut self.lattice.categories);
+        self.lattice.categories = categories;
         for mut made in carried {
             made.orders = self.media.orders(made.kind);
-            let hung = apps::shelve_media(&mut self.xmb.categories, made);
+            let hung = apps::shelve_media(&mut self.lattice.categories, made);
             self.media.discard(hung.worn);
         }
         // After the row that leads to it, and by the same reasoning: the column
@@ -7663,7 +9001,7 @@ impl Shell {
         let rows = self.steam.rows();
         self.shelve_games(rows);
         for panel in &mut self.panels {
-            panel.cursor = Cursor::for_model(&self.xmb);
+            panel.cursor = Cursor::for_model(&self.lattice);
         }
         self.needs_redraw = true;
     }
@@ -7752,7 +9090,7 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|gpu| gpu.thumbnail(path).is_none())
             {
-                self.thumbs.want(path);
+                self.thumbs.want(path, thumbs::Want::Thumbnail);
             }
         }
         // A cover the atlas already holds is not asked for again — the whole
@@ -7771,23 +9109,38 @@ impl Shell {
                     .want(*app_id, art::Piece::Cover, self.steam.pictures(*app_id));
             }
         }
-        // And the picture behind each display, which is the one game each
-        // cursor is standing on rather than a row near it: a hero is most of a
-        // megabyte, and fetching nine of them for every row somebody scrolls
-        // past would be the whole library over the wire by teatime.
-        let scenery: HashSet<u32> = self
+        // And the picture behind each display, which is the one row each cursor
+        // is standing on rather than a row near it: a picture at that size is
+        // most of a megabyte and a decode of the whole file, and making nine of
+        // them for every row somebody scrolls past would be the whole library
+        // over the wire by teatime and a folder of photographs decoded end to
+        // end on the way through it.
+        let scenery: HashSet<art::Sight> = self
             .panels
             .iter()
-            .flat_map(|panel| panel.scenery.wanted())
+            .flat_map(|panel| panel.scenery.wanted().cloned())
             .collect();
-        for app_id in &scenery {
-            if self
+        for of in &scenery {
+            // A picture already in a layer is not asked for again, and neither
+            // is anything at all before there is a device to put one in.
+            let held = self
                 .gpu
                 .as_ref()
-                .is_some_and(|gpu| gpu.scenery(*app_id).is_none())
-            {
-                self.art
-                    .want(*app_id, art::Piece::Hero, self.steam.pictures(*app_id));
+                .is_none_or(|gpu| gpu.scenery(of).is_some());
+            if held {
+                continue;
+            }
+            match of {
+                art::Sight::Game(app_id) => {
+                    self.art
+                        .want(*app_id, art::Piece::Hero, self.steam.pictures(*app_id));
+                }
+                // The user's own file, off the user's own disk, by the worker
+                // that already reads their files. Nothing is fetched and
+                // nothing is cached — see [`thumbs::Want::Backdrop`].
+                art::Sight::Picture(path) => {
+                    self.thumbs.want(path, thumbs::Want::Backdrop);
+                }
             }
         }
         // And that game's logo, which is what a launch splash puts in the
@@ -7799,7 +9152,7 @@ impl Shell {
         // what a hero costs and it is wanted in exactly the same places.
         let logos: HashSet<u32> = scenery
             .iter()
-            .copied()
+            .filter_map(art::Sight::game)
             // The games being started as well, in case a row is somehow no
             // longer the one its cursor is on: a splash is on screen for
             // minutes, and a logo dropped out of the atlas underneath it would
@@ -7836,13 +9189,21 @@ impl Shell {
         gpu.retain_thumbnails(&wanted);
         gpu.retain_scenery(&scenery);
         gpu.retain_logos(&logos);
-        for (path, picture) in made {
-            if !wanted.contains(&path) || gpu.thumbnail(&path).is_some() {
-                continue;
-            }
-            if gpu.put_thumbnail(&path, &picture) {
-                self.needs_redraw = true;
-            }
+        for (path, made) in made {
+            let put = match &made {
+                thumbs::Made::Thumbnail(picture)
+                    if wanted.contains(&path) && gpu.thumbnail(&path).is_none() =>
+                {
+                    gpu.put_thumbnail(&path, picture)
+                }
+                thumbs::Made::Backdrop(picture) => {
+                    let of = art::Sight::Picture(path);
+                    scenery.contains(&of) && gpu.put_scenery(&of, picture)
+                }
+                // A picture of a row the cursor has since left.
+                _ => false,
+            };
+            self.needs_redraw |= put;
         }
         for made in fetched {
             let put = match &made {
@@ -7854,7 +9215,10 @@ impl Shell {
                 art::Made::Hero {
                     app_id,
                     scenery: picture,
-                } if scenery.contains(app_id) => gpu.put_scenery(*app_id, picture),
+                } => {
+                    let of = art::Sight::Game(*app_id);
+                    scenery.contains(&of) && gpu.put_scenery(&of, picture)
+                }
                 art::Made::Logo { app_id, picture } if logos.contains(app_id) => {
                     gpu.put_logo(*app_id, picture)
                 }
@@ -7888,7 +9252,7 @@ impl Shell {
         let mut files = HashSet::new();
         let mut games = HashSet::new();
         for panel in &self.panels {
-            let entries = panel.cursor.current_entries(&self.xmb);
+            let entries = panel.cursor.current_entries(&self.lattice);
             let selected = panel.cursor.selected_item();
             let from = selected.saturating_sub(REACH);
             let to = (selected + REACH + 1).min(entries.len());
@@ -7916,6 +9280,41 @@ impl Shell {
             }
         }
         (files, games)
+    }
+
+    /// The picture that stands behind a whole display while its cursor is on
+    /// `entry`, if that row is one which has one.
+    ///
+    /// Two rows are. A Steam title, whose picture is Valve's key art for it,
+    /// and a photograph met in Files, whose picture is the file itself. In both
+    /// the screen becomes about the thing being looked at, which is what this
+    /// bar does with whatever is under the cursor.
+    ///
+    /// Not a photograph on the Pictures *shelf*, which is the same file by the
+    /// other route. A shelf is every picture under the home directory in one
+    /// column and it is read the way a collection is read — scrolled past
+    /// hundreds of rows to reach one. A folder is somewhere the user walked to
+    /// a step at a time, and the few things in it are what they came to look
+    /// at. So the display becoming that row is worth a full-size decode in the
+    /// second place, and in the first it would be somebody's entire library
+    /// flashed across the screen on the way through it.
+    ///
+    /// `None` for a picture that is already known not to be makeable — a title
+    /// Steam holds no artwork for, a raw from a camera nothing here decodes.
+    /// The display then fades back to the shell's own wallpaper instead of
+    /// holding the last picture while it waits for one that is never coming.
+    fn sight_of(&self, entry: &Entry) -> Option<art::Sight> {
+        if let Some(game) = entry.game() {
+            return match self.art.hopeless(game.app_id, art::Piece::Hero) {
+                true => None,
+                false => Some(art::Sight::Game(game.app_id)),
+            };
+        }
+        let path = picture_behind(entry)?;
+        match self.thumbs.hopeless(path, thumbs::Want::Backdrop) {
+            true => None,
+            false => Some(art::Sight::Picture(path.to_path_buf())),
+        }
     }
 
     // --- Steam -------------------------------------------------------------
@@ -8327,7 +9726,7 @@ impl Shell {
         }
         // A game has the screen now, so the guide steps out of its way — the
         // same thing an ordinary launch does.
-        if self.xmb.running_app().is_some() {
+        if self.lattice.running_app().is_some() {
             self.guide.close();
         }
         self.needs_redraw = true;
@@ -8420,7 +9819,7 @@ impl Shell {
         if changed.account {
             let account = self.steam.account().map(str::to_string);
             tracing::info!(?account, "the Steam account changed");
-            let shifted = apps::offer_steam(&mut self.xmb.categories, account);
+            let shifted = apps::offer_steam(&mut self.lattice.categories, account);
             self.absorb(shifted);
         }
         if changed.library {
@@ -8453,6 +9852,13 @@ impl Shell {
     /// display's highlight and what is in colour are answers that moved with
     /// it. Where each cursor is standing has to be read *before* the rows are
     /// replaced, because afterwards there is nothing left to compare against.
+    ///
+    /// A display that has never opened the column is on no game at all, and is
+    /// left alone. That is not a nicety: a Steam library arrives in two parts —
+    /// what is installed, read off this machine's own disk, and then everything
+    /// the account owns — so the column stands there half-built for as long as
+    /// Steam takes to answer. See [`model::Cursor::row_in_column`], which is
+    /// where the two are told apart.
     fn shelve_games(&mut self, rows: Vec<apps::Entry>) {
         self.drained.told(
             rows.iter()
@@ -8463,12 +9869,21 @@ impl Shell {
             Some(at) => self
                 .panels
                 .iter()
-                .map(|panel| panel.cursor.game_in_column(&self.xmb, at))
+                .map(|panel| panel.cursor.game_in_column(&self.lattice, at))
                 .collect(),
             None => Vec::new(),
         };
+        // And the same question one level further in, for a display standing in
+        // a letter of the index. That column is installed-first like the
+        // library it is a slice of, so the game somebody is watching download
+        // moves to the top of its letter when it lands.
+        let inside: Vec<Option<u32>> = self
+            .panels
+            .iter()
+            .map(|panel| panel.cursor.game_inside(&self.lattice))
+            .collect();
 
-        let shifted = apps::shelve_steam(&mut self.xmb.categories, rows);
+        let shifted = apps::shelve_steam(&mut self.lattice.categories, rows);
         self.absorb(shifted);
 
         // Found again rather than kept: putting the column up or taking it
@@ -8477,11 +9892,26 @@ impl Shell {
         let Some(at) = self.steam_column() else {
             return;
         };
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         for (panel, was) in self.panels.iter_mut().zip(standing) {
             if let Some(app_id) = was {
-                panel.cursor.keep_on_game(xmb, at, app_id);
+                panel.cursor.keep_on_game(lattice, at, app_id);
             }
+        }
+        for (panel, was) in self.panels.iter_mut().zip(inside) {
+            if let Some(app_id) = was {
+                panel.cursor.keep_inside_on_game(lattice, app_id);
+            }
+        }
+
+        // And back inside the column, for a display standing in one of the
+        // index's letters. That column is as long as the letter has games, so
+        // an account that loses one — a shared title the lender took back —
+        // can leave a cursor pointing past the end of a list it is standing
+        // in. The same thing the Settings tree needs for the same reason; see
+        // [`model::Cursor::keep_in_bounds`].
+        for panel in &mut self.panels {
+            panel.cursor.keep_in_bounds(&self.lattice);
         }
     }
 
@@ -8525,23 +9955,28 @@ impl Shell {
         // raised over a game on a display standing in the Steam column, which
         // is the only place it can be raised from at all — but a display whose
         // cursor is elsewhere is not one that asked for anything.
+        //
+        // And only at the top of it. The other place a game row can be pressed
+        // is inside the index, and those columns are A to Z whatever the
+        // library is listed in — nothing there was reordered, so there is no
+        // head to be shown and the cursor stays on the game it was on.
         let Some(at) = self.steam_column() else {
             return;
         };
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         if let Some(panel) = self
             .panels
             .get_mut(self.focused_panel)
-            .filter(|panel| panel.cursor.selected_category == at)
+            .filter(|panel| panel.cursor.selected_category == at && panel.cursor.depth() == 0)
         {
-            panel.cursor.rest_on_first_row(xmb);
+            panel.cursor.rest_on_first_row(lattice);
         }
         self.needs_redraw = true;
     }
 
     /// Where the Steam library hangs on the bar, when there is one.
     fn steam_column(&self) -> Option<usize> {
-        self.xmb
+        self.lattice
             .categories
             .iter()
             .position(|column| column.id == apps::steam_column())
@@ -8645,7 +10080,7 @@ impl Shell {
                 panel.cursor.category_added(at);
             }
             if let Some(at) = shifted.removed {
-                panel.cursor.category_removed(at, &self.xmb);
+                panel.cursor.category_removed(at, &self.lattice);
             }
         }
     }
@@ -8745,11 +10180,11 @@ impl Shell {
         let Some(at) = self.steam_column() else {
             return false;
         };
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         let Some(panel) = self.panels.get_mut(self.focused_panel) else {
             return false;
         };
-        panel.cursor.select_category(at, xmb);
+        panel.cursor.select_category(at, lattice);
         self.needs_redraw = true;
         true
     }
@@ -8806,7 +10241,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?
+            .current_entry(&self.lattice)?
             .game()
     }
 
@@ -8815,7 +10250,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?
+            .current_entry(&self.lattice)?
             .service()
     }
 
@@ -8829,7 +10264,7 @@ impl Shell {
     /// rows of which three are refusals.
     fn game_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
-        let game = panel.cursor.current_entry(&self.xmb)?.game()?;
+        let game = panel.cursor.current_entry(&self.lattice)?.game()?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
 
         let rows = steam_game_menu_rows(game);
@@ -8847,7 +10282,7 @@ impl Shell {
     /// which is another program; and the way out of the menu.
     fn service_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
-        let service = panel.cursor.current_entry(&self.xmb)?.service()?;
+        let service = panel.cursor.current_entry(&self.lattice)?.service()?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
 
         let rows = steam_service_menu_rows(
@@ -8894,14 +10329,14 @@ impl Shell {
             // against a pointer where a path is a string against a string —
             // and it is asked once per row of a shelf that may hold half a
             // million of them.
-            let xmb = &self.xmb;
+            let lattice = &self.lattice;
             let standing: Vec<Option<media::Shelved>> = self
                 .panels
                 .iter()
                 .map(|panel| {
                     panel
                         .cursor
-                        .current_entry(xmb)
+                        .current_entry(lattice)
                         .and_then(apps::Entry::shelved)
                         .cloned()
                 })
@@ -8909,7 +10344,7 @@ impl Shell {
 
             // Disjoint fields: the catalogue is written while this display's
             // own state is read.
-            let hung = apps::shelve_media(&mut self.xmb.categories, made);
+            let hung = apps::shelve_media(&mut self.lattice.categories, made);
 
             // The rows that have just arrived carry the query the worker
             // narrowed them by, which is the one it was told about — and by
@@ -8922,12 +10357,12 @@ impl Shell {
                 .filter(|open| open.of == apps::Searched::Shelf(kind))
             {
                 let text = searching.text.clone();
-                apps::set_search_text(&mut self.xmb.categories, kind, &text);
+                apps::set_search_text(&mut self.lattice.categories, kind, &text);
             }
             if let Some(at) = hung.column {
                 tracing::info!(
                     at,
-                    column = self.xmb.categories[at].title,
+                    column = self.lattice.categories[at].title,
                     "the walk found files on a machine with nothing installed to \
                      open them; that column is back"
                 );
@@ -8937,17 +10372,17 @@ impl Shell {
                 .sorting
                 .take_if(|(sorted, _)| *sorted == kind)
                 .map(|(_, panel)| panel);
-            let xmb = &self.xmb;
+            let lattice = &self.lattice;
             for (at_panel, (panel, was)) in self.panels.iter_mut().zip(standing).enumerate() {
                 if let Some(at) = hung.column {
                     panel.cursor.category_added(at);
                 }
                 if to_top == Some(at_panel) {
-                    panel.cursor.rest_on_first_row(xmb);
+                    panel.cursor.rest_on_first_row(lattice);
                     continue;
                 }
                 if let Some(file) = was {
-                    panel.cursor.keep_on_media(xmb, &file);
+                    panel.cursor.keep_on_media(lattice, &file);
                 }
             }
             self.media.discard(hung.worn);
@@ -8975,10 +10410,10 @@ impl Shell {
     /// what it asks for is bounded on the other side, where one walk answers
     /// however many times it was asked — see [`media::Library::look_again`].
     fn notice_open_shelves(&mut self) {
-        let xmb = &self.xmb;
+        let lattice = &self.lattice;
         let mut opened = false;
         for panel in &mut self.panels {
-            let shelf = apps::shelf_shown(panel.cursor.current_entries(xmb));
+            let shelf = apps::shelf_shown(panel.cursor.current_entries(lattice));
             // Only on the way in, and only into a different shelf: leaving one
             // is not a question, and standing in one is not a new one.
             opened |= shelf.is_some() && shelf != panel.shelf_open;
@@ -8995,7 +10430,7 @@ impl Shell {
         self.panels
             .get(self.focused_panel)?
             .cursor
-            .current_app(&self.xmb)
+            .current_app(&self.lattice)
     }
 
     /// The size of the display being driven.
@@ -9202,6 +10637,17 @@ impl Shell {
             return self.menu_spot_at(x, y, width, height);
         }
 
+        // The picker takes the whole display while it is up, exactly as the
+        // panel above it does: what is under it is the bar holding the very
+        // file being carried, and a click that reached it would move the
+        // selection the transfer is about.
+        if focused {
+            if let Some(carrying) = self.carrying.as_ref().filter(|c| c.picker.is_open()) {
+                return ui::transfer_hit(&carrying.picker, x, y, width, height)
+                    .map_or(Spot::Nothing, Spot::Destination);
+            }
+        }
+
         if focused && self.guide.is_menu() {
             if self.guide.power_open() {
                 let rows = self.guide.power_items().len();
@@ -9216,7 +10662,7 @@ impl Shell {
         // while the screen is still arriving is carried back through the move
         // the drawing was carried forward through first.
         let (x, y) = ui::arrival_point(x, y, width, height, panel.arrival_linear);
-        match ui::bar_hit(&self.xmb, &panel.cursor, x, y, width, height) {
+        match ui::bar_hit(&self.lattice, &panel.cursor, x, y, width, height) {
             Some(spot) => Spot::Bar(spot),
             None => Spot::Nothing,
         }
@@ -9279,11 +10725,29 @@ impl Shell {
         let slide = ui::sidebar_slide_x(self.guide.age(), width);
         let closable = self.closable();
         let items = self.guide.items(closable);
+        let media_open = self.guide.media();
         for (row, item) in items.iter().enumerate() {
-            let mut rect = ui::menu_item_rect(&items, row, width, height);
+            let mut rect = ui::menu_item_rect(&items, row, width, height, media_open);
             rect[0] += slide;
             if !within(rect, x, y) {
                 continue;
+            }
+            // Inside the card, the three buttons are what a press is about; the
+            // card itself is not a thing to press. Asked before the row is
+            // answered, and only of a card that is fully open — a point that
+            // landed on a button halfway through its arrival would press
+            // something that was not there when the hand started moving.
+            if *item == Item::Media && media_open >= 1.0 {
+                for (index, button) in ui::transport_rects(rect).into_iter().enumerate() {
+                    let what = guide::TRANSPORT[index];
+                    // A button the player will not answer is not a thing to
+                    // point at, any more than it is a thing the directions
+                    // would stop on. The point falls through to the card,
+                    // which is a row like any other.
+                    if within(button, x, y) && self.guide.transport_is_live(what) {
+                        return Spot::Transport(what);
+                    }
+                }
             }
             let level = item
                 .bar()
@@ -9360,7 +10824,19 @@ impl Shell {
                 self.guide.select(item, closable),
                 self.guide.selected_item(closable) == Some(item),
             ),
-            Spot::Card(_) | Spot::Bar(_) | Spot::OutsideMenu | Spot::Nothing => (false, false),
+            // Landing on a transport button puts the selection on the card and
+            // on that button at once: a hand that has come this far has already
+            // said which of the three it means.
+            Spot::Transport(what) => (self.guide.select_transport(what, closable), true),
+            // The picker is the bar, so it moves the way the bar does: hovering
+            // says nothing and the first click is what carries the selection
+            // over. Anything else would have a folder opening under a pointer
+            // that was only crossing the screen.
+            Spot::Card(_)
+            | Spot::Bar(_)
+            | Spot::Destination(_)
+            | Spot::OutsideMenu
+            | Spot::Nothing => (false, false),
         };
         if moved {
             self.needs_redraw = true;
@@ -9395,7 +10871,7 @@ impl Shell {
             Spot::Bar(ui::BarSpot::Item { row, .. }) => {
                 match self.panels.get_mut(self.focused_panel) {
                     Some(panel) => {
-                        panel.cursor.point_at_row(row, &self.xmb);
+                        panel.cursor.point_at_row(row, &self.lattice);
                         true
                     }
                     None => false,
@@ -9404,7 +10880,7 @@ impl Shell {
             Spot::Bar(ui::BarSpot::Category(category)) => {
                 match self.panels.get_mut(self.focused_panel) {
                     Some(panel) => {
-                        panel.cursor.point_at_category(category, &self.xmb);
+                        panel.cursor.point_at_category(category, &self.lattice);
                         true
                     }
                     None => false,
@@ -9430,6 +10906,10 @@ impl Shell {
     /// longer does. See [`Shell::press_on`]. The shape is still answered on
     /// every display, since it is what says the click would be worth making.
     fn hover(&mut self, qh: &QueueHandle<Self>, index: usize, x: f32, y: f32) {
+        // Before anything else, and whether or not the startup wallpaper is
+        // still up: a pointer moving over a screen is somebody on that screen,
+        // which is all a display resting behind black needs to be brought back.
+        self.the_user_is_on(index, Instant::now());
         let spot = self.spot_at(index, x, y);
         if !self.startup.ready {
             self.set_cursor_shape(qh, shape::Shape::Default);
@@ -9474,7 +10954,10 @@ impl Shell {
     /// another way — a value set by *where* it was clicked, a screen dismissed
     /// by pressing past it, and the two kinds that take a click to select.
     fn press_at(&mut self, spot: Spot) {
-        if !self.startup.ready {
+        // Nothing left to press on a session that is going: the same answer
+        // every other route gets — see [`Shell::is_leaving`] — and the same one
+        // as a press over the startup wallpaper, which has nothing yet.
+        if self.is_leaving() || !self.startup.ready {
             return;
         }
         let landed = self.point_at(spot);
@@ -9498,17 +10981,27 @@ impl Shell {
                 level: Some(level),
             } if landed => {
                 if let Some(bar) = item.bar() {
-                    if self.quick.set(knob(bar), level) {
+                    let moved = match knob(bar) {
+                        Some(knob) => self.quick.set(knob, level),
+                        None => match self.guide.now_playing().and_then(|now| now.stream) {
+                            Some(key) => self.quick.set_stream(key, level),
+                            None => false,
+                        },
+                    };
+                    if moved {
                         self.needs_redraw = true;
                     }
                 }
             }
-            Spot::MenuRow { .. } | Spot::Entry { .. } if landed => self.on_action(Action::Launch),
+            Spot::MenuRow { .. } | Spot::Entry { .. } | Spot::Transport(_) if landed => {
+                self.on_action(Action::Launch)
+            }
             // The deck and the bar move when they are selected, so the first
             // press is the selection travelling to the pointer and the second
             // is the press of what has arrived there.
             Spot::Card(card) => self.press_card(card),
             Spot::Bar(spot) => self.press_bar(spot),
+            Spot::Destination(spot) => self.press_destination(spot),
             Spot::OutsideMenu if self.context_menu.close() => self.needs_redraw = true,
             _ => {}
         }
@@ -9556,7 +11049,7 @@ impl Shell {
         };
         let moved = match spot {
             ui::BarSpot::Item { row, level } => {
-                if !panel.cursor.point_at_row(row, &self.xmb) {
+                if !panel.cursor.point_at_row(row, &self.lattice) {
                     // Already the selection, so this is the press of it — and on
                     // a bar the press carries where along the groove it landed,
                     // which is the whole of what it is asking for.
@@ -9571,7 +11064,9 @@ impl Shell {
             // A category is a place rather than a thing to open: the column
             // under it is already showing whatever it holds, so arriving is the
             // whole of what a press on one does.
-            ui::BarSpot::Category(category) => panel.cursor.point_at_category(category, &self.xmb),
+            ui::BarSpot::Category(category) => {
+                panel.cursor.point_at_category(category, &self.lattice)
+            }
             // A row of the trail is a column the path was opened *through*, and
             // pressing it is walking back out to it — however many steps that
             // takes, because that is how many columns the user can see between
@@ -9583,6 +11078,33 @@ impl Shell {
         if moved {
             self.finish_cursor_move(before);
             self.sync_setting_preview();
+        }
+    }
+
+    /// A press somewhere on the folder picker.
+    ///
+    /// The bar's own two-step, because it is the bar: the first press on a row
+    /// is the selection travelling to the pointer and the second is the press
+    /// of what has arrived there. A row of a column further out is the trail,
+    /// and pressing it walks back out to it — however many steps that takes,
+    /// which is how many columns the user can see between where they are and
+    /// where they pointed.
+    fn press_destination(&mut self, spot: ui::PickSpot) {
+        match spot {
+            ui::PickSpot::Row(row) => {
+                if self.drive_picker(|picker| picker.point_at(row)) {
+                    self.stepped();
+                    return;
+                }
+                self.press_transfer_row();
+            }
+            ui::PickSpot::Trail(steps) => {
+                if self.drive_picker(|picker| {
+                    (0..steps).fold(false, |out, _| picker.step_out() || out)
+                }) {
+                    self.stepped_back();
+                }
+            }
         }
     }
 
@@ -9719,7 +11241,7 @@ impl Shell {
                 Some((
                     panel.windows.iter().map(|window| window.id).collect(),
                     panel.foreground.clone().unwrap_or_default(),
-                    splash.pid.is_none_or(|pid| self.xmb.launch_alive(pid)),
+                    splash.pid.is_none_or(|pid| self.lattice.launch_alive(pid)),
                 ))
             })
             .collect();
@@ -9844,7 +11366,7 @@ impl Shell {
             .panels
             .get(self.focused_panel)?
             .cursor
-            .current_entry(&self.xmb)?
+            .current_entry(&self.lattice)?
         {
             apps::Entry::App(app) => Owning::App(app),
             apps::Entry::Game(game) => Owning::Game(game.app_id),
@@ -10037,7 +11559,7 @@ impl Shell {
     /// get is somebody else's window — the browser left open an hour ago, the
     /// installer that never got closed — with no more explanation than that it
     /// happened to be underneath. The shell is what the machine goes back to,
-    /// so it takes the screen the same way the guide's own Dashboard row takes
+    /// so it takes the screen the same way the guide's own Start screen row takes
     /// it, and everything still running stays running, one press of the guide
     /// button away.
     ///
@@ -10148,7 +11670,7 @@ impl Shell {
             if index != self.focused_panel {
                 return;
             }
-            self.guide.show_bar_over_app();
+            self.guide.show_start_screen_over_app();
             // The loop syncs after every round of events anyway — an
             // application exiting is one of the things that call says it is
             // for. This is the same call, made where the decision is: a
@@ -10197,6 +11719,19 @@ impl Shell {
         let Some(panel) = self.panels.get(index) else {
             return false;
         };
+        // Nothing of this display's picture is on screen: the compositor has
+        // the black all the way down over it. Drawing under that is drawing
+        // for nobody, and a start screen that went on animating behind a
+        // resting panel would be the one part of this feature that costs
+        // something and shows nothing. See [`Shell::sync_screen_rest`].
+        //
+        // Only once the fade has finished, so the frames the black is drawn
+        // over are real ones — and an animation still in flight goes on being
+        // drawn either way, because `settling` outranks this. Nothing may
+        // vanish before its transition ends.
+        if panel.is_rested(Instant::now()) {
+            return false;
+        }
         if self.splash_on_screen(index) || self.restoring_on(index) {
             return true;
         }
@@ -10339,7 +11874,33 @@ impl Shell {
                     return;
                 };
                 let delta = if action == Action::Left { -1 } else { 1 };
-                if self.quick.nudge(knob(bar), delta) {
+                let moved = match knob(bar) {
+                    Some(knob) => self.quick.nudge(knob, delta),
+                    // The playing application's own row of the mixer, which is
+                    // the same value its row in the mixer panel sets — one
+                    // volume for one application, reached two ways.
+                    None => match self.guide.now_playing().and_then(|now| now.stream) {
+                        Some(key) => self.quick.nudge_stream(key, delta),
+                        None => false,
+                    },
+                };
+                if moved {
+                    self.guide_stepped();
+                }
+            }
+            // The card's three buttons are a line inside one row, so Left and
+            // Right walk them the way they walk the tiles — and off the end of
+            // the three they go back to meaning what they mean everywhere else,
+            // which is how Right crosses to the window cards from the card.
+            Action::Left | Action::Right
+                if self.guide.pane() == guide::Pane::Menu
+                    && self.guide.can_move_transport(
+                        if action == Action::Left { -1 } else { 1 },
+                        closable,
+                    ) =>
+            {
+                let delta = if action == Action::Left { -1 } else { 1 };
+                if self.guide.move_transport(delta, closable) {
                     self.guide_stepped();
                 }
             }
@@ -10552,7 +12113,7 @@ impl Shell {
         tracing::debug!(?item, "guide menu selection");
         match item {
             Item::Resume => self.guide.close(),
-            Item::Dashboard => self.guide.show_bar_over_app(),
+            Item::StartScreen => self.guide.show_start_screen_over_app(),
             Item::Close => {
                 self.close_selected_window();
                 // Stay in the menu. The card that was killed disappears from
@@ -10617,7 +12178,37 @@ impl Shell {
             Item::Volume => {
                 self.quick.toggle_mute();
             }
-            Item::Brightness => {}
+            // And nothing for the media groove either, for the same reason as
+            // brightness: its head is a mark saying what the bar is about, not
+            // a button. The application's own mute lives on its row of the
+            // mixer, which is one tile away and is where every other
+            // per-application sound decision is already made.
+            Item::Brightness | Item::MediaVolume => {}
+            // The card. What is pressed is the transport button the highlight
+            // is on inside it, and the answer goes to the player over the bus
+            // — see [`crate::playing::Watch::press`]. The press animation is
+            // spent on the card, which is what the user is looking at: unlike
+            // every other row here this one neither closes the menu nor opens
+            // a panel, so without it a press would leave nothing on screen to
+            // say it had landed.
+            Item::Media => {
+                let what = match self.guide.transport() {
+                    guide::Transport::Previous => playing::Transport::Previous,
+                    guide::Transport::PlayPause => playing::Transport::PlayPause,
+                    guide::Transport::Next => playing::Transport::Next,
+                };
+                // No guard on whether the player will answer it: the
+                // highlight cannot rest on a button that cannot be pressed —
+                // see [`guide::Guide::transport`] — so by the time a press
+                // arrives here it has already been asked and answered.
+                let asked = self.guide.now_playing().map(|now| now.bus.clone());
+                if let Some(bus) = asked {
+                    self.guide.press(item);
+                    if let Some(watch) = self.playing.as_ref() {
+                        watch.press(&bus, what);
+                    }
+                }
+            }
         }
         self.needs_redraw = true;
     }
@@ -10632,31 +12223,194 @@ impl Shell {
                 self.guide.close();
                 run_detached("systemctl suspend", ["systemctl", "suspend"]);
             }
-            guide::PowerItem::Shutdown => {
-                self.guide.close();
-                // Before the machine goes, because what comes back is a login
-                // screen and this is the last moment anything can tell it how
-                // loud the machine was and which speakers it was coming out of.
-                // Suspend is deliberately not one of these: it comes back to
-                // this same session, with the same volume, and nothing in
-                // between has looked at it.
-                settings::tell_the_login_screen_before_leaving();
-                run_detached("systemctl poweroff", ["systemctl", "poweroff"]);
-            }
-            guide::PowerItem::Exit => {
-                // The login screen is a second away, and the sound server that
-                // knows where this session was playing goes down with the
-                // session. See `settings::tell_the_login_screen_before_leaving`.
-                settings::tell_the_login_screen_before_leaving();
-                if let Some(control) = &self.shell_control {
-                    control.quit();
-                    let _ = self.conn.flush();
-                }
-                self.exit = true;
-            }
+            // The two choices the session does not answer immediately. The
+            // screen fades to black first and the machine is told to go once
+            // it is there — see [`Leaving`] — so what the user watches is the
+            // session leaving rather than a picture stopping.
+            //
+            // The dialog stays where it is, unlike suspend's. There is nothing
+            // to come back to, the black is over the whole display and over
+            // everything on it, and a menu flying home under a curtain is two
+            // things happening at once where the user asked for one.
+            guide::PowerItem::Shutdown => self.leave_for_good(Ending::Off),
+            // Behind the same black, and for the same reason: a restart is a
+            // shutdown the machine comes back from, and the part the user
+            // watches is identical.
+            guide::PowerItem::Restart => self.leave_for_good(Ending::Restart),
+            guide::PowerItem::LogOut => self.log_out(),
             guide::PowerItem::Cancel => self.guide.close_power(),
         }
         self.needs_redraw = true;
+    }
+
+    /// Leave the session and go back to the login screen.
+    ///
+    /// Deliberately without the black that [`Self::leave_for_good`] draws.
+    /// What follows a log-out is another compositor, and the display manager
+    /// holds this session's last frame on the display until the login screen
+    /// has painted its own — see the compositor's `handover`. Fading to black
+    /// first would replace a hand-over nobody can see with a black screen
+    /// everybody can, and it would be the *session's* black rather than the
+    /// machine's: the picture would come back a second later showing somebody
+    /// else's login.
+    ///
+    /// So the last frame of this session is the one the choice was made on,
+    /// dialog and all, exactly as the machine's endings leave theirs.
+    fn log_out(&mut self) {
+        // Ended first, because nothing else will end them. An application is
+        // started with a session of its own, so it survives the compositor
+        // that stops a moment from now, and what a log-out would otherwise
+        // leave behind is a game running for nobody — holding the display's
+        // GPU and still making noise over a login screen the next user is
+        // typing into. Asked, not killed, for the reason `teardown::GRACE`
+        // gives: what Steam does with its last seconds is write the library
+        // out.
+        //
+        // Not waited for, either. This shell has nothing to draw while it
+        // waits, and an application that ignores the ask is beyond what a
+        // shell on its way out can do about it.
+        self.lattice.terminate_launched_apps();
+        // The login screen is a second away, and the sound server that knows
+        // where this session was playing goes down with the session. See
+        // `settings::tell_the_login_screen_before_leaving`.
+        settings::tell_the_login_screen_before_leaving();
+        // The compositor is what greetd is waiting on, so it is what ends the
+        // session; this shell exiting would get there too — the compositor's
+        // lifetime is tied to it — but only after the poll that notices, with
+        // a wallpaper and no session in it in between.
+        if let Some(control) = &self.shell_control {
+            control.quit();
+            let _ = self.conn.flush();
+        }
+        // And without one this shell is a client of a session it does not own.
+        // Leaving is all it can do, and all it should: ending somebody else's
+        // session is not this menu's to offer.
+        self.exit = true;
+    }
+
+    /// End the machine — off, or off and back on — behind a screen going
+    /// black.
+    ///
+    /// The compositor is asked for the black because it is the only thing over
+    /// the whole session: this shell has one surface per display and an
+    /// application in front of it owns the screen, so a shell blacking out its
+    /// own surfaces would darken the display the menu is on and leave a game
+    /// playing on the other. Without one — an older compositor, or this shell
+    /// run as an ordinary client of somebody else's — there is nothing to fade
+    /// with, and the machine goes the way it always did.
+    ///
+    /// Either way the session stops taking input here, and stops taking it for
+    /// good: what is left of this session is a picture on its way out.
+    fn leave_for_good(&mut self, ending: Ending) {
+        self.leaving = Some(Leaving {
+            asked: Instant::now(),
+            gone: false,
+            ending,
+        });
+        let control = self
+            .shell_control
+            .clone()
+            .filter(|control| control.version() >= CURTAIN_SHELL_VERSION);
+        match control {
+            Some(control) => {
+                tracing::info!(?ending, "ending the machine behind a fade to black");
+                control.cover_in_black(1);
+                // Sent now rather than on the next frame: the fade begins when
+                // the compositor hears about it, and this shell is about to
+                // stop being the reason anything is drawn.
+                if let Err(err) = self.conn.flush() {
+                    tracing::warn!(?err, "could not ask for the black");
+                }
+            }
+            None => {
+                tracing::info!(?ending, "no curtain to draw; ending the machine at once");
+                self.guide.close();
+                self.tell_the_machine_to_go();
+            }
+        }
+    }
+
+    /// Tell the machine to go, whichever way it was told to. Once — a second
+    /// `systemctl poweroff` into a session that is already going down would be
+    /// answered by whatever state systemd had reached by then.
+    fn tell_the_machine_to_go(&mut self) {
+        let ending = match &mut self.leaving {
+            Some(leaving) if !leaving.gone => {
+                leaving.gone = true;
+                leaving.ending
+            }
+            // Nothing has been chosen, or it has been chosen already.
+            _ => return,
+        };
+        // Before the machine goes, because what comes back is a login screen
+        // and this is the last moment anything can tell it how loud the machine
+        // was and which speakers it was coming out of. Suspend is deliberately
+        // not one of these: it comes back to this same session, with the same
+        // volume, and nothing in between has looked at it.
+        settings::tell_the_login_screen_before_leaving();
+        let (what, argv) = ending.command();
+        run_detached(what, argv);
+    }
+
+    /// Keep the session's exit moving on the loop's own clock: the two waits
+    /// [`BLACK_PATIENCE`] and [`SHUTDOWN_PATIENCE`] describe.
+    ///
+    /// Here rather than on a frame, because neither of them is about drawing —
+    /// behind a black screen this shell may not be being asked for frames at
+    /// all, since nothing it draws can be seen.
+    fn advance_leaving(&mut self, now: Instant) {
+        let Some(leaving) = &self.leaving else {
+            return;
+        };
+        let waited = now.saturating_duration_since(leaving.asked);
+        match waited_long_enough(leaving.gone, waited) {
+            Leave::Wait => {}
+            Leave::EndTheMachine => {
+                tracing::warn!(
+                    "the compositor never said the screen was black; ending the machine anyway"
+                );
+                self.tell_the_machine_to_go();
+            }
+            Leave::StayAfterAll => {
+                tracing::warn!(
+                    seconds = waited.as_secs(),
+                    "the machine was told to go and is still here; putting the session back"
+                );
+                self.stay_after_all();
+            }
+        }
+    }
+
+    /// Take the black back off and start answering the user again.
+    ///
+    /// Only ever reached by the failure above. Nothing about the session was
+    /// changed on the way out — no application was stopped and nothing was put
+    /// away — so there is nothing to restore: the curtain goes up on the screen
+    /// it came down over.
+    fn stay_after_all(&mut self) {
+        self.leaving = None;
+        if let Some(control) = self
+            .shell_control
+            .as_ref()
+            .filter(|control| control.version() >= CURTAIN_SHELL_VERSION)
+        {
+            control.cover_in_black(0);
+            let _ = self.conn.flush();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Whether the session is on its way out, and so is not to be driven.
+    ///
+    /// Every route into this shell asks: the controller it reads from
+    /// `/dev/input` itself, a key, a click, a finger, and the compositor's own
+    /// forwarded bindings, which arrive as actions. The compositor refuses
+    /// input on its side too, so in a LineXinBar session almost none of this is
+    /// ever reached — but the pad is not the compositor's to refuse, and this
+    /// shell also runs as an ordinary client of compositors that have no
+    /// curtain at all.
+    fn is_leaving(&self) -> bool {
+        self.leaving.is_some()
     }
 
     /// End the application whose card is selected.
@@ -10677,7 +12431,7 @@ impl Shell {
         self.ended_by_the_shell.insert(id);
         let Some(control) = self.shell_control.clone() else {
             // Standalone: our own children are all we can reach.
-            self.xmb.terminate_launched_apps();
+            self.lattice.terminate_launched_apps();
             return;
         };
 
@@ -11240,6 +12994,262 @@ impl Shell {
         }
     }
 
+    /// Rest the displays nobody is watching, and bring back the ones somebody
+    /// has gone near.
+    ///
+    /// The whole of OLED protection's rule, in one place. Five things have to
+    /// be true of a display before its picture is taken away, and every one of
+    /// them is a way of being wrong about it:
+    ///
+    /// * **Somebody is playing something.** Not merely running something: a
+    ///   game is an application somebody sits in front of for hours without
+    ///   touching the other screen, which is the only case this is worth the
+    ///   surprise of. The compositor works it out from the process behind the
+    ///   window in front — see `lxb_shell_v1.output_game` — because a game
+    ///   reaches the screen under any name it likes.
+    /// * **Not this display.** The screen the game is on is the screen being
+    ///   watched, whatever else is true of it.
+    /// * **Not the display being driven.** Control is on it, so the user is on
+    ///   it, and a screen that went black under the cursor five seconds after
+    ///   the user arrived would be a fault rather than a feature.
+    /// * **Nothing on it is moving.** This is the guard, and it is why the rule
+    ///   is not simply "the start screen": a film on the second screen is
+    ///   exactly what somebody would be using it for. The same reading spares a
+    ///   game between levels and a page still loading, and it deliberately does
+    ///   *not* spare a film somebody paused — a paused film is a still picture,
+    ///   which is the thing being protected against.
+    /// * **The user has left it alone for [`REST_AFTER`].** See
+    ///   [`Panel::attention`], and [`Shell::the_user_is_on`], which is the one
+    ///   place that clock is wound.
+    ///
+    /// Diffed per display like the night light, so a session where the answer
+    /// does not move sends nothing at all. Safe to call every pass of the loop
+    /// and called there, because four of the five change without anything being
+    /// pressed — including the one that is a clock.
+    fn sync_screen_rest(&mut self, now: Instant) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < RESTING_SHELL_VERSION {
+            return;
+        }
+        // Anywhere at all, which is the whole of "when the game stops, the
+        // option stops": with nothing being played every display is wanted
+        // awake, whatever its switch says and however long ago it was touched.
+        let playing = self.panels.iter().any(|panel| panel.game);
+        let driven = self.focused_panel;
+        let mut sent = false;
+        for (index, panel) in self.panels.iter_mut().enumerate() {
+            let wanted = display_should_rest(
+                settings::oled_protection_for(&panel.name),
+                playing,
+                panel.game,
+                index == driven,
+                panel.drawing,
+                now.saturating_duration_since(panel.attention),
+            );
+            if panel.resting.is_some_and(|(resting, _)| resting == wanted) {
+                continue;
+            }
+            control.cover_output_in_black(&panel.output, wanted as u32);
+            panel.resting = Some((wanted, now));
+            sent = true;
+            tracing::info!(
+                display = %panel.name,
+                resting = wanted,
+                "a display was rested"
+            );
+        }
+        if sent {
+            // The picture is about to change on a screen that may have stopped
+            // asking for frames, and this is the frame that lets it start
+            // again — see [`Shell::panel_is_visible`], which is what stopped it.
+            self.needs_redraw = true;
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not rest a display");
+            }
+        }
+    }
+
+    /// Keep the applications that are playing something out of the sleeper,
+    /// and let go of the ones that have stopped.
+    ///
+    /// The other half of [`crate::playing`], and the half that decides *which*
+    /// application the compositor is being told about. Three spellings of one
+    /// program meet here — what it took on the bus, what the sound server calls
+    /// the process, and what its window says it is — and only the last means
+    /// anything on the other side of the protocol, because a window is all the
+    /// compositor has to match against. So a player is tied to a window the
+    /// shell already knows about, with [`apps::same_application`], which is the
+    /// same function that tells a desktop entry from the window it will open.
+    ///
+    /// A player whose names reach no window is not sent. There is nothing
+    /// useful to say about it: either it has no window at all, in which case
+    /// nothing was going to stop it, or its window never said what it was, in
+    /// which case the compositor could not recognise the answer either.
+    ///
+    /// Diffed like the night light and the resting screens, so a session where
+    /// nothing changes sends nothing. Safe to call every pass of the loop and
+    /// called there, because — as with the screens — the answer moves on its
+    /// own: [`MEDIA_GRACE`] is a clock, and nothing is pressed when it runs out.
+    fn sync_media_awake(&mut self, now: Instant) {
+        // Every window the session has, by the name its application gives.
+        let known: Vec<String> = self
+            .panels
+            .iter()
+            .flat_map(|panel| panel.windows.iter())
+            .map(|window| window.app_id.clone())
+            .collect();
+        let playing = self
+            .playing
+            .as_ref()
+            .map(playing::Watch::playing)
+            .unwrap_or_default();
+        let wanted = applications_to_keep_awake(&playing, &known, &mut self.media_since, now);
+        // The card first, and whatever the compositor underneath can be told:
+        // it is the shell's own picture of what is playing, and a session
+        // running on a compositor too old to keep an application awake still
+        // gets to see what it is listening to and press pause on it.
+        self.show_what_is_playing(&playing, &wanted);
+        if wanted == self.media_awake {
+            return;
+        }
+
+        // And the exemption, which needs a compositor new enough to be told.
+        // Below that version the answer is still worked out — the card above
+        // is drawn from it — and simply has nowhere to go.
+        let Some(control) = self.shell_control.clone() else {
+            self.media_awake = wanted;
+            return;
+        };
+        if control.version() < MEDIA_SHELL_VERSION {
+            self.media_awake = wanted;
+            return;
+        }
+
+        for app_id in wanted.difference(&self.media_awake) {
+            tracing::info!(%app_id, "this is playing something, so it is not to be stopped");
+            control.keep_awake(app_id.clone(), 1);
+        }
+        for app_id in self.media_awake.difference(&wanted) {
+            tracing::info!(%app_id, "this has stopped playing, and may be stopped again");
+            control.keep_awake(app_id.clone(), 0);
+        }
+        self.media_awake = wanted;
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not say what is playing");
+        }
+    }
+
+    /// Put what is playing on the guide's media card, or take the card away.
+    ///
+    /// Driven by the same set the sleeper's exemption is — an application on it
+    /// is one this session considers to be playing — so the card is up for
+    /// exactly as long as the music is being protected, [`MEDIA_GRACE`]
+    /// included. That grace is the part worth having: a player paused a moment
+    /// ago is the one the user is most likely to have opened this menu to
+    /// press play on, and it is still here to be pressed.
+    ///
+    /// The player is looked up by name rather than by whether it is *still*
+    /// playing, for that very reason. What it says it is doing decides which
+    /// face the middle button wears, and nothing else.
+    fn show_what_is_playing(&mut self, players: &[playing::Player], awake: &HashSet<String>) {
+        // Sorted, because a set has no order and two applications playing at
+        // once would otherwise put a different one on the card every frame.
+        let mut names: Vec<&str> = awake.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        let owns = |player: &playing::Player, app_id: &str| {
+            player
+                .names
+                .iter()
+                .any(|name| apps::same_application(name, app_id))
+        };
+        // Something actually playing before something merely being waited on,
+        // so a second player finishing does not take the card off the first.
+        let found = names
+            .iter()
+            .find_map(|app_id| {
+                players
+                    .iter()
+                    .find(|player| player.playing && owns(player, app_id))
+                    .map(|player| (*app_id, player))
+            })
+            .or_else(|| {
+                names.iter().find_map(|app_id| {
+                    players
+                        .iter()
+                        .find(|player| owns(player, app_id))
+                        .map(|player| (*app_id, player))
+                })
+            });
+
+        let Some((app_id, player)) = found else {
+            self.guide.set_now_playing(None);
+            return;
+        };
+
+        // The application's own row of the mixer, which is what the groove
+        // above the card moves. The same row the mixer panel would show it on,
+        // found the same way — one volume for one application, whichever
+        // control is being used to set it.
+        let stream = self.quick.streams().into_iter().find(|stream| {
+            player.names.iter().any(|name| {
+                apps::same_application(name, &stream.name)
+                    || stream
+                        .binary
+                        .as_deref()
+                        .is_some_and(|binary| apps::same_application(name, binary))
+            })
+        });
+
+        self.guide.set_now_playing(Some(guide::NowPlaying {
+            bus: player.bus.clone(),
+            title: player.title.clone(),
+            // What to write when the player says nothing about what is in it,
+            // which a browser between two videos briefly does. The application
+            // is never nothing, and a card with an empty line under three
+            // buttons reads as one that failed rather than as one waiting.
+            app: app_id_name(app_id).unwrap_or_else(|| app_id.to_string()),
+            playing: player.claiming,
+            can_previous: player.can_previous,
+            can_next: player.can_next,
+            // The mixer's row first — it is the one a drag along the groove
+            // moves, and it answers the same frame — and what the watch heard
+            // where the mixer has nothing, which is every moment the menu has
+            // been shut. Without the second the groove would arrive a beat
+            // after the card, at full size, having missed its own way in.
+            level: stream.as_ref().map(|stream| stream.level).or(player.level),
+            stream: stream.map(|stream| stream.key),
+        }));
+    }
+
+    /// Note that the user is doing something on display `index`.
+    ///
+    /// The one place [`Panel::attention`] is wound, so that every way of being
+    /// on a screen — moving the pointer over it, taking it over with a shoulder
+    /// button, pressing something on it, putting a finger on it — winds the same
+    /// clock.
+    ///
+    /// A display showing a game winds *every* screen's clock rather than only
+    /// its own. That is the difference between "the second screen has been
+    /// alone for five seconds" and "the user has been away from it for five
+    /// seconds", and the second is what was asked for: going back to the game
+    /// is going back to what the user was doing, and the screen they just left
+    /// gets its full wait from that moment rather than from whenever they last
+    /// touched it.
+    fn the_user_is_on(&mut self, index: usize, now: Instant) {
+        let Some(panel) = self.panels.get(index) else {
+            return;
+        };
+        if panel.game {
+            for panel in &mut self.panels {
+                panel.attention = now;
+            }
+            return;
+        }
+        self.panels[index].attention = now;
+    }
+
     /// Tell the compositor how large applications are to draw themselves.
     ///
     /// One value for the whole session rather than one per display, unlike
@@ -11463,10 +13473,10 @@ impl Shell {
     /// something else — and a cursor stranded on a screen nobody is driving is
     /// stranded all the same, waiting for whoever takes that screen next.
     fn rebuild_settings(&mut self) {
-        settings::refresh(&mut self.xmb.categories);
+        settings::refresh(&mut self.lattice.categories);
         let mut moved = false;
         for panel in &mut self.panels {
-            moved |= panel.cursor.keep_in_bounds(&self.xmb);
+            moved |= panel.cursor.keep_in_bounds(&self.lattice);
         }
         if moved {
             self.needs_redraw = true;
@@ -11477,7 +13487,7 @@ impl Shell {
     /// in the Settings column.
     ///
     /// What decides whether the workers behind the pages that describe hardware
-    /// are kept turning. Any display's column: each screen has an XMB of its own
+    /// are kept turning. Any display's column: each screen has a lattice of its own
     /// and a cursor of its own, and the page can be open on the second one while
     /// the first shows something else entirely. Only screens that are actually
     /// being drawn count — a display with an application over the whole of it is
@@ -11490,7 +13500,7 @@ impl Shell {
             self.panel_is_visible(index)
                 && self.panels[index]
                     .cursor
-                    .current_category(&self.xmb)
+                    .current_category(&self.lattice)
                     .is_some_and(|category| category.id == id)
         })
     }
@@ -11524,11 +13534,11 @@ impl Shell {
             self.panel_is_visible(index)
                 && self.panels[index]
                     .cursor
-                    .current_category(&self.xmb)
+                    .current_category(&self.lattice)
                     .is_some_and(|category| category.id == id)
                 && self.panels[index]
                     .cursor
-                    .opened_rows(&self.xmb)
+                    .opened_rows(&self.lattice)
                     .iter()
                     .any(|row| row.title() == settings::SEARCH_PAGE)
         })
@@ -13068,19 +15078,120 @@ struct Doomed {
     glyph: String,
 }
 
+/// What a name typed on a row would call the file: the extension the row never
+/// showed put back on the end of it.
+///
+/// `None` for what is not a name at all, and the three cases are the three the
+/// filesystem itself would refuse. Nothing is an empty name; `/` is the one
+/// byte a name cannot hold, because it is what separates one from the next; and
+/// `.` and `..` are the two names every directory already has.
+///
+/// A free function so the rule can be exercised without a session behind it —
+/// it is the one part of a rename that is a decision rather than a syscall.
+fn renamed_to(typed: &str, extension: Option<&str>) -> Option<String> {
+    let typed = typed.trim();
+    if typed.is_empty() || typed.contains('/') || typed == "." || typed == ".." {
+        return None;
+    }
+    Some(match extension {
+        Some(extension) => format!("{typed}.{extension}"),
+        None => typed.to_string(),
+    })
+}
+
+/// Whether `row` is the row for the thing at `path` — a file on a shelf, a file
+/// in a folder, or the folder itself.
+///
+/// All three, because all three can be renamed and the cursor has to be put
+/// back on whichever of them it was standing on. A row that stands for nowhere
+/// answers `false`, which is every other row on the bar.
+fn row_is_at(row: &apps::Entry, path: &Path) -> bool {
+    match row {
+        apps::Entry::Media(file) => file.path == path,
+        apps::Entry::File(file) => file.path == path,
+        apps::Entry::Folder(folder) => {
+            matches!(&folder.place, Some(files::Place::Directory(at)) if at == path)
+        }
+        _ => false,
+    }
+}
+
+/// A name being changed: the file it belongs to, what it was, and what is on
+/// the row so far.
+///
+/// A copy of all three rather than a borrow of the row, for the reason the
+/// Delete question holds one: the listing a file row lives in is thrown away
+/// and rebuilt while the board is up — a shelf is rebuilt from its worker every
+/// few seconds — and the one command that renames somebody's file must act on
+/// the file it was raised over and on nothing else.
+struct Renaming {
+    path: PathBuf,
+    /// What the row said, which is what the field opened with. Kept so Escape
+    /// has something to put back and so an unchanged name can be told from a
+    /// changed one without going near the disk.
+    was: String,
+    /// What is on the row now.
+    text: String,
+    /// The extension the row's name did not include, put back on the way out.
+    ///
+    /// `None` for the explorer, where a row is the file name and all of it. A
+    /// shelf is the other case: nobody thinks of a song as `Yesterday.flac`, so
+    /// the row is titled without it — and a field that opened with an extension
+    /// the user had never been shown would be asking them to look after
+    /// something the shell had been hiding. They edit the name they were
+    /// reading, and `.flac` goes back on at the end.
+    extension: Option<String>,
+    /// Whether the row came off a shelf rather than out of a folder, which is
+    /// the only thing that differs about putting the answer back.
+    shelved: bool,
+}
+
+/// How long a copy is given before the shell puts a panel up about it.
+///
+/// Long enough that an ordinary file — a document, a photograph, anything the
+/// disk finishes inside a couple of frames — is carried over with nothing on
+/// the screen at all, and short enough that a person who is waiting is told
+/// they are waiting rather than left looking at a bar that has stopped
+/// answering.
+const TRANSFER_PATIENCE: Duration = Duration::from_millis(350);
+
+/// A transfer under way: the folder being chosen, and then the copy itself.
+///
+/// Two stages in one field rather than two fields, because they are one
+/// journey and the shell must never be in both at once — a picker still taking
+/// buttons while its own copy runs would be a second folder being chosen for a
+/// file that has already gone.
+struct Carrying {
+    picker: transfer::Transfer,
+    /// When the copy was started, so the shell can tell one that finished
+    /// inside a frame from one worth putting a panel up about.
+    started: Option<Instant>,
+    /// The copy, once Paste has been pressed and any question about a name
+    /// already taken has been answered. `None` while the user is still walking.
+    run: Option<transfer::Run>,
+    /// Where the panels this raises grow out of: the row Copy or Move was
+    /// pressed on. Held because by the time a name turns out to be taken the
+    /// menu that carried that row is long gone.
+    from: [f32; 4],
+}
+
 /// The rows of the menu over one of the user's own files.
 ///
 /// A free function rather than a method, so the one thing about this menu that
 /// is a decision — which rows it has, in what order, and where the rule between
 /// the bands falls — can be exercised without a running session behind it.
 /// `handled` is whether anything installed says it opens files of this kind;
-/// `deletable` is whether the file is the user's own to delete.
-fn media_rows(handled: bool, deletable: bool) -> Vec<menu::Entry> {
+/// `deletable` is whether the file is the user's own to delete; `carriable` is
+/// whether the file is standing in a folder, which is the one place the two
+/// rows that carry it somewhere else are of any use — see
+/// [`Shell::inside_a_folder`]. Unlike the other two, `carriable` decides
+/// whether the rows are *there*, not whether they are lit.
+fn media_rows(handled: bool, deletable: bool, carriable: bool) -> Vec<menu::Entry> {
     let open_with = menu::Entry::new(menu::Command::OpenWith, "Open with").glyph(icons::OPEN_WITH);
     let delete = menu::Entry::new(menu::Command::Delete, "Delete")
         .glyph(icons::UNINSTALL)
         .grave();
-    vec![
+    let mut rows = vec![
         menu::Entry::new(menu::Command::Open, "Open").glyph(icons::LAUNCH),
         if handled {
             open_with
@@ -13092,6 +15203,13 @@ fn media_rows(handled: bool, deletable: bool) -> Vec<menu::Entry> {
         // has to be under the highlight while that is still the user's choice
         // to make. The Yes it leads to carries the fixed red as well.
         if deletable { delete } else { delete.disabled() },
+        // With the two that carry it rather than up with Open, because what
+        // these three change is which file this *is* — where it lives and what
+        // it is called — and none of them opens anything. Available on a shelf
+        // as well as in a folder, unlike the two above it: a song has a name
+        // wherever it is being looked at from, and there is no column to open a
+        // picker in only because there is nowhere to walk to.
+        menu::Entry::new(menu::Command::Rename, "Rename").glyph(icons::RENAME),
         // The band break: everything above acts on the file, and neither of
         // these two does — one is about the column and the other is about the
         // menu.
@@ -13099,7 +15217,38 @@ fn media_rows(handled: bool, deletable: bool) -> Vec<menu::Entry> {
             .glyph(icons::SORT)
             .group(1),
         menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
-    ]
+    ];
+    if carriable {
+        // Above the rule with Open and Delete, because they act on the file and
+        // so do these — and below Delete, which is where the eye is expected to
+        // stop. Copy and Move are the rows somebody came here on purpose for;
+        // Delete is the one they must never hit by accident, so it keeps the
+        // place it has always had rather than the two rows being put in front of
+        // it and pushing it under the hand. Inserted rather than appended for
+        // the same reason: the order is the whole statement.
+        rows.splice(
+            3..3,
+            [
+                transfer_row(menu::Command::Copy, "Copy", icons::COPY),
+                transfer_row(menu::Command::Move, "Move", icons::MOVE),
+            ],
+        );
+    }
+    rows
+}
+
+/// One of the two rows that carry a file somewhere else.
+///
+/// Never disabled, which is why it takes no say in the matter: these two rows
+/// are drawn where they can be pressed and are absent where they cannot, so a
+/// greyed one would be a state nothing can produce.
+///
+/// Not grave, unlike Delete, and Move is the one worth saying so about: it does
+/// end with the file gone from where it was, but it ends with it *somewhere*.
+/// The warmth under the highlight is the shell's way of saying "this cannot be
+/// undone", and a move can be undone by making the opposite move.
+fn transfer_row(command: menu::Command, label: &str, glyph: &'static str) -> menu::Entry {
+    menu::Entry::new(command, label).glyph(glyph)
 }
 
 /// The rows of the Open with list, built from the applications it is offering,
@@ -13504,7 +15653,7 @@ fn window_name(window: &WindowCard, installed: Option<&str>, from_steam: bool) -
 /// are not the name are dropped: `org.mozilla.firefox` is a reverse-DNS
 /// spelling of Firefox, and what is left after the last dot is the only part
 /// of it anyone recognises. The first letter is raised because a label sits
-/// beside Resume and Dashboard and would otherwise read as a command typed
+/// beside Resume and Start screen and would otherwise read as a command typed
 /// into a terminal.
 ///
 /// Only reached when nothing installed claims the window — a game started
@@ -13577,11 +15726,18 @@ enum ChosenFeedback {
 /// half its rows. See [`Shell::answer_choice`].
 fn chosen_feedback(item: Item, pointer_target: bool) -> ChosenFeedback {
     match item {
-        // Two controls that are drawn but inert when there is nothing for them
-        // to act on: the stick switch with no application to attach it to, and
-        // the brightness bar, which has no equivalent of silencing a session.
+        // The controls that are drawn but inert when there is nothing for them
+        // to act on: the stick switch with no application to attach it to, the
+        // brightness bar, which has no equivalent of silencing a session, and
+        // the media groove, whose head is a mark rather than a button for that
+        // same reason.
+        //
+        // The media card is not among them, and does not need to be: a
+        // transport button the player will not answer cannot be selected, so a
+        // press on the card is always a press on something that does
+        // something.
         Item::Pointer if !pointer_target => ChosenFeedback::Silent,
-        Item::Brightness => ChosenFeedback::Silent,
+        Item::Brightness | Item::MediaVolume => ChosenFeedback::Silent,
         _ => ChosenFeedback::Kept,
     }
 }
@@ -13604,7 +15760,7 @@ fn chosen_feedback(item: Item, pointer_target: bool) -> ChosenFeedback {
 /// The guide is not a screen that stops it: raised over an otherwise empty
 /// Start it keeps the same background, exactly as the bar it was raised from
 /// does. With no display there is no Start screen to hear.
-fn xmb_music_wanted(has_panel: bool, apps_open: bool, handing_over: bool) -> bool {
+fn lattice_music_wanted(has_panel: bool, apps_open: bool, handing_over: bool) -> bool {
     has_panel && !apps_open && !handing_over
 }
 
@@ -13815,12 +15971,19 @@ enum Spot {
     /// A choice in the power dialog.
     PowerRow(usize),
     /// An entry in the guide's sidebar, with the same reading of `level` as a
-    /// menu row's for the two quick-settings bars.
+    /// menu row's for the quick-settings bars.
     Entry { item: Item, level: Option<f32> },
+    /// One of the three transport buttons inside the media card. Its own spot
+    /// rather than a field on `Entry`, because it is the one place in the
+    /// column where a point lands on something *inside* a row and the row is
+    /// not what a press is about.
+    Transport(guide::Transport),
     /// A window miniature in the overview; the start screen's own card last.
     Card(usize),
     /// Something on the start screen.
     Bar(ui::BarSpot),
+    /// A row of the folder picker, or the trail of one of its columns.
+    Destination(ui::PickSpot),
     /// Somewhere the shell is drawing but nothing of it is: the sidebar's own
     /// glass, the air between two keys, the wallpaper past the end of the bar.
     Nothing,
@@ -14218,6 +16381,91 @@ fn paints_over_everything(
     volume: bool,
 ) -> bool {
     over_app && !(launching || menu || keyboard || toasting || volume)
+}
+
+/// Whether one display is to be rested behind black now.
+///
+/// The whole of OLED protection's rule, as arithmetic — the shape
+/// [`paints_over_everything`] and [`should_draw`] are in, and for the same
+/// reason: the rule is what is worth being sure of, and it can be be asked
+/// here without a compositor on the other end of it. Why each of the five is
+/// here is written up on [`Shell::sync_screen_rest`], which is the only caller.
+fn display_should_rest(
+    protected: bool,
+    playing_somewhere: bool,
+    playing_here: bool,
+    driven: bool,
+    drawing: bool,
+    alone_for: Duration,
+) -> bool {
+    protected
+        && playing_somewhere
+        && !playing_here
+        && !driven
+        && !drawing
+        && alone_for >= REST_AFTER
+}
+
+/// Which applications are to be kept out of the sleeper now.
+///
+/// The whole of the media exception, in the shape [`display_should_rest`] is in
+/// and for the same reason: this is the part worth being sure of, and it can be
+/// asked here with neither a bus nor a compositor on either end of it. Why it
+/// reads the way it does is written up on [`Shell::sync_media_awake`], which is
+/// the only caller.
+///
+/// `windows` is every window the session has, by the name its application gives
+/// itself. An empty one is dropped here rather than by the caller: the
+/// compositor refuses that name too, and in the set it would stand for every
+/// window whose client never said what it was.
+///
+/// `since` is wound rather than replaced, which is what makes [`MEDIA_GRACE`] a
+/// grace at all — and it is pruned in the same pass, so an application that
+/// stopped playing an hour ago is not still remembered.
+fn applications_to_keep_awake(
+    players: &[playing::Player],
+    windows: &[String],
+    since: &mut HashMap<String, Instant>,
+    now: Instant,
+) -> HashSet<String> {
+    for window in windows {
+        let app_id = window.trim();
+        if app_id.is_empty() {
+            continue;
+        }
+        let playing = players
+            .iter()
+            .filter(|player| player.playing)
+            .any(|player| {
+                player
+                    .names
+                    .iter()
+                    .any(|name| apps::same_application(name, app_id))
+            });
+        if playing {
+            since.insert(app_id.to_string(), now);
+        }
+    }
+    since.retain(|_, heard| now.saturating_duration_since(*heard) < MEDIA_GRACE);
+    since.keys().cloned().collect()
+}
+
+/// The file a row would put behind the whole display, if it is a row that does.
+///
+/// The rule in one place and out of reach of a compositor, for the reason
+/// [`display_should_rest`] gives. Two halves, and both matter:
+///
+/// * The row has to be one the explorer put in a folder — [`Entry::File`], and
+///   not the [`Entry::Media`] the walk shelves. They can be the same file on
+///   the same disk; what differs is that a shelf is the whole collection in one
+///   column, read by scrolling past hundreds of rows to reach one, and a folder
+///   is somewhere the user walked to a step at a time.
+/// * And it has to be a photograph. A song has nothing to show, and a film's
+///   picture is one frame taken out of it by a tool that may not be installed —
+///   neither is something anybody asked to look at across a whole display.
+fn picture_behind(entry: &Entry) -> Option<&Path> {
+    let file = entry.file()?;
+    (media::kind_of(&file.path) == Some(media::Kind::Image)).then_some(file.path.as_path())
 }
 
 /// Whether a display draws this frame.
@@ -14675,10 +16923,14 @@ fn action_for_keysym(keysym: Keysym) -> Option<Action> {
 
 /// Which control a menu bar drives. The guide names the row; the system module
 /// names the thing that moves.
-fn knob(bar: guide::Bar) -> Knob {
+/// `None` for the media groove, which is not one of the machine's knobs at all:
+/// it moves one application's own streams in the sound server, which is the
+/// mixer's business and is reached by the row's key rather than by a name.
+fn knob(bar: guide::Bar) -> Option<Knob> {
     match bar {
-        guide::Bar::Volume => Knob::Volume,
-        guide::Bar::Brightness => Knob::Brightness,
+        guide::Bar::Volume => Some(Knob::Volume),
+        guide::Bar::Brightness => Some(Knob::Brightness),
+        guide::Bar::Media => None,
     }
 }
 
@@ -14935,6 +17187,11 @@ impl PointerHandler for Shell {
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        // A pointer over a session that is leaving moves nothing and presses
+        // nothing: the whole screen is going black over it.
+        if self.is_leaving() {
+            return;
+        }
         for event in events {
             let Some(index) = self.panels.iter().position(|p| p.owns(&event.surface)) else {
                 continue;
@@ -14975,6 +17232,15 @@ impl PointerHandler for Shell {
                         // right button has meant on every desktop since there
                         // were two of them, so it is bound to the same action
                         // and inherits every rule about where it may be raised.
+                        // Over the folder picker it means the other thing a
+                        // press outside a journey means — give up on it — and
+                        // it means that wherever on the display it lands. The
+                        // whole screen belongs to the transfer while it is up,
+                        // so there is nowhere on it a right button could be
+                        // asking about something else.
+                        BTN_RIGHT if self.carrying.is_some() || self.renaming.is_some() => {
+                            self.on_action(Action::Menu)
+                        }
                         BTN_RIGHT if self.aim_at(spot) => self.on_action(Action::Menu),
                         _ => {}
                     }
@@ -15022,12 +17288,17 @@ impl TouchHandler for Shell {
         id: i32,
         position: (f64, f64),
     ) {
-        if !self.startup.ready {
+        // Nothing to press yet, or nothing left to press: a finger neither
+        // moves the selection nor takes a display over on the way out.
+        if !self.startup.ready || self.is_leaving() {
             return;
         }
         let Some(index) = self.panels.iter().position(|p| p.owns(&surface)) else {
             return;
         };
+        // A finger on a screen is somebody at that screen, before anything
+        // about what it landed on is worked out.
+        self.the_user_is_on(index, Instant::now());
         let at = (position.0 as f32, position.1 as f32);
         // A finger put down on a display that has not got control takes it, and
         // that is the whole of what this touch does — the same rule a click
@@ -15321,6 +17592,13 @@ impl Dispatch<LxbShellV1, ()> for Shell {
             lxb_shell_v1::Event::OutputPressed { output } => {
                 state.press_landed_on_application(&output);
             }
+            // The black this shell asked for is on every display, so whatever
+            // happens to the picture from here on cannot be seen. This is the
+            // moment the machine is told to go.
+            lxb_shell_v1::Event::ScreenIsBlack => {
+                tracing::info!("the compositor says the screen is black");
+                state.tell_the_machine_to_go();
+            }
             lxb_shell_v1::Event::Typed => {
                 // The typing this shell cannot see: into a game, into a window
                 // its keyboard has never been over. One event per handover —
@@ -15520,6 +17798,41 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                     }
                 }
             }
+            lxb_shell_v1::Event::OutputGame { output, playing } => {
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    let playing = playing != 0;
+                    if panel.game != playing {
+                        tracing::info!(
+                            display = %panel.name,
+                            playing,
+                            "a game is being played on a display"
+                        );
+                        panel.game = playing;
+                    }
+                }
+            }
+            lxb_shell_v1::Event::OutputDrawing { output, drawing } => {
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    let drawing = drawing != 0;
+                    if panel.drawing != drawing {
+                        tracing::debug!(
+                            display = %panel.name,
+                            drawing,
+                            "whether anything on a display is still painting"
+                        );
+                        panel.drawing = drawing;
+                    }
+                }
+            }
+            // The pointer over a display this shell has no surface in front of,
+            // or none the pointer can reach — which is the only reason the
+            // compositor says this at all. It moves nothing and presses
+            // nothing: what it is, is the user being on that screen.
+            lxb_shell_v1::Event::OutputPointer { output } => {
+                if let Some(index) = state.panels.iter().position(|p| p.output == output) {
+                    state.the_user_is_on(index, Instant::now());
+                }
+            }
             lxb_shell_v1::Event::OutputMode {
                 output,
                 width,
@@ -15671,6 +17984,21 @@ impl Dispatch<LxbShellV1, ()> for Shell {
 mod scenery_tests {
     use super::*;
 
+    /// One Steam title, as the crossfade holds it.
+    fn game(app_id: u32) -> art::Sight {
+        art::Sight::Game(app_id)
+    }
+
+    /// One of the user's own photographs, as the crossfade holds it.
+    fn picture(name: &str) -> art::Sight {
+        art::Sight::Picture(PathBuf::from(name))
+    }
+
+    /// The two pictures a crossfade is between, in the order it is going.
+    fn between(scenery: &Scenery) -> (Option<art::Sight>, Option<art::Sight>) {
+        (scenery.from.clone(), scenery.to.clone())
+    }
+
     /// A cursor arriving on a game fades its picture up out of the wallpaper,
     /// and leaving the library fades it back down. Nothing is on screen at
     /// either end but the shell's own background, which is what a display that
@@ -15680,8 +18008,8 @@ mod scenery_tests {
         let mut scenery = Scenery::default();
         assert!(!scenery.moving(), "nothing to fade to or from");
 
-        scenery.look_at(Some(7));
-        assert_eq!((scenery.from, scenery.to), (None, Some(7)));
+        scenery.look_at(Some(game(7)));
+        assert_eq!(between(&scenery), (None, Some(game(7))));
         assert!(scenery.moving());
 
         scenery.advance(0.5);
@@ -15692,8 +18020,8 @@ mod scenery_tests {
 
         scenery.look_at(None);
         assert_eq!(
-            (scenery.from, scenery.to),
-            (Some(7), None),
+            between(&scenery),
+            (Some(game(7)), None),
             "the game becomes the picture being left"
         );
         scenery.advance(2.0);
@@ -15707,13 +18035,16 @@ mod scenery_tests {
     #[test]
     fn one_game_hands_the_display_to_the_next() {
         let mut scenery = Scenery::default();
-        scenery.look_at(Some(7));
+        scenery.look_at(Some(game(7)));
         scenery.advance(1.0);
 
-        scenery.look_at(Some(9));
-        assert_eq!((scenery.from, scenery.to), (Some(7), Some(9)));
+        scenery.look_at(Some(game(9)));
+        assert_eq!(between(&scenery), (Some(game(7)), Some(game(9))));
         assert_eq!(scenery.across, 0.0);
-        assert_eq!(scenery.wanted().collect::<Vec<_>>(), vec![7, 9]);
+        assert_eq!(
+            scenery.wanted().cloned().collect::<Vec<_>>(),
+            vec![game(7), game(9)]
+        );
     }
 
     /// A cursor moved and moved straight back runs the same fade the other
@@ -15723,13 +18054,13 @@ mod scenery_tests {
     #[test]
     fn turning_back_reverses_the_fade_it_is_in() {
         let mut scenery = Scenery::default();
-        scenery.look_at(Some(7));
+        scenery.look_at(Some(game(7)));
         scenery.advance(1.0);
-        scenery.look_at(Some(9));
+        scenery.look_at(Some(game(9)));
         scenery.advance(0.25);
 
-        scenery.look_at(Some(7));
-        assert_eq!((scenery.from, scenery.to), (Some(9), Some(7)));
+        scenery.look_at(Some(game(7)));
+        assert_eq!(between(&scenery), (Some(game(9)), Some(game(7))));
         assert!(
             (scenery.across - 0.75).abs() < 0.001,
             "three quarters of the way back to it, not none: {}",
@@ -15745,24 +18076,90 @@ mod scenery_tests {
         // Past halfway the newcomer is mostly on screen, so it is what the
         // next fade leaves behind.
         let mut late = Scenery::default();
-        late.look_at(Some(7));
+        late.look_at(Some(game(7)));
         late.advance(1.0);
-        late.look_at(Some(9));
+        late.look_at(Some(game(9)));
         late.advance(0.8);
-        late.look_at(Some(11));
-        assert_eq!((late.from, late.to), (Some(9), Some(11)));
+        late.look_at(Some(game(11)));
+        assert_eq!(between(&late), (Some(game(9)), Some(game(11))));
         assert_eq!(late.across, 0.0);
 
         // Before halfway it is still the old one that is mostly on screen, so
         // that stays and the newcomer takes over the fade where it stood.
         let mut early = Scenery::default();
-        early.look_at(Some(7));
+        early.look_at(Some(game(7)));
         early.advance(1.0);
-        early.look_at(Some(9));
+        early.look_at(Some(game(9)));
         early.advance(0.2);
-        early.look_at(Some(11));
-        assert_eq!((early.from, early.to), (Some(7), Some(11)));
+        early.look_at(Some(game(11)));
+        assert_eq!(between(&early), (Some(game(7)), Some(game(11))));
         assert!((early.across - 0.2).abs() < 0.001);
+    }
+
+    /// A game and a photograph hand the display to each other exactly as two
+    /// games do. Past the moment a picture is made, nothing here knows or cares
+    /// which of the two it came from — which is the whole reason the crossfade
+    /// holds an [`art::Sight`] rather than an app id.
+    #[test]
+    fn a_game_and_a_photograph_hand_the_display_to_each_other() {
+        let beach = picture("/home/somebody/holiday/beach.jpg");
+        let mut scenery = Scenery::default();
+        scenery.look_at(Some(game(7)));
+        scenery.advance(1.0);
+
+        scenery.look_at(Some(beach.clone()));
+        assert_eq!(between(&scenery), (Some(game(7)), Some(beach.clone())));
+        assert_eq!(scenery.across, 0.0);
+        assert_eq!(
+            scenery.wanted().cloned().collect::<Vec<_>>(),
+            vec![game(7), beach]
+        );
+    }
+
+    /// Which rows put a picture behind the whole display: a photograph in a
+    /// folder, and nothing else in one.
+    ///
+    /// The same photograph on the Pictures shelf does not, and that is the
+    /// point of the test — the two rows are the same file on the same disk, and
+    /// what tells them apart is only which column the user met it in. See
+    /// [`picture_behind`].
+    #[test]
+    fn only_a_photograph_met_in_a_folder_stands_behind_the_display() {
+        let at = |name: &str| PathBuf::from("/home/somebody/holiday").join(name);
+        let in_a_folder = |name: &str| {
+            Entry::File(files::Item {
+                name: name.to_string(),
+                note: String::new(),
+                path: at(name),
+                mime: "application/octet-stream",
+                glyph: icons::FILE_PAGE,
+            })
+        };
+        let on_a_shelf = |name: &str| {
+            Entry::Media(std::sync::Arc::new(
+                media::File::at(&at(name)).expect("a shelved file"),
+            ))
+        };
+
+        assert_eq!(
+            picture_behind(&in_a_folder("beach.jpg")),
+            Some(at("beach.jpg").as_path())
+        );
+        assert_eq!(
+            picture_behind(&on_a_shelf("beach.jpg")),
+            None,
+            "the same photograph on the shelf that gathers them"
+        );
+        assert_eq!(
+            picture_behind(&in_a_folder("clip.mp4")),
+            None,
+            "a film, whose picture is one frame of a tool's choosing"
+        );
+        assert_eq!(
+            picture_behind(&in_a_folder("notes.pdf")),
+            None,
+            "and a document, which has no picture at all"
+        );
     }
 
     /// A library arriving is drawn as it stands: the games on the disk in
@@ -16014,6 +18411,171 @@ mod flight_tests {
         assert!(should_draw(false, true, false));
         // And a visible display always draws, settled or not.
         assert!(should_draw(true, false, false));
+    }
+
+    /// OLED protection, from the one side of it that is arithmetic. Every
+    /// clause is a way of blacking out a screen somebody is looking at, which
+    /// is the failure this feature has to be trusted not to produce.
+    #[test]
+    fn a_screen_rests_only_when_all_five_answers_agree() {
+        const ON: bool = true;
+        const PLAYING: bool = true;
+        const HERE: bool = true;
+        const DRIVEN: bool = true;
+        const MOVING: bool = true;
+        let long = REST_AFTER + Duration::from_secs(1);
+        let short = REST_AFTER - Duration::from_millis(1);
+
+        // The whole of the ordinary case: the switch is on, a game is being
+        // played on the other screen, this one is not being driven, nothing on
+        // it is moving, and nobody has touched it for long enough.
+        assert!(display_should_rest(
+            ON, PLAYING, !HERE, !DRIVEN, !MOVING, long
+        ));
+
+        // The switch is per display, so a screen nobody has asked for this on
+        // is never rested however long it sits there.
+        assert!(!display_should_rest(
+            !ON, PLAYING, !HERE, !DRIVEN, !MOVING, long
+        ));
+        // Nothing rests unless a game is actually running, which is the whole
+        // of "when the game stops, the option stops".
+        assert!(!display_should_rest(
+            ON, !PLAYING, !HERE, !DRIVEN, !MOVING, long
+        ));
+        // The screen the game is on is the screen being watched.
+        assert!(!display_should_rest(
+            ON, PLAYING, HERE, !DRIVEN, !MOVING, long
+        ));
+        // And so is the one being driven, whatever else is true of it.
+        assert!(!display_should_rest(
+            ON, PLAYING, !HERE, DRIVEN, !MOVING, long
+        ));
+        // The guard: something still painting on that screen is somebody
+        // watching a film on it, and a film is not a still picture.
+        assert!(!display_should_rest(
+            ON, PLAYING, !HERE, !DRIVEN, MOVING, long
+        ));
+        // And the clock, which is the one that is not a state: a screen
+        // touched a moment ago waits out the rest of its five seconds.
+        assert!(!display_should_rest(
+            ON, PLAYING, !HERE, !DRIVEN, !MOVING, short
+        ));
+        assert!(display_should_rest(
+            ON, PLAYING, !HERE, !DRIVEN, !MOVING, REST_AFTER
+        ));
+    }
+
+    /// A player that is playing — the only kind that keeps anything awake.
+    fn player(names: &[&str]) -> playing::Player {
+        playing::Player {
+            names: names.iter().map(|name| name.to_string()).collect(),
+            claiming: true,
+            playing: true,
+            ..playing::Player::default()
+        }
+    }
+
+    /// The sleeper's one exception, from both ends: an application that is
+    /// playing something is named to the compositor, and one that is merely
+    /// running is not.
+    #[test]
+    fn only_a_window_whose_application_is_playing_is_kept_awake() {
+        let now = Instant::now();
+        let mut since = HashMap::new();
+        let windows = vec![
+            "app.zen_browser.zen".to_string(),
+            "steam_app_3812600".to_string(),
+        ];
+
+        let awake =
+            applications_to_keep_awake(&[player(&["zen", "Zen"])], &windows, &mut since, now);
+        // The browser, by the name its *window* goes by — which is the only
+        // one of its three spellings the compositor can match. The game is
+        // making at least as much noise and is not on the bus, so it sleeps.
+        assert_eq!(
+            awake,
+            HashSet::from(["app.zen_browser.zen".to_string()]),
+            "the player is named by its window, and the game is not named at all"
+        );
+    }
+
+    /// A window that never said what it was cannot be named to the compositor:
+    /// that name in the set would stand for every unnamed window there is.
+    #[test]
+    fn a_window_with_no_name_is_never_kept_awake() {
+        let mut since = HashMap::new();
+        let windows = vec![String::new(), "   ".to_string()];
+        let awake = applications_to_keep_awake(
+            &[player(&["", "  "])],
+            &windows,
+            &mut since,
+            Instant::now(),
+        );
+        assert!(awake.is_empty());
+    }
+
+    /// Two windows of one program are one application to keep awake, not two.
+    #[test]
+    fn one_application_with_two_windows_is_named_once() {
+        let mut since = HashMap::new();
+        let windows = vec!["zen".to_string(), "zen".to_string()];
+        let awake =
+            applications_to_keep_awake(&[player(&["zen"])], &windows, &mut since, Instant::now());
+        assert_eq!(awake.len(), 1);
+    }
+
+    /// The grace, which is the whole reason this keeps a clock rather than a
+    /// set: the silence between two tracks must not stop the player, because a
+    /// stopped player never reaches the next one.
+    #[test]
+    fn an_application_that_falls_silent_is_kept_awake_for_the_grace() {
+        let start = Instant::now();
+        let mut since = HashMap::new();
+        let windows = vec!["spotify".to_string()];
+
+        let awake =
+            applications_to_keep_awake(&[player(&["spotify"])], &windows, &mut since, start);
+        assert_eq!(awake.len(), 1);
+
+        // Heard from nothing since. Inside the grace it is still playing as far
+        // as this session is concerned — this is the gap between two tracks.
+        let gap = start + MEDIA_GRACE - Duration::from_millis(1);
+        assert_eq!(
+            applications_to_keep_awake(&[], &windows, &mut since, gap).len(),
+            1
+        );
+
+        // And past it, it is not. The map is pruned with it, so a session that
+        // played something once does not remember it all evening.
+        let over = start + MEDIA_GRACE;
+        assert!(applications_to_keep_awake(&[], &windows, &mut since, over).is_empty());
+        assert!(since.is_empty());
+    }
+
+    /// One application falling silent must not take another down with it, nor
+    /// have its own clock wound by somebody else still playing.
+    #[test]
+    fn each_application_runs_out_its_own_grace() {
+        let start = Instant::now();
+        let mut since = HashMap::new();
+        let windows = vec!["spotify".to_string(), "vlc".to_string()];
+
+        applications_to_keep_awake(
+            &[player(&["spotify"]), player(&["vlc"])],
+            &windows,
+            &mut since,
+            start,
+        );
+
+        // Half a grace later only one of them is still playing. Its clock is
+        // wound; the other one's is not.
+        let later = start + MEDIA_GRACE / 2;
+        applications_to_keep_awake(&[player(&["vlc"])], &windows, &mut since, later);
+
+        let over = start + MEDIA_GRACE;
+        let awake = applications_to_keep_awake(&[], &windows, &mut since, over);
+        assert_eq!(awake, HashSet::from(["vlc".to_string()]));
     }
 
     /// Everything the shell raises over an application shares a surface with
@@ -16864,21 +19426,77 @@ mod flight_tests {
     fn music_belongs_to_a_session_with_nothing_open_in_it() {
         // Every screen showing Start, and nothing being handed over: the one
         // session the music is for. The guide raised over it is still that
-        // session — see [`xmb_music_wanted`].
-        assert!(xmb_music_wanted(true, false, false));
+        // session — see [`lattice_music_wanted`].
+        assert!(lattice_music_wanted(true, false, false));
 
         // One application open anywhere ends it, whichever display it is on and
         // whatever the display holding control is showing.
-        assert!(!xmb_music_wanted(true, true, false));
+        assert!(!lattice_music_wanted(true, true, false));
 
         // And a handoff wins even while the screen still contains Start's
         // pixels: the launch splash and the window flying back are both the
         // moment before an application has the display.
-        assert!(!xmb_music_wanted(true, false, true));
+        assert!(!lattice_music_wanted(true, false, true));
 
         // No output means there is no Start screen to hear it. Hotplug makes
         // this a false-to-true edge, so the track begins at sample zero.
-        assert!(!xmb_music_wanted(false, false, false));
+        assert!(!lattice_music_wanted(false, false, false));
+    }
+
+    /// The session waits for the black, and then waits for the machine — and
+    /// each wait has an end, because both of the things it is waiting for can
+    /// fail to happen.
+    #[test]
+    fn a_session_on_its_way_out_does_not_wait_for_ever() {
+        // The ordinary shutdown: the screen is fading and the answer that it
+        // has gone black is what ends the machine, not this.
+        assert_eq!(waited_long_enough(false, Duration::ZERO), Leave::Wait);
+        assert_eq!(
+            waited_long_enough(false, BLACK_PATIENCE - Duration::from_millis(1)),
+            Leave::Wait
+        );
+        // A compositor that was asked and never answered. The screen has been
+        // black for over a second by now as far as anybody can tell, and the
+        // user chose to turn the machine off.
+        assert_eq!(
+            waited_long_enough(false, BLACK_PATIENCE),
+            Leave::EndTheMachine
+        );
+
+        // Told, and going: a machine takes as long as it takes, and nothing
+        // about that is this shell's business.
+        assert_eq!(waited_long_enough(true, BLACK_PATIENCE), Leave::Wait);
+        assert_eq!(
+            waited_long_enough(true, SHUTDOWN_PATIENCE - Duration::from_secs(1)),
+            Leave::Wait
+        );
+        // Told, and still here. The session comes back rather than leaving the
+        // user with a black screen that takes no input.
+        assert_eq!(
+            waited_long_enough(true, SHUTDOWN_PATIENCE),
+            Leave::StayAfterAll
+        );
+
+        // The second wait begins where the first ends, not before it: a
+        // machine cannot be given up on before it has been told to go.
+        assert!(SHUTDOWN_PATIENCE > BLACK_PATIENCE);
+    }
+
+    /// The two endings behind the same curtain say different words to systemd,
+    /// and the difference between them is a machine that comes back and one
+    /// that does not. Pinned here because everything after the choice — the
+    /// black, the patiences, the backstop — is identical, so a pair swapped by
+    /// hand would look right everywhere else.
+    #[test]
+    fn each_ending_tells_the_machine_its_own_thing() {
+        assert_eq!(
+            Ending::Off.command(),
+            ("systemctl poweroff", ["systemctl", "poweroff"])
+        );
+        assert_eq!(
+            Ending::Restart.command(),
+            ("systemctl reboot", ["systemctl", "reboot"])
+        );
     }
 }
 
@@ -16919,7 +19537,7 @@ mod input_tests {
             Item::Mixer,
             Item::DoNotDisturb,
             Item::Notifications,
-            Item::Dashboard,
+            Item::StartScreen,
             Item::Power,
             Item::Volume,
         ] {
@@ -17538,14 +20156,24 @@ mod file_menu_tests {
         rows.iter().map(|row| row.label.as_str()).collect()
     }
 
-    /// Five rows in two bands, and the rule falls above Sort: everything over
-    /// it acts on the file, and neither of the two under it does.
+    /// Eight rows in two bands over a file standing in a folder, and the rule
+    /// falls above Sort: everything over it acts on the file, and neither of
+    /// the two under it does.
     #[test]
-    fn the_file_menu_is_five_rows_with_sort_and_cancel_below_the_rule() {
-        let rows = media_rows(true, true);
+    fn the_file_menu_is_eight_rows_with_sort_and_cancel_below_the_rule() {
+        let rows = media_rows(true, true, true);
         assert_eq!(
             labels(&rows),
-            ["Open", "Open with", "Delete", "Sort", "Cancel"]
+            [
+                "Open",
+                "Open with",
+                "Delete",
+                "Copy",
+                "Move",
+                "Rename",
+                "Sort",
+                "Cancel"
+            ]
         );
         assert_eq!(
             commands(&rows),
@@ -17553,45 +20181,136 @@ mod file_menu_tests {
                 menu::Command::Open,
                 menu::Command::OpenWith,
                 menu::Command::Delete,
+                menu::Command::Copy,
+                menu::Command::Move,
+                menu::Command::Rename,
                 menu::Command::Sort,
                 menu::Command::Dismiss,
             ]
         );
 
         let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
-        assert_eq!(bands, [0, 0, 0, 1, 1], "one rule, and it falls above Sort");
+        assert_eq!(
+            bands,
+            [0, 0, 0, 0, 0, 0, 1, 1],
+            "one rule, and it falls above Sort"
+        );
         assert!(rows.iter().all(|row| row.enabled));
         // Delete is the one row here the highlight arrives on warm: it asks
         // rather than deletes, but it is the way to losing the file, and the
-        // other four are not.
+        // other seven are not. Move is deliberately not one of them — it
+        // ends with the file somewhere, and the opposite move undoes it — and
+        // neither is Rename, which the opposite rename undoes.
         let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
-        assert_eq!(grave, [false, false, true, false, false]);
+        assert_eq!(
+            grave,
+            [false, false, true, false, false, false, false, false]
+        );
     }
 
     /// The two rows that can be unavailable are drawn greyed rather than left
-    /// out, so the panel is the same shape wherever it is raised.
+    /// out, so the panel is the same shape wherever it is raised — and Rename
+    /// is never one of them: a file has a name wherever it is being looked at
+    /// from, and whether the disk will accept a new one is the disk's answer to
+    /// give at the moment it is asked.
+    ///
+    /// Greyed is for a row that would work somewhere the user can get to from
+    /// where they are standing. Copy and Move are the exception and are missing
+    /// instead, which is what the six rows here are.
     #[test]
     fn a_row_that_cannot_be_taken_here_is_still_drawn() {
-        let rows = media_rows(false, false);
-        assert_eq!(labels(&rows).len(), 5);
+        let rows = media_rows(false, false, false);
+        assert_eq!(labels(&rows).len(), 6);
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
-        assert_eq!(enabled, [true, false, false, true, true]);
+        assert_eq!(enabled, [true, false, false, true, true, true]);
     }
 
-    /// A file met in the folder it lives in gets the same five rows, Sort
+    /// A file met in the folder it lives in gets the same eight rows, Sort
     /// included: there it means the folder rather than the shelf, which is the
     /// same statement — the column, not the file the menu was raised over.
     ///
     /// Most of what that column can reach is the machine's own, and Delete is
     /// greyed there rather than left out — the same shape of panel wherever it
     /// is raised, and the same answer the shelves give for a file outside the
-    /// user's home directory.
+    /// user's home directory. Copy and Move are not greyed with it: a file that
+    /// is not the user's to destroy is still a file they may take a copy of,
+    /// and whether the folder they choose will have them is the filesystem's
+    /// answer to give rather than the menu's to guess.
     #[test]
-    fn a_file_that_is_not_the_users_own_cannot_be_deleted_from_a_folder_either() {
-        let rows = media_rows(false, false);
-        assert_eq!(labels(&rows).len(), 5);
+    fn a_file_that_is_not_the_users_own_can_still_be_carried_out_of_a_folder() {
+        let rows = media_rows(false, false, true);
+        assert_eq!(labels(&rows).len(), 8);
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
-        assert_eq!(enabled, [true, false, false, true, true]);
+        assert_eq!(enabled, [true, false, false, true, true, true, true, true]);
+    }
+
+    /// A shelf is a library rather than a folder: there is nothing there for
+    /// the picker to open in, so the two rows that would carry the file are not
+    /// drawn at all and the six that are left keep their order.
+    ///
+    /// The user asked for this after living with them greyed: a row nothing
+    /// the user can do would ever light is not a state of that row, it is a row
+    /// that does not belong on this menu.
+    #[test]
+    fn a_shelved_file_is_offered_no_way_to_carry_it_anywhere() {
+        let rows = media_rows(true, true, false);
+        assert_eq!(
+            labels(&rows),
+            ["Open", "Open with", "Delete", "Rename", "Sort", "Cancel"]
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| matches!(row.command, menu::Command::Copy | menu::Command::Move)),
+            "not greyed and not hidden behind a label — gone"
+        );
+        // Rename does not go with the pair: a song has a name on a shelf as
+        // much as it has one in the folder it came out of.
+        assert_eq!(rows[3].command, menu::Command::Rename);
+        assert!(rows.iter().all(|row| row.enabled), "{:?}", labels(&rows));
+        let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
+        assert_eq!(bands, [0, 0, 0, 0, 1, 1], "the rule still falls above Sort");
+    }
+
+    /// What the row was showing is what the field opens with, and the
+    /// extension a shelf never showed goes back on the end of what comes out.
+    ///
+    /// The whole reason the extension travels separately: nobody thinks of a
+    /// song as `Yesterday.flac`, so the shelf titles it without one — and a
+    /// field that opened with an extension the user had never been shown would
+    /// be asking them to look after something the shell had been hiding from
+    /// them. In a folder the row *is* the file name and there is nothing to put
+    /// back.
+    #[test]
+    fn a_name_typed_on_a_shelf_keeps_the_extension_the_row_never_showed() {
+        assert_eq!(
+            renamed_to("Tomorrow", Some("flac")),
+            Some("Tomorrow.flac".to_string())
+        );
+        assert_eq!(renamed_to("notes.txt", None), Some("notes.txt".to_string()));
+        // What is typed is taken as it is meant rather than as it was typed:
+        // a name with a space at either end is a name nobody can see the ends
+        // of.
+        assert_eq!(
+            renamed_to("  Tomorrow  ", Some("flac")),
+            Some("Tomorrow.flac".to_string())
+        );
+    }
+
+    /// The three names the filesystem itself would refuse, refused before it is
+    /// asked — so that Return on one of them leaves the caret where it is
+    /// rather than putting a panel up about a name nobody finished writing.
+    #[test]
+    fn a_name_that_is_not_a_name_is_not_accepted() {
+        for typed in ["", "   ", ".", "..", "over/there", "/"] {
+            assert_eq!(renamed_to(typed, None), None, "{typed:?} was accepted");
+            assert_eq!(renamed_to(typed, Some("flac")), None, "{typed:?}");
+        }
+        // A dot inside a name is an ordinary letter, and a name that begins
+        // with one is a file the explorer will not list — which is the user's
+        // business and not the shell's to refuse.
+        assert!(renamed_to("v1.2", None).is_some());
+        assert!(renamed_to(".hidden", None).is_some());
     }
 
     /// The Open with list names every application it was given, ticks the one

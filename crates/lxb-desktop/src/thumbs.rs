@@ -33,6 +33,23 @@
 //! dependencies, for the reason the `.desktop` parser gives: both are small,
 //! both are frozen, and the whole of what is needed of them is one digest and
 //! two text chunks.
+//!
+//! ## The other picture a file can be
+//!
+//! A photograph is also the one file that can stand behind the *whole screen*.
+//! When the cursor in Files comes to rest on one, the start screen becomes
+//! about that picture, exactly as it becomes about a game when the cursor comes
+//! to rest on one in a Steam library — see [`Want::Backdrop`] and
+//! [`crate::art::Sight`].
+//!
+//! It is the same worker and the same rule about only doing what is being
+//! looked at, and it is deliberately not the same picture: a thumbnail is 256
+//! pixels down its longest edge, and stretching one across a display would be
+//! showing somebody a photograph of their photograph. So a backdrop is decoded
+//! again at the size the screen wants it. Nothing about that is written to the
+//! shared cache — a backdrop is not a thumbnail, no other desktop has a use for
+//! one, and the file it was made from is on this disk, so having it back costs
+//! a read rather than a download.
 
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
@@ -86,24 +103,55 @@ pub struct Picture {
     pub rgba: Vec<u8>,
 }
 
+/// Which picture of a file is being asked for.
+///
+/// A file can be asked about twice at once and the two answers are different
+/// sizes for different places on the screen, so this travels with every
+/// request and with everything that comes back — a backdrop arriving must not
+/// be mistaken for the row's thumbnail, and a file that has no thumbnail is not
+/// thereby a file that has no backdrop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Want {
+    /// The picture on the row: a frame out of a film, a photograph scaled to
+    /// [`SIZE`], cached where every other desktop caches one.
+    Thumbnail,
+    /// The picture behind the whole display, for a photograph the cursor is
+    /// standing on in Files. Pictures only — there is no such thing as a film
+    /// behind the bar — and nothing is cached.
+    Backdrop,
+}
+
+/// One finished picture of a file.
+pub enum Made {
+    Thumbnail(Picture),
+    Backdrop(crate::art::Scenery),
+}
+
 /// The worker pool, and what it has been asked for.
 pub struct Thumbs {
     queue: Arc<Queue>,
-    done: Receiver<(PathBuf, Option<Picture>)>,
+    done: Receiver<(Job, Option<Made>)>,
     /// Asked for and not yet answered, so a row on screen for a hundred frames
     /// is asked for once.
-    asked: HashSet<PathBuf>,
+    asked: HashSet<Job>,
     /// Answered with nothing: a format nothing installed decodes, a file that
     /// has gone, a video thumbnailer that is not installed. Kept so the shell
     /// does not spend the rest of the session failing at the same file once a
     /// frame — the row keeps its glyph, which is a perfectly good answer.
-    barren: HashSet<PathBuf>,
+    ///
+    /// By what was wanted as well as by the file, because the two can differ:
+    /// a film has a thumbnail and never a backdrop, and a raw from a camera
+    /// that nothing here decodes has neither for the same reason.
+    barren: HashSet<Job>,
 }
+
+/// One thing to make: which file, and which of its pictures.
+type Job = (PathBuf, Want);
 
 /// What the workers take their work from.
 struct Queue {
     /// Most recently wanted at the front.
-    jobs: Mutex<VecDeque<PathBuf>>,
+    jobs: Mutex<VecDeque<Job>>,
     ready: Condvar,
 }
 
@@ -129,19 +177,32 @@ impl Thumbs {
         }
     }
 
-    /// Ask for a thumbnail of `path`, unless it is already being made or has
+    /// Ask for one picture of `path`, unless it is already being made or has
     /// already been found to have none.
-    pub fn want(&mut self, path: &Path) {
-        if self.barren.contains(path) || !self.asked.insert(path.to_path_buf()) {
+    pub fn want(&mut self, path: &Path, want: Want) {
+        let job = (path.to_path_buf(), want);
+        if self.barren.contains(&job) || !self.asked.insert(job.clone()) {
             return;
         }
         let Ok(mut jobs) = self.queue.jobs.lock() else {
             return;
         };
-        jobs.push_front(path.to_path_buf());
+        jobs.push_front(job);
         jobs.truncate(QUEUE);
         drop(jobs);
         self.queue.ready.notify_one();
+    }
+
+    /// Whether one picture of a file has already been found not to exist.
+    ///
+    /// What it is for is the backdrop. A row with no thumbnail keeps its glyph
+    /// and nothing else about the screen changes, so nothing has to ask. A
+    /// display waiting for a backdrop is holding the *previous* picture on
+    /// screen until this one arrives, so a picture that is never coming has to
+    /// be said out loud — otherwise the last photograph somebody looked at
+    /// stays behind the bar for the rest of the session.
+    pub fn hopeless(&self, path: &Path, want: Want) -> bool {
+        self.barren.contains(&(path.to_path_buf(), want))
     }
 
     /// Everything finished since the last look.
@@ -149,16 +210,16 @@ impl Thumbs {
     /// Files that came back with nothing are recorded here rather than
     /// returned: there is nothing for the caller to do about them, and asking
     /// again next frame is the one thing that must not happen.
-    pub fn take(&mut self) -> Vec<(PathBuf, Picture)> {
+    pub fn take(&mut self) -> Vec<(PathBuf, Made)> {
         let mut out = Vec::new();
         loop {
             match self.done.try_recv() {
-                Ok((path, made)) => {
-                    self.asked.remove(&path);
+                Ok((job, made)) => {
+                    self.asked.remove(&job);
                     match made {
-                        Some(picture) => out.push((path, picture)),
+                        Some(picture) => out.push((job.0, picture)),
                         None => {
-                            self.barren.insert(path);
+                            self.barren.insert(job);
                         }
                     }
                 }
@@ -172,16 +233,16 @@ impl Thumbs {
     }
 }
 
-/// One worker: take the most recently wanted file and make its picture.
-fn work(queue: &Queue, send: &Sender<(PathBuf, Option<Picture>)>) {
+/// One worker: take the most recently wanted picture and make it.
+fn work(queue: &Queue, send: &Sender<(Job, Option<Made>)>) {
     loop {
-        let path = {
+        let job = {
             let Ok(mut jobs) = queue.jobs.lock() else {
                 return;
             };
             loop {
-                if let Some(path) = jobs.pop_front() {
-                    break path;
+                if let Some(job) = jobs.pop_front() {
+                    break job;
                 }
                 let Ok(waited) = queue.ready.wait(jobs) else {
                     return;
@@ -190,19 +251,31 @@ fn work(queue: &Queue, send: &Sender<(PathBuf, Option<Picture>)>) {
             }
         };
 
-        let made = produce(&path);
+        let made = produce(&job.0, job.1);
         if made.is_none() {
-            tracing::debug!(file = %path.display(), "nothing here can make a thumbnail of this");
+            tracing::debug!(
+                file = %job.0.display(),
+                want = ?job.1,
+                "nothing here can make that picture of this file"
+            );
         }
-        if send.send((path, made)).is_err() {
+        if send.send((job, made)).is_err() {
             return;
         }
     }
 }
 
+/// Make one picture of a file.
+fn produce(path: &Path, want: Want) -> Option<Made> {
+    match want {
+        Want::Thumbnail => thumbnail(path).map(Made::Thumbnail),
+        Want::Backdrop => backdrop(path).map(Made::Backdrop),
+    }
+}
+
 /// The cached thumbnail of `path`, or a freshly made one, which is then
 /// cached.
-fn produce(path: &Path) -> Option<Picture> {
+fn thumbnail(path: &Path) -> Option<Picture> {
     let stamp = modified(path)?;
     if let Some(cached) = cached(path, stamp) {
         return Some(cached);
@@ -210,6 +283,54 @@ fn produce(path: &Path) -> Option<Picture> {
     let made = render(path)?;
     store(path, stamp, &made);
     Some(made)
+}
+
+/// The picture behind the display, for one of the user's own photographs.
+///
+/// Only a photograph: [`Kind::Image`] and nothing else. A film's thumbnail is
+/// one frame taken out of it by a tool that may not be installed, and a frame
+/// of a film blown up across a display is neither what the file is nor
+/// something anybody asked to look at.
+///
+/// Decoded again from the file rather than grown from the thumbnail, and read
+/// through the same ceiling the thumbnailer uses: this is the user's own disk,
+/// where a photograph straight off a camera is forty megapixels before it is
+/// anything else.
+fn backdrop(path: &Path) -> Option<crate::art::Scenery> {
+    if crate::media::kind_of(path)? != Kind::Image {
+        return None;
+    }
+    let image = full(path)?;
+    Some(crate::art::scenery_from(image))
+}
+
+/// One of the user's pictures, decoded whole.
+///
+/// A vector drawing is rendered instead, at the height the box behind the bar
+/// is: a drawing has no pixels of its own to be decoded at, and rendering it at
+/// the size it will be shown is the whole advantage of it being one.
+fn full(path: &Path) -> Option<image::DynamicImage> {
+    if is_svg(path) {
+        let data = std::fs::read(path).ok()?;
+        let rgba = crate::icons::rasterise_svg(&data, path.parent(), crate::art::HERO_HEIGHT)?;
+        let side = crate::art::HERO_HEIGHT;
+        return image::RgbaImage::from_raw(side, side, rgba).map(image::DynamicImage::ImageRgba8);
+    }
+    let data = std::fs::read(path).ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+/// Whether a file is a vector drawing, which is rendered rather than decoded.
+fn is_svg(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
 }
 
 /// When the source was last written, in whole seconds since the epoch — which
@@ -232,11 +353,7 @@ fn render(path: &Path) -> Option<Picture> {
 /// Scale an image file down. Vector drawings are rendered rather than decoded,
 /// the way the shell's own glyphs are.
 fn from_picture(path: &Path) -> Option<Picture> {
-    if path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
-    {
+    if is_svg(path) {
         let data = std::fs::read(path).ok()?;
         let rgba = crate::icons::rasterise_svg(&data, path.parent(), SIZE)?;
         return Some(Picture {
@@ -893,8 +1010,8 @@ mod tests {
         let mut thumbs = Thumbs::start();
         let path = Path::new("/nonexistent/lxb-test/not-a-picture.png");
 
-        thumbs.want(path);
-        thumbs.want(path);
+        thumbs.want(path, Want::Thumbnail);
+        thumbs.want(path, Want::Thumbnail);
         assert_eq!(thumbs.asked.len(), 1);
         // At most one, because a worker may have taken it already — and the
         // whole point, that a second `want` did not put a second copy in. The
@@ -902,7 +1019,7 @@ mod tests {
         // that started before this test did.
         let queued = thumbs.queue.jobs.lock().unwrap();
         assert!(
-            queued.len() <= 1 && queued.iter().all(|job| job == path),
+            queued.len() <= 1 && queued.iter().all(|(job, _)| job == path),
             "one job at most, and never a second copy of it: {queued:?}"
         );
         drop(queued);
@@ -913,10 +1030,66 @@ mod tests {
             assert!(thumbs.take().is_empty(), "nothing can be made of it");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(thumbs.barren.contains(path), "it came back with nothing");
+        assert!(
+            thumbs.hopeless(path, Want::Thumbnail),
+            "it came back with nothing"
+        );
         assert!(thumbs.asked.is_empty());
 
-        thumbs.want(path);
+        thumbs.want(path, Want::Thumbnail);
         assert!(thumbs.asked.is_empty(), "and it is not asked for again");
+    }
+
+    /// The two pictures of one file are two questions. A file that has no
+    /// thumbnail is not thereby a file with no backdrop, and neither answer may
+    /// be handed back as the other.
+    #[test]
+    fn a_thumbnail_and_a_backdrop_are_asked_for_separately() {
+        let mut thumbs = Thumbs::start();
+        let path = Path::new("/nonexistent/lxb-test/not-a-picture.png");
+
+        thumbs.want(path, Want::Thumbnail);
+        thumbs.want(path, Want::Backdrop);
+        assert_eq!(thumbs.asked.len(), 2, "one job each, not one between them");
+
+        let waited = std::time::Instant::now();
+        while thumbs.barren.len() < 2 && waited.elapsed().as_secs() < 5 {
+            assert!(thumbs.take().is_empty(), "nothing can be made of it");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(thumbs.hopeless(path, Want::Thumbnail));
+        assert!(thumbs.hopeless(path, Want::Backdrop));
+    }
+
+    /// A photograph makes a backdrop; a film does not, whatever the thumbnailer
+    /// on the machine could have made of it.
+    #[test]
+    fn only_a_photograph_is_made_into_a_backdrop() {
+        let dir = std::env::temp_dir().join(format!("lxb-backdrop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("somewhere to write");
+        let picture = dir.join("beach.jpg");
+        let film = dir.join("clip.mp4");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            800,
+            600,
+            image::Rgb([10, 20, 30]),
+        ))
+        .save(&picture)
+        .expect("a picture on the disk");
+        std::fs::write(&film, b"not a film either").expect("a film's name");
+
+        let made = backdrop(&picture).expect("a backdrop");
+        assert_eq!(made.levels.len(), crate::art::HERO_LEVELS as usize);
+        assert_eq!(
+            made.levels[0].len(),
+            (crate::art::HERO_WIDTH * crate::art::HERO_HEIGHT * 4) as usize,
+            "the whole box, filled edge to edge"
+        );
+        assert!(
+            backdrop(&film).is_none(),
+            "a film has no picture to stand in"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

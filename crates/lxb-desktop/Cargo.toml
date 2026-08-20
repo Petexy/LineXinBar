@@ -1,6 +1,6 @@
 [package]
 name = "lxb-desktop"
-description = "An XMB-style shell for the LineXinBar compositor"
+description = "A console-style lattice shell for the LineXinBar compositor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

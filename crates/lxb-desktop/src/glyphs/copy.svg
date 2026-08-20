@@ -1,0 +1,33 @@
+<!--
+  Two sheets, one laid over the other, on the menu row that copies a file.
+
+  The whole of the mark is that there are two of them: a copy is one thing
+  become two, and nothing else has to be drawn to say so. They are the plainest
+  bodies in the set on purpose — the row beside this one carries a sheet with an
+  arrow leaving it, and two marks that both had furniture on them would be two
+  rows the eye cannot tell apart at a glance.
+
+  The offset is wide. A sheet peeping out from behind another by less than the
+  bevel is deep never gets a face of its own and comes out melted into the one
+  in front, which is a smear rather than a second sheet.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="behind" x="3.8" y="3.8" width="14.4" height="18.0" rx="2.2"/>
+    <rect id="front" x="12.2" y="9.4" width="14.4" height="18.0" rx="2.2"/>
+    <g id="bead"><use href="#behind"/><use href="#front"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

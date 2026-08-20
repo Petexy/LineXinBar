@@ -10,6 +10,7 @@
 //! target, so a value written raw would come out roughly twice as bright as
 //! the hex it was copied from.
 
+use lxb_protocol::wallpaper::{self, Style};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// A colour as authored: 0xRRGGBB in sRGB.
@@ -460,6 +461,171 @@ pub fn commit_accent(name: &str) -> bool {
     transition.applied = index;
     transition_to(&mut transition, index);
     true
+}
+
+// --- the theme: which material each half of the shell is drawn in -----------
+//
+// The accent above is a colour and it *travels*: a preview flows towards the
+// highlighted palette and back again, because a colour between two colours is a
+// colour. A material cannot be halfway. The band of water and the glass-silk
+// lines are different geometry, and a glyph is either a bead with a bevel and a
+// shadow or the flat shape of itself; there is nothing in between to show for
+// half a second. So this one lands whole, on the frame it is chosen — or
+// highlighted, since seeing it is the whole reason a settings row previews.
+//
+// Two of them, and they are genuinely independent. The wallpaper is one
+// evaluation of a long function for every pixel on every screen, every frame;
+// a mark is a few dozen pixels of a settings row. They are not the same
+// expense and there is no reason a machine should have to answer for both at
+// once — nor any reason somebody who simply likes flat marks should have to
+// give up the water to get them.
+
+/// Which half of the Theme setting a material belongs to.
+///
+/// The two halves are the same question asked about two different things, so
+/// everything below takes one of these rather than existing twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The picture behind everything: the band of water, or the glass-silk
+    /// ribbons this shell drew before it.
+    Wallpaper,
+    /// Every mark the shell draws itself: a bead of water shaded out of its own
+    /// distance field, or the flat shape of one.
+    Icons,
+}
+
+/// Both halves, in the order Settings lists them: the wallpaper first, because
+/// it is the whole screen and the more expensive of the two.
+pub const PARTS: [Part; 2] = [Part::Wallpaper, Part::Icons];
+
+impl Part {
+    /// What Settings titles the row with.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Wallpaper => "Wallpaper",
+            Self::Icons => "Icons",
+        }
+    }
+
+    /// The key this half is written to `shell.toml` under.
+    ///
+    /// Here rather than in `settings`, because the compositor and the display
+    /// manager read these keys out of the same file and the shell must not be
+    /// the only place that knows what they are called.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Wallpaper => "theme-wallpaper",
+            Self::Icons => "theme-icons",
+        }
+    }
+}
+
+/// The material one half of the shell draws in, and the one it will go back to
+/// when a preview is abandoned.
+///
+/// Two of them rather than one for the same reason the accent keeps two: the
+/// cursor walking down a list of values shows each of them, and walking back off
+/// the list has to undo that without having written anything down.
+#[derive(Debug, Clone, Copy, Default)]
+struct Chosen {
+    applied: Style,
+    shown: Style,
+}
+
+/// What the shell is made of: one answer for the picture behind it and one for
+/// the marks on top of it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Material {
+    wallpaper: Chosen,
+    icons: Chosen,
+}
+
+impl Material {
+    fn part(&mut self, part: Part) -> &mut Chosen {
+        match part {
+            Part::Wallpaper => &mut self.wallpaper,
+            Part::Icons => &mut self.icons,
+        }
+    }
+}
+
+static MATERIAL: OnceLock<Mutex<Material>> = OnceLock::new();
+
+fn lock_material() -> MutexGuard<'static, Material> {
+    MATERIAL
+        .get_or_init(|| Mutex::new(Material::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The material to draw this half of the frame with, preview included.
+pub fn style(part: Part) -> Style {
+    lock_material().part(part).shown
+}
+
+/// The material the user has actually chosen for it, which is what gets written
+/// down.
+pub fn applied_style(part: Part) -> Style {
+    lock_material().part(part).applied
+}
+
+/// What the shader is told, which is the one number each half of the theme comes
+/// down to on the GPU: nought for the shell's own material and one for the plain
+/// one.
+pub fn style_flag(part: Part) -> f32 {
+    match style(part) {
+        Style::Default => 0.0,
+        Style::Simple => 1.0,
+    }
+}
+
+/// Set a material outright, applied and shown together. The startup path,
+/// where the saved setting is read before there is a frame to answer with.
+///
+/// Names are matched exactly, as [`wallpaper::style`] matches them: the two
+/// spellings are the whole of the setting's domain.
+pub fn set_style(part: Part, name: &str) -> bool {
+    let known = wallpaper::STYLES.contains(&name);
+    let style = wallpaper::style(name);
+    let mut material = lock_material();
+    let chosen = material.part(part);
+    chosen.applied = style;
+    chosen.shown = style;
+    known
+}
+
+/// Draw in a material without choosing it, for a highlighted row.
+pub fn preview_style(part: Part, name: &str) -> bool {
+    if !wallpaper::STYLES.contains(&name) {
+        return false;
+    }
+    lock_material().part(part).shown = wallpaper::style(name);
+    true
+}
+
+/// Choose the material the shell is showing for that half.
+pub fn commit_style(part: Part, name: &str) -> bool {
+    if !wallpaper::STYLES.contains(&name) {
+        return false;
+    }
+    let style = wallpaper::style(name);
+    let mut material = lock_material();
+    let chosen = material.part(part);
+    chosen.applied = style;
+    chosen.shown = style;
+    true
+}
+
+/// Leave a preview behind and go back to the materials the user applied.
+///
+/// Both halves at once, and deliberately: this is what a cursor leaving the
+/// Theme rows calls, and it cannot know which of the two it walked through.
+pub fn restore_style() {
+    let mut material = lock_material();
+    for part in PARTS {
+        let chosen = material.part(part);
+        chosen.shown = chosen.applied;
+    }
 }
 
 /// Leave preview behind and flow back to the last accent the user applied.

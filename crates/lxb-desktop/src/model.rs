@@ -1,6 +1,6 @@
-//! The XMB navigation model.
+//! The lattice navigation model.
 //!
-//! The cross media bar is two orthogonal lists: categories run horizontally,
+//! The lattice is two orthogonal lists: categories run horizontally,
 //! and the selected category's items run vertically through it. Selection is
 //! integer, but the drawn position is a float that eases towards it, which is
 //! what gives the interface its characteristic glide.
@@ -168,7 +168,7 @@ pub enum Action {
 ///
 /// Shared by every display: what each one is *pointing at* lives in its own
 /// [`Cursor`], but there is only one catalogue and one set of running children.
-pub struct Xmb {
+pub struct Lattice {
     pub categories: Vec<Category>,
 
     /// Socket selected before connecting the shell. Child applications are
@@ -193,8 +193,14 @@ pub struct Cursor {
     /// Index of the focused category.
     pub selected_category: usize,
     /// Focused item *per category*, so moving away and back returns you to
-    /// where you were, as the real XMB does.
-    selected_items: Vec<usize>,
+    /// where you were, as the console shells this follows do.
+    ///
+    /// `None` for a column this cursor has never stood in, which is not the
+    /// same as row zero of it. A display is in one column at a time and has no
+    /// opinion about the rest of the bar; a row it never chose is a place to
+    /// start from when it first walks in, and not a row it is standing on. What
+    /// turns on the difference is [`Self::row_in_column`].
+    selected_items: Vec<Option<usize>>,
 
     /// The subcategories stepped into, outermost first.
     ///
@@ -314,7 +320,7 @@ struct LaunchedApp {
     wait_error_reported: bool,
 }
 
-impl Xmb {
+impl Lattice {
     /// Build a model for the process's named Wayland display.
     ///
     /// The shell startup path uses [`Self::with_wayland_display`] after
@@ -614,7 +620,7 @@ impl Cursor {
     pub fn new(categories: usize) -> Self {
         Self {
             selected_category: 0,
-            selected_items: vec![0; categories],
+            selected_items: vec![None; categories],
             stack: Vec::new(),
             open: 0,
             category_position: 0.0,
@@ -633,23 +639,23 @@ impl Cursor {
     /// yet, and opening every session onto an empty column would be a poor
     /// greeting. It is placed rather than travelled to, so the bar is already
     /// where it belongs on the first frame.
-    pub fn for_model(xmb: &Xmb) -> Self {
-        let mut cursor = Self::new(xmb.categories.len());
-        if let Some(populated) = xmb.categories.iter().position(Category::has_launchable) {
+    pub fn for_model(lattice: &Lattice) -> Self {
+        let mut cursor = Self::new(lattice.categories.len());
+        if let Some(populated) = lattice.categories.iter().position(Category::has_launchable) {
             cursor.selected_category = populated;
             cursor.category_position = populated as f32;
         }
+        // On the head of that column's list, by the same rule every other
+        // arrival lands under — a session that opened on the row above a
+        // library would open on its index.
+        cursor.restore_column(lattice);
         cursor
     }
 
     /// The row the cursor is on, in whichever column it is standing in.
     pub fn selected_item(&self) -> usize {
         match self.open.checked_sub(1) {
-            None => self
-                .selected_items
-                .get(self.selected_category)
-                .copied()
-                .unwrap_or(0),
+            None => self.row_at(0),
             Some(level) => self.stack.get(level).map_or(0, |column| column.selected),
         }
     }
@@ -669,8 +675,8 @@ impl Cursor {
         self.depth_position
     }
 
-    pub fn current_category<'a>(&self, xmb: &'a Xmb) -> Option<&'a Category> {
-        xmb.categories.get(self.selected_category)
+    pub fn current_category<'a>(&self, lattice: &'a Lattice) -> Option<&'a Category> {
+        lattice.categories.get(self.selected_category)
     }
 
     /// The row the column the cursor is standing in was opened from — the last
@@ -679,9 +685,9 @@ impl Cursor {
     /// `None` at the top of a category, where the column is the category's own
     /// and was not opened from anything. What it answers is "what is this a
     /// list *of*", which is how a panel raised inside a column is titled.
-    pub fn open_from<'a>(&self, xmb: &'a Xmb) -> Option<&'a Entry> {
+    pub fn open_from<'a>(&self, lattice: &'a Lattice) -> Option<&'a Entry> {
         let level = self.open.checked_sub(1)?;
-        self.level_entries(xmb, level)?.get(self.row_at(level))
+        self.level_entries(lattice, level)?.get(self.row_at(level))
     }
 
     /// Every row the cursor has stepped *into*, outermost first.
@@ -696,42 +702,42 @@ impl Cursor {
     /// whether a radio is told to look around, and where being one column out is
     /// the difference between scanning because somebody asked and scanning
     /// because somebody walked past.
-    pub fn opened_rows<'a>(&self, xmb: &'a Xmb) -> Vec<&'a Entry> {
+    pub fn opened_rows<'a>(&self, lattice: &'a Lattice) -> Vec<&'a Entry> {
         (0..self.open)
-            .filter_map(|level| self.level_entries(xmb, level)?.get(self.row_at(level)))
+            .filter_map(|level| self.level_entries(lattice, level)?.get(self.row_at(level)))
             .collect()
     }
 
     /// The rows of the column the cursor is standing in.
-    pub fn current_entries<'a>(&self, xmb: &'a Xmb) -> &'a [Entry] {
-        self.level_entries(xmb, self.open).unwrap_or_default()
+    pub fn current_entries<'a>(&self, lattice: &'a Lattice) -> &'a [Entry] {
+        self.level_entries(lattice, self.open).unwrap_or_default()
     }
 
     /// The row the cursor is on.
-    pub fn current_entry<'a>(&self, xmb: &'a Xmb) -> Option<&'a Entry> {
-        self.current_entries(xmb).get(self.selected_item())
+    pub fn current_entry<'a>(&self, lattice: &'a Lattice) -> Option<&'a Entry> {
+        self.current_entries(lattice).get(self.selected_item())
     }
 
     /// What the cursor is on, when it is on something launchable. `None` for a
     /// subcategory or a setting, neither of which starts a process.
-    pub fn current_app<'a>(&self, xmb: &'a Xmb) -> Option<&'a App> {
-        self.current_entry(xmb)?.app()
+    pub fn current_app<'a>(&self, lattice: &'a Lattice) -> Option<&'a App> {
+        self.current_entry(lattice)?.app()
     }
 
     /// What the highlighted value would apply, without moving the catalogue's
     /// chosen mark. The shell uses this to preview a setting while the cursor
     /// is merely standing on it.
-    pub fn current_setting(&self, xmb: &Xmb) -> Option<Setting> {
-        self.current_entry(xmb)?.setting()
+    pub fn current_setting(&self, lattice: &Lattice) -> Option<Setting> {
+        self.current_entry(lattice)?.setting()
     }
 
     /// Every column the bar is showing, outermost first: the category's own,
     /// then one per subcategory stepped into — and, for as long as it is still
     /// sliding away, the one just stepped out of.
-    pub fn columns<'a>(&self, xmb: &'a Xmb) -> Vec<Column<'a>> {
+    pub fn columns<'a>(&self, lattice: &'a Lattice) -> Vec<Column<'a>> {
         let mut out = Vec::with_capacity(self.stack.len() + 1);
         for level in 0..=self.stack.len() {
-            let Some(entries) = self.level_entries(xmb, level) else {
+            let Some(entries) = self.level_entries(lattice, level) else {
                 break;
             };
             out.push(Column {
@@ -758,8 +764,8 @@ impl Cursor {
     /// once the path stops leading anywhere, which is how a stale stack — one
     /// left over from a catalogue that has since changed — stops short instead
     /// of drawing something that is no longer there.
-    fn level_entries<'a>(&self, xmb: &'a Xmb, level: usize) -> Option<&'a [Entry]> {
-        let mut entries = xmb
+    fn level_entries<'a>(&self, lattice: &'a Lattice, level: usize) -> Option<&'a [Entry]> {
+        let mut entries = lattice
             .categories
             .get(self.selected_category)?
             .entries
@@ -774,8 +780,12 @@ impl Cursor {
     /// with [`Self::level_entries`]: one returns a shared borrow of the
     /// catalogue and the other an exclusive one, and there is no way to have
     /// the second call the first.
-    fn level_entries_mut<'a>(&self, xmb: &'a mut Xmb, level: usize) -> Option<&'a mut [Entry]> {
-        let mut entries = xmb
+    fn level_entries_mut<'a>(
+        &self,
+        lattice: &'a mut Lattice,
+        level: usize,
+    ) -> Option<&'a mut [Entry]> {
+        let mut entries = lattice
             .categories
             .get_mut(self.selected_category)?
             .entries
@@ -797,9 +807,9 @@ impl Cursor {
     /// values is one answer to one question, so choosing an answer un-chooses
     /// the others; a list somewhere else in the tree is a different question
     /// and is none of this one's business.
-    pub fn choose(&self, xmb: &mut Xmb) -> Option<Setting> {
+    pub fn choose(&self, lattice: &mut Lattice) -> Option<Setting> {
         let row = self.selected_item();
-        let entries = self.level_entries_mut(xmb, self.open)?;
+        let entries = self.level_entries_mut(lattice, self.open)?;
         let (setting, acts) = match entries.get(row)? {
             Entry::Choice(choice) => (choice.setting?, choice.acts),
             _ => return None,
@@ -852,11 +862,11 @@ impl Cursor {
     /// shell that is not one of the explorer's.
     pub fn open_place(
         &mut self,
-        xmb: &mut Xmb,
+        lattice: &mut Lattice,
         sort: crate::media::Sort,
     ) -> Option<crate::media::Orders> {
         let row = self.selected_item();
-        let entries = self.level_entries_mut(xmb, self.open)?;
+        let entries = self.level_entries_mut(lattice, self.open)?;
         // A fresh visit, so the field it opens with is empty. A search belongs
         // to the looking somebody is doing rather than to the folder — walking
         // out of one and into another is a different question, and a column
@@ -891,23 +901,28 @@ impl Cursor {
     /// answers `false` at the top of a category where there is no such row.
     pub fn search_here(
         &self,
-        xmb: &mut Xmb,
+        lattice: &mut Lattice,
         query: &str,
         sort: crate::media::Sort,
     ) -> Option<crate::media::Orders> {
         let level = self.open.checked_sub(1)?;
         let row = self.row_at(level);
-        let entries = self.level_entries_mut(xmb, level)?;
+        let entries = self.level_entries_mut(lattice, level)?;
         read_into(entries, row, query, sort)
     }
 
     /// The row selected in the column at `level`.
     fn row_at(&self, level: usize) -> usize {
         match level.checked_sub(1) {
+            // The head of the column for one that has never been stood in:
+            // the row a cursor arrives on is the top of the list. See
+            // [`Self::row_in_column`], which is the same question asked of a
+            // column the cursor is *not* in and answers `None` there.
             None => self
                 .selected_items
                 .get(self.selected_category)
                 .copied()
+                .flatten()
                 .unwrap_or(0),
             Some(index) => self.stack.get(index).map_or(0, |column| column.selected),
         }
@@ -925,7 +940,7 @@ impl Cursor {
         match self.open.checked_sub(1) {
             None => {
                 if let Some(slot) = self.selected_items.get_mut(self.selected_category) {
-                    *slot = row;
+                    *slot = Some(row);
                 }
             }
             Some(level) => {
@@ -970,7 +985,7 @@ impl Cursor {
     /// the bar cannot show.
     ///
     /// Reports whether anything moved, which is what says a redraw is owed.
-    pub fn keep_in_bounds(&mut self, xmb: &Xmb) -> bool {
+    pub fn keep_in_bounds(&mut self, lattice: &Lattice) -> bool {
         let mut moved = false;
         // Outermost first, because a level's own column is reached through the
         // rows above it: clamping level 2 is only meaningful once level 1 is
@@ -980,7 +995,7 @@ impl Cursor {
             // subcategory any more — or one with nothing in it. The two are the
             // same thing to a cursor: everything from here down goes, and it
             // stands in the last column that is still real.
-            let entries = self.level_entries(xmb, level).unwrap_or_default();
+            let entries = self.level_entries(lattice, level).unwrap_or_default();
             if entries.is_empty() {
                 let out = level.saturating_sub(1);
                 // Nothing has moved where the cursor was already outside: a
@@ -1040,7 +1055,7 @@ impl Cursor {
         match level.checked_sub(1) {
             None => {
                 if let Some(slot) = self.selected_items.get_mut(self.selected_category) {
-                    *slot = row;
+                    *slot = Some(row);
                 }
             }
             Some(index) => {
@@ -1061,8 +1076,8 @@ impl Cursor {
     ///
     /// Reports whether that moved anything, and refuses a row the column does
     /// not have.
-    pub fn point_at_row(&mut self, row: usize, xmb: &Xmb) -> bool {
-        if row >= self.current_entries(xmb).len() || row == self.selected_item() {
+    pub fn point_at_row(&mut self, row: usize, lattice: &Lattice) -> bool {
+        if row >= self.current_entries(lattice).len() || row == self.selected_item() {
             return false;
         }
         self.select_row(row);
@@ -1075,15 +1090,15 @@ impl Cursor {
     /// row would: the categories are behind the columns, and arriving at one
     /// with a path still open would leave the cross showing a trail belonging
     /// to a category the user is no longer in.
-    pub fn point_at_category(&mut self, index: usize, xmb: &Xmb) -> bool {
-        if index >= xmb.categories.len() {
+    pub fn point_at_category(&mut self, index: usize, lattice: &Lattice) -> bool {
+        if index >= lattice.categories.len() {
             return false;
         }
         if index == self.selected_category && self.open == 0 {
             return false;
         }
         self.selected_category = index;
-        self.restore_column();
+        self.restore_column(lattice);
         true
     }
 
@@ -1107,10 +1122,10 @@ impl Cursor {
     /// that has been found *again* since — deleted and put back between two
     /// passes of the walk — is a different handle, and the cursor treats it as
     /// the file having gone, which is what it did.
-    pub fn keep_on_media(&mut self, xmb: &Xmb, file: &crate::media::Shelved) {
+    pub fn keep_on_media(&mut self, lattice: &Lattice, file: &crate::media::Shelved) {
         let was = self.selected_item();
         let Some(row) = self
-            .current_entries(xmb)
+            .current_entries(lattice)
             .iter()
             .position(|entry| entry.shelved().is_some_and(|held| Arc::ptr_eq(held, file)))
         else {
@@ -1126,6 +1141,33 @@ impl Cursor {
         self.shift_position(row as f32 - was as f32);
     }
 
+    /// The row this cursor has of its own in the column at `at`, if it has one.
+    ///
+    /// Two ways to have one, and they are the two halves of what the bar means
+    /// by "where this display is": the cursor is standing in the column, or it
+    /// has stood in it and left a row behind. A column it has never walked into
+    /// has neither. Its slot holds the row a *first* visit would begin at,
+    /// which is the head of the list — a starting point, not a place the
+    /// display is.
+    ///
+    /// The difference only shows itself where the column is rebuilt underneath
+    /// a cursor that is elsewhere, which is exactly what a Steam library does
+    /// while the shell is starting: the installed games arrive off the disk
+    /// first and the rest of the account's library a moment later. Read as a
+    /// row, the head of that half-built list would be a game this display was
+    /// standing on, and it would be followed to wherever the finished order
+    /// puts it — leaving somebody who has never opened Steam to walk in on the
+    /// middle of their library rather than the top of the order they chose.
+    fn row_in_column(&self, at: usize) -> Option<usize> {
+        match *self.selected_items.get(at)? {
+            Some(row) => Some(row),
+            // Standing in it without having moved down it. The head of the
+            // column is under the highlight and is being looked at, which is
+            // the whole of what a kept row is for.
+            None => (self.selected_category == at).then_some(0),
+        }
+    }
+
     /// Which game this cursor's row in the column at `at` is on, if it is on
     /// one. The pair of [`Self::keep_on_game`], asked before the column is
     /// rebuilt so there is something to keep it on afterwards.
@@ -1134,10 +1176,12 @@ impl Cursor {
     /// row a cursor is on in a category it is *not* in is remembered all the
     /// same, and walking back to a library that re-sorted while the user was
     /// elsewhere would land them on a different game for exactly the same
-    /// reason.
-    pub fn game_in_column(&self, xmb: &Xmb, at: usize) -> Option<u32> {
-        let row = *self.selected_items.get(at)?;
-        Some(xmb.categories.get(at)?.entries.get(row)?.game()?.app_id)
+    /// reason. A column it has *never* been in has no such row — see
+    /// [`Self::row_in_column`] — and answers `None` however many games are
+    /// hanging in it.
+    pub fn game_in_column(&self, lattice: &Lattice, at: usize) -> Option<u32> {
+        let row = self.row_in_column(at)?;
+        Some(lattice.categories.get(at)?.entries.get(row)?.game()?.app_id)
     }
 
     /// Keep the cursor on the game it was on, after the column at `at` has been
@@ -1156,11 +1200,11 @@ impl Cursor {
     /// the list has been re-sorted, which is not a journey the user made. This
     /// is [`Self::keep_on_media`]'s rule, applied to a list that re-sorts
     /// itself rather than one that grows.
-    pub fn keep_on_game(&mut self, xmb: &Xmb, at: usize, app_id: u32) {
-        let Some(was) = self.selected_items.get(at).copied() else {
+    pub fn keep_on_game(&mut self, lattice: &Lattice, at: usize, app_id: u32) {
+        let Some(was) = self.row_in_column(at) else {
             return;
         };
-        let Some(entries) = xmb.categories.get(at).map(|column| &column.entries) else {
+        let Some(entries) = lattice.categories.get(at).map(|column| &column.entries) else {
             return;
         };
         let Some(row) = entries
@@ -1176,13 +1220,60 @@ impl Cursor {
         if row == was {
             return;
         }
-        self.selected_items[at] = row;
+        self.selected_items[at] = Some(row);
         // Only the column that is on screen has a drawn position to move, and
         // for a category it is always the outermost one: a game is the end of a
         // path, so there is never a subcolumn open over the top of this.
         if self.selected_category == at {
             self.item_position += row as f32 - was as f32;
         }
+    }
+
+    /// The game the cursor is standing on *inside* a column it stepped into, if
+    /// it is in one and on one.
+    ///
+    /// The depth [`Self::game_in_column`] does not reach. That one asks what a
+    /// cursor is on in a category's own column; a library hangs whole columns of
+    /// games off the index at the head of it, and a cursor standing in one of
+    /// those is standing on a game the category's column knows nothing about.
+    ///
+    /// No need to ask which column it is: a game row exists nowhere in this
+    /// tree but a Steam library and the letters of its index, so an answer here
+    /// is by itself the news that this cursor is inside one.
+    pub fn game_inside(&self, lattice: &Lattice) -> Option<u32> {
+        if self.open == 0 {
+            return None;
+        }
+        Some(self.current_entry(lattice)?.game()?.app_id)
+    }
+
+    /// Keep it on that game after the column it is standing in was rebuilt.
+    ///
+    /// A letter of the index is installed-first, like the library it is a slice
+    /// of, so a download finishing moves its game to the top of the letter —
+    /// under the eyes of the one person guaranteed to be watching that row. The
+    /// rule and the arithmetic are [`Self::keep_on_media`]'s: the list slid
+    /// under a stationary cursor, which is not a journey to show.
+    pub fn keep_inside_on_game(&mut self, lattice: &Lattice, app_id: u32) {
+        if self.open == 0 {
+            return;
+        }
+        let was = self.selected_item();
+        let Some(row) = self
+            .current_entries(lattice)
+            .iter()
+            .position(|entry| entry.game().is_some_and(|game| game.app_id == app_id))
+        else {
+            // Gone from this letter altogether — a game the account lost, or
+            // one renamed into another heading. The cursor keeps its row, as it
+            // does for a file deleted from under it.
+            return;
+        };
+        if row == was {
+            return;
+        }
+        self.select_row(row);
+        self.shift_position(row as f32 - was as f32);
     }
 
     /// Put the cursor on the head of the column it is standing in, with the
@@ -1198,8 +1289,8 @@ impl Cursor {
     /// The head of the *list*, not of the column: somebody who has just asked
     /// for "newest first" is asking to be shown the newest, and the search
     /// standing over the shelf is not it.
-    pub fn rest_on_first_row(&mut self, xmb: &Xmb) {
-        let row = first_row(self.current_entries(xmb));
+    pub fn rest_on_first_row(&mut self, lattice: &Lattice) {
+        let row = first_row(self.current_entries(lattice));
         self.select_row(row);
         let at = row as f32;
         match self.open.checked_sub(1) {
@@ -1240,7 +1331,7 @@ impl Cursor {
         if at > self.selected_items.len() {
             return;
         }
-        self.selected_items.insert(at, 0);
+        self.selected_items.insert(at, None);
         if self.selected_category >= at {
             self.selected_category += 1;
             self.category_position += 1.0;
@@ -1260,13 +1351,13 @@ impl Cursor {
     /// The bar is *placed* rather than travelled, because there is no journey
     /// to show: the column the cursor was in is not somewhere it could travel
     /// from any more.
-    pub fn category_removed(&mut self, at: usize, xmb: &Xmb) {
+    pub fn category_removed(&mut self, at: usize, lattice: &Lattice) {
         if at >= self.selected_items.len() {
             return;
         }
         self.selected_items.remove(at);
 
-        let last = xmb.categories.len().saturating_sub(1);
+        let last = lattice.categories.len().saturating_sub(1);
         let was = self.selected_category;
         self.selected_category = match was.cmp(&at) {
             // In front of it: nothing moved.
@@ -1282,7 +1373,7 @@ impl Cursor {
         // gone.
         if was >= at {
             self.leave_subcolumns();
-            self.rest_on_first_row(xmb);
+            self.rest_on_first_row(lattice);
         }
     }
 
@@ -1292,13 +1383,13 @@ impl Cursor {
     /// the *user* asked for — pressing the Steam row to be taken to their
     /// library — and the whole point of the bar sliding is that they can see
     /// where they were taken.
-    pub fn select_category(&mut self, at: usize, xmb: &Xmb) {
-        if at >= xmb.categories.len() || at == self.selected_category {
+    pub fn select_category(&mut self, at: usize, lattice: &Lattice) {
+        if at >= lattice.categories.len() || at == self.selected_category {
             return;
         }
         self.leave_subcolumns();
         self.selected_category = at;
-        self.restore_column();
+        self.restore_column(lattice);
     }
 
     /// Come back out of every subcategory this cursor is standing in.
@@ -1309,8 +1400,8 @@ impl Cursor {
 
     /// Step into the subcategory under the cursor. `false` if the row is not
     /// one — an application, or a setting, both of which are the end of a path.
-    pub fn enter(&mut self, xmb: &Xmb) -> bool {
-        let Some(entries) = self.current_entry(xmb).and_then(Entry::entries) else {
+    pub fn enter(&mut self, lattice: &Lattice) -> bool {
+        let Some(entries) = self.current_entry(lattice).and_then(Entry::entries) else {
             return false;
         };
         // A subcategory with nothing in it is a dead end, and stepping into an
@@ -1372,8 +1463,8 @@ impl Cursor {
     /// unreachable from the one column that is always there. Opening is
     /// [`Action::Launch`]'s job at the top level, as it was on the console,
     /// and Right's again from the moment there is a path to walk.
-    pub fn navigate(&mut self, action: Action, xmb: &Xmb) -> bool {
-        if xmb.categories.is_empty() {
+    pub fn navigate(&mut self, action: Action, lattice: &Lattice) -> bool {
+        if lattice.categories.is_empty() {
             return false;
         }
 
@@ -1389,7 +1480,7 @@ impl Cursor {
                     return false;
                 }
                 self.selected_category -= 1;
-                self.restore_column();
+                self.restore_column(lattice);
                 true
             }
             Action::Right => {
@@ -1397,13 +1488,13 @@ impl Cursor {
                     // Deeper, or nothing: inside a column the category row is
                     // not somewhere Right may jump to, because Left — the only
                     // way back — means something else in here.
-                    return self.enter(xmb);
+                    return self.enter(lattice);
                 }
-                if self.selected_category + 1 >= xmb.categories.len() {
+                if self.selected_category + 1 >= lattice.categories.len() {
                     return false;
                 }
                 self.selected_category += 1;
-                self.restore_column();
+                self.restore_column(lattice);
                 true
             }
             Action::Up => {
@@ -1415,7 +1506,7 @@ impl Cursor {
                 true
             }
             Action::Down => {
-                let count = self.current_entries(xmb).len();
+                let count = self.current_entries(lattice).len();
                 let current = self.selected_item();
                 if current + 1 >= count {
                     return false;
@@ -1447,11 +1538,32 @@ impl Cursor {
     /// out the way a step back out keeps one — but the *depth* is left to ease
     /// back on its own rather than snapped, so the cross returns from wherever
     /// it had slid to instead of jumping there.
-    fn restore_column(&mut self) {
+    ///
+    /// A column nobody has been in yet has no row it was left on, and gets the
+    /// head of its *list* — which is not row zero where something stands over
+    /// the list. A Steam library carries its index above the first game, and a
+    /// display arriving on that row would arrive on a control it did not ask
+    /// for. See [`crate::apps::head_rows`].
+    fn restore_column(&mut self, lattice: &Lattice) {
         self.stack.clear();
         self.open = 0;
+        if self.row_never_chosen() {
+            let row = first_row(self.current_entries(lattice));
+            self.set_row_at(0, row);
+        }
         self.item_position = self.selected_item() as f32;
         self.item_speed = 0.0;
+    }
+
+    /// Whether this cursor has yet to be put on a row of the column it is
+    /// standing in. See [`Self::selected_items`], and [`Self::row_in_column`]
+    /// for what the answer is used for elsewhere.
+    fn row_never_chosen(&self) -> bool {
+        self.selected_items
+            .get(self.selected_category)
+            .copied()
+            .flatten()
+            .is_none()
     }
 
     /// Advance the easing by `dt` seconds. Returns `true` while still moving,
@@ -1847,6 +1959,7 @@ mod tests {
             entries,
             place: None,
             chosen: false,
+            over_the_list: false,
         })
     }
 
@@ -1906,8 +2019,8 @@ mod tests {
         })
     }
 
-    fn model() -> Xmb {
-        Xmb::with_wayland_display(
+    fn model() -> Lattice {
+        Lattice::with_wayland_display(
             vec![
                 Category {
                     id: "a",
@@ -1928,8 +2041,8 @@ mod tests {
 
     /// A column with a path through it: one plain row, then a subcategory two
     /// levels deep whose innermost column is a list of values.
-    fn nested() -> Xmb {
-        Xmb::with_wayland_display(
+    fn nested() -> Lattice {
+        Lattice::with_wayland_display(
             vec![
                 Category {
                     id: "settings",
@@ -1957,8 +2070,8 @@ mod tests {
         )
     }
 
-    fn cursor(xmb: &Xmb) -> Cursor {
-        Cursor::new(xmb.categories.len())
+    fn cursor(lattice: &Lattice) -> Cursor {
+        Cursor::new(lattice.categories.len())
     }
 
     // --- the file explorer's columns ---------------------------------------
@@ -1980,7 +2093,7 @@ mod tests {
 
     /// One column of two rows, both of them somewhere on the disk: the bar as
     /// it stands the moment somebody has stepped into Files.
-    fn places(first: &Path, second: &Path) -> Xmb {
+    fn places(first: &Path, second: &Path) -> Lattice {
         let place = |title: &str, at: &Path| {
             Entry::Folder(crate::apps::Folder {
                 title: title.into(),
@@ -1989,9 +2102,10 @@ mod tests {
                 entries: Vec::new(),
                 place: Some(crate::files::Place::Directory(at.to_path_buf())),
                 chosen: false,
+                over_the_list: false,
             })
         };
-        Xmb::with_wayland_display(
+        Lattice::with_wayland_display(
             vec![Category {
                 id: "system",
                 title: "System",
@@ -2013,20 +2127,20 @@ mod tests {
         std::fs::create_dir(dir.join("inside")).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
 
-        let mut xmb = places(&dir, &dir);
-        let mut cursor = cursor(&xmb);
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
         assert!(
-            !cursor.enter(&xmb),
+            !cursor.enter(&lattice),
             "there is nothing in it to step into yet"
         );
 
         assert!(
-            cursor.open_place(&mut xmb, by_name()).is_some(),
+            cursor.open_place(&mut lattice, by_name()).is_some(),
             "the press reads the folder"
         );
-        assert!(cursor.enter(&xmb), "and now there is a column");
+        assert!(cursor.enter(&lattice), "and now there is a column");
         let rows: Vec<&str> = cursor
-            .current_entries(&xmb)
+            .current_entries(&lattice)
             .iter()
             .map(Entry::title)
             .collect();
@@ -2042,7 +2156,7 @@ mod tests {
         );
         // What was found, on the row it was found under.
         assert_eq!(
-            xmb.categories[0].entries[0].comment(),
+            lattice.categories[0].entries[0].comment(),
             Some("1 folder, 1 file")
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2058,18 +2172,30 @@ mod tests {
         };
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
 
-        let mut xmb = places(&dir, &dir);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.open_place(&mut xmb, by_name()).is_some());
-        assert!(!xmb.categories[0].entries[0].entries().unwrap().is_empty());
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.open_place(&mut lattice, by_name()).is_some());
+        assert!(!lattice.categories[0].entries[0]
+            .entries()
+            .unwrap()
+            .is_empty());
 
-        assert!(cursor.navigate(Action::Down, &xmb), "down to the second");
-        assert!(cursor.open_place(&mut xmb, by_name()).is_some());
         assert!(
-            xmb.categories[0].entries[0].entries().unwrap().is_empty(),
+            cursor.navigate(Action::Down, &lattice),
+            "down to the second"
+        );
+        assert!(cursor.open_place(&mut lattice, by_name()).is_some());
+        assert!(
+            lattice.categories[0].entries[0]
+                .entries()
+                .unwrap()
+                .is_empty(),
             "the first has given up what it was holding"
         );
-        assert!(!xmb.categories[0].entries[1].entries().unwrap().is_empty());
+        assert!(!lattice.categories[0].entries[1]
+            .entries()
+            .unwrap()
+            .is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2085,17 +2211,17 @@ mod tests {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
 
-        let mut xmb = places(&dir, &dir);
-        let mut cursor = cursor(&xmb);
-        cursor.open_place(&mut xmb, by_name());
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.navigate(Action::Down, &xmb);
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.navigate(Action::Down, &lattice);
         assert_eq!(cursor.selected_item(), 3);
 
         assert!(cursor.leave(), "back out to the folder it came from");
-        cursor.open_place(&mut xmb, by_name());
-        cursor.enter(&xmb);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
         assert_eq!(
             cursor.selected_item(),
             1,
@@ -2115,14 +2241,14 @@ mod tests {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
 
-        let mut xmb = places(&dir, &dir);
-        let mut cursor = cursor(&xmb);
-        cursor.open_place(&mut xmb, by_name());
-        cursor.enter(&xmb);
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
 
-        assert!(cursor.search_here(&mut xmb, "alp", by_name()).is_some());
+        assert!(cursor.search_here(&mut lattice, "alp", by_name()).is_some());
         let rows: Vec<&str> = cursor
-            .current_entries(&xmb)
+            .current_entries(&lattice)
             .iter()
             .map(Entry::title)
             .collect();
@@ -2130,9 +2256,9 @@ mod tests {
 
         // And out again, without stepping anywhere: the row that empties the
         // field is the only thing that undoes one.
-        assert!(cursor.search_here(&mut xmb, "", by_name()).is_some());
+        assert!(cursor.search_here(&mut lattice, "", by_name()).is_some());
         assert_eq!(
-            cursor.current_entries(&xmb).len(),
+            cursor.current_entries(&lattice).len(),
             4,
             "the field, and three"
         );
@@ -2151,18 +2277,18 @@ mod tests {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
 
-        let mut xmb = places(&dir, &dir);
-        let mut cursor = cursor(&xmb);
-        cursor.open_place(&mut xmb, by_name());
-        cursor.enter(&xmb);
-        cursor.search_here(&mut xmb, "alpha", by_name());
-        assert_eq!(cursor.current_entries(&xmb).len(), 3);
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
+        cursor.search_here(&mut lattice, "alpha", by_name());
+        assert_eq!(cursor.current_entries(&lattice).len(), 3);
 
         assert!(cursor.leave());
-        cursor.open_place(&mut xmb, by_name());
-        cursor.enter(&xmb);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
         assert_eq!(
-            cursor.current_entries(&xmb).len(),
+            cursor.current_entries(&lattice).len(),
             3,
             "the field, and both files"
         );
@@ -2174,27 +2300,27 @@ mod tests {
     /// rows it has to do nothing at all.
     #[test]
     fn nothing_else_on_the_bar_is_read_off_the_disk() {
-        let mut xmb = nested();
-        let mut cursor = cursor(&xmb);
+        let mut lattice = nested();
+        let mut cursor = cursor(&lattice);
         assert!(
-            cursor.open_place(&mut xmb, by_name()).is_none(),
+            cursor.open_place(&mut lattice, by_name()).is_none(),
             "a plain row"
         );
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         assert!(
-            cursor.open_place(&mut xmb, by_name()).is_none(),
+            cursor.open_place(&mut lattice, by_name()).is_none(),
             "a subcategory of the shell's"
         );
-        assert!(cursor.enter(&xmb), "which still opens");
+        assert!(cursor.enter(&lattice), "which still opens");
     }
 
     /// A catalogue with one real application in it, filed inside a
     /// subcategory: nothing about a window says which column of the bar its
     /// application ended up in, so the lookup has to go all the way down.
-    fn installed() -> Xmb {
+    fn installed() -> Lattice {
         let mut browser = app("Firefox");
         browser.wm_class = Some("firefox".into());
-        Xmb::with_wayland_display(
+        Lattice::with_wayland_display(
             vec![Category {
                 id: "internet",
                 title: "Internet",
@@ -2210,21 +2336,26 @@ mod tests {
     /// the two, and it is what lets a button say "Close Firefox".
     #[test]
     fn a_window_is_traced_back_to_the_application_that_installed_it() {
-        let xmb = installed();
+        let lattice = installed();
 
         assert_eq!(
-            xmb.app_for_window("firefox").map(|app| app.name.as_str()),
+            lattice
+                .app_for_window("firefox")
+                .map(|app| app.name.as_str()),
             Some("Firefox")
         );
         // The two spellings the same application arrives under elsewhere in
         // the shell: an X11 class is capitalised, and a reverse-DNS id carries
         // the name in its tail.
         assert_eq!(
-            xmb.app_for_window("Firefox").map(|app| app.name.as_str()),
+            lattice
+                .app_for_window("Firefox")
+                .map(|app| app.name.as_str()),
             Some("Firefox")
         );
         assert_eq!(
-            xmb.app_for_window("org.mozilla.firefox")
+            lattice
+                .app_for_window("org.mozilla.firefox")
                 .map(|app| app.name.as_str()),
             Some("Firefox")
         );
@@ -2232,9 +2363,9 @@ mod tests {
         // Nothing installed claims these, and neither may anything be invented
         // for them: the caller has its own answer for a window the catalogue
         // has never heard of.
-        assert!(xmb.app_for_window("some-game").is_none());
-        assert!(xmb.app_for_window("").is_none());
-        assert!(xmb.app_for_window("   ").is_none());
+        assert!(lattice.app_for_window("some-game").is_none());
+        assert!(lattice.app_for_window("").is_none());
+        assert!(lattice.app_for_window("   ").is_none());
     }
 
     fn settle(cursor: &mut Cursor) {
@@ -2243,21 +2374,21 @@ mod tests {
 
     #[test]
     fn navigates_within_bounds() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
 
         // Cannot move before the first category or above the first item.
-        assert!(!cursor.navigate(Action::Left, &xmb));
-        assert!(!cursor.navigate(Action::Up, &xmb));
+        assert!(!cursor.navigate(Action::Left, &lattice));
+        assert!(!cursor.navigate(Action::Up, &lattice));
 
-        assert!(cursor.navigate(Action::Down, &xmb));
+        assert!(cursor.navigate(Action::Down, &lattice));
         assert_eq!(cursor.selected_item(), 1);
-        assert!(cursor.navigate(Action::Right, &xmb));
+        assert!(cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.selected_category, 1);
 
         // Category B has a single app, so Down does nothing.
-        assert!(!cursor.navigate(Action::Down, &xmb));
-        assert!(!cursor.navigate(Action::Right, &xmb));
+        assert!(!cursor.navigate(Action::Down, &lattice));
+        assert!(!cursor.navigate(Action::Right, &lattice));
     }
 
     /// A pointer names the row it wants outright, where a direction can only
@@ -2265,18 +2396,18 @@ mod tests {
     /// reads as the column being scrolled rather than replaced.
     #[test]
     fn a_row_can_be_pointed_at_directly() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
 
-        assert!(cursor.point_at_row(2, &xmb));
+        assert!(cursor.point_at_row(2, &lattice));
         assert_eq!(cursor.selected_item(), 2);
         assert!(cursor.item_position < 2.0, "and travels there");
 
         // The row it is already on is not a move, which is what tells a second
         // click on a row apart from the first.
-        assert!(!cursor.point_at_row(2, &xmb));
+        assert!(!cursor.point_at_row(2, &lattice));
         // Nor is a row the column does not have.
-        assert!(!cursor.point_at_row(9, &xmb));
+        assert!(!cursor.point_at_row(9, &lattice));
         assert_eq!(cursor.selected_item(), 2);
     }
 
@@ -2285,19 +2416,19 @@ mod tests {
     /// leave a trail belonging to a category the user has left.
     #[test]
     fn pointing_at_a_category_leaves_the_path_behind() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.enter(&xmb));
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.enter(&lattice));
         assert_eq!(cursor.depth(), 1);
 
-        assert!(cursor.point_at_category(1, &xmb));
+        assert!(cursor.point_at_category(1, &lattice));
         assert_eq!(cursor.selected_category, 1);
         assert_eq!(cursor.depth(), 0);
 
         // The category it is already on, with nothing open, is not a move.
-        assert!(!cursor.point_at_category(1, &xmb));
-        assert!(!cursor.point_at_category(7, &xmb));
+        assert!(!cursor.point_at_category(1, &lattice));
+        assert!(!cursor.point_at_category(7, &lattice));
     }
 
     /// The one case where pointing at the category already selected *is* a
@@ -2305,27 +2436,27 @@ mod tests {
     /// head of that trail is the way back out.
     #[test]
     fn pointing_at_the_open_categorys_button_walks_back_out_to_it() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.enter(&xmb));
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.enter(&lattice));
 
-        assert!(cursor.point_at_category(cursor.selected_category, &xmb));
+        assert!(cursor.point_at_category(cursor.selected_category, &lattice));
         assert_eq!(cursor.depth(), 0);
     }
 
     #[test]
     fn remembers_selection_per_category() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.navigate(Action::Down, &xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.navigate(Action::Down, &lattice);
         assert_eq!(cursor.selected_item(), 2);
 
-        cursor.navigate(Action::Right, &xmb);
+        cursor.navigate(Action::Right, &lattice);
         assert_eq!(cursor.selected_item(), 0);
 
-        cursor.navigate(Action::Left, &xmb);
+        cursor.navigate(Action::Left, &lattice);
         assert_eq!(cursor.selected_item(), 2, "selection should be restored");
     }
 
@@ -2334,27 +2465,27 @@ mod tests {
     /// user was in another category, which is not what happened.
     #[test]
     fn a_remembered_row_is_already_there_rather_than_scrolled_to() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.navigate(Action::Down, &xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.navigate(Action::Down, &lattice);
         while cursor.animate(1.0 / 60.0) {}
         assert_eq!(cursor.item_position, 2.0);
 
         // Away: the column belongs to the next category from the first frame.
-        cursor.navigate(Action::Right, &xmb);
+        cursor.navigate(Action::Right, &lattice);
         assert_eq!(cursor.item_position, 0.0, "and not on its way there");
 
         // And back, with nothing left to animate vertically — only the
         // category row is still travelling.
-        cursor.navigate(Action::Left, &xmb);
+        cursor.navigate(Action::Left, &lattice);
         assert_eq!(cursor.item_position, 2.0);
         cursor.animate(1.0 / 60.0);
         assert_eq!(cursor.item_position, 2.0, "it must not drift off the row");
 
         // Moving inside a category still glides: this is about crossing
         // between them, not about killing the bar's vertical easing.
-        assert!(cursor.navigate(Action::Up, &xmb));
+        assert!(cursor.navigate(Action::Up, &lattice));
         cursor.animate(1.0 / 60.0);
         assert!(
             cursor.item_position < 2.0 && cursor.item_position > 1.0,
@@ -2368,53 +2499,56 @@ mod tests {
     /// somewhere the other cannot undo.
     #[test]
     fn a_path_is_walked_in_with_right_and_out_with_left() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
 
         // At the top of a column the horizontal axis still belongs to the
         // category row, whatever kind of row the cursor is on.
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.navigate(Action::Right, &xmb));
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.selected_category, 1);
         assert_eq!(cursor.depth(), 0);
-        assert!(cursor.navigate(Action::Left, &xmb));
+        assert!(cursor.navigate(Action::Left, &lattice));
 
         // Opening is Launch's job there — and from then on the axis is depth.
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.enter(&xmb), "Appearance opens");
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.enter(&lattice), "Appearance opens");
         assert_eq!(cursor.depth(), 1);
         assert_eq!(
             cursor.selected_category, 0,
             "opening a subcategory must not also move along the row"
         );
         assert_eq!(
-            cursor.current_entry(&xmb).map(Entry::title),
+            cursor.current_entry(&lattice).map(Entry::title),
             Some("Accent color")
         );
 
-        assert!(cursor.navigate(Action::Right, &xmb));
+        assert!(cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.depth(), 2);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("Purple"));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Purple")
+        );
 
         // A value is the end of the path: there is nothing further right, and
         // the category row is not reachable from inside a column.
-        assert!(!cursor.navigate(Action::Right, &xmb));
+        assert!(!cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.selected_category, 0);
 
         // And back out, one level per press, to the row it was opened from.
-        assert!(cursor.navigate(Action::Left, &xmb));
+        assert!(cursor.navigate(Action::Left, &lattice));
         assert_eq!(
-            cursor.current_entry(&xmb).map(Entry::title),
+            cursor.current_entry(&lattice).map(Entry::title),
             Some("Accent color")
         );
-        assert!(cursor.navigate(Action::Left, &xmb));
+        assert!(cursor.navigate(Action::Left, &lattice));
         assert_eq!(
-            cursor.current_entry(&xmb).map(Entry::title),
+            cursor.current_entry(&lattice).map(Entry::title),
             Some("Appearance")
         );
         assert_eq!(cursor.depth(), 0);
         // Only now does Left mean the category row again.
-        assert!(!cursor.navigate(Action::Left, &xmb));
+        assert!(!cursor.navigate(Action::Left, &lattice));
     }
 
     /// A subcategory with nothing in it is a row, not a way in. Multimedia
@@ -2428,7 +2562,7 @@ mod tests {
     /// and no row under the light to say why.
     #[test]
     fn an_empty_subcategory_is_a_dead_end_rather_than_an_empty_column() {
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "multimedia",
                 title: "Multimedia",
@@ -2437,22 +2571,28 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("Music"));
+        let mut cursor = cursor(&lattice);
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Music")
+        );
 
         assert!(
-            !cursor.enter(&xmb),
+            !cursor.enter(&lattice),
             "there is nothing in there to step into"
         );
         assert_eq!(cursor.depth(), 0);
-        assert_eq!(cursor.columns(&xmb).len(), 1);
+        assert_eq!(cursor.columns(&lattice).len(), 1);
 
         // And the row is still the one under the light, so the column the user
         // is looking at is the column they were looking at.
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("Music"));
-        assert!(cursor.navigate(Action::Down, &xmb));
         assert_eq!(
-            cursor.current_entry(&xmb).map(Entry::title),
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Music")
+        );
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
             Some("Audacity")
         );
     }
@@ -2476,7 +2616,7 @@ mod tests {
     #[test]
     fn a_song_arriving_does_not_move_the_one_under_the_cursor() {
         let column = |songs: Vec<Entry>| {
-            Xmb::with_wayland_display(
+            Lattice::with_wayland_display(
                 vec![Category {
                     id: "multimedia",
                     title: "Multimedia",
@@ -2488,24 +2628,30 @@ mod tests {
         };
         let (alpha, beta) = (shelved("/m/alpha.mp3"), shelved("/m/beta.mp3"));
         let (delta, epsilon) = (shelved("/m/delta.mp3"), shelved("/m/epsilon.mp3"));
-        let xmb = column(vec![song(&beta), song(&delta)]);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.navigate(Action::Down, &xmb));
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("delta"));
+        let lattice = column(vec![song(&beta), song(&delta)]);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("delta")
+        );
         while cursor.animate(1.0 / 60.0) {}
         let settled = cursor.position_at(1);
 
         // Two more turn up, one of them above the row being read.
-        let xmb = column(vec![
+        let lattice = column(vec![
             song(&alpha),
             song(&beta),
             song(&delta),
             song(&epsilon),
         ]);
-        cursor.keep_on_media(&xmb, &delta);
+        cursor.keep_on_media(&lattice, &delta);
 
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("delta"));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("delta")
+        );
         assert_eq!(cursor.selected_item(), 2, "one row further down the list");
         // And the column moved with it, so nothing is left travelling: the
         // list slid under a cursor that never went anywhere.
@@ -2525,9 +2671,22 @@ mod tests {
         })
     }
 
+    /// The row a Steam library carries over its first game.
+    fn index(games: Vec<Entry>) -> Entry {
+        Entry::Folder(crate::apps::Folder {
+            title: "Alphabetical".into(),
+            comment: None,
+            icon: None,
+            entries: games,
+            place: None,
+            chosen: false,
+            over_the_list: true,
+        })
+    }
+
     /// A library with these games in it, in this order.
-    fn library(games: Vec<Entry>) -> Xmb {
-        Xmb::with_wayland_display(
+    fn library(games: Vec<Entry>) -> Lattice {
+        Lattice::with_wayland_display(
             vec![Category {
                 id: "steam",
                 title: "Steam",
@@ -2549,31 +2708,31 @@ mod tests {
     /// before.
     #[test]
     fn a_game_that_finishes_downloading_keeps_the_cursor_it_was_under() {
-        let xmb = library(vec![
+        let lattice = library(vec![
             game(1, "Aeonic", true),
             game(2, "Zenith", true),
             game(3, "Celeste", false),
             game(4, "Downloading", false),
         ]);
-        let mut cursor = cursor(&xmb);
+        let mut cursor = cursor(&lattice);
         for _ in 0..3 {
-            assert!(cursor.navigate(Action::Down, &xmb));
+            assert!(cursor.navigate(Action::Down, &lattice));
         }
         while cursor.animate(1.0 / 60.0) {}
-        assert_eq!(cursor.game_in_column(&xmb, 0), Some(4));
+        assert_eq!(cursor.game_in_column(&lattice, 0), Some(4));
         let settled = cursor.position_at(0);
 
         // It lands, and the library comes back re-sorted around it.
-        let xmb = library(vec![
+        let lattice = library(vec![
             game(1, "Aeonic", true),
             game(4, "Downloading", true),
             game(2, "Zenith", true),
             game(3, "Celeste", false),
         ]);
-        cursor.keep_on_game(&xmb, 0, 4);
+        cursor.keep_on_game(&lattice, 0, 4);
 
         assert_eq!(cursor.selected_item(), 1, "two rows up the list");
-        assert_eq!(cursor.game_in_column(&xmb, 0), Some(4));
+        assert_eq!(cursor.game_in_column(&lattice, 0), Some(4));
         assert_eq!(
             cursor.position_at(0),
             settled - 2.0,
@@ -2605,20 +2764,20 @@ mod tests {
                     vec![game(1, "Aeonic", false), game(9, "Fetched", false)]
                 },
             });
-            Xmb::with_wayland_display(categories, OsString::from("lxb-test"))
+            Lattice::with_wayland_display(categories, OsString::from("lxb-test"))
         };
-        let xmb = games(false);
-        let mut cursor = cursor(&xmb);
-        cursor.select_category(1, &xmb);
-        assert!(cursor.navigate(Action::Down, &xmb));
-        cursor.select_category(0, &xmb);
+        let lattice = games(false);
+        let mut cursor = cursor(&lattice);
+        cursor.select_category(1, &lattice);
+        assert!(cursor.navigate(Action::Down, &lattice));
+        cursor.select_category(0, &lattice);
         let elsewhere = cursor.position_at(0);
 
-        let xmb = games(true);
-        cursor.keep_on_game(&xmb, 1, 9);
+        let lattice = games(true);
+        cursor.keep_on_game(&lattice, 1, 9);
 
-        cursor.select_category(1, &xmb);
-        assert_eq!(cursor.game_in_column(&xmb, 1), Some(9));
+        cursor.select_category(1, &lattice);
+        assert_eq!(cursor.game_in_column(&lattice, 1), Some(9));
         assert_eq!(
             elsewhere,
             cursor.position_at(0),
@@ -2626,26 +2785,235 @@ mod tests {
         );
     }
 
+    /// A column that carries something over its list opens on the list.
+    ///
+    /// The Steam library hangs its index above its first game, and Up from that
+    /// game is what reaches it — the place anything standing over a list stands.
+    /// A display that arrived on the index instead would begin every visit to
+    /// somebody's library by stepping down off a row they did not ask for, and
+    /// this is the same rule a shelf's search field is under.
+    #[test]
+    fn a_column_with_a_row_over_it_opens_on_the_first_game() {
+        let lattice = Lattice::with_wayland_display(
+            vec![
+                Category {
+                    id: "applications",
+                    title: "Applications",
+                    icon: "applications",
+                    entries: vec![entry("Audacity")],
+                },
+                Category {
+                    id: "steam",
+                    title: "Steam",
+                    icon: "steam",
+                    entries: vec![
+                        index(vec![game(1, "Aeonic", false)]),
+                        game(1, "Aeonic", false),
+                        game(2, "Zenith", true),
+                    ],
+                },
+            ],
+            OsString::from("lxb-test"),
+        );
+        let mut cursor = cursor(&lattice);
+        cursor.select_category(1, &lattice);
+
+        assert_eq!(cursor.selected_item(), 1);
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Aeonic"),
+            "the first game, not the row over it"
+        );
+        assert_eq!(
+            cursor.position_at(0),
+            1.0,
+            "and the column is drawn from there rather than sliding down to it"
+        );
+
+        // The index is where anything standing over a list is: one press up.
+        assert!(cursor.navigate(Action::Up, &lattice));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Alphabetical")
+        );
+    }
+
+    /// The bug this pins: a library that arrives in two parts while nobody is
+    /// looking at it, and a display that had never opened Steam walking in on
+    /// the middle of it.
+    ///
+    /// Steam answers "what is installed" off this machine's own disk in a
+    /// moment and "what does this account own" a good deal later, so the column
+    /// exists — listed in whatever order the user chose — with only the
+    /// installed games in it. A cursor that read its slot as a row would be
+    /// standing on the head of that half-built list, would follow that game to
+    /// wherever the finished order puts it, and would open there: which under
+    /// "Recently played" is a game chosen by what happens to be on the disk,
+    /// somewhere down a list whose top the user has never seen.
+    #[test]
+    fn a_library_that_fills_in_leaves_a_display_that_never_opened_it_at_the_head() {
+        let steam = |entries: Vec<Entry>| {
+            Lattice::with_wayland_display(
+                vec![
+                    Category {
+                        id: "applications",
+                        title: "Applications",
+                        icon: "applications",
+                        entries: vec![entry("Audacity")],
+                    },
+                    Category {
+                        id: "steam",
+                        title: "Steam",
+                        icon: "steam",
+                        entries,
+                    },
+                ],
+                OsString::from("lxb-test"),
+            )
+        };
+
+        // What the disk knows on its own, which is only what is installed.
+        let lattice = steam(vec![game(9, "Fetched", true)]);
+        let mut cursor = cursor(&lattice);
+        assert_eq!(
+            cursor.selected_category, 0,
+            "the display is in another column"
+        );
+        assert_eq!(
+            cursor.game_in_column(&lattice, 1),
+            None,
+            "and so it is on no game in this one"
+        );
+
+        // And then the account's library, in an order that has nothing to do
+        // with what is on the disk.
+        let lattice = steam(vec![
+            game(1, "Aeonic", false),
+            game(2, "Zenith", false),
+            game(9, "Fetched", true),
+        ]);
+        cursor.keep_on_game(&lattice, 1, 9);
+
+        cursor.select_category(1, &lattice);
+        assert_eq!(cursor.selected_item(), 0);
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("Aeonic"),
+            "the head of the order that was asked for"
+        );
+        assert_eq!(
+            cursor.position_at(0),
+            0.0,
+            "and the column is drawn from the top rather than scrolled into"
+        );
+    }
+
+    /// The other half of that rule: a display that *is* in the library when the
+    /// rest of it lands keeps the game under its highlight, even though it
+    /// never moved off the head of the column.
+    ///
+    /// Somebody is looking at that row. The list filling in underneath it is
+    /// not a move they made, and the cover under the highlight becoming a
+    /// different game is the thing [`Cursor::keep_on_game`] exists to prevent.
+    #[test]
+    fn a_display_standing_in_the_library_keeps_its_game_when_the_rest_arrives() {
+        let lattice = library(vec![game(9, "Fetched", true)]);
+        let mut cursor = cursor(&lattice);
+        assert_eq!(cursor.game_in_column(&lattice, 0), Some(9));
+
+        let lattice = library(vec![
+            game(1, "Aeonic", false),
+            game(2, "Zenith", false),
+            game(9, "Fetched", true),
+        ]);
+        cursor.keep_on_game(&lattice, 0, 9);
+
+        assert_eq!(cursor.selected_item(), 2, "the same game, further down");
+        assert_eq!(
+            cursor.position_at(0),
+            2.0,
+            "and the column drawn from two rows further down, so nothing moved"
+        );
+        assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// A letter of the index re-sorts when a download lands — installed games
+    /// come first in it, as they do in the library — and the display watching
+    /// that download stays on the game rather than on the row number.
+    #[test]
+    fn a_game_that_lands_inside_a_letter_keeps_the_cursor_that_was_on_it() {
+        let letter = |games: Vec<Entry>| {
+            Lattice::with_wayland_display(
+                vec![Category {
+                    id: "steam",
+                    title: "Steam",
+                    icon: "steam",
+                    entries: vec![index(games.clone())],
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let lattice = letter(vec![
+            game(1, "Aeonic", true),
+            game(2, "Alpha", false),
+            game(3, "Anvil", false),
+        ]);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice), "into the index");
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(cursor.game_inside(&lattice), Some(3));
+        let settled = cursor.position_at(1);
+
+        // Anvil finishes, and the letter comes back with it at the top.
+        let lattice = letter(vec![
+            game(3, "Anvil", true),
+            game(1, "Aeonic", true),
+            game(2, "Alpha", false),
+        ]);
+        cursor.keep_inside_on_game(&lattice, 3);
+
+        assert_eq!(cursor.selected_item(), 0, "two rows up its letter");
+        assert_eq!(cursor.game_inside(&lattice), Some(3));
+        assert_eq!(
+            cursor.position_at(1),
+            settled - 2.0,
+            "and the column is drawn from two rows further up, so nothing moved"
+        );
+        assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// The same question asked of a cursor that has stepped into nothing
+    /// answers nothing: the category's own column is [`Cursor::game_in_column`]'s
+    /// to keep, and two rules over one row would fight.
+    #[test]
+    fn a_cursor_at_the_top_of_a_column_is_inside_no_letter() {
+        let lattice = library(vec![game(1, "Aeonic", true), game(2, "Zenith", false)]);
+        let cursor = cursor(&lattice);
+        assert_eq!(cursor.game_inside(&lattice), None);
+    }
+
     /// A game that has left the library altogether — a shared title whose
     /// lender took it back — leaves the cursor where it is standing, the same
     /// answer a deleted file gets.
     #[test]
     fn a_game_that_leaves_the_library_leaves_the_cursor_where_it_stands() {
-        let xmb = library(vec![game(1, "Aeonic", true), game(2, "Zenith", true)]);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.navigate(Action::Down, &xmb));
+        let lattice = library(vec![game(1, "Aeonic", true), game(2, "Zenith", true)]);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.navigate(Action::Down, &lattice));
 
-        let xmb = library(vec![game(1, "Aeonic", true), game(3, "Celeste", true)]);
-        cursor.keep_on_game(&xmb, 0, 2);
+        let lattice = library(vec![game(1, "Aeonic", true), game(3, "Celeste", true)]);
+        cursor.keep_on_game(&lattice, 0, 2);
         assert_eq!(cursor.selected_item(), 1);
-        assert_eq!(cursor.game_in_column(&xmb, 0), Some(3));
+        assert_eq!(cursor.game_in_column(&lattice, 0), Some(3));
     }
 
     /// A file that has gone off the disk takes its row with it, and the cursor
     /// stays where it is standing rather than following the file into nothing.
     #[test]
     fn a_song_deleted_from_under_the_cursor_leaves_it_where_it_stands() {
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "multimedia",
                 title: "Multimedia",
@@ -2657,20 +3025,20 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.navigate(Action::Down, &xmb));
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
 
-        cursor.keep_on_media(&xmb, &shelved("/m/b.mp3"));
+        cursor.keep_on_media(&lattice, &shelved("/m/b.mp3"));
         assert_eq!(cursor.selected_item(), 1);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("c"));
+        assert_eq!(cursor.current_entry(&lattice).map(Entry::title), Some("c"));
     }
 
     /// A shelf listed in a different order is a different list, so the cursor
     /// goes to the head of it — placed there, with nothing left travelling.
     #[test]
     fn a_reordered_column_is_shown_from_its_first_row() {
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "multimedia",
                 title: "Multimedia",
@@ -2686,16 +3054,16 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.navigate(Action::Down, &xmb));
-        assert!(cursor.navigate(Action::Down, &xmb));
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
         while cursor.animate(1.0 / 60.0) {}
         assert_eq!(cursor.selected_item(), 2);
 
-        cursor.rest_on_first_row(&xmb);
+        cursor.rest_on_first_row(&lattice);
         assert_eq!(cursor.selected_item(), 0);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+        assert_eq!(cursor.current_entry(&lattice).map(Entry::title), Some("a"));
         // Placed, not travelled to: there is no journey through a list whose
         // every row has just changed.
         assert_eq!(cursor.position_at(1), 0.0);
@@ -2706,9 +3074,9 @@ mod tests {
     /// at the head of it, and then the files.
     /// `paths` is what the search has left; `found` is how many are on the
     /// shelf altogether, which is not the same number once one is running.
-    fn shelf_of(query: &str, paths: &[&str], found: usize) -> Xmb {
+    fn shelf_of(query: &str, paths: &[&str], found: usize) -> Lattice {
         let listing: Vec<crate::media::Shelved> = paths.iter().map(|path| shelved(path)).collect();
-        Xmb::with_wayland_display(
+        Lattice::with_wayland_display(
             vec![Category {
                 id: "multimedia",
                 title: "Multimedia",
@@ -2725,6 +3093,7 @@ mod tests {
                     ),
                     place: None,
                     chosen: false,
+                    over_the_list: false,
                 })],
             }],
             OsString::from("lxb-test"),
@@ -2736,25 +3105,31 @@ mod tests {
     /// by stepping over a control nobody asked for.
     #[test]
     fn a_shelf_opens_on_its_first_file_and_not_on_its_search() {
-        let xmb = shelf_of("", &["/m/a.mp3", "/m/b.mp3"], 2);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
+        let lattice = shelf_of("", &["/m/a.mp3", "/m/b.mp3"], 2);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
         assert_eq!(cursor.selected_item(), 1);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+        assert_eq!(cursor.current_entry(&lattice).map(Entry::title), Some("a"));
 
         // And the field is exactly one press of Up away, which is where a
         // person looks for the thing above the first thing.
-        assert!(cursor.navigate(Action::Up, &xmb));
-        assert!(cursor.current_entry(&xmb).and_then(Entry::search).is_some());
-        assert!(!cursor.navigate(Action::Up, &xmb), "and nothing above that");
+        assert!(cursor.navigate(Action::Up, &lattice));
+        assert!(cursor
+            .current_entry(&lattice)
+            .and_then(Entry::search)
+            .is_some());
+        assert!(
+            !cursor.navigate(Action::Up, &lattice),
+            "and nothing above that"
+        );
 
         // Reordering the shelf brings the cursor back to the first file for the
         // same reason: what "newest first" asks to be shown is the newest file.
-        cursor.navigate(Action::Down, &xmb);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.navigate(Action::Down, &lattice);
         while cursor.animate(1.0 / 60.0) {}
-        cursor.rest_on_first_row(&xmb);
-        assert_eq!(cursor.current_entry(&xmb).map(Entry::title), Some("a"));
+        cursor.rest_on_first_row(&lattice);
+        assert_eq!(cursor.current_entry(&lattice).map(Entry::title), Some("a"));
         assert!(!cursor.animate(1.0 / 60.0), "placed, not travelled to");
 
         // A column with no such row is untouched by any of it.
@@ -2768,11 +3143,11 @@ mod tests {
     /// from, rather than on a row that is not there.
     #[test]
     fn a_shelf_with_no_matches_opens_on_the_way_out_of_the_search() {
-        let xmb = shelf_of("zzz", &[], 40);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb), "the two rows are still a column");
+        let lattice = shelf_of("zzz", &[], 40);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice), "the two rows are still a column");
         assert_eq!(
-            cursor.current_entry(&xmb).map(Entry::title),
+            cursor.current_entry(&lattice).map(Entry::title),
             Some("Clear search")
         );
     }
@@ -2784,15 +3159,21 @@ mod tests {
     /// this, asked once a frame, rather than any particular way of leaving.
     #[test]
     fn walking_out_to_the_categories_leaves_the_search_field_behind() {
-        let xmb = shelf_of("", &["/m/a.mp3"], 1);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.navigate(Action::Up, &xmb));
-        assert!(cursor.current_entry(&xmb).and_then(Entry::search).is_some());
+        let lattice = shelf_of("", &["/m/a.mp3"], 1);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.navigate(Action::Up, &lattice));
+        assert!(cursor
+            .current_entry(&lattice)
+            .and_then(Entry::search)
+            .is_some());
 
-        cursor.point_at_category(0, &xmb);
+        cursor.point_at_category(0, &lattice);
         assert!(
-            cursor.current_entry(&xmb).and_then(Entry::search).is_none(),
+            cursor
+                .current_entry(&lattice)
+                .and_then(Entry::search)
+                .is_none(),
             "the cursor is back on the category's own column"
         );
     }
@@ -2809,7 +3190,7 @@ mod tests {
     #[test]
     fn a_cursor_a_long_way_down_a_column_stops_moving() {
         let rows: Vec<Entry> = (0..8_000).map(|i| entry(&format!("row{i}"))).collect();
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -2820,8 +3201,8 @@ mod tests {
         );
 
         for row in [1_024, 4_097, 7_999] {
-            let mut cursor = cursor(&xmb);
-            assert!(cursor.point_at_row(row, &xmb));
+            let mut cursor = cursor(&lattice);
+            assert!(cursor.point_at_row(row, &lattice));
             // A second is far longer than any of these takes to arrive; what
             // is being asserted is that it ever says so.
             let mut frames = 0;
@@ -2838,9 +3219,9 @@ mod tests {
     /// a file. Every display is standing in that bar at the time.
     #[test]
     fn a_column_appearing_does_not_move_the_one_the_user_is_on() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.navigate(Action::Right, &xmb));
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.selected_category, 1);
         while cursor.animate(1.0 / 60.0) {}
         let settled = cursor.category_position;
@@ -2849,7 +3230,7 @@ mod tests {
         cursor.category_added(1);
         assert_eq!(cursor.selected_category, 2, "the same column, moved along");
         assert_eq!(cursor.category_position, settled + 1.0);
-        assert_eq!(cursor.selected_items.len(), xmb.categories.len() + 1);
+        assert_eq!(cursor.selected_items.len(), lattice.categories.len() + 1);
 
         // And one behind it moves nothing at all.
         cursor.category_added(3);
@@ -2862,12 +3243,12 @@ mod tests {
     /// that could never reach the column after it.
     #[test]
     fn the_column_after_a_column_of_subcategories_is_still_reachable() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.current_entry(&xmb).unwrap().entries().is_some());
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.current_entry(&lattice).unwrap().entries().is_some());
 
-        assert!(cursor.navigate(Action::Right, &xmb));
+        assert!(cursor.navigate(Action::Right, &lattice));
         assert_eq!(cursor.selected_category, 1);
         assert_eq!(cursor.depth(), 0);
     }
@@ -2878,14 +3259,14 @@ mod tests {
     /// behaved and the one thing a list of one entry can still get wrong.
     #[test]
     fn a_list_of_values_opens_on_the_one_in_force() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Right, &xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Right, &lattice);
 
         assert_eq!(cursor.selected_item(), 1, "Purple, not the top of the list");
-        assert!(cursor.current_entry(&xmb).is_some_and(Entry::chosen));
+        assert!(cursor.current_entry(&lattice).is_some_and(Entry::chosen));
     }
 
     /// Choosing a value moves the mark onto it and takes it off the row that
@@ -2894,29 +3275,29 @@ mod tests {
     /// was opened to answer.
     #[test]
     fn choosing_a_value_moves_the_mark_within_its_column() {
-        let mut xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Right, &xmb);
+        let mut lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Right, &lattice);
         assert_eq!(
             cursor.selected_item(),
             1,
             "opened on Purple, the one in force"
         );
 
-        cursor.navigate(Action::Up, &xmb);
-        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Green")));
+        cursor.navigate(Action::Up, &lattice);
+        assert_eq!(cursor.choose(&mut lattice), Some(Setting::Accent("Green")));
 
-        let values = cursor.current_entries(&xmb);
+        let values = cursor.current_entries(&lattice);
         assert!(values[0].chosen(), "Green");
         assert!(!values[1].chosen(), "Purple, no longer");
         assert_eq!(values.iter().filter(|entry| entry.chosen()).count(), 1);
 
         // And again, back the other way: nothing about this is one-shot.
-        cursor.navigate(Action::Down, &xmb);
-        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Purple")));
-        assert!(cursor.current_entries(&xmb)[1].chosen());
+        cursor.navigate(Action::Down, &lattice);
+        assert_eq!(cursor.choose(&mut lattice), Some(Setting::Accent("Purple")));
+        assert!(cursor.current_entries(&lattice)[1].chosen());
     }
 
     /// Only a value that stands for something is chosen. A row that starts a
@@ -2926,18 +3307,18 @@ mod tests {
     /// row that changes nothing, would make the column lie.
     #[test]
     fn a_row_that_sets_nothing_is_not_chosen() {
-        let mut xmb = nested();
-        let mut cursor = cursor(&xmb);
-        assert_eq!(cursor.choose(&mut xmb), None, "an application");
+        let mut lattice = nested();
+        let mut cursor = cursor(&lattice);
+        assert_eq!(cursor.choose(&mut lattice), None, "an application");
 
-        cursor.navigate(Action::Down, &xmb);
-        assert_eq!(cursor.choose(&mut xmb), None, "a subcategory");
+        cursor.navigate(Action::Down, &lattice);
+        assert_eq!(cursor.choose(&mut lattice), None, "a subcategory");
         assert!(
-            cursor.current_entry(&xmb).unwrap().entries().is_some(),
+            cursor.current_entry(&lattice).unwrap().entries().is_some(),
             "and it is still a subcategory"
         );
 
-        let mut readings = Xmb::with_wayland_display(
+        let mut readings = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -2966,7 +3347,7 @@ mod tests {
     /// opposite of what is true, on the frame it arrives.
     #[test]
     fn a_column_opens_on_a_chosen_subcategory() {
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -2982,13 +3363,13 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
         assert_eq!(cursor.selected_item(), 1, "the network it is on");
-        assert!(cursor.current_entry(&xmb).is_some_and(Entry::chosen));
+        assert!(cursor.current_entry(&lattice).is_some_and(Entry::chosen));
         // And it is still a way in.
-        assert!(cursor.enter(&xmb));
-        assert_eq!(titles(cursor.current_entries(&xmb)), ["Automatic"]);
+        assert!(cursor.enter(&lattice));
+        assert_eq!(titles(cursor.current_entries(&lattice)), ["Automatic"]);
     }
 
     /// A column rewritten under a standing cursor cannot leave it pointing past
@@ -3002,7 +3383,7 @@ mod tests {
     #[test]
     fn a_column_that_loses_rows_keeps_the_cursor_on_one() {
         let page = |rows: Vec<Entry>| {
-            Xmb::with_wayland_display(
+            Lattice::with_wayland_display(
                 vec![Category {
                     id: "a",
                     title: "A",
@@ -3012,40 +3393,40 @@ mod tests {
                 OsString::from("lxb-test"),
             )
         };
-        let xmb = page(vec![
+        let lattice = page(vec![
             choice("Automatic", false),
             choice("Manual", true),
             reading("DNS servers", false),
         ]);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        cursor.navigate(Action::Down, &xmb);
-        cursor.navigate(Action::Down, &xmb);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        cursor.navigate(Action::Down, &lattice);
+        cursor.navigate(Action::Down, &lattice);
         assert_eq!(cursor.selected_item(), 2);
 
         // The field is cleared, so the row it was on is no longer part of the
         // question and the answer in force has moved.
-        let xmb = page(vec![choice("Automatic", true), choice("Manual", false)]);
-        assert!(cursor.keep_in_bounds(&xmb));
+        let lattice = page(vec![choice("Automatic", true), choice("Manual", false)]);
+        assert!(cursor.keep_in_bounds(&lattice));
         assert_eq!(
             cursor.selected_item(),
             0,
             "the value in force, which is the answer that is now true"
         );
-        assert!(!cursor.keep_in_bounds(&xmb), "and nothing moves twice");
+        assert!(!cursor.keep_in_bounds(&lattice), "and nothing moves twice");
 
         // With no value in force to fall back on, the last row that exists.
-        let xmb = page(vec![
+        let lattice = page(vec![
             choice("Automatic", false),
             choice("Manual", false),
             reading("DNS servers", false),
         ]);
-        let mut standing = Cursor::new(xmb.categories.len());
-        assert!(standing.enter(&xmb));
-        standing.navigate(Action::Down, &xmb);
-        standing.navigate(Action::Down, &xmb);
-        let xmb = page(vec![choice("Automatic", false)]);
-        assert!(standing.keep_in_bounds(&xmb));
+        let mut standing = Cursor::new(lattice.categories.len());
+        assert!(standing.enter(&lattice));
+        standing.navigate(Action::Down, &lattice);
+        standing.navigate(Action::Down, &lattice);
+        let lattice = page(vec![choice("Automatic", false)]);
+        assert!(standing.keep_in_bounds(&lattice));
         assert_eq!(standing.selected_item(), 0);
     }
 
@@ -3057,7 +3438,7 @@ mod tests {
     /// something else entirely. See [`crate::apps::Choice::acts`].
     #[test]
     fn a_row_that_acts_takes_no_mark_and_moves_none() {
-        let mut xmb = Xmb::with_wayland_display(
+        let mut lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -3069,12 +3450,12 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        cursor.navigate(Action::Down, &xmb);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        cursor.navigate(Action::Down, &lattice);
 
-        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Forget")));
-        let rows = cursor.current_entries(&xmb);
+        assert_eq!(cursor.choose(&mut lattice), Some(Setting::Accent("Forget")));
+        let rows = cursor.current_entries(&lattice);
         assert!(!rows[1].chosen(), "a press is not a state to be in");
         assert!(
             rows[0].chosen(),
@@ -3082,9 +3463,12 @@ mod tests {
         );
 
         // The row beside it is an ordinary answer and still behaves like one.
-        cursor.navigate(Action::Up, &xmb);
-        assert_eq!(cursor.choose(&mut xmb), Some(Setting::Accent("Automatic")));
-        assert!(cursor.current_entries(&xmb)[0].chosen());
+        cursor.navigate(Action::Up, &lattice);
+        assert_eq!(
+            cursor.choose(&mut lattice),
+            Some(Setting::Accent("Automatic"))
+        );
+        assert!(cursor.current_entries(&lattice)[0].chosen());
     }
 
     /// A cursor the *shell* moves never comes to rest on a row that acts.
@@ -3096,7 +3480,7 @@ mod tests {
     #[test]
     fn a_cursor_put_back_in_bounds_lands_short_of_a_row_that_acts() {
         let page = |rows: Vec<Entry>| {
-            Xmb::with_wayland_display(
+            Lattice::with_wayland_display(
                 vec![Category {
                     id: "a",
                     title: "A",
@@ -3106,23 +3490,23 @@ mod tests {
                 OsString::from("lxb-test"),
             )
         };
-        let xmb = page(vec![
+        let lattice = page(vec![
             folder("IP address", vec![entry("x")]),
             folder("DNS", vec![entry("x")]),
             acting("Disconnect"),
             acting("Forget"),
         ]);
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
         for _ in 0..2 {
-            cursor.navigate(Action::Down, &xmb);
+            cursor.navigate(Action::Down, &lattice);
         }
         assert_eq!(cursor.selected_item(), 2, "on Disconnect");
 
         // Pressed. The network is off, and the page is the shorter one a
         // network the radio is not on gets.
-        let xmb = page(vec![acting("Connect"), acting("Forget")]);
-        assert!(cursor.keep_in_bounds(&xmb));
+        let lattice = page(vec![acting("Connect"), acting("Forget")]);
+        assert!(cursor.keep_in_bounds(&lattice));
         assert_eq!(
             cursor.selected_item(),
             0,
@@ -3131,21 +3515,21 @@ mod tests {
         );
 
         // Where there is a row that does not act, the last of those.
-        let xmb = page(vec![
+        let lattice = page(vec![
             folder("IP address", vec![entry("x")]),
             acting("Connect"),
             acting("Forget"),
         ]);
-        let mut standing = Cursor::new(xmb.categories.len());
-        assert!(standing.enter(&xmb));
+        let mut standing = Cursor::new(lattice.categories.len());
+        assert!(standing.enter(&lattice));
         for _ in 0..2 {
-            standing.navigate(Action::Down, &xmb);
+            standing.navigate(Action::Down, &lattice);
         }
-        let xmb = page(vec![
+        let lattice = page(vec![
             folder("IP address", vec![entry("x")]),
             acting("Forget"),
         ]);
-        assert!(standing.keep_in_bounds(&xmb));
+        assert!(standing.keep_in_bounds(&lattice));
         assert_eq!(standing.selected_item(), 0);
     }
 
@@ -3155,7 +3539,7 @@ mod tests {
     /// already standing in one has to be got out the same way.
     #[test]
     fn a_column_that_empties_is_stepped_out_of() {
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -3164,14 +3548,14 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.enter(&xmb));
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.enter(&lattice));
         assert_eq!(cursor.depth(), 2);
 
         // The radio is switched off: the networks go, and so does the column
         // they were in.
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -3180,13 +3564,13 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        assert!(cursor.keep_in_bounds(&xmb));
+        assert!(cursor.keep_in_bounds(&lattice));
         assert_eq!(cursor.depth(), 1, "back out to the page it hung from");
-        assert_eq!(titles(cursor.current_entries(&xmb)), ["Networks"]);
+        assert_eq!(titles(cursor.current_entries(&lattice)), ["Networks"]);
 
         // And when the row it hung from goes too, out again — as far as there
         // is still a column to stand in.
-        let xmb = Xmb::with_wayland_display(
+        let lattice = Lattice::with_wayland_display(
             vec![Category {
                 id: "a",
                 title: "A",
@@ -3195,9 +3579,9 @@ mod tests {
             }],
             OsString::from("lxb-test"),
         );
-        assert!(cursor.keep_in_bounds(&xmb));
+        assert!(cursor.keep_in_bounds(&lattice));
         assert_eq!(cursor.depth(), 0);
-        assert_eq!(titles(cursor.current_entries(&xmb)), ["Wi-Fi"]);
+        assert_eq!(titles(cursor.current_entries(&lattice)), ["Wi-Fi"]);
     }
 
     /// The trail is checked too, not only the column the cursor is standing in.
@@ -3207,7 +3591,7 @@ mod tests {
     #[test]
     fn the_whole_path_is_brought_back_inside_the_tree() {
         let page = |sockets: Vec<Entry>| {
-            Xmb::with_wayland_display(
+            Lattice::with_wayland_display(
                 vec![Category {
                     id: "a",
                     title: "A",
@@ -3217,22 +3601,22 @@ mod tests {
                 OsString::from("lxb-test"),
             )
         };
-        let xmb = page(vec![
+        let lattice = page(vec![
             folder("test-wired0", vec![choice("Off", false)]),
             folder(
                 "test-wired1",
                 vec![choice("Off", false), choice("On", true)],
             ),
         ]);
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.enter(&xmb));
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.enter(&lattice));
         assert_eq!(cursor.selected_item(), 1, "opened on the value in force");
 
         // The second socket is unplugged and drops out of the listing.
-        let xmb = page(vec![folder("test-wired0", vec![choice("Off", false)])]);
-        assert!(cursor.keep_in_bounds(&xmb));
-        assert_eq!(titles(cursor.current_entries(&xmb)), ["Off"]);
+        let lattice = page(vec![folder("test-wired0", vec![choice("Off", false)])]);
+        assert!(cursor.keep_in_bounds(&lattice));
+        assert_eq!(titles(cursor.current_entries(&lattice)), ["Off"]);
         assert_eq!(cursor.selected_item(), 0);
     }
 
@@ -3241,18 +3625,18 @@ mod tests {
     /// application inside it would launch something nobody chose.
     #[test]
     fn only_an_application_row_is_launchable() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        assert!(cursor.current_app(&xmb).is_some());
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.current_app(&lattice).is_some());
 
-        cursor.navigate(Action::Down, &xmb);
-        assert!(cursor.current_app(&xmb).is_none(), "a subcategory");
-        assert_eq!(cursor.current_setting(&xmb), None);
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Right, &xmb);
-        assert!(cursor.current_app(&xmb).is_none(), "a value");
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.current_app(&lattice).is_none(), "a subcategory");
+        assert_eq!(cursor.current_setting(&lattice), None);
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Right, &lattice);
+        assert!(cursor.current_app(&lattice).is_none(), "a value");
         assert_eq!(
-            cursor.current_setting(&xmb),
+            cursor.current_setting(&lattice),
             Some(Setting::Accent("Purple"))
         );
     }
@@ -3263,23 +3647,23 @@ mod tests {
     /// nothing has moved it.
     #[test]
     fn the_column_stepped_out_of_is_still_there_to_leave() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Right, &xmb);
-        cursor.navigate(Action::Up, &xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Right, &lattice);
+        cursor.navigate(Action::Up, &lattice);
         settle(&mut cursor);
         assert_eq!(cursor.selected_item(), 0, "Green");
 
-        cursor.navigate(Action::Left, &xmb);
+        cursor.navigate(Action::Left, &lattice);
         assert_eq!(
-            cursor.columns(&xmb).len(),
+            cursor.columns(&lattice).len(),
             3,
             "the column being left is still drawn while it slides away"
         );
 
-        cursor.navigate(Action::Right, &xmb);
+        cursor.navigate(Action::Right, &lattice);
         assert_eq!(
             cursor.selected_item(),
             0,
@@ -3288,11 +3672,11 @@ mod tests {
 
         // Moving off the row it hangs from is what finally drops it: it is no
         // longer a column anything on screen leads to.
-        cursor.navigate(Action::Left, &xmb);
-        cursor.navigate(Action::Left, &xmb);
+        cursor.navigate(Action::Left, &lattice);
+        cursor.navigate(Action::Left, &lattice);
         assert_eq!(cursor.depth(), 0);
-        cursor.navigate(Action::Up, &xmb);
-        assert_eq!(cursor.columns(&xmb).len(), 1);
+        cursor.navigate(Action::Up, &lattice);
+        assert_eq!(cursor.columns(&lattice).len(), 1);
     }
 
     /// Changing category leaves the whole path behind — the columns belong to
@@ -3300,18 +3684,21 @@ mod tests {
     /// rather than snapped, so the cross returns from wherever it had slid to.
     #[test]
     fn a_path_does_not_survive_a_change_of_category() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
         settle(&mut cursor);
         assert_eq!(cursor.depth_position(), 1.0);
 
-        cursor.navigate(Action::Left, &xmb);
-        assert!(cursor.navigate(Action::Right, &xmb), "now the row moves");
+        cursor.navigate(Action::Left, &lattice);
+        assert!(
+            cursor.navigate(Action::Right, &lattice),
+            "now the row moves"
+        );
         assert_eq!(cursor.selected_category, 1);
         assert_eq!(cursor.depth(), 0);
-        assert_eq!(cursor.columns(&xmb).len(), 1);
+        assert_eq!(cursor.columns(&lattice).len(), 1);
         assert!(
             cursor.depth_position() > 0.0,
             "the cross should travel back rather than jump"
@@ -3325,34 +3712,34 @@ mod tests {
     /// are that column's — not the category's.
     #[test]
     fn the_open_column_is_the_one_that_scrolls() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
 
         // Accent color is the only row in Appearance.
-        assert!(!cursor.navigate(Action::Down, &xmb));
-        assert!(!cursor.navigate(Action::Up, &xmb));
+        assert!(!cursor.navigate(Action::Down, &lattice));
+        assert!(!cursor.navigate(Action::Up, &lattice));
 
-        cursor.navigate(Action::Right, &xmb);
+        cursor.navigate(Action::Right, &lattice);
         assert!(
-            cursor.navigate(Action::Up, &xmb),
+            cursor.navigate(Action::Up, &lattice),
             "two values to move between"
         );
         assert_eq!(cursor.selected_item(), 0);
-        assert!(!cursor.navigate(Action::Up, &xmb));
-        assert!(cursor.navigate(Action::Down, &xmb));
-        assert!(!cursor.navigate(Action::Down, &xmb));
+        assert!(!cursor.navigate(Action::Up, &lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert!(!cursor.navigate(Action::Down, &lattice));
     }
 
     /// The step in is a move of the bar, so it is sprung like every other one:
     /// it travels, it never overshoots, and it stops.
     #[test]
     fn depth_travels_and_settles_without_overshooting() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
         assert_eq!(cursor.depth_position(), 0.0, "it starts where it was");
 
         let mut previous = 0.0;
@@ -3374,8 +3761,8 @@ mod tests {
         // motion on screen to compare it with. The journey is the wider of the
         // two, so it takes longer — but a step that took half again as long
         // would stop reading as the same interface moving.
-        let mut sideways = self::cursor(&xmb);
-        sideways.navigate(Action::Right, &xmb);
+        let mut sideways = self::cursor(&lattice);
+        sideways.navigate(Action::Right, &lattice);
         let mut row_frames = 0;
         while sideways.animate(1.0 / 60.0) {
             row_frames += 1;
@@ -3391,37 +3778,37 @@ mod tests {
     /// screen mid-glide, with its rows caught between rows.
     #[test]
     fn a_column_left_mid_glide_finishes_its_glide() {
-        let xmb = nested();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
-        cursor.navigate(Action::Right, &xmb);
-        cursor.navigate(Action::Up, &xmb);
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
+        cursor.navigate(Action::Right, &lattice);
+        cursor.navigate(Action::Up, &lattice);
 
         // Away before the row it just left has arrived anywhere.
         cursor.animate(1.0 / 60.0);
-        let column = &cursor.columns(&xmb)[2];
+        let column = &cursor.columns(&lattice)[2];
         assert!(
             column.position > 0.0 && column.position < 1.0,
             "the value list should be mid-glide: {}",
             column.position
         );
 
-        cursor.navigate(Action::Left, &xmb);
+        cursor.navigate(Action::Left, &lattice);
         settle(&mut cursor);
-        assert_eq!(cursor.columns(&xmb)[2].position, 0.0);
+        assert_eq!(cursor.columns(&lattice)[2].position, 0.0);
     }
 
     #[test]
     fn displays_browse_independently() {
         // The whole point of a cursor per display: moving one must not drag
         // the others along with it.
-        let xmb = model();
-        let mut left = cursor(&xmb);
-        let mut right = cursor(&xmb);
+        let lattice = model();
+        let mut left = cursor(&lattice);
+        let mut right = cursor(&lattice);
 
-        left.navigate(Action::Down, &xmb);
-        left.navigate(Action::Right, &xmb);
+        left.navigate(Action::Down, &lattice);
+        left.navigate(Action::Right, &lattice);
 
         assert_eq!(left.selected_category, 1);
         assert_eq!(
@@ -3430,7 +3817,7 @@ mod tests {
         );
         assert_eq!(right.selected_item(), 0);
 
-        right.navigate(Action::Down, &xmb);
+        right.navigate(Action::Down, &lattice);
         assert_eq!(right.selected_item(), 1);
         assert_eq!(
             left.selected_category, 1,
@@ -3440,9 +3827,9 @@ mod tests {
 
     #[test]
     fn animation_converges_and_stops() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Right, &xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Right, &lattice);
 
         // Sixty frames at 60fps is a second, far longer than the ease takes.
         let mut frames = 0;
@@ -3458,9 +3845,9 @@ mod tests {
 
     #[test]
     fn animation_is_monotonic_towards_the_target() {
-        let xmb = model();
-        let mut cursor = cursor(&xmb);
-        cursor.navigate(Action::Right, &xmb);
+        let lattice = model();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Right, &lattice);
 
         let mut previous = cursor.category_position;
         for _ in 0..10 {
@@ -3476,11 +3863,11 @@ mod tests {
 
     #[test]
     fn empty_model_is_inert() {
-        let xmb = Xmb::with_wayland_display(Vec::new(), OsString::from("lxb-test"));
-        let mut cursor = cursor(&xmb);
-        assert!(xmb.is_empty());
-        assert!(!cursor.navigate(Action::Right, &xmb));
-        assert!(cursor.current_app(&xmb).is_none());
+        let lattice = Lattice::with_wayland_display(Vec::new(), OsString::from("lxb-test"));
+        let mut cursor = cursor(&lattice);
+        assert!(lattice.is_empty());
+        assert!(!cursor.navigate(Action::Right, &lattice));
+        assert!(cursor.current_app(&lattice).is_none());
     }
 
     /// A catalogue with nothing launchable in it is empty however many rows it
@@ -3498,10 +3885,10 @@ mod tests {
             "settings",
             vec![folder("Appearance", vec![choice("Purple", true)])],
         );
-        let xmb = Xmb::with_wayland_display(vec![settings], OsString::from("lxb-test"));
-        assert!(xmb.is_empty());
+        let lattice = Lattice::with_wayland_display(vec![settings], OsString::from("lxb-test"));
+        assert!(lattice.is_empty());
 
-        let mut stocked = xmb;
+        let mut stocked = lattice;
         stocked.categories.push(column(
             "games",
             vec![folder("Emulators", vec![entry("a1")])],
@@ -3518,8 +3905,8 @@ mod tests {
     /// poor greeting however many rows it has.
     #[test]
     fn a_display_opens_on_a_column_with_something_to_launch() {
-        let mut xmb = model();
-        xmb.categories.insert(
+        let mut lattice = model();
+        lattice.categories.insert(
             0,
             Category {
                 id: "settings",
@@ -3529,7 +3916,7 @@ mod tests {
             },
         );
 
-        let cursor = Cursor::for_model(&xmb);
+        let cursor = Cursor::for_model(&lattice);
         assert_eq!(cursor.selected_category, 1);
         assert_eq!(
             cursor.category_position, 1.0,
@@ -3538,7 +3925,7 @@ mod tests {
 
         // With nothing anywhere there is no better column to prefer, and the
         // cursor must still be valid.
-        let bare = Xmb::with_wayland_display(Vec::new(), OsString::from("lxb-test"));
+        let bare = Lattice::with_wayland_display(Vec::new(), OsString::from("lxb-test"));
         assert_eq!(Cursor::for_model(&bare).selected_category, 0);
     }
 
@@ -3656,24 +4043,24 @@ mod tests {
 
     #[test]
     fn model_reaps_finished_launches() {
-        let mut xmb = model();
-        match &mut xmb.categories[0].entries[0] {
+        let mut lattice = model();
+        match &mut lattice.categories[0].entries[0] {
             Entry::App(app) => app.exec = "exit 17".into(),
             other => panic!("the first row should be an application: {other:?}"),
         }
-        let cursor = cursor(&xmb);
+        let cursor = cursor(&lattice);
 
-        assert!(xmb.launch_selected(&cursor).is_some());
-        assert_eq!(xmb.launched_apps.len(), 1);
+        assert!(lattice.launch_selected(&cursor).is_some());
+        assert_eq!(lattice.launched_apps.len(), 1);
 
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !xmb.launched_apps.is_empty() && Instant::now() < deadline {
-            xmb.reap_children();
+        while !lattice.launched_apps.is_empty() && Instant::now() < deadline {
+            lattice.reap_children();
             std::thread::sleep(Duration::from_millis(5));
         }
 
         assert!(
-            xmb.launched_apps.is_empty(),
+            lattice.launched_apps.is_empty(),
             "finished application should be reaped"
         );
     }

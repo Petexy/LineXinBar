@@ -1,0 +1,22 @@
+<!--
+  The media card's play button: one triangle pointing the way the track runs.
+
+  Nothing else. A play mark is the most fixed symbol in this whole set — every
+  machine anybody has ever pressed play on draws exactly this — so the only
+  work here is the geometry the material needs: the corners are rounded by a
+  stroke laid along the path rather than by three arcs, which keeps the outline
+  one closed run for the field to measure.
+
+  The tip is the thinnest part, and it is a tip rather than a point for that
+  reason: a corner taken to nothing is all bevel and comes out melted. Rounding
+  it leaves a bead of water there instead, which is what the tip of a real one
+  would be.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path d="M9 6.5L25 16L9 25.5Z" fill="#ffffff" stroke="#ffffff" stroke-width="2.6"
+        stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

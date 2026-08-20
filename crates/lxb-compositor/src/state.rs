@@ -241,6 +241,13 @@ pub struct Lxb {
     pub sleepers: crate::sleep::Sleepers,
     /// Displays answering for a screenshot that has just been taken of them.
     pub flashes: crate::flash::Flashes,
+    /// The black over every display, while the session is on its way out.
+    pub curtain: crate::curtain::Curtain,
+    /// The black over one display, while it rests behind a game being played
+    /// on another. Separate from the curtain above it because it is a
+    /// different statement — that one is about the session leaving, this one
+    /// is about a panel nobody is looking at. See [`crate::blackout`].
+    pub blackouts: crate::blackout::Blackouts,
     /// Frames other clients have asked for over wlr-screencopy, and the damage
     /// each of them has been told about.
     pub screencopy: crate::screencopy::ScreencopyState,
@@ -304,6 +311,21 @@ pub struct Lxb {
     /// question is only put to a window when there is something to compare it
     /// against. See [`Lxb::out_of_sight`] and `lxb_shell_v1.keep_out_of_sight`.
     pub unseen: std::collections::HashSet<String>,
+
+    /// The applications the shell says are playing something, by the name each
+    /// calls itself, folded the same way [`Lxb::unseen`] is.
+    ///
+    /// The one exception to the sleeper. An application with nothing on screen
+    /// is stopped — see [`crate::sleep`] — and that is right for everything a
+    /// program does out of sight except the one thing somebody is deliberately
+    /// listening to. Which of the two a sound is cannot be seen from here: it
+    /// is a fact about a media player on the session bus, and the shell is the
+    /// half of this session that is on one.
+    ///
+    /// Empty in a session where nothing is playing, and in every session with
+    /// no shell, which is what keeps it free. See [`Lxb::media_is_playing`] and
+    /// `lxb_shell_v1.keep_awake`.
+    pub playing: std::collections::HashSet<String>,
 }
 
 impl LxbState {
@@ -471,6 +493,8 @@ impl LxbState {
                 restores: crate::restore::Restores::default(),
                 sleepers: crate::sleep::Sleepers::default(),
                 flashes: crate::flash::Flashes::default(),
+                curtain: crate::curtain::Curtain::default(),
+                blackouts: crate::blackout::Blackouts::default(),
                 screencopy,
                 hdr: crate::hdr::Manager::default(),
                 seat,
@@ -487,6 +511,7 @@ impl LxbState {
                 keyboard_focus_enabled: true,
                 exclusive_keyboard_focus: None,
                 unseen: std::collections::HashSet::new(),
+                playing: std::collections::HashSet::new(),
             },
         })
     }
@@ -920,6 +945,24 @@ impl Lxb {
         }
         let app_id = crate::shell_control::window_app_id(window);
         folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id))
+    }
+
+    /// Whether this window belongs to an application the shell says is playing
+    /// something, and so one that must go on running with nothing on screen.
+    ///
+    /// Read from the window's *current* name for the same reason
+    /// [`Lxb::out_of_sight`] is: a window that arrived nameless and then said
+    /// what it was has to be recognised from the moment it says so, and an
+    /// application that was renamed under a running window is the one case
+    /// where being wrong here stops the music.
+    pub fn media_is_playing(&self, window: &Window) -> bool {
+        // The common case, and why nothing here has to be fast: a session with
+        // nothing playing pays for none of it.
+        if self.playing.is_empty() {
+            return false;
+        }
+        let app_id = crate::shell_control::window_app_id(window);
+        folded_app_id(&app_id).is_some_and(|app_id| self.playing.contains(&app_id))
     }
 
     /// Tell the bus what this session is, so that everything it starts on

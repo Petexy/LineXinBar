@@ -7,4 +7,4 @@ Rules-Requires-Root: no
 
 Package: linexinbar
 Architecture: linux-any
-Description: multi-display Wayland desktop with an XMB-style shell
+Description: multi-display Wayland desktop with a console-style shell

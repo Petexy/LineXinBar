@@ -74,6 +74,19 @@ pub struct Steam {
     /// would compare unequal to the one that just came in and rebuild the
     /// column for no reason. See the equality check in [`Steam::apply`].
     sort: lxb_steam::library::Sort,
+    /// What is typed into the field at the head of the column, as the user
+    /// typed it. Empty for a library nobody has searched, which is the state
+    /// every session starts in.
+    ///
+    /// Held here rather than read back off the row it is drawn on, for the
+    /// reason the shelves' queries are: the column is rebuilt from the library
+    /// whenever a download moves a byte, and a field that read itself off the
+    /// bar would lose whatever had been typed since. Not written down between
+    /// sessions either, unlike [`Steam::sort`] — an order is how somebody wants
+    /// their library listed and a search is a question they are in the middle
+    /// of asking, and a shell that opened on a library narrowed to four games
+    /// by yesterday's question would look like a shell that had lost the rest.
+    search: String,
     /// The sign-in on screen, if one is.
     signing_in: Option<Stage>,
     /// The games being fetched, and how far each has got. Kept here rather
@@ -218,6 +231,7 @@ impl Steam {
             // any particular library: it holds across a sign-out, and the
             // settings are loaded before this is built.
             sort: crate::settings::steam_sort().unwrap_or_default(),
+            search: String::new(),
             signing_in: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
@@ -234,6 +248,7 @@ impl Steam {
             account: None,
             games: Vec::new(),
             sort: crate::settings::steam_sort().unwrap_or_default(),
+            search: String::new(),
             signing_in: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
@@ -292,6 +307,20 @@ impl Steam {
             return false;
         }
         self.sort = sort;
+        true
+    }
+
+    /// Look for something else. Returns whether that is a change — the same
+    /// question asked twice narrows the same column to the same games, and
+    /// rebuilding it would be a keystroke's worth of work for nothing.
+    ///
+    /// The narrowing itself is [`Self::rows`], which is where every question
+    /// about what the column holds is answered together.
+    pub fn set_search(&mut self, query: &str) -> bool {
+        if self.search == query {
+            return false;
+        }
+        self.search = query.to_string();
         true
     }
 
@@ -423,6 +452,12 @@ impl Steam {
                 changed.account |= self.account.take().is_some();
                 changed.library |= !self.games.is_empty();
                 self.games.clear();
+                // A question asked of one account is not asked of the next.
+                // The column goes with the library either way; what this
+                // stops is somebody signing in and finding four of their games
+                // where the whole library should be, narrowed by a word the
+                // last person typed.
+                self.search.clear();
                 // Only a sign-in that was under way: a session that starts
                 // with nobody signed in says so, and there is no panel up
                 // for it to be about.
@@ -479,47 +514,188 @@ impl Steam {
     /// This is where the order the user chose is put on: the library arrives
     /// installed-first and is kept that way, and every other order is a pass
     /// over borrowed rows on the way to the bar. Called when the library
-    /// changes and when the order does, and not otherwise — nothing here is
-    /// asked per frame.
+    /// changes, when the order does and on each letter typed into the field,
+    /// and not otherwise — nothing here is asked per frame.
+    ///
+    /// Three things stand over the column and they go in the order somebody
+    /// arrives at them from below: the field, the row that empties it, and the
+    /// index. Everything under them is what the search has left — the index
+    /// included, since it is the same library seen another way and an index
+    /// listing games the column no longer shows would be an index that lied.
+    /// The column proper starts at the first game, because that is what
+    /// somebody walking into their library came to see; see
+    /// [`crate::apps::head_rows`].
     pub fn rows(&self) -> Vec<crate::apps::Entry> {
-        if !self.signed_in() {
+        if !self.signed_in() || self.games.is_empty() {
             return Vec::new();
         }
-        let mut listing: Vec<&Game> = self.games.iter().collect();
+        // In the library's own order — installed first, each half by name —
+        // whatever the column is about to be listed in, because the index
+        // below is built out of this and that is the order a letter holds its
+        // games in. One `contains` per game per letter typed.
+        let matched: Vec<&Game> = match lxb_steam::library::sought(&self.search) {
+            Some(needle) => self
+                .games
+                .iter()
+                .filter(|game| game.matches(&needle))
+                .collect(),
+            None => self.games.iter().collect(),
+        };
+
+        let mut rows = Vec::with_capacity(matched.len() + 3);
+        crate::apps::head(
+            &mut rows,
+            crate::apps::Searched::Library,
+            &self.search,
+            matched.len(),
+            self.games.len(),
+        );
+        // A search that found nothing leaves the two rows that say why and
+        // nothing else: no index, because there is nothing to index, and a
+        // heading standing over an empty column is a press that opens nothing.
+        if matched.is_empty() {
+            return rows;
+        }
+
+        rows.push(self.alphabetical(&matched));
+        let mut listing = matched;
         // The default order is the one the library is already in, so the
         // ordinary column costs nothing to build.
         if self.sort != lxb_steam::library::Sort::default() {
             listing.sort_by(|a, b| self.sort.compare(a, b));
         }
-        listing
+        rows.extend(listing.into_iter().map(|game| self.row(game)));
+        rows
+    }
+
+    /// The index at the head of the library: the whole of what the column shows
+    /// again, under the letter each game starts with.
+    ///
+    /// A library of a few hundred titles is a column nobody can reach the far
+    /// end of. Every order the Sort list offers is still one list — it answers
+    /// "what have I got most of" or "what did I play last", and none of them
+    /// answers "where is Portal". So the letters are the way *in* to a long
+    /// list, in the one place a thing standing over a list can stand: above its
+    /// first row, reached by pressing Up from it.
+    ///
+    /// The field above it answers "where is Portal" for somebody who knows the
+    /// name and can type it; this answers it for somebody with a pad in their
+    /// hands, who reaches twenty-seven rows in two presses and a keyboard in
+    /// rather more. Neither is the other's fallback — they are the same
+    /// question asked by two different people, and the column carries both for
+    /// the same reason a shelf of music carries a field over an ordered list.
+    ///
+    /// Inside a letter the library's own order stands: installed first, then by
+    /// name. The rest of the column is sorted however the user asked and this is
+    /// not, but what a letter is asked is still "which of these can I play" —
+    /// the same question the top of the column answers, and the one an index
+    /// that buried an installed game under six the account merely owns would
+    /// answer worst. `matching` arrives in that order, so the letters cost a
+    /// walk and no sort.
+    ///
+    /// The games are built a second time rather than shared. What a row *says*
+    /// is a snapshot of the moment it was built — how far a download has got,
+    /// whether the disk has it — and two rows of one game with two different
+    /// notes on them is the bug this avoids by having no way to happen: both
+    /// come from [`Self::row`], in the same pass, out of the same library.
+    ///
+    /// A heading is a *letter* rather than a row with a letter written on it:
+    /// the character is cut out of the shell's own face and stood in the room a
+    /// row's mark has — see [`crate::icons::INDEX_LETTERS`] — so the column is
+    /// read down the alphabet the way a shelf of books is, and the words on the
+    /// rows are free to say how much is in each.
+    fn alphabetical(&self, matching: &[&Game]) -> crate::apps::Entry {
+        // `None` is everything that does not start with one of the headings the
+        // shell cuts, and it goes first because that is where nearly all of it
+        // already is in the column's own order — a digit sorts before a letter
+        // — and because a heap of odd names is a thing to pass on the way to
+        // the alphabet rather than something to find after it. `BTreeMap` puts
+        // it there by itself, `None` before every `Some`, which is the whole
+        // reason the letter is an `Option` here rather than a `char` with a
+        // stand-in in it.
+        let mut letters: BTreeMap<Option<char>, Vec<&Game>> = BTreeMap::new();
+        for game in matching {
+            letters.entry(game.initial()).or_default().push(game);
+        }
+
+        let entries = letters
             .into_iter()
-            .map(|game| {
-                // A game this shell is moving on or off the disk says so, over
-                // whatever the disk says: there is a stretch at the start of
-                // each — before Valve's client has written anything — where
-                // the disk still holds the answer to the previous question,
-                // and a row that gave it would read as a press that did
-                // nothing.
-                let fetching = self.fetching.get(&game.app_id);
-                let removing = self.removing.contains(&game.app_id);
-                let note = match (removing, fetching) {
-                    (true, _) => "Removing…".to_string(),
-                    (false, Some(so_far)) => so_far.said(),
-                    (false, None) => game.note(),
-                };
-                crate::apps::Entry::Game(crate::apps::Game {
-                    app_id: game.app_id,
-                    name: game.name.clone(),
-                    note,
-                    // Neither a game on its way in nor one on its way out can
-                    // be started, and both are busy: one row state for the two
-                    // of them, because what the bar does about it is the same.
-                    installed: game.installed && !game.updating && !removing,
-                    updating: game.updating || removing || fetching.is_some(),
-                    steam_client: self.client.client_at().is_some(),
+            .map(|(letter, games)| {
+                // "#" for the rest, which is the mark a list of names has used
+                // for "not a letter" since long before this shell.
+                let heading = letter.unwrap_or('#');
+                crate::apps::Entry::Folder(crate::apps::Folder {
+                    // What the row has to say, now that the letter is the mark
+                    // and not the words: how far this heading goes. A letter is
+                    // the one row in the shell whose title is a quantity, and it
+                    // can be because the thing it is a heading *for* is already
+                    // drawn beside it.
+                    title: counted(games.len()),
+                    comment: None,
+                    // The letter itself, or the Steam mark for a heading this
+                    // shell has no cell for — which cannot happen while
+                    // `Game::initial` answers out of the same set, and is here
+                    // because the two are in different crates and only one of
+                    // them can be right about that.
+                    icon: Some(
+                        crate::icons::letter_mark(heading)
+                            .unwrap_or(crate::icons::STEAM)
+                            .to_string(),
+                    ),
+                    entries: games.into_iter().map(|game| self.row(game)).collect(),
+                    place: None,
+                    chosen: false,
+                    over_the_list: false,
                 })
             })
-            .collect()
+            .collect();
+
+        crate::apps::Entry::Folder(crate::apps::Folder {
+            title: "Alphabetical".to_string(),
+            comment: Some("Every game in the library, by its first letter".to_string()),
+            // The alphabet itself, named by its two ends and cut from the same
+            // face as the headings behind the row — see
+            // [`crate::icons::INDEX_MARK`]. The Steam mark stood here first,
+            // which said only what every row in this column already says.
+            icon: Some(crate::icons::INDEX_MARK.to_string()),
+            entries,
+            place: None,
+            chosen: false,
+            // The whole of why this is a field on a folder: the column opens on
+            // the first game, and this is above it. See
+            // [`crate::apps::head_rows`].
+            over_the_list: true,
+        })
+    }
+
+    /// One game, as a row.
+    ///
+    /// The one place a title becomes a row, so the column and the index cannot
+    /// come to different conclusions about what a game is doing.
+    fn row(&self, game: &Game) -> crate::apps::Entry {
+        // A game this shell is moving on or off the disk says so, over
+        // whatever the disk says: there is a stretch at the start of each —
+        // before Valve's client has written anything — where the disk still
+        // holds the answer to the previous question, and a row that gave it
+        // would read as a press that did nothing.
+        let fetching = self.fetching.get(&game.app_id);
+        let removing = self.removing.contains(&game.app_id);
+        let note = match (removing, fetching) {
+            (true, _) => "Removing…".to_string(),
+            (false, Some(so_far)) => so_far.said(),
+            (false, None) => game.note(),
+        };
+        crate::apps::Entry::Game(crate::apps::Game {
+            app_id: game.app_id,
+            name: game.name.clone(),
+            note,
+            // Neither a game on its way in nor one on its way out can be
+            // started, and both are busy: one row state for the two of them,
+            // because what the bar does about it is the same.
+            installed: game.installed && !game.updating && !removing,
+            updating: game.updating || removing || fetching.is_some(),
+            steam_client: self.client.client_at().is_some(),
+        })
     }
 
     /// Ask the client to do one thing to one title — check it, remove it, or
@@ -767,7 +943,8 @@ impl Steam {
                 lines: vec![
                     heading,
                     dialog::Line::Note(
-                        "Your library appears on the bar as a column of its own.".to_string(),
+                        "Your library appears on the start screen as a column of its own."
+                            .to_string(),
                     ),
                     dialog::Line::Rule,
                 ],
@@ -881,6 +1058,14 @@ impl Steam {
             },
         };
         Some(panel)
+    }
+}
+
+/// How many games a letter of the index holds, as its row says it.
+fn counted(games: usize) -> String {
+    match games {
+        1 => "1 game".to_string(),
+        games => format!("{games} games"),
     }
 }
 
@@ -1082,9 +1267,14 @@ mod tests {
         steam.account = Some("someone".to_string());
         steam.games = vec![Game::invented(504230, "Celeste".to_string(), false)];
 
-        let note = |steam: &Steam| match &steam.rows()[0] {
-            crate::apps::Entry::Game(game) => (game.note.clone(), game.updating),
-            _ => panic!("that is not a game row"),
+        // Past the index the library carries over its first game; see
+        // [`Steam::alphabetical`].
+        let note = |steam: &Steam| {
+            let rows = steam.rows();
+            match &rows[crate::apps::head_rows(&rows)] {
+                crate::apps::Entry::Game(game) => (game.note.clone(), game.updating),
+                _ => panic!("that is not a game row"),
+            }
         };
         assert_eq!(note(&steam), ("Not installed".to_string(), false));
 
@@ -1170,9 +1360,14 @@ mod tests {
         steam.account = Some("someone".to_string());
         steam.games = vec![Game::invented(504230, "Celeste".to_string(), true)];
 
-        let row = |steam: &Steam| match &steam.rows()[0] {
-            crate::apps::Entry::Game(game) => (game.note.clone(), game.installed, game.updating),
-            _ => panic!("that is not a game row"),
+        let row = |steam: &Steam| {
+            let rows = steam.rows();
+            match &rows[crate::apps::head_rows(&rows)] {
+                crate::apps::Entry::Game(game) => {
+                    (game.note.clone(), game.installed, game.updating)
+                }
+                _ => panic!("that is not a game row"),
+            }
         };
         let (_, installed, _) = row(&steam);
         assert!(installed, "it starts out as a game that can be played");
@@ -1248,6 +1443,226 @@ mod tests {
 
     /// The rows the column is built from: none at all when nobody is signed
     /// in, which is what takes the column off the bar.
+    /// A library with these titles in it, signed in, in the order Steam sends
+    /// one: installed first, each half by name.
+    fn library(games: &[(u32, &str, bool)]) -> Steam {
+        let mut steam = Steam::settled();
+        steam.account = Some("someone".to_string());
+        steam.games = lxb_steam::library::sorted(
+            games
+                .iter()
+                .map(|(app_id, name, installed)| {
+                    Game::invented(*app_id, (*name).to_string(), *installed)
+                })
+                .collect(),
+        );
+        steam
+    }
+
+    /// What a folder row opens onto, by title.
+    fn inside(entry: &crate::apps::Entry) -> Vec<&str> {
+        entry
+            .entries()
+            .expect("that row opens onto nothing")
+            .iter()
+            .map(crate::apps::Entry::title)
+            .collect()
+    }
+
+    /// The field and the index stand over the column rather than in it, so a
+    /// display walking into somebody's library arrives on a game.
+    ///
+    /// In that order, which is the order somebody arriving from below meets
+    /// them in: the letters are the way into the list under them, and the field
+    /// is the way into everything including the letters.
+    #[test]
+    fn the_library_carries_its_index_above_the_first_game() {
+        let steam = library(&[(1, "Aeonic", false), (2, "Zenith", true)]);
+        let rows = steam.rows();
+
+        assert_eq!(
+            crate::apps::head_rows(&rows),
+            2,
+            "two rows stand over the column"
+        );
+        assert_eq!(rows[0].title(), "Search");
+        assert_eq!(rows[0].comment(), Some("Search this library by name"));
+        assert_eq!(rows[1].title(), "Alphabetical");
+        assert!(rows[0].over_the_list() && rows[1].over_the_list());
+        assert_eq!(
+            rows[2..]
+                .iter()
+                .map(crate::apps::Entry::title)
+                .collect::<Vec<_>>(),
+            ["Zenith", "Aeonic"],
+            "and everything under them is a game, in the column's own order"
+        );
+    }
+
+    /// A search narrows everything under the field, the index included — it is
+    /// the same library seen another way, and one that went on offering letters
+    /// full of games the column no longer shows would be an index that lied.
+    #[test]
+    fn a_search_narrows_the_column_and_the_index_with_it() {
+        let mut steam = library(&[
+            (1, "Portal", true),
+            (2, "Portal 2", false),
+            (3, "Celeste", true),
+        ]);
+        assert!(steam.set_search("portal"));
+
+        let rows = steam.rows();
+        assert_eq!(
+            crate::apps::head_rows(&rows),
+            3,
+            "the field, the row that empties it, and the index"
+        );
+        assert_eq!(rows[0].title(), "portal", "the field says what was typed");
+        assert_eq!(rows[0].comment(), Some("2 of 3 games match"));
+        assert_eq!(rows[1].title(), "Clear search");
+        assert_eq!(rows[1].comment(), Some("Show all 3 games"));
+        assert_eq!(
+            rows[3..]
+                .iter()
+                .map(crate::apps::Entry::title)
+                .collect::<Vec<_>>(),
+            ["Portal", "Portal 2"],
+            "and Celeste is not in the column"
+        );
+
+        let letters = rows[2].entries().expect("the index opens onto letters");
+        assert_eq!(
+            letters
+                .iter()
+                .map(crate::apps::Entry::icon)
+                .collect::<Vec<_>>(),
+            [Some("lxb:letter-p")],
+            "nor under C in the index"
+        );
+        assert_eq!(inside(&letters[0]), ["Portal", "Portal 2"]);
+    }
+
+    /// What is looked for is folded the way a name is, so somebody typing what
+    /// they see on the screen finds it.
+    #[test]
+    fn a_search_is_neither_case_nor_the_spaces_round_it() {
+        let mut steam = library(&[(1, "The Witness", true)]);
+        assert!(steam.set_search("  WITNESS "));
+        let rows = steam.rows();
+        assert_eq!(rows[3].title(), "The Witness");
+
+        // And a query of nothing but spaces asks nothing, so it keeps nothing
+        // out — a field with a space in it must not answer with the games whose
+        // names have one. The row that empties the field is still offered,
+        // because there is still something in it to empty.
+        assert!(steam.set_search("   "));
+        let rows = steam.rows();
+        assert_eq!(rows[3].title(), "The Witness");
+        assert_eq!(rows[0].comment(), Some("1 of 1 games matches"));
+    }
+
+    /// A search that finds nothing keeps the two rows that say why. A column
+    /// left empty would leave somebody looking at nothing with no way back to
+    /// their own library but the one they could not see.
+    #[test]
+    fn a_search_that_finds_nothing_still_says_so() {
+        let mut steam = library(&[(1, "Portal", true), (2, "Celeste", true)]);
+        assert!(steam.set_search("qqq"));
+
+        let rows = steam.rows();
+        assert_eq!(rows.len(), 2, "the field and the row that empties it");
+        assert_eq!(rows[0].comment(), Some("No games match"));
+        assert_eq!(rows[1].title(), "Clear search");
+        assert!(
+            rows.iter().all(|row| row.title() != "Alphabetical"),
+            "and no index over an empty column"
+        );
+    }
+
+    /// Every game under the heading it starts with, whatever else is not a
+    /// heading at all — and inside one, installed first, however the column
+    /// itself is listed.
+    #[test]
+    fn the_index_files_a_game_under_its_heading_and_the_rest_under_a_hash() {
+        let mut steam = library(&[
+            (1, "Aeonic", false),
+            (2, "112 Operator", false),
+            (3, "alpha protocol", true),
+            (4, "Zenith", true),
+            (5, "Портал", false),
+        ]);
+        // Anything but by name, so that an index which quietly followed the
+        // column would come out in the wrong order rather than the same one.
+        assert!(steam.set_sort(lxb_steam::library::Sort::LargestFirst));
+
+        let rows = steam.rows();
+        let letters = rows[1].entries().expect("the index opens onto letters");
+
+        // The heading is the row's *mark*, cut from the shell's own face.
+        assert_eq!(
+            letters
+                .iter()
+                .map(crate::apps::Entry::icon)
+                .collect::<Vec<_>>(),
+            [
+                Some("lxb:letter-hash"),
+                Some("lxb:letter-a"),
+                Some("lxb:letter-z")
+            ],
+            "what is not a heading first, then the alphabet"
+        );
+        // So the words on it are free to say how far it goes, and there is
+        // nothing left for a second line to add.
+        assert_eq!(
+            letters
+                .iter()
+                .map(crate::apps::Entry::title)
+                .collect::<Vec<_>>(),
+            ["2 games", "2 games", "1 game"]
+        );
+        assert!(
+            letters
+                .iter()
+                .all(|row| crate::apps::Entry::comment(row).is_none()),
+            "the title is the whole of the row"
+        );
+
+        assert_eq!(
+            inside(&letters[1]),
+            ["alpha protocol", "Aeonic"],
+            "installed first inside a letter, then by name"
+        );
+        assert_eq!(
+            inside(&letters[0]),
+            ["112 Operator", "Портал"],
+            "and a name in another script files with the digits"
+        );
+    }
+
+    /// The two rows one game has — its own, and the one inside its letter — are
+    /// built in the same pass out of the same library, so a download counts up
+    /// on both.
+    #[test]
+    fn a_game_says_the_same_thing_in_the_index_as_it_does_in_the_column() {
+        let mut steam = library(&[(504230, "Celeste", false)]);
+        steam.apply(Event::Installing {
+            app_id: 504230,
+            done: 3_000_000_000,
+            total: 6_000_000_000,
+        });
+
+        let rows = steam.rows();
+        let letters = rows[1].entries().expect("the index opens onto letters");
+        let inside = letters[0].entries().expect("a letter holds games");
+        let column = rows[2].game().expect("the column is games");
+        let indexed = inside[0].game().expect("and so is a letter");
+
+        assert_eq!(column.app_id, indexed.app_id);
+        assert_eq!(column.note, indexed.note);
+        assert!(column.note.starts_with("Installing"), "{}", column.note);
+        assert_eq!(column.updating, indexed.updating);
+    }
+
     #[test]
     fn a_signed_out_session_has_no_rows() {
         let mut steam = Steam::settled();

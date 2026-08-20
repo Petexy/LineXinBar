@@ -1,0 +1,49 @@
+<!--
+  A display with a moon standing in its screen, for the OLED protection rows.
+
+  The same monitor setting-display.svg draws — bezel, neck and foot as one
+  object, screen as an opening — with the moon laid down inside the opening.
+  What the page does is put a screen nobody is watching to sleep, and a display
+  asleep is the plainest way to say that: the object the setting is about, doing
+  the thing the setting does.
+
+  The shell's third moon, and the first that is not the moon on its own. The
+  other two are a warmth over a display and a switch on one thing; here the moon
+  is a small mark inside another, so it is drawn a little fatter than either —
+  a thin crescent at this size is a hair, and it is gone by the time the row is
+  drawn on a quick-settings bar.
+
+  The screen is cut before the moon is laid down. Painted the other way round
+  the hole takes the moon with it, which is a monitor showing nothing and looks
+  exactly like a monitor meant to show nothing.
+
+  The scale is setting-display.svg's, unchanged and for the same reason: a shape
+  has to leave room round itself for the shadow the shader casts beside it. The
+  two are one object and have to stay one size.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="bezel" d="M4.4 5.1h23.2a2 2 0 0 1 2 2v12.9a2 2 0 0 1-2 2H4.4a2 2 0 0 1-2-2V7.1a2 2 0 0 1 2-2z"/>
+    <path id="pane" d="M5.9 8.1h20.2v10.9H5.9z"/>
+    <path id="neck" d="M13.4 22.4h5.2v3.8h-5.2z"/>
+    <path id="foot" d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"/>
+    <path id="moon" d="M16.982 9.366 A4.2 4.2 0 1 0 19.855 16.207 A3.75 3.75 0 0 1 16.982 9.366 Z"/>
+    <g id="bead"><use href="#bezel"/><use href="#neck"/><use href="#foot"/><use href="#moon"/></g>
+    <g id="holes"><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#moon" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <g transform="translate(16 16) scale(0.963) translate(-16 -16)">
+
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

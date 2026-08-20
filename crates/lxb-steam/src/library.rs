@@ -115,6 +115,50 @@ impl Game {
         game
     }
 
+    /// The letter this game is filed under in an index of the library, or
+    /// `None` for a name that begins with anything else — a digit, a bracket, a
+    /// quotation mark, an alphabet this is not written in.
+    ///
+    /// Taken from the same folded key the library is *ordered* by, so a game
+    /// cannot be filed under one letter and sorted under another: `the witness`
+    /// and `The Witness` are one place in the list and one place in the index,
+    /// for the same reason and by the same line of code.
+    ///
+    /// A to Z and nothing else, which is a smaller answer than a name can ask
+    /// for and is deliberate. The shell draws a heading as the *letter itself*,
+    /// cut out of its own face into the same material its marks are made of, so
+    /// the headings are a closed set that is paid for once at startup rather
+    /// than a picture made of any string — `icons::INDEX_LETTERS` in the desktop
+    /// crate is that set, and this is the half of the agreement that lives with
+    /// the library. A name in another script therefore files with the digits and
+    /// the brackets, under the one heading that means "not one of these".
+    pub fn initial(&self) -> Option<char> {
+        // Already folded, so the first character is the lowercase of the name's
+        // first — uppercased here because a heading is a capital, and because
+        // the two halves of a name that folds oddly must not become two
+        // headings.
+        self.order
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .map(|first| first.to_ascii_uppercase())
+    }
+
+    /// Whether this game's name holds what somebody is looking for.
+    ///
+    /// `needle` is a query already folded by [`sought`], which is the same
+    /// folding the name itself went through — so this is one `contains` per
+    /// game per keystroke and no allocation at all. A search of a thousand
+    /// titles is then cheap enough to answer on the frame the letter was
+    /// pressed, which is what a field on this bar has to do.
+    ///
+    /// A substring rather than a prefix, because the name somebody has in mind
+    /// is very often not the one the shop uses: "portal" finds *Portal 2*, and
+    /// "witcher" finds *The Witcher 3: Wild Hunt*, which no prefix ever would.
+    pub fn matches(&self, needle: &str) -> bool {
+        self.order.contains(needle)
+    }
+
     /// What goes under the name on the bar.
     ///
     /// The one line the row has to say something in, so it says the thing that
@@ -373,6 +417,22 @@ fn by_known(a: u64, b: u64, largest_first: bool) -> std::cmp::Ordering {
 /// What a name sorts as.
 fn sort_key(name: &str) -> String {
     name.trim().to_lowercase()
+}
+
+/// What a typed query becomes before it is compared with any name, or `None`
+/// for a query that asks nothing.
+///
+/// Folded exactly as a name is — see [`sort_key`] — because the two are about
+/// to be compared, and a search that folded them differently would be a field
+/// that finds nothing for anybody typing in the case they see on screen. Done
+/// once for the whole library rather than once per game.
+///
+/// The empty answer is the whole of "not searching": a query of spaces is a
+/// query of nothing, and it must show the library rather than the games whose
+/// names contain a space.
+pub fn sought(query: &str) -> Option<String> {
+    let folded = sort_key(query);
+    (!folded.is_empty()).then_some(folded)
 }
 
 /// Turn the CM/PICS catalogue into this crate's deliberately smaller model.
@@ -705,6 +765,54 @@ mod tests {
         let mut game = Game::new(app_id, name.to_string(), 0);
         game.installed = installed;
         game
+    }
+
+    /// What an index of the library files a name under, which is the same
+    /// letter the list is ordered by and not a second reading of the name.
+    #[test]
+    fn a_game_is_filed_under_the_letter_it_sorts_under() {
+        let filed = |name: &str| game(1, name, false).initial();
+
+        assert_eq!(filed("Celeste"), Some('C'));
+        assert_eq!(filed("celeste"), Some('C'), "one name is one place");
+        assert_eq!(filed("  The Witness"), Some('T'), "as the order trims it");
+        // A to Z is the whole of the set, because a heading is drawn as the
+        // letter and the shell cuts those from its own face. Everything else
+        // files under the one heading that is not a letter.
+        assert_eq!(filed("Портал"), None);
+        assert_eq!(filed("Łowca"), None);
+        assert_eq!(filed("112 Operator"), None);
+        assert_eq!(filed("[redacted]"), None);
+        assert_eq!(filed(""), None);
+    }
+
+    /// What a field at the head of the library keeps, which is decided by the
+    /// same folding the order is: somebody types what they can see, and what
+    /// they can see is the name in the case the shop wrote it in.
+    #[test]
+    fn a_name_is_looked_for_the_way_it_is_ordered() {
+        let found = |name: &str, query: &str| match sought(query) {
+            Some(needle) => game(1, name, false).matches(&needle),
+            // Nothing asked keeps everything, which is what the shell shows
+            // for a field nobody has typed into.
+            None => true,
+        };
+
+        assert!(found("Portal 2", "portal"));
+        assert!(found("Portal 2", "PORTAL"), "case is not the question");
+        assert!(found("Portal 2", "  portal "), "nor the spaces round it");
+        // Anywhere in the name, because the name somebody has in mind is very
+        // often not the one the shop begins with.
+        assert!(found("The Witcher 3: Wild Hunt", "witcher"));
+        assert!(found("The Witcher 3: Wild Hunt", "wild hunt"));
+        assert!(!found("Portal 2", "celeste"));
+
+        // A query of nothing is not a search, however many spaces it is made
+        // of — a field with a space in it must not answer with every name that
+        // has one.
+        assert_eq!(sought(""), None);
+        assert_eq!(sought("   "), None);
+        assert!(found("Portal 2", "   "));
     }
 
     fn protocol_game(app_id: u32, name: &str) -> ProtocolGame {

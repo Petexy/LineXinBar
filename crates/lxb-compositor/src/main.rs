@@ -2,11 +2,13 @@
 
 mod backdrop;
 mod backend;
+mod blackout;
 mod capture;
 mod colour;
 mod colour_management;
 mod config;
 mod cursor;
+mod curtain;
 mod flash;
 mod focus;
 mod handlers;
@@ -54,7 +56,7 @@ struct Cli {
     #[arg(short, long, value_enum, default_value_t = BackendChoice::Auto)]
     backend: BackendChoice,
 
-    /// Boot straight into the XMB shell, as a session.
+    /// Boot straight into the desktop shell, as a session.
     ///
     /// Starts `lxb-desktop` (or `general.shell` from the config) and ties the
     /// compositor's lifetime to it, so quitting the shell logs you out. This
@@ -170,6 +172,22 @@ fn main() -> anyhow::Result<()> {
         // state immutably and runs per display.
         state.lxb.restores.prune(std::time::Instant::now());
         state.lxb.flashes.prune(std::time::Instant::now());
+        // And the same for a display that has finished coming back off the
+        // black it was resting behind — see [`blackout`]. It takes the live
+        // display list because a screen can be unplugged while it rests, and
+        // the one that comes back must not come back dead.
+        {
+            let live: Vec<smithay::output::Output> = state.lxb.space.outputs().cloned().collect();
+            state.lxb.blackouts.prune(&live, std::time::Instant::now());
+        }
+        // And a curtain that has finished coming back up stops being one,
+        // which is what gives the session its input back — beside them for the
+        // same reason they are here.
+        state.lxb.curtain.prune(std::time::Instant::now());
+        // Then the one question the render pass cannot answer: whether the
+        // black is on *every* display. A frame is drawn per display, and this
+        // is the pass that sees all of them.
+        state.tell_the_shell_when_the_screen_is_black();
         // One place to notice that the window stack changed, rather than a
         // hook on every path that can map, unmap or retitle a window.
         state.refresh_foreground();

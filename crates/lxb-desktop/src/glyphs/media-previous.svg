@@ -1,0 +1,20 @@
+<!--
+  The media card's previous button: a triangle running back into a wall.
+
+  The wall is a body of its own and stands clear of the triangle's tip. They
+  are not touching and must not be: two bodies of water that meet are one body,
+  and a bar joined to a point would read as an arrow with a tail rather than as
+  the mark that means *back to the start of this*.
+
+  The same triangle media-next.svg carries, turned. Kept the same size in both
+  so a row of three buttons does not have one heavier than its mirror.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="6" y="6" width="4" height="20" rx="2" fill="#ffffff"/>
+  <path d="M26 6.5L13.4 16L26 25.5Z" fill="#ffffff" stroke="#ffffff" stroke-width="2.6"
+        stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

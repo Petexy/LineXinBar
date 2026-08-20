@@ -1,0 +1,37 @@
+<!--
+  The clipboard, at the head of every column of the folder the user is choosing
+  to put something in.
+
+  A board with a clip standing in front of it, which is two bodies and a crevice
+  between them — a clip that had run into the board it holds would be a tombstone
+  with a bite out of the top.
+
+  The two lines across it are openings, exactly as the sheet's are: they say the
+  board is a board and not a slab, and each takes the ring of water a hole
+  displaces.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="board" x="6.4" y="7.0" width="19.2" height="20.6" rx="2.4"/>
+    <rect id="clip" x="11.4" y="3.6" width="9.2" height="6.4" rx="2.0"/>
+    <g id="lines" fill="none" stroke-width="1.3" stroke-linecap="round">
+      <path d="M10.8 16.4h10.4"/>
+      <path d="M10.8 21.4h6.9"/>
+    </g>
+    <g id="bead"><use href="#board"/><use href="#clip"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#clip" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#clip" fill="#ffffff"/>
+      <use href="#lines" stroke="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

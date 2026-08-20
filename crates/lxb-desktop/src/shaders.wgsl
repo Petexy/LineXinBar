@@ -1,4 +1,4 @@
-// Shaders for the XMB shell.
+// Shaders for the lattice shell.
 //
 // Coordinates arrive in physical pixels with the origin at the top-left; the
 // vertex stages convert to clip space using the resolution uniform.
@@ -29,6 +29,13 @@ struct Globals {
     // The picture standing behind the shell: the layer being left, the layer
     // being arrived at, and how much of each is showing.
     hero: vec4<f32>,
+    // Which material each half of the shell is drawn in — 0 for its own, 1 for
+    // the plain one a slow machine asks for under Settings > Appearance > Theme.
+    // x is the wallpaper and y is every mark the shell draws; they are separate
+    // settings and either may be either way round. The other two are spare; a
+    // uniform struct is laid out in sixteen-byte lots and this is the cheapest
+    // honest way to carry two numbers.
+    style: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -80,6 +87,39 @@ const SCENERY_SHADE_TO: f32 = 0.72;
 // different surface, which is what makes the panes and the wallpaper's silk
 // current look like materials in the same room.
 const KEY_LIGHT: vec3<f32> = vec3<f32>(-0.42, -0.66, 0.62);
+
+// Half a turn. WGSL has no constant for it, and the wallpaper needs one: the
+// ribbons are gathered together by a half-period whose ends land exactly on the
+// two edges of the display.
+const PI: f32 = 3.14159265;
+
+// How wide a sheet of the current still is when the display sees it exactly
+// edge-on, as a share of its own width. Rounded off just short of nothing: a
+// sheet with no width at all is a crease rather than a fold, and its lighting
+// degenerates on the singularity.
+const BAND_FOLD: f32 = 0.020;
+
+// How much the face of a sheet bows between its two lips, as a slope at the
+// edge of the flat part. Water has no flat faces, and a face that really is
+// flat carries one surface angle across its whole width, catches the sharp
+// light everywhere at once, and leaves a straight-sided plateau on the ribbon.
+const BAND_BOW: f32 = 0.50;
+
+// The most of their two half-widths that can stand between two neighbouring
+// ribbons of the current — the whole of what keeps the band one band. Under
+// one, so two sheets always overlap whatever the twist has done to either of
+// their widths, and far enough under it to cover the feathering of both
+// silhouettes. `lxb-protocol`'s `the_three_ribbons_of_the_current_are_never_apart`
+// is what holds this number to its promise.
+const BAND_SHARE: f32 = 0.88;
+
+// How far either side of a sheet's edge its silhouette is spread, in samples
+// of whatever this wallpaper is being drawn into. A box filter a sample wide
+// would spread it half a sample each way; this is wider because the fade is a
+// smoothstep rather than a ramp, and a smoothstep does most of its travelling
+// in the middle of the interval it is given. Kept in step with
+// `lxb-protocol`'s `BAND_EDGE_SAMPLES`, which is where it was measured.
+const BAND_EDGE_SAMPLES: f32 = 0.8;
 
 // How far out a corner reaches, under the norm that shapes it.
 //
@@ -172,6 +212,13 @@ fn ambient_field(p: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
 // blink out to make room for the next. They are added by weight and divided by
 // the weight they carry, so a crossfade never dips through the wallpaper
 // underneath on its way across.
+//
+// A layer's own transparency counts as well as its weight. Every picture Steam
+// publishes is opaque, so for a game this is exactly the weighted average it
+// was before; what it is for is the other kind of picture that can stand here —
+// one of the user's own files, which may be a drawing on nothing at all. That
+// one is shown as what it is, with the shell's wallpaper where the file has no
+// pixels, rather than as a black band the size of the display.
 fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
     let leaving = globals.hero.z;
     let arriving = globals.hero.w;
@@ -189,15 +236,368 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
     let cropped = (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
 
     var color = vec3<f32>(0.0);
+    var covered = 0.0;
     if (leaving > 0.0) {
-        color += textureSampleLevel(
-            scenery_texture, scenery_sampler, cropped, i32(globals.hero.x), lod).rgb * leaving;
+        let layer = textureSampleLevel(
+            scenery_texture, scenery_sampler, cropped, i32(globals.hero.x), lod);
+        color += layer.rgb * layer.a * leaving;
+        covered += layer.a * leaving;
     }
     if (arriving > 0.0) {
-        color += textureSampleLevel(
-            scenery_texture, scenery_sampler, cropped, i32(globals.hero.y), lod).rgb * arriving;
+        let layer = textureSampleLevel(
+            scenery_texture, scenery_sampler, cropped, i32(globals.hero.y), lod);
+        color += layer.rgb * layer.a * arriving;
+        covered += layer.a * arriving;
     }
-    return vec4<f32>(color / total, min(total, 1.0));
+    if (covered <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(color / covered, min(total, 1.0) * covered / total);
+}
+
+// The current as the shell's own material: one band of water, three ribbons
+// thick, drifting through a broad lane below the cross point.
+//
+// Takes the scene as it stands and hands it back with the band drawn into it,
+// because water is a body rather than a glow — it takes light out of what
+// stands behind it before putting any of its own back.
+fn water(
+    into: vec3<f32>,
+    uv: vec2<f32>,
+    aspect: f32,
+    t: f32,
+    soften: f32,
+    footprint: vec2<f32>,
+) -> vec3<f32> {
+    var color = into;
+    // The current: one band of water, three ribbons thick, drifting
+    // through a broad lane below the cross point.
+    //
+    // Each ribbon is a sheet of water rather than a drawn line, and it is made
+    // of the same material as everything else in this shell: the cross-section
+    // is the bead `glyph_material` builds — a flat face with a quarter-round
+    // lip rolled over at both edges, from the same `bevel_rise` and
+    // `bevel_slope` — carried along a travelling curve. One angle rolls each
+    // sheet about its own travel, which is what makes it widen and narrow,
+    // hand its highlight from one edge to the other, and throw a shadow on the
+    // wallpaper it stands in front of. A second axis of much smaller waves
+    // runs along its length, and that is the one that makes it water: a sheet
+    // that can only bend across its width has a highlight running its whole
+    // length in one unbroken line — a wire of chrome — because somewhere in a
+    // smooth roll from flat face to steep lip there is always an angle that
+    // catches the lamp.
+    //
+    // The three are stacked along one spine, and they cannot come apart. Each
+    // outer ribbon is pushed off the middle one by a *share* of the two
+    // half-widths that meet there rather than by a length of its own: a share
+    // that passes through zero, so they cross, and never reaches one, so the
+    // sheets always overlap. Nothing the twist or the drift does can open a gap
+    // between them, because the space between them is not a distance — it is a
+    // fraction of a width that shrinks when they do.
+    //
+    // Nothing is refracted from behind: a sheet this thin in front of a field
+    // this smooth displaces nothing the eye could see, and what says water
+    // here is the geometry of the surface.
+    //
+    // How much of a half-width the rolled lip takes. The rest is flat face,
+    // and a ribbon narrower than twice this is all lip — which is correct, and
+    // is what keeps the finer strands beads of water rather than flat rails.
+    let lip = 0.45;
+    // Blurred, the sheet is drawn wide and dim like everything else here, and
+    // its sharp light is nearly all given up: a glinting highlight behind a
+    // frosted pane is the one thing that would say the backdrop is a picture
+    // rather than the room.
+    let ribbon_gloss = mix(1.0, 0.10, soften);
+    let ribbon_wave = mix(1.0, 0.25, soften);
+    // The lamp the whole shell shares, and the half vector between it and an
+    // eye looking straight into the display.
+    let key = normalize(KEY_LIGHT);
+    let half_vector = normalize(key + vec3<f32>(0.0, 0.0, 1.0));
+
+    // Everything the band is made of is gathered in towards its lane at both
+    // ends of the display: the ribbons come off the left edge close together,
+    // open apart across the middle, and close again on the way off the right.
+    // Never all the way to nothing, or the band would leave as one line.
+    let gather = 0.28 + 0.72 * sin(PI * uv.x);
+    let gather_slope = 0.72 * PI * cos(PI * uv.x);
+
+    // The spine: the one curve the band is stacked along, and so the only one
+    // whose slope has to be measured.
+    let spine_a = uv.x * 6.8 + t * 0.56;
+    let spine_b = uv.x * 3.4 - t * 0.39 + 0.8;
+    let swing = sin(spine_a) * 0.055 + sin(spine_b) * 0.085;
+    let swing_slope = cos(spine_a) * 0.055 * 6.8 + cos(spine_b) * 0.085 * 3.4;
+    let spine = 0.62 + swing * gather;
+    // Measure across the curve rather than vertically. Without this correction
+    // a steep section grows visibly thicker than a flat one. In the same
+    // physical-screen units as y, so wide outputs do not over-correct either
+    // the width or the light angle. The gathering is part of the curve, and so
+    // is its slope.
+    let slope = (swing_slope * gather + swing * gather_slope) / aspect;
+    let across = normalize(vec2<f32>(slope, -1.0));
+    // And along the band, in those same units.
+    let along = vec2<f32>(-across.y, across.x);
+    let band = (uv.y - spine) / sqrt(1.0 + slope * slope);
+    // How far across the band one sample reaches, in those same units: the
+    // sample's own two sides, each as much of them as points across the curve.
+    // Nothing else in this picture needs it — every other term here is a field
+    // that changes slowly enough to be read one point at a time — but the
+    // sheets have edges, and an edge drawn from a single point either lands in
+    // a sample or does not. It is not always a display pixel: the same
+    // wallpaper is drawn into a card's miniature, where it is the whole picture
+    // squeezed into a few hundred of them.
+    let sample = abs(across.x * footprint.x * aspect) + abs(across.y * footprint.y);
+
+    // Every ribbon's twist and width before any of them is drawn, because
+    // where one of them stands depends on how wide the one beside it is.
+    var tilt = array<f32, 3>(0.0, 0.0, 0.0);
+    var width = array<f32, 3>(0.0, 0.0, 0.0);
+    for (var i = 0; i < 3; i = i + 1) {
+        let fi = f32(i);
+        let x = uv.x * (2.0 + fi * 0.6);
+        // How far this sheet has turned about its own travel. Three opposing
+        // clocks whose periods do not divide one another, so the twist never
+        // settles into a pattern that repeats down the ribbon, and deep enough
+        // that it carries the sheet past edge-on — which is what a wrapping
+        // ribbon does, and where it pinches.
+        let turning = sin(x * 2.10 - t * (0.23 + fi * 0.05) + fi * 1.9) * 0.95
+            + sin(x * 1.25 + t * 0.15 + fi * 2.7) * 0.55
+            + sin(x * 4.30 - t * 0.35 + fi * 0.7) * 0.22;
+        // Squared, keeping its sign: a ribbon lies open for a long run and then
+        // turns through its twist quickly, rather than rolling evenly the whole
+        // way along like a screw.
+        tilt[i] = (turning * abs(turning) * 0.62
+            + sin(x * 7.0 + t * 0.9 + fi) * 0.08) * ribbon_wave;
+        // How much of the sheet's own width the display sees. Edge-on it is
+        // nearly none of it: the ribbon pinches to a fold there and opens out
+        // again on the far side, with its lit edge handed over to the other
+        // side of itself.
+        let broad = sqrt(cos(tilt[i]) * cos(tilt[i]) + BAND_FOLD);
+        width[i] = (0.0640 - 0.0110 * fi) * broad * mix(1.0, 1.5, soften);
+    }
+
+    // Where each ribbon stands across the band. The middle one *is* the band;
+    // the other two are pushed off it by their share, and `BAND_SHARE` — under
+    // one — is the whole of what keeps the three of them joined.
+    let lift = BAND_SHARE * (0.32 + 0.68 * sin(uv.x * 4.3 - t * 0.37));
+    let drop = BAND_SHARE * (0.32 + 0.68 * sin(uv.x * 3.1 + t * 0.29 + 2.2));
+    let offset = array<f32, 3>(
+        -(width[0] + width[1]) * lift * gather,
+        0.0,
+        (width[1] + width[2]) * drop * gather,
+    );
+
+    for (var i = 0; i < 3; i = i + 1) {
+        let fi = f32(i);
+        let x = uv.x * (2.0 + fi * 0.6);
+        let d = band - offset[i];
+        let sheet_width = width[i];
+
+        // The small water on top of the twist, as the slope of waves
+        // travelling along the ribbon's own length.
+        let along_wave = (cos(x * 9.0 - t * 1.1 + fi * 2.0) * 0.34
+            + cos(x * 23.0 + t * 1.9 + fi * 1.3) * 0.14) * ribbon_wave;
+
+        let reach = abs(d / sheet_width);
+        // Where across the ribbon this pixel is, signed, for the light that
+        // travels through the sheet at an angle.
+        let s_across = clamp(d / sheet_width, -1.0, 1.0);
+        // The silhouette, feathered only in its last few percent: water holds
+        // its own edge, and the rim light needs a surface to sit on. That is
+        // the fade as authored, and what a display's own frame very nearly
+        // draws.
+        //
+        // Widened by a sample either side of the edge, which is what makes the
+        // same band bear being drawn small — into a card's miniature, or into
+        // the compositor's bridge frame, a fifth of a display across. This is
+        // the whole of the anti-aliasing the band gets and all it needs: the
+        // silhouette is the only place this picture stops being smooth, and
+        // everything sharp about a sheet — the lip, the glint, the dispersion —
+        // is carried by `cover` and goes soft with it.
+        //
+        // Either side of the edge, rather than inwards from it: a fade that
+        // only ate into the sheet would thin the water as the picture got
+        // smaller, and where a ribbon is pinched nearly edge-on it would take
+        // most of it. Spread symmetrically, this is close to what a
+        // sample-wide box filter of the same edge lands on, which is the
+        // picture more samples would converge to.
+        let spread = BAND_EDGE_SAMPLES * sample / sheet_width;
+        let cover = 1.0
+            - smoothstep(mix(0.94, 0.40, soften) - spread, 1.0 + spread, reach);
+        // Where in the rolled-over lip this pixel is: 0 at the outer edge, 1
+        // where the flat face begins.
+        let inset = clamp((1.0 - reach) / lip, 0.0, 1.0);
+        let rise = bevel_rise(inset);
+
+        // The cross-section's own angle: the rolled lip, turned with the whole
+        // sheet. Kept as a sine and a cosine rather than as radians, so the
+        // steep lip costs a rotation instead of an arctangent.
+        // The lip, and the bow of the face inside it. A sheet of water is never
+        // flat: without the bow the face's whole width has one surface angle,
+        // so it satisfies the sharp light all at once and flashes as a plateau
+        // with a straight edge down each side of it, which reads as a rectangle
+        // laid on the ribbon. Bowed, the same light is a band running along the
+        // sheet, and the waves along its length break that band up.
+        let wall = normalize(vec2<f32>(
+            -sign(d) * bevel_slope(inset) - s_across * BAND_BOW,
+            1.0,
+        ));
+        let turn = sin(tilt[i]);
+        let level = cos(tilt[i]);
+        let face = vec2<f32>(
+            wall.x * level + wall.y * turn,
+            wall.y * level - wall.x * turn,
+        );
+        // The same water behind less display is brighter for it, up to a
+        // ceiling — or the pinch itself would be the brightest thing on screen.
+        let broad = sqrt(level * level + BAND_FOLD);
+        let fold = min(1.0 / broad, 2.2);
+        // The surface itself: that angle across the ribbon, the wave slope
+        // along it, and what is left of it facing the display.
+        let surface = normalize(vec3<f32>(
+            across * face.x + along * along_wave * face.y,
+            face.y,
+        ));
+
+        let facing = clamp(dot(surface, key), 0.0, 1.0);
+        let fresnel = 0.04 + 0.96 * pow(1.0 - clamp(surface.z, 0.0, 1.0), 5.0);
+        let glint = pow(max(dot(surface, half_vector), 0.0), 42.0);
+        // The room the sheet hands back at a grazing angle. Only the
+        // brightness of it is kept, the way a glyph keeps only the brightness
+        // of the sky it reflects: the colour belongs to the accent.
+        let mirrored = reflect(vec3<f32>(0.0, 0.0, -1.0), surface);
+        let room = 0.42 + 0.73 * (0.5 - 0.5 * dot(mirrored, key));
+        // Only the sharp light travels quickly, so the sheet glistens without
+        // the whole ribbon pulsing.
+        let travelling = 0.60 + 0.40
+            * sin(x * 3.1 - t * (0.9 + fi * 0.25) + fi);
+        // What the light gathers on its way through the sheet: bright arcs
+        // lying across the body wherever a ripple above them is focusing. They
+        // ride the finer of the two waves that bend the surface, rather than a
+        // pattern of their own — a second, unrelated period reads as hatching
+        // rather than as water — they lean because the light crosses the sheet
+        // at an angle on its way through, and they come in patches, because
+        // arcs all the way along a ribbon read as corrugation. The patch is a
+        // squared half-wave rather than a clipped one: clipping a sine leaves a
+        // kink, and a kink in something that only varies along the ribbon is a
+        // straight cut across it — which reads as a rectangle pasted on the
+        // water.
+        let focusing = 0.5 + 0.5 * sin(x * 2.3 - t * 0.5 + fi);
+        let gathered = pow(max(sin(x * 23.0 + t * 1.9 + fi * 1.3
+            + s_across * 3.4), 0.0), 5.0)
+            * (0.15 + 0.85 * focusing * focusing);
+
+        let depth = 1.0 - fi * 0.26;
+        let skirt = exp(-d * d * mix(90.0, 45.0, soften));
+        // The shadow the sheet throws on the wallpaper, down-light of itself.
+        // The one thing that says the band is in front of the scene rather
+        // than mixed into it.
+        let shadow_d = d - sheet_width - 0.010;
+        let shadow = exp(-shadow_d * shadow_d * mix(1400.0, 500.0, soften))
+            * (1.0 - cover);
+        // And the line its curve gathers on the far side of that shadow, where
+        // the light it let through comes back together.
+        let caustic_d = d - sheet_width - 0.0040;
+        let caustic = exp(-caustic_d * caustic_d * mix(30000.0, 2000.0, soften))
+            * broad;
+
+        let haze_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb, 0.46);
+        let body_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb,
+                            0.24 + fi * 0.05 + 0.36 * rise);
+        // A thick edge splits what passes through it into colour: warm above
+        // the lip, cold below it. Small, because it is a cue and not a prism.
+        let split = GLASS_DISPERSION * (1.0 - inset) * (1.0 - inset)
+            * cover * depth * ribbon_gloss * -sign(d);
+
+        let haze_strength = mix(1.0, 0.40, soften) * depth;
+        let body_strength = mix(1.0, 0.55, soften) * depth;
+        let water = cover * fold * body_strength;
+        // Water is a body: it takes light out of what stands behind it and
+        // shades what stands beside it, before any of its own is added.
+        color *= 1.0 - cover * (0.05 + 0.11 * rise) * body_strength;
+        color *= 1.0 - shadow * 0.20 * body_strength;
+        color += haze_tint * skirt * 0.007 * haze_strength;
+        color += body_tint * water * (0.005 + 0.012 * rise + 0.028 * facing);
+        color += globals.accent[1].rgb * fresnel * room * water * 0.100
+            * mix(1.0, 0.45, soften);
+        color += globals.accent[1].rgb * glint * water * 0.120 * travelling
+            * ribbon_gloss;
+        color += globals.accent[1].rgb * gathered * cover * rise * 0.011
+            * depth * ribbon_gloss;
+        color += globals.accent[1].rgb * caustic * 0.011 * depth * ribbon_gloss;
+        color *= vec3<f32>(1.0 + split, 1.0, 1.0 - split);
+    }
+    return color;
+}
+
+// The current as the plainer material: three fine glass-silk ribbons moving
+// together through the same lane.
+//
+// What this shell drew before the band, kept for the Simple theme rather than
+// deleted. A machine that cannot afford the water still gets a current, and
+// this is the one that was tuned to sit under the bar without competing with
+// it. It adds and never subtracts, which is half of why it is cheap: no pixel
+// behind it is read back and dimmed.
+fn silk(into: vec3<f32>, uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec3<f32> {
+    var color = into;
+    // The current: three fine glass-silk ribbons moving together through
+    // a broad lane below the cross point. Each ribbon has a stable translucent
+    // body, a deep lower fold and an accent-soft bevel catching the shell's
+    // upper-left lamp. Only that highlight carries the quicker travelling
+    // sheen, so the material glistens without the whole line pulsing like neon.
+    for (var i = 0; i < 3; i = i + 1) {
+        let fi = f32(i);
+        let speed = 0.42 + fi * 0.14;
+        let lane = 0.62 + (fi - 1.0) * 0.050;
+        let x_scale = 2.0 + fi * 0.6;
+        let x = uv.x * x_scale;
+
+        let phase_a = x * 2.6 + t * speed + fi * 2.1;
+        let phase_b = x * 1.3 - t * speed * 0.7 + fi * 0.8;
+        let center = lane + sin(phase_a) * 0.055 + sin(phase_b) * 0.085;
+
+        // Measure across the curve rather than vertically. Without this
+        // correction a steep section grows visibly thicker than a flat one.
+        // Convert x to the same physical-screen units as y first, so wide
+        // outputs do not over-correct either the width or the light angle.
+        let uv_slope = (cos(phase_a) * 0.055 * 2.6
+            + cos(phase_b) * 0.085 * 1.3) * x_scale;
+        let slope = uv_slope / aspect;
+        let d = (uv.y - center) / sqrt(1.0 + slope * slope);
+
+        let skirt = exp(-d * d * mix(320.0, 110.0, soften));
+        let body = exp(-d * d * mix(5200.0, 680.0, soften));
+        let bevel_d = d + mix(0.0045, 0.012, soften);
+        let bevel = exp(-bevel_d * bevel_d * mix(20000.0, 1000.0, soften));
+        let crest_d = d + mix(0.0065, 0.014, soften);
+        let crest = exp(-crest_d * crest_d * mix(70000.0, 1400.0, soften));
+        let fold_d = d - mix(0.008, 0.016, soften);
+        let lower_fold = exp(-fold_d * fold_d * mix(9500.0, 900.0, soften));
+
+        // A bend facing the shared lamp catches more of its highlight. The
+        // separate travelling term is restrained to the glossy layers.
+        let upper_normal = normalize(vec2<f32>(slope, -1.0));
+        let lamp_facing = max(dot(upper_normal, normalize(KEY_LIGHT.xy)), 0.0);
+        let key_glint = 0.52 + 0.48 * pow(lamp_facing, 4.0);
+        let travelling = 0.64 + 0.36
+            * sin(x * 3.1 - t * (0.9 + fi * 0.25) + fi);
+
+        let depth = 1.0 - fi * 0.18;
+        let haze_strength = mix(1.0, 0.40, soften) * depth;
+        let gloss_strength = mix(1.0, 0.10, soften) * depth;
+        let haze_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb, 0.46);
+        let body_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb,
+                            0.28 + fi * 0.04);
+
+        color += haze_tint * skirt * 0.020 * haze_strength;
+        color += body_tint * body * 0.040 * haze_strength;
+        color += globals.accent[2].rgb * lower_fold * 0.010 * haze_strength;
+        color += globals.accent[1].rgb
+            * (bevel * 0.022 * (0.82 + 0.18 * travelling)
+                + crest * 0.010 * travelling * key_glint)
+            * gloss_strength;
+    }
+    return color;
 }
 
 // The wallpaper, as a function of where you look rather than as a picture.
@@ -207,7 +607,14 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
 // their own edges. `soften` stands in for blur — the same scene drawn wide
 // and dim rather than pixels filtered, which lands the same impression for
 // free. Returns linear light, the space the palette arrives in.
-fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32, lod: f32) -> vec3<f32> {
+fn wallpaper(
+    uv: vec2<f32>,
+    aspect: f32,
+    t: f32,
+    soften: f32,
+    lod: f32,
+    footprint: vec2<f32>,
+) -> vec3<f32> {
     // The mood drifts slowly between the theme's two gradients — indigo to
     // violet and back over a couple of minutes, like the original bar's
     // changing months.
@@ -280,62 +687,12 @@ fn wallpaper(uv: vec2<f32>, aspect: f32, t: f32, soften: f32, lod: f32) -> vec3<
     color += globals.accent[0].rgb * current_light * 0.035
         * mix(1.0, 0.40, soften);
 
-    // The XMB current: three fine glass-silk ribbons moving together through
-    // a broad lane below the cross point. Each ribbon has a stable translucent
-    // body, a deep lower fold and an accent-soft bevel catching the shell's
-    // upper-left lamp. Only that highlight carries the quicker travelling
-    // sheen, so the material glistens without the whole line pulsing like neon.
-    for (var i = 0; i < 3; i = i + 1) {
-        let fi = f32(i);
-        let speed = 0.42 + fi * 0.14;
-        let lane = 0.62 + (fi - 1.0) * 0.050;
-        let x_scale = 2.0 + fi * 0.6;
-        let x = uv.x * x_scale;
-
-        let phase_a = x * 2.6 + t * speed + fi * 2.1;
-        let phase_b = x * 1.3 - t * speed * 0.7 + fi * 0.8;
-        let center = lane + sin(phase_a) * 0.055 + sin(phase_b) * 0.085;
-
-        // Measure across the curve rather than vertically. Without this
-        // correction a steep section grows visibly thicker than a flat one.
-        // Convert x to the same physical-screen units as y first, so wide
-        // outputs do not over-correct either the width or the light angle.
-        let uv_slope = (cos(phase_a) * 0.055 * 2.6
-            + cos(phase_b) * 0.085 * 1.3) * x_scale;
-        let slope = uv_slope / aspect;
-        let d = (uv.y - center) / sqrt(1.0 + slope * slope);
-
-        let skirt = exp(-d * d * mix(320.0, 110.0, soften));
-        let body = exp(-d * d * mix(5200.0, 680.0, soften));
-        let bevel_d = d + mix(0.0045, 0.012, soften);
-        let bevel = exp(-bevel_d * bevel_d * mix(20000.0, 1000.0, soften));
-        let crest_d = d + mix(0.0065, 0.014, soften);
-        let crest = exp(-crest_d * crest_d * mix(70000.0, 1400.0, soften));
-        let fold_d = d - mix(0.008, 0.016, soften);
-        let lower_fold = exp(-fold_d * fold_d * mix(9500.0, 900.0, soften));
-
-        // A bend facing the shared lamp catches more of its highlight. The
-        // separate travelling term is restrained to the glossy layers.
-        let upper_normal = normalize(vec2<f32>(slope, -1.0));
-        let lamp_facing = max(dot(upper_normal, normalize(KEY_LIGHT.xy)), 0.0);
-        let key_glint = 0.52 + 0.48 * pow(lamp_facing, 4.0);
-        let travelling = 0.64 + 0.36
-            * sin(x * 3.1 - t * (0.9 + fi * 0.25) + fi);
-
-        let depth = 1.0 - fi * 0.18;
-        let haze_strength = mix(1.0, 0.40, soften) * depth;
-        let gloss_strength = mix(1.0, 0.10, soften) * depth;
-        let haze_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb, 0.46);
-        let body_tint = mix(globals.accent[0].rgb, globals.accent[2].rgb,
-                            0.28 + fi * 0.04);
-
-        color += haze_tint * skirt * 0.020 * haze_strength;
-        color += body_tint * body * 0.040 * haze_strength;
-        color += globals.accent[2].rgb * lower_fold * 0.010 * haze_strength;
-        color += globals.accent[1].rgb
-            * (bevel * 0.022 * (0.82 + 0.18 * travelling)
-                + crest * 0.010 * travelling * key_glint)
-            * gloss_strength;
+    // The current: the moving thing in the middle of the picture, in
+    // whichever material this shell is set to draw it in.
+    if (globals.style.x > 0.5) {
+        color = silk(color, uv, aspect, t, soften);
+    } else {
+        color = water(color, uv, aspect, t, soften, footprint);
     }
 
     // Two aurora veils sweep through different thirds of the display. Their
@@ -402,6 +759,11 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
     var uv = in.uv;
     var coverage = 1.0;
     var soften = globals.blur;
+    // How much of the wallpaper one pixel of this pass stands for. The whole
+    // surface draws it a display wide; the miniature draws all of it inside a
+    // card, where one pixel is worth several of the display's, and the band of
+    // water has to know that or its edges arrive as a staircase.
+    var footprint = 1.0 / globals.resolution;
 
     // The miniature fades up with the rest of its card, and the wallpaper
     // inside it is drawn here rather than in the scene, so the fade has to
@@ -413,6 +775,7 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
         let lo = globals.window_rect.xy;
         let size = globals.window_rect.zw;
         uv = (px - lo) / size;
+        footprint = 1.0 / size;
         coverage = rounded_coverage(px, globals.window_rect, radius);
         fade = globals.params.w;
     }
@@ -442,6 +805,7 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
             if (corner > 0.0) {
                 coverage = corner;
                 uv = in.uv;
+                footprint = 1.0 / globals.resolution;
                 soften = globals.params.y;
                 fade = 1.0;
             }
@@ -452,7 +816,7 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
     // The analytic wallpaper answers `soften` by drawing itself wide and dim;
     // a photograph can only answer it by being sampled off a smaller copy of
     // itself, so the same ramp has to reach it as a rung of its blur chain.
-    let color = wallpaper(uv, aspect, globals.time, soften, soften * SCENERY_LEVELS);
+    let color = wallpaper(uv, aspect, globals.time, soften, soften * SCENERY_LEVELS, footprint);
 
     // Premultiplied, so the surface blends correctly where the background
     // does not reach.
@@ -674,7 +1038,14 @@ fn behind_at(px: vec2<f32>, lod: f32, soften: f32) -> vec3<f32> {
     // little, while a photograph seen sharp through deep frost is a pane with
     // a hole in it. The deeper of the two — the frost's own rung and the
     // softness the wallpaper is being drawn at — is what it is asked for.
-    let below = wallpaper(uv, aspect, globals.time, soften, max(lod, soften * SCENERY_LEVELS));
+    let below = wallpaper(
+        uv,
+        aspect,
+        globals.time,
+        soften,
+        max(lod, soften * SCENERY_LEVELS),
+        1.0 / globals.resolution,
+    );
     return drawn.rgb + below * (1.0 - drawn.a);
 }
 
@@ -751,6 +1122,20 @@ const GLYPH_LAMP: vec3<f32> = vec3<f32>(-0.4915, -0.7078, 0.5069);
 // How dark the mark's own shadow is where it meets the flat space.
 const GLYPH_SHADOW: f32 = 0.30;
 
+// The plain material, for the Simple theme: how much of the accent is mixed
+// into a mark, and how solid the mark is.
+//
+// White with the accent breathed over it rather than the accent itself — the
+// shell's marks are read at a glance and a coloured mark is a slower one — and
+// a little short of solid, because every one of them stands on glass and a mark
+// that is *more* opaque than the pane it is on reads as a sticker on it.
+const GLYPH_FLAT_TINT: f32 = 0.22;
+const GLYPH_FLAT_ALPHA: f32 = 0.88;
+// How much of the colour the caller asked for survives. Nearly none: the marks
+// are white in this theme. Not *quite* none, so that a caller which deliberately
+// draws one dark — on a light surface — still has something visible there.
+const GLYPH_FLAT_STAIN: f32 = 0.15;
+
 // How far this pixel is from the nearest edge of the glyph, in cell fractions.
 // Negative inside it.
 //
@@ -793,6 +1178,21 @@ fn glyph_material(in: QuadOut) -> vec4<f32> {
     // How far into the mark this pixel is, in pixels of the drawn glyph.
     let d = glyph_at(in.uv, cell) * size.x;
     let coverage = 1.0 - smoothstep(-0.75, 0.75, d);
+
+    // The Simple theme, as chosen for the *marks* — `y`, not the wallpaper's
+    // `x`: the drawing and nothing else.
+    //
+    // The *shape* is identical — this is the same distance field, read at the
+    // same edge, so a mark is the same mark and antialiases the same way. What
+    // is dropped is everything that made it a body: the gradient of the field,
+    // the bevel, the fall down its own height, the reflection, the specular,
+    // the dispersion and its own shadow. Nine texture reads become one and the
+    // arithmetic becomes a fill, which is the whole point of the theme.
+    if (globals.style.y > 0.5) {
+        let stain = mix(vec3<f32>(1.0), in.color.rgb, GLYPH_FLAT_STAIN);
+        let flat = mix(stain, globals.accent[1].rgb, GLYPH_FLAT_TINT);
+        return vec4<f32>(flat, coverage * GLYPH_FLAT_ALPHA * in.material.w);
+    }
 
     // Which way the surface faces: the gradient of the field, which for a
     // distance field points straight out of the nearest edge wherever it is

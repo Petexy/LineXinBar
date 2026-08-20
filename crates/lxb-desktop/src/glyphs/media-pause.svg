@@ -1,0 +1,19 @@
+<!--
+  The media card's pause button: two uprights with air between them.
+
+  The air is the mark. Two bars that touched would be one body of water and the
+  field could not be told otherwise — see category-games.svg — so the gap is
+  wide enough to survive the bevel at the size a guide row draws this, which is
+  also the width at which it still reads as *pause* rather than as a smudge.
+
+  Both bars are capsules. A square end on a run of water this narrow is a flat
+  face on something that has no room for one.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="9" y="6" width="5.4" height="20" rx="2.7" fill="#ffffff"/>
+  <rect x="17.6" y="6" width="5.4" height="20" rx="2.7" fill="#ffffff"/>
+</svg>

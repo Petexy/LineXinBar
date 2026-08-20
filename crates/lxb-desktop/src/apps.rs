@@ -148,7 +148,7 @@ fn program_name(exec: &str) -> Option<String> {
 
 /// One row of a column.
 ///
-/// A column is a tree rather than a list, as the original cross media bar's
+/// A column is a tree rather than a list, as the original console shells'
 /// were: a row is something to launch, a file of the user's own, a subcategory
 /// holding a column of its own, or one of a set of values the shell is set to.
 /// One type rather than four, because a row is drawn the same way whichever it
@@ -193,14 +193,18 @@ pub enum Entry {
     /// mean everywhere else in a column. Left still leaves, because Left is
     /// how every column is left.
     Bar(Bar),
-    /// The field at the head of a shelf of the user's own files, and the row
-    /// that empties it.
+    /// The field at the head of a long column — a shelf of the user's own
+    /// files, a folder, a Steam library — and the row that empties it.
     ///
     /// A row rather than a control drawn over the column, because on this bar
     /// a row is the only thing there is. The user reaches it by pressing Up
     /// from the first file, presses it with the same button that opens a file,
     /// and it sits where anything standing over a list sits — at the top of it.
     /// Nothing new had to be learnt to find it.
+    ///
+    /// One row for all three, so it is also nothing new to learn the second
+    /// time: what differs between them is only where the narrowing happens,
+    /// which is [`Searched`] and nothing the user can see.
     Search(Search),
     /// Steam itself, at the head of the Games column: the way in to somebody's
     /// library, and afterwards the way back out of it.
@@ -388,16 +392,21 @@ pub struct Search {
 
 /// What a field at the head of a column is a search *of*.
 ///
-/// Two answers and they are answered in two different places, which is the
+/// Three answers and they are answered in three different places, which is the
 /// whole reason this is a type. A shelf is half a million files held on a
 /// worker, so narrowing one is a message to that worker and the rows come back
 /// when they are ready. A folder is one directory on the disk, so narrowing one
 /// is reading it again — which costs a `readdir` and a `stat` per row kept, and
-/// is done on the frame the letter was typed.
+/// is done on the frame the letter was typed. A Steam library is a few hundred
+/// titles the shell is already holding, so narrowing one is a `contains` per
+/// game and is likewise done on that frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Searched {
     Shelf(crate::media::Kind),
     Folder,
+    /// Somebody's Steam library, which is a column of games the shell owns the
+    /// whole of. See [`crate::steam::Steam::rows`].
+    Library,
 }
 
 impl Searched {
@@ -406,7 +415,7 @@ impl Searched {
     pub fn shelf(self) -> Option<crate::media::Kind> {
         match self {
             Searched::Shelf(kind) => Some(kind),
-            Searched::Folder => None,
+            Searched::Folder | Searched::Library => None,
         }
     }
 
@@ -419,6 +428,10 @@ impl Searched {
             // saying "3 of 40 files match" over a column of directories would
             // be counting something the user cannot see.
             Searched::Folder => "items",
+            // What the account owns, which is what the count is of: a library
+            // of six hundred games says "4 of 600 games match" whether or not
+            // any of them is on this machine's disk.
+            Searched::Library => "games",
         }
     }
 }
@@ -445,6 +458,7 @@ impl Search {
                 match of {
                     Searched::Shelf(kind) => format!("Search {} by name", kind.plural()),
                     Searched::Folder => "Search this folder by name".to_string(),
+                    Searched::Library => "Search this library by name".to_string(),
                 }
             } else {
                 crate::media::search_note(of.plural(), matched, found)
@@ -520,6 +534,19 @@ pub struct Folder {
     /// `false` everywhere else, which is every subcategory in the shell but
     /// that one: a folder in a list of folders is not an answer to anything.
     pub chosen: bool,
+    /// Whether this row stands *over* the column rather than being one of the
+    /// rows it is a list of.
+    ///
+    /// One of these too — the index at the head of a Steam library, which is
+    /// the whole of that library again by the letter each game starts with. It
+    /// is not one of the games, so a column that opened on it would open on a
+    /// control nobody asked for, and every visit to somebody's library would
+    /// begin by stepping down off it.
+    ///
+    /// That is the same thing the field at the head of a shelf needs and gets
+    /// — see [`head_rows`], which is where the two are counted together, and
+    /// [`Entry::over_the_list`], which is the question asked of a row.
+    pub over_the_list: bool,
 }
 
 /// One of a set of alternatives, exactly one of which is in force.
@@ -625,7 +652,7 @@ impl Bar {
     }
 }
 
-/// A top-level XMB column.
+/// A top-level lattice column.
 #[derive(Debug, Clone)]
 pub struct Category {
     pub id: &'static str,
@@ -638,7 +665,7 @@ pub struct Category {
 /// The shell's own column, for settings that belong to LineXinBar itself rather
 /// than to anything installed on the system.
 ///
-/// Always present and always first, the way the real XMB opens on Settings.
+/// Always present and always first, the way a console shell opens on Settings.
 /// It is deliberately not part of [`CATEGORY_TABLE`]: nothing on disk is
 /// classified into it, so it is not a destination for `.desktop` files.
 pub const SHELL_SETTINGS: (&str, &str, &str) =
@@ -658,7 +685,7 @@ const SYSTEM: &str = "system";
 /// game is installed, so the column has to be nameable from outside the table.
 const GAMES: &str = "games";
 
-/// Where installed applications go, in XMB order.
+/// Where installed applications go, in lattice order.
 ///
 /// Each entry lists the XDG main categories that map onto it, and the first
 /// match wins. `Settings` and `System` share a column, as they do in Plasma —
@@ -777,6 +804,7 @@ fn subcategories(id: &str) -> Vec<Entry> {
                 entries: Vec::new(),
                 place: None,
                 chosen: false,
+                over_the_list: false,
             })
         })
         .collect()
@@ -802,6 +830,7 @@ fn files_row() -> Entry {
         entries: Vec::new(),
         place: Some(crate::files::Place::Volumes),
         chosen: false,
+        over_the_list: false,
     })
 }
 
@@ -861,7 +890,17 @@ pub fn place_rows(listing: Vec<Entry>, query: &str, found: usize) -> Vec<Entry> 
 }
 
 /// The rows that stand over a list: the field, and the row that empties it.
-fn head(rows: &mut Vec<Entry>, of: Searched, query: &str, matched: usize, found: usize) {
+///
+/// The one place either is made, so a field is the same object wherever it is
+/// on this bar — the shelves and the explorer build their columns here, and the
+/// Steam library builds its own beside its index. See [`Searched`] for what
+/// differs between them, which is only where the narrowing happens.
+///
+/// `found` is how many there are altogether and `matched` how many the query
+/// has kept, so a list narrowed to nothing still carries the two rows that say
+/// why. Nothing at all to search gets neither row: a column holding only the
+/// offer to search it is a column worth stepping into for nothing.
+pub fn head(rows: &mut Vec<Entry>, of: Searched, query: &str, matched: usize, found: usize) {
     if found == 0 {
         return;
     }
@@ -887,19 +926,25 @@ pub fn shelf_shown(entries: &[Entry]) -> Option<crate::media::Kind> {
     }
 }
 
-/// How many rows at the head of a column are the search rather than what the
-/// column is a list *of*.
+/// How many rows at the head of a column stand over it rather than being what
+/// the column is a list *of*.
 ///
-/// A column of music opens on music. The field stands over the list in the
-/// place anything standing over a list stands, and is reached by pressing Up
-/// from the top of it — which is the one direction nothing else was using, and
-/// where a person looks for the thing above the first thing. Opening *on* it
-/// would make every visit to a shelf start by stepping over a control the user
-/// did not ask for.
+/// A column of music opens on music, and a library of games opens on a game.
+/// What stands over a list stands in the place anything standing over a list
+/// stands, and is reached by pressing Up from the top of it — which is the one
+/// direction nothing else was using, and where a person looks for the thing
+/// above the first thing. Opening *on* one would make every visit to a shelf
+/// start by stepping over a control the user did not ask for.
+///
+/// Two kinds of them in the shell, and they are one idea rather than two: the
+/// field that searches what the column is a list of, and the index at the head
+/// of a Steam library. A library carries both, in that order — the letters are
+/// the way into the list under them, and the field is the way into everything
+/// including the letters. See [`Entry::over_the_list`].
 pub fn head_rows(entries: &[Entry]) -> usize {
     entries
         .iter()
-        .take_while(|entry| entry.search().is_some())
+        .take_while(|entry| entry.over_the_list())
         .count()
 }
 
@@ -1448,6 +1493,22 @@ impl Entry {
             Entry::Steam(_) | Entry::Game(_) => Some(crate::icons::STEAM),
             Entry::Facts(facts) => Some(&facts.icon),
             Entry::Typed(typed) => Some(&typed.icon),
+        }
+    }
+
+    /// Whether this row stands over the column's list rather than being one of
+    /// it.
+    ///
+    /// True of a shelf's two search rows, which are about the list rather than
+    /// in it, and of the index at the head of a Steam library. Everything else
+    /// on this bar is one of the things its column is a list of — including
+    /// every other subcategory, which is why this is a question about the row
+    /// and not about its kind. See [`head_rows`].
+    pub fn over_the_list(&self) -> bool {
+        match self {
+            Entry::Search(_) => true,
+            Entry::Folder(folder) => folder.over_the_list,
+            _ => false,
         }
     }
 
@@ -2435,6 +2496,7 @@ mod tests {
                 )],
                 place: None,
                 chosen: false,
+                over_the_list: false,
             })],
         };
         assert!(buried.has_launchable());
@@ -2448,6 +2510,7 @@ mod tests {
                 entries: Vec::new(),
                 place: None,
                 chosen: false,
+                over_the_list: false,
             })],
             ..buried.clone()
         };

@@ -1,14 +1,14 @@
 # LineXinBar
 
-A micro Wayland compositor with first-class multi-display support, plus an
-XMB-style shell that runs inside it.
+A micro Wayland compositor with first-class multi-display support, plus a
+console-style lattice shell that runs inside it.
 
 Two binaries:
 
 | Binary        | What it is                                                    |
 | ------------- | ------------------------------------------------------------- |
 | `lxb`         | The compositor. DRM/KMS on a TTY, or nested inside a desktop.  |
-| `lxb-desktop` | The shell: a cross-media-bar launcher, drawn on the GPU.       |
+| `lxb-desktop` | The shell: a console-style lattice launcher, on the GPU.       |
 
 ## Why not just Gamescope
 
@@ -278,7 +278,7 @@ it runs on any compositor implementing layer-shell, which also makes it
 debuggable on its own.
 
 The bar opens with Settings, LineXinBar's own column, which holds the shell's
-settings the way the XMB's Settings region held the PS3's. Everything after it
+settings the way a console's Settings region holds its own. Everything after it
 comes from `.desktop` files in the usual XDG search path, grouped into the
 categories Plasma's launcher uses: System, Multimedia, Graphics, Internet,
 Office, Games, Development, Education & Science, Utilities, and Other. A
@@ -442,8 +442,8 @@ no applications in it.
 
 #### What the menu over a file offers
 
-`Y` on one of these rows raises a menu of five, in two bands — three that act
-on the file and two that do not:
+`Y` on one of these rows raises a menu of six, in two bands — four that act on
+the file and two that do not:
 
 **Open** starts it in whatever a plain `A` would have used. **Open with** lists
 every installed application that says it handles the type, best first, each
@@ -480,6 +480,21 @@ where it was and the panel says so. The row is greyed for a file outside the
 user's home directory. The row it was on goes at once rather than at the walk's
 next pass, so the bar is never still offering to play something the user has
 just watched themselves delete.
+
+**Rename** opens a field on the row and is described [with the folder
+listings](#changing-a-name), where it does the same thing to the same effect.
+
+Copy and Move are **not on this menu**, and are missing rather than greyed —
+the one place in the shell where a row that exists elsewhere is simply not
+drawn. A shelf is a library rather than a folder: it gathers one kind of file
+from everywhere the user keeps them, so there is no column for the picker to
+open in and none for the file to appear in when it lands. Greyed is the shell
+saying "not at this moment", and it is owed the user an idea of what would make
+it the right moment — install something that opens this type, or look at a file
+that is your own. There is nothing of the kind here: the answer would be "go
+and find this song in Files", which is a different column about a different
+thing, and two dead rows on every song, film and photograph in the machine is a
+high price for a panel that keeps one shape.
 
 Below the rule, **Sort** and **Cancel**. Sort is about the column rather than
 the file, which is what the rule is saying.
@@ -633,10 +648,27 @@ beside the one being opened give up their rows as it opens — the tree holds th
 path the user is standing in and not everywhere they have been. A listing stops
 at ten thousand rows and the row above says how many were left out.
 
-`Y` over a file offers the same menu the shelves do — Open, Open with, Delete,
-Sort, Cancel — and every row means there what it means here. Delete is greyed
+`Y` over a file offers the shelves' menu with two more rows in it — Open, Open
+with, Delete, Copy, Move, Rename, Sort, Cancel — and every row it shares means
+here what it means there. **Copy and Move are the two, and this column is the
+only place they appear at all**: a row here stands in a folder rather than in a
+library, so there is somewhere for the picker to open and somewhere for the file
+to appear when it lands. Delete is greyed
 outside the user's home directory, which in this column is most of what can be reached — the
 machine's own files can be looked at from here and never destroyed from here.
+Copy and Move are not greyed with it: taking a copy of one of the machine's own
+files is not destroying it, and whether the folder chosen will have it is the
+filesystem's answer to give at the moment the transfer runs rather than the
+menu's to guess.
+
+`Y` over a **folder** offers a shorter list — Copy, Move, Rename, Sort, Cancel — and
+only inside a listing: Home, Root and the drives are rows of the same kind
+carrying the same kind of path, and none of them is a folder anybody may pick
+up. There is no Open, because a folder is not opened by a program and pressing
+it already opens the column; and no Delete, because a folder is however many
+files deep and "do you want to delete *this*?" cannot honestly be asked about a
+name standing for a thousand things nobody can see. Where both rows lead is
+[the folder picker](#carrying-a-file-somewhere-else).
 Opening a file starts it in whatever the desktop already opens that type with,
 exactly as pressing it on a shelf does, and the loading screen carries the
 file's own name.
@@ -658,6 +690,129 @@ photograph nearly always is.
 They are made the same way the shelves' are and out of the same cache — the
 rows within four of each display's cursor, two workers, nothing ahead of time —
 so a folder of six thousand files costs six thumbnails.
+
+#### Carrying a file somewhere else
+
+Copy and Move are the first two rows of that menu that need a *second* place
+named before anything can happen, and where they lead is the same bar again,
+mirrored.
+
+The screen it opens is one row and one column. The thing being carried stays
+where it was picked, alone, with the rest of the start screen taken away from
+around it — everything but the corner's clock, which is part of the wallpaper
+more than it is part of the controls. Beside it, in from the right, comes a
+column of the folder it is in now, with **Paste** standing at the head of it
+where a shelf's search field stands. What is under the head row is the folder
+itself: the folders in it, which can be walked into, and the files, drawn
+quieter — they are there so the folder is recognisable, and there is nothing
+behind a press of one, because nothing can be filed inside a file.
+
+**A column never opens on Paste.** It opens on the row below it, whatever that
+row is, and the file being carried is one press of Up away from being filed.
+Paste is the one row on this screen that acts: a column that opened on it would
+put the end of the journey under the user's thumb at every step of the journey —
+walk into a folder to see what is in it, press `A` out of habit, and the file
+has been filed somewhere nobody chose. Reaching for something is what says it
+was meant. A folder with nothing in it has only the one row, and there the
+selection has nowhere else to be.
+
+```
+                     osu.appimage          Paste  ·  Copy here      AppImages
+                                           osu.appimage
+                                           r2modman.appimage
+```
+
+It is driven the way the bar is driven, with one thing the other way round:
+the columns of the path stand to the **right** of the one being stood in, so
+**Right is the way back out** and Left is the way in. Two lists of folders both
+walking left would be the same gesture meaning two different things on one
+screen; mirrored, the hand knows which of the two it is driving without being
+told. Right goes back as far as `/` and no further — the picker is a path, and
+every path on this machine ends there. There is no Volumes row at the top of
+it: a mounted drive is under `/` and is reached by walking down to it.
+
+Pressing Paste ends the journey. `B`, `Escape` and the right mouse button give
+up on it, wherever on the display the click lands — the whole screen belongs to
+the transfer while it is up, so there is nowhere on it a right button could be
+asking about something else.
+
+Paste says under itself what pressing it would do — *Copy here*, *Move here* —
+and where it cannot be pressed it says that instead, greyed: **It is already
+here** for a move into the folder the file is already in, and **It cannot be
+put inside itself** for a folder being carried into itself or into anything
+under it, which would copy until the disk was full.
+
+A name already taken in the chosen folder stops the transfer and puts a
+question up: **Keep both**, **Replace**, **Cancel**, in that order and opening
+on the first, because it is the only one of the three that cannot lose
+anything. Keep both writes `osu (2).appimage` — the number before the
+extension, where every desktop this sits beside puts it. Replace is drawn warm
+and in the shell's fixed red, and it is a promise about the *name*: a folder
+written over a folder is merged into it rather than put in its place, because
+deleting the hundred files already in there is not something the panel
+mentioned and not something a press can be taken to have asked for. A copy into
+the folder the file is already in is not a clash at all — it is a duplicate,
+which is a thing people ask for, and it lands beside itself under a free name
+with nothing asked.
+
+The copy runs on a thread, because a file is as big as it is. Nothing is shown
+for one the disk finishes inside a couple of frames; past a third of a second a
+panel says what is being carried, and it stays until the transfer ends. Ending
+says nothing and shows nothing — the user watched themselves choose a folder,
+and a panel telling them it worked would be a button to press to get back to
+the screen they were already on. What they get instead is the column, read
+again, with the file in it or gone from it. A failure *is* a panel, carrying
+what the filesystem actually said, because a command that silently either
+worked or did not is a command nobody trusts twice.
+
+#### Changing a name
+
+**Rename** is on the same menu, and on the shelves' as well — the one of these
+three rows that is: a song has a name wherever it is being looked at from,
+whereas Copy and Move need a folder to have been opened. It opens a field on the row itself rather
+than a panel over it, which is the same thing pressing a search field does —
+what a press means there is "I am about to type", and the answer to that is a
+keyboard.
+
+What it opens with is what the row was showing. In a folder that is the file
+name and all of it; on a shelf it is the title without the extension, because
+that is what the row says — nobody thinks of a song as `Yesterday.flac`, and a
+field that opened with an extension the user had never been shown would be
+asking them to look after something the shell had been hiding. The `.flac` goes
+back on the end of whatever they write.
+
+`B`, `Escape` and the right mouse button put the old name back and give up. This
+is the one thing a search field does *not* do, and the difference is what the
+two are: a search has been narrowing the column with every letter, so there is
+no earlier list left to return to and Escape does not pretend otherwise; a name
+has changed nothing at all until it is accepted, so giving up costs nothing and
+is therefore free. Nothing reaches the disk until Return.
+
+Three names are refused before the filesystem is asked — nothing, `.` and `..`,
+and anything with a `/` in it, which is the one byte a name cannot hold. Return
+on one of those leaves the caret where it is and says nothing, because what is
+wrong with the name is on the row in the user's own letters. A name something
+else in the folder already has is a panel and the end of the rename: `rename(2)`
+would replace that file without a word, and unlike a copy there is no "keep
+both" to offer — the user asked for *this* name.
+
+Afterwards the row goes and comes back rather than being edited in place, for
+the reason a deleted file's row goes at once: what the bar holds is what was on
+the disk when it was read. A folder is read again on the spot, one `readdir`,
+and the cursor is put back on the row wherever the new name has moved it to —
+the column is alphabetical, and a name is exactly what that order is on. A shelf
+is half a million files on a worker, so the worker is told the one thing it
+needs — this path is gone, that one has arrived — and the rows arrive on the
+frame it has them.
+
+A move is a rename where a rename will do, whatever the file is the size of.
+The fallback is the one case it cannot be — the two paths on different
+filesystems, which on any machine with a stick plugged into it is most of what
+a move is *for* — and there it is a copy followed by taking the original away,
+in that order, so a failure leaves the user with two copies rather than none.
+Symbolic links are carried as links rather than as what they point at: a folder
+of shortcuts copied the other way could be a hundred times the size of what
+somebody thought they were carrying.
 
 ### Steam
 
@@ -1045,6 +1200,46 @@ accent = "Blue"
 
 An unknown name there is reported and ignored, and the shell comes up violet.
 
+#### Theme
+
+`Settings > Appearance > Theme` is what the shell is *made of*, and it is a page
+rather than a list: **Wallpaper** and **Icons**, each offering **Default** and
+**Simple**.
+
+Under `Default` the wallpaper's current is a band of water three sheets thick,
+lit as bodies, and every one of the shell's own marks is a bead of water shaded
+out of its own distance field. `Simple` stands that down — the current becomes
+the three fine glass-silk ribbons the shell drew before the band, and a mark
+becomes the flat shape of itself. The *drawings* never change, only what they
+are made of, which is what keeps the shell recognisable rather than reduced.
+
+The two are separate settings because they are separate expenses and separate
+tastes. The wallpaper is one evaluation of a long function for every pixel of
+every screen on every frame; a mark is a few dozen pixels of a row. On an
+RX 9060 XT one full-screen evaluation is 0.38 ms at 1080p under `Default` and
+0.20 ms under `Simple`, and a mark goes from six reads of its distance field to
+one — so a machine that cannot pay for the water behind everything can very well
+keep the beads in front of it, and somebody who simply prefers flat marks can
+have those over the moving water.
+
+Both rows preview: highlighting a value draws the shell in it without choosing
+it, and walking back off puts the applied one back. There is no transition,
+because there is no halfway between a bead of water and the flat shape of one —
+and previewing is essential here, since neither value's *name* tells anybody
+what they are looking at.
+
+They are written to `~/.config/lxb/shell.toml`, which you can also just edit:
+
+```toml
+theme-wallpaper = "Default"
+theme-icons = "Simple"
+```
+
+The login screen reads both keys and the compositor reads the wallpaper's, so a
+machine set to `Simple` is in `Simple` from the moment the greeter appears and
+never changes material in front of you. A file from before the setting was split
+carries one `theme` key; it is still read, and both halves take it.
+
 #### Battery percentage
 
 `Settings > Appearance > Battery percentage` decides whether the start screen's
@@ -1065,7 +1260,11 @@ this same directory.
 The mark itself is not the setting. It is one of six drawings of the same
 shell — empty, low, half, high, full, and a bolt for a battery that is filling
 — and it is drawn whenever there is a battery, in the same water as the clock
-beside it. Being on the mains outranks the level: while it is filling, the bolt
+beside it. It appears twice: in the start screen's corner, and in the
+[guide's header](#the-guide-overlay) under the day. One size in both, because what
+decides that size is the material rather than either layout — the shell's wall
+is 2.4 units of the drawing, and what matters is how many pixels that lands on
+at 1280x800. Being on the mains outranks the level: while it is filling, the bolt
 is what is shown, and the level it is filling from is what the figures are for.
 Sitting plugged in at full is not filling, and shows a full battery.
 
@@ -1093,8 +1292,8 @@ desktop's menu.
 `Settings > Display` is the one part of the Settings column the shell does not
 carry out itself. It sends what was chosen over `lxb_shell_v1` and the
 compositor does the work, because none of it is a client's to touch. There are
-five pages: **Resolution**, **Refresh rate**, **Orientation**, **Night light**,
-and **HDR**.
+six pages: **Resolution**, **Refresh rate**, **Orientation**, **Night light**,
+**HDR**, and **OLED protection**.
 
 Every one of them is *per screen*, and every one of them names the screen
 before it offers anything — see below, where the rule is written out once for
@@ -1464,6 +1663,52 @@ The compositor's own `config.toml` has the same mode, the same transform and
 the same four HDR settings per output, for a session with no shell — see
 [docs/configuration.md](docs/configuration.md).
 
+#### OLED protection
+
+```
+Settings > Display > OLED protection  >  DP-1  >  On
+```
+
+One switch, and what it does is rest this screen behind black while a game is
+being played on another one. An OLED panel keeps what it is shown, and the
+start screen is the worst thing there is to keep: the bar sits in the same row
+of pixels every second it is up, the clock in the same corner, and a second
+display left on it through an evening's play is a display with a bar burnt into
+it.
+
+The black is the compositor's own sheet over the whole screen — the cursor and
+anything running on it included — because the shell owns one surface per
+display and nothing else on it. It takes nothing away: the session goes on
+taking input the whole time it is down, which is what makes moving the pointer
+onto the screen the way to get it back. A second going down, a quarter of a
+second coming back, and it reverses from wherever it has got to.
+
+Four things stop a screen being rested, and none of them is a setting:
+
+| | |
+| --- | --- |
+| **Nothing is being played** | Not merely running: a game, worked out from the process behind the window in front rather than from what the window calls itself, because a game reaches the screen as `steam_app_…`, as its own name, or as nothing at all. When the game ends, every screen comes back. |
+| **The game is on this screen** | The screen being played on is the screen being watched. |
+| **This screen is being driven** | Control is on it, so the user is on it. |
+| **Something on it is still painting** | A film on the second screen is exactly what a second screen is for. A film somebody *paused* is deliberately not spared — a paused film is a still picture, which is the thing this exists for. |
+
+Past those, a screen rests five seconds after the user last did anything on it:
+moved the pointer over it, took it over, or pressed something on it. Going back
+to the game starts that five seconds again, so switching between screens never
+blacks one out in the middle of it.
+
+It is written down per connector, beside the mode and the night light:
+
+```toml
+[display.DP-1]
+oled-protection = true
+```
+
+Nothing of it reaches the compositor's own `config.toml`. Where the mode and
+the night light are remembered there — a session with no shell still has to
+come up in the right mode — this is a rule about what the *shell* is drawing
+and who is looking at it, and a compositor with no shell has neither.
+
 ### Sounds
 
 `Settings > Sounds` holds two kinds of thing: where the *machine's* sound goes
@@ -1505,7 +1750,7 @@ this for the machine, and each program opens the sound card itself. A server tha
 answers and lists no output is a different fact — a machine with no sound card —
 and reads differently.
 
-**Start music** is the Start screen's [background
+**Start music** is the start screen's [background
 music](#shell-audio) — on, which is what the shell comes up doing, or off. It is
 the one recording the shell can be told not to play, because it is the one it
 plays at somebody who has pressed nothing: every other sound is an answer to a
@@ -1515,8 +1760,8 @@ dead button on it.
 Turning it off is heard at once rather than faded out. A fade is what an
 application taking the display gets, because that is a handover; this is somebody
 saying *stop*, and most of a second of music going anyway is not what they asked
-for. Turning it back on starts the track from its beginning, exactly as returning
-to Start from an application does.
+for. Turning it back on starts the track from its beginning, exactly as
+returning to the start screen from an application does.
 
 It says nothing about how loud the rest of the shell is. Every click, the
 keyboard and the shutter stay exactly where the mixer's `System` row left them —
@@ -2053,12 +2298,12 @@ menu over whatever is running:
 | Brightness        | How bright *this* display is, where that can be changed |
 | Resume            | Dismiss the overlay |
 | Close *app*       | End the application on the selected card. It is asked first and cannot refuse |
-| Dashboard         | Show the bar over the running application, without closing it |
+| Start screen      | Show the start screen over the running application, without closing it |
 | Power             | Suspend, turn off, or end the session |
 
-Close and Dashboard are offered only while the card beside the column is a
+Close and Start screen are offered only while the card beside the column is a
 window. The start screen is the last card in the deck, and it is neither
-something to close nor something for Dashboard to bring up that Resume does not
+something to close nor something for Start screen to bring up that Resume does not
 already. Nothing but the power button ends the session: `Esc` opens this menu
 rather than quitting, so leaving is always a deliberate choice.
 
@@ -2101,7 +2346,20 @@ with it — one answer, given in one place, so neither can be silenced without t
 other. Nothing is discarded: everything still arrives, and the tile beside it is
 where it is read.
 
-The header is the wall clock, and under it whatever is running on this display.
+The header is two columns. On the left the wall clock, and under it whatever is
+running on this display; on the right the day, and under *that* the battery — so
+the left of it is what the session is doing and the right is what is true about
+the machine underneath. On a machine with no battery the right-hand column is
+the day and nothing else.
+
+It is the same mark and the same reading the start screen's corner draws — see
+[Battery percentage](#battery-percentage), which is the one setting behind both.
+What differs is where the figures go when they are turned on: **left of the
+mark** here, and above it in the corner. The corner is a cluster on a wallpaper
+with a whole display beside it, where stacking the number keeps it from pushing
+the clock inward; this is a narrow column with a line of its own to spend and
+nothing above the mark but the date. A long application name gives up exactly
+the room the mark takes and ends in an ellipsis rather than running under it.
 
 ### The cards
 
@@ -2218,8 +2476,9 @@ because it is the same kind of object — a short list about one control, grown
 out of that control. What makes it a mixer is the rows.
 
 The row at the foot, `System`, is [the shell's own audio](#shell-audio) — how
-loudly the interface answers and its Start background plays. It is not the
-machine's output, and that is deliberate: what the whole session comes out at
+loudly the interface answers and the start screen's background music plays. It
+is not the machine's output, and that is deliberate: what the whole session
+comes out at
 is the volume bar a few rows above it in the same sidebar, which is there
 whether or not this panel is opened, and a row that turned the machine down as
 well would be the same control twice while leaving the shell's own audio with
@@ -2332,8 +2591,8 @@ need a mouse.
 
 `A` does the one thing a row is for. Everything *else* that can be done to it
 lives behind the top face button — `Y` on an Xbox pad, `Triangle` on a
-PlayStation one — which is where a cross media bar has kept its options menu
-since the first one. On a keyboard it is `Y` or `F10`, deliberately *not* the
+PlayStation one — which is where a console shell of this shape has kept its
+options menu since the first one. On a keyboard it is `Y` or `F10`, deliberately *not* the
 `Menu` key: that one summons the guide, and with Steam running it is the only
 thing that does so without Big Picture coming up alongside it.
 
@@ -2344,12 +2603,14 @@ side of the display has room, and folds back into it when the menu is answered
 or dismissed. Adding a command later is one line in a list; raising a menu
 somewhere new is one function that returns those three things.
 
-Four of them exist so far:
+Six of them exist so far:
 
 | Where | What it is about | Rows |
 | ----- | ---------------- | ---- |
 | The bar | The application on the focused tile, out of the disc it stands on | Information, Uninstall / Launch, Close |
-| The bar | One of the user's own files, out of the same disc | Open, Open with, Delete / Sort, Cancel |
+| The bar | One of the user's own files, on a shelf | Open, Open with, Delete, [Rename](#changing-a-name) / Sort, Cancel |
+| The bar | One of the user's own files, inside a folder listing | Open, Open with, Delete, [Copy, Move](#carrying-a-file-somewhere-else), [Rename](#changing-a-name) / Sort, Cancel |
+| The bar | A folder inside a listing, out of the same disc | Copy, Move, Rename / Sort, Cancel |
 | The guide | The window under the selected card, out of that card | Move to next display, Move to previous display, Screenshot the app / Cancel |
 | The guide | [Everything making a noise](#the-volume-mixer), out of the mixer tile | One row per application / the session's own output |
 
@@ -2797,6 +3058,10 @@ protocol generated from one XML file for both sides:
 | event `share_request` | That question, on its way to the shell — the only client that can draw it. |
 | request `answer_share` | The shell's answer: a display, or nothing, which is a no. |
 | event `share_answered` | That answer, on its way back to whoever asked. |
+| request `cover_output_in_black` | Fade one display to black, or bring it back — the sheet [OLED protection](#oled-protection) rests a screen behind. It takes no input away, unlike the curtain the session goes out behind. |
+| event `output_game` | Whether what is in front of one display is a game: something a supervisor started for the user, worked out from the process behind the window rather than from what the window calls itself. |
+| event `output_drawing` | Whether anything on one display has painted recently — which is what tells a screen that can be rested from one somebody is watching. |
+| event `output_pointer` | The pointer is moving over this display. Sent on arrival and at most once every two seconds after, because the shell sees the pointer only where its own surfaces are in front. |
 
 `output_foreground` is what lets the menu say *Close KWrite* and notice when an
 application it started has exited. It is reported per display because the
@@ -3019,21 +3284,22 @@ finger on a row of the bar puts the selection there exactly as a direction
 does, and the same move made by hand is owed the same answer.
 
 The shell's two screens each have a voice, and each answers a move and a press
-in it. Start moves with `press.ogg` and takes a press with `press-selected.ogg`
-— a subcategory opened, a setting chosen, a search field raised. The Home
-Button guide moves with `press-guide.ogg` and takes a press with
-`press-guide-selected.ogg`. They are separate because the guide is a screen of
-its own rather than another column of Start, and a user who has looked away
-should be able to hear which of the two they are driving.
+in it. The start screen moves with `press.ogg` and takes a press with
+`press-selected.ogg` — a subcategory opened, a setting chosen, a search field
+raised. The Home Button guide moves with `press-guide.ogg` and takes a press
+with `press-guide-selected.ogg`. They are separate because the guide is a
+screen of its own rather than another column of the start screen, and a user
+who has looked away should be able to hear which of the two they are
+driving.
 
 Panels are not screens and do not follow the one they were opened over. A
 context menu, a centred dialog and the mixer keep the same voice wherever they
 were raised, because a component that changed its sound with its backdrop would
 be two controls that look alike. Raising the guide from an otherwise empty
-Start screen also leaves its background music playing; raising it over an
+start screen also leaves its background music playing; raising it over an
 application does not start that music above the application.
 
-Leaving an XMB subcategory is `press-back.ogg`, whether Left or Back walks out
+Leaving a lattice subcategory is `press-back.ogg`, whether Left or Back walks out
 of it or a pointer or finger presses the visible trail or category row. One
 gesture makes one sound even when a trail press crosses several levels: the
 sound answers the decision to go back, not every column it passes.
@@ -3045,13 +3311,13 @@ walking a bar and still sounds like one. Every key of it, including Shift and
 the key that puts the board away, because a board where two of the keys
 answered silently would read as a board with two dead keys on it.
 
-An application starting from Start is `app-launch.ogg`, and it is the one sound
-here that is not a click, because it is not an acknowledgement: the press has
-already been answered by the splash growing out of the tile, and what this one
-says is that something is on its way. It belongs to that screen, and only to
-it: a tile pressed on Start sounds it whether the shell forks for it or comes
-back to a program that is already up, because the tile is where an application
-is *started* from. The guide never sounds it. Every press made on the overlay
+An application starting from the start screen is `app-launch.ogg`, and it is
+the one sound here that is not a click, because it is not an acknowledgement:
+the press has already been answered by the splash growing out of the tile, and
+what this one says is that something is on its way. It belongs to that screen,
+and only to it: a tile pressed on the start screen sounds it whether the shell
+forks for it or comes back to a program that is already up, because the tile is
+where an application is *started* from. The guide never sounds it. Every press made on the overlay
 is answered in the overlay's own voice, the ones that hand an application the
 display included — Resume with something running behind it, and a window card
 chosen out of the deck, both `press-guide-selected.ogg`. A screen with a voice
@@ -3089,12 +3355,13 @@ in silence for anybody who happened to be looking at the room. It sounds as the
 panel goes up and only if it went up, and a password refused does not sound it
 again — that is the same question still waiting, not a new one.
 
-The Start screen has the eleventh recording, `start-bg-music.ogg`. It belongs to
-the session rather than to a screen: it loops while every display is showing
-Start and nothing at all is open, and it fades as a launch or a returning window
-begins taking any of them. One application anywhere ends it — a game on the
-first display and Start on the second is a session with a game in it, and
-crossing to that second screen must not start music up behind the game. When the
+The start screen has the eleventh recording, `start-bg-music.ogg`. It belongs
+to the session rather than to a screen: it loops while every display is showing
+the start screen and nothing at all is open, and it fades as a launch or a
+returning window begins taking any of them. One application anywhere ends it —
+a game on the first display and the start screen on the second is a session
+with a game in it, and crossing to that second screen must not start music up
+behind the game. When the
 last application closes, the shell constructs a fresh stream at sample zero —
 even if the previous one is still fading — so coming back never resumes halfway
 through the track.
@@ -3131,7 +3398,8 @@ the shell's effects and background music, and the one row on that panel no
 sound server knows about. Left and Right move it, `A` silences it, and the
 click the direction makes is heard at the level it has just been moved to, so
 the row previews itself. Muting also drops the music rather than advancing it
-silently; unmuting on Start begins it again. The setting is written to
+silently; unmuting on the start screen begins it again. The setting is written
+to
 `shell.toml` as `sound-volume` and `sound-muted` at every step rather than when
 the user stops moving it: the shell is idle between presses, and a level nobody
 wrote down is the one a machine switched off at the wall would lose.
@@ -3146,7 +3414,7 @@ The output is opened through ALSA, which is PipeWire or PulseAudio on a machine
 that has one and the sound card itself on a machine that does not. A session
 whose sound server is not up yet is retried a few seconds later; if an open
 output disappears, the next loop drops the dead stream and opens the current
-default. Start music is rebuilt there from sample zero if the XMB still owns
+default. Start music is rebuilt there from sample zero if the lattice still owns
 the display. A machine with no output at all is silent, and nothing else about
 the shell changes.
 
@@ -3243,6 +3511,8 @@ crates/lxb-compositor/
   teardown.rs     ending an application, as against ending a process
   capture.rs      photographing one window, or one whole display, into a PNG
   flash.rs        the white a display gives when it has just been photographed
+  blackout.rs     the black one display rests behind while a game is played
+                  on another — see OLED protection
   screencopy.rs   wlr-screencopy: the standard way anything else reads the
                   screen, and what the portal is built on
   hdr.rs          the connector's metadata and the CRTC's colour pipeline
@@ -3285,6 +3555,9 @@ crates/lxb-desktop/
   thumbs.rs       a frame of the film, a photograph scaled down, and the
                   freedesktop cache both are kept in
   trash.rs        the freedesktop trash, for the Delete row
+  transfer.rs     the folder a file is carried to, walked as a mirrored bar,
+                  and the copy or move itself; a name is changed in main.rs,
+                  beside it, because it is one `rename` and a field
   screenshot.rs   where a screenshot goes, in the language the account was made in
   pointer.rs      the right stick as a mouse, and which applications it is
                   turned on for

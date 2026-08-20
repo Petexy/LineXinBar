@@ -1,11 +1,11 @@
-//! Turns the [`Xmb`] model into flat lists of quads and text runs.
+//! Turns the [`Lattice`] model into flat lists of quads and text runs.
 //!
 //! The layout is anchored on a single "cross" point. Categories run
 //! horizontally through it and the selected category's applications run
 //! vertically through it, which is what makes the shape a cross rather than
 //! two unrelated lists.
 //!
-//! Following the original cross media bar, the item column is *split around*
+//! Following the original console shells, the item column is *split around*
 //! the category row: everything before the selection sits above the row,
 //! the selection and everything after it sit below, and a scrolling entry
 //! glides through the widened gap between the two halves. That gap is what
@@ -16,17 +16,18 @@
 //! the columns behind stay on screen showing only the row each was opened
 //! from — the trail that reads, left to right, as the path taken.
 
-use crate::apps::{Entry, Role};
+use crate::apps::{Entry, Role, Searched};
 use crate::dialog::{Dialog, Line};
 use crate::gpu::{Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
 use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
 use crate::icons;
 use crate::keyboard;
 use crate::menu::{Entry as MenuEntry, Menu};
-use crate::model::{Cursor, Standing, Xmb};
+use crate::model::{Cursor, Lattice, Standing};
 use crate::network::Signal;
 use crate::system::Level;
 use crate::theme::theme;
+use crate::transfer::{Row, Transfer};
 use lxb_protocol::overview;
 
 /// Layout constants, expressed against a 1080p reference and scaled at runtime.
@@ -260,7 +261,14 @@ pub(crate) const CORNER_CLOCK_BASELINE: f32 = 0.9668;
 const CORNER_MARK: f32 = 32.0;
 const CORNER_MARK_GAP: f32 = 12.0;
 /// And the battery's cell, which is larger again — a quarter larger than the
-/// fan's.
+/// fan's — wherever in the shell one is drawn.
+///
+/// One size for both places that draw it, the start screen's corner and the
+/// guide's header, because what decides it is the material rather than either
+/// layout: the wall of the shell is 2.4 units of the drawing, and how many
+/// pixels that lands on is the whole question. A second, smaller battery
+/// somewhere else in the shell would be the same drawing rendered below its own
+/// floor.
 ///
 /// Not because it is more important, but because a square cell is a poor fit
 /// for it. The fan fills its cell in both directions; the battery is a shape
@@ -275,7 +283,7 @@ const CORNER_MARK_GAP: f32 = 12.0;
 /// there under fifteen pixels tall with a wall of one: below what this material
 /// can hold a face on at all. What is drawn on a console has to survive the
 /// smallest screen a console comes on.
-const CORNER_BATTERY: f32 = 40.0;
+const BATTERY_MARK: f32 = 40.0;
 /// How solid the corner is: the letters and the mark together, and the one
 /// number for both because they are one cluster. Short of full, because the
 /// corner is written on the wallpaper and not on a pane that could hold it up.
@@ -304,14 +312,18 @@ const CORNER_INK: f32 = 0.85;
 const CORNER_PERCENT: f32 = 18.0;
 const CORNER_PERCENT_LIFT: f32 = 0.36;
 
-/// Where the middle of the mark sits on the clock's line, as a share of the
-/// type's size measured from the top of its box.
+/// Where the middle of a mark sits on a line of type, as a share of that type's
+/// size measured from the top of its box.
 ///
 /// Not half, which would be the middle of the *line* — a line box is a little
 /// taller than the letters in it and carries all of that below the baseline, so
 /// a mark centred on the box hangs low against digits that have no descenders
-/// at all. This is the middle of the digits themselves.
-const CORNER_MARK_LINE: f32 = 0.60;
+/// at all. This is the middle of the letters themselves.
+///
+/// Asked in two places, and it is the same question in both: the corner's marks
+/// against the clock, and the guide header's battery against the line the
+/// application's name is on.
+const MARK_LINE: f32 = 0.60;
 
 /// Where the cross's arms meet, as a share of the display. The focused entry
 /// sits here, so it is also where a launch opens from.
@@ -544,7 +556,44 @@ const GUIDE_TILE_GLYPH: f32 = 0.62;
 /// disc, and a disc reads as a button that does something once rather than as
 /// a switch that is in a state.
 const GUIDE_TILE_RADIUS: f32 = 0.30;
+/// The media card's line: three transport buttons over the line that says what
+/// is playing.
+///
+/// Taller than anything else in the column, and it has to be — it is the one
+/// entry carrying two things stacked rather than one thing laid across a row.
+const GUIDE_MEDIA_ROW: f32 = 112.0;
+/// How big the middle button is, as a fraction of the card's own height.
+const GUIDE_TRANSPORT: f32 = 0.52;
+/// And the two beside it, against the middle one. Smaller because play is what
+/// a hand goes for and the other two are found from it — the same reading every
+/// transport built since the cassette deck has.
+const GUIDE_TRANSPORT_SIDE: f32 = 0.80;
+/// The air between one transport button and the next, in button widths.
+const GUIDE_TRANSPORT_GAP: f32 = 0.44;
+/// How deep a transport button's glass is, against the column's own chips.
+///
+/// One number for every button that has any, so the chosen one is the same
+/// button as the ones beside it with a light on it rather than a different
+/// object. See [`media_card`], which is where what it is for is written down.
+const TRANSPORT_DEPTH: f32 = 0.45;
+
+/// The glyph inside a transport button, as a fraction of it.
+const GUIDE_TRANSPORT_GLYPH: f32 = 0.58;
+/// Where the buttons sit inside the card, as a fraction of its height: the
+/// centre of the row of them, leaving the rest for the title beneath.
+const GUIDE_TRANSPORT_MIDDLE: f32 = 0.40;
+/// The line under them, likewise.
+const GUIDE_MEDIA_TITLE: f32 = 0.80;
+
 const GUIDE_PADDING: f32 = 44.0;
+/// The air between the battery in the header and the figures left of it — and
+/// so also the room the application's name on that line gives up.
+///
+/// Wider than the corner's own gap between mark and clock, because it separates
+/// two different kinds of thing rather than two marks: on the corner's line
+/// everything is the same material, and here a run of ordinary type stands next
+/// to a bead of water.
+const GUIDE_BATTERY_GAP: f32 = 16.0;
 /// How long the sidebar takes to slide in, seconds.
 const GUIDE_SLIDE: f32 = 0.28;
 /// Where the entry column starts, below the header.
@@ -705,9 +754,21 @@ fn entry_appear(age: f32, index: usize) -> f32 {
 /// computing one rectangle have to agree.
 ///
 /// The whole column is passed rather than just a row number because two
-/// entries move the rest: the rule above Dashboard, and the power button,
+/// entries move the rest: the rule above Start screen, and the power button,
 /// which leaves the stack entirely for the foot of the sidebar.
-pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> [f32; 4] {
+///
+/// `media` is 0 to 1 — [`Guide::media`] — and scales the two rows that come and
+/// go with what is playing, so the column slides rather than jumping by a whole
+/// card when a track starts. One function rather than a convenient wrapper
+/// taking it as read: a caller that guessed would be a second place computing
+/// these rectangles, and the one that is wrong is always the one nobody sees.
+pub fn menu_item_rect(
+    items: &[Item],
+    index: usize,
+    width: f32,
+    height: f32,
+    media: f32,
+) -> [f32; 4] {
     let scale = guide_scale(height);
     let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
     let margin = GUIDE_MARGIN * scale;
@@ -729,7 +790,7 @@ pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> 
         if index < first + count {
             // The line the entry is on. A tile is placed along it; everything
             // else fills it.
-            let row = row_height(items[*first]) * scale;
+            let row = row_height(items[*first], media) * scale;
             if items[*first].is_tile() {
                 // The whole line at its own size, and how much room the column
                 // actually has for it.
@@ -767,15 +828,18 @@ pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> 
                     size,
                 ];
             }
-            let row_padding = GUIDE_ROW_PADDING * scale;
+            // A media row part-way open has less height than its own padding
+            // asks for, so the padding is taken in with it rather than eating
+            // into the row from both ends until the chip inverts.
+            let row_padding = (GUIDE_ROW_PADDING * scale).min(row * 0.5);
             return [
                 panel_x + margin,
                 y + row_padding,
                 panel_w - margin * 2.0,
-                row - row_padding * 2.0,
+                (row - row_padding * 2.0).max(0.0),
             ];
         }
-        y += row_height(items[*first]) * scale;
+        y += row_height(items[*first], media) * scale;
     }
 
     // Past the end of the column, which only an index nothing selected can be.
@@ -783,7 +847,17 @@ pub fn menu_item_rect(items: &[Item], index: usize, width: f32, height: f32) -> 
 }
 
 /// How much of the column a line takes up, before its chip's own padding.
-fn row_height(item: Item) -> f32 {
+fn row_height(item: Item, media: f32) -> f32 {
+    // The two that come and go take their whole height from how far open they
+    // are, which is what makes everything below them slide instead of jump.
+    if item.is_media() {
+        let full = if item == Item::Media {
+            GUIDE_MEDIA_ROW
+        } else {
+            GUIDE_BAR_HEIGHT
+        };
+        return full * media.clamp(0.0, 1.0);
+    }
     if item.is_tile() {
         GUIDE_TILE_ROW
     } else if item.bar().is_some() {
@@ -798,9 +872,37 @@ fn row_height(item: Item) -> f32 {
 fn chip_radius(item: Option<Item>, height: f32) -> f32 {
     if item.is_some_and(Item::is_tile) {
         height * GUIDE_TILE_RADIUS
+    } else if item == Some(Item::Media) {
+        // A card rather than a capsule. It is nearly as tall as it is wide at
+        // the ends, and a capsule that tall is a pill lying on its side with
+        // two enormous round caps — which reads as one very fat button rather
+        // than as a panel with buttons in it.
+        (height * GUIDE_TILE_RADIUS).min(height * 0.5)
     } else {
         height * 0.5
     }
+}
+
+/// The three transport buttons inside the media card at `chip`, left to right.
+///
+/// Shared by the drawing and by the hit test, for the reason every other
+/// rectangle in this file is shared: two places working out one circle would
+/// eventually disagree, and the one that is wrong is always the one nobody can
+/// see.
+pub fn transport_rects(chip: [f32; 4]) -> [[f32; 4]; 3] {
+    let [x, y, w, h] = chip;
+    let big = h * GUIDE_TRANSPORT;
+    let small = big * GUIDE_TRANSPORT_SIDE;
+    let gap = big * GUIDE_TRANSPORT_GAP;
+    let run = big + (small + gap) * 2.0;
+    let left = x + (w - run) * 0.5;
+    let middle = y + h * GUIDE_TRANSPORT_MIDDLE;
+    let disc = |at: f32, size: f32| [at, middle - size * 0.5, size, size];
+    [
+        disc(left, small),
+        disc(left + small + gap, big),
+        disc(left + small + gap + big + gap, small),
+    ]
 }
 
 /// The power button's chip: a square in the sidebar's bottom-left corner,
@@ -903,7 +1005,7 @@ fn sidebar_surface([x, y, w, h]: [f32; 4], scale: f32, behind: f32, fade: f32) -
 
 /// The rules, in the same coordinates: one above each row where the column
 /// changes from one kind of thing to another.
-fn menu_separator_rects(items: &[Item], width: f32, height: f32) -> Vec<[f32; 4]> {
+fn menu_separator_rects(items: &[Item], width: f32, height: f32, media: f32) -> Vec<[f32; 4]> {
     let scale = guide_scale(height);
     let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
     // The header and rules share one visual measure even though the glass
@@ -914,8 +1016,8 @@ fn menu_separator_rects(items: &[Item], width: f32, height: f32) -> Vec<[f32; 4]
         .into_iter()
         .filter_map(|row| {
             let above = (0..row).rev().find(|index| items[*index] != Item::Power)?;
-            let [_, above_y, _, above_h] = menu_item_rect(items, above, width, height);
-            let [_, below_y, _, _] = menu_item_rect(items, row, width, height);
+            let [_, above_y, _, above_h] = menu_item_rect(items, above, width, height, media);
+            let [_, below_y, _, _] = menu_item_rect(items, row, width, height, media);
             // Centre the rule between the *visible* chip edges. Positioning it
             // from the lower line alone ignored each chip's own row padding,
             // which left visibly more air above the rule than below it.
@@ -1108,6 +1210,36 @@ impl Scene {
         }
         for text in &mut self.texts {
             text.color[3] *= alpha;
+        }
+    }
+
+    /// The same, for everything standing below the line `y` — and nothing
+    /// above it.
+    ///
+    /// For the one screen that takes the bar away rather than standing over it:
+    /// the folder picker, where the whole of what is left on the left of the
+    /// display is the file being carried and the picker draws that itself. The
+    /// corner is what the line spares. It is the clock and the marks beside it,
+    /// which are part of the wallpaper more than they are part of the
+    /// controls — the shell's own note about the machine rather than anything
+    /// the user is choosing between — and a session that could not be told the
+    /// time while a file was being filed would be answering a question nobody
+    /// asked with one nobody wanted.
+    ///
+    /// Measured at each thing's middle rather than at its top edge, because the
+    /// tallest thing on the bar is the light behind the chosen row: it is more
+    /// than twice the icon it stands behind, so its top edge reaches into the
+    /// corner's band while the row it belongs to is nowhere near it.
+    pub fn fade_below(&mut self, y: f32, alpha: f32) {
+        for quad in &mut self.quads {
+            if quad.y + quad.h * 0.5 > y {
+                quad.fade *= alpha;
+            }
+        }
+        for text in &mut self.texts {
+            if text.y + text.size * 0.5 > y {
+                text.color[3] *= alpha;
+            }
         }
     }
 
@@ -1433,14 +1565,18 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
         // column per frame is exactly the cost this shell does not pay.
         match entry {
             Entry::Media(file) => return file.kind.has_picture().then(|| Cards::of(CARD_ASPECT)),
-            // A folder's field says nothing about cards, and says it without
-            // stopping the walk: what a directory holds is folders, documents
-            // and photographs together, so its column is rows — see the round
-            // preview an explorer row draws instead.
-            Entry::Search(search) => {
-                let kind = search.of.shelf()?;
-                return kind.has_picture().then(|| Cards::of(CARD_ASPECT));
-            }
+            Entry::Search(search) => match search.of {
+                Searched::Shelf(kind) => return kind.has_picture().then(|| Cards::of(CARD_ASPECT)),
+                // A folder's column is rows: what a directory holds is folders,
+                // documents and photographs together — see the round preview an
+                // explorer row draws instead.
+                Searched::Folder => return None,
+                // A library's is covers, and its field says so before a single
+                // game is reached — which matters most when there is no game to
+                // reach, because a search narrowed to nothing must not change
+                // the shape of the column it narrowed.
+                Searched::Library => return Some(Cards::of(COVER_ASPECT)),
+            },
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
             _ => {}
         }
@@ -1618,6 +1754,25 @@ fn charge_figures(percent: u8) -> ([char; 4], usize) {
     (written, length + 2)
 }
 
+/// What the keyboard is going into on the display being drawn, if anything.
+///
+/// One answer rather than a flag per field, because the bar has exactly one row
+/// under the caret at a time and the two things it can be are answered in the
+/// same place: a search field carries what is typed in the row itself, and a
+/// name being changed carries it here — the row it belongs to is still the file
+/// it has always been, and the shell is not going to write a half-typed name
+/// into the catalogue every display draws from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Typing<'a> {
+    /// Nothing on this display is being typed into.
+    #[default]
+    Nothing,
+    /// The search field the cursor is standing on, which holds its own text.
+    Search,
+    /// The name of the row the cursor is standing on, as it stands so far.
+    Name(&'a str),
+}
+
 /// Lay out one display's bar.
 ///
 /// `focused` is whether this is the display the controller and keyboard are
@@ -1626,15 +1781,15 @@ fn charge_figures(percent: u8) -> ([char; 4], usize) {
 ///
 /// `time` runs the selection pulse.
 ///
-/// `typing` is whether the on-screen keyboard is typing into this display's
-/// bar, which happens in exactly one place: the search field at the head of a
-/// column of the user's own files. It is what puts the caret on that row, and
-/// it is a per-display answer rather than something the row itself carries —
-/// the board is up on one screen, and a caret blinking away on the other would
-/// be a field nobody is typing into.
+/// `typing` is what the on-screen keyboard is going into on this display, which
+/// is what puts the caret on a row — the search field at the head of a column
+/// of the user's own files, or the name of the row the cursor is on. It is a
+/// per-display answer rather than something the row itself carries: the board is
+/// up on one screen, and a caret blinking away on the other would be a field
+/// nobody is typing into.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
-    xmb: &Xmb,
+    lattice: &Lattice,
     cursor: &Cursor,
     width: f32,
     height: f32,
@@ -1642,7 +1797,7 @@ pub fn build(
     corner: Corner<'_>,
     time: f32,
     slots: &impl SlotLookup,
-    typing: bool,
+    typing: Typing<'_>,
 ) -> Scene {
     let mut quads = Vec::new();
     let mut texts = Vec::new();
@@ -1663,8 +1818,8 @@ pub fn build(
     let ink = theme.text_soft.a(CORNER_INK * attention);
     // The middle of the line every mark in the corner is centred on. Not the
     // middle of the line *box*, which hangs below the digits; see
-    // [`CORNER_MARK_LINE`].
-    let mark_middle = clock_top + clock_size * CORNER_MARK_LINE;
+    // [`MARK_LINE`].
+    let mark_middle = clock_top + clock_size * MARK_LINE;
 
     // What is left in the battery, on the far side of the time from the
     // wireless fan.
@@ -1683,7 +1838,7 @@ pub fn build(
     if let Some(charge) = corner.battery {
         let name = battery_glyph(charge);
         if let Some(slot) = slots.glyph(name) {
-            let cell = CORNER_BATTERY * scale;
+            let cell = BATTERY_MARK * scale;
             quads.push(shaded(
                 Quad {
                     x: clock_right - cell,
@@ -1770,7 +1925,7 @@ pub fn build(
     // on it is exactly the machine whose settings the user has come looking
     // for. With nothing at all in the catalogue this is still the only thing
     // drawn, because there is then no bar to say it under.
-    if xmb.is_empty() {
+    if lattice.is_empty() {
         texts.push(Text {
             content: "No applications found".to_string(),
             x: cross_x,
@@ -1806,13 +1961,13 @@ pub fn build(
     // carries the whole chain along by one, so a column takes the place of the
     // one it came out of and the far end of a long path leaves the screen
     // rather than the near end running off it.
-    let columns = cursor.columns(xmb);
+    let columns = cursor.columns(lattice);
     let depth = cursor.depth_position();
     let column_x = |level: usize| bar_column_x(level as f32, depth, width, height);
 
     // --- the columns of the path taken -----------------------------------
     // Drawn first so the category row overlaps them, as on the real bar.
-    if let Some(category) = cursor.current_category(xmb) {
+    if let Some(category) = cursor.current_category(lattice) {
         if category.entries.is_empty() && column_alpha > 0.01 {
             texts.push(Text {
                 content: category.empty_note().to_string(),
@@ -2257,10 +2412,20 @@ pub fn build(
             // the same field is drawn on the trail behind a step further in,
             // and a caret back there would say the keyboard was going to that
             // one.
-            let field = (typing && selected && column.standing == Standing::Open)
+            let under_the_caret = selected && column.standing == Standing::Open;
+            let field = (typing == Typing::Search && under_the_caret)
                 .then(|| entry.search())
                 .flatten()
                 .filter(|search| search.role == Role::Field);
+            // And the row whose *name* is being changed, which is any row at
+            // all rather than a field the tree carries. What it is called on
+            // the disk has not changed yet and will not until the name is
+            // accepted, so what is drawn comes from here and the row goes on
+            // saying what it has always said underneath.
+            let renaming = match typing {
+                Typing::Name(name) if under_the_caret => Some(name),
+                _ => None,
+            };
 
             if selected {
                 let name_size = 30.0 * scale * near;
@@ -2278,9 +2443,10 @@ pub fn build(
                     // called "Search" while nobody is in it, and a field being
                     // typed into that still said so would be a field with a
                     // word already in it.
-                    content: match field {
-                        Some(search) => format!("{}{CARET}", search.query),
-                        None => entry.title().to_string(),
+                    content: match (field, renaming) {
+                        (Some(search), _) => format!("{}{CARET}", search.query),
+                        (None, Some(name)) => format!("{name}{CARET}"),
+                        (None, None) => entry.title().to_string(),
                     },
                     x: text_x,
                     y: name_y,
@@ -2354,7 +2520,7 @@ pub fn build(
     // the thing the cursor is on.
     let (row_near, row_clarity) = category_row_recession(depth);
     let category_spacing = category_spacing * row_near;
-    for (index, category) in xmb.categories.iter().enumerate() {
+    for (index, category) in lattice.categories.iter().enumerate() {
         let offset = index as f32 - cursor.category_position;
         let x = bar_category_x(offset, depth, width, height);
 
@@ -2593,25 +2759,25 @@ pub enum BarSpot {
 /// height between them and a category's buttons divide the width, and there is
 /// nowhere on the cross that belongs to nothing.
 pub fn bar_hit(
-    xmb: &Xmb,
+    lattice: &Lattice,
     cursor: &Cursor,
     x: f32,
     y: f32,
     width: f32,
     height: f32,
 ) -> Option<BarSpot> {
-    if xmb.is_empty() {
+    if lattice.is_empty() {
         return None;
     }
     let depth = cursor.depth_position();
-    category_row_hit(xmb, cursor, x, y, width, height, depth)
-        .or_else(|| column_hit(xmb, cursor, x, y, width, height, depth))
+    category_row_hit(lattice, cursor, x, y, width, height, depth)
+        .or_else(|| column_hit(lattice, cursor, x, y, width, height, depth))
 }
 
 /// The category row's half of [`bar_hit`].
 #[allow(clippy::too_many_arguments)]
 fn category_row_hit(
-    xmb: &Xmb,
+    lattice: &Lattice,
     cursor: &Cursor,
     x: f32,
     y: f32,
@@ -2633,7 +2799,7 @@ fn category_row_hit(
     let spacing = CATEGORY_SPACING * scale * row_near;
     let offset = (x - bar_column_x(0.0, depth, width, height)) / spacing;
     let index = (cursor.category_position + offset).round();
-    if index < 0.0 || index as usize >= xmb.categories.len() {
+    if index < 0.0 || index as usize >= lattice.categories.len() {
         return None;
     }
     let index = index as usize;
@@ -2652,7 +2818,7 @@ fn category_row_hit(
 /// The columns' half of [`bar_hit`], front to back — the order they stand in.
 #[allow(clippy::too_many_arguments)]
 fn column_hit(
-    xmb: &Xmb,
+    lattice: &Lattice,
     cursor: &Cursor,
     x: f32,
     y: f32,
@@ -2661,7 +2827,7 @@ fn column_hit(
     depth: f32,
 ) -> Option<BarSpot> {
     let scale = guide_scale(height);
-    let columns = cursor.columns(xmb);
+    let columns = cursor.columns(lattice);
     for (level, column) in columns.iter().enumerate().rev() {
         // A column the bar has stepped out of is not something the hand can be
         // pointing at. It is on its way off the screen — and once the step has
@@ -2774,6 +2940,537 @@ fn column_hit(
                     level: None,
                 });
             }
+        }
+    }
+    None
+}
+
+// --- the folder a file is being carried to -----------------------------
+//
+// The bar walked the other way round. Everything below is the same layout as
+// the columns above with one number negated, and the reason it is written out
+// rather than shared with them is that almost nothing else survives the mirror:
+// there is no category row over it, no cards, no bars, no search field and no
+// thumbnails — a destination column is folders, files that cannot be pressed,
+// and the row that ends the journey.
+
+/// Where the column the user is standing in stands, as a share of the width.
+///
+/// Not the mirror of [`BAR_CROSS_X`], which would be 0.78 and would leave the
+/// folder names running off the right edge: a row is an icon with its *name*
+/// beside it, and the name is on the right on both halves of this screen. The
+/// mark and its name together are what has to fit, so the cross stands where it
+/// leaves room for one column of names inside the picker and one more outside
+/// it — the trail's.
+const PICK_CROSS_X: f32 = 0.60;
+
+/// What is kept clear at the right edge for the outermost column on screen:
+/// its own half-icon, and enough beside it for a folder's name to be read.
+///
+/// This is what the step is measured *back* from, which is the whole difference
+/// between the picker and the bar. On the bar a column steps as far as it can
+/// while keeping its icon on the display, because its name trails away from the
+/// edge it is leaving by; here the name trails *towards* that edge, so a step
+/// that wide would carry every trail's name off the screen and leave the user
+/// with a rank of anonymous folder marks.
+const PICK_TAIL: f32 = ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 212.0;
+
+/// How far apart the picker's columns stand, on a display this size.
+///
+/// The room to the right of the cross, less what the outermost column needs for
+/// its name. It shrinks with the display rather than being a fixed distance,
+/// because the room it is dividing is a share of the width — and it is held
+/// clear of the point where two columns would print through one another.
+fn pick_step(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let room = width * (1.0 - PICK_CROSS_X) - PICK_TAIL * scale;
+    room.max(COLUMN_MARGIN * scale)
+}
+
+/// Where the column at `level` of the picker's path stands.
+///
+/// The mirror of [`bar_column_x`], and the one line in this half of the file
+/// that makes it a mirror: a level *behind* the one being stood in — the folder
+/// this one is inside — stands to the right, so Right is the way back out.
+fn pick_column_x(level: f32, depth: f32, width: f32, height: f32) -> f32 {
+    width * PICK_CROSS_X - (level - depth) * pick_step(width, height)
+}
+
+/// How much of something standing at `x` has not yet left the picker's screen.
+///
+/// [`leaving`] with the edge on the other side: the far end of this path runs
+/// off the right of the display rather than the left.
+fn pick_leaving(x: f32, width: f32, scale: f32) -> f32 {
+    let band = ITEM_ICON * scale;
+    ((width - x + band) / band).clamp(0.0, 1.0)
+}
+
+/// How dark the screen behind the picker is drawn.
+///
+/// Deeper than a context menu's scrim. What is behind this is not a menu's
+/// backdrop — it is the very column the file was picked out of, holding the
+/// same kind of rows, at the same rhythm, in the same material — and at a
+/// menu's dimming the eye reads the two as one long bar with a bright patch in
+/// the middle of it.
+const PICK_SCRIM: f32 = 0.62;
+
+/// What a row that leads nowhere has left of the ink a folder gets.
+///
+/// Two kinds of row are quiet, and for the same reason from opposite ends: a
+/// file is on the column to be recognised rather than to be pressed, and the
+/// head row in a folder the thing cannot go in has nothing behind a press
+/// either. Neither is unreachable — the highlight stands on both, because the
+/// column opens below Paste and the line under a blocked Paste is the whole
+/// reason to stand on it — so this is what says "there is nothing here" in
+/// place of a reach the shell has not taken away.
+///
+/// A file *under the highlight* is drawn at full strength all the same. The
+/// selection has to be legible wherever it lands, and a row nobody can read is
+/// worse than a row nothing happens on.
+const PICK_FILE_INK: f32 = 0.45;
+
+/// What is drawn of a transfer the user is arranging.
+pub struct TransferView<'a> {
+    pub transfer: &'a Transfer,
+    /// How much of the way in the picker is, 0 off the right edge and 1 landed.
+    /// Already eased.
+    pub arrived: f32,
+    /// The global clock, for the selection pulse.
+    pub time: f32,
+    pub slots: &'a dyn SlotLookup,
+}
+
+/// The screen a file is carried to another folder on: the thing being carried,
+/// standing alone where it was picked, and the mirrored bar that says where it
+/// is going.
+pub fn build_transfer(view: TransferView, width: f32, height: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let arrived = view.arrived.clamp(0.0, 1.0);
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+
+    let mut scene = Scene::default();
+    // The screen behind, dimmed. It covers the compositor's own layer as well
+    // as the shell's, which is why it is a quad here rather than only the fade
+    // `recede_behind_transfer` puts on the bar.
+    scene.quads.push(Quad {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        slot: SOLID_SLOT,
+        color: theme.glass.a(PICK_SCRIM * arrived),
+        ..Quad::default()
+    });
+
+    // The one row left on the left of the screen: what is being carried.
+    //
+    // Drawn here rather than left to the bar underneath, which is dimmed with
+    // everything else on it — and drawn at exactly the size the bar's own
+    // recession leaves that row, so what the user sees is the row they were
+    // standing on with the rest of the screen taken away from around it rather
+    // than a second, different drawing of the same file.
+    let source = view.transfer.source();
+    let [ax, ay, aw, ah] = launch_origin(width, height);
+    let near = 1.0 - CONTEXT_DEPTH;
+    scene.quads.extend(pick_glow(
+        [ax + aw * 0.5, ay + ah * 0.5],
+        ITEM_ICON_FOCUSED * scale * near,
+        theme.accent.a((0.34 + 0.26 * pulse) * arrived),
+    ));
+    pick_row(
+        &mut scene,
+        PickRow {
+            at: [ax + aw * 0.5, ay + ah * 0.5],
+            near,
+            title: &source.name,
+            note: Some(&source.note),
+            glyph: source.glyph,
+            selected: true,
+            alpha: arrived,
+            ink: 1.0,
+            text_max: (width * PICK_CROSS_X
+                - COLUMN_CLEAR * scale
+                - (ax + aw * 0.5 + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near))
+                .max(0.0),
+            scale,
+        },
+        view.slots,
+    );
+
+    // And the mirrored bar, which arrives from the right and leaves the same
+    // way. One scene of its own so it can be carried in whole: a picker that
+    // faded up in place would be a second screen appearing over the first,
+    // where what this is is a screen sliding in beside it.
+    let mut picker = Scene::default();
+    build_pick_columns(&mut picker, &view, width, height, pulse);
+    picker.scale_by(1.0, [(1.0 - arrived) * width * (1.0 - PICK_CROSS_X), 0.0]);
+    picker.fade(arrived);
+    scene.quads.extend(picker.quads);
+    scene.texts.extend(picker.texts);
+    scene
+}
+
+/// The columns of the path the user is walking to the folder they want.
+fn build_pick_columns(scene: &mut Scene, view: &TransferView, width: f32, height: f32, pulse: f32) {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let cross_y = height * BAR_CROSS_Y;
+    let spacing = ITEM_SPACING * scale;
+    let gap_below = gap_below(None) * scale;
+    let step = pick_step(width, height);
+    let depth = view.transfer.depth();
+    let columns = view.transfer.columns();
+
+    for column in columns.iter() {
+        let level = column.level;
+        // How much this column is the one being stood in, and how much of it is
+        // on screen at all. Both the bar's own answers — see the columns of
+        // [`build`], which this is the mirror of.
+        let active = 1.0 - (depth - level as f32).abs().min(1.0);
+        let present = (1.0 - (level as f32 - depth)).clamp(0.0, 1.0);
+        let present = match column.standing {
+            Standing::Leaving => departing(present),
+            Standing::Open | Standing::Behind => present,
+        };
+        if present <= 0.01 {
+            continue;
+        }
+        let (near, clarity) = receded(depth - level as f32);
+        let x = pick_column_x(level as f32, depth, width, height);
+        let clarity = clarity * pick_leaving(x, width, scale);
+        let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near;
+        // Every column's names are cut off at the one behind it, which stands
+        // to the right of it. The bar cuts only the columns it has stepped
+        // past, because there is nothing to the right of the one it is in;
+        // here there always is, and it is the trail.
+        let text_max = (x + step - COLUMN_CLEAR * scale - text_x).max(0.0);
+
+        let shown = rows_in_view(column.position, column.rows.len(), spacing * near, height);
+        for index in shown {
+            let row = &column.rows[index];
+            let offset = index as f32 - column.position;
+            let y = nested_y(offset, cross_y, gap_below, spacing * near, 0.0);
+            if y < -spacing || y > height + spacing {
+                continue;
+            }
+
+            let distance = offset.abs();
+            let focus = (1.0 - distance.min(1.0)) * active;
+            let trail = index == column.selected;
+            let presence = match column.standing {
+                _ if trail => present,
+                Standing::Leaving => present,
+                Standing::Behind => departing(active),
+                Standing::Open => active,
+            } * clarity;
+            let mut alpha = (1.0 - (distance / 6.0)).clamp(0.0, 1.0) * presence;
+            // The same two edges the bar's columns dissolve at: clear of the
+            // clock at the top, and clear of a whole icon at the bottom.
+            let fade_range = 70.0 * scale;
+            alpha *= ((y - 90.0 * scale) / fade_range).clamp(0.0, 1.0);
+            alpha *= ((height - (ITEM_ICON / 2.0 + 16.0) * scale - y) / fade_range).clamp(0.0, 1.0);
+            if alpha <= 0.01 {
+                continue;
+            }
+
+            let selected = distance < 0.5 && active > 0.5;
+            let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
+            // A row that leads nowhere keeps less of itself than one that can
+            // be walked into — see [`PICK_FILE_INK`], and note which of the two
+            // stays quiet under the highlight and which does not.
+            let quiet = match row {
+                Row::File { .. } => !selected,
+                Row::Paste => !column.can_paste,
+                Row::Folder { .. } => false,
+            };
+            let (ink, mark) = if quiet {
+                (PICK_FILE_INK, PICK_FILE_INK)
+            } else {
+                (1.0, 1.0)
+            };
+
+            // A row that cannot be pressed keeps less of everything, the light
+            // behind it included: it is the selection standing on a row that
+            // has nothing to give, and a full lamp behind it would be the
+            // screen saying press this.
+            let alpha = alpha * mark;
+            if distance < 0.5 && active > 0.01 {
+                scene.quads.extend(pick_glow(
+                    [x, y],
+                    icon_size,
+                    theme.accent.a((0.34 + 0.26 * pulse) * alpha * active),
+                ));
+            }
+            pick_row(
+                scene,
+                PickRow {
+                    at: [x, y],
+                    near,
+                    title: row.title(),
+                    note: match row {
+                        Row::Paste => Some(column.paste),
+                        other => other.note(),
+                    },
+                    glyph: row.glyph(),
+                    selected,
+                    alpha,
+                    ink,
+                    text_max,
+                    scale,
+                },
+                view.slots,
+            );
+        }
+    }
+}
+
+/// The breathing light behind the row the picker is standing on, at whatever
+/// size that row's mark is drawn.
+///
+/// Its own function because it is drawn twice on this screen: behind the file
+/// being carried, which never stops being the thing the whole screen is about,
+/// and behind whichever row of the picker the highlight is on.
+fn pick_glow(at: [f32; 2], icon_size: f32, color: [f32; 4]) -> [Quad; 1] {
+    let glow = icon_size * 2.3;
+    [Quad {
+        x: at[0] - glow / 2.0,
+        y: at[1] - glow / 2.0,
+        w: glow,
+        h: glow,
+        slot: GLOW_SLOT,
+        color,
+        ..Quad::default()
+    }]
+}
+
+/// One row of the picker, or the file it is about: a mark, and one or two lines
+/// beside it.
+struct PickRow<'a> {
+    /// The middle of its mark, in display coordinates.
+    at: [f32; 2],
+    /// How near the front the column it belongs to stands.
+    near: f32,
+    title: &'a str,
+    note: Option<&'a str>,
+    glyph: &'static str,
+    /// Whether it is the row the picker is standing on, which is what decides
+    /// whether the second line is drawn at all — the bar's own rule, so a
+    /// column reads the same in both halves of the screen.
+    selected: bool,
+    alpha: f32,
+    /// What share of the ink the writing keeps. One for a row that can be
+    /// pressed and less for one that is only there to be read.
+    ink: f32,
+    text_max: f32,
+    scale: f32,
+}
+
+fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
+    let theme = theme();
+    let [x, y] = row.at;
+    let scale = row.scale;
+    let icon_size = if row.selected {
+        ITEM_ICON_FOCUSED
+    } else {
+        ITEM_ICON
+    } * scale
+        * row.near;
+
+    // The glass under the chosen row, of the same material every other chosen
+    // thing in the shell stands on.
+    if row.selected {
+        let disc = icon_size * ITEM_DISC;
+        scene.quads.push(Quad {
+            x: x - disc / 2.0,
+            y: y - disc / 2.0,
+            w: disc,
+            h: disc,
+            slot: SOLID_SLOT,
+            color: theme.accent.a(0.13),
+            radius: disc / 2.0,
+            thickness: DEPTH_CONTROL * scale,
+            frost: FROST_CONTROL,
+            gloss: GLOSS_FULL,
+            fade: row.alpha,
+            ..Quad::default()
+        });
+    }
+    scene.quads.push(icon_quad(
+        slots.glyph(row.glyph),
+        Some(row.glyph),
+        x - icon_size / 2.0,
+        y - icon_size / 2.0,
+        icon_size,
+        row.alpha,
+        theme.accent_deep.a(row.alpha * 0.75),
+    ));
+
+    let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * row.near;
+    if row.selected {
+        let name_size = 30.0 * scale * row.near;
+        let name_y = if row.note.is_some() {
+            y - 40.0 * scale * row.near
+        } else {
+            y - name_size * 0.62
+        };
+        scene.texts.push(Text {
+            content: row.title.to_string(),
+            x: text_x,
+            y: name_y,
+            size: name_size,
+            color: theme.text.a(row.alpha * row.ink),
+            bold: true,
+            max_width: row.text_max,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+        });
+        if let Some(note) = row.note {
+            scene.texts.push(Text {
+                content: note.to_string(),
+                x: text_x,
+                y: y + 4.0 * scale * row.near,
+                size: 19.0 * scale * row.near,
+                color: theme.text_soft.a(row.alpha * 0.85 * row.ink),
+                bold: false,
+                max_width: row.text_max,
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                lines: 1,
+            });
+        }
+        return;
+    }
+    let text_size = 22.0 * scale * row.near;
+    scene.texts.push(Text {
+        content: row.title.to_string(),
+        x: text_x,
+        y: y - text_size * 0.62,
+        size: text_size,
+        color: theme.text.a(row.alpha * 0.62 * row.ink),
+        bold: false,
+        max_width: row.text_max,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+    });
+}
+
+/// How far down the display the corner's own band reaches.
+///
+/// What [`recede_behind_transfer`] spares, in the drawing's own units: the
+/// clock sits [`CORNER_TOP`] down and is [`CORNER_CLOCK`] tall, and the marks
+/// either side of it are centred on the same line. Everything else the start
+/// screen draws is a row of the cross, which begins two hundred units below
+/// this.
+const CORNER_BAND: f32 = 120.0;
+
+/// Take the start screen away behind the picker, and drop the labels it would
+/// otherwise print straight through the folders being chosen between.
+///
+/// Away rather than dimmed, which is the one place this differs from what a
+/// context menu does to the same screen. A menu stands *over* the bar and is
+/// about a row of it, so the bar goes on being the thing behind it; the picker
+/// replaces it — the one thing left of the start screen is the file being
+/// carried, and the picker draws that itself, out of what it was handed rather
+/// than out of a bar that is still live underneath.
+///
+/// The labels go by the second call for the reason every panel in this shell
+/// needs one: every quad in a scene is drawn before every text run, so a screen
+/// laid over the bar does not hide the bar's words unless they are taken away.
+pub fn recede_behind_transfer(scene: &mut Scene, width: f32, height: f32, progress: f32) {
+    scene.fade_below(
+        CORNER_BAND * guide_scale(height),
+        1.0 - progress.clamp(0.0, 1.0),
+    );
+    scene.hide_text_behind([0.0, 0.0, width, height]);
+}
+
+/// What a press on the picker has landed on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PickSpot {
+    /// A row of the column being stood in.
+    Row(usize),
+    /// The row a column further out was opened from — the trail. Carries how
+    /// many steps out it is, which is how many presses of Right reach it.
+    Trail(usize),
+}
+
+/// What is under `(x, y)` on the picker, if anything.
+///
+/// Bands rather than the drawn marks, exactly as [`bar_hit`] measures the bar:
+/// a user aiming at a row is aiming at the row and not at the circle of glass
+/// under its picture.
+pub fn transfer_hit(
+    transfer: &Transfer,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Option<PickSpot> {
+    let scale = guide_scale(height);
+    let cross_y = height * BAR_CROSS_Y;
+    let spacing = ITEM_SPACING * scale;
+    let gap_below = gap_below(None) * scale;
+    let depth = transfer.depth();
+    let columns = transfer.columns();
+    // Front to back, which for this bar means from the column being stood in
+    // outwards: a point in the band two columns share belongs to the nearer.
+    let open = columns
+        .iter()
+        .find(|column| column.standing == Standing::Open)?
+        .level;
+    for column in columns.iter().rev() {
+        let level = column.level;
+        // The one being stepped out of is on its way off the screen and is not
+        // aimed at: what a press over it would mean is a folder the user has
+        // already left.
+        if level > open || column.rows.is_empty() {
+            continue;
+        }
+        let (near, _) = receded(depth - level as f32);
+        let column_x = pick_column_x(level as f32, depth, width, height);
+        let reach = ITEM_ICON_FOCUSED * ITEM_DISC * scale * near;
+        let left = column_x - reach * 0.5;
+        // As far as the names run, which is where the column behind this one
+        // starts: the whole width of a row is what can be aimed at, not the
+        // mark at the head of it.
+        let right = column_x + pick_step(width, height) - COLUMN_CLEAR * scale;
+        if x < left || x > right {
+            continue;
+        }
+        let rows = if level == open {
+            0..column.rows.len()
+        } else {
+            // Everything but the trail row has been given up by a column that
+            // has been stepped past, so the trail is the only thing on it a
+            // press can be about — and what it means is going back to it.
+            column.selected..column.selected + 1
+        };
+        for index in rows {
+            let row_y = |index: usize| {
+                nested_y(
+                    index as f32 - column.position,
+                    cross_y,
+                    gap_below,
+                    spacing * near,
+                    0.0,
+                )
+            };
+            let here = row_y(index);
+            let band = spacing * near * 0.5;
+            if y < here - band || y > here + band {
+                continue;
+            }
+            return Some(if level == open {
+                PickSpot::Row(index)
+            } else {
+                PickSpot::Trail(open - level)
+            });
         }
     }
     None
@@ -2947,6 +3644,18 @@ pub struct GuideView<'a> {
     /// because it grows on and goes out again, and the tile is in plain sight
     /// while it does both.
     pub unread: f32,
+    /// What is left in the battery, or `None` for a machine that has none —
+    /// which draws nothing, on exactly the terms the start screen's corner
+    /// draws nothing. See [`Corner::battery`], and [`crate::power`] for what
+    /// counts as this machine's battery in the first place.
+    pub battery: Option<crate::power::Charge>,
+    /// Whether the charge is written out in figures beside that mark.
+    ///
+    /// The same setting the corner reads — Settings > Appearance > Battery
+    /// percentage — because it is one answer about one machine. A console
+    /// where the number was on in one place and off in another would be a
+    /// console with two settings and one row.
+    pub battery_percent: bool,
     /// The foreground application's title, for the sidebar's header.
     pub app: Option<&'a str>,
     /// Name of the application the Close entry would end — the one behind the
@@ -3058,6 +3767,9 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     let closable = view.close_target.is_some();
     let items = view.guide.items(closable);
     let selected = view.guide.selected_index(closable);
+    // How far the two rows that come and go with what is playing are open.
+    // Every rectangle in the column below them depends on it.
+    let media_open = view.guide.media();
     let pane = view.guide.pane();
     let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
 
@@ -3125,17 +3837,84 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             lines: 1,
         });
     }
+    // What is left in the battery, under the day and on the same line as the
+    // name of whatever is running.
+    //
+    // Under the date because that is the column it belongs to: the left of this
+    // header is what the session is *doing* — the hour, and the application in
+    // front — and the right is what is true about the machine underneath it.
+    // Sharing the second line with the application's name keeps the header the
+    // two rows it has always been rather than growing one for a mark.
+    //
+    // The figures go to the *left* of the mark here and above it in the corner,
+    // and the difference is the room. The corner is a cluster on a wallpaper
+    // with the whole width of a display beside it, and stacking keeps the run
+    // from pushing the clock inward; this is a narrow column with a line of its
+    // own to spend and nothing above the mark but the date.
+    let second_line = 52.0 * scale + title_size * 1.35;
+    let mut app_width = text_w;
+    if let Some(charge) = view.battery {
+        let name = battery_glyph(charge);
+        if let Some(slot) = view.slots.glyph(name) {
+            let cell = BATTERY_MARK * scale;
+            // In the day's own ink rather than the white a mark on a lit tile
+            // is drawn in. It is not on a tile: it stands on the header's glass
+            // beside the date, and the two are one statement about the machine.
+            let ink = theme.text_soft.a(0.7 * slide);
+            quads.push(shaded(
+                Quad {
+                    x: sidebar_x + text_x + text_w - cell,
+                    y: second_line + subtitle_size * MARK_LINE - cell * 0.5,
+                    w: cell,
+                    h: cell,
+                    slot,
+                    color: ink,
+                    ..Quad::default()
+                },
+                Some(name),
+            ));
+            app_width -= cell + GUIDE_BATTERY_GAP * scale;
+            if view.battery_percent {
+                // Ordinary type, and not the water the corner writes its own
+                // figures in. Everything in this panel that is *words* goes
+                // through the text pipeline — the hour above this, the day, the
+                // name of the application on this very line — and a run of
+                // figures modelled as beads would be the one place in the
+                // sidebar where writing was made of something else.
+                //
+                // Right-aligned into the room left of the mark, so it is never
+                // measured: the layout cannot ask how wide a run came out, and
+                // it does not need to.
+                texts.push(Text {
+                    content: format!("{}%", charge.percent.min(100)),
+                    x: sidebar_x + text_x,
+                    y: second_line,
+                    size: subtitle_size,
+                    color: ink,
+                    bold: false,
+                    max_width: app_width,
+                    align: TextAlign::Right,
+                    clip: None,
+                    halo: 0.0,
+                    lines: 1,
+                });
+            }
+        }
+    }
+
     texts.push(Text {
         content: match view.app {
             Some(app) => app.to_string(),
             None => "Nothing is running".to_string(),
         },
         x: sidebar_x + text_x,
-        y: 52.0 * scale + title_size * 1.35,
+        y: second_line,
         size: subtitle_size,
         color: theme.text_soft.a(0.85 * slide),
         bold: false,
-        max_width: text_w,
+        // Short of the column's width by whatever the battery took, so a long
+        // application name ends in an ellipsis rather than under the mark.
+        max_width: app_width,
         align: TextAlign::Left,
         clip: None,
         halo: 0.0,
@@ -3145,7 +3924,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         texts.push(Text {
             content: format!("Screen {screen}"),
             x: sidebar_x + text_x,
-            y: 52.0 * scale + title_size * 1.35 + subtitle_size * 1.45,
+            y: second_line + subtitle_size * 1.45,
             size: subtitle_size,
             color: theme.text_soft.a(0.6 * slide),
             bold: false,
@@ -3167,7 +3946,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // caller. Falling back to the row itself keeps the first frame honest.
     let [hx, hy, hw, hh] = view
         .menu_highlight
-        .unwrap_or_else(|| menu_item_rect(&items, selected, width, height));
+        .unwrap_or_else(|| menu_item_rect(&items, selected, width, height, media_open));
     let glow_h = hh * 2.6;
     quads.push(Quad {
         x: sidebar_x + hx + hw * 0.5 - sidebar_w * 0.55,
@@ -3201,7 +3980,16 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         h: lh,
         slot: SOLID_SLOT,
         color: theme.accent.a(0.46 + 0.05 * pulse),
-        radius: chip_radius(items.get(selected).copied(), lh),
+        radius: match items.get(selected) {
+            // The light on the media row is not on the row: it is on the
+            // transport button the user is about to press, put there by the
+            // caller. A transport button is a disc, so the light is a disc —
+            // asking `chip_radius` here would hand back the *card's* corner
+            // and round a thirty-pixel square by nine, which is a squircle
+            // sitting where a circle should be.
+            Some(Item::Media) => lh * 0.5,
+            other => chip_radius(other.copied(), lh),
+        },
         thickness: DEPTH_CONTROL * scale,
         behind: view.behind,
         frost: FROST_CONTROL,
@@ -3214,7 +4002,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // looks like, what the menu does to the application in front of it, what
     // it does to the session. Barely there on purpose — they are groupings,
     // not borders.
-    for [sx, sy, sw, sh] in menu_separator_rects(&items, width, height) {
+    for [sx, sy, sw, sh] in menu_separator_rects(&items, width, height, media_open) {
         quads.push(Quad {
             x: sidebar_x + sx,
             y: sy,
@@ -3227,7 +4015,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     }
 
     for (index, item) in items.iter().enumerate() {
-        let [rx, ry, rw, rh] = menu_item_rect(&items, index, width, height);
+        let [rx, ry, rw, rh] = menu_item_rect(&items, index, width, height, media_open);
         let focused = index == selected;
         // Entries arrive in turn, each sliding the last of its own distance.
         let appear = entry_appear(age, index);
@@ -3248,6 +4036,15 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         // A tile being pressed goes down, chip and all. Everything else in the
         // column either closes the menu or opens a dialog when it is chosen,
         // so there is nothing left on screen for a press to be seen on.
+        // The two rows that come and go do not merely grow: their contents fade
+        // in behind the growth and out ahead of it, so a card on its way in is
+        // never a row of buttons at a size nobody would press and a card on its
+        // way out has finished being legible before its line closes.
+        let opening = if item.is_media() {
+            crate::smoothstep(((media_open - 0.30) / 0.70).clamp(0.0, 1.0))
+        } else {
+            1.0
+        };
         let press = view.guide.press_progress(*item);
         let chip = scaled_about_centre(
             [sidebar_x + rx + drift, ry, rw, rh],
@@ -3283,13 +4080,27 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 w: chip[2],
                 h: chip[3],
                 slot: SOLID_SLOT,
-                color: theme.glass_raised.a(0.10),
+                // The media card is the one chip in the column that is not a
+                // button, and it is not made of what the buttons are made of.
+                //
+                // Every other entry here is a raised control: light glass over
+                // the dark panel. This is the ground three of those *stand on*,
+                // so it is the dark stain instead — a well cut into the
+                // sidebar rather than another slab laid on it. Built out of the
+                // raised glass it put a second lit surface under each button,
+                // and three controls that should have looked exactly like the
+                // chips above and below came out looking switched on.
+                color: if *item == Item::Media {
+                    theme.glass.a(0.42)
+                } else {
+                    theme.glass_raised.a(0.10)
+                },
                 radius: chip_radius(Some(*item), chip[3]),
                 thickness: DEPTH_CONTROL * scale,
                 behind: view.behind,
                 frost: FROST_CONTROL,
                 gloss: GLOSS_QUIET,
-                fade: appear * slide * (1.0 - handed_over),
+                fade: appear * slide * opening * (1.0 - handed_over),
                 ..Quad::default()
             });
         }
@@ -3360,6 +4171,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         if let Some(bar) = item.bar() {
             let level = match bar {
                 Bar::Volume => view.volume,
+                Bar::Media => view.guide.now_playing().and_then(|now| now.level),
                 Bar::Brightness => view.brightness,
             };
             // The row exists because the control does — the same answer put
@@ -3371,10 +4183,59 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     bar,
                     level,
                     scale,
-                    (if focused { 1.0 } else { 0.82 }) * appear * slide,
+                    (if focused { 1.0 } else { 0.82 }) * appear * slide * opening,
                     view.slots,
                 ));
             }
+            continue;
+        }
+
+        if *item == Item::Media {
+            let Some(now) = view.guide.now_playing() else {
+                continue;
+            };
+            // The press-scaled rectangle, so the well, the buttons in it and
+            // the line under them all go down together — and with the light,
+            // which the caller sinks by the same amount. A card that stayed put
+            // while only the highlight moved would read as the light slipping
+            // off the button rather than as the button being pressed.
+            let card = chip;
+            let lit = (if focused { 1.0 } else { 0.82 }) * appear * slide * opening;
+            quads.extend(media_card(
+                card,
+                now,
+                view.guide.transport_at(),
+                focused,
+                scale,
+                view.behind,
+                lit,
+                view.slots,
+            ));
+            // What is playing, under the buttons. Centred, because it belongs
+            // to the three above it rather than to a column of left-aligned
+            // labels — and clipped to the card, since a title is whatever the
+            // page, tab or track happens to be called and there is no length a
+            // line of it can be relied on to be.
+            let title_size = 21.0 * scale;
+            let padding = GUIDE_LABEL_PADDING * scale * 0.5;
+            texts.push(Text {
+                content: now.line().to_string(),
+                x: card[0] + padding,
+                y: card[1] + card[3] * GUIDE_MEDIA_TITLE - title_size * 0.5,
+                size: title_size,
+                // White, like the labels on the buttons below it rather than
+                // like the quieter second line of the header. What is playing
+                // is the one thing on this card that is *news* — the buttons
+                // beside it are the same three buttons whatever is in it — and
+                // it is the line somebody opens the menu to read.
+                color: theme.text.a(lit),
+                bold: false,
+                max_width: (card[2] - padding * 2.0).max(0.0),
+                align: TextAlign::Center,
+                clip: None,
+                halo: 0.0,
+                lines: 1,
+            });
             continue;
         }
 
@@ -3678,8 +4539,9 @@ fn push_power_dialog(
         let focused = index == selected;
         let [row_x, row_y, row_w, capsule] =
             power_dialog_row_rect(width, height, items.len(), index);
-        // Warm for the two choices there is no coming back from, so the
-        // difference is visible before the label is read.
+        // Warm for the one choice there is no coming back from — the machine
+        // off and staying off — so the difference is visible before the label
+        // is read.
         let tint = if item.is_grave() {
             theme.danger
         } else {
@@ -6919,6 +7781,13 @@ fn quick_bar(
     let name = match (bar, level.muted) {
         (Bar::Volume, false) => icons::VOLUME,
         (Bar::Volume, true) => icons::VOLUME_MUTED,
+        // One note either way. The speaker changes to a struck-out one because
+        // its head is a button — pressing it is how the session is silenced —
+        // and this groove's head is not: it is the brightness bar's kind of
+        // bar, a mark saying what the groove is about and nothing to press.
+        // A crossed-out speaker on the media row would offer a mute that is
+        // not there, and would say it in the other bar's handwriting.
+        (Bar::Media, _) => icons::MEDIA_VOLUME,
         (Bar::Brightness, _) => icons::BRIGHTNESS,
     };
     if let Some(slot) = slots.glyph(name) {
@@ -6938,6 +7807,145 @@ fn quick_bar(
 
     let [track_x, middle, track_w, _] = bar_track_line(chip, scale);
     quads.extend(track([track_x, middle, track_w, 0.0], level, scale, alpha));
+    quads
+}
+
+/// The three transport buttons of the media card at `chip`, and the light that
+/// says which of them the highlight is on.
+///
+/// Drawn in three passes for one reason: the selection has to travel. It is one
+/// disc that glides between the buttons — `at` is where it has got to, in
+/// columns — rather than a fill that jumps from one to the next, which is the
+/// same rule the highlight sliding down the column obeys. So the quiet chips go
+/// down first, the travelling light over them, and the glyphs over that, and
+/// nothing has to know where the light is except the light.
+#[allow(clippy::too_many_arguments)]
+fn media_card(
+    chip: [f32; 4],
+    now: &crate::guide::NowPlaying,
+    at: f32,
+    focused: bool,
+    scale: f32,
+    behind: f32,
+    alpha: f32,
+    slots: &dyn SlotLookup,
+) -> Vec<Quad> {
+    let theme = theme();
+    let rects = transport_rects(chip);
+    let mut quads = Vec::with_capacity(8);
+
+    // Whether each button is a thing that can be pressed. The player is asked
+    // — a video with nothing after it says so — and a button it will not answer
+    // is drawn as an outline rather than a chip, the way an unreachable tile
+    // is: a dimmer chip is what a chip *behind the selection* looks like too.
+    let live = [now.can_previous, true, now.can_next];
+
+    for (index, rect) in rects.iter().enumerate() {
+        let [x, y, w, h] = *rect;
+        if live[index] {
+            // The same glass every other chip in the column is made of, to the
+            // number: these are buttons in the Home Button menu and there is no
+            // reason for them to be a different material from the ones above
+            // and below them. Only their shape differs, and only because a
+            // transport button has been a circle since the cassette deck.
+            //
+            // The depth is the exception, and it is what makes them *look* the
+            // same rather than merely be made of the same thing. A bevel is a
+            // narrow border on a tile seventy across and most of the area of a
+            // disc half that, so a small control at the column's own depth is
+            // nearly all edge light — which reads as a brighter material, and
+            // is what the user saw. Taken down in proportion, the fill carries
+            // the button and it sits at the weight of the chips around it.
+            quads.push(Quad {
+                x,
+                y,
+                w,
+                h,
+                slot: SOLID_SLOT,
+                color: theme.glass_raised.a(0.10),
+                radius: h * 0.5,
+                thickness: DEPTH_CONTROL * scale * TRANSPORT_DEPTH,
+                behind,
+                frost: FROST_CONTROL,
+                gloss: GLOSS_QUIET,
+                fade: alpha,
+                ..Quad::default()
+            });
+        } else {
+            // A button the player will not answer is drawn exactly the way an
+            // unreachable tile is — the outline where its chip would be, and
+            // no glass in it. The same answer for the same reason: a dimmer
+            // slab of the same material is what a chip *behind the selection*
+            // looks like too, so quietening the glass could never say this,
+            // and a card is not a special enough place to invent a second
+            // language for it.
+            quads.push(Quad {
+                x,
+                y,
+                w,
+                h,
+                slot: SOLID_SLOT,
+                color: theme.text_soft.a(0.22),
+                radius: h * 0.5,
+                border: (1.5 * scale).max(1.0),
+                fade: alpha,
+                ..Quad::default()
+            });
+        }
+    }
+
+    // No light of its own. The selection on a transport button is the
+    // column's own highlight, moved onto the button rather than onto the row
+    // — see `Shell::draw`, where the rectangle is chosen — so the card draws
+    // three buttons and nothing else, and a card nobody is on is three plain
+    // chips.
+
+    // And the marks. The middle one says what pressing it will *do*, which is
+    // the opposite of what the player is doing now.
+    let names = [
+        icons::MEDIA_PREVIOUS,
+        if now.playing {
+            icons::MEDIA_PAUSE
+        } else {
+            icons::MEDIA_PLAY
+        },
+        icons::MEDIA_NEXT,
+    ];
+    for (index, rect) in rects.iter().enumerate() {
+        let [x, y, w, h] = *rect;
+        let glyph = h * GUIDE_TRANSPORT_GLYPH;
+        let Some(name) = own_mark(Some(names[index]), slots) else {
+            continue;
+        };
+        let Some(slot) = slots.glyph(name) else {
+            continue;
+        };
+        quads.push(shaded(
+            Quad {
+                x: x + (w - glyph) * 0.5,
+                y: y + (h - glyph) * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                // White, like every other mark this shell draws, on the
+                // ladder the tiles' glyphs are lit on: the button under the
+                // selection is the brightest thing in the card, one that can
+                // merely be pressed is next, and one nothing can be done with
+                // is a long way behind both.
+                color: {
+                    let chosen = focused && (at - index as f32).abs() < 0.5;
+                    let lit = match (live[index], chosen) {
+                        (false, _) => 0.30,
+                        (_, true) => 1.0,
+                        _ => 0.86,
+                    };
+                    [1.0, 1.0, 1.0, alpha * lit]
+                },
+                ..Quad::default()
+            },
+            Some(name),
+        ));
+    }
     quads
 }
 
@@ -8514,12 +9522,12 @@ mod tests {
     }
 
     /// A library on the bar, in the column of its own the shell hangs it in.
-    fn library(games: &[(u32, &str)]) -> Xmb {
+    fn library(games: &[(u32, &str)]) -> Lattice {
         shelved_games(games.iter().map(|(id, name)| game(*id, name)).collect())
     }
 
     /// The same, when the test cares which of them are on the disk.
-    fn part_owned(games: &[(u32, &str, bool)]) -> Xmb {
+    fn part_owned(games: &[(u32, &str, bool)]) -> Lattice {
         shelved_games(
             games
                 .iter()
@@ -8528,8 +9536,8 @@ mod tests {
         )
     }
 
-    fn shelved_games(entries: Vec<Entry>) -> Xmb {
-        Xmb::new(vec![Category {
+    fn shelved_games(entries: Vec<Entry>) -> Lattice {
+        Lattice::new(vec![Category {
             id: "graphics",
             title: "Graphics",
             icon: "g",
@@ -8553,6 +9561,7 @@ mod tests {
             entries,
             place: None,
             chosen: false,
+            over_the_list: false,
         })
     }
 
@@ -8594,13 +9603,13 @@ mod tests {
     }
 
     /// Lay a bar out for a display that is taking input.
-    fn focused(xmb: &Xmb, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
-        let cursor = Cursor::new(xmb.categories.len());
-        build_with(xmb, &cursor, width, height, true, slots)
+    fn focused(lattice: &Lattice, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
+        let cursor = Cursor::new(lattice.categories.len());
+        build_with(lattice, &cursor, width, height, true, slots)
     }
 
     fn build_with(
-        xmb: &Xmb,
+        lattice: &Lattice,
         cursor: &Cursor,
         width: f32,
         height: f32,
@@ -8608,7 +9617,7 @@ mod tests {
         slots: &impl SlotLookup,
     ) -> Scene {
         build(
-            xmb,
+            lattice,
             cursor,
             width,
             height,
@@ -8616,7 +9625,7 @@ mod tests {
             Corner::default(),
             0.0,
             slots,
-            false,
+            Typing::Nothing,
         )
     }
 
@@ -8726,7 +9735,7 @@ mod tests {
             );
             // And on the clock's line: the middle of the mark against the
             // middle of the digits, not the middle of the line box they sit in.
-            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * CORNER_MARK_LINE;
+            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * MARK_LINE;
             assert!(
                 ((mark.y + mark.h * 0.5) - middle).abs() < 0.5,
                 "{width}x{height}: the mark's middle is at {}, the digits' at {middle}",
@@ -8855,10 +9864,10 @@ mod tests {
             }
         }
 
-        let xmb = corner_xmb();
-        let cursor = Cursor::new(xmb.categories.len());
+        let lattice = corner_lattice();
+        let cursor = Cursor::new(lattice.categories.len());
         let scene = build(
-            &xmb,
+            &lattice,
             &cursor,
             1920.0,
             1080.0,
@@ -8870,7 +9879,7 @@ mod tests {
             },
             0.0,
             &NoColon,
-            false,
+            Typing::Nothing,
         );
         assert!(
             letter_quads(&scene).is_empty(),
@@ -8967,7 +9976,7 @@ mod tests {
                 mark.x + mark.w,
             );
             // And on the clock's line, with the fan on the other side of it.
-            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * CORNER_MARK_LINE;
+            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * MARK_LINE;
             assert!(
                 ((mark.y + mark.h * 0.5) - middle).abs() < 0.5,
                 "{width}x{height}: the battery's middle is at {}, the digits' at {middle}",
@@ -8991,7 +10000,7 @@ mod tests {
                     .fold(f32::MIN, f32::max)
             };
             let stepped = last(&corner(None)) - last(&scene);
-            let asked = CORNER_BATTERY * scale + CORNER_MARK_GAP * scale;
+            let asked = BATTERY_MARK * scale + CORNER_MARK_GAP * scale;
             assert!(
                 (stepped - asked).abs() < 0.5,
                 "{width}x{height}: the time stepped {stepped} aside, not {asked}",
@@ -9228,8 +10237,8 @@ mod tests {
 
     /// One column with one row in it, which is all the corner's tests need
     /// behind them.
-    fn corner_xmb() -> Xmb {
-        Xmb::new(vec![Category {
+    fn corner_lattice() -> Lattice {
+        Lattice::new(vec![Category {
             id: "dev",
             title: "Development",
             icon: "dev",
@@ -9238,10 +10247,18 @@ mod tests {
     }
 
     fn corner_scene(corner: Corner<'_>, width: f32, height: f32) -> Scene {
-        let xmb = corner_xmb();
-        let cursor = Cursor::new(xmb.categories.len());
+        let lattice = corner_lattice();
+        let cursor = Cursor::new(lattice.categories.len());
         build(
-            &xmb, &cursor, width, height, true, corner, 0.0, &Named, false,
+            &lattice,
+            &cursor,
+            width,
+            height,
+            true,
+            corner,
+            0.0,
+            &Named,
+            Typing::Nothing,
         )
     }
 
@@ -9250,7 +10267,7 @@ mod tests {
     /// on, and a label measured from the icon has its head inside the glass.
     #[test]
     fn a_categorys_label_clears_the_button_it_names() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "dev",
             title: "Development",
             icon: "dev",
@@ -9258,7 +10275,7 @@ mod tests {
         }]);
 
         for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
-            let scene = focused(&xmb, width, height, &AllSlots);
+            let scene = focused(&lattice, width, height, &AllSlots);
             let cross_y = height * BAR_CROSS_Y;
 
             // The button: the largest circle centred on the category row.
@@ -9308,7 +10325,7 @@ mod tests {
     /// the fit has to hold for the square, not for the artwork inside it.
     #[test]
     fn a_focused_items_icon_stays_inside_the_disc_it_stands_on() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
@@ -9316,7 +10333,7 @@ mod tests {
         }]);
 
         for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
-            let scene = focused(&xmb, width, height, &AllSlots);
+            let scene = focused(&lattice, width, height, &AllSlots);
             let disc = launch_origin(width, height);
             let centre = [disc[0] + disc[2] * 0.5, disc[1] + disc[3] * 0.5];
             let icon = scene
@@ -9345,13 +10362,13 @@ mod tests {
     #[test]
     fn a_launch_opens_out_of_the_tile_it_was_chosen_from() {
         for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
-            let xmb = Xmb::new(vec![Category {
+            let lattice = Lattice::new(vec![Category {
                 id: "a",
                 title: "A",
                 icon: "a",
                 entries: vec![app("first"), app("second")],
             }]);
-            let scene = focused(&xmb, width, height, &AllSlots);
+            let scene = focused(&lattice, width, height, &AllSlots);
             let tile = launch_origin(width, height);
 
             let disc = scene.quads.iter().find(|quad| {
@@ -9380,8 +10397,8 @@ mod tests {
     #[test]
     fn a_game_opens_out_of_the_cover_it_was_chosen_from() {
         for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
-            let xmb = library(&[(504230, "Celeste"), (367520, "Hollow Knight")]);
-            let scene = opened(&xmb, width, height, &Covers);
+            let lattice = library(&[(504230, "Celeste"), (367520, "Hollow Knight")]);
+            let scene = opened(&lattice, width, height, &Covers);
             let tile = cover_origin(width, height);
 
             // The chosen game's own cover, which is the tallest picture drawn:
@@ -9820,8 +10837,8 @@ mod tests {
 
     #[test]
     fn empty_model_still_renders_a_message() {
-        let xmb = Xmb::new(Vec::new());
-        let scene = focused(&xmb, 1920.0, 1080.0, &NoSlots);
+        let lattice = Lattice::new(Vec::new());
+        let scene = focused(&lattice, 1920.0, 1080.0, &NoSlots);
         assert!(scene.quads.is_empty());
         assert_eq!(scene.texts.len(), 1);
     }
@@ -9831,15 +10848,15 @@ mod tests {
     /// applications on it is exactly the one whose settings are wanted.
     #[test]
     fn a_catalogue_with_nothing_to_launch_still_draws_the_shells_own_column() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "settings",
             title: "Settings",
             icon: "settings",
             entries: vec![folder("Appearance", vec![choice("Purple", true)])],
         }]);
-        assert!(xmb.is_empty(), "nothing here starts a process");
+        assert!(lattice.is_empty(), "nothing here starts a process");
 
-        let scene = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let scene = focused(&lattice, 1920.0, 1080.0, &AllSlots);
         assert!(scene.texts.iter().any(|text| text.content == "Appearance"));
         assert!(scene.texts.iter().any(|text| text.content == "Settings"));
 
@@ -9854,8 +10871,8 @@ mod tests {
 
     /// Two categories with rows in them, for the pointing tests: the shape of
     /// the cross needs an arm in each direction to be aimed at.
-    fn crossed() -> Xmb {
-        Xmb::new(vec![
+    fn crossed() -> Lattice {
+        Lattice::new(vec![
             Category {
                 id: "play",
                 title: "Play",
@@ -9877,10 +10894,10 @@ mod tests {
     /// was aimed at.
     #[test]
     fn the_row_under_the_pointer_is_the_row_drawn_there() {
-        let xmb = crossed();
+        let lattice = crossed();
         let (width, height) = (1920.0, 1080.0);
-        let cursor = Cursor::new(xmb.categories.len());
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let cursor = Cursor::new(lattice.categories.len());
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         // The icons of the open column, top to bottom. Nothing is scrolled, so
         // they are its rows in order — the selection is the first of them.
@@ -9897,7 +10914,7 @@ mod tests {
 
         for (index, [x, y]) in rows.iter().enumerate() {
             assert_eq!(
-                bar_hit(&xmb, &cursor, *x, *y, width, height),
+                bar_hit(&lattice, &cursor, *x, *y, width, height),
                 row_hit(index),
                 "the icon drawn at ({x}, {y}) is row {index}"
             );
@@ -9907,7 +10924,14 @@ mod tests {
         // where the launch splash grows out of.
         let [ox, oy, ow, oh] = launch_origin(width, height);
         assert_eq!(
-            bar_hit(&xmb, &cursor, ox + ow * 0.5, oy + oh * 0.5, width, height),
+            bar_hit(
+                &lattice,
+                &cursor,
+                ox + ow * 0.5,
+                oy + oh * 0.5,
+                width,
+                height
+            ),
             row_hit(0)
         );
     }
@@ -9917,25 +10941,25 @@ mod tests {
     /// that neither reaches the other.
     #[test]
     fn the_category_row_takes_the_line_it_is_drawn_on() {
-        let xmb = crossed();
+        let lattice = crossed();
         let (width, height) = (1920.0, 1080.0);
-        let cursor = Cursor::new(xmb.categories.len());
+        let cursor = Cursor::new(lattice.categories.len());
         let (cross_x, cross_y) = (width * BAR_CROSS_X, height * BAR_CROSS_Y);
         let spacing = CATEGORY_SPACING * guide_scale(height);
 
         assert_eq!(
-            bar_hit(&xmb, &cursor, cross_x, cross_y, width, height),
+            bar_hit(&lattice, &cursor, cross_x, cross_y, width, height),
             Some(BarSpot::Category(0))
         );
         assert_eq!(
-            bar_hit(&xmb, &cursor, cross_x + spacing, cross_y, width, height),
+            bar_hit(&lattice, &cursor, cross_x + spacing, cross_y, width, height),
             Some(BarSpot::Category(1)),
             "the next button along the row"
         );
         // Past the last category there is no button, and nothing invented.
         assert_eq!(
             bar_hit(
-                &xmb,
+                &lattice,
                 &cursor,
                 cross_x + spacing * 3.0,
                 cross_y,
@@ -9951,24 +10975,24 @@ mod tests {
     /// it is, because it is the only row of that column still drawn.
     #[test]
     fn pointing_at_the_trail_is_asking_to_step_back_out() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
-        let cursor = stepped(&xmb);
+        let cursor = stepped(&lattice);
 
         // The trail's row and the open column's row sit on the same line; the
         // trail is the one further left.
         let icons = trail_icons(
-            &build_with(&xmb, &cursor, width, height, true, &AllSlots),
+            &build_with(&lattice, &cursor, width, height, true, &AllSlots),
             height,
         );
         let line = launch_origin(width, height);
         let middle = line[1] + line[3] * 0.5;
         assert_eq!(
-            bar_hit(&xmb, &cursor, icons[0][0], middle, width, height),
+            bar_hit(&lattice, &cursor, icons[0][0], middle, width, height),
             Some(BarSpot::Trail(1))
         );
         assert_eq!(
-            bar_hit(&xmb, &cursor, icons[1][0], middle, width, height),
+            bar_hit(&lattice, &cursor, icons[1][0], middle, width, height),
             row_hit(0),
             "and the column in front of it is still being browsed"
         );
@@ -9978,7 +11002,7 @@ mod tests {
         let category_x = bar_category_x(0.0, cursor.depth_position(), width, height);
         assert_eq!(
             bar_hit(
-                &xmb,
+                &lattice,
                 &cursor,
                 category_x,
                 height * BAR_CROSS_Y,
@@ -9993,8 +11017,8 @@ mod tests {
     /// levels down whose innermost column is a list of values. Every column
     /// along it has a second row, so a test can tell a column that is keeping
     /// only the row it was opened from apart from one that has nothing else.
-    fn nested() -> Xmb {
-        Xmb::new(vec![Category {
+    fn nested() -> Lattice {
+        Lattice::new(vec![Category {
             id: "settings",
             title: "Settings",
             icon: "settings",
@@ -10020,18 +11044,18 @@ mod tests {
     /// Stand the cursor one subcategory in, settled: the whole shape of a path
     /// is on screen there — the category, the row it was opened from, and the
     /// column that opened.
-    fn stepped(xmb: &Xmb) -> Cursor {
+    fn stepped(lattice: &Lattice) -> Cursor {
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, xmb);
-        assert!(cursor.enter(xmb));
+        cursor.navigate(Action::Down, lattice);
+        assert!(cursor.enter(lattice));
         settle(&mut cursor);
         cursor
     }
 
     /// And at the end of the path, settled.
-    fn walked(xmb: &Xmb) -> Cursor {
-        let mut cursor = stepped(xmb);
-        assert!(cursor.navigate(Action::Right, xmb));
+    fn walked(lattice: &Lattice) -> Cursor {
+        let mut cursor = stepped(lattice);
+        assert!(cursor.navigate(Action::Right, lattice));
         settle(&mut cursor);
         cursor
     }
@@ -10056,10 +11080,10 @@ mod tests {
     /// next to the column it opened.
     #[test]
     fn a_path_reads_left_to_right_under_the_category_it_hangs_off() {
-        let xmb = nested();
-        let cursor = stepped(&xmb);
+        let lattice = nested();
+        let cursor = stepped(&lattice);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         let icons = trail_icons(&scene, height);
         assert_eq!(icons.len(), 2, "the open column, and the one behind it");
@@ -10112,8 +11136,8 @@ mod tests {
     /// missing icon.
     #[test]
     fn a_row_at_the_edge_keeps_its_name_and_its_name_keeps_it() {
-        let xmb = nested();
-        let cursor = stepped(&xmb);
+        let lattice = nested();
+        let cursor = stepped(&lattice);
 
         for (width, height) in [
             (960.0, 600.0),   // 16:10, and small
@@ -10122,7 +11146,7 @@ mod tests {
             (1920.0, 1080.0), // the reference
             (2560.0, 1080.0), // wider than the step was measured for
         ] {
-            let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
             let category = scene
                 .quads
                 .iter()
@@ -10165,12 +11189,12 @@ mod tests {
     /// instead of the near end running off the other.
     #[test]
     fn a_column_takes_the_place_of_the_one_it_was_opened_from() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
-        let mut cursor = stepped(&xmb);
+        let mut cursor = stepped(&lattice);
 
         let places = |cursor: &Cursor| {
-            let scene = build_with(&xmb, cursor, width, height, true, &AllSlots);
+            let scene = build_with(&lattice, cursor, width, height, true, &AllSlots);
             trail_icons(&scene, height)
                 .iter()
                 .map(|icon| icon[0])
@@ -10179,7 +11203,7 @@ mod tests {
         let before = places(&cursor);
         assert_eq!(before.len(), 2);
 
-        assert!(cursor.navigate(Action::Right, &xmb));
+        assert!(cursor.navigate(Action::Right, &lattice));
         settle(&mut cursor);
         let after = places(&cursor);
 
@@ -10197,8 +11221,15 @@ mod tests {
     /// of choices beside the real one.
     #[test]
     fn a_column_behind_the_open_one_keeps_only_its_own_row() {
-        let xmb = nested();
-        let scene = build_with(&xmb, &stepped(&xmb), 1920.0, 1080.0, true, &AllSlots);
+        let lattice = nested();
+        let scene = build_with(
+            &lattice,
+            &stepped(&lattice),
+            1920.0,
+            1080.0,
+            true,
+            &AllSlots,
+        );
 
         let shown = |scene: &Scene, name: &str| scene.texts.iter().any(|text| text.content == name);
         assert!(shown(&scene, "Appearance"), "the row it was opened from");
@@ -10208,7 +11239,7 @@ mod tests {
 
         // A step further in and the same is true one column along, while the
         // column that has now fallen two back is off the screen entirely.
-        let scene = build_with(&xmb, &walked(&xmb), 1920.0, 1080.0, true, &AllSlots);
+        let scene = build_with(&lattice, &walked(&lattice), 1920.0, 1080.0, true, &AllSlots);
         assert!(shown(&scene, "Accent color"), "the row it was opened from");
         assert!(
             !shown(&scene, "Wallpaper"),
@@ -10229,13 +11260,13 @@ mod tests {
     /// cannot be read, which is a breadcrumb for nothing.
     #[test]
     fn a_trail_label_has_room_to_be_read_on_any_display() {
-        let xmb = nested();
+        let lattice = nested();
         // One step in and two: the row standing behind the open column is a
         // different one each time, and both have to be readable where they
         // stand.
         let paths = [
-            (stepped(&xmb), "Appearance"),
-            (walked(&xmb), "Accent color"),
+            (stepped(&lattice), "Appearance"),
+            (walked(&lattice), "Accent color"),
         ];
 
         for (width, height) in [
@@ -10246,7 +11277,7 @@ mod tests {
             (3840.0, 2160.0),
         ] {
             for (cursor, name) in &paths {
-                let scene = build_with(&xmb, cursor, width, height, true, &AllSlots);
+                let scene = build_with(&lattice, cursor, width, height, true, &AllSlots);
                 let label = scene
                     .texts
                     .iter()
@@ -10269,9 +11300,9 @@ mod tests {
     /// be three answers to one question.
     #[test]
     fn only_the_open_column_is_lit() {
-        let xmb = nested();
-        let cursor = walked(&xmb);
-        let scene = build_with(&xmb, &cursor, 1920.0, 1080.0, true, &AllSlots);
+        let lattice = nested();
+        let cursor = walked(&lattice);
+        let scene = build_with(&lattice, &cursor, 1920.0, 1080.0, true, &AllSlots);
 
         let glows: Vec<&Quad> = scene
             .quads
@@ -10298,14 +11329,14 @@ mod tests {
     /// through, and not on the frame it arrives.
     #[test]
     fn stepping_into_a_subcategory_never_jumps() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         settle(&mut cursor);
 
         let head = |cursor: &Cursor| {
-            let scene = build_with(&xmb, cursor, width, height, true, &AllSlots);
+            let scene = build_with(&lattice, cursor, width, height, true, &AllSlots);
             // Where the row being opened from stands, and how big it is: the
             // trail's head is on screen for the whole move, so it is the one
             // mark that can be followed across the handover.
@@ -10314,7 +11345,7 @@ mod tests {
 
         let start = head(&cursor);
         assert!((start[0] - width * BAR_CROSS_X).abs() < 0.5);
-        cursor.enter(&xmb);
+        cursor.enter(&lattice);
         assert_eq!(
             head(&cursor)[0],
             start[0],
@@ -10357,9 +11388,9 @@ mod tests {
     /// shrank under a label that did not has come away from its own name.
     #[test]
     fn the_trail_falls_away_a_step_at_a_time() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &stepped(&xmb), width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &stepped(&lattice), width, height, true, &AllSlots);
 
         // Three planes, front to back: the open column, the row it was opened
         // from, and the category row behind that.
@@ -10408,7 +11439,7 @@ mod tests {
 
         // A step further in does not push the trail further back: what is one
         // column behind is always one step away, however long the path is.
-        let deeper = build_with(&xmb, &walked(&xmb), width, height, true, &AllSlots);
+        let deeper = build_with(&lattice, &walked(&lattice), width, height, true, &AllSlots);
         let deeper_icons = trail_icons(&deeper, height);
         assert!((deeper_icons[0][1] - behind[1]).abs() < 0.5);
         assert!((deeper_icons[0][2] - behind[2]).abs() < 0.01);
@@ -10419,13 +11450,13 @@ mod tests {
     /// answering a question nobody had asked.
     #[test]
     fn the_top_of_a_column_stands_at_the_front() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         settle(&mut cursor);
 
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
         let category = scene
             .quads
             .iter()
@@ -10446,14 +11477,14 @@ mod tests {
     /// The recession arrives over the move rather than on the frame it starts.
     #[test]
     fn falling_back_is_something_that_happens_over_the_step() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         settle(&mut cursor);
 
         let category_size = |cursor: &Cursor| {
-            build_with(&xmb, cursor, width, height, true, &AllSlots)
+            build_with(&lattice, cursor, width, height, true, &AllSlots)
                 .quads
                 .iter()
                 .filter(|quad| is_icon(quad))
@@ -10463,7 +11494,7 @@ mod tests {
         };
 
         let front = category_size(&cursor);
-        cursor.enter(&xmb);
+        cursor.enter(&lattice);
         assert_eq!(category_size(&cursor), front, "not on the press itself");
 
         let mut previous = front;
@@ -10486,15 +11517,15 @@ mod tests {
     /// the right of where it will stop rather than fading up in place.
     #[test]
     fn a_column_opened_below_the_first_still_arrives_from_somewhere() {
-        let xmb = nested();
+        let lattice = nested();
         let (width, height) = (1920.0, 1080.0);
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
-        cursor.enter(&xmb);
+        cursor.navigate(Action::Down, &lattice);
+        cursor.enter(&lattice);
         settle(&mut cursor);
 
         let swatch_x = |cursor: &Cursor| {
-            let scene = build_with(&xmb, cursor, width, height, true, &Named);
+            let scene = build_with(&lattice, cursor, width, height, true, &Named);
             scene
                 .quads
                 .iter()
@@ -10503,7 +11534,7 @@ mod tests {
         };
         assert_eq!(swatch_x(&cursor), None, "the values column is not open yet");
 
-        cursor.navigate(Action::Right, &xmb);
+        cursor.navigate(Action::Right, &lattice);
         let mut travelled: Vec<f32> = Vec::new();
         while cursor.animate(1.0 / 60.0) {
             if let Some(x) = swatch_x(&cursor) {
@@ -10527,8 +11558,8 @@ mod tests {
     /// What the layout gives a named row, or nothing where it has faded out
     /// altogether. Names rather than icons because a name is the half of a row
     /// that lands on the column beside it.
-    fn row_ink(xmb: &Xmb, cursor: &Cursor, name: &str) -> Option<f32> {
-        build_with(xmb, cursor, 1920.0, 1080.0, true, &Named)
+    fn row_ink(lattice: &Lattice, cursor: &Cursor, name: &str) -> Option<f32> {
+        build_with(lattice, cursor, 1920.0, 1080.0, true, &Named)
             .texts
             .iter()
             .find(|text| text.content == name)
@@ -10556,22 +11587,26 @@ mod tests {
     /// another with one of them on its way out — so a step in and a step out
     /// are measured the same way and held to the same thing.
     fn handover(
-        xmb: &Xmb,
+        lattice: &Lattice,
         cursor: &mut Cursor,
         step: impl FnOnce(&mut Cursor) -> bool,
         going: &str,
         coming: &str,
     ) -> Handover {
-        let mut inks = vec![row_ink(xmb, cursor, going).expect("the row the step takes away")];
-        assert_eq!(row_ink(xmb, cursor, coming), None, "and the one it brings");
+        let mut inks = vec![row_ink(lattice, cursor, going).expect("the row the step takes away")];
+        assert_eq!(
+            row_ink(lattice, cursor, coming),
+            None,
+            "and the one it brings"
+        );
 
         assert!(step(cursor), "the step should move the bar");
         let (mut frames, mut arriving) = (0, None);
         while cursor.animate(1.0 / 60.0) {
             frames += 1;
-            match row_ink(xmb, cursor, going) {
+            match row_ink(lattice, cursor, going) {
                 Some(alpha) => inks.push(alpha),
-                None if arriving.is_none() => arriving = row_ink(xmb, cursor, coming),
+                None if arriving.is_none() => arriving = row_ink(lattice, cursor, coming),
                 None => {}
             }
         }
@@ -10579,7 +11614,7 @@ mod tests {
         Handover {
             going: inks,
             coming: arriving.expect("the row taking its place is on screen by then"),
-            settled: row_ink(xmb, cursor, coming).expect("and it is there at the end"),
+            settled: row_ink(lattice, cursor, coming).expect("and it is there at the end"),
             frames,
         }
     }
@@ -10628,18 +11663,18 @@ mod tests {
     /// across the words.
     #[test]
     fn a_column_opening_clears_the_one_it_stands_over() {
-        let xmb = nested();
+        let lattice = nested();
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         settle(&mut cursor);
 
         // "plain" is the row this column is losing — the cursor is on
         // "Appearance", so that one stays as the trail and "plain" does not.
         // "Wallpaper" is a row of the column about to open over it.
         let step = handover(
-            &xmb,
+            &lattice,
             &mut cursor,
-            |cursor| cursor.enter(&xmb),
+            |cursor| cursor.enter(&lattice),
             "plain",
             "Wallpaper",
         );
@@ -10655,16 +11690,16 @@ mod tests {
     /// journey back, printed over the names of the column underneath them.
     #[test]
     fn a_column_stepped_out_of_is_gone_before_the_bar_has_finished_leaving_it() {
-        let xmb = nested();
-        let mut cursor = walked(&xmb);
+        let lattice = nested();
+        let mut cursor = walked(&lattice);
 
         // Two deep: "Purple" is a row of the column standing open, and
         // "Wallpaper" a row of the one it was opened out of — which is the
         // column being come back to, and is not on screen until that starts.
         let step = handover(
-            &xmb,
+            &lattice,
             &mut cursor,
-            |cursor| cursor.navigate(Action::Left, &xmb),
+            |cursor| cursor.navigate(Action::Left, &lattice),
             "Purple",
             "Wallpaper",
         );
@@ -10680,7 +11715,7 @@ mod tests {
     /// button that has been pressed rather than as a control.
     #[test]
     fn a_bar_stands_on_its_own_glass_rather_than_on_a_disc() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "settings",
             title: "Settings",
             icon: "settings",
@@ -10688,9 +11723,9 @@ mod tests {
         }]);
         // One step in is the whole path: the bar is the only row of the column
         // it opens onto, and there is nowhere further to go.
-        let cursor = stepped(&xmb);
+        let cursor = stepped(&lattice);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &Named);
+        let scene = build_with(&lattice, &cursor, width, height, true, &Named);
 
         // The groove is the one tall narrow pane the shell draws, and the rest
         // of the bar is what stands in the same channel.
@@ -10762,15 +11797,15 @@ mod tests {
     #[test]
     fn a_bar_is_set_by_where_along_its_track_the_press_landed() {
         let fill = 0.4;
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "settings",
             title: "Settings",
             icon: "settings",
             entries: vec![app("plain"), folder("Color temperature", vec![bar(fill)])],
         }]);
-        let cursor = stepped(&xmb);
+        let cursor = stepped(&lattice);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &Named);
+        let scene = build_with(&lattice, &cursor, width, height, true, &Named);
 
         // The groove and the handle as they were drawn, because what the hand
         // aims at is what the eye can see — the same reading of the scene the
@@ -10789,7 +11824,7 @@ mod tests {
             .find(|quad| (quad.x + quad.w / 2.0 - middle).abs() < 1.0)
             .expect("the handle on the end of the fill");
 
-        let pressed = |x: f32, y: f32| match bar_hit(&xmb, &cursor, x, y, width, height) {
+        let pressed = |x: f32, y: f32| match bar_hit(&lattice, &cursor, x, y, width, height) {
             Some(BarSpot::Item { row: 0, level }) => level,
             other => panic!("{other:?} at ({x}, {y})"),
         };
@@ -10833,10 +11868,10 @@ mod tests {
         // there is no value to be asking for, and it does not reach across the
         // column at the height it happens to be drawn at.
         for at in [groove.y - 2.0, groove.y + groove.h + 2.0] {
-            assert_eq!(bar_hit(&xmb, &cursor, middle, at, width, height), None);
+            assert_eq!(bar_hit(&lattice, &cursor, middle, at, width, height), None);
         }
         assert_eq!(
-            bar_hit(&xmb, &cursor, beside, groove.y + 1.0, width, height),
+            bar_hit(&lattice, &cursor, beside, groove.y + 1.0, width, height),
             None,
             "the head of the track is not the whole of that line"
         );
@@ -10846,9 +11881,9 @@ mod tests {
     /// itself: the swatch is the answer, and the word beside it is its name.
     #[test]
     fn the_value_in_force_is_marked_and_drawn_in_its_own_colour() {
-        let xmb = nested();
-        let cursor = walked(&xmb);
-        let scene = build_with(&xmb, &cursor, 1920.0, 1080.0, true, &Named);
+        let lattice = nested();
+        let cursor = walked(&lattice);
+        let scene = build_with(&lattice, &cursor, 1920.0, 1080.0, true, &Named);
 
         let purple = crate::theme::Color(0x8B5CF6).rgb();
         let swatches: Vec<&Quad> = scene
@@ -10889,10 +11924,10 @@ mod tests {
     /// chosen from, which is not where the tile is at the top level.
     #[test]
     fn a_launch_from_inside_a_path_opens_from_the_right_tile() {
-        let xmb = nested();
-        let cursor = walked(&xmb);
+        let lattice = nested();
+        let cursor = walked(&lattice);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         let tile = launch_origin(width, height);
         let centre = [tile[0] + tile[2] * 0.5, tile[1] + tile[3] * 0.5];
@@ -10913,8 +11948,8 @@ mod tests {
     /// and never the outermost. Which is what lets it use the band the category
     /// row would otherwise be holding open, so a fixture that stood one at the
     /// top level would be testing a layout the shell never draws.
-    fn album(paths: &[&str]) -> Xmb {
-        Xmb::new(vec![Category {
+    fn album(paths: &[&str]) -> Lattice {
+        Lattice::new(vec![Category {
             id: "graphics",
             title: "Graphics",
             icon: "g",
@@ -10926,23 +11961,23 @@ mod tests {
     }
 
     /// That album, open, with the cursor settled on its first picture.
-    fn opened(xmb: &Xmb, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(xmb));
+    fn opened(lattice: &Lattice, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(lattice));
         settle(&mut cursor);
-        build_with(xmb, &cursor, width, height, true, slots)
+        build_with(lattice, &cursor, width, height, true, slots)
     }
 
     /// A shelf as the worker hands it over: the field, whatever the search has
     /// left, and the row that puts the rest back.
-    fn shelf(kind: crate::media::Kind, query: &str, paths: &[&str], found: usize) -> Xmb {
+    fn shelf(kind: crate::media::Kind, query: &str, paths: &[&str], found: usize) -> Lattice {
         let listing = paths
             .iter()
             .map(|path| {
                 std::sync::Arc::new(crate::media::File::at(Path::new(path)).expect("a file"))
             })
             .collect();
-        Xmb::new(vec![Category {
+        Lattice::new(vec![Category {
             id: "graphics",
             title: "Graphics",
             icon: "g",
@@ -10958,20 +11993,20 @@ mod tests {
     /// typed, with the caret on the end of it.
     #[test]
     fn only_the_field_being_typed_into_carries_the_caret() {
-        let xmb = shelf(
+        let lattice = shelf(
             crate::media::Kind::Image,
             "sun",
             &["/home/x/Pictures/sunset.jpg"],
             4,
         );
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb));
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice));
         // Stepping in lands on the pictures; the field is the row above them.
-        while cursor.navigate(Action::Up, &xmb) {}
+        while cursor.navigate(Action::Up, &lattice) {}
         settle(&mut cursor);
-        let says = |typing: bool| {
+        let says = |typing: Typing<'_>| {
             build(
-                &xmb,
+                &lattice,
                 &cursor,
                 1920.0,
                 1080.0,
@@ -10988,14 +12023,14 @@ mod tests {
         };
 
         // Nobody typing: the row reads as what the column is filtered by.
-        let quiet = says(false);
+        let quiet = says(Typing::Nothing);
         assert!(quiet.iter().any(|said| said == "sun"), "{quiet:?}");
         assert!(!quiet.iter().any(|said| said == "sun|"), "{quiet:?}");
 
         // Typing: the caret is on the end of the query, and on nothing else.
         // The row below offers to clear the search and is not a field, so a
         // caret on it would be a second place the letters might be going.
-        let typed = says(true);
+        let typed = says(Typing::Search);
         assert!(typed.iter().any(|said| said == "sun|"), "{typed:?}");
         assert!(typed.iter().any(|said| said == "Clear search"), "{typed:?}");
         assert!(
@@ -11010,18 +12045,18 @@ mod tests {
     /// that stands in for a field nobody is in.
     #[test]
     fn a_field_opened_on_nothing_holds_only_the_caret() {
-        let xmb = shelf(
+        let lattice = shelf(
             crate::media::Kind::Image,
             "",
             &["/home/x/Pictures/sunset.jpg"],
             1,
         );
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb));
-        while cursor.navigate(Action::Up, &xmb) {}
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice));
+        while cursor.navigate(Action::Up, &lattice) {}
         settle(&mut cursor);
         let said: Vec<String> = build(
-            &xmb,
+            &lattice,
             &cursor,
             1920.0,
             1080.0,
@@ -11029,7 +12064,7 @@ mod tests {
             Corner::default(),
             0.0,
             &AllSlots,
-            true,
+            Typing::Search,
         )
         .texts
         .into_iter()
@@ -11084,11 +12119,11 @@ mod tests {
     /// in the game's place, and the Steam mark that stood in for it goes.
     #[test]
     fn a_game_wears_its_cover_instead_of_the_steam_mark() {
-        let xmb = library(&[(2835570, "Buckshot Roulette"), (504230, "Celeste")]);
+        let lattice = library(&[(2835570, "Buckshot Roulette"), (504230, "Celeste")]);
         let marks = |scene: &Scene| scene.quads.iter().filter(|q| q.slot == 7).count();
 
-        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
-        let arrived = opened(&xmb, 1920.0, 1080.0, &Covers);
+        let waiting = opened(&lattice, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&lattice, 1920.0, 1080.0, &Covers);
         assert!(
             marks(&waiting) > 0,
             "the Steam mark stands in until there is a cover"
@@ -11145,8 +12180,8 @@ mod tests {
     /// a photograph the user owns is not a photograph they are missing.
     #[test]
     fn a_game_that_is_not_here_wears_a_colourless_cover() {
-        let xmb = part_owned(&[(1, "Here", true), (2, "Not here", false)]);
-        let scene = opened(&xmb, 1920.0, 1080.0, &Covers);
+        let lattice = part_owned(&[(1, "Here", true), (2, "Not here", false)]);
+        let scene = opened(&lattice, 1920.0, 1080.0, &Covers);
         let mut covers: Vec<&Quad> = scene
             .quads
             .iter()
@@ -11249,8 +12284,8 @@ mod tests {
     fn the_mount_is_the_same_width_all_the_way_round() {
         /// The glass left showing beside the chosen row's picture, and above
         /// it.
-        fn mount_of(xmb: &Xmb, slots: &impl SlotLookup) -> (f32, f32) {
-            let scene = opened(xmb, 1920.0, 1080.0, slots);
+        fn mount_of(lattice: &Lattice, slots: &impl SlotLookup) -> (f32, f32) {
+            let scene = opened(lattice, 1920.0, 1080.0, slots);
             let card = scene
                 .quads
                 .iter()
@@ -11288,8 +12323,8 @@ mod tests {
     /// drawn over it.
     #[test]
     fn a_picture_stands_on_its_card_at_its_own_shape() {
-        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg"]);
-        let wide = opened(&xmb, 1920.0, 1080.0, &Pictures(16.0 / 9.0));
+        let lattice = album(&["/home/x/a.jpg", "/home/x/b.jpg"]);
+        let wide = opened(&lattice, 1920.0, 1080.0, &Pictures(16.0 / 9.0));
         let scale = guide_scale(1080.0);
 
         let drawn: Vec<&Quad> = wide
@@ -11320,7 +12355,7 @@ mod tests {
 
         // A tall picture is fitted into the same card, so the row keeps its
         // height and the labels keep their column.
-        let tall = opened(&xmb, 1920.0, 1080.0, &Pictures(0.5));
+        let tall = opened(&lattice, 1920.0, 1080.0, &Pictures(0.5));
         let portrait = tall
             .quads
             .iter()
@@ -11340,15 +12375,15 @@ mod tests {
     /// for one thing.
     #[test]
     fn the_glyph_gives_way_to_the_picture() {
-        let xmb = album(&["/home/x/a.jpg"]);
+        let lattice = album(&["/home/x/a.jpg"]);
 
         // Slot 7 is every glyph these doubles hand out, the category button's
         // included, so what says the row's own glyph has gone is one fewer of
         // them rather than none.
         let glyphs = |scene: &Scene| scene.quads.iter().filter(|q| q.slot == 7).count();
 
-        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
-        let arrived = opened(&xmb, 1920.0, 1080.0, &Pictures(1.5));
+        let waiting = opened(&lattice, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&lattice, 1920.0, 1080.0, &Pictures(1.5));
         assert!(
             glyphs(&waiting) > 0,
             "the glyph stands in until there is a picture"
@@ -11366,7 +12401,7 @@ mod tests {
     /// as the workers finished.
     #[test]
     fn a_picture_arriving_moves_nothing() {
-        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
+        let lattice = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
         // Where each row's own name was drawn. The titles are one letter each,
         // so nothing else in the scene can be mistaken for one.
         let rows = |scene: &Scene| -> Vec<f32> {
@@ -11380,14 +12415,14 @@ mod tests {
             ys
         };
 
-        let waiting = opened(&xmb, 1920.0, 1080.0, &AllSlots);
-        let arrived = opened(&xmb, 1920.0, 1080.0, &Pictures(1.5));
+        let waiting = opened(&lattice, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&lattice, 1920.0, 1080.0, &Pictures(1.5));
         assert_eq!(rows(&waiting).len(), 3);
         assert_eq!(rows(&waiting), rows(&arrived));
 
         // And a column of pictures stands further apart than a column of
         // applications, which is what makes room for them.
-        let apps = Xmb::new(vec![Category {
+        let apps = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
@@ -11448,9 +12483,9 @@ mod tests {
     /// column is a different band from an icon column's.
     #[test]
     fn a_card_is_pointed_at_where_it_is_drawn() {
-        let xmb = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb));
+        let lattice = album(&["/home/x/a.jpg", "/home/x/b.jpg", "/home/x/c.jpg"]);
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice));
         settle(&mut cursor);
         let (width, height) = (1920.0, 1080.0);
 
@@ -11468,7 +12503,7 @@ mod tests {
         };
         for row in 0..3 {
             assert_eq!(
-                bar_hit(&xmb, &cursor, x, row_y(row), width, height),
+                bar_hit(&lattice, &cursor, x, row_y(row), width, height),
                 row_hit(row),
                 "row {row}"
             );
@@ -11484,7 +12519,7 @@ mod tests {
         while step <= bottom {
             assert!(
                 matches!(
-                    bar_hit(&xmb, &cursor, x, step, width, height),
+                    bar_hit(&lattice, &cursor, x, step, width, height),
                     Some(BarSpot::Item { .. })
                 ),
                 "nothing at {step}, between {top} and {bottom}"
@@ -11497,14 +12532,14 @@ mod tests {
     fn offscreen_rows_are_culled() {
         // A long list must not emit a quad per entry.
         let entries: Vec<Entry> = (0..500).map(|i| app(&format!("app{i}"))).collect();
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
             entries,
         }]);
 
-        let scene = focused(&xmb, 1920.0, 1080.0, &NoSlots);
+        let scene = focused(&lattice, 1920.0, 1080.0, &NoSlots);
         assert!(
             scene.quads.len() < 40,
             "expected culling, got {} quads",
@@ -11564,15 +12599,15 @@ mod tests {
     #[test]
     fn a_click_finds_a_row_far_down_a_long_list() {
         let paths: Vec<String> = (0..5_000).map(|i| format!("/home/x/{i:05}.jpg")).collect();
-        let xmb = album(&paths.iter().map(String::as_str).collect::<Vec<&str>>());
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb));
-        assert!(cursor.point_at_row(2_500, &xmb));
+        let lattice = album(&paths.iter().map(String::as_str).collect::<Vec<&str>>());
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.point_at_row(2_500, &lattice));
         settle(&mut cursor);
 
         let (width, height) = (1920.0, 1080.0);
         let x = bar_column_x(1.0, cursor.depth_position(), width, height);
-        let position = cursor.columns(&xmb)[1].position;
+        let position = cursor.columns(&lattice)[1].position;
         for row in 2_499..=2_501 {
             let y = bar_item_y(
                 row as f32 - position,
@@ -11582,7 +12617,7 @@ mod tests {
                 Some(Cards::of(CARD_ASPECT)),
             );
             assert_eq!(
-                bar_hit(&xmb, &cursor, x, y, width, height),
+                bar_hit(&lattice, &cursor, x, y, width, height),
                 row_hit(row),
                 "row {row}"
             );
@@ -11591,7 +12626,7 @@ mod tests {
 
     #[test]
     fn a_display_that_is_not_taking_input_is_dimmed_but_still_legible() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
@@ -11599,8 +12634,8 @@ mod tests {
         }]);
         let cursor = Cursor::new(1);
 
-        let live = build_with(&xmb, &cursor, 1920.0, 1080.0, true, &AllSlots);
-        let idle = build_with(&xmb, &cursor, 1920.0, 1080.0, false, &AllSlots);
+        let live = build_with(&lattice, &cursor, 1920.0, 1080.0, true, &AllSlots);
+        let idle = build_with(&lattice, &cursor, 1920.0, 1080.0, false, &AllSlots);
 
         let brightest = |scene: &Scene| {
             scene
@@ -11624,14 +12659,14 @@ mod tests {
     /// reserved for text that is no longer there.
     #[test]
     fn the_item_column_uses_the_space_below_the_old_footer() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
             entries: vec![app("first"), app("second"), app("third"), app("fourth")],
         }]);
 
-        let scene = focused(&xmb, 960.0, 600.0, &AllSlots);
+        let scene = focused(&lattice, 960.0, 600.0, &AllSlots);
         let fourth = scene
             .texts
             .iter()
@@ -11662,10 +12697,10 @@ mod tests {
             .collect();
         let expected = categories.len();
 
-        let xmb = Xmb::new(categories);
+        let lattice = Lattice::new(categories);
         // Wide enough that all eleven fit on the row, so anything missing was
         // faded away rather than legitimately culled off-screen.
-        let scene = focused(&xmb, 3840.0, 1080.0, &AllSlots);
+        let scene = focused(&lattice, 3840.0, 1080.0, &AllSlots);
 
         let row_y = 1080.0 * 0.30;
         // The selection bloom and the glass each category stands on straddle
@@ -11688,13 +12723,13 @@ mod tests {
 
     #[test]
     fn focused_entry_gets_a_glow_and_comment() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
             entries: vec![app("first"), app("second")],
         }]);
-        let scene = focused(&xmb, 1920.0, 1080.0, &NoSlots);
+        let scene = focused(&lattice, 1920.0, 1080.0, &NoSlots);
 
         // Selected item and selected category each breathe under a glow.
         assert_eq!(
@@ -11710,18 +12745,18 @@ mod tests {
     fn the_item_column_splits_around_the_category_row() {
         // The regression this guards against: item rows printing over the
         // category icons and label, which made both unreadable.
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Settings",
             icon: "a",
             entries: vec![app("first"), app("second"), app("third")],
         }]);
         let mut cursor = Cursor::new(1);
-        cursor.navigate(Action::Down, &xmb);
+        cursor.navigate(Action::Down, &lattice);
         settle(&mut cursor);
 
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         // The exclusion band the category row owns: its icons plus the label
         // beneath the selected one.
@@ -11764,7 +12799,7 @@ mod tests {
 
     #[test]
     fn the_selection_glow_breathes_over_time() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "A",
             icon: "a",
@@ -11774,7 +12809,7 @@ mod tests {
 
         let glow_alpha = |time: f32| {
             let scene = build(
-                &xmb,
+                &lattice,
                 &cursor,
                 1920.0,
                 1080.0,
@@ -11782,7 +12817,7 @@ mod tests {
                 Corner::default(),
                 time,
                 &AllSlots,
-                false,
+                Typing::Nothing,
             );
             scene
                 .quads
@@ -11879,6 +12914,8 @@ mod tests {
                 stick_pointer: false,
                 do_not_disturb: false,
                 unread: 0.0,
+                battery: None,
+                battery_percent: false,
                 app,
                 close_target,
                 screen,
@@ -11892,6 +12929,197 @@ mod tests {
                 power: if guide.power_open() { 1.0 } else { 0.0 },
                 time: 0.0,
                 slots,
+            },
+            1920.0,
+            1080.0,
+        )
+    }
+
+    /// The guide's header draws the battery under the day and hard against the
+    /// same edge, and nothing at all on a machine that has none.
+    ///
+    /// The right-hand column of a two-column header: the left says what the
+    /// session is doing, and this says what is true about the machine
+    /// underneath it.
+    #[test]
+    fn the_battery_stands_under_the_day_in_the_guides_header() {
+        let guide = Guide::default();
+        let batteries = [
+            icons::BATTERY_EMPTY,
+            icons::BATTERY_LOW,
+            icons::BATTERY_HALF,
+            icons::BATTERY_HIGH,
+            icons::BATTERY_FULL,
+            icons::BATTERY_CHARGING,
+        ]
+        .map(Named::slot_of);
+        let mark = |scene: &Scene| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| batteries.contains(&quad.slot))
+                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
+        };
+
+        let bare = guide_header(&guide, None, false);
+        assert_eq!(
+            mark(&bare),
+            None,
+            "a battery was drawn for a machine that has none",
+        );
+
+        let scene = guide_header(
+            &guide,
+            Some(crate::power::Charge {
+                percent: 72,
+                charging: false,
+            }),
+            false,
+        );
+        let drawn = scene
+            .quads
+            .iter()
+            .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_HIGH))
+            .expect("72 per cent is drawn three quarters full");
+        assert!(
+            drawn.glyph_material(),
+            "the battery is drawn as a picture: {drawn:?}",
+        );
+
+        // Against the same edge the day is aligned to: the right of the
+        // header's own text column.
+        let (width, height) = (1920.0, 1080.0);
+        let scale = guide_scale(height);
+        let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+        let padding = GUIDE_PADDING * scale;
+        let right = panel_x + padding * 0.8 + (panel_w - padding * 1.6);
+        assert!(
+            ((drawn.x + drawn.w) - right).abs() < 0.5,
+            "the battery ends at {}, not against the column's edge at {right}",
+            drawn.x + drawn.w,
+        );
+
+        // And on the line the application's name is on, centred on the letters
+        // rather than on the line box they hang in.
+        let name = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Nothing is running")
+            .expect("the second line is drawn");
+        let middle = name.y + name.size * MARK_LINE;
+        assert!(
+            ((drawn.y + drawn.h * 0.5) - middle).abs() < 0.5,
+            "the battery's middle is at {}, the line's at {middle}",
+            drawn.y + drawn.h * 0.5,
+        );
+    }
+
+    /// The charge is written to the *left* of the mark here, not over it as in
+    /// the start screen's corner — and in ordinary type, which is what
+    /// everything else in this panel that is words is drawn in.
+    ///
+    /// It also takes its room from the application's name, so a long title ends
+    /// in an ellipsis rather than running under the mark.
+    #[test]
+    fn the_charge_is_written_left_of_the_guides_battery() {
+        let guide = Guide::default();
+        let charge = crate::power::Charge {
+            percent: 96,
+            charging: false,
+        };
+        let figures = |scene: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == "96%")
+                .cloned()
+        };
+
+        let quiet = guide_header(&guide, Some(charge), false);
+        assert!(
+            figures(&quiet).is_none(),
+            "the charge was written out without being asked for",
+        );
+
+        let scene = guide_header(&guide, Some(charge), true);
+        let written = figures(&scene).expect("the charge is written out");
+        let mark = scene
+            .quads
+            .iter()
+            .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
+            .expect("96 per cent is drawn full");
+
+        // Right-aligned into the room left of the mark — which is how the
+        // layout places it without ever measuring how wide it came out.
+        assert_eq!(written.align, TextAlign::Right);
+        let scale = guide_scale(1080.0);
+        assert!(
+            ((written.x + written.max_width) - (mark.x - GUIDE_BATTERY_GAP * scale)).abs() < 0.5,
+            "the figures end at {}, not clear of the mark at {}",
+            written.x + written.max_width,
+            mark.x - GUIDE_BATTERY_GAP * scale,
+        );
+
+        // On the same line as the name beside it, and in the day's own ink.
+        let name = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Nothing is running")
+            .expect("the second line is drawn");
+        assert_eq!(written.y, name.y);
+        let day = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Tue 5 Aug")
+            .expect("the day is drawn");
+        assert_eq!(written.color, day.color, "one ink for the whole column");
+
+        // And the name gave up exactly the room the mark and its air took.
+        let bare = guide_header(&guide, None, false);
+        let bare_name = bare
+            .texts
+            .iter()
+            .find(|text| text.content == "Nothing is running")
+            .expect("the second line is drawn");
+        let given = bare_name.max_width - name.max_width;
+        let asked = BATTERY_MARK * scale + GUIDE_BATTERY_GAP * scale;
+        assert!(
+            (given - asked).abs() < 0.5,
+            "the name gave up {given}, not {asked}",
+        );
+    }
+
+    /// The guide's header, for a machine with this battery.
+    fn guide_header(
+        guide: &Guide,
+        battery: Option<crate::power::Charge>,
+        battery_percent: bool,
+    ) -> Scene {
+        build_guide(
+            GuideView {
+                guide,
+                clock: Some(Clock {
+                    time: "15:18",
+                    date: "Tue 5 Aug",
+                }),
+                volume: None,
+                brightness: None,
+                stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
+                battery,
+                battery_percent,
+                app: None,
+                close_target: None,
+                screen: None,
+                cards: &[],
+                highlight: None,
+                menu_highlight: None,
+                behind: 0.0,
+                card_age: guide.age(),
+                power: 0.0,
+                time: 0.0,
+                slots: &Named,
             },
             1920.0,
             1080.0,
@@ -11983,10 +13211,10 @@ mod tests {
 
         let items = guide.items(false);
         let power = items.len() - 1;
-        let [px, py, pw, ph] = menu_item_rect(&items, power, 1920.0, 1080.0);
+        let [px, py, pw, ph] = menu_item_rect(&items, power, 1920.0, 1080.0, 1.0);
         assert!((pw - ph).abs() < 1.0, "the power button should be square");
         assert!(py > 1080.0 * 0.8, "and sit at the foot of the sidebar");
-        let last_row = menu_item_rect(&items, power - 1, 1920.0, 1080.0);
+        let last_row = menu_item_rect(&items, power - 1, 1920.0, 1080.0, 1.0);
         assert!(py > last_row[1] + last_row[3] * 2.0, "well below the rows");
 
         // A square in a corner is only in the corner if both its gaps match.
@@ -12004,7 +13232,7 @@ mod tests {
             .iter()
             .position(|item| *item == Item::Resume)
             .expect("Resume is always present");
-        assert!((px - menu_item_rect(&items, resume, 1920.0, 1080.0)[0]).abs() < 0.5);
+        assert!((px - menu_item_rect(&items, resume, 1920.0, 1080.0, 1.0)[0]).abs() < 0.5);
 
         // The symbol comes out of the atlas now rather than being assembled
         // from quads, so what there is to check is that it lands square and
@@ -12084,6 +13312,8 @@ mod tests {
             stick_pointer: false,
             do_not_disturb: false,
             unread: 0.0,
+            battery: None,
+            battery_percent: false,
             app: None,
             close_target: None,
             screen: None,
@@ -12115,7 +13345,7 @@ mod tests {
             .iter()
             .position(|item| *item == Item::Volume)
             .expect("the volume bar is in the column");
-        let chip = menu_item_rect(&items, row, width, height);
+        let chip = menu_item_rect(&items, row, width, height, 1.0);
         let [track_x, _, track_w, _] = bar_track_line(chip, guide_scale(height));
 
         assert_eq!(bar_level_at(chip, height, track_x), Some(0.0));
@@ -12181,18 +13411,18 @@ mod tests {
                 Item::Brightness,
                 Item::Resume,
                 Item::Close,
-                Item::Dashboard,
+                Item::StartScreen,
                 Item::Power
             ]
         );
 
-        // Two rules: one under the tiles and bars, one above Dashboard.
-        let rules = menu_separator_rects(&items, 1920.0, 1080.0);
+        // Two rules: one under the tiles and bars, one above Start screen.
+        let rules = menu_separator_rects(&items, 1920.0, 1080.0, 1.0);
         assert_eq!(rules.len(), 2);
         let index_of = |wanted: Item| items.iter().position(|item| *item == wanted).unwrap();
-        let resume = menu_item_rect(&items, index_of(Item::Resume), 1920.0, 1080.0);
+        let resume = menu_item_rect(&items, index_of(Item::Resume), 1920.0, 1080.0, 1.0);
         assert!(rules[0][1] < resume[1], "the first rule is above Resume");
-        let brightness = menu_item_rect(&items, index_of(Item::Brightness), 1920.0, 1080.0);
+        let brightness = menu_item_rect(&items, index_of(Item::Brightness), 1920.0, 1080.0, 1.0);
         assert!(
             rules[0][1] > brightness[1] + brightness[3],
             "and below the bars"
@@ -12205,7 +13435,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(_, item)| item.is_tile())
-            .map(|(index, _)| menu_item_rect(&items, index, 1920.0, 1080.0))
+            .map(|(index, _)| menu_item_rect(&items, index, 1920.0, 1080.0, 1.0))
             .collect();
         for pair in tiles.windows(2) {
             assert_eq!(pair[0][1], pair[1][1], "tiles share a line");
@@ -12213,7 +13443,7 @@ mod tests {
         }
         let column: Vec<[f32; 4]> = (0..items.len() - 1)
             .filter(|index| !items[*index].is_tile() || *index == 0)
-            .map(|index| menu_item_rect(&items, index, 1920.0, 1080.0))
+            .map(|index| menu_item_rect(&items, index, 1920.0, 1080.0, 1.0))
             .collect();
         for pair in column.windows(2) {
             assert!(
@@ -12224,7 +13454,7 @@ mod tests {
             );
         }
         // And the power button is still in the corner, out of the stack.
-        let power = menu_item_rect(&items, items.len() - 1, 1920.0, 1080.0);
+        let power = menu_item_rect(&items, items.len() - 1, 1920.0, 1080.0, 1.0);
         assert_eq!(power, power_button_rect(1920.0, 1080.0));
 
         // A machine with neither bar has neither row, and Resume is back
@@ -12238,14 +13468,14 @@ mod tests {
                 Item::Notifications,
                 Item::Resume,
                 Item::Close,
-                Item::Dashboard,
+                Item::StartScreen,
                 Item::Power
             ]
         );
         let plain_items = plain.items(true);
         assert_eq!(
-            menu_item_rect(&plain_items, 0, 1920.0, 1080.0),
-            menu_item_rect(&items, 0, 1920.0, 1080.0),
+            menu_item_rect(&plain_items, 0, 1920.0, 1080.0, 1.0),
+            menu_item_rect(&items, 0, 1920.0, 1080.0, 1.0),
             "the tile line heads the column whichever rows follow it"
         );
         // Resume is a row lower there than the bar is here, by exactly the
@@ -12255,8 +13485,8 @@ mod tests {
             .iter()
             .position(|item| *item == Item::Resume)
             .unwrap();
-        let button = menu_item_rect(&plain_items, resume_row, 1920.0, 1080.0);
-        let bar = menu_item_rect(&items, index_of(Item::Volume), 1920.0, 1080.0);
+        let button = menu_item_rect(&plain_items, resume_row, 1920.0, 1080.0, 1.0);
+        let bar = menu_item_rect(&items, index_of(Item::Volume), 1920.0, 1080.0, 1.0);
         assert_eq!(button[0], bar[0], "and every row is inset the same");
         assert!(bar[3] < button[3], "a bar's row is shorter than a button's");
     }
@@ -12293,7 +13523,7 @@ mod tests {
 
             let items = fullest.items(true);
             for (index, item) in items.iter().enumerate() {
-                let [x, y, w, h] = menu_item_rect(&items, index, width, height);
+                let [x, y, w, h] = menu_item_rect(&items, index, width, height, 1.0);
                 if *item == Item::Power {
                     let left = x - panel_x;
                     let bottom = panel_y + panel_h - (y + h);
@@ -12320,7 +13550,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter(|(_, item)| item.is_tile())
-                .map(|(index, _)| menu_item_rect(&items, index, width, height))
+                .map(|(index, _)| menu_item_rect(&items, index, width, height, 1.0))
                 .collect();
             let first = tiles.first().expect("the column always carries tiles");
             let last = tiles.last().expect("the column always carries tiles");
@@ -12344,7 +13574,7 @@ mod tests {
             .iter()
             .position(|item| *item == Item::Resume)
             .expect("Resume is always present");
-        let [x, _, w, _] = menu_item_rect(&items, resume, 1920.0, 1080.0);
+        let [x, _, w, _] = menu_item_rect(&items, resume, 1920.0, 1080.0, 1.0);
         let label = scene
             .texts
             .iter()
@@ -12389,7 +13619,7 @@ mod tests {
         ] {
             for items in &cases {
                 let rows = separator_rows(items);
-                let rules = menu_separator_rects(items, width, height);
+                let rules = menu_separator_rects(items, width, height, 1.0);
                 assert_eq!(rules.len(), rows.len());
 
                 for (row, rule) in rows.into_iter().zip(rules) {
@@ -12397,8 +13627,8 @@ mod tests {
                         .rev()
                         .find(|index| items[*index] != Item::Power)
                         .expect("a separator must have a control above it");
-                    let upper = menu_item_rect(items, above, width, height);
-                    let lower = menu_item_rect(items, row, width, height);
+                    let upper = menu_item_rect(items, above, width, height, 1.0);
+                    let lower = menu_item_rect(items, row, width, height, 1.0);
                     let above_gap = rule[1] - (upper[1] + upper[3]);
                     let below_gap = lower[1] - (rule[1] + rule[3]);
                     assert!(above_gap > 0.0 && below_gap > 0.0);
@@ -12427,10 +13657,10 @@ mod tests {
         guide.set_bars(BOTH_BARS);
         let items = guide.items(true);
 
-        let pointer = menu_item_rect(&items, 0, 1920.0, 1080.0);
-        let mixer = menu_item_rect(&items, 1, 1920.0, 1080.0);
-        let moon = menu_item_rect(&items, 2, 1920.0, 1080.0);
-        let bell = menu_item_rect(&items, 3, 1920.0, 1080.0);
+        let pointer = menu_item_rect(&items, 0, 1920.0, 1080.0, 1.0);
+        let mixer = menu_item_rect(&items, 1, 1920.0, 1080.0, 1.0);
+        let moon = menu_item_rect(&items, 2, 1920.0, 1080.0, 1.0);
+        let bell = menu_item_rect(&items, 3, 1920.0, 1080.0, 1.0);
         assert_eq!(items[0], Item::Pointer);
         assert_eq!(items[1], Item::Mixer);
         assert_eq!(items[2], Item::DoNotDisturb);
@@ -12452,7 +13682,7 @@ mod tests {
 
         // Centred on the row below rather than sharing its left edge: the same
         // air at both ends of the line, and more of it than the rows keep.
-        let volume = menu_item_rect(&items, 4, 1920.0, 1080.0);
+        let volume = menu_item_rect(&items, 4, 1920.0, 1080.0, 1.0);
         let left = pointer[0] - volume[0];
         let right = (volume[0] + volume[2]) - (bell[0] + bell[2]);
         assert!(
@@ -12492,6 +13722,8 @@ mod tests {
                     stick_pointer: on,
                     do_not_disturb: false,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: Some("Celeste"),
                     close_target: None,
                     screen: None,
@@ -12510,7 +13742,7 @@ mod tests {
         };
 
         let items = base.items(false);
-        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0, 1.0);
         let in_tile = move |q: &&Quad| {
             q.x >= tile[0] - 0.5
                 && q.y >= tile[1] - 0.5
@@ -12581,6 +13813,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: quiet,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: None,
                     close_target: None,
                     screen: None,
@@ -12603,7 +13837,7 @@ mod tests {
             .iter()
             .position(|item| *item == Item::DoNotDisturb)
             .expect("the tile is on every session");
-        let tile = menu_item_rect(&items, index, 1920.0, 1080.0);
+        let tile = menu_item_rect(&items, index, 1920.0, 1080.0, 1.0);
         let in_tile = move |q: &&Quad| {
             q.x >= tile[0] - 0.5
                 && q.y >= tile[1] - 0.5
@@ -12673,6 +13907,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: false,
                     unread,
+                    battery: None,
+                    battery_percent: false,
                     app: None,
                     close_target: None,
                     screen: None,
@@ -12693,7 +13929,7 @@ mod tests {
         let items = Guide::default().items(false);
         let corner = |item: Item| {
             let index = items.iter().position(|held| *held == item).unwrap();
-            let [x, y, w, h] = menu_item_rect(&items, index, 1920.0, 1080.0);
+            let [x, y, w, h] = menu_item_rect(&items, index, 1920.0, 1080.0, 1.0);
             // The quadrant the mark lives in, and nothing else does.
             [x + w * 0.5, y, w * 0.5, h * 0.5]
         };
@@ -12839,7 +14075,7 @@ mod tests {
         guide.backdate_press(crate::guide::PRESS_TIME * PRESS_DOWN);
         let pressed = guide_scene(&guide, Some("Celeste"), None, &[], None);
 
-        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let tile = menu_item_rect(&items, 0, 1920.0, 1080.0, 1.0);
         let inside = |scene: &Scene| -> Vec<Quad> {
             scene
                 .quads
@@ -12878,7 +14114,7 @@ mod tests {
         let scene = guide_scene(&guide, Some("Celeste"), None, &[], None);
 
         let items = guide.items(false);
-        let mixer = menu_item_rect(&items, 0, 1920.0, 1080.0);
+        let mixer = menu_item_rect(&items, 0, 1920.0, 1080.0, 1.0);
         assert_eq!(items[0], Item::Mixer);
         assert!(
             scene.quads.iter().any(|q| {
@@ -12905,7 +14141,7 @@ mod tests {
         let scene = guide_scene(&guide, Some("Celeste"), None, &[], None);
 
         let items = guide.items(false);
-        let row = |index: usize| menu_item_rect(&items, index, 1920.0, 1080.0);
+        let row = |index: usize| menu_item_rect(&items, index, 1920.0, 1080.0, 1.0);
         // Everything laid inside a row, ignoring the chip it rests on.
         let inside = |[rx, ry, rw, rh]: [f32; 4]| -> Vec<&Quad> {
             scene
@@ -12978,6 +14214,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: false,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: None,
                     close_target: None,
                     screen: None,
@@ -12996,7 +14234,7 @@ mod tests {
         };
         let items = guide.items(false);
         let volume = items.iter().position(|item| *item == Item::Volume).unwrap();
-        let row = menu_item_rect(&items, volume, 1920.0, 1080.0);
+        let row = menu_item_rect(&items, volume, 1920.0, 1080.0, 1.0);
         let in_row = move |q: &&Quad| q.y > row[1] && q.y + q.h <= row[1] + row[3] + 0.5;
 
         // `Named` hands out one slot per glyph, so the icon in the row says
@@ -13041,19 +14279,19 @@ mod tests {
     fn a_faint_rule_separates_the_application_entries() {
         let guide = Guide::default();
         let items = guide.items(true);
-        let rules = menu_separator_rects(&items, 1920.0, 1080.0);
+        let rules = menu_separator_rects(&items, 1920.0, 1080.0, 1.0);
         // Two, with no bars: under the tiles, and under the entries about the
         // application. The second is the one this is about.
         assert_eq!(rules.len(), 2);
         let rule = *rules.last().expect("the column has a rule");
-        let dashboard = items
+        let start_screen = items
             .iter()
-            .position(|item| *item == Item::Dashboard)
+            .position(|item| *item == Item::StartScreen)
             .unwrap();
-        let above = menu_item_rect(&items, dashboard - 1, 1920.0, 1080.0);
-        let below = menu_item_rect(&items, dashboard, 1920.0, 1080.0);
+        let above = menu_item_rect(&items, start_screen - 1, 1920.0, 1080.0, 1.0);
+        let below = menu_item_rect(&items, start_screen, 1920.0, 1080.0, 1.0);
         assert!(rule[1] > above[1] + above[3], "the rule is below Close");
-        assert!(rule[1] < below[1], "and above Dashboard");
+        assert!(rule[1] < below[1], "and above Start screen");
         assert!(rule[3] <= 2.0, "a hairline, not a border");
 
         let mut guide = Guide::default();
@@ -13073,7 +14311,7 @@ mod tests {
     /// which a scrim quad cannot do, because every quad is drawn under every
     /// text run.
     #[test]
-    fn the_power_dialog_dims_what_it_covers_and_offers_four_choices() {
+    fn the_power_dialog_dims_what_it_covers_and_offers_every_choice() {
         let mut guide = Guide::default();
         guide.open();
         guide.backdate_open(2.0);
@@ -13098,7 +14336,8 @@ mod tests {
             "Power",
             "Suspend System",
             "Turn Off System",
-            "Exit LineXinBar Shell",
+            "Restart System",
+            "Log Out",
             "Cancel",
         ] {
             assert!(
@@ -13121,7 +14360,7 @@ mod tests {
     /// contents ride the same single factor.
     #[test]
     fn the_power_dialog_grows_out_of_its_button() {
-        let (width, height, rows) = (1920.0, 1080.0, 4);
+        let (width, height, rows) = (1920.0, 1080.0, Guide::default().power_items().len());
         let button = power_button_rect(width, height);
         let settled = power_dialog_rect(width, height, rows);
 
@@ -13181,6 +14420,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: false,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: Some("Celeste"),
                     close_target: None,
                     screen: None,
@@ -13376,8 +14617,8 @@ mod tests {
         // Mid-glide the chip sits between rows, and the accent is drawn there
         // rather than snapped to the row it is heading for.
         let index_of = |wanted: Item| items.iter().position(|item| *item == wanted).unwrap();
-        let first = menu_item_rect(&items, index_of(Item::Close), 1920.0, 1080.0);
-        let second = menu_item_rect(&items, index_of(Item::Dashboard), 1920.0, 1080.0);
+        let first = menu_item_rect(&items, index_of(Item::Close), 1920.0, 1080.0, 1.0);
+        let second = menu_item_rect(&items, index_of(Item::StartScreen), 1920.0, 1080.0, 1.0);
         let between = [first[0], (first[1] + second[1]) / 2.0, first[2], first[3]];
         let gliding = build_guide(
             GuideView {
@@ -13391,6 +14632,8 @@ mod tests {
                 stick_pointer: false,
                 do_not_disturb: false,
                 unread: 0.0,
+                battery: None,
+                battery_percent: false,
                 app: Some("Celeste"),
                 close_target: Some("Celeste"),
                 screen: None,
@@ -13483,6 +14726,8 @@ mod tests {
                 stick_pointer: false,
                 do_not_disturb: false,
                 unread: 0.0,
+                battery: None,
+                battery_percent: false,
                 app: Some("Celeste"),
                 close_target: None,
                 screen: None,
@@ -13613,14 +14858,14 @@ mod tests {
     fn the_deepest_screen_fits_inside_the_snapshot_budget() {
         // The bar, shrunk into its card, with the guide over it and the power
         // dialog over that — the same order the renderer is handed.
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Settings",
             icon: "a",
             entries: vec![app("first"), app("second"), app("third")],
         }]);
         let (width, height) = (1920.0, 1080.0);
-        let mut scene = build_with(&xmb, &Cursor::new(1), width, height, true, &AllSlots);
+        let mut scene = build_with(&lattice, &Cursor::new(1), width, height, true, &AllSlots);
         scene.place_into([900.0, 200.0, 900.0, 520.0], width, height);
 
         let mut guide = Guide::default();
@@ -13651,7 +14896,7 @@ mod tests {
     /// row, and what they landed on was a rank of half-lit icons.
     #[test]
     fn the_category_row_goes_before_the_column_it_opens_arrives() {
-        let xmb = Xmb::new(vec![
+        let lattice = Lattice::new(vec![
             Category {
                 id: "media",
                 title: "Multimedia",
@@ -13690,11 +14935,11 @@ mod tests {
                 .map_or(0.0, |text| text.color[3])
         };
 
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "the row opens a column of its own");
         let mut halfway = None;
         loop {
-            let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
             let (map, column) = (map_ink(&scene), column_ink(&scene));
             let inside = cursor.depth_position();
 
@@ -13728,7 +14973,7 @@ mod tests {
     /// worth holding onto, because either half looks like a typo on its own.
     #[test]
     fn the_category_row_stands_on_squircles() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Settings",
             icon: "a",
@@ -13736,7 +14981,7 @@ mod tests {
         }]);
         let cursor = Cursor::new(1);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         let cross_y = height * 0.30;
         let tiles: Vec<&Quad> = scene
@@ -13969,7 +15214,7 @@ mod tests {
     /// separately and wrong together.
     #[test]
     fn the_category_row_asks_for_the_material() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Games",
             icon: icons::CATEGORY_GAMES,
@@ -13977,7 +15222,7 @@ mod tests {
         }]);
         let cursor = Cursor::new(1);
         let (width, height) = (1920.0, 1080.0);
-        let scene = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+        let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
 
         let cross_y = height * 0.30;
         let marks: Vec<&Quad> = scene
@@ -14027,7 +15272,7 @@ mod tests {
 
         let items = guide.items(true);
         for (index, item) in items.iter().enumerate() {
-            let [rx, ry, _, rh] = menu_item_rect(&items, index, 1920.0, 1080.0);
+            let [rx, ry, _, rh] = menu_item_rect(&items, index, 1920.0, 1080.0, 1.0);
             let control = scene
                 .quads
                 .iter()
@@ -14134,6 +15379,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: false,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: Some("Celeste"),
                     close_target: Some("Celeste"),
                     screen: None,
@@ -14225,6 +15472,8 @@ mod tests {
                     stick_pointer: false,
                     do_not_disturb: false,
                     unread: 0.0,
+                    battery: None,
+                    battery_percent: false,
                     app: Some("Celeste"),
                     close_target: Some("Celeste"),
                     screen: None,
@@ -14301,14 +15550,14 @@ mod tests {
     /// has to be the bar itself, scaled — icons included.
     #[test]
     fn a_scene_placed_into_a_card_is_the_same_scene_shrunk() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "games",
             title: "Games",
             icon: "games",
             entries: vec![app("Celeste")],
         }]);
         let cursor = Cursor::new(1);
-        let full = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let full = focused(&lattice, 1920.0, 1080.0, &AllSlots);
         // Everything the display puts a pixel of on screen — including the
         // ones it only puts part of, which the card keeps that same part of.
         let on_screen: Vec<&Quad> = full
@@ -14319,7 +15568,7 @@ mod tests {
         assert!(on_screen.len() > 1, "the bar should have icons to shrink");
 
         let mut mini = build(
-            &xmb,
+            &lattice,
             &cursor,
             1920.0,
             1080.0,
@@ -14327,7 +15576,7 @@ mod tests {
             Corner::default(),
             0.0,
             &AllSlots,
-            false,
+            Typing::Nothing,
         );
         // A card a quarter of the display's width, at its aspect ratio.
         let card = [1200.0, 300.0, 480.0, 270.0];
@@ -14369,7 +15618,7 @@ mod tests {
     /// place a screen a fifth off to the left would have put it.
     #[test]
     fn a_card_draws_nothing_the_display_it_pictures_would_have_cut() {
-        let xmb = Xmb::new(vec![
+        let lattice = Lattice::new(vec![
             Category {
                 id: "media",
                 title: "Multimedia",
@@ -14385,8 +15634,8 @@ mod tests {
         ]);
         // Standing inside the subcategory, where the row has been carried off
         // the edge — the state the guide is opened over.
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "the row opens a column of its own");
         settle(&mut cursor);
 
         // Whether any of the screens tried actually cuts the run — a wide one
@@ -14394,7 +15643,7 @@ mod tests {
         // nothing at all.
         let mut cut = false;
         for [width, height] in SCREENS {
-            let mut mini = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let mut mini = build_with(&lattice, &cursor, width, height, true, &AllSlots);
             // A card at the display's own shape, as the overview lays one out.
             let card = [width * 0.5, height * 0.2, width * 0.4, height * 0.4];
             mini.place_into(card, width, height);
@@ -14443,7 +15692,7 @@ mod tests {
     /// it. A pane that ran off the edge is cut to the edge, here as there.
     #[test]
     fn a_card_keeps_the_half_of_an_icon_the_display_still_shows() {
-        let xmb = Xmb::new(vec![
+        let lattice = Lattice::new(vec![
             Category {
                 id: "media",
                 title: "Multimedia",
@@ -14457,13 +15706,13 @@ mod tests {
                 entries: vec![app("Files")],
             },
         ]);
-        let mut cursor = Cursor::new(xmb.categories.len());
-        assert!(cursor.enter(&xmb), "the row opens a column of its own");
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "the row opens a column of its own");
         settle(&mut cursor);
 
         let mut straddled = false;
         for [width, height] in SCREENS {
-            let full = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let full = build_with(&lattice, &cursor, width, height, true, &AllSlots);
             // The panes the display cuts rather than hides: part on the screen
             // and part past its edge.
             let hanging: Vec<&Quad> = full
@@ -14480,7 +15729,7 @@ mod tests {
             }
             straddled = true;
 
-            let mut mini = build_with(&xmb, &cursor, width, height, true, &AllSlots);
+            let mut mini = build_with(&lattice, &cursor, width, height, true, &AllSlots);
             let card = [width * 0.5, height * 0.2, width * 0.4, height * 0.4];
             mini.place_into(card, width, height);
             let scale = card[2] / width;
@@ -14525,8 +15774,8 @@ mod tests {
 
     /// The bar the panels of two categories, for the depth tests: enough of a
     /// cross that there is something out at the edges to watch draw inward.
-    fn cross() -> Xmb {
-        Xmb::new(vec![
+    fn cross() -> Lattice {
+        Lattice::new(vec![
             Category {
                 id: "games",
                 title: "Games",
@@ -14550,9 +15799,9 @@ mod tests {
     #[test]
     fn the_start_screen_steps_back_around_the_tile_a_menu_opens_from() {
         for [width, height] in SCREENS {
-            let xmb = cross();
-            let flat = focused(&xmb, width, height, &AllSlots);
-            let mut back = focused(&xmb, width, height, &AllSlots);
+            let lattice = cross();
+            let flat = focused(&lattice, width, height, &AllSlots);
+            let mut back = focused(&lattice, width, height, &AllSlots);
             recede_into_depth(&mut back, width, height, 1.0);
 
             let [ax, ay, aw, ah] = launch_origin(width, height);
@@ -14608,9 +15857,9 @@ mod tests {
     /// and leave the resting bar to the mercy of rounding.
     #[test]
     fn a_start_screen_with_nothing_over_it_is_left_exactly_where_it_is() {
-        let xmb = cross();
-        let flat = focused(&xmb, 1920.0, 1080.0, &AllSlots);
-        let mut untouched = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let lattice = cross();
+        let flat = focused(&lattice, 1920.0, 1080.0, &AllSlots);
+        let mut untouched = focused(&lattice, 1920.0, 1080.0, &AllSlots);
         recede_into_depth(&mut untouched, 1920.0, 1080.0, 0.0);
         for (quad, want) in untouched.quads.iter().zip(&flat.quads) {
             assert_eq!(
@@ -14631,9 +15880,9 @@ mod tests {
     #[test]
     fn the_start_screen_starts_at_the_back_of_the_shells_own_depth() {
         for [width, height] in SCREENS {
-            let xmb = cross();
-            let flat = focused(&xmb, width, height, &AllSlots);
-            let mut far = focused(&xmb, width, height, &AllSlots);
+            let lattice = cross();
+            let flat = focused(&lattice, width, height, &AllSlots);
+            let mut far = focused(&lattice, width, height, &AllSlots);
             arrive_from_depth(&mut far, width, height, 0.0);
 
             assert_eq!(far.quads.len(), flat.quads.len(), "arriving drops nothing");
@@ -14686,9 +15935,9 @@ mod tests {
     /// alone rather than pushed back by nothing.
     #[test]
     fn an_arrived_start_screen_is_left_exactly_where_it_is() {
-        let xmb = cross();
-        let flat = focused(&xmb, 1920.0, 1080.0, &AllSlots);
-        let mut landed = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let lattice = cross();
+        let flat = focused(&lattice, 1920.0, 1080.0, &AllSlots);
+        let mut landed = focused(&lattice, 1920.0, 1080.0, &AllSlots);
         arrive_from_depth(&mut landed, 1920.0, 1080.0, 1.0);
         for (quad, want) in landed.quads.iter().zip(&flat.quads) {
             assert_eq!(
@@ -14709,9 +15958,9 @@ mod tests {
     /// rather than still thickening as it settles.
     #[test]
     fn the_arrival_only_ever_comes_closer_and_is_lit_before_it_lands() {
-        let xmb = cross();
+        let lattice = cross();
         let (width, height) = (1920.0, 1080.0);
-        let flat = focused(&xmb, width, height, &AllSlots);
+        let flat = focused(&lattice, width, height, &AllSlots);
         // The widest pane on the bar, which is the one with the most room to
         // grow: a category's own glass.
         let widest = |scene: &Scene| scene.quads.iter().map(|quad| quad.w).fold(0.0f32, f32::max);
@@ -14726,7 +15975,7 @@ mod tests {
         let mut last = (0.0f32, 0.0f32);
         for step in 0..=20 {
             let arrival = step as f32 / 20.0;
-            let mut scene = focused(&xmb, width, height, &AllSlots);
+            let mut scene = focused(&lattice, width, height, &AllSlots);
             arrive_from_depth(&mut scene, width, height, arrival);
             let (size, ink) = (widest(&scene), lit(&scene));
             assert!(size >= last.0, "the screen went back at {arrival}");
@@ -14737,7 +15986,7 @@ mod tests {
         assert!((last.0 - widest(&flat)).abs() < 1e-3, "it never landed");
 
         // Fully lit with the last of the travelling still to do.
-        let mut early = focused(&xmb, width, height, &AllSlots);
+        let mut early = focused(&lattice, width, height, &AllSlots);
         arrive_from_depth(&mut early, width, height, ARRIVAL_LIT_BY);
         assert!((lit(&early) - lit(&flat)).abs() < 1e-3);
         assert!(widest(&early) < widest(&flat), "and still on its way");
@@ -14750,8 +15999,8 @@ mod tests {
     #[test]
     fn the_arrival_runs_on_the_shells_own_symmetric_ramp() {
         let (width, height) = (1920.0, 1080.0);
-        let xmb = cross();
-        let settled = focused(&xmb, width, height, &AllSlots);
+        let lattice = cross();
+        let settled = focused(&lattice, width, height, &AllSlots);
         let widest = |scene: &Scene| scene.quads.iter().map(|quad| quad.w).fold(0.0f32, f32::max);
         // How much of the journey is behind it, read off the drawing rather
         // than off the ramp — and read in *steps of depth*, which is what the
@@ -14761,7 +16010,7 @@ mod tests {
         // at a steady speed does. Mistaking that swelling for the ramp is how
         // an even move gets read as an accelerating one.
         let travelled = |arrival: f32| {
-            let mut scene = focused(&xmb, width, height, &AllSlots);
+            let mut scene = focused(&lattice, width, height, &AllSlots);
             arrive_from_depth(&mut scene, width, height, arrival);
             let near = widest(&scene) / widest(&settled);
             let steps = near.ln() / DEPTH_SHRINK.ln();
@@ -14815,10 +16064,10 @@ mod tests {
     #[test]
     fn a_click_on_an_arriving_bar_is_about_where_it_looks() {
         for [width, height] in SCREENS {
-            let xmb = cross();
-            let cursor = Cursor::new(xmb.categories.len());
+            let lattice = cross();
+            let cursor = Cursor::new(lattice.categories.len());
 
-            let flat = focused(&xmb, width, height, &AllSlots);
+            let flat = focused(&lattice, width, height, &AllSlots);
             // The second category's own glass, where the settled bar puts it.
             let settled = (
                 bar_category_x(1.0, 0.0, width, height),
@@ -14837,7 +16086,7 @@ mod tests {
             // Nothing is dropped on the way in, so the same pane is at the same
             // index in a scene caught halfway through the arrival.
             for arrival in [0.2, 0.5, 0.8] {
-                let mut coming = focused(&xmb, width, height, &AllSlots);
+                let mut coming = focused(&lattice, width, height, &AllSlots);
                 arrive_from_depth(&mut coming, width, height, arrival);
                 let drawn = &coming.quads[button];
                 let (x, y) = arrival_point(
@@ -14849,7 +16098,7 @@ mod tests {
                 );
                 assert!((x - settled.0).abs() < 1e-2 && (y - settled.1).abs() < 1e-2);
                 assert_eq!(
-                    bar_hit(&xmb, &cursor, x, y, width, height),
+                    bar_hit(&lattice, &cursor, x, y, width, height),
                     Some(BarSpot::Category(1)),
                     "{width}x{height} at {arrival}: a press on the second category missed it"
                 );
@@ -14862,8 +16111,8 @@ mod tests {
     #[test]
     fn the_handover_lays_black_over_the_whole_display() {
         for [width, height] in SCREENS {
-            let xmb = cross();
-            let mut scene = focused(&xmb, width, height, &AllSlots);
+            let lattice = cross();
+            let mut scene = focused(&lattice, width, height, &AllSlots);
             let quads = scene.quads.len();
             cover_with_black(&mut scene, width, height, 1.0);
 
@@ -14882,8 +16131,8 @@ mod tests {
         }
 
         // And a display with none left over it is left exactly as it was.
-        let xmb = cross();
-        let mut clear = focused(&xmb, 1920.0, 1080.0, &AllSlots);
+        let lattice = cross();
+        let mut clear = focused(&lattice, 1920.0, 1080.0, &AllSlots);
         let quads = clear.quads.len();
         cover_with_black(&mut clear, 1920.0, 1080.0, 0.0);
         assert_eq!(clear.quads.len(), quads);
@@ -14894,10 +16143,10 @@ mod tests {
     /// meant to be black would be the one thing on it anybody could see.
     #[test]
     fn nothing_of_the_shell_reads_through_the_black() {
-        let xmb = cross();
+        let lattice = cross();
         let (width, height) = (1920.0, 1080.0);
 
-        let mut dark = focused(&xmb, width, height, &AllSlots);
+        let mut dark = focused(&lattice, width, height, &AllSlots);
         assert!(
             dark.texts.iter().any(|text| text.color[3] > 0.0),
             "the bar this is covering has writing on it"
@@ -14914,8 +16163,8 @@ mod tests {
         // Dimmed to what the sheet leaves, not cut at a threshold: a run that
         // came back whole the frame the black passed it would snap into place
         // instead of coming up out of the dark with the bar it belongs to.
-        let lit = focused(&xmb, width, height, &AllSlots);
-        let mut half = focused(&xmb, width, height, &AllSlots);
+        let lit = focused(&lattice, width, height, &AllSlots);
+        let mut half = focused(&lattice, width, height, &AllSlots);
         cover_with_black(&mut half, width, height, 0.5);
         for (dimmed, whole) in half.texts.iter().zip(&lit.texts) {
             assert!((dimmed.color[3] - whole.color[3] * 0.5).abs() < 1e-6);
@@ -15462,7 +16711,7 @@ mod tests {
 
     /// The bug this replaced: a menu raised over a card landed across the
     /// guide's sidebar and every button it touched lost its label — Resume,
-    /// Close and Dashboard all went blank, while their chips stayed lit.
+    /// Close and Start screen all went blank, while their chips stayed lit.
     ///
     /// A run the panel only reaches into keeps the part of itself that is still
     /// in the open, cut at the panel's edge. One it covers outright is still
@@ -17246,7 +18495,7 @@ mod tests {
     fn the_mixer_grows_out_of_its_tile_in_the_column() {
         let (width, height) = (1920.0, 1080.0);
         let items = [Item::Pointer, Item::Mixer, Item::Volume, Item::Resume];
-        let tile = menu_item_rect(&items, 1, width, height);
+        let tile = menu_item_rect(&items, 1, width, height, 1.0);
 
         let mut menu = Menu::default();
         assert!(menu.open_at(
@@ -17382,14 +18631,14 @@ mod tests {
     /// be noticed.
     #[test]
     fn a_context_menu_over_the_guide_fits_inside_the_snapshot_budget() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Settings",
             icon: "a",
             entries: vec![app("first"), app("second"), app("third")],
         }]);
         let (width, height) = (1920.0, 1080.0);
-        let mut scene = build_with(&xmb, &Cursor::new(1), width, height, true, &AllSlots);
+        let mut scene = build_with(&lattice, &Cursor::new(1), width, height, true, &AllSlots);
         scene.place_into([900.0, 200.0, 900.0, 520.0], width, height);
 
         let mut guide = Guide::default();
@@ -17953,14 +19202,14 @@ mod tests {
     /// it, over the guide, over the bar — all still inside the snapshot budget.
     #[test]
     fn a_panel_over_a_menu_over_the_guide_fits_inside_the_snapshot_budget() {
-        let xmb = Xmb::new(vec![Category {
+        let lattice = Lattice::new(vec![Category {
             id: "a",
             title: "Settings",
             icon: "a",
             entries: vec![app("first"), app("second"), app("third")],
         }]);
         let (width, height) = (1920.0, 1080.0);
-        let mut scene = build_with(&xmb, &Cursor::new(1), width, height, true, &AllSlots);
+        let mut scene = build_with(&lattice, &Cursor::new(1), width, height, true, &AllSlots);
         scene.place_into([900.0, 200.0, 900.0, 520.0], width, height);
 
         let mut guide = Guide::default();
@@ -18084,14 +19333,14 @@ mod tests {
     #[test]
     fn a_label_the_panel_crosses_keeps_the_end_its_words_are_on() {
         for [width, height] in SCREENS {
-            let xmb = cross();
+            let lattice = cross();
             let dialog = informed([width * 0.22, height * 0.5, 300.0, 120.0]);
             let panel = dialog_rect(width, height, &dialog);
 
             // The runs that reach clear across the panel, which are the ones
             // the old rule got wrong: it is the far end of those that has the
             // room and the near end that has the words.
-            let straddling: Vec<(String, f32)> = focused(&xmb, width, height, &AllSlots)
+            let straddling: Vec<(String, f32)> = focused(&lattice, width, height, &AllSlots)
                 .texts
                 .iter()
                 .filter(|text| {
@@ -18106,7 +19355,7 @@ mod tests {
                 "{width}x{height}: no label of this bar reaches across the panel"
             );
 
-            let mut scene = focused(&xmb, width, height, &AllSlots);
+            let mut scene = focused(&lattice, width, height, &AllSlots);
             recede_behind_dialog(&mut scene, width, height, &dialog, 1.0);
             for (name, from) in straddling {
                 assert!(
@@ -18133,5 +19382,475 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The card's own line grows and shrinks, which is what makes everything
+    /// under it slide instead of jumping by a whole card when a track starts.
+    #[test]
+    fn the_column_slides_as_the_media_rows_open() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(crate::guide::NowPlaying {
+            bus: "bus".into(),
+            title: "A Track".into(),
+            app: "Fixture".into(),
+            playing: true,
+            can_previous: true,
+            can_next: true,
+            level: Some(crate::system::Level {
+                value: 0.5,
+                muted: false,
+            }),
+            stream: Some(1),
+        }));
+        let items = guide.items(false);
+        let resume = items
+            .iter()
+            .position(|item| *item == Item::Resume)
+            .expect("resume");
+        let top = |media: f32| menu_item_rect(&items, resume, 1920.0, 1080.0, media)[1];
+
+        // Shut, the rows take no room at all, so Resume sits exactly where it
+        // would with no card in the column.
+        let without: Vec<Item> = items.iter().copied().filter(|i| !i.is_media()).collect();
+        let plain = without
+            .iter()
+            .position(|item| *item == Item::Resume)
+            .expect("resume");
+        assert!(
+            (top(0.0) - menu_item_rect(&without, plain, 1920.0, 1080.0, 1.0)[1]).abs() < 0.5,
+            "a shut card still took room in the column"
+        );
+
+        // And it travels the whole way rather than in one step.
+        let (shut, half, open) = (top(0.0), top(0.5), top(1.0));
+        assert!(open > shut, "the card never made room for itself");
+        assert!(half > shut && half < open, "the column jumped: {half}");
+    }
+
+    /// A transport button the player will not answer is drawn the way every
+    /// other control this shell puts out of reach is — the outline where its
+    /// chip would be — and the light that says which button is chosen is a
+    /// disc, because the thing it is sitting on is one.
+    ///
+    /// Both halves were got wrong once by reaching for the row: a quieter slab
+    /// reads as a chip standing behind the selection, and the card's own corner
+    /// radius on a rectangle the size of a button is a squircle.
+    #[test]
+    fn a_dead_transport_button_is_outlined_and_the_light_on_a_live_one_is_round() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(crate::guide::NowPlaying {
+            bus: "bus".into(),
+            title: "A Track".into(),
+            app: "Fixture".into(),
+            playing: true,
+            // Nothing before this one, something after it: one button of each
+            // kind, side by side, in one drawing.
+            can_previous: false,
+            can_next: true,
+            level: None,
+            stream: None,
+        }));
+        guide.open();
+        guide.backdate_open(2.0);
+        // All the way open, so the card is at the size a hand would meet it at
+        // rather than part way through arriving.
+        guide.animate_media(1.0);
+        // On the card, because the radius the light is given is read from the
+        // entry the column is standing on.
+        assert!(guide.select(Item::Media, false), "could not reach the card");
+        let items = guide.items(false);
+        let index = items
+            .iter()
+            .position(|item| *item == Item::Media)
+            .expect("the card is in the column while something is playing");
+        let row = menu_item_rect(&items, index, 1920.0, 1080.0, 1.0);
+        let [previous, _, next] = transport_rects(row);
+        // Where the caller puts the light: on the button, not on the row.
+        let scene = build_guide(
+            GuideView {
+                guide: &guide,
+                clock: None,
+                volume: None,
+                brightness: None,
+                stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
+                battery: None,
+                battery_percent: false,
+                app: None,
+                close_target: None,
+                screen: None,
+                cards: &[],
+                highlight: None,
+                menu_highlight: Some(next),
+                behind: 0.0,
+                card_age: guide.age(),
+                power: 0.0,
+                time: 0.0,
+                slots: &Named,
+            },
+            1920.0,
+            1080.0,
+        );
+        let inside = |button: [f32; 4]| {
+            move |q: &&Quad| {
+                q.slot == SOLID_SLOT
+                    && q.x >= button[0] - 0.5
+                    && q.y >= button[1] - 0.5
+                    && q.x + q.w <= button[0] + button[2] + 0.5
+                    && q.y + q.h <= button[1] + button[3] + 0.5
+            }
+        };
+
+        // The one that cannot be pressed: a hairline, and no glass at all.
+        let dead: Vec<&Quad> = scene.quads.iter().filter(inside(previous)).collect();
+        assert!(
+            dead.iter().all(|q| q.thickness == 0.0),
+            "a button out of reach was given glass: {dead:?}"
+        );
+        assert!(
+            dead.iter().any(|q| q.border > 0.0),
+            "no outline standing in for the chip"
+        );
+
+        // The one that can: a slab, like every other chip in the column.
+        assert!(
+            scene
+                .quads
+                .iter()
+                .filter(inside(next))
+                .any(|q| q.thickness > 0.0 && q.border == 0.0),
+            "a live button lost its chip"
+        );
+
+        // And the light on it is round. `chip_radius` would have answered with
+        // the card's corner here, which is a third of the height rather than
+        // half of it.
+        let light = scene
+            .quads
+            .iter()
+            .filter(inside(next))
+            .max_by(|a, b| a.color[3].total_cmp(&b.color[3]))
+            .expect("the selection light");
+        assert!(
+            (light.radius - light.h * 0.5).abs() < 0.5,
+            "the light is a squircle: {} across {} tall",
+            light.radius,
+            light.h
+        );
+    }
+
+    /// The three buttons sit inside the card, in order, without touching — and
+    /// play is the big one, because it is the button a hand goes for.
+    #[test]
+    fn the_transport_buttons_sit_inside_the_card_in_order() {
+        let card = [100.0, 200.0, 320.0, 112.0];
+        let [previous, play, next] = transport_rects(card);
+
+        for button in [previous, play, next] {
+            assert!(button[0] >= card[0], "a button hung off the left");
+            assert!(
+                button[0] + button[2] <= card[0] + card[2] + 0.01,
+                "a button hung off the right"
+            );
+            assert!(button[1] >= card[1] && button[1] + button[3] <= card[1] + card[3]);
+            assert_eq!(button[2], button[3], "a transport button is not a disc");
+        }
+        assert!(
+            previous[0] + previous[2] < play[0],
+            "previous ran into play"
+        );
+        assert!(play[0] + play[2] < next[0], "play ran into next");
+        assert!(
+            play[3] > previous[3] && play[3] > next[3],
+            "play is the big one"
+        );
+        assert!(
+            (previous[3] - next[3]).abs() < 0.01,
+            "the two beside it are a pair and must match"
+        );
+
+        // Centred on the card, so a wider sidebar does not leave the row
+        // hanging off one side.
+        let run_middle = (previous[0] + next[0] + next[2]) * 0.5;
+        assert!((run_middle - (card[0] + card[2] * 0.5)).abs() < 0.01);
+    }
+
+    /// A card part-way open never inverts: its chip has a height of nought or
+    /// more, whatever the padding would otherwise take off it.
+    #[test]
+    fn a_part_open_card_never_turns_itself_inside_out() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(crate::guide::NowPlaying {
+            bus: "bus".into(),
+            app: "Fixture".into(),
+            level: Some(crate::system::Level {
+                value: 0.5,
+                muted: false,
+            }),
+            ..Default::default()
+        }));
+        let items = guide.items(false);
+        for step in 0..=20 {
+            let media = step as f32 / 20.0;
+            for (index, item) in items.iter().enumerate() {
+                let [_, _, w, h] = menu_item_rect(&items, index, 1920.0, 1080.0, media);
+                assert!(w >= 0.0 && h >= 0.0, "{item:?} at {media} came out {w}x{h}");
+            }
+        }
+    }
+
+    // --- the folder a file is carried to -----------------------------------
+
+    /// A picker standing in a scratch folder, with one folder and one file in
+    /// it — enough for a column with all three kinds of row on it.
+    ///
+    /// `None` where there is nowhere to write, in which case the test that
+    /// wanted it says nothing rather than failing. The explorer's own tests do
+    /// the same.
+    fn picker(name: &str) -> Option<(PathBuf, crate::transfer::Transfer)> {
+        let dir = std::env::temp_dir().join(format!("lxb-picker-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("inside")).ok()?;
+        std::fs::write(dir.join("a.txt"), b"x").ok()?;
+        // Deliberately not one of the two rows in the folder: the picker draws
+        // the thing being carried as well as the column, so a fixture whose
+        // subject shares a name with a row it lists would have its tests
+        // reading the wrong one of the two.
+        let source = crate::transfer::Source {
+            path: dir.join("carried.bin"),
+            name: "carried.bin".to_string(),
+            note: "6 B".to_string(),
+            glyph: icons::FILE_PAGE,
+            folder: false,
+        };
+        let picker = crate::transfer::Transfer::begin(crate::transfer::Kind::Copy, source, &dir)?;
+        Some((dir, picker))
+    }
+
+    /// The whole of what makes the picker a mirror: the folder a column is
+    /// *inside* stands to its right, where on the bar it stands to its left.
+    ///
+    /// Both halves are asserted, because either alone would pass on a layout
+    /// that had quietly become the bar again. The picker also has to stand
+    /// clear of the bar's own cross, which is where the file being carried is
+    /// left standing.
+    #[test]
+    fn the_pickers_columns_run_the_other_way_from_the_bars() {
+        let (width, height) = (1600.0, 900.0);
+        let open = pick_column_x(3.0, 3.0, width, height);
+        let behind = pick_column_x(2.0, 3.0, width, height);
+        let deeper = pick_column_x(4.0, 3.0, width, height);
+        assert!(
+            behind > open,
+            "the folder this one is inside must stand to the right of it"
+        );
+        assert!(deeper < open, "and a folder stepped into, to the left");
+        assert!(
+            open > width * BAR_CROSS_X + ITEM_ICON_FOCUSED * ITEM_DISC,
+            "the picker must stand clear of the file it is about"
+        );
+        // And the one it came out of is on the screen, name and all — which is
+        // what the step is measured back from and the one thing a true mirror
+        // of the bar would have lost.
+        assert!(
+            behind + ITEM_ICON_FOCUSED * ITEM_DISC * guide_scale(height) < width,
+            "the trail ran off the display"
+        );
+    }
+
+    /// What a press lands on is the row drawn under it, for every row of the
+    /// open column — and the trail beside it is a way back out.
+    #[test]
+    fn a_press_on_the_picker_lands_on_the_row_drawn_there() {
+        let Some((dir, picker)) = picker("hit") else {
+            return;
+        };
+        let (width, height) = (1600.0, 900.0);
+        let scale = guide_scale(height);
+        let column = picker
+            .columns()
+            .into_iter()
+            .find(|column| column.standing == Standing::Open)
+            .expect("the column being stood in");
+        let x = pick_column_x(column.level as f32, picker.depth(), width, height);
+        for row in 0..column.rows.len() {
+            let y = nested_y(
+                row as f32 - column.position,
+                height * BAR_CROSS_Y,
+                gap_below(None) * scale,
+                ITEM_SPACING * scale,
+                0.0,
+            );
+            assert_eq!(
+                transfer_hit(&picker, x, y, width, height),
+                Some(PickSpot::Row(row)),
+                "row {row} is not where it is drawn"
+            );
+            // And the name beside the mark is part of the row, not air.
+            assert_eq!(
+                transfer_hit(&picker, x + ITEM_ICON * scale, y, width, height),
+                Some(PickSpot::Row(row)),
+            );
+        }
+        // The column the path runs through keeps its trail row, and pressing it
+        // is walking back out to it.
+        let behind = pick_column_x(column.level as f32 - 1.0, picker.depth(), width, height);
+        let trail = nested_y(
+            0.0,
+            height * BAR_CROSS_Y,
+            gap_below(None) * scale,
+            ITEM_SPACING * scale,
+            0.0,
+        );
+        assert_eq!(
+            transfer_hit(&picker, behind, trail, width, height),
+            Some(PickSpot::Trail(1)),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The start screen goes behind the picker rather than being dimmed behind
+    /// it — and the corner does not, because the clock is not a control.
+    #[test]
+    fn the_bar_goes_behind_the_picker_and_the_corner_stays() {
+        let mut scene = Scene {
+            quads: vec![
+                // Something in the corner's own band, and something on the
+                // cross, both at full strength.
+                Quad {
+                    x: 1500.0,
+                    y: 40.0,
+                    w: 24.0,
+                    h: 24.0,
+                    fade: 1.0,
+                    ..Quad::default()
+                },
+                Quad {
+                    x: 300.0,
+                    y: 400.0,
+                    w: 100.0,
+                    h: 100.0,
+                    fade: 1.0,
+                    ..Quad::default()
+                },
+            ],
+            texts: vec![Text {
+                content: "osu.appimage".to_string(),
+                x: 420.0,
+                y: 440.0,
+                size: 30.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+                bold: false,
+                max_width: 400.0,
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                lines: 1,
+            }],
+        };
+        recede_behind_transfer(&mut scene, 1600.0, 900.0, 1.0);
+        assert_eq!(scene.quads[0].fade, 1.0, "the clock went with the bar");
+        assert_eq!(scene.quads[1].fade, 0.0, "the bar is still on the screen");
+        assert!(
+            scene.texts.is_empty() || scene.texts[0].color[3] == 0.0,
+            "a label the picker covers printed straight through it"
+        );
+    }
+
+    /// The name of the row under the caret is what is being typed, and the
+    /// row goes on saying what the file is really called everywhere else.
+    ///
+    /// Both halves matter. The caret has to be on the row the keyboard is
+    /// going into or the user is typing somewhere they cannot see; and the
+    /// name being typed must not reach the trail behind it, where the same
+    /// file may be listed again — the column a step further out keeps the row
+    /// it was opened from, and a caret back there would say the keyboard was
+    /// going to that one.
+    #[test]
+    fn the_row_being_renamed_carries_the_caret_and_no_other_row_does() {
+        let lattice = shelf(
+            crate::media::Kind::Image,
+            "",
+            &["/home/x/Pictures/sunset.jpg"],
+            1,
+        );
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice));
+        // A column opens on the first row that belongs to the list rather than
+        // standing over it, which here is the picture — the row a name belongs
+        // to, and not the field above it.
+        settle(&mut cursor);
+        let said = |typing: Typing<'_>| {
+            build(
+                &lattice,
+                &cursor,
+                1920.0,
+                1080.0,
+                true,
+                Corner::default(),
+                0.0,
+                &AllSlots,
+                typing,
+            )
+            .texts
+            .into_iter()
+            .map(|text| text.content)
+            .collect::<Vec<String>>()
+        };
+        let quiet = said(Typing::Nothing);
+        assert!(
+            !quiet.iter().any(|said| said.ends_with(CARET)),
+            "a caret with nobody typing: {quiet:?}"
+        );
+        let typed = said(Typing::Name("two"));
+        assert!(
+            typed.iter().any(|said| said == "two|"),
+            "the name being typed is not on the row: {typed:?}"
+        );
+        assert_eq!(
+            typed.iter().filter(|said| said.ends_with(CARET)).count(),
+            1,
+            "more than one row is being typed into: {typed:?}"
+        );
+    }
+
+    /// A row nothing can be filed inside is on the column to be read and never
+    /// to be pressed, and the drawing says so by giving it less ink than the
+    /// folder above it.
+    #[test]
+    fn a_file_on_the_picker_is_drawn_quieter_than_a_folder() {
+        let Some((dir, picker)) = picker("ink") else {
+            return;
+        };
+        let (width, height) = (1600.0, 900.0);
+        let scene = build_transfer(
+            TransferView {
+                transfer: &picker,
+                arrived: 1.0,
+                time: 0.0,
+                slots: &Named,
+            },
+            width,
+            height,
+        );
+        let column = picker
+            .columns()
+            .into_iter()
+            .find(|column| column.standing == Standing::Open)
+            .expect("the column being stood in");
+        let named = |name: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == name)
+                .unwrap_or_else(|| panic!("{name} is not on the column"))
+        };
+        assert!(matches!(column.rows[0], crate::transfer::Row::Paste));
+        assert!(
+            named("inside").color[3] > named("a.txt").color[3],
+            "the file is as loud as the folder above it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

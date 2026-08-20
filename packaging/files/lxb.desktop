@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=LineXinBar
-Comment=XMB-style console shell on the LineXinBar compositor
+Comment=Console-style shell on the LineXinBar compositor
 Exec=lxb-session
 TryExec=lxb-session
 Type=Application

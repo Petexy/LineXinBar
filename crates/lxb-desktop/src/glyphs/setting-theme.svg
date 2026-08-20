@@ -1,0 +1,59 @@
+<!--
+  A wide brush, at the head of the Theme rows.
+
+  The row is a page now rather than a list of values — the wallpaper is one
+  question and the marks are another — so its mark has to stand for both without
+  being either of them. A brush is what is held while the material is chosen; the
+  wave went with the half it was always about, and lives in setting-wallpaper.svg.
+
+  A decorator's brush rather than a fine one, because the setting is about what
+  the whole screen is made of and not about a detail of it, and laid corner to
+  corner because that is the only way a mark of this length fits a square cell.
+
+  Four bodies and one opening. The head, the ferrule and the handle overlap and
+  the field reads them as one — which is right, a brush is one object, and the
+  two steps in its outline are where the shader stands a wall up. The bulb at
+  the butt is the fourth, and the hole through it is the reason it is there:
+  every brush of this kind hangs from one, and it is the feature that says brush
+  before any of the others are read. Drawn as a plain rounded block the same
+  width throughout, this mark came out a hammer.
+
+  The narrowest wall is the ring round that hole at 2.2 units, which is thinner
+  than the bevel is deep, so it beads over into a rounded lip rather than keeping
+  a face. That is what a wet ring of this size should do, and the silhouette —
+  which is what carries a mark at 84 pixels — is exact either way.
+
+  The head is a third again as wide as the ferrule that carries it, and that step
+  is what makes the two read as two. Drawn with the ferrule nearly as wide, the
+  whole thing came out a single tapered lump.
+
+  The transform below is the margin and the centring: the drawing runs corner to
+  corner, needs two of the cell's 32 units clear all round for the shadow the
+  shader casts beside it, and is not symmetric about the point it turns on.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="bulb" cx="4.8" cy="16" r="4.0"/>
+    <path id="handle" d="M4.8 13.6 L14.0 11.4 L14.0 20.6 L4.8 18.4 Z"/>
+    <rect id="ferrule" x="13.6" y="10.6" width="4.8" height="10.8" rx="1.0"/>
+    <rect id="head" x="18.6" y="7.8" width="10.8" height="16.4" rx="1.8"/>
+    <circle id="eye" cx="4.8" cy="16" r="1.8"/>
+    <g id="bead">
+      <use href="#bulb"/><use href="#handle"/><use href="#ferrule"/><use href="#head"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#eye" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g transform="translate(16 16) scale(0.88) rotate(-45) translate(-16 -16)">
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

@@ -22,7 +22,7 @@
 //!     Some(app.name.clone()),
 //!     vec![
 //!         Entry::new(Command::Placeholder("show-information"), "Show Information"),
-//!         Entry::new(Command::Placeholder("hide"), "Hide from the Bar").disabled(),
+//!         Entry::new(Command::Placeholder("hide"), "Hide from the start screen").disabled(),
 //!         Entry::new(Command::Placeholder("remove"), "Remove").group(1).grave(),
 //!     ],
 //!     ui::context_menu_rows_that_fit(height),
@@ -210,6 +210,40 @@ pub enum Command {
     /// opens a question and the other takes somebody's photograph off the
     /// disk.
     ConfirmDelete,
+    /// Carry the selected file or folder somewhere else on the disk: leaving a
+    /// copy of it where it is, or not.
+    ///
+    /// Two commands rather than one carrying which, and for the reason the two
+    /// display rows are two commands: they are rows the user picked by name.
+    /// One of them ends with the thing still where it was and the other does
+    /// not, which is the largest difference there is between two rows of a
+    /// menu, and a single command with a flag in it would be one place for the
+    /// wrong flag to arrive from.
+    ///
+    /// Neither carries its subject. The menu is about whatever was selected
+    /// when it was raised, exactly as [`Command::Delete`] is, and what the
+    /// press does is open the picker — which takes a copy of the subject there
+    /// and then. See [`crate::transfer`].
+    Copy,
+    Move,
+    /// Answer the question a name already taken in the chosen folder puts up:
+    /// write over what is there, or put both side by side.
+    ///
+    /// Their own commands rather than [`Command::Copy`] arriving a second time,
+    /// for the reason [`Command::ConfirmDelete`] is its own: one of these
+    /// destroys one of the user's files and the other cannot, and a shell where
+    /// those are one name is a shell one mis-routed press away from overwriting
+    /// something nobody asked about.
+    ReplaceFile,
+    KeepBothFiles,
+    /// Put the caret on the selected row's name, so it can be changed.
+    ///
+    /// It opens a field rather than doing anything, which is why it is one
+    /// command and not two: what comes back is not an answer the menu has to
+    /// carry — the row itself collects it, and the keyboard is what says so.
+    /// See [`crate::main::Renaming`] for why the row goes on saying what the
+    /// file is really called while it is being typed over.
+    Rename,
     /// Ask what order the column should be listed in.
     Sort,
     /// List it in this one.

@@ -11,9 +11,10 @@ use std::{fmt, fs, time::Instant};
 /// Public because the producer and consumer must agree on this spelling.
 pub const HANDOFF_ENV: &str = "LXB_BACKGROUND_HANDOFF";
 
-/// Bump this when the wallpaper's shader, palette, coordinates, or clock
-/// semantics change in a way that would make the same time draw another scene.
-const VISUAL_ID: &str = "lxb-wallpaper-v1";
+/// The scene both ends of a handoff have to be drawing. Named where the scene
+/// is — `lxb-protocol` — so the compositor's bridge frame and this shell cannot
+/// disagree about which wallpaper a record is for.
+const VISUAL_ID: &str = lxb_protocol::wallpaper::VISUAL;
 const CLOCK_ID: &str = "linux-monotonic";
 const MAX_RECORD_BYTES: usize = 1024;
 const MAX_HANDOFF_AGE_NS: u64 = 30_000_000_000;
@@ -171,6 +172,20 @@ fn parse(record: &str) -> Result<Handoff, Rejection> {
     let mut sample_ns = None;
     let mut scene_ns = None;
     let mut accent = None;
+    // Accepted and then dropped on the floor, deliberately. The display manager
+    // writes the material the *wallpaper* was drawn in for the benefit of a
+    // reader that cannot see this account's settings — the compositor drawing a
+    // bridge frame in front of the *login screen* runs as the greeter's own
+    // account. This shell is the account, has already read `shell.toml`, and a
+    // record that disagreed with it would be a second opinion about a setting
+    // with a page in front of it. What is not acceptable is refusing the record
+    // over a field that is none of this module's business, because that would
+    // throw the phase away with it.
+    //
+    // One field although the Theme setting is two: the marks the shell draws are
+    // no part of a wallpaper, so the reader this is written for has no use for
+    // them and the record has never carried them.
+    let mut theme = None;
 
     for field in record.split(';') {
         let (key, value) = field.split_once('=').ok_or(Rejection::MalformedField)?;
@@ -186,6 +201,7 @@ fn parse(record: &str) -> Result<Handoff, Rejection> {
             "sample-ns" => &mut sample_ns,
             "scene-ns" => &mut scene_ns,
             "accent" => &mut accent,
+            "theme" => &mut theme,
             _ => return Err(Rejection::UnknownField),
         };
         if slot.replace(value).is_some() {
@@ -310,7 +326,7 @@ mod tests {
     fn canonical_fixture_matches_the_display_manager_encoder() {
         assert_eq!(
             valid_record(),
-            "v=1;visual=lxb-wallpaper-v1;clock=linux-monotonic;boot=01234567-89ab-cdef-0123-456789abcdef;sample-ns=10000000000;scene-ns=42000000000;accent=Blue"
+            "v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;boot=01234567-89ab-cdef-0123-456789abcdef;sample-ns=10000000000;scene-ns=42000000000;accent=Blue"
         );
     }
 
@@ -352,8 +368,13 @@ mod tests {
             parse(&valid_record().replace("v=1", "v=2")).unwrap_err(),
             Rejection::UnsupportedVersion
         );
+        // The retired identifier rather than an invented one, because that is
+        // the case this field exists for: a display manager still on the older
+        // wallpaper, handing its phase to a shell that would draw a different
+        // scene at the same time. Continuing from it is worse than starting
+        // again, and the record has to be refused for that to happen.
         assert_eq!(
-            parse(&valid_record().replace(VISUAL_ID, "lxb-wallpaper-v2")).unwrap_err(),
+            parse(&valid_record().replace(VISUAL_ID, "lxb-wallpaper-v1")).unwrap_err(),
             Rejection::UnsupportedVisual
         );
         assert_eq!(

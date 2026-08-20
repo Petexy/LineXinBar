@@ -11,7 +11,7 @@
 //! ## What the pieces are
 //!
 //! Valve's store artwork has a dozen shapes. Three of them matter to a shell
-//! built like a cross media bar:
+//! built like the lattice:
 //!
 //! * the **cover** — the portrait capsule, which is the picture a person
 //!   recognises a game by and the only one drawn at the size of a row. Named

@@ -192,6 +192,7 @@ fn place(title: &str, at: &Path, glyph: &'static str, fallback: Option<String>) 
         entries: Vec::new(),
         place: Some(Place::Directory(at.to_path_buf())),
         chosen: false,
+        over_the_list: false,
     })
 }
 
@@ -296,6 +297,7 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort) -> Shown {
                 entries: Vec::new(),
                 place: Some(Place::Directory(path.clone())),
                 chosen: false,
+                over_the_list: false,
             })
         } else {
             let (mime, glyph) = described(&path);

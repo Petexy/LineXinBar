@@ -4,24 +4,24 @@
 //! clicks. The click is not decoration either — it is the half of the
 //! acknowledgement that survives the user looking somewhere else on the
 //! screen, and on a bar that eases rather than snaps it arrives on the press
-//! while the highlight is still travelling. Every XMB there has ever been made
-//! this sound.
+//! while the highlight is still travelling. Every console shell of this shape
+//! there has ever been made this sound.
 //!
 //! Eleven recordings, shipped in the repository beside this file for the same
 //! reason the fonts and the cursor are: there may be no desktop on the machine
 //! and so no theme of sounds to borrow one from. Ten are short answers.
 //!
 //! Six of those answer a control the user pressed, and they are arranged as
-//! pairs. Start answers a direction that moved something and a press that it
-//! then keeps; the guide overlay answers the same two in its own voice, so the
-//! ear can tell the two screens apart as readily as the eye; the move back out
-//! of a subcategory has its own, because it is the one move that undoes one; a
-//! key of the on-screen keyboard going down has another, because a board is its
-//! own instrument. A seventh belongs to Start alone: an application starting
-//! from a tile of the bar, which is the one place in the shell an application is
-//! started from. An eighth belongs to one *button* rather than to a screen: the
-//! guide button, which works from inside anything and therefore answers from
-//! inside anything.
+//! pairs. The start screen answers a direction that moved something and a
+//! press that it then keeps; the guide overlay answers the same two in its own
+//! voice, so the ear can tell the two screens apart as readily as the eye; the
+//! move back out of a subcategory has its own, because it is the one move that
+//! undoes one; a key of the on-screen keyboard going down has another, because
+//! a board is its own instrument. A seventh belongs to the start screen alone:
+//! an application starting from a tile of the bar, which is the one place in
+//! the shell an application is started from. An eighth belongs to one *button*
+//! rather than to a screen: the guide button, which works from inside anything
+//! and therefore answers from inside anything.
 //!
 //! The last two answer something that *happened* rather than something that was
 //! pressed, which is why each of them exists: a display photographed, and a
@@ -30,10 +30,10 @@
 //! moment, and a shell that made no noise for either would be one where a
 //! picture and a password prompt both arrived in silence.
 //!
-//! The eleventh is the Start screen's background music. It loops only while
+//! The eleventh is the start screen's background music. It loops only while
 //! nothing at all is open on any display, fades when an application takes one
-//! of them, and is reconstructed from sample zero whenever Start is returned to
-//! rather than resumed.
+//! of them, and is reconstructed from sample zero whenever the start screen is
+//! returned to rather than resumed.
 //!
 //! It is also the one recording here that can be turned off outright, from
 //! Settings > Sounds > Start music. The ten short clips answer a control that
@@ -47,7 +47,7 @@
 //! Reusable panels raised from either screen — context menus, dialogs, and the
 //! mixer they can carry — retain the same sounds they have everywhere else: a
 //! component decides its own voice rather than inheriting the backdrop it
-//! happened to be raised over. A guide raised from an otherwise empty Start
+//! happened to be raised over. A guide raised from an otherwise empty start
 //! screen does not end its background music; one raised over an application
 //! does not start it.
 //!
@@ -161,8 +161,8 @@ const STEP: &[u8] = include_bytes!("sounds/press.ogg");
 /// the ear no way of telling which way the user is going.
 const BACK: &[u8] = include_bytes!("sounds/press-back.ogg");
 
-/// Choosing something on Start that the shell then keeps: a subcategory
-/// opened, a setting taken, a search field raised.
+/// Choosing something on the start screen that the shell then keeps: a
+/// subcategory opened, a setting taken, a search field raised.
 ///
 /// The counterpart of [`STEP`] rather than a louder version of it. Moving the
 /// highlight and pressing what it is on are the two halves of using the bar,
@@ -172,8 +172,9 @@ const SELECT: &[u8] = include_bytes!("sounds/press-selected.ogg");
 /// A direction that moved something in the Home Button guide.
 ///
 /// The guide's own, not the bar's. It is a screen of its own rather than
-/// another column of Start, and the two are told apart by ear as well as by
-/// eye — which is the whole reason it waited rather than borrowing [`STEP`].
+/// another column of the start screen, and the two are told apart by ear as
+/// well as by eye — which is the whole reason it waited rather than borrowing
+/// [`STEP`].
 const GUIDE_STEP: &[u8] = include_bytes!("sounds/press-guide.ogg");
 
 /// Choosing something in the guide that the shell then keeps.
@@ -263,7 +264,7 @@ const GUIDE_OPEN: &[u8] = include_bytes!("sounds/guide-open.ogg");
 /// enough to sit under whatever is already playing.
 const NOTIFY: &[u8] = include_bytes!("sounds/notification.ogg");
 
-/// The Start screen's background music.
+/// The start screen's background music.
 const MUSIC: &[u8] = include_bytes!("sounds/start-bg-music.ogg");
 
 /// The music eases in from silence so beginning at sample zero never clicks.
@@ -350,9 +351,9 @@ pub struct Sounds {
     /// When each of them was last put on the output, so that a copy is never
     /// laid on top of one still sounding. See [`RESTED`].
     played_at: [Option<Instant>; Effect::ALL.len()],
-    /// The one looping stream, while Start owns the focused display. Unlike
-    /// the effects it is decoded as it plays, because it is minutes rather
-    /// than milliseconds long.
+    /// The one looping stream, while the start screen owns the focused
+    /// display. Unlike the effects it is decoded as it plays, because it is
+    /// minutes rather than milliseconds long.
     music: Option<MusicPlayback>,
     /// The last focus decision. A rising edge is what makes a *new* decoder;
     /// it must not be inferred from whether a fade still has a player alive.
@@ -398,8 +399,8 @@ impl Sounds {
         self.play(Effect::Back);
     }
 
-    /// Start's answer to a press that the shell then keeps: a subcategory
-    /// opened, a setting taken, a search field raised.
+    /// The start screen's answer to a press that the shell then keeps: a
+    /// subcategory opened, a setting taken, a search field raised.
     ///
     /// Not a press on a tile that hands the display to an application. That is
     /// [`Self::launch`] whether the process is being started or merely returned
@@ -415,9 +416,10 @@ impl Sounds {
     }
 
     /// The guide's answer to every press it acts on — a panel raised out of a
-    /// tile, a switch turned over, the overlay dismissed back to Start, and
-    /// the presses that hand an application the display: a window card chosen
-    /// out of the deck, and Resume with something running behind the overlay.
+    /// tile, a switch turned over, the overlay dismissed back to the start
+    /// screen, and the presses that hand an application the display: a window
+    /// card chosen out of the deck, and Resume with something running behind
+    /// the overlay.
     ///
     /// Those two used to take [`Self::launch`], on the grounds that being
     /// handed the screen is one event however it was asked for. They do not
@@ -438,7 +440,8 @@ impl Sounds {
         self.play(Effect::Key);
     }
 
-    /// An application about to take the display, started from Start.
+    /// An application about to take the display, started from the start
+    /// screen.
     ///
     /// A tile of the bar pressed, whether that forks a process or comes back
     /// to one already up: the tile is where an application is started from,
@@ -496,7 +499,7 @@ impl Sounds {
         self.play(Effect::Notify);
     }
 
-    /// Reconcile the Start screen's one looping stream with what has focus.
+    /// Reconcile the start screen's one looping stream with what has focus.
     ///
     /// Called on every main-loop tick rather than from individual focus-event
     /// handlers. Both local guide actions and compositor foreground events can
@@ -661,9 +664,10 @@ impl Sounds {
     fn refresh_failed_output(&mut self, now: Instant) {
         if self.device_failed.swap(false, Ordering::AcqRel) {
             tracing::warn!("audio output was lost; reopening it");
-            // A Player is tied to its mixer. Drop it before the mixer, and if
-            // Start still owns focus the next lines of `sync_music` will build
-            // a new decoder on the replacement output at sample zero.
+            // A Player is tied to its mixer. Drop it before the mixer, and
+            // if the start screen still owns focus the next lines of
+            // `sync_music` will build a new decoder on the replacement output
+            // at sample zero.
             self.stop_music();
             self.device = None;
             self.retry_at = now;

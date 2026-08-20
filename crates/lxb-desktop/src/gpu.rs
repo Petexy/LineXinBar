@@ -2,7 +2,7 @@
 //!
 //! Two pipelines draw the interface:
 //!
-//! * a full-screen pass that draws the animated XMB backdrop in a shader, and
+//! * a full-screen pass that draws the animated lattice backdrop in a shader, and
 //! * an instanced textured-quad pass that draws every icon and panel from a
 //!   single atlas.
 //!
@@ -358,7 +358,7 @@ pub const SQUIRCLE_CORNER: f32 = 4.0;
 pub const SOLID_SLOT: u32 = 0;
 
 /// A soft radial glow, generated at startup. Tinted and pulsed, it is what
-/// makes the selected entry unmistakable — the XMB highlight.
+/// makes the selected entry unmistakable — the lattice highlight.
 pub const GLOW_SLOT: u32 = 1;
 
 /// Atlas cells taken by the procedural sprites above; icons start after them.
@@ -450,9 +450,16 @@ const UI_FONT_BOLD: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-B
 /// be, because a clock is thirteen characters and not a language: each is cut
 /// out of the bundled face once at startup, measured into a signed distance
 /// field exactly as a glyph's shape is (see [`crate::icons::distance_field`]),
-/// and drawn as one quad per letter. Nothing else in the shell may follow: a
-/// window title is somebody else's alphabet, and a cell per codepoint is not a
-/// text renderer.
+/// and drawn as one quad per letter.
+///
+/// The rule that keeps that from becoming a text renderer is that the set is
+/// *closed*: a fixed list of characters, cut once, because they are marks. A
+/// window title is somebody else's alphabet and will never be in one of these.
+/// The second such list is [`crate::icons::INDEX_LETTERS`], the headings a long
+/// column can be indexed by, and it is a list of its own rather than more rows
+/// here — a clock and an index share no character, and one list holding both
+/// would be a set whose reason for stopping where it does could not be
+/// written down.
 ///
 /// The fourteenth is the per cent sign, and it is here on exactly that
 /// argument rather than in spite of it. What it writes is the battery's charge,
@@ -499,6 +506,34 @@ const LETTER_SET: [(char, &str); 14] = [
 pub const LETTER_BOX: f32 = 1.0;
 pub const LETTER_MIDDLE: f32 = 0.35;
 
+/// The same two numbers for an index's headings, which are capitals and want
+/// their own.
+///
+/// Wider than an em, and centred on the *cap* rather than on the run. Every
+/// heading but two is a plain capital between the baseline and the cap line, so
+/// that is what the eye centres a row's mark on — but `Q` hangs a tail below the
+/// baseline and `W` is nearly an em across, and a mark that ran out to its cell
+/// edge would have its shadow end in a straight cut (see
+/// [`crate::icons::distance_field`], and the margin the icons tests hold every
+/// mark to). The extra fifteenth is what those two need and the rest of the
+/// alphabet spends on air.
+const INDEX_BOX: f32 = 1.15;
+const INDEX_MIDDLE: f32 = 0.355;
+
+/// And the box the *row* an index hangs under is cut in, which holds three
+/// characters instead of one — see [`crate::icons::INDEX_MARK`].
+///
+/// Nearly two ems, because that is what "A-Z" is wide, and the cell is square:
+/// a run has to fit across it with the same margin a single heading keeps, so
+/// the type is cut smaller and the mark comes out shorter than the letters it
+/// stands over. That is the right way round. The row is the way *in* to the
+/// alphabet and the headings are the alphabet, so a mark that stood as tall as
+/// them would read as one more of them.
+///
+/// Centred on the cap line like the headings, since it is capitals; the hyphen
+/// finds its own height between them.
+const INDEX_MARK_BOX: f32 = 1.9;
+
 /// One of the corner's characters, ready to be drawn.
 ///
 /// The cell it was measured into — `None` for the space, which has an advance
@@ -510,13 +545,16 @@ pub struct Letter {
     pub advance: f32,
 }
 
-/// The size the letters are cut at.
+/// The size a set's letters are cut at, given how many ems of type its cell
+/// covers.
 ///
 /// Large enough that the supersampled grid the distance transform runs on is
 /// the letter's own resolution rather than a guess at it: the cell is measured
-/// at [`crate::icons::SDF_SUPERSAMPLE`] times [`CELL`], and an em of type at
-/// this size is exactly that many pixels across.
-const LETTER_FIELD_SIZE: f32 = (CELL * crate::icons::SDF_SUPERSAMPLE) as f32 / LETTER_BOX;
+/// at [`crate::icons::SDF_SUPERSAMPLE`] times [`CELL`], and the box is exactly
+/// that many pixels across whatever share of an em it is.
+fn letter_field_size(box_ems: f32) -> f32 {
+    (CELL * crate::icons::SDF_SUPERSAMPLE) as f32 / box_ems
+}
 
 /// Which cell one of the corner's characters is filed under, if it has one.
 fn letter_name(letter: char) -> Option<&'static str> {
@@ -541,33 +579,50 @@ fn shell_faces() -> FontSystem {
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }
 
-/// Shape one character on its own and answer with the glyph it came out as.
+/// Shape a run of the shell's own type on its own line and answer with the
+/// glyphs it came out as.
 ///
-/// `None` for a character the face has no glyph for, which for this set would
-/// mean the bundled font had been replaced by something that is not Roboto.
-fn shaped_letter(
+/// `None` if the face has no glyph for any of it, which for these sets would
+/// mean the bundled font had been replaced by something that is not Roboto —
+/// and it is the whole run that fails, because half a mark is worse than none.
+///
+/// One character is the ordinary case and a short run is the exception, rather
+/// than two ways of cutting a cell: a mark that is three letters is still one
+/// mark, laid out by the same shaper that lays out the one-letter ones. What
+/// the caller does with the glyphs is the same either way — see
+/// [`letter_fields`].
+fn shaped_run(
     font_system: &mut FontSystem,
-    letter: char,
+    content: &str,
     size: f32,
-) -> Option<glyphon::cosmic_text::LayoutGlyph> {
+) -> Option<Vec<glyphon::cosmic_text::LayoutGlyph>> {
     let mut buffer = TextBuffer::new(font_system, Metrics::new(size, size));
     buffer.set_size(None, None);
     let attrs = Attrs::new()
         .family(Family::Name(UI_FONT))
         .weight(Weight::NORMAL);
-    buffer.set_text(&letter.to_string(), &attrs, Shaping::Advanced, None);
+    buffer.set_text(content, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
-    buffer
-        .layout_runs()
-        .next()?
-        .glyphs
-        .first()
-        .cloned()
-        .filter(|glyph| glyph.glyph_id != 0)
+    let glyphs = buffer.layout_runs().next()?.glyphs.to_vec();
+    if glyphs.is_empty() || glyphs.iter().any(|glyph| glyph.glyph_id == 0) {
+        return None;
+    }
+    Some(glyphs)
 }
 
-/// Cut the corner's letters out of the bundled face and measure each into the
-/// cell the quad shader shades a shape out of.
+/// Shape one character on its own and answer with the glyph it came out as.
+fn shaped_letter(
+    font_system: &mut FontSystem,
+    letter: char,
+    size: f32,
+) -> Option<glyphon::cosmic_text::LayoutGlyph> {
+    shaped_run(font_system, &letter.to_string(), size)?
+        .into_iter()
+        .next()
+}
+
+/// Cut the shell's own closed sets of type out of the bundled face and measure
+/// each mark into the cell the quad shader shades a shape out of.
 ///
 /// Done on the thread that decodes the built-in glyphs and handed to the atlas
 /// with them — see `load_builtin_icons` — because it is the same work: a
@@ -579,59 +634,93 @@ pub fn letter_fields() -> Vec<(String, Icon)> {
     let fine = CELL * crate::icons::SDF_SUPERSAMPLE;
     let mut out = Vec::new();
 
-    for (letter, name) in LETTER_SET {
+    // Every closed set, cut the same way and into the same kind of cell: the
+    // corner's clock, the headings an index of a long column is written in, and
+    // the mark on the row that index hangs under. Each carries the box it is
+    // centred in, because a row of digits, a capital on its own and a run of
+    // three are not centred on the same line — see [`LETTER_SET`], [`INDEX_BOX`]
+    // and [`INDEX_MARK_BOX`].
+    let cutting = LETTER_SET
+        .iter()
+        .map(|(letter, name)| (letter.to_string(), *name, LETTER_BOX, LETTER_MIDDLE))
+        .chain(
+            crate::icons::INDEX_LETTERS
+                .iter()
+                .map(|(letter, name)| (letter.to_string(), *name, INDEX_BOX, INDEX_MIDDLE)),
+        )
+        .chain(std::iter::once((
+            "A-Z".to_string(),
+            crate::icons::INDEX_MARK,
+            INDEX_MARK_BOX,
+            INDEX_MIDDLE,
+        )));
+    for (content, name, box_ems, middle) in cutting {
         if name.is_empty() {
             continue;
         }
-        let Some(glyph) = shaped_letter(&mut font_system, letter, LETTER_FIELD_SIZE) else {
-            tracing::warn!(%letter, "the bundled face has no such character");
+        let field_size = letter_field_size(box_ems);
+        let Some(glyphs) = shaped_run(&mut font_system, &content, field_size) else {
+            tracing::warn!(%content, "the bundled face has no such characters");
             continue;
         };
-        // The pen at the origin, so the mask's placement is measured from the
-        // letter's own baseline and nothing else.
-        let physical = glyph.physical((0.0, 0.0), 1.0);
-        let Some(image) = swash.get_image_uncached(&mut font_system, physical.cache_key) else {
-            tracing::warn!(%letter, "the face would not rasterise a character");
-            continue;
-        };
-        if image.content != glyphon::cosmic_text::SwashContent::Mask {
-            tracing::warn!(%letter, "a character came back as something other than coverage");
-            continue;
-        }
 
-        // Where the letter's square sits in the same pixels the mask is in: the
-        // pen is at zero, the baseline is at zero, and up is negative.
-        let box_side = LETTER_BOX * LETTER_FIELD_SIZE;
-        let left = glyph.w * 0.5 - box_side * 0.5;
-        let top = -(LETTER_MIDDLE * LETTER_FIELD_SIZE) - box_side * 0.5;
+        // Where the run's square sits in the same pixels the masks are in: the
+        // pen starts at zero, the baseline is at zero, and up is negative. The
+        // whole run is centred across the box, so a mark of three characters
+        // stands where a mark of one does.
+        let run_width: f32 = glyphs.iter().map(|glyph| glyph.w).sum();
+        let box_side = box_ems * field_size;
+        let left = run_width * 0.5 - box_side * 0.5;
+        let top = -(middle * field_size) - box_side * 0.5;
 
         let mut inside = vec![false; (fine * fine) as usize];
-        for row in 0..image.placement.height {
-            for column in 0..image.placement.width {
-                // Coverage of a half or more is the letter, which is where the
-                // distance field's zero belongs: the transform measures a
-                // shape, and a shape's edge is where it covers half a pixel.
-                let coverage = image.data[(row * image.placement.width + column) as usize];
-                if coverage < 128 {
-                    continue;
-                }
-                let x = image.placement.left + column as i32 - left.round() as i32;
-                let y = -image.placement.top + row as i32 - top.round() as i32;
-                if x < 0 || y < 0 || x >= fine as i32 || y >= fine as i32 {
-                    // A letter that does not fit its own square would be drawn
-                    // with a straight cut down it. The test holds the box big
-                    // enough; this is what stops a bad one corrupting a
-                    // neighbouring cell instead of being visible.
-                    tracing::warn!(%letter, "a character reaches outside its cell");
-                    continue;
-                }
-                inside[(y as u32 * fine + x as u32) as usize] = true;
+        let mut drawn = false;
+        for glyph in &glyphs {
+            // The pen at the origin, so each mask's placement is measured from
+            // the run's own baseline and its own start and nothing else.
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            let Some(image) = swash.get_image_uncached(&mut font_system, physical.cache_key) else {
+                tracing::warn!(%content, "the face would not rasterise a character");
+                continue;
+            };
+            if image.content != glyphon::cosmic_text::SwashContent::Mask {
+                tracing::warn!(%content, "a character came back as something other than coverage");
+                continue;
             }
+            for row in 0..image.placement.height {
+                for column in 0..image.placement.width {
+                    // Coverage of a half or more is the letter, which is where
+                    // the distance field's zero belongs: the transform measures
+                    // a shape, and a shape's edge is where it covers half a
+                    // pixel.
+                    let coverage = image.data[(row * image.placement.width + column) as usize];
+                    if coverage < 128 {
+                        continue;
+                    }
+                    let x = physical.x + image.placement.left + column as i32 - left.round() as i32;
+                    let y = physical.y - image.placement.top + row as i32 - top.round() as i32;
+                    if x < 0 || y < 0 || x >= fine as i32 || y >= fine as i32 {
+                        // A mark that does not fit its own square would be
+                        // drawn with a straight cut down it. The test holds the
+                        // box big enough; this is what stops a bad one
+                        // corrupting a neighbouring cell instead of being
+                        // visible.
+                        tracing::warn!(%content, "a character reaches outside its cell");
+                        continue;
+                    }
+                    inside[(y as u32 * fine + x as u32) as usize] = true;
+                    drawn = true;
+                }
+            }
+        }
+        if !drawn {
+            tracing::warn!(%content, "a mark came out with nothing in it");
+            continue;
         }
 
         match crate::icons::distance_field(&inside, fine, CELL) {
             Some(icon) => out.push((name.to_string(), icon)),
-            None => tracing::warn!(%letter, "a character would not measure"),
+            None => tracing::warn!(%content, "a mark would not measure"),
         }
     }
     out
@@ -961,6 +1050,14 @@ struct Globals {
     /// The picture standing behind everything: the layer being left, the layer
     /// being arrived at, and how much of each is showing. See [`Hero`].
     hero: [f32; 4],
+    /// Which material each half of the shell is drawn in: 0 for its own and 1
+    /// for the plain one a slow machine asks for, under Settings > Appearance >
+    /// Theme. `x` is the wallpaper — the band of water against the glass-silk
+    /// ribbons — and `y` is every mark the shell draws, beaded out of its own
+    /// shape against the flat shape itself. Two numbers rather than one because
+    /// the two are separate settings, and the pair costs nothing here: a uniform
+    /// block is laid out in sixteen-byte lots, so the other two are spare.
+    style: [f32; 4],
 }
 
 /// How many card corners one pass can cover. The column shows at most three
@@ -1126,7 +1223,7 @@ pub struct Gpu {
     logos: HashMap<u32, Thumb>,
 
     /// The pictures that stand behind a display, one per layer of an array
-    /// texture, and which game each layer is holding. `None` is a free layer.
+    /// texture, and what each layer is a picture of. `None` is a free layer.
     ///
     /// A texture of its own rather than a corner of the atlas: this one is a
     /// whole display's worth of picture with a chain of blurred copies under
@@ -1134,7 +1231,7 @@ pub struct Gpu {
     /// all.
     scenery_texture: wgpu::Texture,
     scenery_bind_group: wgpu::BindGroup,
-    scenery_layers: Vec<Option<u32>>,
+    scenery_layers: Vec<Option<crate::art::Sight>>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -1422,7 +1519,7 @@ impl Gpu {
 
         // --- pipelines ---------------------------------------------------
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("xmb shaders"),
+            label: Some("lattice shaders"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
         });
 
@@ -2034,37 +2131,34 @@ impl Gpu {
         self.thumbs.retain(|path, _| wanted.contains(path));
     }
 
-    /// The layer holding one game's picture, if it is resident.
-    pub fn scenery(&self, app_id: u32) -> Option<u32> {
+    /// The layer holding one picture, if it is resident.
+    pub fn scenery(&self, of: &crate::art::Sight) -> Option<u32> {
         self.scenery_layers
             .iter()
-            .position(|held| *held == Some(app_id))
+            .position(|held| held.as_ref() == Some(of))
             .map(|layer| layer as u32)
     }
 
-    /// Put a game's picture into a free layer, with all of its halvings.
+    /// Put a picture into a free layer, with all of its halvings.
     ///
     /// Nothing is evicted to make room: a layer is only free once the shell
     /// has said it no longer wants what is in it, and a picture arriving for a
     /// display that has since moved on must not take the layer out from under
     /// the picture somebody is looking at. Answers false when there is no room,
     /// which leaves that display's wallpaper as it was.
-    pub fn put_scenery(&mut self, app_id: u32, scenery: &crate::art::Scenery) -> bool {
-        if self.scenery(app_id).is_some() {
+    pub fn put_scenery(&mut self, of: &crate::art::Sight, scenery: &crate::art::Scenery) -> bool {
+        if self.scenery(of).is_some() {
             return false;
         }
         let Some(layer) = self.scenery_layers.iter().position(Option::is_none) else {
-            tracing::debug!(
-                app_id,
-                "no free layer for that picture; the wallpaper stays"
-            );
+            tracing::debug!(?of, "no free layer for that picture; the wallpaper stays");
             return false;
         };
         for (level, pixels) in scenery.levels.iter().enumerate() {
             let level = level as u32;
             let (width, height) = crate::art::Scenery::size(level);
             if pixels.len() != (width * height * 4) as usize {
-                tracing::warn!(app_id, level, "that rung is not the size it should be");
+                tracing::warn!(?of, level, "that rung is not the size it should be");
                 return false;
             }
             self.queue.write_texture(
@@ -2091,19 +2185,19 @@ impl Gpu {
                 },
             );
         }
-        self.scenery_layers[layer] = Some(app_id);
+        self.scenery_layers[layer] = Some(of.clone());
         true
     }
 
-    /// Give up every layer whose game no display is showing.
+    /// Give up every layer whose picture no display is showing.
     ///
     /// The same policy as the thumbnails, and it has to be: what these hold is
     /// what is on screen, and a picture the cursor has left is one nothing will
     /// draw again until it is asked for. Getting it back costs a read of a file
     /// that is on the disk by then.
-    pub fn retain_scenery(&mut self, wanted: &HashSet<u32>) {
+    pub fn retain_scenery(&mut self, wanted: &HashSet<crate::art::Sight>) {
         for layer in &mut self.scenery_layers {
-            if layer.is_some_and(|app_id| !wanted.contains(&app_id)) {
+            if layer.as_ref().is_some_and(|of| !wanted.contains(of)) {
                 *layer = None;
             }
         }
@@ -2174,6 +2268,12 @@ impl Gpu {
                 glow: theme.glow.a(1.0),
                 covers: params.covers,
                 hero: hero.packed(),
+                style: [
+                    crate::theme::style_flag(crate::theme::Part::Wallpaper),
+                    crate::theme::style_flag(crate::theme::Part::Icons),
+                    0.0,
+                    0.0,
+                ],
             }),
         );
 
@@ -2622,6 +2722,7 @@ impl Target {
                 glow: [0.0; 4],
                 covers: [[0.0; 4]; MAX_COVERS],
                 hero: [0.0; 4],
+                style: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -3540,8 +3641,9 @@ mod tests {
         shell_faces()
     }
 
-    /// Every character the corner's clock is written in ships as a measurement of
-    /// its own shape, inside its own cell, with room round it for the shadow.
+    /// Every character cut from the shell's own face — the corner's clock and an
+    /// index's headings — ships as a measurement of its own shape, inside its
+    /// own cell, with room round it for the shadow.
     ///
     /// The letters are held to the same three things a built-in glyph is — see
     /// `icons::tests::a_glyph_can_ship_as_the_shape_of_itself` — with one
@@ -3549,16 +3651,26 @@ mod tests {
     /// and covers at least a twentieth of its cell; a colon is two dots in an em
     /// and covers a fiftieth, and that is right. What matters here is that it is
     /// *there*, that it is inside its cell, and that the field is a distance.
+    ///
+    /// The margin is what says the two sets need two boxes. `Q` is the letter
+    /// that found it: its tail hangs a tenth of an em below the baseline, and in
+    /// the box the clock's digits are centred in it ended in a straight cut down
+    /// the bottom of its cell.
     #[test]
-    fn every_letter_of_the_clock_is_a_shape_in_its_cell() {
+    fn every_letter_cut_from_the_face_is_a_shape_in_its_cell() {
         let fields = letter_fields();
         let expected: Vec<&str> = LETTER_SET
             .iter()
+            .chain(crate::icons::INDEX_LETTERS.iter())
             .map(|(_, name)| *name)
+            .chain(std::iter::once(crate::icons::INDEX_MARK))
             .filter(|name| !name.is_empty())
             .collect();
         let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, expected, "the clock's own alphabet, in order");
+        assert_eq!(
+            names, expected,
+            "the clock's own characters, the index's headings and its mark, in order"
+        );
 
         let size = CELL as usize;
         for (name, icon) in &fields {

@@ -66,10 +66,17 @@ use smithay::utils::{Buffer, Logical, Rectangle, Size, Transform};
 
 /// How large the bridge image is drawn before it is scaled to the display.
 ///
-/// Every term in the wallpaper is broad — the finest of them, a silk ribbon's
-/// crest, is still several rows tall here — and the renderer scales textures
-/// with a linear filter. Rendering at panel resolution instead would add tens
-/// of milliseconds to exactly the interval this is trying to shorten.
+/// Small, because rendering at panel resolution would add tens of milliseconds
+/// to exactly the interval this is trying to shorten — a frame of it costs
+/// eight times this one — and because the renderer scales textures with a
+/// linear filter, which is enough for a picture with nothing sharp in it.
+///
+/// Almost nothing here *is* sharp: every field in the wallpaper is broad, and
+/// the one thing with an edge — the band of water — is told how big a sample of
+/// it is and feathers its silhouettes to match. That is what makes this size a
+/// choice about cost rather than a choice about how the band looks: without it
+/// a sheet pinched nearly edge-on is a couple of rows tall here, and a couple
+/// of rows of hard edge scaled up threefold is a chain of beads.
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 360;
 
@@ -144,8 +151,8 @@ impl Backdrop {
     /// display: they are usually the same shape, and a bridge frame stretched
     /// across an unusual second monitor for a third of a second is still the
     /// right colours in the right places.
-    pub fn start(accent: &str, scene: Duration, aspect: f32) -> Self {
-        let painter = Arc::new(Painter::new(accent, scene, aspect));
+    pub fn start(accent: &str, style: wallpaper::Style, scene: Duration, aspect: f32) -> Self {
+        let painter = Arc::new(Painter::new(accent, style, scene, aspect));
         // Drawn here, on the way up, rather than waited for: the next thing
         // this compositor does is present a frame, and there is no earlier
         // picture to show while a thread starts.
@@ -277,7 +284,7 @@ struct Work {
 }
 
 impl Painter {
-    fn new(accent: &str, scene: Duration, aspect: f32) -> Self {
+    fn new(accent: &str, style: wallpaper::Style, scene: Duration, aspect: f32) -> Self {
         Self {
             // A scene time longer than this machine has been running cannot be
             // subtracted from now. Nothing this compositor is handed should
@@ -286,7 +293,7 @@ impl Painter {
             origin: Instant::now()
                 .checked_sub(scene)
                 .unwrap_or_else(Instant::now),
-            sky: Sky::new(wallpaper::palette(accent)),
+            sky: Sky::styled(wallpaper::palette(accent), style),
             aspect: if aspect.is_finite() && aspect > 0.0 {
                 aspect
             } else {
@@ -417,29 +424,55 @@ impl Opening {
     }
 
     /// Draw it, for a display of this shape.
+    ///
+    /// The accent and the clock can come from the display manager's record; the
+    /// material never does. A theme is a standing fact about the account whose
+    /// session this is — the shell reads it out of `shell.toml` at startup and
+    /// the login screen reads the same key — so this reads it there too rather
+    /// than taking it from a hand-over that may have been written by a greeter
+    /// drawing for somebody else.
     pub fn start(&self, aspect: f32) -> Backdrop {
-        let (accent, scene) = opening_scene(self.handoff.as_deref());
+        let (accent, style, scene) = opening_look(self.handoff.as_deref());
         tracing::info!(
             %accent,
+            theme = style.name(),
             scene_secs = scene.as_secs_f32(),
             "drawing the startup wallpaper"
         );
-        Backdrop::start(&accent, scene, aspect)
+        Backdrop::start(&accent, style, scene, aspect)
     }
 }
 
-/// What the wallpaper should look like as this session starts.
+/// What the wallpaper should look like as this session starts: the palette, the
+/// material, and where the clock had reached.
 ///
-/// The display manager's record is the good case: it carries both the accent
-/// the login screen was drawn in and where its clock had reached, so the
-/// bridge continues that animation rather than restarting it. Without one —
-/// a plain `lxb --shell` on a TTY, or a display manager that knows nothing
-/// about this — the accent still comes from the user's own settings and the
-/// clock simply starts at zero. Either way the screen is not black.
-pub fn opening_scene(handoff: Option<&std::ffi::OsStr>) -> (String, Duration) {
+/// The display manager's record is the good case: it carries the accent the
+/// login screen was drawn in and where its clock had reached, so the bridge
+/// continues that animation rather than restarting it. Without one — a plain
+/// `lxb --shell` on a TTY, or a display manager that knows nothing about this —
+/// the accent still comes from the user's own settings and the clock simply
+/// starts at zero. Either way the screen is not black.
+///
+/// The material follows the same rule with one addition: the record's answer
+/// where it has one, and this account's own settings otherwise. That order
+/// rather than the reverse, and it is the one place in either project where a
+/// hand-over outranks the file — in front of a *login screen* this compositor
+/// runs as the greeter's account, and the settings it can read are not those of
+/// the person whose wallpaper is on the screen. The greeter is the only process
+/// that knows both, so where it has said, it is right.
+///
+/// One material rather than two: the shell's Theme setting has a half about the
+/// wallpaper and a half about the marks it draws, and nothing here draws a mark.
+/// The record's `theme` field is the wallpaper's half and has always been.
+pub fn opening_look(handoff: Option<&std::ffi::OsStr>) -> (String, wallpaper::Style, Duration) {
     match handoff.and_then(|record| record.to_str()).and_then(read) {
-        Some(scene) => scene,
-        None => (configured_accent(), Duration::ZERO),
+        Some((accent, style, scene)) => {
+            (accent, style.unwrap_or_else(|| configured_look().1), scene)
+        }
+        None => {
+            let (accent, style) = configured_look();
+            (accent, style, Duration::ZERO)
+        }
     }
 }
 
@@ -447,10 +480,19 @@ pub fn opening_scene(handoff: Option<&std::ffi::OsStr>) -> (String, Duration) {
 ///
 /// Deliberately incomplete: the shell owns this record's meaning and does the
 /// whole of its validation, including the checks that matter for trusting it —
-/// that it came from this boot and has not gone stale. This reads the two
-/// fields a picture needs and gives up on anything it does not recognise. A
-/// record this rejects is still passed on to the shell untouched.
-fn read(record: &str) -> Option<(String, Duration)> {
+/// that it came from this boot and has not gone stale. This reads the fields a
+/// picture needs and gives up on anything it does not recognise. A record this
+/// rejects is still passed on to the shell untouched.
+///
+/// `visual` is the exception, and it is not one of the shell's checks being
+/// duplicated for its own sake: it is the field that says whether the number
+/// beside it is a phase of *this* scene at all. A display manager still drawing
+/// an older wallpaper hands over a time the shell will refuse, and a bridge
+/// frame painted from it would put a picture on screen that the shell's own
+/// first frame then jumps away from — which is the seam this whole module
+/// exists to remove. Refused here, both ends of that boot start the animation
+/// from zero together.
+fn read(record: &str) -> Option<(String, Option<wallpaper::Style>, Duration)> {
     // The same bound the shell applies, so a malformed environment cannot
     // make the compositor walk a long string before the session starts.
     if record.len() > 1024 || !record.is_ascii() {
@@ -460,14 +502,23 @@ fn read(record: &str) -> Option<(String, Duration)> {
     let mut accent = None;
     let mut sample_ns = None;
     let mut scene_ns = None;
+    let mut visual = None;
+    let mut theme = None;
     for field in record.split(';') {
         let (key, value) = field.split_once('=')?;
         match key {
             "accent" => accent = Some(value),
+            "visual" => visual = Some(value),
+            "theme" => theme = Some(value),
             "sample-ns" => sample_ns = Some(value.parse::<u64>().ok()?),
             "scene-ns" => scene_ns = Some(value.parse::<u64>().ok()?),
             _ => {}
         }
+    }
+
+    // The scene this build draws, or no scene time at all.
+    if visual? != wallpaper::VISUAL {
+        return None;
     }
 
     let accent = accent?;
@@ -482,7 +533,11 @@ fn read(record: &str) -> Option<(String, Duration)> {
     // rather than from where it was a login ago.
     let elapsed_ns = monotonic_now_ns()?.checked_sub(sample_ns?)?;
     let scene_ns = scene_ns?.checked_add(elapsed_ns)?;
-    Some((accent.to_string(), Duration::from_nanos(scene_ns)))
+    Some((
+        accent.to_string(),
+        theme.map(wallpaper::style),
+        Duration::from_nanos(scene_ns),
+    ))
 }
 
 fn monotonic_now_ns() -> Option<u64> {
@@ -507,8 +562,27 @@ fn monotonic_now_ns() -> Option<u64> {
 /// display manager still comes up in the right colour. An unreadable or
 /// unrecognised value falls back to the default palette, which is what the
 /// shell itself does with it.
-fn configured_accent() -> String {
-    let default = wallpaper::PALETTES[0].name.to_string();
+/// The accent and the material the shell is set to, out of its own settings
+/// file.
+///
+/// Both keys, in one read, because they are one answer: a bridge frame in the
+/// shell's accent but the wrong material is as much of a seam as one in the
+/// wrong colour. The theme is the shell's own — see `wallpaper::Style` — and a
+/// name this build does not know is read as the shell reads it, which is the
+/// default one.
+///
+/// The *wallpaper's* half of the theme, and only that half. The shell's Theme
+/// setting is two: what the picture behind everything is made of, and what its
+/// own marks are made of. This compositor draws a wallpaper and no marks at all,
+/// so the second key is none of its business. `theme` is what both halves were
+/// written under before they were split, and is read where the wallpaper has no
+/// key of its own — a machine set to `Simple` before an update must not come up
+/// in the water for the seconds before the shell's first frame.
+fn configured_look() -> (String, wallpaper::Style) {
+    let default = (
+        wallpaper::PALETTES[0].name.to_string(),
+        wallpaper::Style::default(),
+    );
     let Some(path) = shell_settings_path() else {
         return default;
     };
@@ -523,13 +597,31 @@ fn configured_accent() -> String {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return default;
     };
-    text.parse::<toml::Table>()
-        .ok()
-        .and_then(|table| {
-            let name = table.get("accent")?.as_str()?;
-            (wallpaper::palette(name).name == name).then(|| name.to_string())
-        })
-        .unwrap_or(default)
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return default;
+    };
+    look_in(&table)
+}
+
+/// The same two answers, out of a parsed settings file.
+///
+/// Split from [`configured_look`] so the keys can be exercised without the
+/// environment this compositor is normally started in: everything above this is
+/// about finding a file and refusing to read one that is not a settings file.
+fn look_in(table: &toml::Table) -> (String, wallpaper::Style) {
+    let accent = table
+        .get("accent")
+        .and_then(toml::Value::as_str)
+        .filter(|name| wallpaper::palette(name).name == *name)
+        .map(str::to_string)
+        .unwrap_or_else(|| wallpaper::PALETTES[0].name.to_string());
+    let style = table
+        .get("theme-wallpaper")
+        .or_else(|| table.get("theme"))
+        .and_then(toml::Value::as_str)
+        .map(wallpaper::style)
+        .unwrap_or_default();
+    (accent, style)
 }
 
 fn shell_settings_path() -> Option<std::path::PathBuf> {
@@ -548,7 +640,7 @@ mod tests {
     /// canonical encoder, and to the shell's consumer fixture.
     fn record(accent: &str, sample_ns: u64, scene_ns: u64) -> String {
         format!(
-            "v=1;visual=lxb-wallpaper-v1;clock=linux-monotonic;\
+            "v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;\
              boot=01234567-89ab-cdef-0123-456789abcdef;\
              sample-ns={sample_ns};scene-ns={scene_ns};accent={accent}"
         )
@@ -557,12 +649,103 @@ mod tests {
     #[test]
     fn a_records_accent_and_clock_reach_the_bridge_frame() {
         let sample_ns = monotonic_now_ns().expect("monotonic clock");
-        let (accent, scene) = read(&record("Green", sample_ns, 42_000_000_000)).expect("record");
+        let (accent, style, scene) =
+            read(&record("Green", sample_ns, 42_000_000_000)).expect("record");
+        // A record that says nothing about the material leaves the question to
+        // this account's own settings, which is what `opening_look` then asks.
+        assert_eq!(style, None);
         assert_eq!(accent, "Green");
         // At least the handed-over scene time, plus however long this test
         // took to get here — never less, which would run the clock backwards.
         assert!(scene >= Duration::from_secs(42));
         assert!(scene < Duration::from_secs(43));
+    }
+
+    /// The material the login screen was drawing in reaches the bridge frame in
+    /// front of it.
+    ///
+    /// This is the one thing the record says that this compositor cannot look up
+    /// for itself. In front of a login screen it runs as the greeter's own
+    /// account, and the settings of the person whose wallpaper is on the screen
+    /// are in a home directory it has no business reading — so a greeter drawing
+    /// the plain material has to be able to say so, or the two of them disagree
+    /// for the third of a second the bridge is up.
+    #[test]
+    fn the_material_the_greeter_drew_in_reaches_the_bridge_frame() {
+        let sample_ns = monotonic_now_ns().expect("monotonic clock");
+        let plain = format!(
+            "{};theme=Simple",
+            record("Purple", sample_ns, 42_000_000_000)
+        );
+        let (_, style, _) = read(&plain).expect("a record with a material is still a record");
+        assert_eq!(style, Some(wallpaper::Style::Simple));
+        assert_eq!(
+            opening_look(Some(std::ffi::OsStr::new(&plain))).1,
+            wallpaper::Style::Simple,
+            "what the greeter said, not what this account's file says"
+        );
+
+        // A name this build does not know is read the way the shell reads one:
+        // as its own look, rather than as a reason to throw the phase away.
+        let odd = format!(
+            "{};theme=Glass",
+            record("Purple", sample_ns, 42_000_000_000)
+        );
+        let (_, style, _) = read(&odd).expect("an unknown material is not a broken record");
+        assert_eq!(style, Some(wallpaper::Style::Default));
+    }
+
+    /// The wallpaper's half of the shell's Theme setting, and the key both
+    /// halves shared before there were two of them.
+    ///
+    /// This compositor draws a wallpaper and never a mark, so `theme-icons` is
+    /// none of its business and must not reach the bridge frame. The old `theme`
+    /// key is read where the wallpaper has nothing of its own, because a machine
+    /// stood down to `Simple` before the split meant it about the picture too.
+    #[test]
+    fn the_bridge_frame_reads_the_wallpapers_half_of_the_theme() {
+        let look = |settings: &str| look_in(&settings.parse().expect("a settings file"));
+
+        assert_eq!(look("").1, wallpaper::Style::Default);
+        assert_eq!(
+            look("theme-wallpaper = \"Simple\"").1,
+            wallpaper::Style::Simple
+        );
+        assert_eq!(
+            look("theme = \"Simple\"").1,
+            wallpaper::Style::Simple,
+            "a file from before the split still says what it said"
+        );
+        assert_eq!(
+            look("theme = \"Simple\"\ntheme-wallpaper = \"Default\"").1,
+            wallpaper::Style::Default,
+            "and the newer, narrower key outranks it"
+        );
+        assert_eq!(
+            look("theme-icons = \"Simple\"").1,
+            wallpaper::Style::Default,
+            "the marks are the shell's own business, and nothing here draws one"
+        );
+        assert_eq!(
+            look("accent = \"Green\"\ntheme-wallpaper = \"Simple\""),
+            ("Green".to_string(), wallpaper::Style::Simple),
+            "both keys, in one read: they are one answer about one frame"
+        );
+    }
+
+    /// A display manager on the older wallpaper is handing over a phase of a
+    /// picture nothing here draws any more. The shell refuses that record, so
+    /// the bridge frame in front of it has to refuse it too — the two of them
+    /// starting from different moments of the animation is exactly the seam
+    /// this module removes.
+    #[test]
+    fn a_record_for_another_wallpaper_is_declined() {
+        let sample_ns = monotonic_now_ns().expect("monotonic clock");
+        let retired = record("Purple", sample_ns, 42_000_000_000)
+            .replace(wallpaper::VISUAL, "lxb-wallpaper-v1");
+        assert!(read(&retired).is_none());
+        // And the identifier is being compared, not merely present.
+        assert!(read(&record("Purple", sample_ns, 42_000_000_000)).is_some());
     }
 
     #[test]
@@ -590,8 +773,12 @@ mod tests {
 
     #[test]
     fn a_session_with_no_record_still_gets_a_palette_and_a_clock() {
-        let (accent, scene) = opening_scene(None);
+        let (accent, style, scene) = opening_look(None);
         assert_eq!(wallpaper::palette(&accent).name, accent);
+        // And a material, which without a record is whatever this account's own
+        // settings say — the shell's own look on a machine that has not asked
+        // for anything else.
+        assert!(wallpaper::STYLES.contains(&style.name()));
         assert_eq!(scene, Duration::ZERO);
     }
 
@@ -602,7 +789,12 @@ mod tests {
     fn a_nonsensical_aspect_still_draws_a_wallpaper() {
         let sky = Sky::new(wallpaper::palette("Purple"));
         for aspect in [f32::NAN, 0.0, -2.0, f32::INFINITY] {
-            let backdrop = Backdrop::start("Purple", Duration::from_secs(3), aspect);
+            let backdrop = Backdrop::start(
+                "Purple",
+                wallpaper::Style::Default,
+                Duration::from_secs(3),
+                aspect,
+            );
             assert_eq!(backdrop.source_size(), (WIDTH as f64, HEIGHT as f64).into());
         }
         // And the fallback shape is the one a sane aspect would have drawn.
@@ -615,29 +807,49 @@ mod tests {
     /// clock, and it arrives at whatever that clock says by then.
     #[test]
     fn the_frame_on_screen_follows_the_wallpaper_clock() {
-        let backdrop = Backdrop::start("Purple", Duration::ZERO, 16.0 / 9.0);
-        let first = backdrop.drawn_at.get();
+        let backdrop = Backdrop::start(
+            "Purple",
+            wallpaper::Style::Default,
+            Duration::ZERO,
+            16.0 / 9.0,
+        );
 
-        // Every pass is one compositor frame asking for the wallpaper. A
-        // painted frame costs milliseconds, so this is a handful of passes on
-        // any machine and the wait is only there to bound a broken one.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while backdrop.drawn_at.get() == first && Instant::now() < deadline {
+        // Wait for two frames rather than one, and time the second: what the
+        // frame on screen may be behind the clock is what the painter *can* do
+        // here, and this is the machine saying so rather than this test
+        // assuming it. The wallpaper is thirty-odd transcendental functions a
+        // pixel, and a run of the whole suite has every core already busy with
+        // the other thousand tests — a frame that honestly took a third of a
+        // second to paint is still the newest frame there is. What the test is
+        // for is a painter that hands over a frame it had been sitting on,
+        // which is cycles behind rather than one.
+        let mut seen = Vec::new();
+        let mut cycle = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut since = Instant::now();
+        while seen.len() < 2 && Instant::now() < deadline {
             backdrop.catch_up();
+            let drawn_at = backdrop.drawn_at.get();
+            if seen.last() != Some(&drawn_at) {
+                cycle = Some(since.elapsed());
+                since = Instant::now();
+                seen.push(drawn_at);
+            }
             std::thread::sleep(Duration::from_millis(4));
         }
 
-        assert!(
-            backdrop.drawn_at.get() > first,
-            "the wallpaper never moved past the frame it started on"
-        );
+        let (Some([first, second]), Some(cycle)) = (seen.first_chunk::<2>(), cycle) else {
+            panic!("the wallpaper never moved past the frame it started on");
+        };
+        assert!(second > first, "{second:?} is not past {first:?}");
         // And what it moved to is the moment it was shown at, not some frame
         // the painter had been sitting on.
-        let behind = backdrop
-            .painter
-            .scene()
-            .saturating_sub(backdrop.drawn_at.get());
-        assert!(behind < TOO_OLD, "{behind:?} behind the clock");
+        let behind = backdrop.painter.scene().saturating_sub(*second);
+        let allowed = TOO_OLD + cycle * 2;
+        assert!(
+            behind < allowed,
+            "{behind:?} behind the clock, and a frame here takes {cycle:?}"
+        );
     }
 
     /// Nothing is painted while the session has the screen. A shell drawing at
@@ -645,7 +857,12 @@ mod tests {
     /// what is behind it.
     #[test]
     fn the_painter_stops_when_the_wallpaper_leaves_the_screen() {
-        let backdrop = Backdrop::start("Blue", Duration::ZERO, 16.0 / 9.0);
+        let backdrop = Backdrop::start(
+            "Blue",
+            wallpaper::Style::Default,
+            Duration::ZERO,
+            16.0 / 9.0,
+        );
         backdrop.catch_up();
 
         // Long enough for the grace period to pass and for whatever was
@@ -666,7 +883,8 @@ mod tests {
     /// every frame on top of that.
     #[test]
     fn only_a_stopped_painter_is_woken_by_the_frame_that_needs_it() {
-        let backdrop = Backdrop::start("Red", Duration::ZERO, 16.0 / 9.0);
+        let backdrop =
+            Backdrop::start("Red", wallpaper::Style::Default, Duration::ZERO, 16.0 / 9.0);
         // The first frame a wallpaper comes back on screen in.
         assert!(!backdrop.painter.wanted_for(KEEP_PAINTING));
         // And every frame after it, for as long as it stays there.
@@ -678,7 +896,12 @@ mod tests {
     /// reach the screen even once.
     #[test]
     fn a_frame_left_over_from_a_session_ago_is_never_shown() {
-        let backdrop = Backdrop::start("Green", Duration::from_secs(3600), 16.0 / 9.0);
+        let backdrop = Backdrop::start(
+            "Green",
+            wallpaper::Style::Default,
+            Duration::from_secs(3600),
+            16.0 / 9.0,
+        );
         // As if the shell had had the screen for an hour.
         let long_ago = backdrop.painter.scene() - Duration::from_secs(3600);
         backdrop.drawn_at.set(long_ago);

@@ -277,7 +277,7 @@ impl OutputManager {
     }
 
     /// The usable area of an output: its geometry minus layer-shell exclusive
-    /// zones (panels, docks, and the XMB shell when it reserves space).
+    /// zones (panels, docks, and the desktop shell when it reserves space).
     pub fn usable_area(space: &Space<Window>, output: &Output) -> Option<Rectangle<i32, Logical>> {
         let geometry = space.output_geometry(output)?;
         let mut zone = layer_map_for_output(output).non_exclusive_zone();

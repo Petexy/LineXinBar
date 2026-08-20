@@ -1526,6 +1526,12 @@ struct Block {
     binary: Option<String>,
     /// The process behind it, where the server says. See [`Own`].
     pid: Option<u32>,
+    /// Whether the server is holding this sound rather than playing it, which
+    /// is what a paused player leaves behind: the stream stays open, attached
+    /// to its sink, and nothing comes out of it. The mixer does not care — a
+    /// row is an application, playing or not — but [`audible_applications`]
+    /// does, because it is the whole difference between music and silence.
+    corked: bool,
 }
 
 /// How the shell's own sounds appear in that listing, so that they can be left
@@ -1597,6 +1603,22 @@ fn own() -> &'static Own {
 /// the mixer under a poor name rather than not turn up at all.
 fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
     let mut streams: Vec<Stream> = Vec::new();
+    for block in parse_sink_input_blocks(out) {
+        add_stream(&mut streams, block, own);
+    }
+    streams
+}
+
+/// One [`Block`] per sound in that listing, before anything is grouped or left
+/// out.
+///
+/// Kept apart from [`parse_sink_inputs`] because two questions are asked of
+/// this output and they want different things from it: the mixer wants one row
+/// per application and does not care whether a sound is running, and
+/// [`audible_applications`] wants every sound that is running and does not care
+/// whose row it would be in.
+fn parse_sink_input_blocks(out: &str) -> Vec<Block> {
+    let mut blocks: Vec<Block> = Vec::new();
     let mut input: Option<Block> = None;
 
     // Every block is finished by the next one starting, or by the end of the
@@ -1604,9 +1626,7 @@ fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
     for line in out.lines().chain(std::iter::once("")) {
         let trimmed = line.trim();
         if let Some(head) = trimmed.strip_prefix("Sink Input #") {
-            if let Some(finished) = input.take() {
-                add_stream(&mut streams, finished, own);
-            }
+            blocks.extend(input.take());
             input = head.trim().parse().ok().map(|id| Block {
                 id,
                 level: Level {
@@ -1616,6 +1636,7 @@ fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
                 name: None,
                 binary: None,
                 pid: None,
+                corked: false,
             });
             continue;
         }
@@ -1628,6 +1649,8 @@ fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
             }
         } else if let Some(rest) = trimmed.strip_prefix("Mute:") {
             block.level.muted = rest.trim() == "yes";
+        } else if let Some(rest) = trimmed.strip_prefix("Corked:") {
+            block.corked = rest.trim() == "yes";
         } else if let Some(said) = property(trimmed, "application.name") {
             block.name = Some(said);
         } else if let Some(said) = property(trimmed, "application.process.binary") {
@@ -1636,10 +1659,94 @@ fn parse_sink_inputs(out: &str, own: &Own) -> Vec<Stream> {
             block.pid = said.parse().ok();
         }
     }
-    if let Some(finished) = input.take() {
-        add_stream(&mut streams, finished, own);
+    blocks.extend(input.take());
+    blocks
+}
+
+/// Every name the sound server is playing something under, right now.
+///
+/// The corroborating half of the rule that keeps a player running while
+/// nothing of it is on screen — see [`crate::playing`]. A media player says on
+/// the bus that it is playing; this says something is actually coming out, and
+/// only where the two agree is an application spared. That way a player left
+/// claiming `Playing` into a stream that ended does not hold a whole process
+/// tree awake for the rest of the session.
+///
+/// Both names are given for each sound, because the two sides of the match
+/// spell an application differently and neither is reliably the one a window
+/// goes by: the program (`zen`) and what it calls itself (`Zen`).
+///
+/// A **muted** stream still counts. Mute is a decision about what reaches the
+/// speakers, and the player behind it is still playing — its position is still
+/// advancing, and it will still reach the end of the track and start the next
+/// one. A **corked** stream does not: that is the server holding a sound that
+/// has been paused, which is silence of the kind this is looking for.
+///
+/// Asked of `pactl`, as the mixer's own listing is, and so answered only where
+/// there is a sound server to ask. On a machine with nothing but the kernel
+/// mixer there are no streams to list, nothing corroborates, and nothing is
+/// ever spared — which is the same answer that session gave before any of this
+/// existed.
+pub fn audible_applications() -> Vec<Audible> {
+    match run("pactl", &["list", "sink-inputs"]) {
+        Some(listed) => audible_names(&listed, own()),
+        None => Vec::new(),
     }
-    streams
+}
+
+/// One application the sound server is playing something for.
+///
+/// The level rides along because this listing is already being read every
+/// couple of seconds while anything is playing, and the guide's media bar wants
+/// exactly that number. Reading it here rather than asking the mixer for it is
+/// what keeps that bar from arriving a beat after the card it belongs to: the
+/// mixer clears its rows while nobody is looking at them — see [`Quick::watch`]
+/// — so with the menu shut there is nothing there to ask.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Audible {
+    /// What it is playing under, both spellings: the program and what it calls
+    /// itself.
+    pub names: Vec<String>,
+    /// The loudest of its sounds, which is what the user is hearing — the same
+    /// reading a mixer row takes.
+    pub level: Level,
+}
+
+/// The reading behind [`audible_applications`], apart from the program that
+/// answers it so that it can be tested against a listing rather than a machine.
+fn audible_names(listed: &str, own: &Own) -> Vec<Audible> {
+    let mut found: Vec<Audible> = Vec::new();
+    for block in parse_sink_input_blocks(listed) {
+        // The shell's own sounds are left out for the reason the mixer leaves
+        // them out, and one more: this shell is not an application anything
+        // would ever stop, and its start music must not be what keeps some
+        // other program awake.
+        if block.corked || own.made(&block) {
+            continue;
+        }
+        let level = block.level;
+        let names: Vec<String> = [block.binary, block.name].into_iter().flatten().collect();
+        // Two sounds of one application are one row here, as they are in the
+        // mixer, and the loudest of them is what is being heard.
+        match found
+            .iter_mut()
+            .find(|had| had.names.iter().any(|name| names.contains(name)))
+        {
+            Some(had) => {
+                for name in names {
+                    if !had.names.contains(&name) {
+                        had.names.push(name);
+                    }
+                }
+                had.level = Level {
+                    value: had.level.value.max(level.value),
+                    muted: had.level.muted && level.muted,
+                };
+            }
+            None => found.push(Audible { names, level }),
+        }
+    }
+    found
 }
 
 /// Fold one sound into the row for the application that is making it, or drop
@@ -3192,5 +3299,81 @@ Display 2
             }),
         );
         assert!((quick.level(Knob::Volume).unwrap().value - 0.55).abs() < 1e-6);
+    }
+
+    /// A listing with one sound running, one the server is holding, and one of
+    /// the shell's own. Written the way `pactl list sink-inputs` writes it.
+    fn listing() -> String {
+        [
+            "Sink Input #1061",
+            "\tCorked: no",
+            "\tMute: no",
+            "\tProperties:",
+            "\t\tapplication.name = \"Zen\"",
+            "\t\tapplication.process.binary = \"zen\"",
+            "\t\tapplication.process.id = \"2\"",
+            "",
+            "Sink Input #1062",
+            "\tCorked: yes",
+            "\tMute: no",
+            "\tProperties:",
+            "\t\tapplication.name = \"Spotify\"",
+            "\t\tapplication.process.binary = \"spotify\"",
+            "",
+            "Sink Input #1063",
+            "\tCorked: no",
+            "\tMute: no",
+            "\tProperties:",
+            "\t\tapplication.name = \"LineXinBar\"",
+            "\t\tapplication.process.binary = \"lxb-desktop\"",
+            "",
+        ]
+        .join("\n")
+    }
+
+    /// The reading the sleeper's one exception rests on: what is coming out of
+    /// the machine *now*. Both names are given for each, because the window
+    /// this will be matched to may go by either.
+    /// Every name one audible application is playing under, flattened.
+    fn heard_names(heard: &[Audible]) -> Vec<String> {
+        heard.iter().flat_map(|a| a.names.clone()).collect()
+    }
+
+    #[test]
+    fn only_a_sound_that_is_running_is_audible() {
+        let heard = audible_names(&listing(), &elsewhere());
+        assert_eq!(
+            heard_names(&heard),
+            vec!["zen".to_string(), "Zen".to_string()]
+        );
+        // And how loud it is, which is what the guide's media bar draws.
+        assert!((heard[0].level.value - 1.0).abs() < 1e-6);
+    }
+
+    /// A paused player leaves its stream open and corked, which is the shape of
+    /// silence this has to see through: the server still lists it, and nothing
+    /// is coming out of it.
+    #[test]
+    fn a_corked_stream_is_silence() {
+        let heard = heard_names(&audible_names(&listing(), &elsewhere()));
+        assert!(!heard.iter().any(|said| said == "spotify"));
+    }
+
+    /// And the shell's own sound is nobody's reason to stay awake. Its start
+    /// music plays over the very screen that covers an application, so counting
+    /// it would spare whatever happened to be underneath.
+    #[test]
+    fn the_shells_own_sound_is_not_an_application_playing() {
+        let heard = heard_names(&audible_names(&listing(), &elsewhere()));
+        assert!(!heard.iter().any(|said| said == "lxb-desktop"));
+    }
+
+    /// Nothing running at all is the common case, and it must not be read as
+    /// "everything is playing".
+    #[test]
+    fn a_listing_with_nothing_running_hears_nothing() {
+        assert!(audible_names("", &elsewhere()).is_empty());
+        let all_corked = "Sink Input #1\n\tCorked: yes\n\tProperties:\n\t\tapplication.process.binary = \"mpv\"\n";
+        assert!(audible_names(all_corked, &elsewhere()).is_empty());
     }
 }

@@ -715,7 +715,7 @@ impl XdgDecorationHandler for LxbState {
 }
 
 // ---------------------------------------------------------------------------
-// wlr-layer-shell — this is what the XMB shell binds to
+// wlr-layer-shell — this is what the desktop shell binds to
 // ---------------------------------------------------------------------------
 
 impl WlrLayerShellHandler for LxbState {

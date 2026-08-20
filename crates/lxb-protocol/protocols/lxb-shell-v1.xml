@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="25">
+  <interface name="lxb_shell_v1" version="28">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -795,6 +795,115 @@
            summary="per cent of natural size; 100 is one to one, and the floor"/>
     </request>
 
+    <request name="cover_in_black" since="26">
+      <description summary="fade every display to black, or bring it back">
+        Draws one black sheet over each display — over every application, over
+        the shell's own surfaces, over the cursor — and fades it in over about
+        half a second. Sent again with covered set to 0, it fades back off.
+
+        This is what a console does on its way out. The session shell asks for
+        it when the user chooses to turn the machine off, and only then does it
+        run the command that ends the session: a shutdown that cut straight to
+        black would look like a display losing its signal, and there is no
+        difference on screen between that and a crash.
+
+        It has to be the compositor's sheet rather than the shell's. The shell
+        draws one surface per display and an application in front of it owns
+        the screen; a shell that blacked out its own surfaces would darken the
+        display the menu was on and leave a game running on the other one.
+
+        While the curtain is anything but fully up the session takes no input
+        at all — not the keyboard, not the pointer, not a touch, and not the
+        compositor's own bindings. A machine on its way down must not be
+        driven, and half a second is long enough to press something in. That
+        includes the bindings that would leave the session, so a client which
+        asks for this and then does not go must take it back up again; see
+        screen_is_black for the answer that says it is safe to leave.
+
+        The pixels are the only thing this touches. Applications are not
+        stopped, not resized and not told anything: they are simply not
+        visible, and what they were doing when the machine went is what they
+        were doing.
+      </description>
+      <arg name="covered" type="uint" summary="1 to fade to black, 0 to fade back off it"/>
+    </request>
+
+    <request name="cover_output_in_black" since="27">
+      <description summary="fade one display to black, or bring it back">
+        The same black sheet cover_in_black draws, over one display instead of
+        over the session, and with none of that request's authority over the
+        rest of it.
+
+        This is what a screen nobody is looking at rests behind while a game is
+        being played on another one. An OLED panel left showing a still picture
+        keeps it: the start screen's bar is in the same place every second it
+        is up, and a second screen left on it for the length of an evening's
+        play is the worst case there is. So the shell asks for the black once
+        that display has been left alone, and asks for it back the moment the
+        user goes near it again.
+
+        It has to be the compositor's sheet for the reason the session's is:
+        the shell owns one surface per display, and everything else on that
+        display — an application in front of it, the cursor over the top —
+        belongs to somebody else. A shell blacking out its own surfaces would
+        leave a paused film and a pointer lit on the screen it was resting.
+
+        Unlike cover_in_black this takes nothing away. The session goes on
+        taking input while it is down, on this display and on every other: the
+        whole point is that moving the pointer onto a resting screen brings it
+        back, and a curtain that swallowed the movement could never be lifted
+        by it. Nothing is hidden from any client either — no window is told
+        anything, resized, or stopped — because a display resting is a fact
+        about the panel and not about what is running on it.
+
+        The fade is a second going down and a quarter of a second coming back
+        up, eased at both ends, and reversible from wherever it has got to: a
+        pointer that arrives halfway through brings the screen back from half
+        black rather than from all of it.
+
+        Asking for what a display is already doing costs nothing and does not
+        restart the fade. Silently ignored when the output is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display to rest"/>
+      <arg name="covered" type="uint" summary="1 to fade to black, 0 to fade back off it"/>
+    </request>
+
+    <request name="keep_awake" since="28">
+      <description summary="this application is playing something; do not stop it">
+        Names an application that must go on running even with nothing of it on
+        screen. Everything else about it is unchanged: it is not drawn, it is
+        not given the keyboard, and it is not put in front of anything. It is
+        simply not stopped.
+
+        An application nobody can see is stopped outright — that is what keeps
+        a covered game from going on playing its music into the room — and the
+        one thing that rule is wrong about is an application whose whole
+        purpose is the sound it is making. A game covered by the start screen
+        should fall silent. Music the user put on should not, and neither
+        should the stream they are listening to while they play.
+
+        The compositor cannot tell those apart. The difference is not in the
+        window, not in the process tree and not in the audio: a game's
+        soundtrack and an album are both a program feeding a sink. It is on the
+        session bus, where a media player says what it is playing and whether
+        it is playing it, and the shell is the half of this session that is on
+        a bus at all.
+
+        So the shell decides and this carries the answer. What it means by it
+        is deliberately narrow — an application that both announces itself as a
+        media player and is audibly playing, which no game does — and it is
+        held for a short while after the sound stops, because the silence
+        between two tracks is not the end of the music and an application
+        stopped in that gap would never reach the next one.
+
+        Sent again with awake set to zero when that stops being true. An
+        application named here while it is already stopped is started again at
+        once. An empty app_id names nothing and is ignored.
+      </description>
+      <arg name="app_id" type="string" summary="what the application calls itself"/>
+      <arg name="awake" type="uint" summary="1 to keep it running unseen, 0 to let it be stopped again"/>
+    </request>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -1317,6 +1426,92 @@
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display that was asked about"/>
       <arg name="path" type="string" summary="the file that was written, empty when none was"/>
+    </event>
+
+    <event name="screen_is_black" since="26">
+      <description summary="the curtain is down on every display">
+        Answers cover_in_black: every display the compositor is driving has put
+        a frame on screen with the black fully drawn over it.
+
+        It is sent once per curtain, and only on the way down. A client asking
+        for the black because it is about to end the session waits for this
+        before it does — that is the whole point of the request, and it is the
+        one moment at which nothing that happens next can be seen.
+
+        A display the compositor cannot draw on — one that is off, or has been
+        unplugged — takes no part: it is showing nothing already. With no
+        display left at all the event follows the fade immediately, because a
+        session with nothing to black out has nothing to wait for.
+      </description>
+    </event>
+
+    <event name="output_game" since="27">
+      <description summary="a game is being played on this display">
+        Whether what is in front of this display is a game — an application a
+        supervisor started for the user, rather than the supervisor's own
+        interface or anything the shell launched itself. Today that means an
+        application under Valve's client: the client draws its own storefront
+        and it starts games, and only the second of those is somebody playing.
+
+        Worked out from the process behind the window rather than from what the
+        window calls itself. A game reaches the screen under any name it likes
+        — its Steam class, its own app_id, or nothing at all — and the one
+        thing every one of them has in common is which client is running it.
+        That is the same walk of the tree Close makes to decide what an
+        application is.
+
+        Sent when the answer changes, per display, and on binding. A shell that
+        never asks about it can ignore it entirely; what it is for is the rule
+        that rests the *other* screens while somebody is playing, which is a
+        rule about a game and not about any application being on screen.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="playing" type="uint" summary="1 while a game is in front of this display"/>
+    </event>
+
+    <event name="output_drawing" since="27">
+      <description summary="something on this display is still painting">
+        Whether any application on this display has put a new frame up recently.
+        A film playing on the second screen keeps this at 1; the same film
+        paused, a page nobody is scrolling, and a display with no application on
+        it at all are all 0.
+
+        The shell cannot answer this for itself. It is told which windows are on
+        which display, and it is told what they are called, but a window that
+        has stopped drawing looks exactly like one that has not from the other
+        side of the compositor — the frames go from the client to us.
+
+        It is what tells a screen that can be rested from one that is being
+        watched. A still picture is the thing an OLED panel is damaged by and
+        the thing nobody minds losing; a moving one is neither.
+
+        Recently means the last few seconds, which is deliberately long enough
+        that a film dropping frames is still drawing and short enough that a
+        paused one has stopped. Sent when the answer changes, per display, and
+        on binding.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="drawing" type="uint" summary="1 while something on it is still painting"/>
+    </event>
+
+    <event name="output_pointer" since="27">
+      <description summary="the pointer is moving over this display">
+        Sent while the pointer is being moved, naming the display it is over.
+
+        The shell sees the pointer only where its own surfaces are in front, and
+        that is precisely not where this matters: over an application, and over
+        a display whose picture the shell has asked to have taken away, the
+        movement is delivered somewhere else or to nobody. So the compositor
+        names the display, exactly as output_pressed names the one a press
+        landed on.
+
+        Throttled rather than streamed: it is sent the moment the pointer
+        arrives on a different display, and after that at most once every two
+        seconds for as long as it goes on moving. A pointer standing still sends
+        nothing at all. That is enough for a shell timing out a display it has
+        left alone, and it is a long way short of a motion event.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display the pointer is over"/>
     </event>
   </interface>
 </protocol>

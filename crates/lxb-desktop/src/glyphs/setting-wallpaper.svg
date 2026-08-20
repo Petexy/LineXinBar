@@ -1,0 +1,37 @@
+<!--
+  A wave, at the head of Theme > Wallpaper.
+
+  The mark is the thing the setting most visibly changes: the current that runs
+  across the wallpaper, which is a band of water under one theme and three fine
+  glass-silk lines under the other. Not a drop, however tempting — the accent
+  rows are already a drop, and this is the one mark in the Settings column that
+  would otherwise stand next to its own twin.
+
+  It was the whole Theme row's mark until the row became two, and it stayed with
+  the half it had always been drawing: a wave says wallpaper and says nothing at
+  all about the marks the shell makes.
+
+  One body, no openings, and thick on purpose: a band six units deep never has a
+  part narrower than the wall the shader stands up on it, which is what keeps it
+  a bead of water rather than something melted. A wave drawn as three hairlines
+  would be exactly that mistake.
+
+  The two ends are rounded rather than cut, because a mark that ends in a
+  straight edge inside its own cell reads as a piece of something larger. They
+  are drawn as half-circles of the band's own half-depth, which is why the wave
+  is pulled a unit in from where its margin would otherwise allow.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path fill="#ffffff" d="M6 13
+    C 9.4 7.1, 12.6 7.1, 16 13
+    C 19.4 18.9, 22.6 18.9, 26 13
+    A 3 3 0 0 1 26 19
+    C 22.6 24.9, 19.4 24.9, 16 19
+    C 12.6 13.1, 9.4 13.1, 6 19
+    A 3 3 0 0 1 6 13
+    Z"/>
+</svg>

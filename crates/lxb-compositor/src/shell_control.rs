@@ -103,6 +103,27 @@ pub struct ShellControlState {
     /// into a game would otherwise wake it once per letter to say what the
     /// first letter already said.
     typing_is_news: bool,
+    /// Last answer broadcast per display to "is a game being played here":
+    /// whether the window in front of it is something a supervisor started for
+    /// the user. Diffed like the rest — it changes when a game starts or ends
+    /// and at no other time.
+    output_game: Vec<(Output, bool)>,
+    /// The process behind the window in front of each display, as of the last
+    /// time the answer above was worked out.
+    ///
+    /// The cache that makes this affordable. Deciding whether a window is a
+    /// game means walking `/proc`, and the refresh this rides on runs every
+    /// pass of the session's loop; the same pid in front is the same answer, so
+    /// the walk only happens when one of these changes.
+    output_front_pid: Vec<(Output, Option<i32>)>,
+    /// Last answer broadcast per display to "is anything moving here". Diffed
+    /// like the rest, but unlike the rest it is a reading of the clock rather
+    /// than of the desktop's shape, so it is taken once a pass of the loop.
+    output_drawing: Vec<(Output, bool)>,
+    /// Display the pointer was last reported over, and when it was reported,
+    /// so a pointer being moved about sends an event every couple of seconds
+    /// rather than one per motion. See [`Self::pointer_moved`].
+    pointer_output: Option<(Output, std::time::Instant)>,
     /// Questions in flight: who asked, and what number they gave it.
     ///
     /// One list rather than one per client, because an answer names only the
@@ -238,9 +259,48 @@ const TYPED_SINCE: u32 = 24;
 /// read by whichever compositor comes next — but nothing is sent.
 const APP_SCALE_SINCE: u32 = 25;
 
+/// First version that can be asked to fade every display to black, and that
+/// says when the black is on screen. Below it a shell that turns the machine
+/// off has nothing to put over the session first, and the picture stops
+/// wherever the kernel happened to catch it.
+const CURTAIN_SINCE: u32 = 26;
+
+/// First version that can rest one display behind black while a game is played
+/// on another, and that reports the two facts a shell cannot see for itself:
+/// which display has a game in front of it, and which has anything still
+/// painting. Below it the OLED protection page still remembers what it was set
+/// to — the file is read by whichever compositor comes next — but no screen is
+/// ever rested.
+const RESTING_SINCE: u32 = 27;
+
+/// First version that can be told an application is playing something and must
+/// not be stopped while it is out of sight. Below it the sleeper is the whole
+/// rule — an application nobody can see is stopped, whatever it was in the
+/// middle of — which is what every session did before this and is still what a
+/// session with no shell does.
+const MEDIA_SINCE: u32 = 28;
+
+/// How long a display may go without anything painting on it before it counts
+/// as still — the reading behind `lxb_shell_v1.output_drawing`.
+///
+/// Three seconds, chosen from both ends. Long enough that a film dropping
+/// frames, a game between levels, or a page waiting on the network is still
+/// something somebody is watching; short enough that a film somebody paused has
+/// stopped being one well before the shell's own idle timer runs out, so a
+/// screen that is going to rest does not sit lit for a further minute first.
+const STILL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How often a pointer that goes on moving over the same display is reported.
+///
+/// The shell uses this to keep a display awake, so it has to be comfortably
+/// shorter than the idle it is keeping the display away from — five seconds —
+/// and is otherwise as long as it can be. Two seconds turns a mouse dragged
+/// across a game for a minute into thirty events rather than several thousand.
+const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = APP_SCALE_SINCE;
+const CURRENT_VERSION: u32 = MEDIA_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -252,6 +312,9 @@ const _: () = assert!(VOLUME_SINCE == PLACE_SINCE + 1);
 const _: () = assert!(PRESSED_SINCE == VOLUME_SINCE + 1);
 const _: () = assert!(TYPED_SINCE == PRESSED_SINCE + 1);
 const _: () = assert!(APP_SCALE_SINCE == TYPED_SINCE + 1);
+const _: () = assert!(CURTAIN_SINCE == APP_SCALE_SINCE + 1);
+const _: () = assert!(RESTING_SINCE == CURTAIN_SINCE + 1);
+const _: () = assert!(MEDIA_SINCE == RESTING_SINCE + 1);
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -270,6 +333,10 @@ impl ShellControlState {
             output_modes: Vec::new(),
             output_transform: Vec::new(),
             output_place: Vec::new(),
+            output_game: Vec::new(),
+            output_front_pid: Vec::new(),
+            output_drawing: Vec::new(),
+            pointer_output: None,
             launch_output: None,
             pressed_output: None,
             typing_is_news: true,
@@ -419,6 +486,22 @@ impl ShellControlState {
         if sent {
             tracing::debug!("a key was pressed on a keyboard; the shell is told");
             self.typing_is_news = false;
+        }
+    }
+
+    /// Tell every shell that the black it asked for is on every display.
+    ///
+    /// This is the one event the session's own exit waits on: the shell runs
+    /// the command that ends the machine when it arrives. Sent once per
+    /// curtain — [`crate::curtain::Curtain::everything_is_black`] is what says
+    /// so — because a shutdown asked for twice is one asked for once and once
+    /// more into a session that is already going.
+    pub(crate) fn send_screen_is_black(&self) {
+        for instance in &self.instances {
+            if instance.version() < CURTAIN_SINCE {
+                continue;
+            }
+            instance.screen_is_black();
         }
     }
 
@@ -584,6 +667,75 @@ impl ShellControlState {
         self.output_hdr = current;
     }
 
+    /// Publish which displays have a game in front of them.
+    ///
+    /// Diffed like the rest, and it barely moves: the answer changes when a
+    /// game starts and when it ends, and never in between.
+    fn broadcast_output_game(&mut self, current: Vec<(Output, bool)>) {
+        for (output, playing) in &current {
+            let known = self
+                .output_game
+                .iter()
+                .any(|(seen, seen_playing)| seen == output && seen_playing == playing);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_game(instance, output, *playing);
+            }
+        }
+        self.output_game = current;
+    }
+
+    /// Publish which displays still have something painting on them.
+    ///
+    /// The one broadcast here whose answer moves without the desktop changing
+    /// shape — a film ends, somebody pauses it — so it is taken once a pass of
+    /// the session's loop rather than when a window maps. The diff is what
+    /// keeps that from being an event per pass.
+    fn broadcast_output_drawing(&mut self, current: Vec<(Output, bool)>) {
+        for (output, drawing) in &current {
+            let known = self
+                .output_drawing
+                .iter()
+                .any(|(seen, seen_drawing)| seen == output && seen_drawing == drawing);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_drawing(instance, output, *drawing);
+            }
+        }
+        self.output_drawing = current;
+    }
+
+    /// Say that the pointer is being moved over `output`, if that is news.
+    ///
+    /// News means one of two things: it has arrived on a different display from
+    /// the one last reported, or it is still on the same one and has been
+    /// moving for [`POINTER_REPEAT`] since anybody was told. Everything else is
+    /// swallowed here — a pointer crossing a game at sixty motions a second is
+    /// one event every two seconds, and a pointer standing still is none.
+    ///
+    /// What the shell does with it is time out a display it has been left
+    /// alone with, so the repeat has to be shorter than that timeout and is
+    /// otherwise as long as it can be. See `lxb_shell_v1.output_pointer`.
+    pub fn pointer_moved(&mut self, output: &Output, now: std::time::Instant) {
+        let news = match &self.pointer_output {
+            Some((seen, told)) => {
+                seen != output || now.saturating_duration_since(*told) >= POINTER_REPEAT
+            }
+            None => true,
+        };
+        if !news {
+            return;
+        }
+        self.pointer_output = Some((output.clone(), now));
+        for instance in &self.instances {
+            send_output_pointer(instance, output);
+        }
+    }
+
     /// Publish what each display can be driven at, and which of those it is
     /// being driven at now.
     fn broadcast_output_modes(&mut self, current: Vec<(Output, Vec<DisplayMode>)>) {
@@ -666,6 +818,12 @@ impl ShellControlState {
         for (output, status) in &self.output_hdr {
             sent |= send_output_hdr(shell, output, status);
             sent |= send_output_night_light(shell, output, status);
+        }
+        for (output, playing) in &self.output_game {
+            sent |= send_output_game(shell, output, *playing);
+        }
+        for (output, drawing) in &self.output_drawing {
+            sent |= send_output_drawing(shell, output, *drawing);
         }
         for (output, modes) in &self.output_modes {
             sent |= send_output_modes(shell, output, modes);
@@ -793,6 +951,61 @@ fn send_output_night_light(
     let mut sent = false;
     for wl_output in output.client_outputs(&client) {
         shell.output_night_light(&wl_output, status.night_light as u32, status.warming as u32);
+        sent = true;
+    }
+    sent
+}
+
+/// Send whether a game is being played on one display, resolved through the
+/// receiving client's own `wl_output` for the reason the title is.
+fn send_output_game(shell: &LxbShellV1, output: &Output, playing: bool) -> bool {
+    if shell.version() < RESTING_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_game(&wl_output, playing as u32);
+        sent = true;
+    }
+    sent
+}
+
+/// Send whether anything on one display is still painting.
+///
+/// A separate event from the one above rather than two arguments on it, for the
+/// reason the night light is separate from HDR: they are separate answers. A
+/// display with a game on it is drawing and a display with a paused film on it
+/// is not, and a shell that read one for the other would rest the screen
+/// somebody is playing on.
+fn send_output_drawing(shell: &LxbShellV1, output: &Output, drawing: bool) -> bool {
+    if shell.version() < RESTING_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_drawing(&wl_output, drawing as u32);
+        sent = true;
+    }
+    sent
+}
+
+/// Say the pointer is over one display, resolved the same way.
+fn send_output_pointer(shell: &LxbShellV1, output: &Output) -> bool {
+    if shell.version() < RESTING_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        shell.output_pointer(&wl_output);
         sent = true;
     }
     sent
@@ -1061,6 +1274,39 @@ impl LxbState {
         Some(path.to_string_lossy().into_owned())
     }
 
+    /// Fade every display to black, or take that black back off.
+    ///
+    /// The session stops taking input for as long as the curtain is anything
+    /// but fully up — see [`crate::curtain`], which holds both halves of this
+    /// and says why the compositor rather than the shell draws it.
+    ///
+    /// Nothing else changes. No application is stopped, resized or told
+    /// anything: what is behind the black goes on exactly as it was, which is
+    /// what makes taking the curtain back up put the session back rather than
+    /// restart it.
+    pub fn cover_the_session_in_black(&mut self, covered: bool) {
+        tracing::info!(covered, "the shell asked for the curtain");
+        self.lxb.curtain.cover(covered, std::time::Instant::now());
+        // Nothing else is going to ask for this frame: the picture the curtain
+        // covers may be a game that is drawing anyway, or a session sitting
+        // still on the start screen with nothing to say.
+        self.queue_redraw();
+    }
+
+    /// Say so once the black is on every display, which is what the shell is
+    /// waiting for before it ends the machine.
+    ///
+    /// Asked once a pass of the session's loop rather than from the render
+    /// path, for the reason the flashes are pruned there: a frame is drawn per
+    /// display and this is a question about all of them at once.
+    pub fn tell_the_shell_when_the_screen_is_black(&mut self) {
+        let displays: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        if self.lxb.curtain.everything_is_black(displays.into_iter()) {
+            tracing::info!("the screen is black; the shell is told");
+            self.lxb.shell_control.send_screen_is_black();
+        }
+    }
+
     /// Run an application without ever showing it, or stop doing so.
     ///
     /// Everything that makes a window *noticed* asks
@@ -1183,6 +1429,25 @@ impl LxbState {
             .shell_control
             .broadcast_output_app_id(per_output_app_id);
 
+        // And whether a game is being played on each display, which is the
+        // same window asked about a third time — what process is behind it.
+        let per_output_front = outputs
+            .iter()
+            .map(|output| {
+                let pid = self
+                    .topmost_application(Some(output))
+                    .and_then(|window| self.window_pid(&window));
+                (output.clone(), pid)
+            })
+            .collect();
+        self.refresh_output_games(per_output_front);
+
+        // And whether anything on each display is still painting. A reading of
+        // the clock rather than of the window stack, so it rides here for the
+        // plainest reason: this is the refresh that runs every pass of the
+        // session's loop.
+        self.refresh_output_drawing();
+
         // The overview's window lists ride the same refresh: they are diffed
         // per display, so an unchanged desktop sends nothing.
         let per_output_windows = outputs
@@ -1222,6 +1487,72 @@ impl LxbState {
         // not ready when it bound would otherwise wait for the desktop to
         // change before learning what is on it.
         self.lxb.shell_control.catch_up_new_shells();
+    }
+
+    /// Publish which displays have a game in front of them.
+    ///
+    /// `fronts` is the process behind each display's foreground window, and it
+    /// is the whole of why this is affordable: answering the question means
+    /// reading `/proc`, and the refresh above runs on every pass of the
+    /// session's loop. The same process in front is the same answer — a live
+    /// pid does not change which client is running it — so the walk happens
+    /// when a window changes and at no other time.
+    fn refresh_output_games(&mut self, fronts: Vec<(Output, Option<i32>)>) {
+        if self.lxb.shell_control.output_front_pid == fronts {
+            return;
+        }
+        let processes = teardown::Processes::read();
+        let boundary = teardown::Boundary {
+            shell: self.lxb.session_shell_pid,
+            compositor: Some(std::process::id() as i32),
+        };
+        let games = fronts
+            .iter()
+            .map(|(output, pid)| {
+                let playing = pid
+                    .is_some_and(|pid| teardown::supervised_application(&processes, pid, boundary));
+                (output.clone(), playing)
+            })
+            .collect();
+        self.lxb.shell_control.output_front_pid = fronts;
+        self.lxb.shell_control.broadcast_output_game(games);
+    }
+
+    /// Publish which displays still have something painting on them.
+    ///
+    /// [`crate::render::windows_on_screen`] is what "on this display" means
+    /// here, and it is the same answer the sleep pass uses: a window behind a
+    /// fullscreen one is not on screen, and a display the shell's own opaque
+    /// surface covers has nothing on it at all — which is the start screen, and
+    /// is the still picture this whole rule exists for.
+    fn refresh_output_drawing(&mut self) {
+        let outputs: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        let current = outputs
+            .into_iter()
+            .map(|output| {
+                let drawing = crate::render::windows_on_screen(&self.lxb, &output)
+                    .iter()
+                    .any(|window| crate::render::painted_within(window, STILL));
+                (output, drawing)
+            })
+            .collect();
+        self.lxb.shell_control.broadcast_output_drawing(current);
+    }
+
+    /// Rest one display behind black, or bring it back.
+    ///
+    /// The shell decides when — the setting is its Settings column's, and so is
+    /// every fact about where the user's attention is. What is here is the
+    /// sheet and nothing else. See [`crate::blackout`].
+    pub fn cover_output_in_black(&mut self, output: &Output, covered: bool) {
+        tracing::debug!(display = %output.name(), covered, "the shell rested a display");
+        self.lxb
+            .blackouts
+            .cover(output, covered, std::time::Instant::now());
+        // Nothing else is going to ask for this frame: the display being
+        // covered is showing a start screen that has stopped animating,
+        // precisely because the shell has stopped drawing it.
+        self.queue_redraw();
     }
 
     /// Publish each display's HDR capability and state, if either changed.
@@ -2079,6 +2410,9 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             lxb_shell_v1::Request::KeepOutOfSight { app_id, hidden } => {
                 state.keep_out_of_sight(&app_id, hidden == 1)
             }
+            lxb_shell_v1::Request::KeepAwake { app_id, awake } => {
+                state.keep_application_awake(&app_id, awake == 1)
+            }
             lxb_shell_v1::Request::SetApplicationScale { scale } => {
                 state.set_application_scale(crate::scale::AppScale::from_percent(scale))
             }
@@ -2098,6 +2432,15 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     .into_result()
                     .is_ok_and(|down| down == lxb_shell_v1::KeyState::Pressed);
                 state.shell_keyboard_key(key, pressed);
+            }
+            lxb_shell_v1::Request::CoverInBlack { covered } => {
+                state.cover_the_session_in_black(covered == 1)
+            }
+            lxb_shell_v1::Request::CoverOutputInBlack { output, covered } => {
+                match Output::from_resource(&output) {
+                    Some(output) => state.cover_output_in_black(&output, covered == 1),
+                    None => tracing::debug!("a display that is gone was asked to rest"),
+                }
             }
             lxb_shell_v1::Request::Quit => {
                 tracing::info!("session shell requested shutdown");
@@ -2128,6 +2471,17 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
         // shell that crashes or is restarted must not leave one behind.
         if !state.lxb.shell_control.has_shell() {
             state.lxb.overview.close_all(std::time::Instant::now());
+
+            // And with no shell there is nobody left to take back what it said
+            // about an application playing something. Left standing, one
+            // exemption granted before a shell crashed would keep that
+            // application out of the sleeper for the rest of the session, and
+            // nothing on screen would ever say why.
+            if !state.lxb.playing.is_empty() {
+                state.lxb.playing.clear();
+                tracing::info!("the shell has gone; nothing is exempt from being stopped any more");
+                state.refresh_application_sleep();
+            }
         }
     }
 }

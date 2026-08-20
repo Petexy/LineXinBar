@@ -1293,6 +1293,10 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         }
     };
 
+    // Which is also the moment this frame's curtain was decided: read before
+    // the elements are built, so a frame counted as black had the black over
+    // every element in it. See [`crate::curtain::Curtain::a_frame_was_drawn`].
+    let frame_started = std::time::Instant::now();
     let elements = output_elements(
         &mut renderer,
         &state.lxb,
@@ -1342,6 +1346,10 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
             // both of those read it back. See
             // [`crate::render::record_where_each_surface_was_drawn`].
             post_repaint(&state.lxb, &output, time, None, &render_result.states);
+            // And, if this frame was a black one, the display it puts the
+            // black on. Whether it is *queued* below makes no difference:
+            // a frame nothing changed in is one the screen is already showing.
+            state.lxb.curtain.a_frame_was_drawn(&output, frame_started);
 
             let feedback = if render_result.is_empty {
                 None

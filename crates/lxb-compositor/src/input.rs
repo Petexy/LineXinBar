@@ -596,6 +596,24 @@ impl LxbState {
         output: Option<Output>,
         source_size: Option<Size<i32, Physical>>,
     ) {
+        // Behind the curtain the session is not driven at all: not by the
+        // keyboard, not by the pointer, not by a finger, and not by this
+        // compositor's own bindings, which are read out of the very keyboard
+        // events refused here. Half a second of black is long enough to press
+        // something in, and what is on the other side of it is a machine
+        // going down.
+        //
+        // Refused at the mouth of the session rather than per device, because
+        // what is being refused is the session and not one way into it. The
+        // cost is that a key held as the curtain came down never has its
+        // release seen, so the seat goes on believing it is held: a curtain
+        // that is taken back up — the failure path, where the shutdown never
+        // happened — can leave one key needing to be pressed and released
+        // again before it means anything. That is the cheap end of the trade
+        // against replaying input into a machine that is on its way out.
+        if self.lxb.curtain.holds_input() {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -848,6 +866,21 @@ impl LxbState {
     /// screen, where it was last painted is where the pointer starts, which is
     /// the corner.
     fn cursor_moved(&mut self) {
+        // And which display it has moved over, for the shell. It sees the
+        // pointer only where its own surfaces are in front, which is exactly
+        // not where this matters: over an application, and over a screen it has
+        // rested behind black, the motion is delivered somewhere else or to
+        // nobody. Throttled where it is sent rather than here — see
+        // [`crate::shell_control::ShellControlState::pointer_moved`].
+        let over = self
+            .lxb
+            .outputs
+            .output_at(&self.lxb.space, self.lxb.pointer_location);
+        if let Some(output) = over {
+            self.lxb
+                .shell_control
+                .pointer_moved(&output, std::time::Instant::now());
+        }
         self.queue_redraw();
     }
 

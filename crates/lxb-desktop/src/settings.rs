@@ -5,10 +5,10 @@
 //! what it holds are LineXinBar's own controls, and a shell that had to find its
 //! own settings on the filesystem could be left without them.
 //!
-//! It is a tree, and deliberately: the real XMB kept its Settings region a
-//! short column of subcategories rather than one long list, so a setting is
-//! always two or three rows away instead of thirty. Each level here is a
-//! [`Folder`], which is what the bar steps into.
+//! It is a tree, and deliberately: a console settings region is a short column
+//! of subcategories rather than one long list, so a setting is always two or
+//! three rows away instead of thirty. Each level here is a [`Folder`], which is
+//! what the bar steps into.
 //!
 //! A row that sets something carries a [`Setting`] saying what. The bar knows
 //! how to move a mark from one row of a column to another — that is
@@ -55,6 +55,7 @@ use crate::apps::{Category, Choice, Entry, Folder};
 use crate::icons;
 use crate::system::{Devices, Direction, Level};
 use crate::theme::{self, Color};
+use lxb_protocol::wallpaper;
 
 /// What choosing a row does.
 ///
@@ -65,6 +66,19 @@ use crate::theme::{self, Color};
 pub enum Setting {
     /// Set the accent to the palette of this name — one of [`theme::ACCENTS`].
     Accent(&'static str),
+    /// Draw one half of the shell — the wallpaper, or every mark it makes — in
+    /// the material of this name, one of [`lxb_protocol::wallpaper::STYLES`].
+    ///
+    /// The two halves carry the [`theme::Part`] they are about rather than
+    /// being two variants, because they are one question asked twice and
+    /// everything that answers it answers both the same way.
+    ///
+    /// The one setting here that is about what the machine can *afford* rather
+    /// than about what the user wants to look at, which is why its rows say so
+    /// in their comments — though it is a preference too, and that is the whole
+    /// reason the two are separate: a machine that cannot pay for the water
+    /// behind everything can very well pay for the marks in front of it.
+    Style(theme::Part, &'static str),
     /// Play the Start screen's background music, or leave that screen quiet.
     ///
     /// Carries no display, unlike everything under Display: the music belongs
@@ -188,6 +202,14 @@ pub enum DisplayValue {
     NightLightFrom(u8),
     /// The hour of local time it goes off again, 0 to 23.
     NightLightUntil(u8),
+    /// Rest this display behind black once it has been left alone, while a game
+    /// is being played on another one.
+    ///
+    /// Per display like everything else here, and it has to be: what this
+    /// protects against is a panel keeping the still picture it is shown, and
+    /// whether a screen does that is a fact about the screen. A television and
+    /// an OLED handheld beside it are not the same question.
+    OledProtection(bool),
 }
 
 /// One thing that can be changed about what this machine is on.
@@ -956,6 +978,15 @@ static PLACE: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
 /// newly plugged screen to be missing.
 static NIGHT: Mutex<BTreeMap<String, NightLight>> = Mutex::new(BTreeMap::new());
 
+/// Which displays are to be rested while a game is played on another, for the
+/// displays somebody has answered the question on.
+///
+/// Filed on its own, like [`MODE`], [`TURN`] and [`NIGHT`], with nothing
+/// inherited behind it and for the same reason: a screen nobody has asked to
+/// rest is never rested, which is the setting's own default and is never the
+/// wrong answer for a display this file has never heard of.
+static OLED: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+
 /// What was read out of the settings file for displays it says nothing about.
 ///
 /// The first version of this page had one set of HDR settings for the whole
@@ -1176,6 +1207,37 @@ pub fn note_battery(charge: Option<crate::power::Charge>) -> bool {
     let changed = shown(&held) != shown(&charge);
     *held = charge;
     changed
+}
+
+/// Whether this session's compositor can rest a display behind black at all.
+///
+/// Reported rather than remembered, on the terms [`BATTERY`] is: it is a
+/// statement about what is on the other end of `lxb_shell_v1`, made by the
+/// half of the shell that holds the connection. Nothing of it goes into the
+/// settings file — the setting itself is written down as usual, because a
+/// session moved to a newer compositor should find its screens still set the
+/// way they were left.
+///
+/// It is one answer for the whole session and not one per display, unlike
+/// everything else under Display, because it is a fact about the protocol
+/// rather than about a screen: a compositor either draws these sheets or it
+/// does not, and it draws them over any display it is driving.
+static SCREEN_REST: Mutex<bool> = Mutex::new(false);
+
+/// Record whether screens can be rested. `true` when the column has to be
+/// rebuilt to say so, as [`note_support`].
+pub fn note_screen_rest(available: bool) -> bool {
+    let mut held = SCREEN_REST.lock().unwrap();
+    if *held == available {
+        return false;
+    }
+    *held = available;
+    true
+}
+
+/// Whether the page has anything behind it.
+pub fn screen_rest_available() -> bool {
+    *SCREEN_REST.lock().unwrap()
 }
 
 /// How large every application draws its own interface, in per cent of the size
@@ -1402,14 +1464,27 @@ pub fn bluetooth_was_on() -> bool {
 /// written at shutdown is one that is not there after the times it matters
 /// most.
 pub fn note_bluetooth_powered(on: bool) {
-    {
-        let mut held = BLUETOOTH_WAS_ON.lock().unwrap();
-        if *held == on {
-            return;
-        }
-        *held = on;
+    if remember_bluetooth_powered(on) {
+        save(&stored());
     }
-    save(&stored());
+}
+
+/// Hold whether Bluetooth is on, and say whether that is news.
+///
+/// Split from the write for the reason the volume's pair is split — see
+/// [`the_shell_s_own_volume_is_remembered`]: a test that went through the
+/// function above would write to the config directory of whoever is running the
+/// tests, and this one did, for as long as it took somebody to notice their own
+/// shelf orders changing when they ran `cargo test`.
+///
+/// [`the_shell_s_own_volume_is_remembered`]: tests::the_shell_s_own_volume_is_remembered
+fn remember_bluetooth_powered(on: bool) -> bool {
+    let mut held = BLUETOOTH_WAS_ON.lock().unwrap();
+    if *held == on {
+        return false;
+    }
+    *held = on;
+    true
 }
 
 /// Set them, and write it down. Reports whether anything moved.
@@ -1565,6 +1640,13 @@ pub fn night_light_for(display: &str) -> NightLight {
         .get(display)
         .copied()
         .unwrap_or_default()
+}
+
+/// Whether one display is to be rested while a game is played on another. A
+/// display nobody has answered for is left alone, which is what a page that
+/// has never been visited should do.
+pub fn oled_protection_for(display: &str) -> bool {
+    OLED.lock().unwrap().get(display).copied().unwrap_or(false)
 }
 
 /// What the compositor should be asked for on one display *now*: whether the
@@ -1808,13 +1890,16 @@ pub fn refresh(categories: &mut [Category]) {
     }
 }
 
-/// How the shell looks: the colour everything chosen is drawn in, and — on a
-/// machine that has a battery — whether its corner writes the charge out.
+/// How the shell looks: the colour everything chosen is drawn in, how much
+/// material it is drawn with, and — on a machine that has a battery — whether
+/// its corner writes the charge out.
 ///
-/// The accent first, because it is the whole shell and the other is one mark on
-/// one screen.
+/// The accent first, because it is the whole shell and what somebody who opens
+/// this page came for. The theme second: it is the larger change of the two, and
+/// it is also the one nobody goes looking for until something is slow. The
+/// battery's figures last, because they are one mark on one screen.
 fn appearance() -> Entry {
-    let mut rows = vec![accent_colour()];
+    let mut rows = vec![accent_colour(), theme_row()];
     // Only on a machine that has one. A desktop offered a switch for battery
     // figures would be offered a setting it can never see the effect of, which
     // is worse than not being offered it: the user would turn it on and go
@@ -1851,6 +1936,73 @@ fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
             value("Off", None, !on, Setting::BatteryPercent(false)),
             value("On", None, on, Setting::BatteryPercent(true)),
         ],
+    )
+}
+
+/// The theme: how much material the shell draws itself with.
+///
+/// A page rather than a list of values, because there are two questions here and
+/// they are not one question. The wallpaper is a long function evaluated for
+/// every pixel of every screen on every frame; a mark is a few dozen pixels on a
+/// settings row. They cost their own money, and a machine that cannot afford the
+/// first can very well afford the second — so a user who came here because
+/// something is slow can stand the water down and keep the marks, and a user who
+/// came here because they prefer flat marks can have those over the water.
+///
+/// The wallpaper first: it is the whole screen, and it is the expensive half.
+fn theme_row() -> Entry {
+    folder(
+        "Theme",
+        "What the shell is made of",
+        icons::SETTING_THEME,
+        theme::PARTS.iter().copied().map(material_row).collect(),
+    )
+}
+
+/// One half of the theme: the wallpaper, or every mark the shell draws.
+///
+/// Two values each, and the second exists for one reason above all others — a
+/// machine that cannot afford the first. So the comments say what each *costs*
+/// as well as what it looks like: a user who is here is here because something
+/// is slow, and "the shell's own look" tells them nothing they can act on.
+///
+/// The row marked is the applied one rather than the one being previewed, like
+/// every other list of values in this tree: what is drawn on screen while the
+/// cursor walks is the preview, and what is ticked is the setting.
+fn material_row(part: theme::Part) -> Entry {
+    let in_force = theme::applied_style(part).name();
+    let (comment, icon, of_default, of_simple) = match part {
+        theme::Part::Wallpaper => (
+            "The picture behind everything",
+            icons::SETTING_WALLPAPER,
+            "A band of water, lit as three sheets",
+            "Fine ribbons, for a machine with little to spare",
+        ),
+        theme::Part::Icons => (
+            "Every mark the shell draws",
+            icons::SETTING_ICONS,
+            "Every mark a bead of water",
+            "Flat shapes, for a machine with little to spare",
+        ),
+    };
+    folder(
+        part.title(),
+        comment,
+        icon,
+        wallpaper::STYLES
+            .iter()
+            .map(|name| {
+                value(
+                    name,
+                    Some(match wallpaper::style(name) {
+                        wallpaper::Style::Default => of_default,
+                        wallpaper::Style::Simple => of_simple,
+                    }),
+                    *name == in_force,
+                    Setting::Style(part, name),
+                )
+            })
+            .collect(),
     )
 }
 
@@ -1908,7 +2060,116 @@ fn display() -> Entry {
             display_order(),
             night_light(),
             high_dynamic_range(),
+            oled_protection(),
         ],
+    )
+}
+
+/// OLED protection: rest a screen nobody is watching while a game is being
+/// played on another one.
+///
+/// Last of the Display pages, and it earns that place the way HDR earns
+/// second-to-last: the ones above it are about the picture every display has,
+/// and this is about the *panel* — a question only some hardware makes anybody
+/// ask, and one nobody comes to this column looking for until they own the
+/// screen that needs it.
+///
+/// The same three shapes as [`night_light`] and [`high_dynamic_range`], and for
+/// the same reasons. What differs is what is left out, which is nothing: a
+/// black sheet is the compositor's own drawing over a display it is already
+/// driving, so every screen it reports can be rested. A whole session drops off
+/// this page instead — one whose compositor has never heard of the request —
+/// and there the row says so rather than opening onto a switch that would do
+/// nothing.
+fn oled_protection() -> Entry {
+    let screens = support();
+    if !screen_rest_available() || screens.is_empty() {
+        return folder(
+            "OLED protection",
+            "Rest a screen nobody is watching",
+            icons::SETTING_SCREEN_REST,
+            vec![nothing_can_be_rested()],
+        );
+    }
+    match screens.as_slice() {
+        // One screen, so there is no screen to choose — and the page above it
+        // says which screen it is and what the switch is set to.
+        [(name, _)] => folder(
+            "OLED protection",
+            &format!("{name} — {}", resting_of(name)),
+            icons::SETTING_SCREEN_REST,
+            oled_protection_controls(name),
+        ),
+        _ => folder(
+            "OLED protection",
+            "Rest a screen nobody is watching",
+            icons::SETTING_SCREEN_REST,
+            screens
+                .iter()
+                .map(|(name, _)| {
+                    folder(
+                        name,
+                        &resting_of(name),
+                        icons::SETTING_DISPLAY,
+                        oled_protection_controls(name),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The controls, for one screen — shared by the screen list and by the session
+/// that has only one screen, the way [`night_light_controls`] is.
+///
+/// One row, and it is the switch. Nothing else about this is the user's to set:
+/// how long a screen is left alone first, how long the fade takes, and what
+/// counts as leaving it alone are answers this shell has, and a page offering
+/// four of them would be asking the user to design the feature.
+fn oled_protection_controls(name: &str) -> Vec<Entry> {
+    vec![oled_protection_switch(
+        intern(name),
+        oled_protection_for(name),
+    )]
+}
+
+/// What one screen's switch is set to, in the few words a row's comment has.
+fn resting_of(display: &str) -> String {
+    match oled_protection_for(display) {
+        true => "On".to_string(),
+        false => "Off".to_string(),
+    }
+}
+
+/// The switch itself, on or off.
+fn oled_protection_switch(display: &'static str, on: bool) -> Entry {
+    folder(
+        "OLED protection",
+        "Fade this screen to black while a game is played on another",
+        icons::SETTING_SCREEN_REST,
+        vec![
+            value(
+                "Off",
+                None,
+                !on,
+                setting(display, DisplayValue::OledProtection(false)),
+            ),
+            value(
+                "On",
+                None,
+                on,
+                setting(display, DisplayValue::OledProtection(true)),
+            ),
+        ],
+    )
+}
+
+/// The row that stands in for the screen list when no screen can be rested.
+fn nothing_can_be_rested() -> Entry {
+    reading(
+        "No display can be rested",
+        "The black is drawn over the whole of a display, cursor and all, so it \
+         is the compositor's to draw: this session's has never heard of it",
     )
 }
 
@@ -3306,7 +3567,7 @@ fn start_music_switch() -> Entry {
     let on = start_music();
     folder(
         "Start music",
-        "The music the Start screen plays",
+        "The music the start screen plays",
         icons::CATEGORY_MUSIC,
         vec![
             value("Off", None, !on, Setting::StartMusic(false)),
@@ -4915,6 +5176,7 @@ fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry 
         // in it comes off the disk, so there is no place for it to come back to.
         place: None,
         chosen: false,
+        over_the_list: false,
     })
 }
 
@@ -5063,6 +5325,20 @@ pub fn preview(setting: Option<Setting>) {
                 tracing::warn!(accent = name, "no accent by that name");
             }
         }
+        // The material lands whole rather than travelling, because there is no
+        // halfway between a bead of water and the flat shape of one. Previewed
+        // all the same, and these are the rows here that need previewing most:
+        // the difference between the two values is the screen itself, and no
+        // name for it would tell anybody what they are choosing.
+        //
+        // One half at a time, which is the point of splitting them: highlighting
+        // Simple under Wallpaper must leave the marks exactly as they are, so
+        // that what changes on screen is what the row is about and nothing else.
+        Some(Setting::Style(part, name)) => {
+            if !theme::preview_style(part, name) {
+                tracing::warn!(part = part.title(), theme = name, "no theme by that name");
+            }
+        }
         // Highlighting a value the compositor or the sound server would have to
         // act on changes nothing; the accent goes back to what is applied, as
         // it does when the cursor leaves a list of values entirely.
@@ -5080,7 +5356,13 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::Bluetooth(_)
             | Setting::AppScale(_),
         )
-        | None => theme::restore_accent(),
+        | None => {
+            theme::restore_accent();
+            // And the material, for the same reason and in the same breath: a
+            // cursor that walked onto Simple and off again has to leave the
+            // shell in the theme the user is actually using.
+            theme::restore_style();
+        }
     }
 }
 
@@ -5166,6 +5448,16 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 return false;
             }
             tracing::info!(accent = name, "accent");
+        }
+        // Nothing to tell anybody: the wallpaper and every glyph are drawn from
+        // this once a frame, so the frame the row was pressed on is the frame
+        // the shell changes material in.
+        Setting::Style(part, name) => {
+            if !theme::commit_style(part, name) {
+                tracing::warn!(part = part.title(), theme = name, "no theme by that name");
+                return false;
+            }
+            tracing::info!(part = part.title(), theme = name, "theme");
         }
         // Nothing to tell anybody either, for the opposite reason to the
         // accent's: the shell asks this of itself once a frame — see
@@ -5365,6 +5657,13 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         _ => {}
                     }
                 }
+                // And the OLED protection on its own again, for the fourth
+                // time and the same reason: a screen somebody asked to rest
+                // has not thereby been given a mode, a turn, a warmth or a
+                // colour pipeline.
+                DisplayValue::OledProtection(on) => {
+                    OLED.lock().unwrap().insert(screen.to_string(), on);
+                }
                 _ => {
                     let mut held = HDR.lock().unwrap();
                     let inherited = *INHERITED.lock().unwrap();
@@ -5388,7 +5687,8 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         | DisplayValue::NightLightTemperature(_)
                         | DisplayValue::NightLightSchedule(_)
                         | DisplayValue::NightLightFrom(_)
-                        | DisplayValue::NightLightUntil(_) => {}
+                        | DisplayValue::NightLightUntil(_)
+                        | DisplayValue::OledProtection(_) => {}
                     }
                 }
             }
@@ -5435,7 +5735,35 @@ pub fn load() {
             );
         }
     }
+    adopt_theme(&stored);
     adopt(stored);
+}
+
+/// Put the two halves of the Theme setting into force from a parsed file.
+///
+/// Each half its own key, and the key they both used to share where a half has
+/// nothing of its own: a file written before the setting was split says one
+/// thing about the whole shell, and it meant it about both. Split from
+/// [`load`] so that can be exercised without a file, which is the only way to
+/// hold the fallback without writing into the developer's own home directory.
+fn adopt_theme(stored: &Stored) {
+    for (part, named) in [
+        (theme::Part::Wallpaper, &stored.theme_wallpaper),
+        (theme::Part::Icons, &stored.theme_icons),
+    ] {
+        let Some(named) = named.as_ref().or(stored.theme.as_ref()) else {
+            continue;
+        };
+        if !theme::set_style(part, named) {
+            // Named by the key rather than by the row, because this is about
+            // what is in the file and the reader is looking at the file.
+            tracing::warn!(
+                key = part.key(),
+                theme = named,
+                "the settings name a theme this shell does not have"
+            );
+        }
+    }
 }
 
 /// Take the display settings out of a parsed file.
@@ -5555,11 +5883,13 @@ fn adopt(stored: Stored) {
     let mut turns = TURN.lock().unwrap();
     let mut places = PLACE.lock().unwrap();
     let mut nights = NIGHT.lock().unwrap();
+    let mut rests = OLED.lock().unwrap();
     held.clear();
     modes.clear();
     turns.clear();
     places.clear();
     nights.clear();
+    rests.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
         // than refusing the file: this is a text file the user is entitled to
@@ -5688,6 +6018,13 @@ fn adopt(stored: Stored) {
                 },
             );
         }
+        // And whether this screen rests while a game is played on another,
+        // which is a plain switch and needs none of the care above it. A
+        // section that says nothing about it leaves that display alone, which
+        // is what the setting does when nobody has answered it.
+        if let Some(rest) = display.oled_protection {
+            rests.insert(name.clone(), rest);
+        }
         // A section that says nothing about HDR leaves that display on the
         // inherited settings rather than being pinned to a copy of them —
         // which is what a section carrying only a mode is.
@@ -5726,6 +6063,23 @@ fn adopt(stored: Stored) {
 #[serde(default, rename_all = "kebab-case")]
 struct Stored {
     accent: Option<String>,
+    /// Which material each half of the shell draws itself in — `Default` or
+    /// `Simple`, one answer for the picture behind everything and one for every
+    /// mark on top of it. The display manager reads both keys as well as the
+    /// accent, so that a login screen never arrives in a material the session is
+    /// not using; the compositor reads the wallpaper's alone, because the frame
+    /// it bridges the start of the session with is a wallpaper and nothing else.
+    theme_wallpaper: Option<String>,
+    theme_icons: Option<String>,
+    /// What both of them were before they were two settings.
+    ///
+    /// Read, never written. One `theme` key said what the whole shell was made
+    /// of, and a file left by that shell means it about both halves — so it is
+    /// what each of them falls back to, and the first save afterwards replaces
+    /// it with the pair. Kept rather than dropped because the alternative is a
+    /// machine somebody deliberately set to `Simple` coming back up in the water
+    /// after an update.
+    theme: Option<String>,
     /// What a display with no section of its own is set to.
     ///
     /// These four are where the first, single-display version of this page
@@ -5876,6 +6230,13 @@ struct StoredDisplay {
     /// hours are neither a whole day nor none of one, and are dropped.
     night_light_from: Option<u8>,
     night_light_until: Option<u8>,
+    /// Rest this display behind black while a game is played on another one.
+    ///
+    /// No top-level default stands behind it, as none stands behind the night
+    /// light's keys: a display this file has never heard of is never rested,
+    /// which is the setting's own default and is what a screen plugged in for
+    /// the first time should do.
+    oled_protection: Option<bool>,
 }
 
 impl Mode {
@@ -5932,6 +6293,7 @@ fn stored() -> Stored {
     let turns = TURN.lock().unwrap();
     let places = PLACE.lock().unwrap();
     let nights = NIGHT.lock().unwrap();
+    let rests = OLED.lock().unwrap();
 
     // A screen may have been given one of these and not the others, so the
     // sections are the union rather than any one list: writing only the screens
@@ -5955,12 +6317,28 @@ fn stored() -> Stored {
     for (name, night) in nights.iter() {
         display.entry(name.clone()).or_default().night_from(*night);
     }
+    for (name, rest) in rests.iter() {
+        display.entry(name.clone()).or_default().oled_protection = Some(*rest);
+    }
 
     let sound = *SOUND.lock().unwrap();
     let playing = *START_MUSIC.lock().unwrap();
 
     Stored {
         accent: Some(theme::accent().name.to_string()),
+        // The applied ones, never a preview: this is written the moment a row is
+        // pressed, and a file that recorded what the cursor happened to be
+        // standing on would be a setting nobody chose.
+        theme_wallpaper: Some(
+            theme::applied_style(theme::Part::Wallpaper)
+                .name()
+                .to_string(),
+        ),
+        theme_icons: Some(theme::applied_style(theme::Part::Icons).name().to_string()),
+        // Never written. See [`Stored::theme`]: this is the key the two above
+        // replaced, and writing it as well would be a third opinion about a
+        // setting that now has two.
+        theme: None,
         sound_volume: Some(sound.value),
         sound_muted: Some(sound.muted),
         start_music: Some(playing),
@@ -6051,6 +6429,8 @@ fn save(stored: &Stored) {
 /// [`set_sound`] deliberately writes the file on every step of a held volume
 /// direction, which is a second or two of writes for one press.
 type Shown = (
+    Option<String>,
+    Option<String>,
     Option<String>,
     Option<bool>,
     Option<u16>,
@@ -6220,6 +6600,8 @@ fn start_the_login_screen(programs: &[&str]) -> Option<(String, std::process::Ch
 fn news_for_the_login_screen(stored: &Stored) -> bool {
     let shown: Shown = (
         stored.accent.clone(),
+        stored.theme_wallpaper.clone(),
+        stored.theme_icons.clone(),
         stored.hdr,
         stored.hdr_sdr_brightness,
         stored.hdr_srgb_intensity,
@@ -6244,6 +6626,19 @@ const PREAMBLE: &str = "\
 #
 # accent: the colour of being chosen. One of the names the shell offers under
 # Settings > Appearance > Accent color. An unknown name is ignored.
+#
+# theme-wallpaper and theme-icons: how much material each half of the shell is
+# drawn with — Default for its own look, or Simple for the plainer one a slow
+# machine asks for. The wallpaper is the band of water against the fine ribbons
+# the shell drew before it; the icons are marks beaded out of their own shape
+# against the flat shapes themselves. Two keys because they cost their own money
+# and either may be either way round. Settings > Appearance > Theme. An unknown
+# name is read as Default. The login screen reads both keys, and the compositor
+# reads the wallpaper's for the frame it opens the session with.
+#
+# theme: what those two were before they were two settings. Read where a half
+# says nothing of its own, never written, and replaced by the pair at the next
+# save — a machine deliberately set to Simple stays there across the change.
 #
 # sound-volume: how loud the shell's effects and Start music are, 0 to 1, and
 # sound-muted whether they are silenced. Both are the System row of the volume
@@ -6372,6 +6767,28 @@ const PREAMBLE: &str = "\
 #                         on, is an evening. The two may not be the same hour;
 #                         a file that says they are keeps no hours at all.
 #
+# oled-protection is Settings > Display > OLED protection: fade this screen to
+# black once it has been left alone for five seconds, while a game is being
+# played on another one. Off unless this says true, and it has no top-level
+# default for the reason the night light's keys have none — a display this file
+# has never heard of is never rested.
+#
+# What it is for is a panel that keeps the picture it is shown. The start
+# screen is the worst case there is: the bar sits in the same row of pixels
+# every second it is up, and a second screen left on it through an evening's
+# play is a screen with a bar burnt into it. The black is the compositor's own
+# sheet over the whole display, the cursor and anything running on it included,
+# and it never takes any input away — moving the pointer onto the screen brings
+# it back in a quarter of a second, as does taking that display over or
+# pressing anything on it.
+#
+# Four things stop a screen being rested, and none of them can be set here:
+# the screen the game is on is never rested, nor is the one being driven, nor
+# is one with something still painting on it — a film playing on the second
+# screen is exactly what a second screen is for — and nothing is rested at all
+# unless a game is actually running. A film somebody paused is deliberately not
+# spared: a paused film is a still picture, which is the thing this exists for.
+#
 # night-light-latitude and night-light-longitude, at the top level, are where
 # this machine is, in degrees — north and east positive. They are what
 # sunset-to-sunrise is worked out from, and they are only needed when the
@@ -6488,6 +6905,8 @@ mod tests {
         reported_places: Vec<(String, u32)>,
         place: BTreeMap<String, u32>,
         night: BTreeMap<String, NightLight>,
+        oled: BTreeMap<String, bool>,
+        screen_rest: bool,
         sound: Level,
         app_scale: u16,
         start_music: bool,
@@ -6512,6 +6931,8 @@ mod tests {
             reported_places: placed(),
             place: PLACE.lock().unwrap().clone(),
             night: NIGHT.lock().unwrap().clone(),
+            oled: OLED.lock().unwrap().clone(),
+            screen_rest: screen_rest_available(),
             sound: *SOUND.lock().unwrap(),
             app_scale: app_scale(),
             start_music: start_music(),
@@ -6528,6 +6949,11 @@ mod tests {
         TURN.lock().unwrap().clear();
         PLACE.lock().unwrap().clear();
         NIGHT.lock().unwrap().clear();
+        OLED.lock().unwrap().clear();
+        // A compositor that can rest a screen, which is what the session ships
+        // with. The page that says otherwise is tested by asking for it — see
+        // [`a_session_that_cannot_rest_a_screen_says_so`].
+        note_screen_rest(true);
         *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
         note_turned(Vec::new());
         note_places(Vec::new());
@@ -6546,6 +6972,8 @@ mod tests {
         *TURN.lock().unwrap() = saved.turn;
         *PLACE.lock().unwrap() = saved.place;
         *NIGHT.lock().unwrap() = saved.night;
+        *OLED.lock().unwrap() = saved.oled;
+        note_screen_rest(saved.screen_rest);
         *SOUND.lock().unwrap() = saved.sound;
         *APP_SCALE.lock().unwrap() = saved.app_scale;
         *START_MUSIC.lock().unwrap() = saved.start_music;
@@ -7121,7 +7549,8 @@ mod tests {
                             | DisplayValue::NightLightTemperature(_)
                             | DisplayValue::NightLightSchedule(_)
                             | DisplayValue::NightLightFrom(_)
-                            | DisplayValue::NightLightUntil(_) => {
+                            | DisplayValue::NightLightUntil(_)
+                            | DisplayValue::OledProtection(_) => {
                                 unreachable!()
                             }
                         }
@@ -7162,6 +7591,200 @@ mod tests {
                 assert_eq!(entry.swatch(), Some(accent.theme.accent));
             }
         });
+    }
+
+    /// The Theme page's two halves, and what each of their rows does to the
+    /// shell.
+    ///
+    /// Four things this holds, all of which have been wrong in another setting
+    /// in this tree at some point: highlighting a row draws in that material
+    /// without choosing it, walking back off the list puts the applied one back,
+    /// choosing one writes the name the row is titled with rather than the name
+    /// of the material that happened to be on screen — and, the one this page
+    /// exists for, a row under one half leaves the other half exactly as it was.
+    #[test]
+    fn the_theme_rows_change_the_material_and_only_then_write_it_down() {
+        let halves = || {
+            appearance_page()[1]
+                .entries()
+                .expect("Theme opens onto its two halves")
+                .to_vec()
+        };
+        let values = |half: usize| {
+            halves()[half]
+                .entries()
+                .expect("each half opens onto its values")
+                .to_vec()
+        };
+        for part in theme::PARTS {
+            assert!(theme::set_style(part, "Default"));
+        }
+
+        assert_eq!(
+            halves().iter().map(Entry::title).collect::<Vec<_>>(),
+            ["Wallpaper", "Icons"],
+            "the wallpaper first: it is the whole screen and the expensive half"
+        );
+        assert_eq!(
+            halves().iter().map(Entry::icon).collect::<Vec<_>>(),
+            [
+                Some(crate::icons::SETTING_WALLPAPER),
+                Some(crate::icons::SETTING_ICONS)
+            ],
+            "and each half wears the mark of the thing it changes"
+        );
+
+        for (half, part) in theme::PARTS.into_iter().enumerate() {
+            let other = theme::PARTS[1 - half];
+            let rows = values(half);
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                wallpaper::STYLES.to_vec(),
+                "the rows are the styles themselves, in the order the crate lists them"
+            );
+            assert!(
+                rows[0].chosen(),
+                "a shell nobody has asked draws its own look"
+            );
+            assert!(!rows[1].chosen());
+            assert!(
+                rows.iter().all(|row| row.comment().is_some()),
+                "a row about what a machine can afford has to say so"
+            );
+
+            // Highlighted: drawn in, not chosen.
+            preview(rows[1].setting());
+            assert_eq!(theme::style(part), wallpaper::Style::Simple);
+            assert_eq!(
+                theme::applied_style(part),
+                wallpaper::Style::Default,
+                "highlighting Simple is not choosing it"
+            );
+            assert_eq!(theme::style_flag(part), 1.0, "and the shader is told");
+            assert_eq!(
+                theme::style(other),
+                wallpaper::Style::Default,
+                "and told about this half alone"
+            );
+
+            // Walked off the list again.
+            preview(None);
+            assert_eq!(theme::style(part), wallpaper::Style::Default);
+            assert_eq!(theme::style_flag(part), 0.0);
+
+            // Chosen, and written down as itself.
+            let mut persisted = None;
+            assert!(apply_with(
+                rows[1].setting().expect("Simple sets something"),
+                |stored| {
+                    persisted = Some((stored.theme_wallpaper.clone(), stored.theme_icons.clone()))
+                },
+            ));
+            assert_eq!(theme::applied_style(part), wallpaper::Style::Simple);
+            assert_eq!(
+                theme::applied_style(other),
+                wallpaper::Style::Default,
+                "choosing one half is not choosing the other"
+            );
+            let (wallpaper_named, icons_named) = persisted.expect("both halves are written");
+            assert_eq!(
+                [wallpaper_named.as_deref(), icons_named.as_deref()],
+                match part {
+                    theme::Part::Wallpaper => [Some("Simple"), Some("Default")],
+                    theme::Part::Icons => [Some("Default"), Some("Simple")],
+                }
+            );
+            // And the page opens on it next time it is built.
+            assert!(values(half)[1].chosen());
+
+            assert!(theme::set_style(part, "Default"));
+        }
+    }
+
+    /// The two keys the halves are written under, spelled once and asserted
+    /// here.
+    ///
+    /// Neither of them is this shell's alone: the display manager reads both out
+    /// of the file to bring a login screen up in the right material, and the
+    /// compositor reads the wallpaper's for the frame it opens the session with.
+    /// A rename that only the shell knew about would be a login screen quietly
+    /// falling back to the default.
+    #[test]
+    fn the_two_halves_are_written_under_the_keys_they_say_they_are() {
+        let written = toml::to_string(&Stored {
+            theme_wallpaper: Some("Simple".to_string()),
+            theme_icons: Some("Default".to_string()),
+            ..Stored::default()
+        })
+        .expect("the settings are writable as TOML");
+        assert_eq!(
+            written.lines().take(2).collect::<Vec<_>>(),
+            [
+                r#"theme-wallpaper = "Simple""#,
+                r#"theme-icons = "Default""#
+            ],
+            "the wallpaper first, beside the accent, in the order the page lists them"
+        );
+        assert!(
+            !written.contains("\ntheme ="),
+            "the key the two replaced is read and never written"
+        );
+        for part in theme::PARTS {
+            assert!(
+                written.contains(&format!("{} = ", part.key())),
+                "{} is not written under {}",
+                part.title(),
+                part.key()
+            );
+        }
+    }
+
+    /// The one key both halves used to share is still read, and is read as what
+    /// it meant: one answer about the whole shell.
+    ///
+    /// Without this a machine somebody deliberately stood down to Simple comes
+    /// back up in the water after an update, which is the one thing this setting
+    /// exists to prevent. A half with a key of its own outranks it, because that
+    /// is a newer answer to a narrower question.
+    #[test]
+    fn a_file_from_before_the_split_still_says_what_it_said() {
+        let _guard = LOCK.lock();
+        for part in theme::PARTS {
+            assert!(theme::set_style(part, "Default"));
+        }
+
+        adopt_theme(&Stored {
+            theme: Some("Simple".to_string()),
+            ..Stored::default()
+        });
+        for part in theme::PARTS {
+            assert_eq!(
+                theme::applied_style(part),
+                wallpaper::Style::Simple,
+                "{} ignored a file that named one material for the whole shell",
+                part.title()
+            );
+        }
+
+        adopt_theme(&Stored {
+            theme: Some("Simple".to_string()),
+            theme_icons: Some("Default".to_string()),
+            ..Stored::default()
+        });
+        assert_eq!(
+            theme::applied_style(theme::Part::Wallpaper),
+            wallpaper::Style::Simple,
+            "the half with nothing of its own keeps the old key's answer"
+        );
+        assert_eq!(
+            theme::applied_style(theme::Part::Icons),
+            wallpaper::Style::Default,
+            "and the half that has been answered since outranks it"
+        );
+
+        for part in theme::PARTS {
+            assert!(theme::set_style(part, "Default"));
+        }
     }
 
     /// Every row carries what choosing it does, and it does what the row says
@@ -7276,6 +7899,7 @@ mod tests {
                     night_light_schedule: Some("hours".to_string()),
                     night_light_from: Some(21),
                     night_light_until: Some(7),
+                    oled_protection: Some(true),
                 },
             )]),
             media_sort: BTreeMap::from([
@@ -7306,6 +7930,7 @@ mod tests {
             "hdr-sdr-brightness",
             "hdr-srgb-intensity",
             "hdr-peak-brightness",
+            "oled-protection",
         ] {
             assert!(body.contains(key), "{key} is not written under that name");
         }
@@ -7322,6 +7947,14 @@ mod tests {
                 }
             );
             assert_eq!(mode_for(FIRST), Some(mode(2560, 1440, 144)));
+            // And the switch that rests this screen while a game is played on
+            // another, which is written and read like anything else per
+            // display — see [`oled_protection_for`].
+            assert!(oled_protection_for(FIRST));
+            assert!(
+                !oled_protection_for(SECOND),
+                "a screen the file says nothing about is never rested"
+            );
             // The order each shelf is listed in comes back with the rest of
             // it, and a shelf the file says nothing about is left alphabetical
             // rather than given somebody else's answer.
@@ -7482,7 +8115,7 @@ mod tests {
                     .iter()
                     .map(Entry::title)
                     .collect::<Vec<_>>(),
-                ["Accent color"],
+                ["Accent color", "Theme"],
                 "a machine with no battery is offered a battery setting",
             );
         });
@@ -7496,12 +8129,12 @@ mod tests {
                 let page = appearance_page();
                 assert_eq!(
                     page.iter().map(Entry::title).collect::<Vec<_>>(),
-                    ["Accent color", "Battery percentage"],
+                    ["Accent color", "Theme", "Battery percentage"],
                     "the accent first: it is the whole shell, and this is one mark",
                 );
                 // The row is drawn at the level the machine is actually at, so
                 // the list is headed by the mark the user is deciding about.
-                assert_eq!(page[1].icon(), Some(crate::icons::BATTERY_HIGH));
+                assert_eq!(page[2].icon(), Some(crate::icons::BATTERY_HIGH));
             },
         );
     }
@@ -7523,7 +8156,7 @@ mod tests {
                 *BATTERY_PERCENT.lock().unwrap() = false;
 
                 let page = |()| {
-                    appearance_page()[1]
+                    appearance_page()[2]
                         .entries()
                         .expect("Battery percentage opens onto its two values")
                         .to_vec()
@@ -8126,7 +8759,8 @@ hdr-peak-brightness = 600
                         "Orientation",
                         "Display order",
                         "Night light",
-                        "HDR"
+                        "HDR",
+                        "OLED protection"
                     ],
                     "the shape of the picture comes before what it carries"
                 );
@@ -9532,6 +10166,107 @@ hdr = true
             assert_eq!(hours.len(), 23);
             assert!(!hours.contains(&"21:00".to_string()));
             assert!(hours.contains(&"07:00".to_string()));
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // OLED protection
+    // -----------------------------------------------------------------------
+
+    /// The switch rows for one screen, however the page reaches them.
+    fn rest_controls_for(name: &str) -> Vec<Entry> {
+        let page = page("OLED protection");
+        // One screen and the controls stand in the screen list's place, exactly
+        // as they do on the night light page.
+        if page.iter().any(|entry| entry.title() == "OLED protection") {
+            return page;
+        }
+        page.iter()
+            .find(|entry| entry.title() == name)
+            .unwrap_or_else(|| panic!("{name} is not in the OLED protection screen list"))
+            .entries()
+            .expect("a screen opens its switch")
+            .to_vec()
+    }
+
+    /// Every screen is on this page, unlike every other page under Display:
+    /// what rests a display is a black sheet the compositor draws over it, and
+    /// there is no connector that cannot have one.
+    #[test]
+    fn every_screen_can_be_rested() {
+        // An SDR panel with no HDR to offer and a television with plenty. The
+        // HDR page has one of them and this one has both.
+        with_displays(&[(FIRST, warmable()), (SECOND, capable(PEAK))], || {
+            let listed: Vec<String> = page("OLED protection")
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert_eq!(listed, [FIRST, SECOND]);
+        });
+
+        // One screen, so there is no screen to choose between: the switch
+        // stands in the list's place and the row above it says whose it is and
+        // what it is set to.
+        with_displays(&[(AWKWARD, warmable())], || {
+            let row = display_row("OLED protection");
+            assert_eq!(row.comment(), Some(&format!("{AWKWARD} — Off")[..]));
+            assert_eq!(
+                rest_controls_for(AWKWARD)
+                    .iter()
+                    .map(Entry::title)
+                    .collect::<Vec<_>>(),
+                ["OLED protection"],
+                "one switch, and nothing else to set"
+            );
+        });
+    }
+
+    /// The switch sets the screen it is under and no other, and the page says
+    /// so afterwards.
+    #[test]
+    fn resting_one_screen_leaves_the_other_alone() {
+        with_displays(&[(FIRST, warmable()), (SECOND, warmable())], || {
+            let on = rest_controls_for(FIRST)[0]
+                .entries()
+                .expect("the switch opens onto its two values")
+                .iter()
+                .find(|entry| entry.title() == "On")
+                .expect("a switch has an On")
+                .setting()
+                .expect("a value sets something");
+            assert_eq!(
+                on,
+                setting(intern(FIRST), DisplayValue::OledProtection(true)),
+                "the row names the screen it was reached through"
+            );
+            assert!(apply_with(on, |_| {}));
+
+            assert!(oled_protection_for(FIRST));
+            assert!(!oled_protection_for(SECOND), "one screen, not both");
+            // And the screen list says which is which without opening either.
+            let comments: Vec<String> = page("OLED protection")
+                .iter()
+                .map(|entry| entry.comment().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(comments, ["On", "Off"]);
+        });
+    }
+
+    /// A session whose compositor has never heard of the request offers no
+    /// switch at all. A control that cannot act is worse than a page that says
+    /// why, and this is a whole-session answer rather than a per-screen one.
+    #[test]
+    fn a_session_that_cannot_rest_a_screen_says_so() {
+        with_displays(&[(FIRST, warmable()), (SECOND, warmable())], || {
+            note_screen_rest(false);
+            let rows = page("OLED protection");
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].setting().is_none(), "it sets nothing");
+            assert!(
+                rows[0].title().contains("No display"),
+                "{:?}",
+                rows[0].title()
+            );
         });
     }
 
@@ -12465,10 +13200,16 @@ hdr = true
         assert!(startup(&rows)[1].chosen());
 
         // And what "as it was left" refers to is written by the shell watching
-        // rather than by anybody pressing anything.
-        note_bluetooth_powered(false);
+        // rather than by anybody pressing anything. Through the half that
+        // decides, never the half that writes: the whole file belongs to
+        // whoever is running these tests.
+        assert!(remember_bluetooth_powered(false), "false is news here");
         assert!(!bluetooth_was_on());
         assert_eq!(stored().bluetooth_was_on, Some(false));
+        assert!(
+            !remember_bluetooth_powered(false),
+            "and saying it twice is not, which is what spares the file"
+        );
 
         put_back(saved);
     }

@@ -37,7 +37,7 @@ smithay::render_elements! {
     /// A CPU-side image: the themed cursor.
     Memory = MemoryRenderBufferRenderElement<R>,
     /// One flat colour over the whole display: the flash a screenshot answers
-    /// with, and nothing else so far.
+    /// with, and the black a session goes out behind.
     Solid = SolidColorRenderElement,
 }
 
@@ -82,10 +82,43 @@ where
 
     let mut elements: Vec<LxbRenderElement<R>> = Vec::new();
 
-    // The flash before everything, cursor included: a camera's answer is over
-    // the whole screen or it is not an answer. It is never in the photograph —
-    // the picture is read back before the flash is started — and it is only
-    // ever here for the few frames after one was actually written.
+    // The curtain over everything, the cursor and the flash included: a session
+    // on its way out takes the whole screen with it, and a pointer left drawn
+    // over the black would be the last thing anybody saw of it. Nothing else
+    // in this list is above it — see [`crate::curtain`].
+    if let Some((id, black, commit)) = lxb.curtain.black(now) {
+        elements.push(LxbRenderElement::Solid(SolidColorRenderElement::new(
+            id,
+            Rectangle::from_size(output_geo.size.to_physical_precise_round(scale)),
+            commit,
+            // Premultiplied, as below: black at this alpha is zero in the
+            // colour channels and the alpha itself in the fourth.
+            [0.0, 0.0, 0.0, black],
+            Kind::Unspecified,
+        )));
+    }
+
+    // Then the black one display rests behind while a game is played on
+    // another — under the curtain, because the session leaving is over every
+    // screen and outranks one screen sleeping, and over everything else on
+    // this one for the reason the curtain is over everything: a cursor left
+    // lit on a resting OLED panel is the brightest thing on it. See
+    // [`crate::blackout`].
+    if let Some((id, black, commit)) = lxb.blackouts.black(output, now) {
+        elements.push(LxbRenderElement::Solid(SolidColorRenderElement::new(
+            id,
+            Rectangle::from_size(output_geo.size.to_physical_precise_round(scale)),
+            commit,
+            // Premultiplied, as the curtain above is.
+            [0.0, 0.0, 0.0, black],
+            Kind::Unspecified,
+        )));
+    }
+
+    // Then the flash, cursor included: a camera's answer is over the whole
+    // screen or it is not an answer. It is never in the photograph — the
+    // picture is read back before the flash is started — and it is only ever
+    // here for the few frames after one was actually written.
     if let Some((id, white)) = lxb.flashes.white(output, now) {
         elements.push(LxbRenderElement::Solid(SolidColorRenderElement::new(
             id,
@@ -1028,6 +1061,23 @@ fn covered(
 /// nearly two minutes before the game dies, with the compositor's side of the
 /// story attached to it.
 const QUIET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether `window` has put a frame up within `recently`.
+///
+/// The same reading [`watch_for_a_quiet_application`] takes, asked for a
+/// different purpose: that one logs a game whose render thread has parked, and
+/// this one answers whether a display has anything moving on it — which is what
+/// tells a screen that can be rested from one somebody is watching. See
+/// [`crate::blackout`] and `lxb_shell_v1.output_drawing`.
+///
+/// A window that has never committed anything has no reading at all, and is
+/// counted as still: it has shown nobody anything.
+pub fn painted_within(window: &Window, recently: std::time::Duration) -> bool {
+    window
+        .user_data()
+        .get::<LastDrawn>()
+        .is_some_and(|drawn| drawn.at.get().elapsed() < recently)
+}
 
 /// When a window last had a frame of its own to show, and whether its silence
 /// has already been reported.

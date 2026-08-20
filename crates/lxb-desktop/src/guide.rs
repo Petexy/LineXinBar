@@ -123,14 +123,35 @@ pub enum Item {
     Notifications,
     /// How loud the session is. A bar, not a button.
     Volume,
+    /// How loud the thing being played is, as against how loud the session is.
+    ///
+    /// Beside the session's own bar rather than beside the card it belongs to,
+    /// because two grooves that both set a loudness are one thing the eye
+    /// groups and reads at a glance — and because the question they answer
+    /// together is the one somebody opens this menu with a film running to
+    /// ask: *quieter, but which of the two.*
+    ///
+    /// Present only while something is playing, and it goes with the card.
+    MediaVolume,
     /// How bright the display the menu is on is.
     Brightness,
+    /// What is playing, and the three buttons that drive it.
+    ///
+    /// One entry rather than three. The card is a single control in the column
+    /// — the highlight lands on all of it — and the three transport buttons are
+    /// a selection *inside* it, walked with Left and Right the way a bar's
+    /// level is. Three entries on one line would have been the tiles' shape,
+    /// and it would have left the title under them belonging to nothing.
+    ///
+    /// Present only while something is playing. See [`Guide::animate_media`]
+    /// for what "only while" means at the two ends of it.
+    Media,
     /// Dismiss the overlay and go back to whatever was underneath.
     Resume,
     /// Kill the application whose card is selected beside the column.
     Close,
-    /// Show the bar without closing the running application.
-    Dashboard,
+    /// Show the start screen without closing the running application.
+    StartScreen,
     /// The power button at the foot of the column: opens [`PowerItem`].
     Power,
 }
@@ -151,7 +172,83 @@ enum Band {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bar {
     Volume,
+    Media,
     Brightness,
+}
+
+/// One of the three buttons on the media card.
+///
+/// In the order they are drawn, which is also the order Left and Right walk
+/// them, so the enum is the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Previous,
+    PlayPause,
+    Next,
+}
+
+/// The three, in the order they are drawn.
+pub const TRANSPORT: [Transport; 3] = [Transport::Previous, Transport::PlayPause, Transport::Next];
+
+impl Default for Transport {
+    /// Play, which is the button a hand goes to without looking and the one
+    /// the other two are found from.
+    fn default() -> Self {
+        Transport::PlayPause
+    }
+}
+
+impl Transport {
+    /// Where along the row it sits, which is what the selection eases between.
+    pub fn column(self) -> usize {
+        match self {
+            Transport::Previous => 0,
+            Transport::PlayPause => 1,
+            Transport::Next => 2,
+        }
+    }
+}
+
+/// What the card is about: the one player the buttons act on.
+///
+/// Everything here is what the shell was told at the last look, and the card
+/// goes on drawing it while it fades out — see [`Guide::animate_media`] — so a
+/// player that has gone is still legible for as long as its card is on screen.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NowPlaying {
+    /// The bus name a press is sent to. Not shown.
+    pub bus: String,
+    /// What is playing. Empty where the player says nothing, which is drawn as
+    /// the application's own name instead — a card with a blank line under
+    /// three buttons reads as one that failed to load.
+    pub title: String,
+    /// What to call it when there is no title.
+    pub app: String,
+    /// Whether it is playing *now*, which is the whole of what the middle
+    /// button's glyph says: playing shows the pause mark, because a glyph on a
+    /// button is what pressing it will do.
+    pub playing: bool,
+    pub can_previous: bool,
+    pub can_next: bool,
+    /// Where the playing application's own volume stands, and the row of the
+    /// mixer that moves it. `None` where the sound server has nothing of the
+    /// application in it — a video paused long enough for its stream to have
+    /// been taken down — and then the groove is left out rather than drawn
+    /// dead, exactly as a machine with no backlight leaves out the brightness
+    /// bar.
+    pub level: Option<crate::system::Level>,
+    pub stream: Option<u32>,
+}
+
+impl NowPlaying {
+    /// The line under the buttons.
+    pub fn line(&self) -> &str {
+        if self.title.is_empty() {
+            &self.app
+        } else {
+            &self.title
+        }
+    }
 }
 
 /// Which bars this machine turned out to have.
@@ -216,11 +313,13 @@ impl Item {
                 Some(target) => format!("Close {target}"),
                 None => "Close".to_string(),
             },
-            Item::Dashboard => "Dashboard".to_string(),
+            Item::StartScreen => "Start screen".to_string(),
             // Drawn as a glyph or as a track, so there is nothing to write.
             Item::Power
             | Item::Volume
+            | Item::MediaVolume
             | Item::Brightness
+            | Item::Media
             | Item::Pointer
             | Item::Mixer
             | Item::DoNotDisturb
@@ -236,9 +335,20 @@ impl Item {
     pub fn bar(self) -> Option<Bar> {
         match self {
             Item::Volume => Some(Bar::Volume),
+            Item::MediaVolume => Some(Bar::Media),
             Item::Brightness => Some(Bar::Brightness),
             _ => None,
         }
+    }
+
+    /// Whether this entry comes and goes with what the session is playing.
+    ///
+    /// The two of them do it together and at the same speed: the bar and the
+    /// card are one control that happens to need two lines, and a session
+    /// where the groove arrived a beat before the buttons would read as two
+    /// unrelated things turning up at once.
+    pub fn is_media(self) -> bool {
+        matches!(self, Item::Media | Item::MediaVolume)
     }
 
     fn band(self) -> Band {
@@ -248,9 +358,11 @@ impl Item {
             | Item::DoNotDisturb
             | Item::Notifications
             | Item::Volume
-            | Item::Brightness => Band::Quick,
+            | Item::MediaVolume
+            | Item::Brightness
+            | Item::Media => Band::Quick,
             Item::Resume | Item::Close => Band::Window,
-            Item::Dashboard | Item::Power => Band::Session,
+            Item::StartScreen | Item::Power => Band::Session,
         }
     }
 }
@@ -316,15 +428,24 @@ fn line_at(lines: &[(usize, usize)], index: usize) -> Option<(usize, usize)> {
 pub enum PowerItem {
     Suspend,
     Shutdown,
-    Exit,
+    Restart,
+    /// End the session and go back to the login screen. What used to sit here
+    /// was "Exit LineXinBar Shell", which named the mechanism rather than the
+    /// thing being asked for.
+    LogOut,
     Cancel,
 }
 
 /// The dialog's choices, in the order they are drawn.
+///
+/// The two that act on the machine sit together, turning off before restarting
+/// because that is the one people reach for without reading; leaving the
+/// session follows them, and Cancel is always last.
 const POWER_ITEMS: &[PowerItem] = &[
     PowerItem::Suspend,
     PowerItem::Shutdown,
-    PowerItem::Exit,
+    PowerItem::Restart,
+    PowerItem::LogOut,
     PowerItem::Cancel,
 ];
 
@@ -333,18 +454,39 @@ impl PowerItem {
         match self {
             PowerItem::Suspend => "Suspend System",
             PowerItem::Shutdown => "Turn Off System",
-            PowerItem::Exit => "Exit LineXinBar Shell",
+            PowerItem::Restart => "Restart System",
+            PowerItem::LogOut => "Log Out",
             PowerItem::Cancel => "Cancel",
         }
     }
 
-    /// Whether choosing this ends the session or the machine. Drawn warmer
-    /// than the rest, so the two irreversible rows are never picked by
-    /// muscle memory alone.
+    /// Whether choosing this leaves the user with a machine that is off. Drawn
+    /// warmer than the rest, so the one row nothing on this machine can undo
+    /// is never picked by muscle memory alone.
+    ///
+    /// Only that row. Restarting and logging out both end the session, but
+    /// both of them come back by themselves — what the warmth is for is the
+    /// choice after which the user has to get up and press something.
     pub fn is_grave(self) -> bool {
-        matches!(self, PowerItem::Shutdown | PowerItem::Exit)
+        matches!(self, PowerItem::Shutdown)
     }
 }
+
+/// How long the media rows take to open, and to close again, in seconds.
+///
+/// Longer than the sidebar's own slide, because this happens *while the sidebar
+/// is already up*: a row that appeared under the user's eye at the speed the
+/// whole panel arrives at would read as a jump. Short enough that a track
+/// starting while the menu is open is not a wait.
+const MEDIA_FLIGHT: f32 = 0.34;
+
+/// How long the selection takes to travel from one transport button to the
+/// next.
+///
+/// Quick — the three buttons are a thumb's width apart, and a selection that
+/// took as long to cross that as it takes to cross the column would lag the
+/// press behind it.
+const TRANSPORT_FLIGHT: f32 = 0.12;
 
 #[derive(Debug, Default)]
 pub struct Guide {
@@ -374,6 +516,31 @@ pub struct Guide {
     /// in, because it is the one thing that changes the shape of the column
     /// without the user having done anything.
     bars: Bars,
+    /// What the media card is about, or `None` for a session playing nothing.
+    ///
+    /// Kept for the whole of the card's life *including* its way out: the rows
+    /// close over a third of a second and everything in them has to go on being
+    /// drawn until they have — see [[motion-and-animation-rules]], and
+    /// [`Guide::animate_media`], which is where this is finally dropped.
+    showing: Option<NowPlaying>,
+    /// Whether the shell still wants the card, as against whether it is still
+    /// on screen. The target the openness below is easing towards.
+    media_wanted: bool,
+    /// How far the media rows are open: 0 gone, 1 fully there.
+    ///
+    /// A position rather than a start time, for the reason [`Guide::power_linear`]
+    /// is one: a card taken away halfway through arriving has to close from
+    /// where it got to rather than snap open first.
+    media_linear: f32,
+    /// Which of the three transport buttons the highlight is on inside the
+    /// card. Play is the middle one and the one a hand reaches for, so it is
+    /// where the selection starts and where it goes back to when the card is
+    /// closed and opened again.
+    transport: Transport,
+    /// Eased position of that selection along the three, in columns. The
+    /// selection glides between the buttons rather than jumping — the same
+    /// rule the highlight travelling down the column obeys.
+    transport_at: f32,
     /// Whether the compositor can be asked to move the pointer, which is what
     /// the stick-pointer tile would be for. Off on any compositor but
     /// LineXinBar, and on one too old to have the request.
@@ -601,7 +768,7 @@ impl Guide {
     /// whatever this session can actually change. `closable` is whether the
     /// selected card is a real window, which governs the two entries that are
     /// about that window — with the start screen selected there is nothing to
-    /// close, and nothing for Dashboard to do that the card does not already
+    /// close, and nothing for Start screen to do that the card does not already
     /// do, because going to the bar *is* resuming it.
     pub fn items(&self, closable: bool) -> Vec<Item> {
         let mut items = Vec::with_capacity(8);
@@ -633,10 +800,27 @@ impl Guide {
         if self.bars.brightness {
             items.push(Item::Brightness);
         }
+        // Then the two that come and go with what is playing, in that order and
+        // after every bar the machine has of its own.
+        //
+        // The groove sat between the session's volume and the brightness bar
+        // until 2026-08-20, on the reading that two grooves setting a loudness
+        // belong together. On a machine that actually has a backlight that put
+        // a control which comes and goes in the middle of two that never do,
+        // and the user asked for it below — which is also the arrangement where
+        // the two media rows are one block: what is playing, and how loud it
+        // is, arriving and leaving together at the bottom of the quick
+        // controls rather than through the middle of them.
+        if self.has_media_volume() {
+            items.push(Item::MediaVolume);
+        }
+        if self.has_media() {
+            items.push(Item::Media);
+        }
         items.push(Item::Resume);
         if closable {
             items.push(Item::Close);
-            items.push(Item::Dashboard);
+            items.push(Item::StartScreen);
         }
         items.push(Item::Power);
         items
@@ -823,6 +1007,190 @@ impl Guide {
         POWER_ITEMS
     }
 
+    /// Whether the media rows are in the column at all.
+    ///
+    /// True from the moment something starts playing until the card has
+    /// finished closing, which is deliberately longer than the shell wants it:
+    /// a row taken out of `items` the instant the music stopped would leave the
+    /// column to snap shut under whatever the user was looking at.
+    pub fn has_media(&self) -> bool {
+        self.showing.is_some()
+    }
+
+    /// Whether the groove is there too, which needs a stream to move as well
+    /// as something playing.
+    pub fn has_media_volume(&self) -> bool {
+        self.showing.as_ref().is_some_and(|now| now.level.is_some())
+    }
+
+    /// What the card is about, for the drawing.
+    pub fn now_playing(&self) -> Option<&NowPlaying> {
+        self.showing.as_ref()
+    }
+
+    /// How far the media rows are open, 0 to 1.
+    ///
+    /// Read by the layout, which is asked from a dozen places that have no
+    /// clock — so it is the eased position rather than anything computed from
+    /// one, exactly as the power dialog's is.
+    pub fn media(&self) -> f32 {
+        self.media_linear
+    }
+
+    /// Tell the menu what the session is playing, or that it is playing
+    /// nothing.
+    ///
+    /// Setting it while it is already up only refreshes what is written on it:
+    /// a track changing must not restart the way in, and the selection must
+    /// not move off the button under the user's thumb.
+    pub fn set_now_playing(&mut self, now: Option<NowPlaying>) {
+        match now {
+            Some(now) => {
+                if self.showing.is_none() {
+                    // Coming back after being away: start where a hand would.
+                    self.transport = Transport::default();
+                    self.transport_at = Transport::default().column() as f32;
+                }
+                if self.showing.as_ref() != Some(&now) {
+                    self.showing = Some(now);
+                }
+                self.media_wanted = true;
+            }
+            None => self.media_wanted = false,
+        }
+    }
+
+    /// Advance the media rows by `dt` and return how far open they are.
+    ///
+    /// One number in both directions, like the power dialog's, so a card that
+    /// is taken away while it is still arriving falls back from where it is.
+    /// What this owns that the dialog does not is the *end* of the way out:
+    /// the card is only forgotten once it has finished closing, which is what
+    /// keeps its title and its buttons on screen for the whole of the fade.
+    pub fn animate_media(&mut self, dt: f32) -> f32 {
+        let target = if self.media_wanted { 1.0 } else { 0.0 };
+        let step = dt / MEDIA_FLIGHT;
+        self.media_linear = if self.media_linear < target {
+            (self.media_linear + step).min(target)
+        } else {
+            (self.media_linear - step).max(target)
+        };
+        if !self.media_wanted && self.media_linear <= 0.0 {
+            self.showing = None;
+        }
+        // And the selection inside the card, which glides between the three
+        // buttons rather than jumping from one to the next.
+        let wanted = self.transport().column() as f32;
+        let step = dt / TRANSPORT_FLIGHT;
+        self.transport_at = if self.transport_at < wanted {
+            (self.transport_at + step).min(wanted)
+        } else {
+            (self.transport_at - step).max(wanted)
+        };
+        self.media_linear
+    }
+
+    /// Whether the media rows are still moving.
+    ///
+    /// The frames have to keep coming until they have settled, exactly as they
+    /// do for a switch going over: a card arrives because a track started, not
+    /// because anything was pressed, so nothing else in the session is asking
+    /// for the frames its way in needs. Without this it opens in whatever
+    /// single frame the shell happens to draw next, which is the pop-in the
+    /// animation exists to prevent.
+    pub fn media_is_moving(&self) -> bool {
+        let target = if self.media_wanted { 1.0 } else { 0.0 };
+        self.media_linear != target || self.transport_at != self.transport().column() as f32
+    }
+
+    /// Whether one transport button is a thing that can be pressed at all.
+    ///
+    /// The player is asked — a video with nothing after it says so — and play
+    /// is always live, because a player that can be neither played nor paused
+    /// is not a player the card would be up for.
+    pub fn transport_is_live(&self, what: Transport) -> bool {
+        let Some(now) = self.showing.as_ref() else {
+            return false;
+        };
+        match what {
+            Transport::Previous => now.can_previous,
+            Transport::PlayPause => true,
+            Transport::Next => now.can_next,
+        }
+    }
+
+    /// Which transport button the highlight is on.
+    ///
+    /// Never one that cannot be pressed. A button the player will not answer is
+    /// not a place the selection may rest, exactly as an entry that has stopped
+    /// being reachable is not — see [`Guide::selected_index`], which falls back
+    /// to Resume for the same reason this falls back to play. It matters here
+    /// beyond the press: the selection is the one thing that changes a
+    /// transport button's colour, so a highlight that could sit on a dead
+    /// button would light it.
+    pub fn transport(&self) -> Transport {
+        if self.transport_is_live(self.transport) {
+            self.transport
+        } else {
+            Transport::PlayPause
+        }
+    }
+
+    /// Where that selection has got to along the row, in columns.
+    pub fn transport_at(&self) -> f32 {
+        self.transport_at
+    }
+
+    /// Whether Left or Right has anywhere to go inside the card.
+    ///
+    /// Off the end of the row they go back to meaning what they mean
+    /// everywhere else in the column, which is how Right crosses to the window
+    /// cards from the middle of a media row — the same bargain the tile line
+    /// strikes.
+    pub fn can_move_transport(&self, delta: i32, closable: bool) -> bool {
+        self.next_transport(delta, closable).is_some()
+    }
+
+    /// The next button along that can actually be pressed, stepping over any
+    /// that cannot — the same walk [`Guide::move_in_line`] makes along the
+    /// tiles. A row whose only neighbour is dead has no neighbour.
+    fn next_transport(&self, delta: i32, closable: bool) -> Option<Transport> {
+        if self.selected_item(closable) != Some(Item::Media) {
+            return None;
+        }
+        let mut at = self.transport().column() as i32;
+        loop {
+            at += delta;
+            let next = *TRANSPORT.get(usize::try_from(at).ok()?)?;
+            if self.transport_is_live(next) {
+                return Some(next);
+            }
+        }
+    }
+
+    /// Move it, and say whether it went.
+    pub fn move_transport(&mut self, delta: i32, closable: bool) -> bool {
+        let Some(next) = self.next_transport(delta, closable) else {
+            return false;
+        };
+        self.transport = next;
+        true
+    }
+
+    /// Put the selection on one transport button outright, which is what a
+    /// pointer over it does.
+    ///
+    /// Refused for a button that cannot be pressed: a pointer may not put the
+    /// highlight somewhere the directions would step over.
+    pub fn select_transport(&mut self, what: Transport, closable: bool) -> bool {
+        if !self.transport_is_live(what) {
+            return false;
+        }
+        let moved = self.select(Item::Media, closable) || self.transport != what;
+        self.transport = what;
+        moved
+    }
+
     /// Advance the dialog's growth by `dt` and return where it is now.
     ///
     /// One number in both directions, so a dialog dismissed before it finished
@@ -857,8 +1225,8 @@ impl Guide {
     }
 
     /// Move within the dialog. It does not wrap: Cancel is the last row, and
-    /// wrapping from it back onto "Turn Off System" is the one place where a
-    /// held direction should stop rather than carry on.
+    /// carrying on round from it onto the rows that end the session is the one
+    /// place where a held direction should stop rather than continue.
     pub fn move_power(&mut self, delta: i32) -> bool {
         let Some(current) = self.power else {
             return false;
@@ -890,7 +1258,7 @@ impl Guide {
         self.power = None;
     }
 
-    pub fn show_bar_over_app(&mut self) {
+    pub fn show_start_screen_over_app(&mut self) {
         self.mode = Some(Mode::BarOverApp);
     }
 
@@ -899,13 +1267,13 @@ impl Guide {
     ///
     /// The two are not interchangeable and picking the wrong one is visible
     /// straight away: [`Self::close`] alone drops the shell below an
-    /// application still in front of it, and [`Self::show_bar_over_app`] alone
+    /// application still in front of it, and [`Self::show_start_screen_over_app`] alone
     /// leaves it holding the overlay and the keyboard over an empty display.
     /// So every dismissal that is *not* the user choosing a row asks this
     /// instead of choosing for itself.
     pub fn dismiss(&mut self, app_running: bool) {
         if app_running {
-            self.show_bar_over_app();
+            self.show_start_screen_over_app();
         } else {
             self.close();
         }
@@ -1069,7 +1437,7 @@ mod tests {
         assert_eq!(guide.mode(), Mode::Bar);
 
         // From the bar shown over an application, it opens rather than closes.
-        guide.show_bar_over_app();
+        guide.show_start_screen_over_app();
         assert!(guide.toggle());
         assert_eq!(guide.mode(), Mode::Menu);
     }
@@ -1103,12 +1471,12 @@ mod tests {
     fn the_window_entries_are_offered_only_when_a_window_is_selected() {
         let guide = Guide::default();
         assert!(guide.items(WINDOW).contains(&Item::Close));
-        assert!(guide.items(WINDOW).contains(&Item::Dashboard));
+        assert!(guide.items(WINDOW).contains(&Item::StartScreen));
 
         // The start screen's card is selected: nothing to kill, and nothing
-        // for Dashboard to do that Resume does not already do from here.
+        // for Start screen to do that Resume does not already do from here.
         assert!(!guide.items(START_CARD).contains(&Item::Close));
-        assert!(!guide.items(START_CARD).contains(&Item::Dashboard));
+        assert!(!guide.items(START_CARD).contains(&Item::StartScreen));
 
         // The power button is the one entry that is always there.
         for closable in [WINDOW, START_CARD] {
@@ -1198,7 +1566,7 @@ mod tests {
         guide.open();
 
         // Down the column to its foot.
-        for expected in [Item::Close, Item::Dashboard, Item::Power] {
+        for expected in [Item::Close, Item::StartScreen, Item::Power] {
             assert!(guide.move_selection(1, WINDOW));
             assert_eq!(guide.selected_item(WINDOW), Some(expected));
         }
@@ -1216,7 +1584,7 @@ mod tests {
 
     /// The reason the selection is held as an entry and not a row number:
     /// scrolling the cards onto the start screen drops two rows, and a
-    /// remembered row 3 would mean "Dashboard" before and "Power" after.
+    /// remembered row 3 would mean "Start screen" before and "Power" after.
     #[test]
     fn the_highlight_stays_on_its_entry_when_the_column_shortens() {
         let mut guide = Guide::default();
@@ -1257,13 +1625,31 @@ mod tests {
         assert!(!guide.move_power(-1));
         assert_eq!(guide.power_item(), Some(PowerItem::Suspend));
 
-        for expected in [PowerItem::Shutdown, PowerItem::Exit, PowerItem::Cancel] {
+        for expected in [
+            PowerItem::Shutdown,
+            PowerItem::Restart,
+            PowerItem::LogOut,
+            PowerItem::Cancel,
+        ] {
             assert!(guide.move_power(1));
             assert_eq!(guide.power_item(), Some(expected));
         }
-        // And Down at Cancel does not carry on round to "Turn Off System".
+        // And Down at Cancel does not carry on round to "Suspend System".
         assert!(!guide.move_power(1));
         assert_eq!(guide.power_item(), Some(PowerItem::Cancel));
+    }
+
+    /// Turning the machine off is the only choice drawn as one there is no
+    /// coming back from. Restarting and logging out end just as much, and both
+    /// of them bring the machine back on their own.
+    #[test]
+    fn only_turning_the_machine_off_is_drawn_as_grave() {
+        let grave: Vec<PowerItem> = POWER_ITEMS
+            .iter()
+            .copied()
+            .filter(|item| item.is_grave())
+            .collect();
+        assert_eq!(grave, [PowerItem::Shutdown]);
     }
 
     /// The dialog grows out of its button and falls back into it, which means
@@ -1436,7 +1822,7 @@ mod tests {
                 Item::Brightness,
                 Item::Resume,
                 Item::Close,
-                Item::Dashboard,
+                Item::StartScreen,
                 Item::Power
             ]
         );
@@ -1479,7 +1865,7 @@ mod tests {
         let mut guide = Guide::default();
         guide.set_bars(BOTH_BARS);
         guide.set_pointer_control(true);
-        // Tiles, bars | Resume, Close | Dashboard
+        // Tiles, bars | Resume, Close | Start screen
         assert_eq!(separator_rows(&guide.items(WINDOW)), vec![6, 8]);
         // The same, with the window's own two entries gone.
         assert_eq!(separator_rows(&guide.items(START_CARD)), vec![6]);
@@ -1500,7 +1886,7 @@ mod tests {
     fn every_entry_knows_which_kind_of_control_it_is() {
         assert_eq!(Item::Volume.bar(), Some(Bar::Volume));
         assert_eq!(Item::Brightness.bar(), Some(Bar::Brightness));
-        for button in [Item::Resume, Item::Close, Item::Dashboard, Item::Power] {
+        for button in [Item::Resume, Item::Close, Item::StartScreen, Item::Power] {
             assert_eq!(button.bar(), None, "{button:?}");
             assert!(!button.is_tile(), "{button:?}");
             assert!(!button.label(Some("Celeste")).is_empty() || button == Item::Power);
@@ -1687,7 +2073,7 @@ mod tests {
             Item::Brightness,
             Item::Resume,
             Item::Close,
-            Item::Dashboard,
+            Item::StartScreen,
             Item::Power,
         ] {
             assert!(guide.is_enabled(item), "{item:?}");
@@ -1779,7 +2165,7 @@ mod tests {
         assert_eq!(Item::Resume.label(None), "Resume");
         assert_eq!(Item::Close.label(Some("Celeste")), "Close Celeste");
         assert_eq!(Item::Close.label(None), "Close");
-        assert_eq!(Item::Dashboard.label(None), "Dashboard");
+        assert_eq!(Item::StartScreen.label(None), "Start screen");
         assert!(Item::Power.label(None).is_empty());
     }
 
@@ -1905,7 +2291,7 @@ mod tests {
         );
         for mode in [Mode::Menu, Mode::BarOverApp] {
             if mode == Mode::BarOverApp {
-                guide.show_bar_over_app();
+                guide.show_start_screen_over_app();
             }
             assert_eq!(
                 guide.surface_state(
@@ -1935,7 +2321,7 @@ mod tests {
             match mode {
                 Mode::Bar => guide.close(),
                 Mode::Menu => guide.open(),
-                Mode::BarOverApp => guide.show_bar_over_app(),
+                Mode::BarOverApp => guide.show_start_screen_over_app(),
             }
             for app_running in [false, true] {
                 for keep_grabbed in [false, true] {
@@ -2353,9 +2739,251 @@ mod tests {
         assert!(!guide.is_over_app());
         guide.open();
         assert!(guide.is_over_app());
-        guide.show_bar_over_app();
+        guide.show_start_screen_over_app();
         assert!(guide.is_over_app());
         guide.close();
         assert!(!guide.is_over_app());
+    }
+
+    fn now(title: &str) -> NowPlaying {
+        NowPlaying {
+            bus: "org.mpris.MediaPlayer2.fixture".to_string(),
+            title: title.to_string(),
+            app: "Fixture".to_string(),
+            playing: true,
+            can_previous: true,
+            can_next: true,
+            level: Some(crate::system::Level {
+                value: 0.5,
+                muted: false,
+            }),
+            stream: Some(7),
+        }
+    }
+
+    /// The whole of what the user asked for: the card is not there when
+    /// nothing is playing, it is when something is, and it goes away again on
+    /// its own once the music has been let go of.
+    #[test]
+    fn the_media_rows_come_and_go_with_what_is_playing() {
+        let mut guide = Guide::default();
+        assert!(!guide.items(false).iter().any(|item| item.is_media()));
+
+        guide.set_now_playing(Some(now("A Track")));
+        let items = guide.items(false);
+        assert!(items.contains(&Item::Media));
+        assert!(items.contains(&Item::MediaVolume));
+        // The groove sits directly under the session's own, and the card
+        // after every bar there is.
+        let at = |wanted: Item| items.iter().position(|item| *item == wanted);
+        assert!(at(Item::MediaVolume) < at(Item::Media));
+        assert!(at(Item::Media) < at(Item::Resume));
+    }
+
+    /// And below the machine's own bars, not through the middle of them: a
+    /// control that comes and goes must not separate two that never do.
+    #[test]
+    fn the_media_rows_sit_under_every_bar_the_machine_has() {
+        let mut guide = Guide::default();
+        guide.set_bars(Bars {
+            volume: true,
+            brightness: true,
+        });
+        guide.set_now_playing(Some(now("A Track")));
+        let items = guide.items(false);
+        let at = |wanted: Item| items.iter().position(|item| *item == wanted);
+        assert!(at(Item::Volume) < at(Item::Brightness));
+        assert!(at(Item::Brightness) < at(Item::MediaVolume));
+        assert!(at(Item::MediaVolume) < at(Item::Media));
+    }
+
+    /// Nothing disappears before its transition finishes: the card is still in
+    /// the column, and still carrying what to draw, for the whole of its way
+    /// out.
+    #[test]
+    fn the_card_is_still_there_while_it_is_closing() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        while guide.animate_media(0.05) < 1.0 {}
+
+        guide.set_now_playing(None);
+        let mut frames = 0;
+        while guide.media() > 0.0 {
+            assert!(
+                guide.has_media() && guide.now_playing().is_some(),
+                "the card stopped being drawable while it was still on screen"
+            );
+            guide.animate_media(0.05);
+            frames += 1;
+            assert!(frames < 200, "the card never finished closing");
+        }
+        // And only then is it forgotten.
+        assert!(!guide.has_media());
+        assert!(guide.now_playing().is_none());
+        assert!(!guide.items(false).iter().any(|item| item.is_media()));
+    }
+
+    /// A card taken away while it is still arriving falls back from where it
+    /// got to rather than snapping open first.
+    #[test]
+    fn a_card_taken_away_half_way_in_closes_from_there() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        guide.animate_media(MEDIA_FLIGHT * 0.5);
+        let half = guide.media();
+        assert!(half > 0.2 && half < 0.8, "half way in, not {half}");
+
+        guide.set_now_playing(None);
+        let next = guide.animate_media(MEDIA_FLIGHT * 0.1);
+        assert!(next < half, "it went on opening: {half} then {next}");
+    }
+
+    /// A track changing must not restart the way in, nor move the selection
+    /// off the button under the user's thumb.
+    #[test]
+    fn a_new_track_does_not_reopen_the_card() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("First")));
+        while guide.animate_media(0.05) < 1.0 {}
+        guide.select(Item::Media, false);
+        guide.move_transport(1, false);
+
+        guide.set_now_playing(Some(now("Second")));
+        assert_eq!(guide.media(), 1.0);
+        assert_eq!(guide.transport(), Transport::Next);
+        assert_eq!(guide.now_playing().map(|now| now.line()), Some("Second"));
+    }
+
+    /// Left and Right walk the three buttons and stop at the ends, where they
+    /// go back to meaning what they mean everywhere else in the column.
+    #[test]
+    fn the_transport_is_walked_and_stops_at_both_ends() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        guide.select(Item::Media, false);
+        assert_eq!(guide.transport(), Transport::PlayPause);
+
+        assert!(guide.move_transport(-1, false));
+        assert_eq!(guide.transport(), Transport::Previous);
+        assert!(!guide.can_move_transport(-1, false));
+        assert!(!guide.move_transport(-1, false));
+
+        assert!(guide.move_transport(1, false));
+        assert!(guide.move_transport(1, false));
+        assert_eq!(guide.transport(), Transport::Next);
+        assert!(!guide.can_move_transport(1, false));
+    }
+
+    /// A button the player will not answer is stepped over, not stopped on —
+    /// the same walk the tile line makes past a tile that cannot be reached.
+    /// It matters beyond the press: the selection is the one thing that changes
+    /// a transport button's colour, so a highlight able to rest on a dead
+    /// button would light it.
+    #[test]
+    fn the_selection_steps_over_a_button_the_player_will_not_answer() {
+        let mut guide = Guide::default();
+        let mut ends = now("The Last One");
+        ends.can_next = false;
+        guide.set_now_playing(Some(ends));
+        guide.select(Item::Media, false);
+
+        // Right has nowhere to go: the only button that way is dead, so the
+        // press means what it means everywhere else in the column.
+        assert!(!guide.can_move_transport(1, false));
+        assert!(!guide.move_transport(1, false));
+        assert_eq!(guide.transport(), Transport::PlayPause);
+
+        // Left still walks, because that one can be pressed.
+        assert!(guide.move_transport(-1, false));
+        assert_eq!(guide.transport(), Transport::Previous);
+        // And back the other way it steps over the dead one rather than
+        // stopping on it.
+        assert!(guide.move_transport(1, false));
+        assert_eq!(guide.transport(), Transport::PlayPause);
+        assert!(!guide.can_move_transport(1, false));
+    }
+
+    /// And a pointer may not put it there either.
+    #[test]
+    fn a_pointer_cannot_choose_a_button_the_player_will_not_answer() {
+        let mut guide = Guide::default();
+        let mut ends = now("The Last One");
+        ends.can_next = false;
+        guide.set_now_playing(Some(ends));
+        assert!(!guide.select_transport(Transport::Next, false));
+        assert_eq!(guide.transport(), Transport::PlayPause);
+        assert!(guide.select_transport(Transport::Previous, false));
+        assert_eq!(guide.transport(), Transport::Previous);
+    }
+
+    /// A button that goes dead *under* the highlight takes it back to play,
+    /// which is the one button that is always there — the same fall-back the
+    /// column makes to Resume when an entry disappears.
+    #[test]
+    fn a_button_that_dies_under_the_highlight_gives_it_up() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        guide.select(Item::Media, false);
+        assert!(guide.move_transport(1, false));
+        assert_eq!(guide.transport(), Transport::Next);
+
+        let mut ends = now("The Last One");
+        ends.can_next = false;
+        guide.set_now_playing(Some(ends));
+        assert_eq!(guide.transport(), Transport::PlayPause);
+    }
+
+    /// And they mean nothing at all while the highlight is on some other row,
+    /// or the volume bar above the card could never be slid.
+    #[test]
+    fn the_transport_is_only_walked_from_the_card() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        guide.select(Item::MediaVolume, false);
+        assert!(!guide.can_move_transport(1, false));
+        assert!(!guide.move_transport(1, false));
+    }
+
+    /// The selection glides between the buttons rather than jumping.
+    #[test]
+    fn the_selection_travels_between_the_buttons() {
+        let mut guide = Guide::default();
+        guide.set_now_playing(Some(now("A Track")));
+        guide.select(Item::Media, false);
+        while guide.animate_media(0.05) < 1.0 {}
+        assert_eq!(guide.transport_at(), 1.0);
+
+        guide.move_transport(1, false);
+        guide.animate_media(TRANSPORT_FLIGHT * 0.5);
+        let midway = guide.transport_at();
+        assert!(midway > 1.0 && midway < 2.0, "jumped straight to {midway}");
+        while guide.animate_media(0.05) < 1.0 || guide.transport_at() < 2.0 {}
+        assert_eq!(guide.transport_at(), 2.0);
+    }
+
+    /// A player that says nothing about what is in it is still legible: the
+    /// card falls back to the application's own name rather than printing a
+    /// blank line under three buttons.
+    #[test]
+    fn a_card_with_no_title_says_what_the_application_is() {
+        let mut nothing = now("");
+        assert_eq!(nothing.line(), "Fixture");
+        nothing.title = "Something".to_string();
+        assert_eq!(nothing.line(), "Something");
+    }
+
+    /// The groove is left out where the sound server has nothing of the
+    /// application in it, the way a machine with no backlight leaves out the
+    /// brightness bar — but the card stays, because there is still something
+    /// to press.
+    #[test]
+    fn the_groove_needs_a_stream_and_the_card_does_not() {
+        let mut guide = Guide::default();
+        let mut silent = now("A Track");
+        silent.level = None;
+        guide.set_now_playing(Some(silent));
+        let items = guide.items(false);
+        assert!(items.contains(&Item::Media));
+        assert!(!items.contains(&Item::MediaVolume));
     }
 }

@@ -16,6 +16,77 @@
 //! one: a definition two processes have to agree on exactly, kept in one place
 //! so they cannot disagree quietly.
 
+/// How much material one half of the shell is drawn with.
+///
+/// The shell's own look is expensive on purpose: the current is three sheets of
+/// water lit as bodies, and every glyph is a bead of water shaded out of its own
+/// distance field. On a machine that cannot afford that, the whole of it can be
+/// stood down to the drawing underneath — and the *drawing* is the same either
+/// way, which is what keeps the shell recognisable rather than reduced.
+///
+/// One value of this is *half* an answer. The wallpaper and the marks are two
+/// separate settings — Settings > Appearance > Theme > Wallpaper and > Icons,
+/// written to `shell.toml` as `theme-wallpaper` and `theme-icons` — because the
+/// two cost their own money and are wanted in their own combinations: the water
+/// is a full-screen evaluation every frame and a mark is a few dozen pixels, so
+/// a machine that cannot afford the first may very well afford the second, and
+/// somebody who simply prefers flat marks over a moving wallpaper is entitled to
+/// that. This enum is the answer either of them takes.
+///
+/// The display manager reads both keys, so a login screen never arrives in a
+/// material the session is not using; the compositor reads only the wallpaper's,
+/// because a bridge frame is a wallpaper and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Style {
+    /// Water: the band of three sheets, and beaded glyphs.
+    #[default]
+    Default,
+    /// The plainer material a slow machine asks for: the current as three fine
+    /// glass-silk lines, which is what this shell drew before the band, and
+    /// glyphs as their own flat shapes.
+    Simple,
+}
+
+/// Every style the shell offers, in the order Settings lists them — the same two
+/// under Wallpaper as under Icons. The first is what an unreadable or
+/// unrecognised setting falls back to.
+pub const STYLES: [&str; 2] = ["Default", "Simple"];
+
+/// The style of that name, matched exactly, case-sensitively, the way
+/// [`palette`] matches an accent: the two names are the whole of either
+/// setting's domain and quietly accepting `simple` would make two spellings of
+/// one value.
+pub fn style(name: &str) -> Style {
+    match name {
+        "Simple" => Style::Simple,
+        _ => Style::Default,
+    }
+}
+
+impl Style {
+    /// The name this style is written down as, which is also what Settings
+    /// shows. The same two names under either half of the Theme row.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => STYLES[0],
+            Self::Simple => STYLES[1],
+        }
+    }
+}
+
+/// What this wallpaper *is*, for anything that hands its clock to anything
+/// else.
+///
+/// A scene time only means something to a process that draws the same scene, so
+/// every handoff record carries this string and a reader that does not
+/// recognise it starts the animation again rather than continuing from a phase
+/// of a picture it is not drawing. Bump it whenever a change here or in
+/// `lxb-desktop`'s `shaders.wgsl` would draw a different frame at the same
+/// time — and bump the display manager's copy with it, in the same breath:
+/// CEDM vendors this scene rather than depending on this crate, and a version
+/// only does its job when both ends of the handover agree what it names.
+pub const VISUAL: &str = "lxb-wallpaper-v2";
+
 /// A colour as authored: `0xRRGGBB` in sRGB.
 ///
 /// The spelling `lxb-desktop::theme::Color` uses, so the two palette tables
@@ -148,18 +219,28 @@ pub fn palette(name: &str) -> &'static Palette {
         .unwrap_or(&PALETTES[0])
 }
 
-/// One accent's colours resolved into linear light, once per image rather
-/// than once per pixel.
+/// One accent's colours resolved into linear light, and the material the scene
+/// is drawn in: everything that is constant across one image rather than worked
+/// out once per pixel.
 #[derive(Debug, Clone, Copy)]
 pub struct Sky {
     sky: [[f32; 3]; 4],
     accent: [[f32; 3]; 3],
     glow: [f32; 3],
+    style: Style,
 }
 
 impl Sky {
+    /// The shell's own material, which is what a caller with no setting to
+    /// consult should draw.
     pub fn new(palette: &Palette) -> Self {
+        Self::styled(palette, Style::Default)
+    }
+
+    /// The same, in the style the user chose.
+    pub fn styled(palette: &Palette, style: Style) -> Self {
         Self {
+            style,
             sky: [
                 palette.sky[0].rgb(),
                 palette.sky[1].rgb(),
@@ -182,13 +263,24 @@ impl Sky {
 /// and `t` is the wallpaper clock in seconds — the one the display manager
 /// hands over, so the same `t` here and in the shell is the same frame.
 ///
+/// `footprint` is how much of that 0..1 one sample stands for — `[1 / width,
+/// 1 / height]` of the picture being drawn. Everything here is a smooth field
+/// except the band of water, which has silhouettes, and a silhouette has to
+/// know how big a sample is or it lands as a staircase. Nothing else reads it.
+///
 /// This is `wallpaper()` from `shaders.wgsl` with `soften` and `lod` at zero
 /// and no key art: the softened variants are for the guide's backdrop and the
 /// glass panes, and there is no artwork to sample before the shell has read
 /// the user's library. Keep the arithmetic in step with that function, term
 /// for term, and bump the visual identity in the handoff record when it
 /// changes in a way that would draw a different frame at the same `t`.
-pub fn sample(sky: &Sky, uv: [f32; 2], aspect: f32, t: f32) -> [f32; 3] {
+///
+/// `footprint` is the one thing here that is not part of that identity: it
+/// says how finely this picture is being read, not what the picture *is*, and
+/// two readers drawing the same scene at two sizes are still on the same
+/// clock. Bumping the identity over it would restart the animation at a
+/// handover to avoid a difference of half a pixel of edge.
+pub fn sample(sky: &Sky, uv: [f32; 2], aspect: f32, t: f32, footprint: [f32; 2]) -> [f32; 3] {
     let (u, v) = (uv[0], uv[1]);
 
     // The mood drifts slowly between the theme's two gradients.
@@ -253,7 +345,380 @@ pub fn sample(sky: &Sky, uv: [f32; 2], aspect: f32, t: f32) -> [f32; 3] {
     let current_light = smoothstep(0.32, 1.62, current);
     color = add3(color, scale3(sky.accent[0], current_light * 0.035));
 
-    // The XMB current: three fine glass-silk ribbons moving together through
+    // The current: the moving thing in the middle of the picture, in
+    // whichever material this shell is set to draw it in.
+    color = match sky.style {
+        Style::Default => water(sky, color, [u, v], aspect, t, footprint),
+        Style::Simple => silk(sky, color, [u, v], aspect, t),
+    };
+
+    // Two aurora veils sweep through different thirds of the display.
+    let upper_center =
+        0.28 + (u * 2.6 + t * 0.16).sin() * 0.10 + (u * 5.4 - t * 0.11).sin() * 0.040;
+    let upper_d = v - upper_center;
+    let upper_veil = (-upper_d * upper_d * 32.0).exp();
+    let upper_crest = (-upper_d * upper_d * 230.0).exp();
+    let upper_sheen = 0.72 + 0.28 * (u * 4.2 - t * 0.22).sin();
+
+    let lower_center =
+        0.72 + (u * 2.1 - t * 0.13 + 2.4).sin() * 0.12 + (u * 4.7 + t * 0.083).sin() * 0.035;
+    let lower_d = v - lower_center;
+    let lower_veil = (-lower_d * lower_d * 26.0).exp();
+    let lower_crest = (-lower_d * lower_d * 180.0).exp();
+    let lower_sheen = 0.74 + 0.26 * (u * 3.7 + t * 0.18 + 1.7).sin();
+
+    color = add3(
+        color,
+        scale3(
+            sky.accent[0],
+            (upper_veil * 0.052 + upper_crest * 0.025) * upper_sheen,
+        ),
+    );
+    color = add3(
+        color,
+        add3(
+            scale3(sky.accent[2], lower_veil * 0.16 * lower_sheen),
+            scale3(sky.accent[0], lower_crest * 0.028 * lower_sheen),
+        ),
+    );
+
+    // Vignette, so the edges do not compete with the content.
+    let edge = distance([u, v], [0.5, 0.5]);
+    scale3(color, 1.0 - smoothstep(0.55, 1.05, edge) * 0.55)
+}
+
+/// How wide a sheet still is when the display sees it exactly edge-on, as a
+/// share of its own width.
+///
+/// Rounded off just short of nothing: a sheet with no width at all is a crease
+/// rather than a fold, and its lighting degenerates on the singularity.
+const BAND_FOLD: f32 = 0.020;
+
+/// How much the face of a sheet bows between its two lips, as a slope at the
+/// edge of the flat part.
+///
+/// Water has no flat faces. A face that really is flat carries one surface
+/// angle across its whole width, catches the sharp light everywhere at once,
+/// and leaves a straight-sided plateau on the ribbon.
+const BAND_BOW: f32 = 0.50;
+
+/// The most of their two half-widths that can stand between two neighbouring
+/// ribbons of the current.
+///
+/// The whole of what the band promises: **under one**, so two sheets always
+/// overlap, whatever the twist has done to either of their widths. The gap
+/// between them is not a distance, it is a share of a width, and it shrinks
+/// when they do. Left far enough under one to cover the feathering of both
+/// silhouettes, so what the *eye* sees is joined and not only the geometry —
+/// `the_three_ribbons_of_the_current_are_never_apart` holds it to that.
+const BAND_SHARE: f32 = 0.88;
+
+/// How far either side of a sheet's edge its silhouette is spread, in samples
+/// of the picture being drawn.
+///
+/// A box filter a sample wide would spread it half a sample each way. This is
+/// wider because the fade is a smoothstep rather than a ramp, and a
+/// smoothstep does most of its travelling in the middle of the interval it is
+/// given: measured against a picture drawn with sixty-four samples to the
+/// pixel, the error stops falling at about this much and blurring it further
+/// only costs sharpness.
+const BAND_EDGE_SAMPLES: f32 = 0.8;
+
+/// How much of a sheet stands over a sample `reach` of the way across it.
+///
+/// Feathered only in its last few percent: water holds its own edge, and the
+/// rim light needs a surface to sit on. That is the fade as authored, and what
+/// the shell's own frame very nearly draws.
+///
+/// Widened by a sample either side of the edge, which is what makes the same
+/// band bear being drawn small — into the compositor's bridge frame, a fifth of
+/// a display across, or into a card's miniature. This is the whole of the
+/// anti-aliasing the band gets and all it needs: the silhouette is the only
+/// place this picture stops being smooth, and everything sharp about a sheet —
+/// the lip, the glint, the dispersion — is carried by this number and goes soft
+/// with it.
+///
+/// Either side of the edge, rather than inwards from it: a fade that only ate
+/// into the sheet would thin the water as the picture got smaller, and where a
+/// ribbon is pinched nearly edge-on it would take most of it. Spread
+/// symmetrically, this is close to what a sample-wide box filter of the same
+/// edge lands on, which is the picture more samples would converge to.
+fn silhouette(reach: f32, width: f32, sample: f32) -> f32 {
+    let spread = BAND_EDGE_SAMPLES * sample / width;
+    1.0 - smoothstep(0.94 - spread, 1.0 + spread, reach)
+}
+
+/// The twist of each ribbon of the current, how wide that leaves it, and where
+/// it stands across the band, at one place and time.
+///
+/// `gather` is how much of the band's spread survives here, which is what
+/// closes the three together at both ends of the display.
+///
+/// The widths come first because the offsets are made out of them: the middle
+/// ribbon *is* the band, and the outer two are pushed off it by a share of the
+/// two half-widths that meet there — never as much as [`BAND_SHARE`] of it, and
+/// through zero, so they cross without ever coming apart.
+fn stack(u: f32, t: f32, gather: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let mut tilt = [0.0_f32; 3];
+    let mut width = [0.0_f32; 3];
+    for i in 0..3 {
+        let fi = i as f32;
+        let x = u * (2.0 + fi * 0.6);
+        // How far this sheet has turned about its own travel. Three opposing
+        // clocks whose periods do not divide one another, so the twist never
+        // settles into a pattern that repeats down the ribbon, and deep enough
+        // that it carries the sheet past edge-on — which is what a wrapping
+        // ribbon does, and where it pinches.
+        let turning = (x * 2.10 - t * (0.23 + fi * 0.05) + fi * 1.9).sin() * 0.95
+            + (x * 1.25 + t * 0.15 + fi * 2.7).sin() * 0.55
+            + (x * 4.30 - t * 0.35 + fi * 0.7).sin() * 0.22;
+        // Squared, keeping its sign: a ribbon lies open for a long run and then
+        // turns through its twist quickly, rather than rolling evenly the whole
+        // way along like a screw.
+        tilt[i] = turning * turning.abs() * 0.62 + (x * 7.0 + t * 0.9 + fi).sin() * 0.08;
+        let broad = (tilt[i].cos() * tilt[i].cos() + BAND_FOLD).sqrt();
+        width[i] = (0.0640 - 0.0110 * fi) * broad;
+    }
+
+    let lift = BAND_SHARE * (0.32 + 0.68 * (u * 4.3 - t * 0.37).sin());
+    let drop = BAND_SHARE * (0.32 + 0.68 * (u * 3.1 + t * 0.29 + 2.2).sin());
+    let offset = [
+        -(width[0] + width[1]) * lift * gather,
+        0.0,
+        (width[1] + width[2]) * drop * gather,
+    ];
+    (tilt, width, offset)
+}
+
+/// The current as the shell's own material: one band of water, three ribbons
+/// thick, drifting through a broad lane below the cross point.
+///
+/// Takes the scene as it stands and hands it back with the band drawn into it,
+/// because water is a body rather than a glow — it takes light out of what
+/// stands behind it before putting any of its own back.
+fn water(
+    sky: &Sky,
+    into: [f32; 3],
+    point: [f32; 2],
+    aspect: f32,
+    t: f32,
+    footprint: [f32; 2],
+) -> [f32; 3] {
+    let (u, v) = (point[0], point[1]);
+    let mut color = into;
+    // The current: one band of water, three ribbons thick, drifting
+    // through a broad lane below the cross point.
+    //
+    // Each ribbon is a sheet of water rather than a drawn line, and it is made
+    // of the same material as everything else in this shell: the cross-section
+    // is the bead `glyph_material` builds — a flat face with a quarter-round
+    // lip rolled over at both edges, from the same `bevel_rise` and
+    // `bevel_slope` — carried along a travelling curve. One angle rolls each
+    // sheet about its own travel, which is what makes it widen and narrow,
+    // hand its highlight from one edge to the other, and throw a shadow on the
+    // wallpaper it stands in front of. A second axis of much smaller waves
+    // runs along its length, and that is the one that makes it water: a sheet
+    // that can only bend across its width has a highlight running its whole
+    // length in one unbroken line — a wire of chrome — because somewhere in a
+    // smooth roll from flat face to steep lip there is always an angle that
+    // catches the lamp.
+    //
+    // The three are stacked along one spine, and they cannot come apart.
+    // Each outer ribbon is pushed off the middle one by a *share* of the two
+    // half-widths that meet there rather than by a length of its own: a share
+    // that passes through zero, so they cross, and never reaches one, so the
+    // sheets always overlap. Nothing the twist or the drift does can open a
+    // gap between them, because the space between them is not a distance — it
+    // is a fraction of a width that shrinks when they do.
+    //
+    // Nothing is refracted from behind: a sheet this thin in front of a field
+    // this smooth displaces nothing the eye could see, and what says water
+    // here is the geometry of the surface.
+    //
+    // How much of a half-width the rolled lip takes. The rest is flat face,
+    // and a ribbon narrower than twice this is all lip — which is correct, and
+    // is what keeps the finer strands beads of water rather than flat rails.
+    let lip = 0.45;
+    // The lamp the whole shell shares, and the half vector between it and an
+    // eye looking straight into the display.
+    let key = normalize3([-0.42, -0.66, 0.62]);
+    let half_vector = normalize3([key[0], key[1], key[2] + 1.0]);
+
+    // Everything the band is made of is gathered in towards its lane at both
+    // ends of the display: the ribbons come off the left edge close together,
+    // open apart across the middle, and close again on the way off the right.
+    // Never all the way to nothing, or the band would leave as one line.
+    let gather = 0.28 + 0.72 * (std::f32::consts::PI * u).sin();
+    let gather_slope = 0.72 * std::f32::consts::PI * (std::f32::consts::PI * u).cos();
+
+    // The spine: the one curve the band is stacked along, and so the only one
+    // whose slope has to be measured.
+    let spine_a = u * 6.8 + t * 0.56;
+    let spine_b = u * 3.4 - t * 0.39 + 0.8;
+    let swing = spine_a.sin() * 0.055 + spine_b.sin() * 0.085;
+    let swing_slope = spine_a.cos() * 0.055 * 6.8 + spine_b.cos() * 0.085 * 3.4;
+    let spine = 0.62 + swing * gather;
+    // Measured across the curve rather than vertically, so a steep section
+    // does not grow visibly thicker than a flat one. In the same
+    // physical-screen units as y, so wide outputs do not over-correct either
+    // the width or the light angle. The gathering is part of the curve, and so
+    // is its slope.
+    let slope = (swing_slope * gather + swing * gather_slope) / aspect;
+    let across = normalize2([slope, -1.0]);
+    // And along the band, in those same units.
+    let along = [-across[1], across[0]];
+    let band = (v - spine) / (1.0 + slope * slope).sqrt();
+    // How far across the band one sample reaches, in those same units: the
+    // sample's own two sides, each as much of them as points across the curve.
+    // Nothing else in this picture needs it — every other term here is a field
+    // that changes slowly enough to be read one point at a time — but the
+    // sheets have edges, and an edge drawn from a single point either lands in
+    // a sample or does not.
+    let sample = (across[0] * footprint[0] * aspect).abs() + (across[1] * footprint[1]).abs();
+
+    // Every ribbon's twist and width, and where each of them stands across the
+    // band, before any of them is drawn.
+    let (tilt, width, offset) = stack(u, t, gather);
+
+    for i in 0..3 {
+        let fi = i as f32;
+        let x = u * (2.0 + fi * 0.6);
+        let d = band - offset[i];
+        let width = width[i];
+
+        // The small water on top of the twist, as the slope of waves
+        // travelling along the ribbon's own length.
+        let along_wave = (x * 9.0 - t * 1.1 + fi * 2.0).cos() * 0.34
+            + (x * 23.0 + t * 1.9 + fi * 1.3).cos() * 0.14;
+
+        let reach = (d / width).abs();
+        // Where across the ribbon this pixel is, signed, for the light that
+        // travels through the sheet at an angle.
+        let s_across = (d / width).clamp(-1.0, 1.0);
+        let cover = silhouette(reach, width, sample);
+        // Where in the rolled-over lip this pixel is: 0 at the outer edge, 1
+        // where the flat face begins.
+        let inset = ((1.0 - reach) / lip).clamp(0.0, 1.0);
+        let rise = bevel_rise(inset);
+
+        // The cross-section's own angle: the rolled lip, turned with the whole
+        // sheet. Kept as a sine and a cosine rather than as radians, so the
+        // steep lip costs a rotation instead of an arctangent.
+        // The lip, and the bow of the face inside it. A sheet of water is never
+        // flat: without the bow the face's whole width has one surface angle,
+        // so it satisfies the sharp light all at once and flashes as a plateau
+        // with a straight edge down each side of it, which reads as a rectangle
+        // laid on the ribbon. Bowed, the same light is a band running along the
+        // sheet, and the waves along its length break that band up.
+        let wall = normalize2([-d.signum() * bevel_slope(inset) - s_across * BAND_BOW, 1.0]);
+        let (turn, level) = (tilt[i].sin(), tilt[i].cos());
+        // How much of this sheet's own width the display sees, which `stack`
+        // has already turned into how wide it is drawn. The same water behind
+        // less display is brighter for it, up to a ceiling — or the pinch
+        // itself would be the brightest thing on screen.
+        let broad = (level * level + BAND_FOLD).sqrt();
+        let fold = (1.0 / broad).min(2.2);
+        let face = [
+            wall[0] * level + wall[1] * turn,
+            wall[1] * level - wall[0] * turn,
+        ];
+        // The surface itself: that angle across the ribbon, the wave slope
+        // along it, and what is left of it facing the display.
+        let surface = normalize3([
+            across[0] * face[0] + along[0] * along_wave * face[1],
+            across[1] * face[0] + along[1] * along_wave * face[1],
+            face[1],
+        ]);
+
+        let facing = dot3(surface, key).clamp(0.0, 1.0);
+        let fresnel = 0.04 + 0.96 * (1.0 - surface[2].clamp(0.0, 1.0)).powi(5);
+        let glint = dot3(surface, half_vector).max(0.0).powi(42);
+        // The room the sheet hands back at a grazing angle. Only the
+        // brightness of it is kept, the way a glyph keeps only the brightness
+        // of the sky it reflects: the colour belongs to the accent.
+        let mirrored = reflect3([0.0, 0.0, -1.0], surface);
+        let room = 0.42 + 0.73 * (0.5 - 0.5 * dot3(mirrored, key));
+        // Only the sharp light travels quickly, so the sheet glistens without
+        // the whole ribbon pulsing.
+        let travelling = 0.60 + 0.40 * (x * 3.1 - t * (0.9 + fi * 0.25) + fi).sin();
+        // What the light gathers on its way through the sheet: bright arcs
+        // lying across the body wherever a ripple above them is focusing. They
+        // ride the finer of the two waves that bend the surface, rather than a
+        // pattern of their own — a second, unrelated period reads as hatching
+        // rather than as water — they lean because the light crosses the sheet
+        // at an angle on its way through, and they come in patches, because
+        // arcs all the way along a ribbon read as corrugation. The patch is a
+        // squared half-wave rather than a clipped one: clipping a sine leaves a
+        // kink, and a kink in something that only varies along the ribbon is a
+        // straight cut across it — which reads as a rectangle pasted on the
+        // water.
+        let focusing = 0.5 + 0.5 * (x * 2.3 - t * 0.5 + fi).sin();
+        let gathered = (x * 23.0 + t * 1.9 + fi * 1.3 + s_across * 3.4)
+            .sin()
+            .max(0.0)
+            .powi(5)
+            * (0.15 + 0.85 * focusing * focusing);
+
+        let depth = 1.0 - fi * 0.26;
+        let skirt = (-d * d * 90.0).exp();
+        // The shadow the sheet throws on the wallpaper, down-light of itself.
+        // The one thing that says the band is in front of the scene rather
+        // than mixed into it.
+        let shadow_d = d - width - 0.010;
+        let shadow = (-shadow_d * shadow_d * 1400.0).exp() * (1.0 - cover);
+        // And the line its curve gathers on the far side of that shadow, where
+        // the light it let through comes back together.
+        let caustic_d = d - width - 0.0040;
+        let caustic = (-caustic_d * caustic_d * 30000.0).exp() * broad;
+
+        let haze_tint = mix3(sky.accent[0], sky.accent[2], 0.46);
+        let body_tint = mix3(sky.accent[0], sky.accent[2], 0.24 + fi * 0.05 + 0.36 * rise);
+        // A thick edge splits what passes through it into colour: warm above
+        // the lip, cold below it. Small, because it is a cue and not a prism.
+        let split = 0.055 * (1.0 - inset) * (1.0 - inset) * cover * depth * -d.signum();
+
+        let water = cover * fold * depth;
+        // Water is a body: it takes light out of what stands behind it and
+        // shades what stands beside it, before any of its own is added.
+        color = scale3(color, 1.0 - cover * (0.05 + 0.11 * rise) * depth);
+        color = scale3(color, 1.0 - shadow * 0.20 * depth);
+        color = add3(color, scale3(haze_tint, skirt * 0.007 * depth));
+        color = add3(
+            color,
+            scale3(body_tint, water * (0.005 + 0.012 * rise + 0.028 * facing)),
+        );
+        color = add3(color, scale3(sky.accent[1], fresnel * room * water * 0.100));
+        color = add3(
+            color,
+            scale3(sky.accent[1], glint * water * 0.120 * travelling),
+        );
+        color = add3(
+            color,
+            scale3(sky.accent[1], gathered * cover * rise * 0.011 * depth),
+        );
+        color = add3(color, scale3(sky.accent[1], caustic * 0.011 * depth));
+        color = [color[0] * (1.0 + split), color[1], color[2] * (1.0 - split)];
+    }
+    color
+}
+
+/// The current as the plainer material: three fine glass-silk ribbons moving
+/// together through the same lane.
+///
+/// What this shell drew before the band, kept for the Simple theme rather than
+/// deleted — a machine that cannot afford the water still gets a current, and
+/// this is the one that was tuned for a year to sit under the bar without
+/// competing with it. Each ribbon is a broad skirt, a steady translucent body,
+/// a deep lower fold and an accent-soft bevel catching the shell's upper-left
+/// lamp; only the glossy layers carry the quicker travelling sheen, so the
+/// whole line does not pulse like neon.
+///
+/// Adds and never subtracts, which is the other half of why it is cheap: no
+/// pixel behind it has to be read back and dimmed.
+fn silk(sky: &Sky, into: [f32; 3], point: [f32; 2], aspect: f32, t: f32) -> [f32; 3] {
+    let (u, v) = (point[0], point[1]);
+    let mut color = into;
+    // The current: three fine glass-silk ribbons moving together through
     // a broad lane below the cross point.
     let key_light = normalize2([-0.42, -0.66]);
     for i in 0..3 {
@@ -306,40 +771,7 @@ pub fn sample(sky: &Sky, uv: [f32; 2], aspect: f32, t: f32) -> [f32; 3] {
             ),
         );
     }
-
-    // Two aurora veils sweep through different thirds of the display.
-    let upper_center =
-        0.28 + (u * 2.6 + t * 0.16).sin() * 0.10 + (u * 5.4 - t * 0.11).sin() * 0.040;
-    let upper_d = v - upper_center;
-    let upper_veil = (-upper_d * upper_d * 32.0).exp();
-    let upper_crest = (-upper_d * upper_d * 230.0).exp();
-    let upper_sheen = 0.72 + 0.28 * (u * 4.2 - t * 0.22).sin();
-
-    let lower_center =
-        0.72 + (u * 2.1 - t * 0.13 + 2.4).sin() * 0.12 + (u * 4.7 + t * 0.083).sin() * 0.035;
-    let lower_d = v - lower_center;
-    let lower_veil = (-lower_d * lower_d * 26.0).exp();
-    let lower_crest = (-lower_d * lower_d * 180.0).exp();
-    let lower_sheen = 0.74 + 0.26 * (u * 3.7 + t * 0.18 + 1.7).sin();
-
-    color = add3(
-        color,
-        scale3(
-            sky.accent[0],
-            (upper_veil * 0.052 + upper_crest * 0.025) * upper_sheen,
-        ),
-    );
-    color = add3(
-        color,
-        add3(
-            scale3(sky.accent[2], lower_veil * 0.16 * lower_sheen),
-            scale3(sky.accent[0], lower_crest * 0.028 * lower_sheen),
-        ),
-    );
-
-    // Vignette, so the edges do not compete with the content.
-    let edge = distance([u, v], [0.5, 0.5]);
-    scale3(color, 1.0 - smoothstep(0.55, 1.05, edge) * 0.55)
+    color
 }
 
 /// A huge, feathered pool of light.
@@ -359,6 +791,44 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
     (dx * dx + dy * dy).sqrt()
+}
+
+/// How steep the rolled lip is `inset` of the way in: 0 at the outer edge, 1
+/// where the flat face begins. A quarter-round profile, and the same one
+/// `bevel_rise` in `shaders.wgsl` gives every other piece of water in the
+/// shell. `rise` is how much of the full depth has been reached there.
+fn bevel_rise(inset: f32) -> f32 {
+    (1.0 - (1.0 - inset) * (1.0 - inset)).max(0.0).sqrt()
+}
+
+/// Held short of vertical at the very edge, for the reason `bevel_slope` in
+/// `shaders.wgsl` holds it there: a truly vertical face is edge-on to an eye
+/// looking straight into it, and the lighting degenerates on the singularity
+/// rather than on the last pixel of a steep curve.
+fn bevel_slope(inset: f32) -> f32 {
+    (1.0 - inset) / bevel_rise(inset).max(0.16)
+}
+
+fn reflect3(v: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
+    let twice = 2.0 * dot3(v, normal);
+    [
+        v[0] - twice * normal[0],
+        v[1] - twice * normal[1],
+        v[2] - twice * normal[2],
+    ]
+}
+
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [v[0] / length, v[1] / length, v[2] / length]
+    }
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn normalize2(v: [f32; 2]) -> [f32; 2] {
@@ -450,7 +920,13 @@ fn draw_band(
         let v = (first as f32 + row as f32 + 0.5) / height as f32;
         for (column, pixel) in line.chunks_exact_mut(4).enumerate() {
             let u = (column as f32 + 0.5) / width as f32;
-            let color = sample(sky, [u, v], aspect, t);
+            let color = sample(
+                sky,
+                [u, v],
+                aspect,
+                t,
+                [1.0 / width as f32, 1.0 / height as f32],
+            );
             for channel in 0..3 {
                 pixel[channel] =
                     (linear_to_srgb(color[channel].clamp(0.0, 1.0)) * 255.0).round() as u8;
@@ -463,6 +939,112 @@ fn draw_band(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One pixel of a display, for the tests that need to ask for a sample
+    /// rather than to say anything about the size of one.
+    const PIXEL: [f32; 2] = [1.0 / 1920.0, 1.0 / 1080.0];
+
+    /// The two sizes this wallpaper is really drawn at: the shell's own frame,
+    /// and the bridge frame the compositor paints small and scales up.
+    const DRAWN_AT: [(&str, [f32; 2]); 2] = [
+        ("the shell's frame", PIXEL),
+        ("a bridge frame", [1.0 / 640.0, 1.0 / 360.0]),
+    ];
+
+    /// The one thing the current promises about itself: it is a band, not three
+    /// lines that happen to be near each other. Two neighbouring ribbons always
+    /// overlap by enough that the feathering of both silhouettes is inside the
+    /// overlap, so there is nowhere on the display, at any time, where the eye
+    /// could find the wallpaper between them.
+    ///
+    /// This is the geometry alone, and the fixed part of the feathering with
+    /// it. The rest of the feathering is as wide as a sample, which the
+    /// geometry knows nothing about;
+    /// `the_band_is_still_joined_at_the_size_it_is_drawn` takes the promise the
+    /// rest of the way at both sizes anything draws this at.
+    ///
+    /// Swept rather than reasoned about, because the widths come out of a twist
+    /// of three sines squared and the offsets come out of the widths: the shape
+    /// of that is not something to hold in the head and be sure of.
+    #[test]
+    fn the_three_ribbons_of_the_current_are_never_apart() {
+        // Where the silhouette starts to fade, out of `sample`. The overlap has
+        // to be wider than the two fading edges put together.
+        const FEATHER: f32 = 0.06;
+        for step in 0..1200 {
+            // Coarser in time than across the display, and prime-ish steps, so
+            // the sweep does not keep landing on the same phase of the clocks.
+            let t = step as f32 * 0.37;
+            for column in 0..=240 {
+                let u = column as f32 / 240.0;
+                let gather = 0.28 + 0.72 * (std::f32::consts::PI * u).sin();
+                let (_, width, offset) = stack(u, t, gather);
+                for pair in 0..2 {
+                    let above = offset[pair] + width[pair];
+                    let below = offset[pair + 1] - width[pair + 1];
+                    let seen = FEATHER * (width[pair] + width[pair + 1]);
+                    assert!(
+                        above - below >= seen,
+                        "ribbons {pair} and {} part at u={u} t={t}: \
+                         {above} to {below}, needing {seen} of overlap",
+                        pair + 1,
+                    );
+                }
+            }
+        }
+    }
+
+    /// And the same promise once the silhouettes are feathered to the size of
+    /// the sample they are drawn with, which is the part the geometry cannot
+    /// see: a bridge frame is a fifth of the display across, so a sample there
+    /// is worth three of the shell's, and where a sheet is pinched nearly
+    /// edge-on that is most of its width.
+    ///
+    /// Walked across every seam rather than argued about, and stated as what
+    /// the eye would actually find: how much of the wallpaper is still showing
+    /// at the least covered point between two ribbons, with both of their
+    /// feathered silhouettes over it.
+    #[test]
+    fn the_band_is_still_joined_at_the_size_it_is_drawn() {
+        for (label, footprint) in DRAWN_AT {
+            let mut least = 1.0_f32;
+            for step in 0..600 {
+                // Coarser in time than across the display, and prime-ish steps,
+                // so the sweep does not keep landing on the same phase of the
+                // clocks.
+                let t = step as f32 * 0.37;
+                for column in 0..=240 {
+                    let u = column as f32 / 240.0;
+                    let gather = 0.28 + 0.72 * (std::f32::consts::PI * u).sin();
+                    let (_, width, offset) = stack(u, t, gather);
+                    // A sample of that picture, across a band lying flat. The
+                    // spine's own slope only ever shortens this, and a seam is
+                    // measured across the band in any case.
+                    let sample = footprint[1];
+                    let cover = |ribbon: usize, at: f32| {
+                        let reach = ((at - offset[ribbon]) / width[ribbon]).abs();
+                        silhouette(reach, width[ribbon], sample)
+                    };
+                    for pair in 0..2 {
+                        for slice in 0..=64 {
+                            let across = slice as f32 / 64.0;
+                            let at = offset[pair] + (offset[pair + 1] - offset[pair]) * across;
+                            let covered =
+                                1.0 - (1.0 - cover(pair, at)) * (1.0 - cover(pair + 1, at));
+                            least = least.min(covered);
+                        }
+                    }
+                }
+            }
+            // A twentieth of the wallpaper showing through the thinnest part of
+            // a seam is nothing the eye can find; a seam that had come open
+            // would be showing all of it.
+            assert!(
+                least >= 0.95,
+                "{label}: a seam is only {least} covered at its thinnest",
+            );
+        }
+    }
 
     #[test]
     fn every_palette_has_a_distinct_name_and_sky() {
@@ -498,7 +1080,7 @@ mod tests {
                 for step in 0..=8 {
                     let position = step as f32 / 8.0;
                     for uv in [[position, 0.5_f32], [0.5, position]] {
-                        let color = sample(&sky, uv, aspect, t);
+                        let color = sample(&sky, uv, aspect, t, PIXEL);
                         for channel in color {
                             assert!(channel.is_finite(), "{channel} at {uv:?}");
                             assert!((0.0..=1.0).contains(&channel), "{channel} at {uv:?}");
@@ -544,7 +1126,7 @@ mod tests {
     #[test]
     fn the_wallpaper_moves_with_its_clock() {
         let sky = Sky::new(palette("Purple"));
-        let at = |t| sample(&sky, [0.5, 0.6], 16.0 / 9.0, t);
+        let at = |t| sample(&sky, [0.5, 0.6], 16.0 / 9.0, t, PIXEL);
         assert_ne!(at(0.0), at(4.0));
     }
 }

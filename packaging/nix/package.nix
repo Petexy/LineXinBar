@@ -179,7 +179,7 @@ rustPlatform.buildRustPackage {
     description =
       if compositorOnly
       then "Wayland compositor for LineXinBar, usable on its own"
-      else "Multi-display Wayland desktop with an XMB-style shell";
+      else "Multi-display Wayland desktop with a console-style shell";
     homepage = "https://github.com/Petexy/LineXinBar";
     license = with lib.licenses; [ gpl3Only asl20 mit ];
     mainProgram = "lxb";

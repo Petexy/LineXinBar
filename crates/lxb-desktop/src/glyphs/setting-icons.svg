@@ -1,0 +1,67 @@
+<!--
+  Four of the shell's own marks, shrunk into one cell, at the head of
+  Theme > Icons.
+
+  The setting is about what every mark in the shell is made of, and there is no
+  picture of that except the marks themselves. So this one is not a new drawing:
+  it is the accent's drop, System's house and its folder, and the guide's moon,
+  copied outline for outline from setting-accent.svg, file-home.svg,
+  file-folder.svg and do-not-disturb.svg and laid out four to a cell.
+
+  Each is fitted into a box of its own and centred in it, which is exactly what
+  the atlas does with a drawing — so the four come out the same size as one
+  another however different their proportions are, the way a row of marks does in
+  the bar. The boxes are 10.4 units of the cell's 32 with 2.8 between them: wide
+  enough that the field reads four bodies rather than one, and far enough inside
+  the edge for the shadow.
+
+  Their openings are deliberately left out — the house has no door here and the
+  folder has no pocket. An opening a third of its usual size is narrower than the
+  bevel is deep and comes out as a dimple rather than a hole, which reads as a
+  fault in the drawing. What is left is the silhouette, and the silhouette is
+  what carries a mark at this size.
+
+  Each of the four is thinner than twice the bevel in places and will bead over
+  into a small dome rather than standing up a flat face. That is the right answer
+  here rather than a compromise: a small bead of water is a dome.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- setting-accent.svg, whole. -->
+    <path id="drop" d="M16 3.4C16 3.4 25.1 14.1 25.1 19.7A9.1 9.1 0 0 1 6.9 19.7C6.9 14.1 16 3.4 16 3.4z"/>
+
+    <!-- file-home.svg, less its door. -->
+    <path id="roof" d="M16 4.6L28.2 15.2H3.8z" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect id="wall" x="6.8" y="13.8" width="18.4" height="13.4" rx="1.8"/>
+    <g id="house"><use href="#roof" stroke="#ffffff"/><use href="#wall"/></g>
+
+    <!-- file-folder.svg, less its pocket. -->
+    <rect id="tab" x="4.0" y="7.4" width="11.6" height="6.6" rx="1.9"/>
+    <rect id="back" x="4.0" y="10.0" width="24.0" height="14.6" rx="2.2"/>
+    <g id="folder"><use href="#tab"/><use href="#back"/></g>
+
+    <!-- do-not-disturb.svg, whole. -->
+    <path id="moon" d="M18.32 4.847
+           A11.2 11.2 0 1 0 25.97 23.09
+           A10 10 0 0 1 18.32 4.847 Z"/>
+  </defs>
+
+  <g fill="#ffffff" transform="translate(16 16) scale(1.1) translate(-16 -16)">
+    <g transform="translate(9.4 9.4) scale(0.409) translate(-16 -16.1)">
+      <use href="#drop"/>
+    </g>
+    <g transform="translate(22.6 9.4) scale(0.402) translate(-16 -15.5)">
+      <use href="#house"/>
+    </g>
+    <g transform="translate(9.4 22.6) scale(0.433) translate(-16 -16)">
+      <use href="#folder"/>
+    </g>
+    <g transform="translate(22.6 22.6) scale(0.464) translate(-16 -16)">
+      <use href="#moon"/>
+    </g>
+  </g>
+</svg>

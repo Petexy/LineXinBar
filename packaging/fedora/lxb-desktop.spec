@@ -1,7 +1,7 @@
 Name:           lxb-desktop
 Version:        0.1.0
 Release:        1%{?dist}
-Summary:        Multi-display Wayland desktop with an XMB-style shell
+Summary:        Multi-display Wayland desktop with a console-style shell
 
 # LineXinBar/Bibata, embedded Roboto, and the locked statically linked Rust
 # dependency graph for Linux.

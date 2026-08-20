@@ -1,0 +1,23 @@
+<!--
+  A sheet, and an arrow leaving it, on the menu row that moves a file.
+
+  One sheet rather than two, which is the whole difference from the row above:
+  what is moved does not become two of anything, it goes. The arrow is a second
+  body with clear air round it — wider than the arrow's own shaft is thick, or
+  the field would measure the pair as one mark with a notch in it.
+
+  The head and the shaft overlap on purpose and take no crevice between them.
+  They are one object: an arrow with a gap across its neck is a triangle
+  balanced on the end of a bar.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <rect x="3.2" y="6.2" width="11.4" height="19.6" rx="2.2"/>
+    <rect x="18.2" y="14.35" width="5.8" height="3.3" rx="1.65"/>
+    <path d="M23.2 10.8 28.6 16 23.2 21.2z"/>
+  </g>
+</svg>

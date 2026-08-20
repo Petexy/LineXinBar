@@ -110,7 +110,7 @@ fn stick_is_pushed((x, y): (f32, f32)) -> bool {
     x.abs() >= STICK_ENGAGE || y.abs() >= STICK_ENGAGE
 }
 
-/// Owns the platform controller context and translates it into XMB actions.
+/// Owns the platform controller context and translates it into lattice actions.
 ///
 /// Failure to access `/dev/input` is intentionally non-fatal: keyboard input
 /// remains usable and the warning tells the user what functionality was lost.
@@ -834,7 +834,7 @@ fn is_left_face(button: Button, code: u32, layout: Layout) -> bool {
 
 /// Whether a press is the *top* face button — Y on an Xbox pad, Triangle on a
 /// PlayStation one — which raises the context menu, the way Triangle has opened
-/// the options menu on a cross media bar since the first one.
+/// the options menu on a console shell of this shape since the first one.
 fn is_top_face(button: Button, code: u32, layout: Layout) -> bool {
     match layout {
         Layout::Mapped => matches!(button, Button::North),
