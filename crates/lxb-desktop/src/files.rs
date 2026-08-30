@@ -89,6 +89,23 @@ pub enum Place {
     Volumes(Shows),
     /// One directory, listed when it is stepped into.
     Directory(PathBuf, Shows),
+    /// The trash: everything the user has deleted, wherever on this machine it
+    /// went.
+    ///
+    /// Not a [`Place::Directory`] pointed at `~/.local/share/Trash/files`,
+    /// although that is where most of what it lists is sitting. Three things
+    /// are wrong with that reading and each of them on its own settles it: the
+    /// names in there are the trash's rather than the user's, half of what
+    /// belongs in the column is in a `.Trash-1000` at the top of some other
+    /// disk, and the rows are things to put back or destroy rather than things
+    /// to open. It is a listing of a *specification*, not of a folder.
+    ///
+    /// It carries no [`Shows`]. Every walk that is choosing something is
+    /// choosing a file to keep — a wallpaper, a cover, somebody's face — and
+    /// the trash is where things go that the user has said they do not want.
+    /// A picker that offered it would be offering an answer that disappears
+    /// the next time the trash is emptied.
+    Trash,
 }
 
 impl Place {
@@ -96,6 +113,42 @@ impl Place {
     pub fn shows(&self) -> Shows {
         match self {
             Self::Volumes(shows) | Self::Directory(_, shows) => *shows,
+            // The disk as it is, which is the only walk that reaches it — see
+            // [`Place::Trash`], which is offered from nowhere else.
+            Self::Trash => Shows::Everything,
+        }
+    }
+}
+
+/// How a folder is read: the order its rows come back in, and whether the
+/// names beginning with a dot are among them.
+///
+/// One value rather than two arguments, because the two are one thing — a pair
+/// of preferences the user holds about *reading a listing*, chosen from the
+/// same menu, written into the same settings file, applied to every folder
+/// alike. Deliberately not on [`Place`], which is where [`Shows`] travels:
+/// `Shows` is a fact about the walk and belongs to the column, and these two
+/// are facts about the person and belong to the shell, which holds them once
+/// and hands them down on every read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct How {
+    /// Which of the nine orders the rows come back in.
+    pub sort: crate::media::Sort,
+    /// Whether names beginning with a dot are listed.
+    ///
+    /// Off by default — see [`crate::settings::show_hidden`], which is where
+    /// the answer is kept and why it is off.
+    pub hidden: bool,
+}
+
+impl How {
+    /// A to Z with the dotfiles left out: what an unasked shell reads a folder
+    /// with, and what every walk that is *choosing* something reads it with —
+    /// see [`crate::transfer`], whose columns are a path rather than a list.
+    pub fn plain() -> Self {
+        Self {
+            sort: crate::media::Sort::NameAscending,
+            hidden: false,
         }
     }
 }
@@ -121,6 +174,59 @@ pub enum Shows {
     /// Only what could stand behind a screen: the folders to keep walking
     /// through, the pictures, and the films. See [`worth_showing`].
     Scenery,
+    /// Only folders, because a folder is the answer: the walk somebody makes to
+    /// say where their games are.
+    ///
+    /// The third reason the disk is walked, and the first one where what is
+    /// being chosen is the *column* rather than a row in it. So this one
+    /// changes two things rather than one: the files are left out, since not
+    /// one of them can be the answer, and every column carries a row at its
+    /// head that says "this folder" — see [`crate::apps::Pick`], and
+    /// [`crate::apps::place_rows`], which is where that row is put on.
+    ///
+    /// It carries what the answer is *for*, because the walk is the only thing
+    /// that knows: a press on that head row is several columns away from the
+    /// row the picker was opened from, and by then that row has been rebuilt
+    /// underneath it more than once.
+    Folders(crate::settings::Picking),
+    /// Only what could be one of somebody's own game's pictures: the folders to
+    /// keep walking through, and the pictures themselves.
+    ///
+    /// The same walk [`Shows::Scenery`] is and the same rows, with the films
+    /// left out — what stands behind a game is a still, and a row offering a
+    /// film would be an answer this shell cannot use. It carries which of the
+    /// two pictures is being chosen, because a walk several folders deep is the
+    /// only thing left that knows: the row it started from is a column away and
+    /// has been rebuilt since. See [`crate::retroarch::Piece`].
+    Picture(crate::retroarch::Piece),
+    /// Only what could be somebody's face: the folders to keep walking through,
+    /// and the pictures.
+    ///
+    /// The same walk [`Shows::Picture`] is, and it carries nothing — unlike that
+    /// one, which has to say *which* of a game's two pictures is being chosen.
+    /// There is only ever one account form open at a time, and it is the form
+    /// that knows whose face this is; see [`crate::users::set_picture`].
+    Portrait,
+}
+
+impl Shows {
+    /// What a column of this walk is being chosen for, if it is a choice at
+    /// all.
+    pub fn picking(self) -> Option<crate::settings::Picking> {
+        match self {
+            Shows::Folders(picking) => Some(picking),
+            Shows::Everything | Shows::Scenery | Shows::Picture(_) | Shows::Portrait => None,
+        }
+    }
+
+    /// Which of a game's two pictures this walk is choosing, if it is choosing
+    /// one at all.
+    pub fn piece(self) -> Option<crate::retroarch::Piece> {
+        match self {
+            Shows::Picture(piece) => Some(piece),
+            Shows::Everything | Shows::Scenery | Shows::Folders(_) | Shows::Portrait => None,
+        }
+    }
 }
 
 /// Whether this entry belongs in a column listed as `shows`.
@@ -139,6 +245,21 @@ fn worth_showing(shows: Shows, path: &Path, leads_to_a_folder: bool) -> bool {
                     crate::media::kind_of(path),
                     Some(crate::media::Kind::Image | crate::media::Kind::Video)
                 )
+        }
+        // Not even to be walked past. A folder chooser that listed the files as
+        // well would be offering rows that cannot be pressed, in a column whose
+        // every other row can be — and the folder somebody is looking for would
+        // be somewhere in the middle of their music.
+        Shows::Folders(_) => leads_to_a_folder,
+        // And a picture, which is the one kind a game's cover or the picture
+        // behind it can be. A film is left out where the wallpaper takes one:
+        // what stands behind a game is a still, and a cover is a card an inch
+        // high.
+        // And a picture, which is the one kind a face can be — for the reason a
+        // game's cover can only be one: a row offering a film as somebody's
+        // portrait would be an answer this shell cannot use.
+        Shows::Picture(_) | Shows::Portrait => {
+            leads_to_a_folder || crate::media::kind_of(path) == Some(crate::media::Kind::Image)
         }
     }
 }
@@ -220,15 +341,188 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
         ));
     }
 
+    // And the trash, under all of them, because it is not a disk: the three
+    // rows above are places on this machine and this one is a place in the
+    // *specification* — everything the user has deleted, gathered out of the
+    // home trash and out of every mounted volume's own. Last for that reason
+    // rather than by ranking, and only where the disk is being browsed: a walk
+    // choosing a wallpaper or somebody's face must not be offered a file that
+    // disappears the next time the trash is emptied.
+    if shows == Shows::Everything {
+        places.push(trash_row());
+    }
+
     let found = places.len();
     let kept: Vec<Entry> = places
         .into_iter()
         .filter(|row| matched(row.title(), query))
         .collect();
+    // No New folder row: the three rows above are the disks there are to look
+    // in, and the list of disks is not a folder anything can be made in.
+    let mut rows = crate::apps::place_rows(kept, query, found, at_the_head(None, shows), None);
+    // One walk has an answer that is not a file on this disk: an account's
+    // avatar can be *none*, and that belongs in the column asking which picture
+    // rather than beside the row that opened it. It stands over the list, so the
+    // column still opens on the first disk. See [`crate::settings::
+    // no_avatar_row`], which is where the row and its wording live — the tree
+    // writes its own rows, and this only says where one goes.
+    if shows == Shows::Portrait {
+        if let Some(row) = crate::settings::no_avatar_row() {
+            rows.insert(0, row);
+        }
+    }
     Shown {
         note: WHAT_FILES_ARE.to_string(),
-        rows: crate::apps::place_rows(kept, query, found),
+        rows,
         orders: crate::media::Orders::default(),
+    }
+}
+
+/// The row that opens the trash.
+///
+/// The count is read here rather than left to the press, because a Trash row
+/// with nothing behind it is a row that cannot be stepped into at all — an
+/// empty column is the one shape this bar cannot show — and a row that did
+/// nothing when pressed and never said why would be the shell appearing to be
+/// broken. So the line under it says "Empty", which is the answer to what the
+/// press would have shown.
+///
+/// It is one `readdir` per trash directory that exists, which on a stock
+/// machine is one, on the press that opens Files. See [`crate::trash::bins`].
+fn trash_row() -> Entry {
+    let items = crate::trash::listing().len();
+    Entry::Folder(Folder {
+        title: "Trash".to_string(),
+        comment: Some(match items {
+            0 => "Empty".to_string(),
+            1 => "1 item".to_string(),
+            items => format!("{items} items"),
+        }),
+        // The bin, which is the mark the rest of the shell already wears for
+        // taking something off this machine — see [`crate::icons::UNINSTALL`].
+        // This is the literal case: it is a bin, and it is where everything
+        // that row destroys would have gone if it had been one of the user's
+        // own files.
+        icon: Some(crate::icons::UNINSTALL.to_string()),
+        entries: Vec::new(),
+        place: Some(Place::Trash),
+        chosen: false,
+        over_the_list: false,
+        person: None,
+        portrait: None,
+    })
+}
+
+/// Everything in the trash, as a column: the row that empties it, and then
+/// what is in there.
+///
+/// The head row is what makes the column enterable when the trash holds one
+/// thing, and it is deliberately absent when the trash holds nothing — an
+/// Empty trash row over an empty trash is a control with nothing to act on,
+/// and the row that opened the column has already said "Empty".
+///
+/// There is no search field, which is the one way this column is less than a
+/// folder's. It is deliberate rather than an omission, and it is not a strong
+/// argument: a trash can hold hundreds of things. What is on the other side of
+/// it is that the rows are not what a field would be narrowing — a name here is
+/// what the file was called before it was deleted, and what it is called on the
+/// disk is something else — so a field would be searching one set of names over
+/// a column listed by another. If it turns out to be wanted, it goes in the same
+/// way every other one does; see [`crate::apps::head`].
+///
+/// The order is the explorer's, whatever the user has set it to, on the facts
+/// the trash has: see [`trash_order`], which is where the deletion date takes
+/// the place of a created time that would only ever say when the file was
+/// thrown away.
+pub fn trash(sort: crate::media::Sort) -> Shown {
+    trash_of(crate::trash::listing(), sort)
+}
+
+/// The same, told what is in the trash.
+///
+/// Split off so the shape of the column and the nine orders can be exercised
+/// against a list made for the purpose, rather than against the trash of
+/// whoever is running the tests — which would be reading somebody's deleted
+/// files to find out whether a sort works.
+fn trash_of(mut listing: Vec<crate::trash::Trashed>, sort: crate::media::Sort) -> Shown {
+    let (mut folders, mut files) = (0usize, 0usize);
+    for item in &listing {
+        if item.folder {
+            folders += 1;
+        } else {
+            files += 1;
+        }
+    }
+    // The nine orders, applied to what the trash knows, on the same facts a
+    // folder's own listing is ordered by. Always, including the order the
+    // trash is already read in: what it arrives in is a property of
+    // [`crate::trash::listing`], and a column that was only in the right order
+    // because of what its caller happened to do would be one that quietly
+    // stopped being so the day that changed.
+    listing.sort_by(|a, b| trash_order(sort, a, b));
+    let orders = crate::media::Orders {
+        // A trashed thing has no creation date the shell can honestly report:
+        // what `stat` gives is when it was renamed into `files/`, which is
+        // when it was *deleted*. That is a real fact and it is what the two
+        // Newest/Oldest rows order by here, said plainly on the row.
+        created: !listing.is_empty(),
+        modified: listing.iter().any(|item| item.modified.is_some()),
+    };
+
+    let mut rows: Vec<Entry> = Vec::with_capacity(listing.len() + 1);
+    if !listing.is_empty() {
+        rows.push(Entry::Sweep(crate::apps::Sweep::new(listing.len())));
+    }
+    rows.extend(listing.into_iter().map(Entry::Trashed));
+    Shown {
+        note: note((folders, files), 0),
+        rows,
+        orders,
+    }
+}
+
+/// Put one trashed thing before another, in `sort`'s order.
+///
+/// The folders-first rule the explorer's own listing keeps is deliberately not
+/// kept here. In a folder that rule is about the shape of the thing — the rows
+/// that lead somewhere stand above the rows that are somewhere — and in the
+/// trash no row leads anywhere: they are all things that were deleted, and
+/// what somebody is looking for is the one they deleted by mistake, whichever
+/// kind it was.
+fn trash_order(
+    sort: crate::media::Sort,
+    a: &crate::trash::Trashed,
+    b: &crate::trash::Trashed,
+) -> std::cmp::Ordering {
+    use crate::media::Sort;
+    let by_name = |a: &crate::trash::Trashed, b: &crate::trash::Trashed| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.at.cmp(&b.at))
+    };
+    let then = || by_name(a, b);
+    match sort {
+        Sort::NameAscending => then(),
+        Sort::NameDescending => by_name(b, a),
+        Sort::LargestFirst => b.size.cmp(&a.size).then_with(then),
+        Sort::SmallestFirst => a.size.cmp(&b.size).then_with(then),
+        Sort::Type => described(&a.from)
+            .0
+            .cmp(described(&b.from).0)
+            .then_with(then),
+        // The deletion date, which is the one date this column has that a
+        // folder's listing does not — and the only honest reading of "newest"
+        // for a thing whose every timestamp on disk is the moment it was
+        // thrown away.
+        Sort::NewestFirst => b.deleted_at.cmp(&a.deleted_at).then_with(then),
+        Sort::OldestFirst => a.deleted_at.cmp(&b.deleted_at).then_with(then),
+        Sort::LastChangedFirst => {
+            crate::media::by_time(a.modified, b.modified, true).then_with(then)
+        }
+        Sort::LongestUntouchedFirst => {
+            crate::media::by_time(a.modified, b.modified, false).then_with(then)
+        }
     }
 }
 
@@ -254,6 +548,8 @@ fn place(
         place: Some(Place::Directory(at.to_path_buf(), shows)),
         chosen: false,
         over_the_list: false,
+        person: None,
+        portrait: None,
     })
 }
 
@@ -269,15 +565,22 @@ fn place(
 /// those orders the folders stay alphabetical among themselves rather than
 /// being ranked by a number that means nothing.
 ///
-/// Dotfiles are left out. They are configuration rather than possessions —
-/// nobody's photographs are in `~/.cache` — and a home directory listed with
-/// them in it opens on forty rows of program state before the first thing the
-/// user recognises. The shell's own settings live in the Settings column, which
-/// is where somebody looking for them is already going.
+/// Dotfiles are left out unless `how` says otherwise. They are configuration
+/// rather than possessions — nobody's photographs are in `~/.cache` — and a
+/// home directory listed with them in it opens on forty rows of program state
+/// before the first thing the user recognises. The shell's own settings live in
+/// the Settings column, which is where somebody looking for them is already
+/// going.
+///
+/// Which is an argument about what a listing *opens* with and not about what
+/// the user may ever see, so there is a way past it: [`How::hidden`], set from
+/// the Show hidden files row of the explorer's own menu. It is one answer for
+/// every folder and it is written down, exactly as the order is — see
+/// [`crate::settings::show_hidden`].
 ///
 /// An unreadable directory comes back empty, and the note above says so rather
 /// than the column pretending the folder had nothing in it.
-pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -> Shown {
+pub fn listing(at: &Path, query: &str, how: How, shows: Shows) -> Shown {
     let Ok(reading) = std::fs::read_dir(at) else {
         return Shown {
             rows: Vec::new(),
@@ -301,7 +604,7 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -
             left_out += 1;
             continue;
         };
-        if name.starts_with('.') {
+        if name.starts_with('.') && !how.hidden {
             continue;
         }
         if folders + files >= MOST {
@@ -366,6 +669,8 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -
                 place: Some(Place::Directory(path.clone(), shows)),
                 chosen: false,
                 over_the_list: false,
+                person: None,
+                portrait: None,
             })
         } else {
             let (mime, glyph) = described(&path);
@@ -388,7 +693,7 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -
         });
     }
 
-    found.sort_by(|a, b| order_by(sort, a, b));
+    found.sort_by(|a, b| order_by(how.sort, a, b));
     Shown {
         note: note((folders, files), left_out),
         rows: crate::apps::place_rows(
@@ -399,9 +704,66 @@ pub fn listing(at: &Path, query: &str, sort: crate::media::Sort, shows: Shows) -
             // included, since a search that says "3 of 200" over a folder of
             // ten thousand would be counting the wrong thing.
             folders + files + left_out,
+            at_the_head(Some(at), shows),
+            can_make_a_folder(at, shows).then(|| crate::apps::Make {
+                at: at.to_path_buf(),
+            }),
         ),
         orders,
     }
+}
+
+/// Whether a column of `at` carries the row that makes a new folder in it.
+///
+/// Two conditions, and they are about two different things.
+///
+/// The walk has to be the disk being *browsed*. Every other walk is choosing
+/// something — a wallpaper, a game's cover, somebody's face, the folder their
+/// ROMs are in — and a brand new empty folder is not the answer to any of those
+/// questions. The one that comes closest is [`Shows::Folders`], and it is the
+/// clearest case of all: that column already carries an answer at its head, and
+/// two head rows where one says "this folder" and the other makes a different
+/// one is a column asking somebody to read carefully.
+///
+/// And the folder has to be one this user can write to. `/usr/lib` is four
+/// presses from Root and everything in it belongs to the machine; a head row
+/// offering to make a folder there would be an offer nobody on this system can
+/// take, standing over six thousand rows, on every column of the way down.
+/// This is the one guess about permissions the explorer makes in advance, and
+/// it is made because the row is *furniture* rather than a command somebody
+/// went looking for — the argument [`crate::main::media_rows`] gives for not
+/// greying Copy and Move is an argument about a menu the user opened on
+/// purpose.
+///
+/// `access(2)` and not a `stat` of the mode: the mode is three bits and the
+/// answer is those bits, plus the user's groups, plus any ACL on the directory,
+/// plus whether the filesystem is mounted read-only. The kernel knows all four
+/// and nothing here does.
+fn can_make_a_folder(at: &Path, shows: Shows) -> bool {
+    if shows != Shows::Everything {
+        return false;
+    }
+    let Ok(path) = std::ffi::CString::new(at.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for the length of the
+    // call, and `access` reads nothing else.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+}
+
+/// The row that stands over one of these columns, where the walk is a choice.
+///
+/// `at` is the folder the column is of, or `None` for the column of volumes —
+/// which gets no such row, because the list of disks is not a folder anybody
+/// can put their games in. Stepping into one of them is what reaches a folder,
+/// and that column carries the row.
+fn at_the_head(at: Option<&Path>, shows: Shows) -> Option<crate::apps::Pick> {
+    let about = shows.picking()?;
+    Some(crate::apps::Pick {
+        at: at?.to_path_buf(),
+        about,
+        comment: about.note().to_string(),
+    })
 }
 
 /// One entry of a listing, with what an order needs to place it.
@@ -739,6 +1101,40 @@ const SYSTEM: &[&str] = &[
 /// mounts drives is the volume's own label: `/run/media/kate/Photographs` is
 /// "Photographs". A mount point with nothing to take a name from keeps its
 /// whole path, which is at least true.
+/// Where every real filesystem on this machine is mounted, `/` included.
+///
+/// A wider net than [`drives`] casts on purpose, because it is answering a
+/// different question. That one asks "what would somebody call a disk", and
+/// leaves out the machine's own arrangement of itself — `/usr`, `/var`, the
+/// subvolumes of the root disk — because a bar offering the same drive five
+/// times under the names of its own directories is a bar explaining its mount
+/// table. This asks "where could a trash directory be", and a trash at the top
+/// of a volume is at the top of the volume whatever the user would call it.
+///
+/// The pseudo filesystems are still left out, and so is anything not backed by
+/// a device node or a network share: there is no trash on `/proc`, and walking
+/// thirty of the kernel's own mounts looking for one is thirty `stat` calls
+/// spent on a question with a known answer. See [`crate::trash::bins`], which
+/// is the one caller.
+pub fn mounted_volumes() -> Vec<PathBuf> {
+    let mut tops: Vec<PathBuf> = Vec::new();
+    for mount in read_mounts() {
+        if PSEUDO.contains(&mount.kind.as_str()) {
+            continue;
+        }
+        if !mount.source.starts_with("/dev/") && !NETWORK.contains(&mount.kind.as_str()) {
+            continue;
+        }
+        // The same volume mounted twice is one volume — see [`drives`], which
+        // guards the same thing for the same reason.
+        if tops.contains(&mount.at) {
+            continue;
+        }
+        tops.push(mount.at);
+    }
+    tops
+}
+
 pub fn drives(mounts: &[Mount]) -> Vec<Drive> {
     let mut drives: Vec<Drive> = Vec::new();
     for mount in mounts {
@@ -798,7 +1194,7 @@ fn home() -> Option<PathBuf> {
 /// being looked at from. What is left is this table: the types somebody
 /// actually has in a folder, with the marks kept deliberately few. A page is
 /// the honest drawing for a file whose only distinguishing feature is its name.
-fn described(path: &Path) -> (&'static str, &'static str) {
+pub fn described(path: &Path) -> (&'static str, &'static str) {
     if let Some(kind) = crate::media::kind_of(path) {
         return (crate::media::mime_of(path).unwrap_or(OCTETS), kind.glyph());
     }
@@ -928,12 +1324,58 @@ mod tests {
     /// The rows a folder comes back with, unsearched and in the order every
     /// column opens in.
     fn shown(at: &Path) -> Shown {
-        listing(at, "", crate::media::Sort::NameAscending, Shows::Everything)
+        listing(at, "", How::plain(), Shows::Everything)
     }
 
     /// A column opened to choose a wallpaper lists the folders to keep walking
     /// through and the two kinds of file that can be drawn, and nothing else.
     ///
+    /// A walk that is choosing one of a game's pictures leaves the films out.
+    ///
+    /// The one difference from the wallpaper's own walk, and it is a fact about
+    /// what the answer is *for*: a wallpaper can be a film, and neither of a
+    /// game's two pictures can — what stands behind a game is a still, and a
+    /// cover is a card an inch high. A row offering a film would be an answer
+    /// this shell cannot use.
+    ///
+    /// Everything else about it is the wallpaper's walk: the folders are there
+    /// to keep walking through, and stepping into one goes on choosing rather
+    /// than browsing.
+    #[test]
+    fn a_walk_for_a_games_picture_leaves_the_films_out() {
+        let Some(dir) = scratch("game-picture") else {
+            return;
+        };
+        std::fs::create_dir(dir.join("Albums")).unwrap();
+        for name in ["cover.png", "holiday.mp4", "notes.txt", "song.flac"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        let shows = Shows::Picture(crate::retroarch::Piece::Cover);
+        let picking = listing(&dir, "", How::plain(), shows);
+        assert_eq!(
+            titles(&picking.rows),
+            ["Albums", "cover.png"],
+            "a folder to walk into, and the one picture"
+        );
+
+        let Some(Entry::Folder(folder)) = picking
+            .rows
+            .iter()
+            .find(|row| row.title() == "Albums")
+            .cloned()
+        else {
+            panic!("the folder is a way further in");
+        };
+        assert_eq!(folder.place.as_ref().map(Place::shows), Some(shows));
+        assert_eq!(
+            shows.piece(),
+            Some(crate::retroarch::Piece::Cover),
+            "and every step of it still knows which picture it is choosing"
+        );
+        assert_eq!(shows.picking(), None, "it is not a folder being chosen");
+    }
+
     /// The row above it counts what it is showing rather than what is in the
     /// folder, because that row is a description of the column somebody is
     /// looking at.
@@ -955,7 +1397,7 @@ mod tests {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
 
-        let picking = listing(&dir, "", crate::media::Sort::NameAscending, Shows::Scenery);
+        let picking = listing(&dir, "", How::plain(), Shows::Scenery);
         assert_eq!(
             titles(&picking.rows),
             ["Albums", "drawing.svg", "holiday.mp4", "sunset.jpg"],
@@ -1047,6 +1489,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// And they are there for the asking, with the folders still over the files
+    /// and the count above saying so — the switch changes which rows a folder
+    /// has, not how a folder is read otherwise.
+    #[test]
+    fn the_hidden_names_are_listed_when_the_switch_is_on() {
+        let Some(dir) = scratch("hidden-shown") else {
+            return;
+        };
+        std::fs::create_dir(dir.join(".config")).unwrap();
+        std::fs::write(dir.join(".bashrc"), b"x").unwrap();
+        std::fs::write(dir.join("seen.txt"), b"x").unwrap();
+        let how = How {
+            hidden: true,
+            ..How::plain()
+        };
+        let found = listing(&dir, "", how, Shows::Everything);
+        assert_eq!(
+            titles(&found.rows),
+            [".config", ".bashrc", "seen.txt"],
+            "the folder first, whatever its name begins with"
+        );
+        assert_eq!(found.note, "1 folder, 2 files");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The field narrows what the switch has let through, and nothing else: a
+    /// search made with the hidden names off cannot find one.
+    #[test]
+    fn a_search_reaches_a_hidden_name_only_where_they_are_listed() {
+        let Some(dir) = scratch("hidden-search") else {
+            return;
+        };
+        std::fs::write(dir.join(".bashrc"), b"x").unwrap();
+        std::fs::write(dir.join("bash-notes.txt"), b"x").unwrap();
+        let hidden = How {
+            hidden: true,
+            ..How::plain()
+        };
+        assert_eq!(
+            titles(&listing(&dir, "bash", How::plain(), Shows::Everything).rows),
+            ["bash-notes.txt"],
+        );
+        assert_eq!(
+            titles(&listing(&dir, "bash", hidden, Shows::Everything).rows),
+            [".bashrc", "bash-notes.txt"],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The trash, as a column: the row that empties it over everything in it,
+    /// newest first.
+    #[test]
+    fn the_trash_carries_the_row_that_empties_it_over_what_is_in_it() {
+        let listing = vec![
+            trashed("holiday.mp4", "2026-08-20T10:00:00", false),
+            trashed("Live at Leeds", "2026-08-24T18:30:00", true),
+            trashed("notes.txt", "2026-08-22T09:15:00", false),
+        ];
+        let shown = trash_of(listing.clone(), crate::media::Sort::NewestFirst);
+
+        let rows: Vec<&str> = shown.rows.iter().map(Entry::title).collect();
+        assert_eq!(
+            rows,
+            ["Empty trash", "Live at Leeds", "notes.txt", "holiday.mp4"],
+            "newest first, and folders are not lifted above files: in the trash \
+             nothing leads anywhere, and what somebody is looking for is what \
+             they deleted by mistake"
+        );
+        assert!(shown.rows[0].over_the_list(), "it stands over the list");
+        assert_eq!(shown.rows[0].comment(), Some("3 items"));
+        assert_eq!(shown.note, "1 folder, 2 files");
+
+        // Every other order is the shell's own, on what the trash knows.
+        let by_name = trash_of(listing.clone(), crate::media::Sort::NameAscending);
+        let named: Vec<&str> = by_name.rows[1..].iter().map(Entry::title).collect();
+        assert_eq!(named, ["holiday.mp4", "Live at Leeds", "notes.txt"]);
+
+        // An empty trash gets no row at all, so the column cannot be stepped
+        // into — the row that opened it has already said "Empty", and a
+        // control with nothing to act on is worse than no control.
+        let nothing = trash_of(Vec::new(), crate::media::Sort::NewestFirst);
+        assert!(nothing.rows.is_empty());
+        assert_eq!(nothing.note, "Empty");
+    }
+
+    /// A row in the trash is named for what it was called before it was
+    /// deleted, not for what the trash filed it as.
+    #[test]
+    fn a_trashed_row_wears_the_name_the_user_gave_it() {
+        let shown = trash_of(
+            vec![trashed("Don't Stop.mp3", "2026-08-24T18:30:00", false)],
+            crate::media::Sort::NewestFirst,
+        );
+        assert_eq!(shown.rows[1].title(), "Don't Stop.mp3");
+        assert_eq!(
+            shown.rows[1].comment(),
+            Some("From /home/x/Music · deleted 24 August 2026")
+        );
+        assert_eq!(
+            shown.rows[1].icon(),
+            Some(crate::media::Kind::Audio.glyph())
+        );
+    }
+
+    /// One thing in the trash, as `crate::trash` would have read it.
+    fn trashed(name: &str, when: &str, folder: bool) -> crate::trash::Trashed {
+        let from = PathBuf::from(format!("/home/x/Music/{name}"));
+        let mut item = crate::trash::Trashed {
+            name: name.to_string(),
+            at: PathBuf::from(format!("/home/x/.local/share/Trash/files/{name}")),
+            ticket: PathBuf::from(format!("/home/x/.local/share/Trash/info/{name}.trashinfo")),
+            from,
+            note: String::new(),
+            deleted_at: when.to_string(),
+            folder,
+            size: 0,
+            modified: None,
+        };
+        item.note = item.describe();
+        item
+    }
+
     /// A directory the user may not read is not a directory with nothing in it,
     /// and the row says which.
     #[test]
@@ -1056,18 +1620,38 @@ mod tests {
         assert_eq!(found.note, "This cannot be opened");
     }
 
+    /// An empty folder carries exactly one row: the offer to make something in
+    /// it.
+    ///
+    /// No field — there is nothing there to search — and that used to be the
+    /// whole of the column, which made an empty directory a dead end: a column
+    /// with nothing in it cannot be stepped into, so the first thing in one had
+    /// to be made from a terminal. The head row is what opens it.
     #[test]
-    fn an_empty_folder_says_it_is_empty() {
+    fn an_empty_folder_can_still_be_stepped_into_to_make_something_in_it() {
         let Some(dir) = scratch("empty") else {
             return;
         };
         let found = shown(&dir);
-        assert!(
-            found.rows.is_empty(),
-            "not even a field: there is nothing there to search"
-        );
+        let rows: Vec<&str> = found.rows.iter().map(Entry::title).collect();
+        assert_eq!(rows, ["New folder"]);
+        assert!(found.rows[0].over_the_list(), "it stands over the list");
+        assert!(titles(&found.rows).is_empty(), "and nothing under it");
         assert_eq!(found.note, "Empty");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And a folder this user cannot write to carries no such row: `/usr/lib`
+    /// is four presses from Root, and an offer nobody on the machine can take
+    /// standing over six thousand rows is furniture rather than a command.
+    #[test]
+    fn a_folder_that_cannot_be_written_to_is_offered_no_way_to_make_one() {
+        let found = shown(Path::new("/usr/lib"));
+        assert!(
+            !found.rows.iter().any(|row| row.make().is_some()),
+            "{:?}",
+            titles(&found.rows).first()
+        );
     }
 
     /// A link to a directory is a way further in, not a file. `/lib` is one on
@@ -1114,12 +1698,7 @@ mod tests {
         for file in ["report.pdf", "notes.txt", "REPORT-2.pdf"] {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
-        let found = listing(
-            &dir,
-            "report",
-            crate::media::Sort::NameAscending,
-            Shows::Everything,
-        );
+        let found = listing(&dir, "report", How::plain(), Shows::Everything);
         assert_eq!(
             titles(&found.rows),
             ["Reports", "REPORT-2.pdf", "report.pdf"],
@@ -1134,8 +1713,14 @@ mod tests {
         let notes: Vec<Option<&str>> = head.iter().map(Entry::comment).collect();
         assert_eq!(
             notes,
-            [Some("3 of 4 items match"), Some("Show all 4 items")],
-            "the field says what it kept, and under it the way back"
+            [
+                Some("Make a folder in this one"),
+                Some("3 of 4 items match"),
+                Some("Show all 4 items")
+            ],
+            "the field says what it kept, and under it the way back — with the \
+             row that makes a folder standing over both, where the picker's own \
+             answer row stands"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1149,14 +1734,10 @@ mod tests {
             return;
         };
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let found = listing(
-            &dir,
-            "zzz",
-            crate::media::Sort::NameAscending,
-            Shows::Everything,
-        );
+        let found = listing(&dir, "zzz", How::plain(), Shows::Everything);
         assert!(titles(&found.rows).is_empty());
-        assert_eq!(crate::apps::head_rows(&found.rows), 2);
+        // New folder, the field, and the row that empties it.
+        assert_eq!(crate::apps::head_rows(&found.rows), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1175,7 +1756,13 @@ mod tests {
         std::fs::write(dir.join("big.bin"), vec![0u8; 4096]).unwrap();
         std::fs::write(dir.join("small.txt"), b"x").unwrap();
 
-        let order = |sort| titles(&listing(&dir, "", sort, Shows::Everything).rows).join(" ");
+        let order = |sort| {
+            let how = How {
+                sort,
+                ..How::plain()
+            };
+            titles(&listing(&dir, "", how, Shows::Everything).rows).join(" ")
+        };
         assert_eq!(order(Sort::NameAscending), "Ada zebra big.bin small.txt");
         assert_eq!(order(Sort::NameDescending), "zebra Ada small.txt big.bin");
         assert_eq!(
@@ -1195,23 +1782,13 @@ mod tests {
             return;
         };
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let found = listing(
-            &dir,
-            "",
-            crate::media::Sort::NameAscending,
-            Shows::Everything,
-        );
+        let found = listing(&dir, "", How::plain(), Shows::Everything);
         assert!(
             found.orders.modified,
             "every Unix filesystem keeps a modification time"
         );
 
-        let empty = listing(
-            &dir,
-            "zzz",
-            crate::media::Sort::NameAscending,
-            Shows::Everything,
-        );
+        let empty = listing(&dir, "zzz", How::plain(), Shows::Everything);
         assert_eq!(
             empty.orders,
             crate::media::Orders::default(),

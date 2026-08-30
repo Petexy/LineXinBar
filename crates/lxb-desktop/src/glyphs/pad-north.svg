@@ -1,0 +1,20 @@
+<!--
+  The north face button, as the four of them.
+
+  pad-west.svg with the bead moved round the cluster. North is the button this
+  shell raises a menu with — Y where a pad has letters, and the top one
+  wherever it has not — so this is the one that says there is more to be
+  chosen than the column is showing.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g fill="none" stroke="#fff" stroke-width="1.5">
+    <circle cx="18.7" cy="12" r="2.7"/>
+    <circle cx="12" cy="18.7" r="2.7"/>
+    <circle cx="5.3" cy="12" r="2.7"/>
+  </g>
+  <circle cx="12" cy="5.3" r="3.4" fill="#fff"/>
+</svg>

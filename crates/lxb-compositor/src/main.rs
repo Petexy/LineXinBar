@@ -17,6 +17,7 @@ mod hdr;
 mod input;
 mod outputs;
 mod overview;
+mod pip;
 mod remembered;
 mod render;
 mod restore;
@@ -191,6 +192,10 @@ fn main() -> anyhow::Result<()> {
         // One place to notice that the window stack changed, rather than a
         // hook on every path that can map, unmap or retitle a window.
         state.refresh_foreground();
+        // And, in the same breath, whether one of those retitlings was a window
+        // becoming — or ceasing to be — the one that floats over everything.
+        // See [`pip`].
+        state.refresh_floating_windows();
         // And, for the same reason and in the same breath, whether each
         // application can still be seen at all — which is what decides whether
         // it goes on running. It belongs here rather than beside

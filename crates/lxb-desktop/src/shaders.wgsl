@@ -929,9 +929,12 @@ struct QuadIn {
     // How much of the colour is taken out of what is sampled: 0 the picture as
     // it was made, 1 grey.
     @location(7) drain: f32,
+    // Which material one of the shell's own marks is drawn in, or a negative
+    // to draw it in whatever the theme says. See `glyph_material`.
+    @location(8) mark: f32,
     // The rectangle this pane is cut to, as its two corners in pixels. A pane
     // nothing is cutting carries a box larger than any display.
-    @location(8) cut: vec4<f32>,
+    @location(9) cut: vec4<f32>,
 };
 
 struct QuadOut {
@@ -947,7 +950,8 @@ struct QuadOut {
     @location(6) corner_power: f32,
     @location(7) face_curve: f32,
     @location(8) drain: f32,
-    @location(9) cut: vec4<f32>,
+    @location(9) mark: f32,
+    @location(10) cut: vec4<f32>,
 };
 
 @vertex
@@ -976,6 +980,7 @@ fn vs_quad(@builtin(vertex_index) index: u32, quad: QuadIn) -> QuadOut {
     out.corner_power = quad.corner_power;
     out.face_curve = quad.face_curve;
     out.drain = quad.drain;
+    out.mark = quad.mark;
     out.cut = quad.cut;
     return out;
 }
@@ -1262,8 +1267,18 @@ fn glyph_material(in: QuadOut) -> vec4<f32> {
     let d = glyph_at(in.uv, cell) * size.x;
     let coverage = 1.0 - smoothstep(-0.75, 0.75, d);
 
-    // The Simple theme, as chosen for the *marks* — `y`, not the wallpaper's
-    // `x`: the drawing and nothing else.
+    // Which material this mark is drawn in. The theme's answer for the marks —
+    // `globals.style.y`, not the wallpaper's `x`: the drawing and nothing else
+    // — unless the quad brought one of its own, which four rows in the whole
+    // shell do.
+    //
+    // Those four are the Theme page's own values, and each of them wears the
+    // same drawing as the row above or below it: what says which is which is
+    // that each is drawn in the material it applies. See `Quad::mark`, which
+    // is where the argument for that is written down.
+    let plain = select(globals.style.y, in.mark, in.mark >= 0.0);
+
+    // The Simple theme, as chosen for the *marks*.
     //
     // The *shape* is identical — this is the same distance field, read at the
     // same edge, so a mark is the same mark and antialiases the same way. What
@@ -1271,7 +1286,7 @@ fn glyph_material(in: QuadOut) -> vec4<f32> {
     // the bevel, the fall down its own height, the reflection, the specular,
     // the dispersion and its own shadow. Nine texture reads become one and the
     // arithmetic becomes a fill, which is the whole point of the theme.
-    if (globals.style.y > 0.5) {
+    if (plain > 0.5) {
         let stain = mix(vec3<f32>(1.0), in.color.rgb, GLYPH_FLAT_STAIN);
         let flat = mix(stain, globals.accent[1].rgb, GLYPH_FLAT_TINT);
         return vec4<f32>(flat, coverage * GLYPH_FLAT_ALPHA * in.material.w);

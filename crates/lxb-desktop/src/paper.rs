@@ -475,6 +475,15 @@ fn decode(reel: &Reel, path: &Path, moving: bool) -> Option<()> {
     // ever touches the library, but registering is a per-process matter and
     // saying so here keeps the whole of the decoder in one file.
     ffmpeg::init().ok()?;
+    // And this shell speaks for itself. `libav` writes its own account of every
+    // file it cannot make sense of straight to stderr, around `tracing` and in
+    // its own spelling — three lines about signatures and `probesize` for the
+    // one case below that this decoder already has an answer for, and they land
+    // in the middle of a build's test output looking like something went wrong
+    // when what happened is a file was correctly refused. Above `Fatal` is
+    // silenced; `Fatal` and `Panic` still come through, because those are the
+    // ones that end with the process gone rather than with a `None`.
+    ffmpeg::log::set_level(ffmpeg::log::Level::Fatal);
 
     let mut input = ffmpeg::format::input(path)
         .map_err(|error| tracing::debug!(file = %path.display(), %error, "cannot be opened"))

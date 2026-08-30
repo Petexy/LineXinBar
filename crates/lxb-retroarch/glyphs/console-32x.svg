@@ -1,0 +1,33 @@
+<!--
+  The Sega 32X: the cap that sat in the Mega Drive's cartridge slot, fins and
+  all.
+
+  It is drawn as what it is — a lump with a wide brim and a stalk, standing on
+  nothing — because that is the only way anybody ever saw one, and because a
+  plain cartridge here would be the Super Nintendo's row again. See
+  console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="cap" x="4.6" y="7" width="22.8" height="10.4" rx="2.6"/>
+    <rect id="stalk" x="11" y="16.8" width="10" height="8.6" rx="1.6"/>
+    <rect id="vent" x="8.4" y="9.6" width="15.2" height="3.2" rx="1"/>
+    <g id="fins">
+      <rect x="12.8" y="18.8" width="2.4" height="4.6" rx="1"/>
+      <rect x="16.8" y="18.8" width="2.4" height="4.6" rx="1"/>
+    </g>
+    <g id="bead"><use href="#cap"/><use href="#stalk"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#vent" fill="#000000"/>
+      <use href="#fins" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

@@ -81,6 +81,15 @@ const VERSION: u32 = 3;
 /// behind the display is not a question anybody is asking.
 pub const FORMAT: wl_shm::Format = wl_shm::Format::Xbgr8888;
 
+/// The same order with the fourth byte meant: what a picture of one *layer* of
+/// the screen is written in.
+///
+/// A screen has no alpha and a layer of one is nothing but: the shell
+/// composites the picture over the wallpaper it evaluates for itself, so what
+/// nothing covers has to arrive covering nothing. See
+/// `lxb_shell_v1.ask_for_the_picture_behind`.
+pub const LAYER_FORMAT: wl_shm::Format = wl_shm::Format::Abgr8888;
+
 /// What one frame is a picture of.
 #[derive(Debug)]
 struct Target {

@@ -148,6 +148,10 @@ pub struct Lxb {
     /// The volume key being held down, which is the one binding that goes on
     /// acting while it is held: see [`crate::input::VolumeKey`].
     pub volume_key: crate::input::VolumeKey,
+    /// The modifier a walk along the session's applications is being held
+    /// under, watched for coming up. Alt+Tab's other half, and it cannot live
+    /// in the table either: see [`crate::input::WindowSwitch`].
+    pub window_switch: crate::input::WindowSwitch,
 
     // Protocol globals. Several of these are never read after construction,
     // but dropping them would unadvertise the global, so they are owned here
@@ -243,8 +247,8 @@ pub struct Lxb {
     pub flashes: crate::flash::Flashes,
     /// The black over every display, while the session is on its way out.
     pub curtain: crate::curtain::Curtain,
-    /// The black over one display, while it rests behind a game being played
-    /// on another. Separate from the curtain above it because it is a
+    /// The black over one display, while it rests behind another one being
+    /// used. Separate from the curtain above it because it is a
     /// different statement — that one is about the session leaving, this one
     /// is about a panel nobody is looking at. See [`crate::blackout`].
     pub blackouts: crate::blackout::Blackouts,
@@ -275,6 +279,27 @@ pub struct Lxb {
     /// done so since — see `crate::input::watch_a_client_placing_the_pointer`.
     pub pointer_hints: Option<(std::time::Instant, u32)>,
     pub cursor_status: smithay::input::pointer::CursorImageStatus,
+    /// The shape the *compositor* is asking for over the shape the client
+    /// asked for, if it is asking for one at all.
+    ///
+    /// Only ever the floating window's edges: a pointer on one of them is about
+    /// to resize a window rather than about to reach the video, and nothing but
+    /// the cursor can say so. Separate from `cursor_status` rather than written
+    /// into it, because that one is the client's answer and has to be there
+    /// unchanged the moment the pointer moves off the edge — see
+    /// [`Lxb::cursor_now`], which is the one place the two are put together.
+    pub cursor_override: Option<smithay::input::pointer::CursorIcon>,
+    /// The hand on a floating window, while there is one — see [`crate::pip`].
+    pub pip_drag: Option<crate::pip::Drag>,
+    /// A button whose release this compositor has already spoken for.
+    ///
+    /// Every press it takes for itself leaves a release behind — the right
+    /// button that raised the floating window's menu, the click that put a
+    /// window down, the press that chose the row in the first place — and a
+    /// client that never heard the press must not hear the release. Half a
+    /// click is worse than none: a toolkit that gets one is a toolkit with a
+    /// button stuck down.
+    pub swallow_release: Option<u32>,
     /// Whether the cursor is drawn at all.
     ///
     /// A console is not a desktop: it is driven with a controller, and an
@@ -349,7 +374,10 @@ impl LxbState {
         // must: it is what a screen copy is handed over in, and a client cannot
         // make a buffer in a format the compositor never advertised. See
         // [`crate::screencopy::FORMAT`].
-        let shm_state = ShmState::new::<Self>(dh, vec![crate::screencopy::FORMAT]);
+        let shm_state = ShmState::new::<Self>(
+            dh,
+            vec![crate::screencopy::FORMAT, crate::screencopy::LAYER_FORMAT],
+        );
         // `new_with_xdg_output` also exports xdg-output, which clients need to
         // reason about logical positions in a multi-display layout.
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(dh);
@@ -457,6 +485,7 @@ impl LxbState {
                 keybindings,
                 home_tap: crate::input::HomeTap::default(),
                 volume_key: crate::input::VolumeKey::default(),
+                window_switch: crate::input::WindowSwitch::default(),
                 compositor_state,
                 xdg_shell_state,
                 xdg_decoration_state,
@@ -505,6 +534,9 @@ impl LxbState {
                 pointer_clamped: None,
                 pointer_hints: None,
                 cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
+                cursor_override: None,
+                pip_drag: None,
+                swallow_release: None,
                 // Nothing has moved a pointer yet, and on a machine with no
                 // mouse plugged in nothing ever will.
                 pointer_visible: false,
@@ -963,6 +995,58 @@ impl Lxb {
         }
         let app_id = crate::shell_control::window_app_id(window);
         folded_app_id(&app_id).is_some_and(|app_id| self.playing.contains(&app_id))
+    }
+
+    /// Whether this window is the one floating over everything: a browser's
+    /// picture-in-picture, while the shell has asked for such a window to
+    /// float at all.
+    ///
+    /// Read from the window's *current* title rather than decided when it maps,
+    /// for the reason [`Lxb::out_of_sight`] is read from the current name: a
+    /// browser creates the window and titles it afterwards, and one that
+    /// arrived nameless has to start floating the moment it says what it is.
+    /// The other direction matters just as much — a window that stops being
+    /// called this is an ordinary window again, which is what a browser does
+    /// when the user puts the video back.
+    ///
+    /// Free where the feature is switched off, which is the point of asking the
+    /// setting first: a session that does not want floating windows never reads
+    /// a title here at all.
+    pub fn floating(&self, window: &Window) -> bool {
+        self.outputs.pip().settings().floating && crate::pip::can_float(window)
+    }
+
+    /// Whether this window may be given the keyboard.
+    ///
+    /// The three questions that have to agree wherever focus is decided, asked
+    /// in one place so they cannot come apart: the window is a real one and
+    /// still alive, it is not an application the shell is driving out of sight,
+    /// and it is not the floating window.
+    ///
+    /// The floating one is the newest of the three and the plainest. It is
+    /// topmost by construction — it is drawn over everything — so every rule
+    /// that says "the topmost window gets the keyboard" would hand it to a
+    /// video the moment one was parked in the corner, and the game underneath
+    /// would go deaf. It is still clicked on: a pointer finds it exactly where
+    /// it is drawn, which is how its own play button is pressed.
+    pub fn takes_the_keyboard(&self, window: &Window) -> bool {
+        crate::input::window_accepts_keyboard_focus(window)
+            && !self.out_of_sight(window)
+            && !self.floating(window)
+    }
+
+    /// What the cursor is, all told: the shape this compositor is asking for
+    /// while it is asking for one, and the client's own the rest of the time.
+    ///
+    /// It asks for exactly one thing — a resize shape over the floating
+    /// window's edges — and it asks for it over everything, a client's own
+    /// cursor surface included. The window under that pointer is about to be
+    /// resized rather than about to be drawn in, whatever it believes.
+    pub fn cursor_now(&self) -> smithay::input::pointer::CursorImageStatus {
+        match self.cursor_override {
+            Some(icon) => smithay::input::pointer::CursorImageStatus::Named(icon),
+            None => self.cursor_status.clone(),
+        }
     }
 
     /// Tell the bus what this session is, so that everything it starts on

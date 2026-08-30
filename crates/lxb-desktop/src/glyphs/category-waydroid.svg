@@ -1,0 +1,55 @@
+<!--
+  The Waydroid column's glyph: the head of a small machine, with two eyes taken
+  out of it and two aerials standing off the top.
+
+  The column holds the Android applications this session is running under
+  Waydroid, and what they have in common is not a subject — a calculator, a
+  browser and a game share nothing but where they come from. So the mark is
+  about the *guest*: another kind of machine, running inside this one.
+
+  The shell's own drawing rather than anybody's logo, on the same footing as
+  category-steam.svg. The head is deliberately not the half-dome the phones
+  wear: it is a full head — a dome over straight sides with a rounded chin —
+  because a half-dome at 84 px is a hill with two dots on it, and because this
+  set is meant to be one hand's work rather than a traced badge.
+
+  The aerials are stroked lines with round caps rather than tapered horns, so
+  each is a run of even width the material can bead along without a medial
+  crease down it. Both start well inside the dome and are the same body as the
+  head — an aerial floating off a skull would read as two more openings — and
+  they leave it at the shoulders, where the dome has already turned over, so
+  neither joint needs a crevice cutting.
+
+  The eyes are openings and not pupils. A hole's edge is an edge like any other,
+  so each gets the ring of displaced volume standing round it for nothing, which
+  is what makes a face out of two circles at the size a column is drawn.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="head" d="M5 19.4A11 8 0 0 1 27 19.4V24.4A2.6 2.6 0 0 1 24.4 27H7.6A2.6 2.6 0 0 1 5 24.4Z"/>
+    <g id="aerials" fill="none" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round">
+      <path d="M11.4 13.6L7.8 6.6"/>
+      <path d="M20.6 13.6L24.2 6.6"/>
+    </g>
+    <g id="eyes">
+      <circle cx="11.8" cy="18.4" r="1.95"/>
+      <circle cx="20.2" cy="18.4" r="1.95"/>
+    </g>
+    <g id="bead">
+      <use href="#head"/>
+      <use href="#aerials"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#eyes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

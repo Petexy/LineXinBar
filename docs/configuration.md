@@ -76,7 +76,7 @@ D-Bus is a separate activation boundary, and the same names have to reach it:
 a service the bus starts on demand inherits nothing from whatever asked for it,
 so a bus that has not been told what this session is starts the desktop portal
 with no display and no desktop name — which is a session with no screen sharing
-in it, silently. LineXinBar therefore replaces the bus daemon's activation
+and no file chooser in it, silently. LineXinBar therefore replaces the bus daemon's activation
 environment (and the systemd user manager's) once its Wayland and XWayland
 sockets are ready, on a session that **owns the seat** — the DRM backend, which
 is the machine's own session — and stops the portal again on its way out so the
@@ -226,6 +226,812 @@ its own marks. So a machine set to `Simple` is in `Simple` from the moment the
 greeter appears, and never changes material in front of the user. A greeter
 drawing for somebody else's account passes the wallpaper's answer along in the
 hand-over record; see `theme` under `LXB_BACKGROUND_HANDOFF`.
+
+## `retroarch-roms`, in `shell.toml`
+
+`~/.config/lxb/shell.toml`, top level, beside the keys above:
+
+```toml
+retroarch-roms = "/home/someone/ROMs"
+```
+
+Where the RetroArch integration looks for games. Read by nothing unless the
+optional `lxb-retroarch` package is installed — on every other machine it is a
+line in the file that nothing opens, which is deliberate: uninstalling the
+integration and putting it back should not lose the answer.
+
+The folder holds **one subfolder per console, named after the console**, and
+that name is the whole of what says which machine a game was written for:
+
+```text
+ROMs/
+  psp/Tekken 6.iso
+  nes/Metroid.nes
+  megadrive/Sonic.md
+```
+
+`psp`, `PSP`, `playstationportable` and forty other console names are
+recognised; a folder whose name is not, becomes a column under its own name and
+lists what is in it anyway. A subfolder with no game in it is not listed at all.
+Games kept a folder each — a `.cue` and its `.bin`, a `.m3u` and its discs — are
+found up to three levels down and listed under their own names; the pieces of a
+disc image are not offered as games of their own.
+
+It is written from Settings > Games > RetroArch > ROMs path, and from the head
+of the RetroArch column, which asks for it until there is a folder with games in
+it and then stops asking. Both open the same picker: a column of folders, with
+`Select folder` standing over each one.
+
+Choosing a folder also runs `flatpak override --user --filesystem=<folder>` for
+`org.libretro.RetroArch`, and only where RetroArch is a flatpak of this user's
+own. Without it, a collection anywhere outside the home directory is one a
+sandboxed RetroArch starts and cannot read. It needs no authority of any kind,
+touches one application, and is undone with
+`flatpak override --user --reset org.libretro.RetroArch`. Editing this key by
+hand does not do it; the folder is granted when it is chosen.
+
+Which core runs a console is not configurable here. The integration carries a
+table of them, best first, and takes whichever of a console's cores is actually
+installed.
+
+When none is, it fetches one — from `buildbot.libretro.com`, where RetroArch's
+own Online Updater gets them, into `~/.var/app/org.libretro.RetroArch/config/
+retroarch/cores` for a flatpak and `~/.config/retroarch/cores` for a
+distribution package. Both are RetroArch's own core directory, so nothing here
+keeps a second collection of cores beside the one RetroArch knows about.
+
+The controllers are not configurable here either. Every time a game starts, the
+shell writes `lxb-controllers.cfg` beside RetroArch's own `retroarch.cfg` and
+hands it to RetroArch with `--appendconfig`. It holds one line per player —
+`input_playerN_joypad_index` — putting the pad somebody last touched on player
+one, the other live pads after it, and last of all the pads this shell has
+grabbed the guide button of, which cannot answer an emulator at all.
+
+The controllers Steam Input invents are not among them. Steam stands a virtual
+Xbox pad in front of every controller it takes over, and that copy answers to
+whatever profile Steam has for some other game; the real pad is the one worth
+binding. The file also sets `input_max_users` to the number of controllers it
+actually handed over, so a player port past the end of that list cannot be
+filled by RetroArch out of what was left out. A controller Steam Input is the
+only driver for is still handed over, because leaving it out would hand the
+game nothing. The second-generation Steam Controller is no longer one of those:
+the kernel gives it no driver, so the shell builds its gamepad itself and
+RetroArch is handed that.
+
+It also holds that pad's buttons — `input_playerN_b_btn`,
+`input_playerN_l2_axis`, `input_playerN_up_btn` and the rest — because
+RetroArch's own list of pads does not have Steam's virtual controllers on it,
+nor any controller newer than the list, and a pad it does not recognise has no
+working buttons at all. Those numbers come from SDL's mapping database for the
+pads it knows, and otherwise from the device's own declaration for any pad of
+Xbox's shape, which needs no database: an XInput controller sends one fixed set
+of codes and always has. A pad that is neither is given its player number alone,
+which leaves RetroArch's own guess in place. The guide button is never written
+for any pad.
+
+Nothing in the file is kept. It ends RetroArch's *save settings on exit* for
+that launch, because RetroArch cannot tell a setting somebody chose from a line
+appended on the way in, and one evening's pad order is not a setting. Save
+files, save states, playlists and each core's own options live elsewhere and are
+unaffected; what is given up is a setting changed inside RetroArch during a game
+the shell started. Deleting the file loses nothing; the next game writes it
+again.
+
+Some cores also need a folder of their own beside them — PPSSPP's fonts and
+atlases, Dolphin's `Sys` tree — and that is fetched with the core, into
+RetroArch's `system_directory` (its own setting, read where it has been moved,
+and a `system` folder beside the configuration otherwise). A console whose core
+is installed but missing that folder counts as a console with no core: the row
+says it needs a download, and the press fetches only the part that is missing.
+Nothing here fetches a console's own BIOS, which is not libretro's to publish.
+
+Under **Settings > Games > RetroArch** are the emulators' own settings, one page
+per installed core, and under those the settings belonging to no core — aspect
+ratio, video driver, whole-number scaling, waiting for the screen. Nothing on a
+core's page is written down in this shell: the core is loaded and asked what it
+can be set to, so the page is that emulator's own list under its own names. A
+chosen value is written where RetroArch reads it — `config/<Core>/<Core>.opt`
+for a core's own settings, `retroarch.cfg` for the rest — and it stays there,
+unlike the controller order, which is appended for one launch only. Both files
+are rewritten whole, so nothing else in them is disturbed.
+
+Cores happen without asking exactly once: when the ROM folder is chosen, for
+every console in it. After that a console with no core asks first, on the press of one
+of its games. Neither is configurable, and a machine that should never fetch one
+can leave the folder unset — or not install the package, which is the setting
+that turns all of this off.
+
+## Which core plays a console
+
+Not a setting. `crates/lxb-retroarch/src/consoles.rs` lists the cores that can
+play each console, best first, and that order is kept — less whatever this
+machine has already downloaded and found it could not open.
+
+It was not always kept. A core that could start without firmware was once sorted
+in front of one that could not, which on a machine with no PlayStation 2 BIOS put
+`play` ahead of `pcsx2`. Play! needs no BIOS and starts; it also runs very little.
+Compatibility is what a console is chosen for, and the answer to a missing BIOS
+is to ask for the BIOS — see **A missing BIOS** below.
+
+What a core needs is never written down in this repository. libretro publishes
+it per core in the `<core>_libretro.info` files that ship with RetroArch, and
+those are read instead — see `crates/lxb-retroarch/src/firmware.rs`, which also
+explains why a table of BIOS file names here would be wrong within a year.
+
+### Installing it
+
+flatpak installs a runtime, its extensions and the application as separate jobs,
+each with a progress bar of its own that starts again at nothing — so a panel
+showing that percentage filled and emptied three or four times over with one
+sentence under it, which reads as an install that keeps failing. The helper reads
+the `Installing n/m` flatpak prints beside the bar and makes one bar of the
+whole transaction, so it only ever goes forwards, and says "Getting what
+RetroArch needs" until the last job, which is RetroArch itself.
+
+flatpak is run under `LC_ALL=C` for that: the word in front of those numbers is
+translated, and a progress bar that worked in some countries and not others
+would be worse than none.
+
+### What a fresh RetroArch is set to
+
+One setting, written once, and only into a configuration nothing has ever
+chosen for: **`video_driver = "vulkan"`**.
+
+RetroArch's own default is OpenGL. It was the right default for the machines it
+was chosen on and it is the wrong one here — a machine running this shell is
+drawing its own bar through Vulkan or it would not have got this far. Left on
+OpenGL, RetroArch comes up on the GL driver, discovers at content load that the
+core wants a Vulkan context, overrides itself for that session and restores
+OpenGL on the way out, so it does the same dance on every launch.
+
+**Only where the line is absent.** A `retroarch.cfg` with no `video_driver` in
+it is one nobody has chosen for. RetroArch writes every key it has on the way
+out, so the moment it has been run once — or somebody picks a driver under
+Settings → Games → RetroArch → Video driver — the line is there and this never
+looks again. That is what makes it a default rather than the shell overruling
+people.
+
+**And only where Vulkan is actually here.** The test is that something already
+uses it: the shell opens its own renderer for Vulkan or OpenGL and takes
+whichever it gets, so a machine with no Vulkan answers no and nothing tells an
+emulator to use a driver that is not there. Nothing is probed for it — a
+separate look at what the machine supports would be a second answer to a
+question already answered, and it could disagree with the one the shell is
+running on.
+
+It is applied on the first frame where both facts are known: that there is a
+RetroArch, which the probe says, and which backend the shell drew through, which
+does not exist until the first frame. A removal puts it back to being looked at
+again, because what comes back after that is a fresh machine.
+
+### Taking it off again
+
+The menu over the RetroArch row under Games — **Remove RetroArch**, below the
+rule with *Open RetroArch*, and last of the three because it is the only row
+there that takes something away. It asks first, and the question names what
+goes.
+
+What goes is the application and everything kept for it:
+
+* the flatpak itself, `flatpak uninstall --user --delete-data`, which takes
+  `~/.var/app/org.libretro.RetroArch` with it — RetroArch's own configuration,
+  every core this shell downloaded into it, the assets, the playlists, the save
+  files, and any BIOS that was put there;
+* the filesystem permission the shell granted for the games folder, which
+  survives an uninstall otherwise and would be silently inherited by a
+  reinstall;
+* this shell's own cache of the cover art fetched from libretro, which lives
+  under the *shell's* cache rather than RetroArch's and so is out of
+  `--delete-data`'s reach;
+* the scratch directory a core's files land in while it is being asked what it
+  can be set to;
+* and the one line in the shell's own settings that belongs to this integration
+  and nothing else: where the games are.
+
+**The games are not touched**, and neither is the folder they are in. This
+removes a program and what the program kept.
+
+Everything the shell had read off it goes at the same moment, and that is not
+tidying up: the shelf of games, the emulators' settings pages and the firmware
+rows are all built out of the last scan and the last ask, so leaving them
+standing would draw a column of games nothing can play and settings pages for
+emulators that are no longer installed. The row then asks the machine again, and
+comes back offering to download it — which is where a fresh machine starts.
+
+**Only the `--user` flatpak.** That is the one this shell installs and the only
+one it can remove without a password: a system-wide flatpak's uninstall needs
+root and a distribution package needs the package manager. Both are somebody
+else's decision to undo, and the panel says so rather than raising a password
+prompt over a television.
+
+The row exists because the setup is a sequence of first-time questions — where
+the games are, which cores to fetch, where a BIOS is — and every one of them can
+otherwise only be seen once per machine.
+
+### A missing BIOS
+
+Several consoles have no software of their own until the machine's boot ROM is
+there. That file belongs to whoever made the console, nobody may redistribute
+it, and the only lawful copy is one dumped from hardware somebody owns — so this
+integration will never fetch one and RetroArch's own updater will not either.
+
+What it does instead is **ask where yours is** — after the game has failed to
+start, and never before. Press a game and it is started. If the emulator comes
+straight back without playing anything, and there is a BIOS for that console
+nobody has chosen, a panel names the game, says it did not start, and offers to
+choose a folder. What is chosen is copied — not read from where it lies —
+because RetroArch has no setting for it: its cores look for particular names
+below one system folder of its own, so pointing an emulator at a downloads
+directory is not a thing the format allows.
+
+**The question used to stand in front of the press**, on any console whose core
+declared a file this machine had not got, and that was the shell deciding in
+advance what an emulator would do with it. It is wrong often enough to matter:
+melonDS plays most Nintendo DS games with its own high-level BIOS and declares
+all eight of its files optional, and half the cores that name a boot ROM name
+three regions of it. A game that would have run perfectly well was answered with
+a question instead. Whether a console can manage is the emulator's business, and
+the emulator answers by running.
+
+So nothing on a game's row says a BIOS is missing, either. It says which console
+the game is for, and — where nothing on the machine can play it at all — that a
+core is a download away. That second one really is known before the press.
+
+Two things have to be true before a failed launch is answered: it failed within
+twenty seconds, and the console has a file nobody has chosen. A game that ran for
+a while and then fell over did not fail to *start*, and a console with everything
+its cores read already on the disk has nothing for anybody to go and find.
+Everything else — a bad dump, a core that fell over, an emulator that could not
+open the display — stays in the log, which is where it belongs. A panel on every
+failed launch would be a shell interrupting people about things it does not
+understand.
+
+Where the files go is libretro's declaration and not a guess. A core that names a
+folder (`pcsx2/bios`) is given every *dump* in the one you chose, because the
+emulator reads all of them and lets you pick a region in its own menu. A core
+that names a file (`dc/dc_boot.bin`) is given that file, matched without regard
+to case. Nothing is renamed or fetched; a file you already had moves from one of
+your folders to another.
+
+**A folder with no BIOS in it is refused, and asked again.** This is the one
+press in the integration that has to be able to go round twice: a boot ROM is
+one file among thousands, you are looking for it in a chooser on a television
+across the room, and the first guess is very often the wrong folder — or the
+right folder with the dump still inside the archive it came down in. So the
+panel afterwards says *No BIOS in that folder*, names what was looked for in
+libretro's own words, and offers **Choose another** beside **Cancel**. The
+console the question is about, and the game whose press asked it, are both still
+standing behind that panel: getting it right on the second try still ends with
+that game starting.
+
+Nothing is written down that says the console is set up, either. What decides
+that is what is on the disk, read again the moment the copy finishes — so a
+folder that answered nothing leaves the row saying *Not added*, leaves the
+warning under every game on that console, and raises the same question on the
+next press.
+
+Where a declaration names a file, being refused means no file of that name was
+in the folder. Where it names a *whole folder* there is no name to match on, and
+this is the one place a chooser could empty a downloads directory into
+RetroArch — so what goes in is what could be a boot ROM. That is a test for what
+a dump is **not**: an archive, a document, a picture, a recording, a program, or
+text of any kind. A dump itself is an opaque blob and there is nothing positive
+to look for that would not be a table of consoles, which this integration does
+not have anywhere. Files a core wrote beside its own BIOS — pcsx2's four-byte
+`.mec`, its `.nvm` — are blobs too and go in with it; it costs nothing, and what
+an emulator wants beside its firmware is not this shell's business.
+
+It matters more than it sounds. Before it, pointing the chooser at a folder of
+photographs copied the photographs in, and a firmware folder with *something* in
+it read as answered: the row said *Added*, the warning came off every game on
+that console, and the emulator started to a black screen with nothing anywhere
+saying why.
+
+The same question is a row on that emulator's own settings page — **Settings →
+Games → RetroArch → LRPS2 → PlayStation 2 BIOS** — and it is there whether or
+not a BIOS has been chosen. **Every core that reads one has that row**, including
+the cores libretro says can manage without: melonDS calls all eight of its files
+optional, and somebody who owns a Nintendo DS and dumped its firmware wants those
+files used. Optional means "no warning", not "nowhere to put it". Choosing one is a thing people get wrong: the wrong
+region, a bad copy, the other console's. A row that vanished the moment it was
+answered could only be reached again by taking the file back off the disk.
+
+It is on the *emulator's* page and not beside somebody's consoles, because that
+is what it belongs to: pcsx2 reads a PlayStation 2 BIOS and the page next to it
+does not. Nobody has to go looking for it — pressing a game that cannot start
+raises the panel, and the panel walks the cursor there.
+
+libretro's firmware list is not only boot ROMs. pcsx2 declares
+`pcsx2/resources/GameIndex.yaml` as required too, and that one is fetched with
+the core; anything this integration downloads for itself is left off the row,
+because asking somebody to find a file they have never had is worse than not
+asking.
+
+Two guards, against a folder chosen by accident rather than against any real
+collection: nothing over 64 MB is treated as a BIOS, and at most 64 files are
+taken. A PlayStation 2 BIOS is about four megabytes.
+
+**The game starts when the BIOS lands**, where the question came from pressing
+one. The walk to answer it moves the cursor off that game, so the cursor is
+carried back to the row before it starts — a press that ends four columns away
+from what was pressed is a press nobody can follow. Reached from Settings
+instead, there is no game to go on to and a panel says what was copied.
+
+Which console the chooser is answering for is read off the row it opens *from*,
+every time, and not only from the panel over a game. The row under an emulator's
+settings page is reached with no game in hand at all, and a console left over
+from a panel dismissed an hour ago used to send a Nintendo DS dump looking for
+PlayStation 2 file names — and, where the folder held one, start the PlayStation
+2 game from an hour ago.
+
+The panel's walk goes to that console's row and to no other. It also **waits for
+the page it lands on**. An emulator's settings
+page is built out of what its core answered, and the cores are asked when
+somebody arrives in Settings rather than at every login; this walk is the one
+route that arrives there without anybody walking. So it asks, waits for the core
+that owns the row to answer — they answer one at a time, and it is not the
+first — and gives up after eight seconds rather than moving the bar under your
+hands minutes later. Before that, *Choose folder* did nothing at all on a fresh
+session — and, once it did something, a walk made a moment too early found
+melonDS's row and answered a PlayStation 2 question with a Nintendo DS folder.
+
+### What counts as having the BIOS
+
+Not every file a core lists. duckstation names all three PlayStation BIOS
+regions, o2em four Videopac models, uae4arm six Kickstarts — nobody owns the set
+and nobody has to, because one of them is what your own games run on. A row that
+counted the other two as missing would go on saying *Not added* on a console that
+was fully set up, and go on offering a chooser no folder on earth could answer.
+
+So which of them stand in for each other is read out of where they live: what a
+core wants in one folder is one job, and having any of it is having what that job
+needs. duckstation's three sit side by side and are three spellings of one. It is
+a reading of libretro's own layout rather than a table of consoles, which is the
+rule this whole integration is held to.
+
+Nothing here refuses a press. It decides what a settings row says, and what the
+panel over a game that has already failed offers to go and look for.
+
+Two things can still leave a console unplayable, and both are said rather than
+worked around:
+
+* **Every core for it needs firmware and you have not got one.** The press starts
+  the emulator, the emulator comes straight back, and the panel over it asks
+  where a BIOS is — see **A missing BIOS** above.
+* **A core downloads and will not load.** libretro builds its cores against a
+  general-purpose Linux and a flatpak RetroArch runs against a runtime that is
+  not one, so a core can arrive whole and fail in the dynamic linker. The
+  install checks with `ldd` *in the environment the core will be loaded in*.
+
+  A core that will not open is taken back off the disk and its name written to `$XDG_CACHE_HOME/linexinbar/cores-that-will-not-load`, so the
+  next press does not spend another download on it. Delete that file to try
+  again after a RetroArch or core update.
+
+## An emulator's own settings
+
+Each installed core gets a page under **Settings → Games → RetroArch**, and
+nothing on it is written down in this repository: the core declares what it can
+be set to and the helper asks it, so the page is whatever that emulator's
+authors put in it, in their order and under their names.
+
+**The question is asked when somebody reaches Settings**, not at start-up. It is
+not a cheap one: every installed core is loaded into a process to be asked, and a
+machine with a dozen of them would map a dozen emulators at every login for a
+screen most people open twice — once when they install an emulator, once when a
+game looks wrong.
+
+Reaching Settings is a long way from a core's own page: down the column to Games,
+in, down to RetroArch, in, and down again. The answer has those presses and their
+animations to arrive in, and it arrives the way a fetched core's answer already
+did — the column is built again and the rows are simply there.
+
+**There is a short way.** The menu over a console — and over any one of its games
+— offers **Emulator settings**, which carries the cursor straight to that
+emulator's page. It is offered whenever something on this machine plays the
+console, and not only once the page exists: on a session where nobody has been to
+Settings there are no pages at all, so a row that waited for one would be greyed
+on every fresh login. The press asks for them and waits up to eight seconds for
+the one it wants, then gives up rather than moving the bar under somebody's hands
+a minute later. An emulator that declared nothing and needs no BIOS has a row
+instead of a page; the walk stops on it and lets it say where its settings really
+are.
+
+The answer goes stale when a RetroArch is found and again whenever a core
+finishes installing, and it is asked once per staleness however long somebody
+stands in Settings. That second staleness matters: a core fetched during a
+session was not on the disk when the shell first asked, and without it the new
+emulator's page did not exist until the shell was started again.
+
+**Not every emulator answers when it is merely asked.** Most hand their table
+over during `retro_set_environment`, which is the first call a frontend makes
+and costs nothing. Some declare nothing there at all: on this machine LRPS2
+makes three calls and none of them is a table, and dolphin makes none.
+
+So the helper asks again, further in, and it is a ladder rather than a single
+deeper ask because each rung is one more emulator entry point that can fail:
+
+1. `retro_set_environment` — melonDS, Mesen and PPSSPP answer here.
+2. `retro_init` — LRPS2 answers here, with sixty-six settings in five groups.
+3. `retro_load_game` **with a null game** — dolphin answers here, with
+   ninety-nine in twelve.
+
+Nobody's game is ever opened. A null `retro_game_info` is what `libretro.h`
+defines for a frontend starting a core with no content, and it is the one
+argument that gets an emulator to declare without playing anything. It needs no
+BIOS and no disc: LRPS2 answers with neither.
+
+Three things make this survivable.
+
+**A process of its own.** Rungs two and three are calls into an emulator, not
+questions put to a shared object, so what a crash costs is one core's settings
+page rather than the answers every core before it gave.
+
+**The answer leaves before the crash.** dolphin dies *every time* — a moment
+after handing over its table, carrying on into video setup where a frontend this
+small has nothing for it. So the record is written from inside the core's own
+callback, the instant a table arrives, rather than after the entry point
+returns. There is no return to wait for. The caller keeps the newest line it
+saw, which is why reading what has been declared must not empty it: a core may
+declare in two calls, and the second line has to carry both.
+
+**The calls a core makes on the way are answered.** Refusing them is what stops
+an emulator getting far enough to say anything, and one of them is fatal rather
+than merely unhelpful: the libretro pattern for `GET_LOG_INTERFACE` is to take
+the frontend's logger *or* fall back to its own, and a core that forgets the
+second half keeps a null pointer and calls it. LRPS2 segfaults inside
+`retro_init` for exactly that reason, which read for a long time as an emulator
+that could not be asked at all. It is also why `retro_init` was once believed to
+crash PPSSPP; it does not.
+
+An emulator taken this far writes things down on its way past — dolphin lays out
+a whole `User` tree — so the save directory it is given is a scratch folder and
+never RetroArch's own. The system folder is the real one, because the point of
+asking is to hear the truth about this machine.
+
+The whole run costs about a fifth of a second for five cores, two of which are
+taken all the way. It happens when somebody reaches Settings, once per
+staleness, rather than at startup.
+
+**A core that answers none of the three rungs still gets a row**, with the
+information mark and a line saying its settings are in RetroArch's own menu with
+a game running. Left off the page, an emulator somebody had just installed was
+simply missing, which reads as the install having failed. The line does not
+promise that playing something will bring the settings here — for a core that
+only speaks with a real game in it, nothing the shell does afterwards will hear
+it.
+
+**Two names per setting.** A V2 table carries a full name and a short one for
+when the setting is already standing under its own group. LRPS2 calls one of
+them `Emulation > EE Cycle Rate` and the other `EE Cycle Rate`; the short one is
+used where there is a group above it and the full one where there is not.
+
+## Cores that ask for an executable stack
+
+A libretro core can arrive whole, name every library it needs, and still be
+impossible to load. A shared object carries a `PT_GNU_STACK` program header whose
+flags say what kind of stack it wants, and a few are built asking for an
+executable one — nearly always by accident, from an assembly file missing its
+`.note.GNU-stack` marker. A current glibc refuses outright:
+
+```text
+cannot enable executable stack as shared object requires: Invalid argument
+```
+
+libretro's own build server ships melonDS this way. Nothing this integration
+checked caught it: the download is a valid ELF of the right size, and `ldd` finds
+every library it names, because the failure is in the loader rather than in what
+the core links against. What somebody saw was a Nintendo DS shelf that scanned,
+listed its games, offered to play one, and did nothing at all when asked —
+and RetroArch on its own failed the same way, so there was nowhere to go and find
+out why. It took the core's settings page with it by the same door, since the
+options probe reaches a core through `dlopen` too.
+
+So the integration takes the bit off. It is one bit in one program header: the
+file is not moved, relinked, or rewritten anywhere else, and a file that is not an
+ELF — or is of a shape the reader does not recognise — is not opened for writing
+at all. Clearing it cannot break a working core, because an object that genuinely
+executed its stack is one that was already failing to load.
+
+It runs in three places, all of them cheap enough to run every time: on the
+directory during a scan, on the same directory before the options probe, and on a
+core the moment it has been downloaded — that last one before the check that
+would otherwise throw the core away and refuse to fetch it again.
+
+Only the user's own core directory is repaired. A core under `/usr/lib/libretro`
+belongs to the distribution's package manager, which would put it back on the
+next update, and writing there needs a root this integration never asks for.
+
+## The console marks
+
+Not a setting; there is nothing to configure. Each console the integration knows
+has a drawing of its own, and they ship in the `lxb-retroarch` package under
+`share/lxb/glyphs/console-*.svg` — read out of the data directory at startup,
+which is how a package brings its own marks to a shell built without them.
+
+Each is the machine drawn flat on, in as few parts as it can be recognised from,
+and nothing in the file is shaded: the shell measures the outline into a distance
+field and its own shader makes the water. A folder whose name the table does not
+know has no machine behind it and falls back to RetroArch's own mark, as does a
+console whose drawing did not ship.
+
+**They are drawn to the hardware's own measurements**, and that is the rule the
+set is held to rather than a preference. A Game Boy Advance is 144.5 by 82 mm
+with a screen half again as wide as it is tall; a DS has two 256-by-192 panels
+and a 3DS has a 400-by-240 over a 320-by-240; a PSP has four face buttons in a
+diamond and a Game Gear has two side by side. Every one of those is a thing
+somebody checks without meaning to, and getting it wrong is the difference
+between a drawing of a console and a drawing of *the* console.
+`art::drawings::every_screen_is_the_shape_its_panel_was` holds the screens to
+it: the panel figures live beside the drawings, and a redraw that disagrees with
+the hardware fails rather than shipping.
+
+Where a measurement has to be given up it is given up for the material and said
+so in the file. The bevel this shader rolls over every edge is about two and a
+half units of a thirty-two-unit cell, so a wall thinner than that has no flat
+face and comes out melted — which is why the PSP's screen covers under half its
+width here and over half of one in life: the buttons on either side of it need a
+wall to sit in.
+
+Adding one means a drawing under `crates/lxb-retroarch/glyphs/`, named
+`console-<key>.svg`, and the matching `glyph:` on that console in
+`crates/lxb-retroarch/src/consoles.rs`. The two are checked against each other:
+a name with no file is a column wearing the fallback with nothing in the log to
+say why, and a file with no name in front of it is a cell of the shell's atlas
+spent on a drawing nothing asks for.
+
+## The games' artwork
+
+Not a setting either, and there is no key for it. Every game in the folder gets
+the cover on its row and the picture behind the display from
+[libretro's thumbnail collection](https://thumbnails.libretro.com) — the box art
+and one screenshot, the same two RetroArch fetches. The screenshot is blurred on
+its way to the display; a console's screen is three hundred pixels tall, and
+enlarged honestly across a television it is a wall of squares.
+
+**Each shelf is drawn at the shape of its own console's boxes.** A Nintendo DS
+case is wider than it is tall, a Wii case is taller than a PlayStation 2 one and
+a UMD case is taller again, so one card shape for all of them leaves a cover
+floating in a button it cannot fill. The shape is measured off the covers
+themselves — the first few a console has, the middle of what they measure, taken
+to a hundredth so that two scans differing by a pixel do not move the column —
+rather than looked up in a table of consoles, which would be this shell
+asserting the dimensions of artwork it did not make. Every card on a shelf is
+one shape, including the games with no cover, and a console with nothing to
+measure yet keeps the shape it had before. What is held constant between shelves
+is how much of the glass a row takes up, so a squarer cover is drawn wider and
+shorter and every row of every console still weighs the same.
+
+**A game is not asked for by its file name.** libretro's names are the names of
+dumps — `Tekken 6 (USA) (En,Fr,De,Es,It,Ru)` — and asking for `Tekken 6.iso`
+answers 404, which is why RetroArch shows a hand-sorted collection no artwork
+either. Instead the listing of each console's shelf is fetched once and every
+game is matched against it with the tags off both sides, the punctuation
+dropped, and `Legend of Zelda, The` put back the way the box says it. Where
+several dumps reduce to one game, a beta or a demo loses to the release, then
+region decides, then the plainer name; the same shelf answers the same way every
+time. Nothing clever is done with numbers — `Mega Man X` must not become
+`Mega Man 10` — so a game whose name is too far from the database's simply gets
+none, and keeps the mark its row always wore.
+
+Everything lands under:
+
+```text
+$XDG_CACHE_HOME/linexinbar/retroarch-art/
+  .shelves/<System Name>.list                    the names, one per line
+  <System Name>/Named_Boxarts/<Game Name>.png
+  <System Name>/Named_Snaps/<Game Name>.png
+  <System Name>/Named_Snaps/<Game Name>.none     the server has none
+```
+
+libretro's own layout, in this shell's cache and never in RetroArch's thumbnail
+folder: what somebody sees in the emulator's own interface is the emulator's
+business. The empty `.none` file is what stops a game with a cover and no
+screenshot asking for that screenshot once a session for the rest of the
+machine's life; a listing is believed for a fortnight before it is fetched
+again. Deleting the whole directory loses nothing but the download.
+
+**It is not small.** The two pictures come down at the size libretro publishes
+them — measured across a mixed handful of consoles, about half a megabyte a
+game, so a five-hundred-game collection is a couple of hundred megabytes, plus
+a few hundred kilobytes for each console's listing. That is a cache, in the
+cache directory, and it can be deleted at any time; what it buys is that a
+column of games looks like a shelf of games.
+
+The shell asks for whatever is missing **once per folder per session**, quietly:
+no panel, and the covers appearing down the column are the feedback. Three rows
+ask for more. **Settings > Games > RetroArch > Get the artwork again** looks for
+every game afresh, ignoring what is on this disk — for a collection that has
+grown, or a game that has since been renamed. The menu over a **console** offers
+the same for that shelf alone. And the menu over one game offers **Get the
+artwork** for that one, which is what to press after renaming it; if libretro
+still has nothing, a panel says so rather than the row quietly staying as it
+was.
+
+## Pictures of your own
+
+libretro has a cover for nearly everything anybody owns, and two cases where it
+has none: a game whose file name is too far from the database's for any match,
+and a game whose published cover is not the edition you have. The menu over a
+game answers both — **Choose a cover** and **Choose a background** open a walk
+through your own files, one folder at a time, exactly as the wallpaper is
+chosen. The row it hangs off is the game's own, and the films are left out:
+neither of a game's pictures can be one.
+
+**A background is chosen by seeing it.** Standing on a picture puts it across
+the whole display, the way the wallpaper picker works, because that is what a
+background is going to be. A cover is not: it is a card an inch high, so that
+walk shows each picture on its own row instead and leaves the display alone —
+a full-screen preview of something that is never going to happen would be worse
+than none.
+
+A background of your own is also drawn **as it is**. libretro's screenshot is a
+photograph of a console's screen, three hundred pixels tall, and is blurred on
+its way across a television because enlarged honestly it is a wall of squares.
+Yours is at whatever size you chose it, and goes to the display the way a
+wallpaper does.
+
+What you choose is **copied**, not pointed at, so tidying the folder you found it
+in does not take the cover with it:
+
+```text
+$XDG_DATA_HOME/linexinbar/game-art/
+  <console>/<the game's own file name>.cover.png
+  <console>/<the game's own file name>.background.jpg
+```
+
+Named after the game's file so the directory can be read, and one directory per
+console because the same dump can sit on two shelves. A picture of your own
+stands where libretro's would and **stays there through every fetch afterwards**
+— a run that put the published cover back over yours would be the shell
+overruling a choice you made.
+
+Once one is chosen the menu row that chose it becomes **Remove your cover** — or
+your background — in the same place on the same list, so the menu does not
+change shape under your hand. Removing it puts the row back to
+libretro's, or to the console's mark where libretro has nothing. Deleting the
+file by hand does the same thing: the copy *is* the record.
+
+The shelf takes its shape from these too, which matters most for a console
+libretro has never published artwork for: every row of it wears a picture you
+put there by hand, and the cards are cut to their shape rather than to the one a
+column of marks falls back to.
+
+## `picture-in-picture`, in `shell.toml`
+
+`~/.config/lxb/shell.toml`, top level, beside the keys above:
+
+```toml
+picture-in-picture = true
+picture-in-picture-size = "medium"
+picture-in-picture-place = "top-right"
+```
+
+What happens to the small window a browser puts a video into when the user asks
+for picture-in-picture. Written from Settings > System > Picture-in-Picture,
+which is a switch, a size and a corner.
+
+Such a window is found by its **title**, which is `Picture-in-Picture` and is
+what every browser that has the feature calls that window. It cannot be found
+any other way: the window belongs to the browser and calls itself by the
+browser's name, which is also what the window the video came out of calls
+itself.
+
+A window that answers to it is taken out of the layout every other window is
+under. It is not maximized, it is not given the keyboard, it is not listed in
+the guide as something to switch to, and it is drawn **in front of everything
+the session has** — over a fullscreen game, over the start screen, and over the
+guide, which is the one surface nothing else is allowed in front of. It is still
+clicked on, exactly where it is drawn — and looked for in front of everything
+else, as it is drawn — which is how its own play button is pressed. A press on
+it never takes the keyboard: whatever the user was working in goes on hearing
+every key. And the application it belongs to is never put to sleep while it is
+on screen, however completely the rest of that application is covered.
+
+| Key | Values | Default | Meaning |
+| --- | ------ | ------- | ------- |
+| `picture-in-picture` | bool | `true` | Float such a window at all. |
+| `picture-in-picture-size` | `small`, `medium`, `large` | `medium` | A sixth, a quarter or a third of the display's width. |
+| `picture-in-picture-place` | `top-left`, `top-right`, `bottom-left`, `bottom-right` | `top-right` | Which corner it sits in. |
+
+How tall the window is at that width is the window's own business: the
+compositor asks it what shape it wants to be — a configure carrying no size,
+which is xdg-shell for *choose one* — and follows the answer, so a
+four-to-three video is not letterboxed into a widescreen box. Sixteen to nine
+stands in until it answers, and the answer is the first size it draws that it
+was not told to draw: a client's very first commit is often a one-pixel
+placeholder, which is not a window and is not read as one. It goes on being
+listened for, so a video swapped for one of another shape in the same window
+takes that shape too. A second picture-in-picture window opened while the first
+is still up stands below it in a column from the same corner, in the order they
+started floating.
+
+A mouse can move and resize such a window, which is the one thing the three keys
+above do not describe. Eight logical pixels in from each edge of the surround is
+a band that resizes it, where two bands meet is a corner that resizes it both
+ways, and dragging anywhere else carries it; the pointer takes a resize shape
+over the edges. A press in the middle goes to the client at once and only becomes
+a drag once the hand has travelled four pixels, at which point the client is told
+the pointer left — so a play button still answers a click, and a click that turns
+into a drag does not press it. The opening keeps the client's shape throughout,
+so every handle scales the window rather than restretching the video, and it can
+be made no smaller than the smallest the layout draws, no larger than the screen,
+and not dragged off it or onto another one.
+
+The right button on it raises the shell's context menu — Move, Resize, Move to
+next display, Move to previous display, Close, Cancel. Move and Resize hand the
+window to the pointer until the next click, from the middle of it and from the
+corner with the most room to grow into; a click of any other button puts it
+back. The two display rows are the same request the guide's window menu sends,
+and neither wraps: a row that cannot be taken is disabled and still drawn. Close
+asks the window to close, which is what puts the video back in the page it came
+from — not the Close that ends an application, because the application here is a
+browser.
+
+A context menu is drawn **in front of** the floating windows instead of behind
+them, and a press on its panel goes to the shell — otherwise a window resized to
+fill the screen could never be made small again. It is given a surface of its
+own for this, a child of the display's with nothing else on it, rather than
+lifting a rectangle of the shell's main surface: a panel is rounded and a
+rectangle is not, and the bounding box laid four square corners of the start
+screen over the video. On its own surface the panel is exactly its own shape, and
+its input region is what decides whose a press is, so the shape the pointer finds
+is the shape the eye finds.
+
+The panel's glass refracts the video, the way it refracts everything else it
+stands on. The shell cannot see a frame of somebody's video, so the compositor
+draws it a small picture of what is behind that surface and it refracts that —
+absorbed on the way, because the shell's own ground is deliberately dark and a
+pane that let a bright film through at full strength would stop being readable.
+
+A controller reaches such a window **while the guide is open**, which is the one
+moment the user is plainly not using the application underneath. The right stick
+pressed hands the guide's directions to the videos over it and pressed again
+hands them back, as Back does; the selected one is marked by the compositor in
+the shell's accent, frame and glow, breathing. The right stick then carries it,
+exactly as a mouse held on it does. The D-pad and the left stick walk between the
+videos on that screen by where they are on it, and the top face button raises the
+same menu the right button raises — where Move and Resize become right-stick
+drags ended by Accept and undone by Back, since there is no pointer to hand the
+window to. Only that screen's videos: the guide is only ever on the screen being
+driven, and such a window stays on the screen it opened on.
+
+A window that has been moved or resized **leaves the column**: it keeps where it
+was put, and the place it stood in is free for the next window that starts
+floating. `picture-in-picture-place` and `picture-in-picture-size` stop applying
+to it until either is *changed*, which puts every floating window back into the
+column — a press on the Settings page is the user saying where they want their
+videos.
+
+`picture-in-picture = false` treats such a window as the application window it
+otherwise is — maximized, listed, focusable — which is what this session did
+before it could be asked. A size or a corner spelled some other way is ignored
+with a line in the log, and that half keeps the answer it had.
+
+The window is drawn with a hairline rounded surround — three logical pixels,
+fixed, with its corners rounded at eight — and a shadow under it. The two
+numbers are one decision: the client's square corner sits √2·(r − b) from the
+centre of the outer arc and is hidden only where √2·(r − b) ≤ r, so a surround
+this thin can only round a corner about that far. What the shell's menu radius
+still sets is how far the window is held off the edges of the screen. The
+surround is not a decoration:
+a client's buffer is a rectangle with four square corners, and the surround is
+what covers them — see `crates/lxb-protocol/src/pip.rs`, where the arithmetic
+that makes it hold is written down and shared with the compositor that paints
+it. Nothing is drawn outside that shape: a client with its own drop shadow —
+Firefox's picture-in-picture window has one — or one drawing larger than the
+size it was given is scaled down to fit the opening and clipped to it. And
+nothing shows through it either. The surround is painted half a pixel *over* the
+picture, because the opening is a fractional rectangle and everything drawn is
+whole — butt them together and the half pixel left over is a one-pixel line of
+the session down one side of the video — and behind the window the opening is
+filled with the surround's own colour, so a client that does not cover it — one
+still starting up, or one that will not take the size it was given — is centred
+and letterboxed on more surround rather than leaving a hole through to whatever
+is behind.
+
+It is carried out by the compositor, which is what places windows. Nothing is
+remembered there: the shell says what this is as soon as it connects, which is
+long before any browser exists to put a video in.
 
 ## What the displays were last set to
 
@@ -480,6 +1286,8 @@ Actions:
 | `focus-prev-output`   | Move focus to the previous output. |
 | `move-to-next-output` | Send the focused window to the next output. |
 | `cycle-window`        | Rotate the window stack on this output. |
+| `switch-window`       | Walk the session shell's window deck one card on, with the modifier still held; letting it go takes the card. Rotates the stack, as `cycle-window` does, where the shell cannot draw a deck. |
+| `switch-window-back`  | The same walk, the other way. |
 | `guide`               | Show the session shell's guide overlay. |
 | `keyboard`            | Show the session shell's on-screen keyboard. |
 | `screenshot`          | Photograph the display the user is on. |
@@ -584,6 +1392,7 @@ use, or drive the overlay with Escape inside the shell instead.
 | `Any+XF86AudioLowerVolume` | `volume-down` |
 | `Any+XF86AudioMute`  | `volume-mute` |
 | `Super+Tab`          | `cycle-window` |
+| `Alt+Tab` / `Alt+Shift+Tab` | `switch-window` / `switch-window-back` |
 | `Super+Left` / `Super+Right` | `focus-prev-output` / `focus-next-output` |
 | `Super+Shift+Right`  | `move-to-next-output` |
 

@@ -72,12 +72,41 @@ impl LinearColor {
     }
 }
 
+/// The accent being shown this frame, packed back into the 0xRRGGBB that an
+/// authored [`Color`] is written as.
+///
+/// For the one place a colour of this shell's has to leave the process: the mark
+/// around a selected floating window is painted by the compositor, because such
+/// a window is drawn in front of every surface this shell owns. Packed rather
+/// than handed over as three numbers because that is what a colour *is* on the
+/// page it was authored on, and a palette written down a second way is a palette
+/// that can disagree with itself.
+///
+/// The shown accent rather than the applied one, so a mark on screen while
+/// somebody is trying accents on the Settings page travels with everything else
+/// that is coloured by it — see [`theme`].
+pub fn shown_accent() -> u32 {
+    let LinearColor([red, green, blue]) = theme().accent;
+    let byte = |channel: f32| (srgb(channel.clamp(0.0, 1.0)) * 255.0).round() as u32;
+    (byte(red) << 16) | (byte(green) << 8) | byte(blue)
+}
+
 /// The sRGB transfer function, inverted.
 fn linear(channel: f32) -> f32 {
     if channel <= 0.04045 {
         channel / 12.92
     } else {
         ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// And the way back out of linear light, for the one colour that has to be
+/// written down again as it was authored. See [`shown_accent`].
+fn srgb(channel: f32) -> f32 {
+    if channel <= 0.003_130_8 {
+        channel * 12.92
+    } else {
+        1.055 * channel.powf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -301,6 +330,178 @@ pub const RED: Theme = Theme {
     glow: Color(0x991B1B),
 };
 
+/// Teal water: the one colour on the wheel between the green and the blue.
+///
+/// It has to stay there. Pulled warmer it becomes the green and pulled cooler
+/// the blue, and an accent that reads as one of its neighbours is a row in the
+/// setting that changes nothing.
+pub const TEAL: Theme = Theme {
+    accent: Color(0x14B8A6),
+    accent_soft: Color(0x5EEAD4),
+    accent_deep: Color(0x134E4A),
+    glass: Color(0x051A19),
+    glass_raised: Color(0xA7CFC9),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xC7E0DB),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x08302B),
+        Color(0x020F0D),
+        Color(0x0B4038),
+        Color(0x041614),
+    ],
+    glow: Color(0x115E59),
+};
+
+/// Pale periwinkle over a night with most of its colour taken out.
+///
+/// The light one. Purple and Blue are saturated colours at two thirds
+/// lightness; this is a much paler rung on a far greyer sky, so what the eye
+/// reads first is not the hue — which sits between theirs — but how much light
+/// the accent carries.
+pub const INDIGO: Theme = Theme {
+    accent: Color(0xA5B4FC),
+    accent_soft: Color(0xC7D2FE),
+    accent_deep: Color(0x312E81),
+    glass: Color(0x0D0E22),
+    glass_raised: Color(0xB3B9DE),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xD5D9F2),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x101128),
+        Color(0x030409),
+        Color(0x15163A),
+        Color(0x070813),
+    ],
+    glow: Color(0x252270),
+};
+
+/// Magenta glass, with the warning colour left where it always is.
+///
+/// Pink and the one warning colour are far enough apart on the wheel — magenta
+/// against a warm red-orange — that a destructive answer stays legible as one
+/// without the swap Red has to make.
+pub const PINK: Theme = Theme {
+    accent: Color(0xEC4899),
+    accent_soft: Color(0xF9A8D4),
+    accent_deep: Color(0x831843),
+    glass: Color(0x200714),
+    glass_raised: Color(0xE0A7C4),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xF0CCE0),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x2C0A1E),
+        Color(0x0C0207),
+        Color(0x3E0D28),
+        Color(0x160410),
+    ],
+    glow: Color(0x861042),
+};
+
+/// Orange on a scorched black sky, with destructive choices turned pure red.
+///
+/// The one warning colour is itself a red-orange, which under this accent would
+/// be a slightly duller cast of the colour everything chosen is already drawn
+/// in. Red answers the same collision by going the other way, to amber; here
+/// the answer is a red with no orange left in it.
+pub const ORANGE: Theme = Theme {
+    accent: Color(0xF97316),
+    accent_soft: Color(0xFDBA74),
+    accent_deep: Color(0x7C2D12),
+    glass: Color(0x1D0B02),
+    glass_raised: Color(0xE8C3A7),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xF0DAC4),
+    danger: Color(0xDC2626),
+    sky: [
+        Color(0x301206),
+        Color(0x0D0402),
+        Color(0x421A07),
+        Color(0x160702),
+    ],
+    glow: Color(0x842C0F),
+};
+
+/// Not white: the palest grey that is still a colour of its own.
+///
+/// Pure white is what the rim and the text already are, and an accent equal to
+/// them would leave a selection with nothing to be brighter than. This sits one
+/// rung below, so a lit edge still lifts off the thing it is lighting.
+pub const WHITE: Theme = Theme {
+    accent: Color(0xE4E4E4),
+    accent_soft: Color(0xF5F5F5),
+    accent_deep: Color(0x3D3D3D),
+    glass: Color(0x0C0C0C),
+    glass_raised: Color(0xC4C4C4),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xC9C9C9),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x151515),
+        Color(0x040404),
+        Color(0x1E1E1E),
+        Color(0x090909),
+    ],
+    glow: Color(0x444444),
+};
+
+/// Mid grey on neutral dark grey: the monochrome one.
+///
+/// The middle of the three colourless palettes, and the only one whose accent
+/// stands well clear of both the white light on its edges and the dark behind
+/// it. Nothing in it is tinted — a grey with a cast in it would be one more
+/// colour pretending to be no colour at all.
+pub const SILVER: Theme = Theme {
+    accent: Color(0xA6A6A6),
+    accent_soft: Color(0xD6D6D6),
+    accent_deep: Color(0x4A4A4A),
+    glass: Color(0x121212),
+    glass_raised: Color(0xC0C0C0),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xCFCFCF),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x2A2A2A),
+        Color(0x0B0B0B),
+        Color(0x383838),
+        Color(0x131313),
+    ],
+    glow: Color(0x6B6B6B),
+};
+
+/// Near black, for a screen that should say as little as it can.
+///
+/// Near rather than at: a selection has to be *some* light, so the accent is a
+/// dark grey and the sky keeps a hair of tone above nothing at all. What tells
+/// a chosen row from the rest here is mostly the white rim — which is what does
+/// it in every palette; this one simply leaves it to work alone.
+pub const BLACK: Theme = Theme {
+    accent: Color(0x525252),
+    accent_soft: Color(0x8A8A8A),
+    accent_deep: Color(0x1F1F1F),
+    glass: Color(0x0A0A0A),
+    glass_raised: Color(0x969696),
+    rim: Color(0xFFFFFF),
+    text: Color(0xFFFFFF),
+    text_soft: Color(0xB0B0B0),
+    danger: Color(0xE0533A),
+    sky: [
+        Color(0x141414),
+        Color(0x030303),
+        Color(0x1C1C1C),
+        Color(0x070707),
+    ],
+    glow: Color(0x2E2E2E),
+};
+
 /// A palette under the name the user picks it by.
 ///
 /// The name is the setting: it is what the Settings column shows, and what
@@ -335,6 +536,34 @@ pub const ACCENTS: &[Accent] = &[
     Accent {
         name: "Red",
         theme: RED,
+    },
+    Accent {
+        name: "Teal",
+        theme: TEAL,
+    },
+    Accent {
+        name: "Indigo",
+        theme: INDIGO,
+    },
+    Accent {
+        name: "Pink",
+        theme: PINK,
+    },
+    Accent {
+        name: "Orange",
+        theme: ORANGE,
+    },
+    Accent {
+        name: "White",
+        theme: WHITE,
+    },
+    Accent {
+        name: "Silver",
+        theme: SILVER,
+    },
+    Accent {
+        name: "Black",
+        theme: BLACK,
     },
 ];
 
@@ -592,7 +821,18 @@ pub fn applied_style(part: Part) -> Style {
 /// down to on the GPU: nought for the shell's own material and one for the plain
 /// one.
 pub fn style_flag(part: Part) -> f32 {
-    match style(part) {
+    flag(style(part))
+}
+
+/// The same number for a material named outright rather than looked up.
+///
+/// Two callers, and the second is why this is not written inside
+/// [`style_flag`]: a row on the Theme page carries the material it *applies*
+/// down to the quad its mark is drawn on — see [`crate::gpu::Quad::mark`] —
+/// and the number that says which material has to be the same number in both
+/// places or a row would preview one thing and set another.
+pub fn flag(style: Style) -> f32 {
+    match style {
         Style::Default => 0.0,
         Style::Simple => 1.0,
         // The one value that is not a material: the shader stops drawing the
@@ -734,6 +974,29 @@ mod tests {
         assert_eq!(Color(0xFFFFFF).rgb(), [1.0; 3]);
     }
 
+    /// The one colour of this shell's that leaves the process comes back out as
+    /// the colour it was authored as.
+    ///
+    /// It has to: the mark around a selected floating window is painted by the
+    /// compositor, and a mark that was a shade off the accent everything beside
+    /// it is drawn in would be the seam this palette exists to prevent. The trip
+    /// out and back is through linear light, so it is a real conversion and not
+    /// a number handed along.
+    #[test]
+    fn the_accent_that_crosses_the_protocol_is_the_accent_that_was_authored() {
+        for accent in ACCENTS {
+            with_accent(accent.name, || {
+                assert_eq!(
+                    shown_accent(),
+                    accent.theme.accent.0,
+                    "{} came back as {:#08x}",
+                    accent.name,
+                    shown_accent()
+                );
+            });
+        }
+    }
+
     #[test]
     fn channels_land_in_the_right_order() {
         let [r, g, b] = Color(0xFF0000).rgb();
@@ -777,7 +1040,10 @@ mod tests {
     fn each_accent_is_a_distinct_palette_under_a_distinct_name() {
         assert_eq!(
             ACCENTS.iter().map(|accent| accent.name).collect::<Vec<_>>(),
-            ["Purple", "Blue", "Green", "Yellow", "Red"]
+            [
+                "Purple", "Blue", "Green", "Yellow", "Red", "Teal", "Indigo", "Pink", "Orange",
+                "White", "Silver", "Black"
+            ]
         );
 
         for (index, accent) in ACCENTS.iter().enumerate() {

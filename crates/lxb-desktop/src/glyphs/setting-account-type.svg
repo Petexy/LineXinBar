@@ -1,0 +1,27 @@
+<!--
+  A shield, on the row that says what an account is allowed to do.
+
+  The row used to wear the single figure, which is the mark of *a person* and is
+  what an account with no avatar falls back to — so the same drawing stood for
+  two different things two rows apart on one page. What this row is about is not
+  who they are but what they may do, and a shield is the plainest picture of
+  authority the set can carry without inventing a symbol.
+
+  Nothing is cut out of it. The two answers underneath — Standard and
+  Administrator — are a set of alternatives and wear the bead every other set in
+  this tree wears, so this mark has only to say which question is being asked.
+  A shield with a letter or a star in it would be saying which *answer*, on the
+  row that is the question.
+
+  Broad-shouldered and short, so it is not mistaken for the arch of a bust at a
+  settings row's size: the shoulders run out to the full width at the top and
+  the point is well inside the cell.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path d="M16 3.4L27.6 7.2V16.4C27.6 22.4 22.6 26.9 16 29.2C9.4 26.9 4.4 22.4 4.4 16.4V7.2Z"
+        fill="#ffffff"/>
+</svg>

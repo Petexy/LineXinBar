@@ -1,0 +1,39 @@
+<!--
+  The Amiga: the monitor over the keyboard, which is how one was sold and how
+  every photograph of one was taken.
+
+  The one machine in this set drawn as a system rather than as a single box.
+  Commodore's own picture of an Amiga is the 1084 sitting on the desk with the
+  keyboard in front of it, and on a shelf that already holds three bare
+  keyboards — Commodore 64, MSX, Spectrum — the screen is what keeps this one
+  from being a fourth.
+
+  The screen is four to three, which is what a monitor of the period was.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="monitor" x="7.4" y="4.2" width="17.2" height="12.4" rx="1.6"/>
+    <rect id="board" x="3" y="18.6" width="26" height="8.4" rx="1.6"/>
+    <rect id="pane" x="9.6" y="5.8" width="12.8" height="9.6" rx="0.7"/>
+    <g id="keys">
+      <rect x="6.2" y="21" width="5" height="3" rx="0.7"/>
+      <rect x="13.5" y="21" width="5" height="3" rx="0.7"/>
+      <rect x="20.8" y="21" width="5" height="3" rx="0.7"/>
+    </g>
+    <g id="bead"><use href="#monitor"/><use href="#board"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#pane" fill="#000000"/>
+      <use href="#keys" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,37 @@
+<!--
+  The Nintendo GameCube: the cube, the lid that takes up most of it, and the
+  four ports along its front.
+
+  The lid is the correction.  A GameCube disc is 80 mm across and the lid over
+  it is nearly the width of the machine — drawn small it left a margin no
+  GameCube ever had, and put this square with a round hole in it a step closer
+  to the Dreamcast further down the column, whose lid really is that size.
+
+  The handle it is famous for went through two drawings and out again: a squat
+  arch over a round opening reads as a handbag, and a wider one over a square
+  opening reads as a briefcase.  Neither is worth losing the console for.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="cube" x="4.6" y="5.6" width="22.8" height="22.8" rx="2"/>
+    <circle id="lid" cx="16" cy="14.4" r="6.6"/>
+    <g id="ports">
+      <circle cx="9.2" cy="25.2" r="1.2"/><circle cx="13.7" cy="25.2" r="1.2"/>
+      <circle cx="18.3" cy="25.2" r="1.2"/><circle cx="22.8" cy="25.2" r="1.2"/>
+    </g>
+    <mask id="pierced">
+      <use href="#cube" fill="#ffffff"/>
+      <use href="#lid" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#cube" fill="#ffffff"/>
+  </g>
+</svg>

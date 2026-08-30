@@ -1,0 +1,41 @@
+<!--
+  A screen with a small window standing in its lower right corner, for the
+  Picture-in-Picture placement rows.
+
+  setting-pip.svg's screen and setting-pip.svg's window, with the window moved
+  and the play mark left out. That absence is the whole difference between the
+  five drawings, and it is the difference between the two questions: the page
+  above these asks whether a video floats at all, and these ask which corner of
+  the screen it floats in. A play mark repeated four times down one column would
+  say the first thing four more times and the second thing not at all.
+
+  Four drawings of one object, and they carry no scale for the reason the four
+  rotations carry the same one: they are the same screen with the same window
+  moved, and any of them coming out a different size would read as a different
+  screen.
+
+  Values with drawings of their own, which is the exception the four
+  orientations earn and the second place in this tree it is earned. What is
+  being chosen is a *place*: the row that matches the corner somebody wants can
+  be picked out without reading it, and four rows spelling out top and bottom,
+  left and right are four rows nobody can tell apart at a glance.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
+          d="M4.2 6.4h23.6a1.8 1.8 0 0 1 1.8 1.8v15.6a1.8 1.8 0 0 1-1.8 1.8H4.2a1.8 1.8 0 0 1-1.8-1.8V8.2a1.8 1.8 0 0 1 1.8-1.8z
+             M4.2 8.2v15.6h23.6V8.2z"/>
+    <rect id="pane" x="16.6" y="15.8" width="9.6" height="6.4" rx="1"/>
+    <g id="bead"><use href="#frame"/><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

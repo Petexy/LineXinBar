@@ -43,6 +43,17 @@ const DEAD_ZONE: f32 = 0.18;
 /// that the far edge is not overshot on the way to a menu.
 const POINTER_SPEED: f32 = 1250.0;
 
+/// How fast a floating window travels at full deflection, in logical pixels per
+/// second.
+///
+/// Slower than the pointer, and set against what is being moved rather than
+/// against the screen. A pointer is a mark a few pixels across being aimed at
+/// something small; a window is a hand's worth of screen being put somewhere,
+/// and there are only ever a few places on a display it is going. About two and
+/// a half seconds to cross a 1080p panel, which is unhurried enough that a
+/// corner can be arrived at rather than overshot.
+const WINDOW_SPEED: f32 = 750.0;
+
 /// The same for scrolling, in logical pixels of content per second.
 ///
 /// Slower than the pointer, and set against a different thing: roughly a
@@ -66,6 +77,19 @@ const CURVE: f32 = 2.2;
 /// somewhere else entirely.
 const MAX_STEP: f32 = 0.05;
 
+/// Whether there is a thumb on a stick at all, on exactly the terms
+/// [`Stick::motion`] answers `None` for.
+///
+/// A different question from whether the stick *moved* anything, and both are
+/// wanted: a stick held perfectly still at full deflection produces travel every
+/// poll, and one held still at rest produces none — but so does the first poll
+/// after a gap, which has no interval behind it. Anything that takes hold of
+/// something while a stick is pushed has to ask this rather than reading the
+/// travel, or it lets go once a poll and takes hold again on the next.
+pub fn pushed((x, y): (f32, f32)) -> bool {
+    (x * x + y * y).sqrt() > DEAD_ZONE
+}
+
 /// Turns stick deflection into movement, at whatever rate it was built for.
 ///
 /// One type for the two of them because they are the same instrument: a
@@ -88,6 +112,19 @@ impl Stick {
         Self {
             last: None,
             speed: POINTER_SPEED,
+        }
+    }
+
+    /// The right stick again, carrying a floating window over the guide.
+    ///
+    /// The same instrument at a different rate, which is the whole of why there
+    /// is one type here: a window follows the stick with the same dead zone and
+    /// the same curve the pointer does, so the control feels like one control
+    /// whichever of the two it happens to be moving.
+    pub fn floating_window() -> Self {
+        Self {
+            last: None,
+            speed: WINDOW_SPEED,
         }
     }
 

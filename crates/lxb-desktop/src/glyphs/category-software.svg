@@ -1,0 +1,55 @@
+<!--
+  The Software column's glyph: an open carton with an arrow coming down into it.
+
+  The column holds the stores and software hubs — the places a machine gets more
+  of itself from — and what every one of them does is the same act: something
+  arrives from outside and goes into the box. The carton says where it lands and
+  the arrow says which way it is travelling, which between them is the one mark
+  that means install without being any particular shop's logo.
+
+  The carton is a wall and a floor rather than a slab. The opening is cut from
+  above the top edge downwards, so it runs off the top of the body and leaves a
+  three-unit wall each side with the floor under it — and that is what makes the
+  box *open*. A closed rectangle with an arrow over it is a parcel, and a parcel
+  is not what a store hands you.
+
+  The two flaps are that wall folded outwards, so they are part of the same body
+  and run into it with no crevice between them — the same rule the monitor's
+  panel, neck and foot are drawn under in category-system.svg. Each meets the
+  top edge short of the mouth, so neither is bitten into by it.
+
+  The arrow stops five units short of the floor and clears each wall by four at
+  the rim. It is a separate body standing in the opening, so the shader finds
+  air on every side of it and beads a wall round the arrow as well as round the
+  mouth — which is what says the arrow is going *in* rather than being painted
+  on the front. The opening is taken out after the body and before the arrow is
+  laid back in, which is the order that keeps the arrow rather than erasing it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="carton" x="6.2" y="16" width="19.6" height="11.6" rx="2"/>
+    <path id="flap-left" d="M8.84 16.24L6.56 18.76L2.55 15.15L4.83 12.62Z"/>
+    <path id="flap-right" d="M23.16 16.24L25.44 18.76L29.45 15.15L27.17 12.62Z"/>
+    <rect id="mouth" x="9.2" y="12.6" width="13.6" height="12" rx="1.4"/>
+    <path id="arrow" d="M14.4 4.6H17.6V11.8H21L16 19.6L11 11.8H14.4Z"/>
+    <g id="bead">
+      <use href="#carton"/>
+      <use href="#flap-left"/>
+      <use href="#flap-right"/>
+      <use href="#arrow"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#mouth" fill="#000000"/>
+      <use href="#arrow" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

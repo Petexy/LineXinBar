@@ -1,0 +1,32 @@
+<!--
+  The Game Boy (DMG-01): the brick, and the corner it wears down to.
+
+  Drawn to the machine, 90 by 148 mm, which is where the proportions come from:
+  a screen bezel very slightly wider than it is tall, a cross a third of the way
+  up, and A and B set on a slant with A the higher of the two.  The rounded
+  bottom-right corner is the one part of this shelf that needs no opening in it
+  to be read.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="brick" d="M10.1 3h11.8a2 2 0 0 1 2 2v15.6A8.3 8.3 0 0 1 15.6 29H10.1a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>
+    <rect id="screen" x="10.6" y="6.2" width="10.9" height="9.6" rx="0.7"/>
+    <path id="cross" d="M11.4 16.8h2.2v1.8h1.8v2.2h-1.8v1.8h-2.2v-1.8H9.6v-2.2h1.8z"/>
+    <g id="pips"><circle cx="19" cy="20.6" r="1.25"/><circle cx="21.2" cy="19.1" r="1.25"/></g>
+    <mask id="pierced">
+      <use href="#brick" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#brick" fill="#ffffff"/>
+  </g>
+</svg>

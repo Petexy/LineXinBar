@@ -1,0 +1,33 @@
+[package]
+name = "lxb-retroarch"
+description = "The shell's RetroArch integration: where it is, how to install it, what is in somebody's ROM folder, and the cores that play it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lxb-retroarch"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+
+# The whole of what passes between this binary and the shell. One JSON object
+# per line on stdout, so a helper that is a version ahead can add a field
+# without the shell it is talking to failing to parse the line — see
+# `report.rs`, which is the only file either side has to agree about.
+serde_json = "1"
+
+# Fetching a core from libretro's own build server, which is what RetroArch's
+# Online Updater fetches from and the only place cores are published. HTTPS with
+# a TLS stack that needs no system library, and blocking on purpose: this
+# process has nothing else to do while a core comes down, and the shell is
+# already on the other end of a pipe rather than waiting on this thread.
+ureq = "3"
+
+# A core is published zipped, and this is the `inflate` behind `zip.rs`. The
+# same crate the shell decodes every PNG with, so it costs this tree nothing.
+flate2 = "1"

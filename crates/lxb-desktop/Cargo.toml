@@ -19,6 +19,14 @@ serde.workspace = true
 toml.workspace = true
 clap.workspace = true
 
+# What the optional RetroArch integration says, and the only thing this shell
+# and that package have to agree about: one JSON record per line on the
+# helper's stdout. See `src/retroarch.rs`, which declares its own half of the
+# format — this crate deliberately does not depend on `lxb-retroarch`, because
+# a machine may have either package without the other.
+serde_json = "1"
+
+
 # Wayland client: layer-shell, seat, keyboard.
 #
 # `calloop`/`system`: wgpu needs a real `wl_display` / `wl_surface` pointer from

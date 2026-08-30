@@ -1,0 +1,38 @@
+<!--
+  A person and a plus, on the row at the foot of the Users column that makes a
+  new account.
+
+  The plus stands beside the figure rather than being cut into it. A hole in a
+  bead of water is what this set draws a *control* with — the pad's buttons, the
+  padlock's keyhole — and an opening shaped like a plus reads as something taken
+  away from the person, which is the opposite of what the row does. Beside it,
+  the two bodies are one sentence: this, and one more.
+
+  They do not touch. The nearest the plus comes to the shoulder is 2.6 units,
+  which is past the bevel's depth, so each keeps a wall of its own rather than
+  running together into a lump with a spur on it. The figure is the same head
+  and shoulders as setting-person.svg, narrowed to make room — the row that
+  makes an account and the account it makes have to look like one another.
+
+  The plus's bars are 3.6 units across. Narrower than that and the two walls
+  meet down the middle before either has a face, and the mark comes out melted;
+  it is the same measurement the Settings cog's teeth cost, written down in
+  category-games.svg as the second of the three ways a shape goes wrong.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="head" cx="11.6" cy="11" r="4.4"/>
+    <path id="shoulders" d="M2.8 27.2A8.8 8.8 0 0 1 20.4 27.2Z"/>
+    <g id="plus">
+      <rect x="20.6" y="17.7" width="8.8" height="3.8" rx="1"/>
+      <rect x="23.1" y="15.2" width="3.8" height="8.8" rx="1"/>
+    </g>
+    <g id="bead"><use href="#head"/><use href="#shoulders"/><use href="#plus"/></g>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

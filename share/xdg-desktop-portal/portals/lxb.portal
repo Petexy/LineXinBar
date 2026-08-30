@@ -5,5 +5,5 @@
 # anything not named here is left to whichever other backend the machine has.
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.lxb
-Interfaces=org.freedesktop.impl.portal.ScreenCast;
+Interfaces=org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.FileChooser;
 UseIn=LineXinBar;

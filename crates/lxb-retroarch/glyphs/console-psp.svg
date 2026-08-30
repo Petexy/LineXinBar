@@ -1,0 +1,49 @@
+<!--
+  The PlayStation Portable (PSP-1000): 170 by 74 mm, the widest and lowest
+  handheld in this column, and the only one built round a 16:9 screen.
+
+  It has no corners.  The left and right ends of a PSP are one long curve from
+  the top edge to the bottom, and because the machine is more than twice as wide
+  as it is tall that curve is an *ellipse* — it sweeps the whole height while
+  standing only a third of it proud.  Drawn as a rounded rectangle, with even a
+  short straight shoulder at each end, it stops being a PSP; drawn as a stadium
+  it would eat the walls the cross and the buttons sit in.  Hence `rx` and `ry`
+  of their own, which is the one drawing in this set that needs them.
+
+  Four face buttons, not two, high on the right; the cross opposite them and the
+  analogue nub below it, which is the other thing a PSP has that nothing else on
+  this shelf does.
+
+  The screen is the one measurement given up.  It really covers three fifths of
+  the width; here it covers half, because everything either side of it needs a
+  wall and the bevel this material takes off every edge eats about two units of
+  one.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2" y="9.58" width="28" height="12.84" rx="3.4" ry="6.42"/>
+    <rect id="screen" x="8.4" y="11.4" width="14" height="7.9" rx="0.6"/>
+    <path id="cross" d="M4.55 12.5h1.5v1.15H7.2v1.5H6.05v1.15h-1.5v-1.15H3.4v-1.5h1.15z"/>
+    <circle id="nub" cx="5" cy="18.6" r="1.1"/>
+    <g id="pips">
+      <circle cx="26.2" cy="12.99" r="0.85"/><circle cx="28.1" cy="14.89" r="0.85"/>
+      <circle cx="26.2" cy="16.79" r="0.85"/><circle cx="24.3" cy="14.89" r="0.85"/>
+    </g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#nub" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,35 @@
+<!--
+  The Game Gear: 210 by 113 mm, the cross on the left and buttons 1 and 2 side
+  by side on the right, with START above and between them.
+
+  Those two buttons are a row, not a column.  Sega put them beside one another
+  on a machine wide enough to take them, which is the opposite of every Nintendo
+  handheld on this shelf, and at the size a row is drawn it is the clearest
+  thing about it.
+
+  See console-nes.svg for the set's rules, and console-lynx.svg, which is the
+  same idea half again as wide.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2.5" y="8.75" width="27" height="14.5" rx="2.8"/>
+    <rect id="screen" x="11.1" y="11.9" width="9.8" height="7.7" rx="0.6"/>
+    <path id="cross" d="M5.6 13.3h2v1.6h1.6v2h-1.6v1.6h-2v-1.6H4v-2h1.6z"/>
+    <g id="pips"><circle cx="23.4" cy="16.7" r="1.3"/><circle cx="26.4" cy="16.7" r="1.3"/></g>
+    <circle id="start" cx="24.9" cy="13.1" r="0.9"/>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+      <use href="#start" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

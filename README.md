@@ -95,9 +95,11 @@ one feature:
 | `xdg-open`                                | Opening one of the user's own files when nothing installed declares its type | Those rows are listed but report that nothing opens them |
 | `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
 | `pipewire`                                | The frames a shared screen is carried on | `lxb-portal` will not start, and screen sharing is unavailable |
-| `xdg-desktop-portal`                      | The front desk applications ask for a screen — [screen sharing](#screen-sharing) needs both this and `lxb-portal` | Applications find no portal and cannot share anything |
+| `xdg-desktop-portal`                      | The front desk applications ask for a screen or for a file — [screen sharing](#screen-sharing) and [choosing a file](#choosing-a-file) both need this and `lxb-portal` | Applications find no portal: none can share a screen, and each falls back to whatever file dialog it has of its own |
 | `polkit` (`polkitd`, and its agent helper) | [Authorisation prompts](#authorisation-prompts): mounting a disk, installing a package, managing a service | Every action whose policy needs a human is refused, with nothing on screen to allow it |
 | `steam` (native or Flatpak)               | Playing and installing anything in the Steam column | The account still signs in and the library is still listed, but nothing in it starts or downloads: every row says so rather than doing nothing |
+| `lxb-retroarch` (a package of its own)    | [RetroArch and your own console games](#retroarch-and-your-own-console-games): a row under Steam, and a column of the consoles in your ROM folder | The shell never mentions RetroArch at all — no row, no column, no page under Settings |
+| `flatpak`, with `lxb-retroarch` installed | Installing RetroArch from the shell, and running the Flathub build | The row says RetroArch is not installed and that there is no flatpak to install it with; a distribution package of `retroarch` is used in preference either way |
 
 ### Permissions
 
@@ -111,10 +113,12 @@ one feature:
 - **i2c**, for `ddcutil` to reach an external monitor — usually the `i2c`
   group.
 - **`/dev/uinput`**, to keep [the guide button](#the-guide-button-is-the-shells-alone)
-  off every controller an application can read. A logind session normally has
-  it through `uaccess`; otherwise it is the `uinput` group or a udev rule.
-  Without it every pad still works exactly as it did, and the guide button
-  reaches applications as well as the shell.
+  off every controller an application can read, and to build the gamepad the
+  kernel gives the second-generation Steam Controller no driver for. A logind
+  session normally has it through `uaccess`; otherwise it is the `uinput` group
+  or a udev rule. Without it every pad the kernel drives still works exactly as
+  it did, with the guide button reaching applications as well as the shell —
+  and that one pad works in the shell but in nothing the shell launches.
 
 ### Bundled, so not required
 
@@ -290,9 +294,37 @@ The bar opens with Settings, LineXinBar's own column, which holds the shell's
 settings the way a console's Settings region holds its own. Everything after it
 comes from `.desktop` files in the usual XDG search path, grouped into the
 categories Plasma's launcher uses: System, Multimedia, Graphics, Internet,
-Office, Games, Development, Education & Science, Utilities, and Other. A
-category with no application in it is hidden — except Settings, which is part
-of the bar rather than a result of what is installed.
+Office, Games, Software, Development, Education & Science, Utilities, Waydroid
+and Other. A category with no application in it is hidden — except Settings,
+which is part of the bar rather than a result of what is installed.
+
+Two of those columns are not filled by a main category, because no main
+category answers what they are about. **Software** holds the stores and
+software hubs — anything declaring `PackageManager` alongside `System` or
+`Settings`, plus a short list of the well-known stores that declare neither,
+Plasma's Discover among them. **Waydroid** holds the Android applications this
+machine can run: Waydroid writes `X-WayDroid-App` on every entry it generates
+and no main category at all, so before that column they fell through to Other.
+Waydroid's own launcher is filed with them, at the head of what it runs. An
+entry Waydroid marked `NoDisplay` stays hidden, as it does everywhere else in
+the shell.
+
+Which column a session opens on is **Settings > System > Startup category**,
+and it is Games unless somebody has said otherwise. The page is the bar itself —
+one row per column this machine has, each wearing its own mark — and a column
+named by the setting but not on the bar this session, a Steam library nobody is
+signed in to, is offered all the same and says why it is not there. Where the
+named column is genuinely absent the shell opens where it always did: the first
+column with something in it.
+
+An application can also ask for its icon to be drawn in the shell's own
+material rather than as the picture its theme holds, by naming `lxb` in its
+`Keywords` or `Categories`. The icon is then measured into a distance field and
+the quad shader cuts a bead of water to it, exactly as it does for the shell's
+own marks, so the row wears the same material as the column heading above it.
+It is opt-in because what the shader is handed is the *silhouette*: a drawing
+made to be a shape comes out as one, and a photograph comes out as a rounded
+slab of glass.
 
 Multimedia carries two subcategories of its own, Music and Video, Graphics
 carries one, Images, and System carries **Files**. What is in all four is the
@@ -303,6 +335,56 @@ or `Video` but never the reverse, so an entry may declare `AudioVideo` and
 stop, and many of the best-known media applications do exactly that — so the
 players and the editors stay in their columns, where nothing has to be guessed
 about them.
+
+### What the buttons do
+
+The start screen writes its own controls in the corner opposite the clock:
+
+```
+                                  Select  (A)   Options  (Y)   Guide  (⌂)
+```
+
+**Drawn rather than lettered.** "Press A" is wrong on a PlayStation pad, which
+has no A, and worse than wrong on a Nintendo one, where A is the button on the
+opposite side of the cluster from where an Xbox layout puts it. So each is a
+picture of the cluster with the button in question filled in, which is true on
+all of them — the same drawings the file panel's own legend uses, laid out by
+the same code, because it is the same promise: somebody who has learned that the
+filled bead at the bottom of the cluster takes a row must not have to learn it
+again in a file dialog.
+
+**And named by whichever control is in hand.** The same act is South on a pad
+and Enter on a keyboard, and there is no wording that covers both without naming
+neither, so the shell says the one the user's hands are actually on — it watches
+for a button, a stick or a key and remembers which came last. On a keyboard the
+row reads Enter, the right mouse button and Super. Options leaves the keyboard
+deliberately: no key printed on a keyboard says "menu" to as many people as the
+right button does. Super is the one key with a mark for it that is not somebody's
+logo, and it is the binding the compositor holds back from every application so
+that the guide is always reachable.
+
+**Options comes and goes with the row.** Most of the bar is objects — an
+application, a song, a file, a game — and every one of them has a context menu;
+a settings value and a subcategory are not objects and have none. The legend
+offers the button exactly when a press on it would raise something, because it
+asks the very function the press does. A legend naming a button that does
+nothing is worse than naming none.
+
+**Guide never does.** It is the one press that works from everywhere in the
+session, an application holding the whole screen included, and a legend that
+dropped it on some rows would be hiding the way out.
+
+It is drawn on the display being driven and no other, and it gives the corner up
+to anything with buttons of its own: the guide overlay, a context menu, the
+centred panel, a file being carried, an application's file question — which
+draws a legend of its own — and the on-screen keyboard's corner chip, which
+stands in this very corner. Two clusters of button pictures in one corner is not
+a legend, it is a pile.
+
+**It can be turned off** at `Settings > System > Button hints`, and it is on
+until it is. Somebody who does not need it is exactly the person who will find
+the switch; somebody who does will never go looking for a setting to reveal what
+they do not know is missing.
 
 ### Music, Video and Images
 
@@ -1184,6 +1266,297 @@ Steam. For a machine where somebody else's account is signed in, and for a
 session that should make no network connections at all — which, with this off,
 is every one of them.
 
+### RetroArch, and your own console games
+
+**A package, not a feature.** Everything in this section exists on a machine
+that has installed **`lxb-retroarch`** and on no other: the shell looks for that
+program on `PATH` at startup and, without it, never mentions RetroArch anywhere
+— no row, no column, no page under Settings. It is a separate package because a
+machine that will never emulate a console should not carry a table of forty
+consoles, a flatpak installer and a walk over somebody's collection. See
+`crates/lxb-retroarch`, which is the whole of the optional half; the shell's own
+half is `src/retroarch.rs`, and what passes between them is one JSON record per
+line on a pipe.
+
+With it installed, a **RetroArch** row stands in the Games column, under Steam
+— Steam is the row every session has, and a row that arrived with an install
+must not push it down a place. Where RetroArch's own `.desktop` entry exists,
+this row takes its place and that entry comes off the bar, exactly as the Steam
+row takes the client's: two rows called RetroArch wearing one mark is the bar
+saying the same thing twice, and of the two it is this one that leads to
+somebody's games.
+
+Pressing the row does whatever is left to be done, and never more than one thing
+at a time:
+
+1. **RetroArch is not installed.** The row says so, and the press asks whether
+   to install it. Yes fetches the Flathub build into *this user's own* flatpak
+   installation — no root, no polkit, nothing else on the machine touched — with
+   a panel counting it up. A distribution package of RetroArch is preferred over
+   the flatpak wherever both are present, because a native build can open a ROM
+   wherever the user keeps one and a sandboxed one is limited to their home
+   directory.
+2. **No ROM folder has been chosen.** A panel asks where the games are, and says
+   what the folder has to look like: **one subfolder per console, named after the
+   console** — `ROMs/psp`, `ROMs/nes`, `ROMs/megadrive`. That name is the whole
+   of what says which machine a game was written for, and no amount of reading
+   the files can answer it. Choosing is a column of folders with **Select
+   folder** standing over each one — the same picker as Settings > Games >
+   RetroArch > ROMs path, which is where it is changed afterwards.
+3. **Both done.** The press steps across to the **RetroArch** column, which
+   stands immediately after Steam's.
+
+The row that asks where the games are stands at the head of that column for as
+long as the question is open — nobody has chosen a folder, or the one they chose
+cannot be read this morning, or there is nothing in it yet — and goes the moment
+there are games in it. After that the folder is a setting rather than a
+question, and it is under Settings, where settings are.
+
+That column is the folder as the shell reads it: the subfolders that hold
+something become **consoles**, named as consoles rather than as folders where
+the name is one this shell knows — `psp` is PlayStation Portable — and left
+exactly as the user spelt them where it is not. A console with nothing in it is
+not an empty column, it is not a column at all. Stepping into one shows the
+games it holds, **as covers, on the layout a Steam library uses**, each under
+its own name with the extension taken off. Games kept a folder each are found up
+to three levels down and listed flat; the pieces of a disc image — the `.bin`
+under a `.cue`, the discs a `.m3u` names — are not offered as games of their
+own, because they are not games anybody can start.
+
+**Choosing the folder also gives the emulator access to it**, and only to it. A
+flatpak sees this user's home directory and nothing further, so a collection on
+an external drive is one RetroArch starts and then cannot read — reporting it in
+its own window, where nobody on a console is looking. The integration runs
+`flatpak override --user --filesystem=<the folder>` for RetroArch alone at the
+moment the folder is chosen: no password, no root, one application, one folder,
+and `flatpak override --user --reset org.libretro.RetroArch` undoes it. A
+distribution package of RetroArch is in no sandbox and nothing is done for it.
+
+**A console needs a core, and the shell fetches it.** A core is the emulator
+proper — RetroArch is the machine around it — and it comes in neither the
+distribution's package nor the Flathub build, which ships none at all. So
+choosing the ROM folder fetches one for every console found in it, from
+libretro's own build server, which is where RetroArch's Online Updater gets
+them and which needs no password and no root. They land in this user's own core
+directory, the one RetroArch itself downloads into, so a core fetched here is
+one RetroArch's own interface lists as installed — and one it fetched is one
+this finds without being told. Which core is a table this integration carries,
+best first; the first of a console's list that the server actually publishes is
+the one taken.
+
+Afterwards it asks. A game whose console has no core — a machine added to the
+folder after the setup — answers its press with **"Get it and play?"**, and Yes
+fetches that one core and starts the game as soon as it is there. That is the
+only time anything is downloaded without being asked for, and it is the moment
+somebody said "these are my games". A fetch that fails says so and starts
+nothing; the panel over one can be put away, and the row under Games goes on
+saying which core is coming down.
+
+**And a core is not always the whole emulator.** Some of them are a shared
+object *and* a folder of data they cannot run without: PPSSPP is 21 megabytes of
+PSP emulator and none of the PSP's own fonts, so a core installed by itself
+starts a game, draws every menu as a row of blank grey boxes, and says `Core
+system files missing, expect bugs` along the bottom. Nothing is broken — the
+half of the emulator that draws letters was simply never fetched. RetroArch
+keeps those folders on a *System Files* page of its updater, separate from the
+core downloader and reached from a different menu, which is how a machine ends
+up with one and not the other.
+
+So the shell fetches that too, from the same server, and a console whose core is
+missing it reads exactly like a console with no core at all: the row says it
+needs a download, and pressing a game gets the missing half. It is deliberately
+a short list rather than a rule. The archives are named for the emulator and not
+for the folder — Dolphin's folder is `dolphin-emu` and its archive is
+`Dolphin.zip` — and most of what a core declares it needs is *not* published and
+must not be: a Dreamcast core wants the Dreamcast's own boot ROM, which belongs
+to whoever made the machine. The list is the part somebody checked by hand:
+cores whose required files libretro publishes in full.
+
+**Every console wears its own machine.** The column used to be a stack of
+identical RetroArch marks, so nine consoles were nine rows you had to *read* —
+and a glyph is read before a name is, and from further away. Each one is now the
+machine itself, drawn in the shell's own material: the deck with the door on the
+front, the brick with the corner cut off it, the cube, the cabinet, the keyboard
+with the cartridge slot in it. A game with no cover wears its console's mark too,
+so a shelf of PlayStation games still looks like PlayStation games.
+
+They are drawn as the *object*, never as a logo or a controller — a wordmark is
+illegible at the size a row is drawn and belongs to somebody else, and a
+controller is the Games category's own mark and would say "a game" forty times
+over. The drawings ship with `lxb-retroarch` rather than with the shell, because
+a machine without that package has no console columns to put them on.
+
+**Every game wears its cover, and stands the screen behind it.** A column of
+forty identical marks says only how many files are in a folder; the cover says
+which one each row *is*, from across a room, before the name has been read —
+which is the whole reason the Steam column has one, and no reason a game somebody
+dumped themselves should be the poor relation of one they bought. They come from
+[libretro's own thumbnail collection](https://thumbnails.libretro.com), the same
+one RetroArch fetches from: the box art becomes the cover, and the screenshot
+stands behind the whole display while the cursor is on the row.
+
+The screenshot is **deliberately blurred**, and that is not a stylistic
+flourish. What libretro holds is a picture of a console's screen — three hundred
+pixels tall — and a three-hundred-pixel picture enlarged across a television is a
+wall of squares. Softened it is what it was always going to be: the colour and
+the massing of the game, behind the row that is the game. See
+`art::blurred_scenery_from`, which reduces it until there is no grid left to
+enlarge and then softens what remains.
+
+**A game does not have to be named the way the database names it.** That is the
+whole trick and it is the reason RetroArch itself shows a hand-sorted collection
+no artwork at all. libretro's names are the names of *dumps* —
+`Tekken 6 (USA) (En,Fr,De,Es,It,Ru)` — and somebody who dumped their own disc
+called the file `Tekken 6.iso`; asking for a picture by the file's name is a 404
+every time. So the shell does not ask by the file's name. It fetches the listing
+of the console's shelf once, keeps it, and matches every game in the folder
+against it with the tags taken off both sides, the punctuation dropped, and a
+database's `Legend of Zelda, The` put back the way the box says it. What is
+deliberately *not* done is anything clever with numbers: turning roman numerals
+into figures would make `Final Fantasy VII` meet `Final Fantasy 7` and would also
+make `Mega Man X` meet `Mega Man 10`, and a wrong cover is worse than none
+because a wrong one is not obviously wrong.
+
+Where several dumps reduce to the same game — a PlayStation Portable shelf has
+two `Tekken 6` and eleven `Tekken - Dark Resurrection` — one is chosen by whether
+it is the game at all (a beta, a demo or a prototype loses, unless the file
+itself says "demo"), then by region, then by the plainer name; and the same shelf
+answers the same way every time, because a cover that changed between two runs
+for no reason anybody could see would be worse than either of them.
+
+Nothing about this is announced. The pictures are asked for once per folder per
+session, only for what has not got them, and no panel stands over it: the covers
+appearing one at a time down a column somebody is already scrolling *is* the
+feedback. Everything lands in `$XDG_CACHE_HOME/linexinbar/retroarch-art`, in
+libretro's own layout — never in RetroArch's thumbnail folder, because what
+somebody sees in the emulator's own interface is the emulator's business.
+
+**A game has a menu too:** play it, get its artwork, rename it, delete it. Get
+the artwork is the row that has no counterpart elsewhere in the shell, and it is
+there because the matching can miss — somebody who called their file `smb.nes`
+has written down less than it needs. Which is why the row under it matters as
+much: Rename is how a game gets called what it is, and the two together are the
+answer to "why has this one no picture". Delete is offered on the terms a
+photograph is and greyed on the same ones — a game outside the user's own home
+directory is a file on somebody else's disk. **Uninstall is not on it at all**:
+nothing installed a ROM, so the only thing that row could mean is deleting the
+file, which the row below already says plainly. A press that finds no artwork
+says so in a panel rather than leaving the row as it was.
+
+**The row has a menu, like Steam's.** Raising it over RetroArch offers what can
+be done to a collection rather than to a game: look through the games folder
+again, fetch whatever emulators are missing and how many that is, change where
+the games are, and — below the rule, because it is a different program — open
+RetroArch's own interface, which the shell otherwise hides from its own category
+and there would be no way back to. A machine that has not got RetroArch yet is
+offered it and nothing else; a machine still waiting on the helper raises no menu
+at all, because every row on it needs an answer that has not arrived.
+
+**And the emulators have settings, under Settings > Games > RetroArch.** One page
+per installed core at the top — PPSSPP's rendering resolution and texture
+upscaling, Mesen's overclock — and under them the settings that belong to no core:
+the aspect every game is drawn at, the driver it draws with, whole-number scaling,
+whether it waits for the screen, where the games are, and a row that fetches every
+game's artwork again — for the two reasons somebody would want that: libretro's
+collection grows, and a game the shell could not put a name to has very often
+been renamed since.
+
+Not one of those core settings is written down in this repository, and that is the
+point. A core *declares* what it can be set to — its keys, what to call them, the
+groups it sorts them into, every value each will take — and it declares it to
+whatever loads it. So the helper loads the core, asks it, and writes down the
+answer; the page is whatever that emulator's authors put in it, in their order,
+under their names, and it is right about a version of the core released after this
+shell was. PPSSPP alone declares seventy-five settings across five groups. A
+hand-written copy of that would be wrong the first time somebody updated the core
+and would say so nowhere.
+
+Starting a game is the shell's own launch, the one every row on this bar uses:
+the loading screen, the display it is pinned to, and the guide's Close all work
+on it exactly as they do on anything else, because what the helper answers with
+is a command line and never a running process.
+
+**And the controller is handed over with it.** An emulator is not like other
+applications here: it binds *one device* to each player port, so which
+controller lands on player one decides whether anything happens at all. On a
+machine running this shell there is more than one of every pad — the guide
+button is kept from applications by grabbing each controller and standing a copy
+of it in the pad's place ([the guide button](#the-guide-button-is-the-shells-alone)), and Steam
+mirrors every pad again as a virtual Xbox controller — so the first device an
+emulator finds is usually the grabbed original, which by design says nothing to
+anybody. That is a player one that cannot move.
+
+So the shell works out the order itself, every single time a game starts: the
+pad somebody last had their hands on leads, the other live ones follow, and the
+grabbed originals go last. It is written as player indices into a small file of
+its own and read on top of RetroArch's own settings with `--appendconfig`.
+
+**And where the buttons are, for the pads RetroArch has never heard of.** An
+emulator does not know one controller from another until it recognises it:
+RetroArch keeps a list of the pads it has profiles for, and a pad that is not on
+that list gets no buttons at all — every one of them dead, on whichever player
+port it lands. Steam's own virtual controllers are not on that list, and this
+shell puts one of those in front of a game every time somebody plays through
+Steam Input, so a living room can very easily hold four controllers and nothing
+that works.
+
+The shell has a *different* list — SDL's, the one every game on this machine
+already trusts, carried along with the controller reading it does anyway — and
+it has the pads RetroArch's is missing. So for any pad that list knows, the
+shell says where each control is, in the numbers RetroArch counts in: a button's
+place in the device's own list of buttons, an axis's place in its list of axes,
+and a D-pad named as a hat where the pad reports one. Naming the controls by
+*place* rather than by the letter printed on them is what lets one answer cross
+between an Xbox pad and a PlayStation pad, whose two middle face buttons are the
+other way round.
+
+**And for every XInput controller, whether either list has heard of it.** There
+is always a pad newer than the lists — RetroArch's has no entry for an 8BitDo
+Pro 3, and a controller nobody recognises is a controller with no buttons. But an
+XInput pad is not a pad of unknown layout. It is a pad of *the* layout, the one
+its driver has been required to send since the first Xbox controller, so a device
+declaring that set of codes has already said where everything is. The shell reads
+it straight off the device and needs no list at all.
+
+Two codes make that worth stating carefully. The kernel calls `0x133` *north* and
+`0x134` *west*, meaning the top button and the left one — and on a pad of Xbox's
+shape that is exactly backwards, because its driver sent `0x133` for the X marked
+on the left long before those names existed. A PlayStation pad sends the same two
+codes the other way round and means the kernel's names by them. So the shell
+insists on two things before reading a pad this way: analogue triggers on their
+own axes, and no shoulder *buttons* beneath them, which is the pair no Sony pad
+has ever matched. Anything failing that is left alone rather than guessed at.
+
+Two things are deliberately left out. A pad **no** list knows and whose shape
+cannot be read is given its player number and nothing else, leaving RetroArch to
+answer for it exactly as it does today — a guess from a list is worth more than a
+guess from this shell. And the **guide button is never handed over**: it is the
+way out of whatever is in front, and an emulator with a binding for it would
+answer the one press that is not an application's to answer.
+
+**Steam Input is kept out of it.** Steam does not pass a controller through; it
+takes the real one over and stands a virtual Xbox pad in front of it, so while
+Steam runs every pad on the machine is on it twice and the copy answers to a
+profile set for some other game entirely. An emulator binding one device per
+player cannot prefer the real one, so the shell does it instead, and names only
+as many player ports as it handed controllers over — a port past the end of that
+list is a port RetroArch would fill by itself, out of exactly what was left out.
+The exception is a controller Steam Input is the *only* driver for: there the
+invented pad is not a duplicate but the whole of it, and leaving it out would
+hand the game nothing at all. The second-generation Steam Controller used to be
+that case and no longer is — the shell
+[drives it itself](#the-pad-with-no-driver-at-all), so RetroArch is given the
+real thing.
+
+None of it is kept. RetroArch writes its settings back over its own
+configuration when it closes and cannot tell a setting somebody chose from a
+line appended on the way in, so the file switches that off for launches the
+shell makes — otherwise one evening's pad order would stand as settings for
+every launch afterwards, including the ones this shell knows nothing about. Save
+files, save states, playlists and each core's own options are written elsewhere
+and are untouched. Deleting the file loses nothing; the next game writes it
+again.
+
 ### Appearance
 
 #### Accent color
@@ -1733,12 +2106,11 @@ the same four HDR settings per output, for a session with no shell — see
 Settings > Display > OLED protection  >  DP-1  >  On
 ```
 
-One switch, and what it does is rest this screen behind black while a game is
-being played on another one. An OLED panel keeps what it is shown, and the
-start screen is the worst thing there is to keep: the bar sits in the same row
-of pixels every second it is up, the clock in the same corner, and a second
-display left on it through an evening's play is a display with a bar burnt into
-it.
+One switch, and what it does is rest this screen behind black while another one
+is being used. An OLED panel keeps what it is shown, and the start screen is
+the worst thing there is to keep: the bar sits in the same row of pixels every
+second it is up, the clock in the same corner, and a second display left on it
+through an evening's play is a display with a bar burnt into it.
 
 The black is the compositor's own sheet over the whole screen — the cursor and
 anything running on it included — because the shell owns one surface per
@@ -1747,19 +2119,24 @@ taking input the whole time it is down, which is what makes moving the pointer
 onto the screen the way to get it back. A second going down, a quarter of a
 second coming back, and it reverses from wherever it has got to.
 
-Four things stop a screen being rested, and none of them is a setting:
+Three things stop a screen being rested, and none of them is a setting:
 
 | | |
 | --- | --- |
-| **Nothing is being played** | Not merely running: a game, worked out from the process behind the window in front rather than from what the window calls itself, because a game reaches the screen as `steam_app_…`, as its own name, or as nothing at all. When the game ends, every screen comes back. |
-| **The game is on this screen** | The screen being played on is the screen being watched. |
+| **Nothing is open at all** | Something has to be in front of one of the displays — any application, whatever started it: a game, a film, a browser, an emulator, Valve's own storefront. The compositor answers it from the window in front rather than from what that window calls itself, because an application reaches the screen as `steam_app_…`, as its own name, or as nothing at all. When the last one closes, every screen comes back. |
 | **This screen is being driven** | Control is on it, so the user is on it. |
 | **Something on it is still painting** | A film on the second screen is exactly what a second screen is for. A film somebody *paused* is deliberately not spared — a paused film is a still picture, which is the thing this exists for. |
 
+What is deliberately *not* on that list is what happens to be open on the screen
+being rested. A paused game, a window nobody has touched, the start screen: all
+of them are still pictures, and the two clauses above already spare every screen
+somebody is actually at. A session with something open on each display would
+otherwise be one where no screen could ever rest.
+
 Past those, a screen rests five seconds after the user last did anything on it:
 moved the pointer over it, took it over, or pressed something on it. Going back
-to the game starts that five seconds again, so switching between screens never
-blacks one out in the middle of it.
+to what was open starts that five seconds again, so switching between screens
+never blacks one out in the middle of it.
 
 It is written down per connector, beside the mode and the night light:
 
@@ -2091,8 +2468,17 @@ it cannot join has to be set up elsewhere.
 ### System
 
 `Settings > System` is the page about neither the picture nor the sound. It holds
-two rows: **Application scaling**, which is the reason it exists, and **System
+four rows: **Application scaling**, which is the reason it exists,
+**Picture-in-Picture**, which is what happens to a browser's floating video
+window, **Button hints**, which is whether the start screen writes
+[what its buttons do](#what-the-buttons-do) in its corner, and **System
 information**, which is the page a console needs to be able to say what it is.
+
+Button hints is under System rather than under Appearance, which is the one thing
+about its place worth arguing over. What it changes is not how the shell *looks*
+but how much it says about itself — the same kind of answer as how large an
+application is drawn, which is the row above it, and not the same kind as an
+accent colour.
 
 ```
 Settings > System > Application scaling  >  150%
@@ -2148,9 +2534,413 @@ afterwards costs a black screen; here there is nothing on screen to correct —
 every application is started *by* the shell, always after it has said what this
 is.
 
+#### Picture-in-Picture
+
+```
+Settings > System > Picture-in-Picture   >  On, medium, top right
+                                            Picture-in-Picture  >  Off / On
+                                            Size                >  Small / Medium / Large
+                                            Placement           >  the four corners
+```
+
+A browser asked to put a video into picture-in-picture opens a small window for
+it, and that window is titled `Picture-in-Picture` — the one string every
+browser that has the feature agrees on. It cannot be recognised any other way:
+the window belongs to the browser and calls itself by the browser's name, which
+is also what the window the video came out of calls itself.
+
+A window that answers to that title is taken out of the layout every other
+window here is under. It is **not maximized**, it is **not given the keyboard**,
+it is **not listed in the guide** as something to switch to, and it is drawn
+**in front of everything the session has** — over a fullscreen game, over the
+start screen, and over the guide, which is the one surface nothing else in this
+compositor is allowed in front of. That is the whole feature: a window that is
+still there while the user does something else.
+
+It is still clicked on, exactly where it is drawn, which is how its own play
+button is pressed — and it is looked for *in front of* everything else for the
+same reason it is drawn in front of everything else: what is nearest the hand
+and what is nearest the eye cannot be two different windows. A press on it never
+takes the keyboard, though. Whatever the user was working in goes on hearing
+every key, which is the whole point of a video parked out of the way. And the
+application it belongs to is never put to sleep while it is on screen, however
+completely the rest of that application is covered — the sleeper asks whether
+anything of an application can be seen, and this can.
+
+**Size** is three shares of the display's width — a sixth, a quarter or a third
+— rather than a number of pixels: the same choice has to mean the same thing on
+a laptop panel and on a television across the room. How *tall* the window is at
+that width is the window's own business. The compositor asks it what shape it
+wants to be, by sending it a configure carrying no size at all — which is
+xdg-shell for *choose one* — and follows the answer, so a four-to-three video is
+drawn four to three and a phone's video stood on its end is drawn standing on
+its end. Until it answers, and for a client that never does, sixteen to nine
+stands in.
+
+The answer is the first size the client draws that it was not *told* to draw,
+and it is listened for as long as the window floats. Both halves of that were
+paid for. A client's opening move is very often not a window at all — Firefox
+commits a single pixel before it has laid anything out — and a placeholder read
+as a shape says *square*, which is a widescreen video in a square frame. And a
+browser will put a video of another shape into the same window, which is a
+second answer to a question that a single reading would have closed.
+
+**Placement** is the four corners and only the four corners: that is what a page
+driven by a controller can honestly offer, and every corner holds the window off
+both edges by the same distance — the shell's menu radius, which is what every
+shape in this session is spaced by. A second picture-in-picture opened while the
+first is still up stands **below it in a column** from that corner, in the order
+they started floating — two windows in one corner is one window with something
+wrong with it, and the one already there does not move aside for the newcomer.
+
+**A mouse moves it.** Eight logical pixels in from each edge of
+the surround is a band that resizes the window, and where two of those bands meet
+is a corner that resizes it both ways; everything inside them is the video, and
+dragging there carries the window. The pointer says which is which — it takes a
+resize shape over the edges and leaves the client's own cursor alone everywhere
+else. Neither is a client's drag: nothing is asked of the browser and nothing is
+told to it.
+
+**A press inside the frame is that window's, and nothing else's.** It is drawn in
+front of everything the shell owns, so it is pressed in front of everything the
+shell owns — ahead of the start screen and the guide, which are on the layer a
+press would otherwise be answered by first. Without that rule a click on a video
+was a click on whatever the shell had underneath it, and the user got a row
+pressed they never aimed at. It stops there whether or not the client wants it,
+too: a point inside the frame that no surface answers is a point *nobody* hears
+about rather than one the application behind hears about, and the frame is asked
+rather than the surface, since the surround is this compositor's own paint and
+lies in no client at all.
+
+The one exception is a **menu of the shell's on screen**, and not only under the
+panel: a press past a menu is how a menu is dismissed, and that press has to
+reach the shell to do it. A panel that could not be got rid of by clicking beside
+it would be worse than a video that ignores one click — and a press outside a
+menu presses nothing and only closes it, so nothing is done that the user did not
+ask for.
+
+The middle of the window has two jobs at once, so it does both. The press reaches
+the client the instant it happens, so a play button answers at once, and the drag
+only starts if the hand then travels four pixels — at which point the client is
+told the pointer *left*, which is what cancels the click it was in the middle of.
+It is deliberately not sent a release: a release is a *completed* click, and on a
+video's own play button a completed click is the video stopping because somebody
+moved it out of the way.
+
+A drag never restretches the video. The opening keeps the shape its client asked
+for, so all eight handles scale the window and pulling one edge moves the other
+dimension with it; the edges nobody is holding stay exactly where they were. It
+cannot be pulled smaller than the smallest the layout draws, or larger than the
+screen, or off it — and it stays on the screen it was opened on, as every window
+here does.
+
+**A controller moves it too, out of the guide.** A console has no pointer, so
+there is nothing to put on the window and nothing to press it with — but there
+is a moment when the user is plainly not using the application underneath, and
+that is the moment the overlay is up. **With the guide open, the right stick
+pressed hands the guide's own directions to the videos floating over it**, and
+presses again to hand them back; Back does the same. Nothing is offered when
+there is nothing floating on that screen, and the press then does nothing at all.
+
+The selected window is marked by the compositor rather than by the shell, which
+is forced and is the right way round: such a window is drawn in front of every
+surface the shell owns, so a mark drawn by the shell would be behind the thing
+it marks. Its hairline surround turns the session's accent and an accent glow
+breathes out into the shadow around it, on the same one-and-four-fifths seconds
+everything else the user is choosing between breathes at. The guide's own
+selection stops breathing while the directions are elsewhere: it stays where the
+user left it and stays lit, because they are coming back to it, but two things
+pulsing side by side is two controls claiming one thumb.
+
+**And the guide steps back while they are gone.** Three things at once, because
+they are one thing said three ways — *the thumb is somewhere else*. The
+selection stops breathing, as above. The **frame around the selected window card
+goes**: that ring is the whole of what says *this card answers the next press*,
+and while the directions are on a video it does not, so a lit ring around a card
+the D-pad no longer reaches is the shell lying about where the user is standing.
+And the menu itself dims, a little under two fifths of the way down, over about
+a fifth of a second — far enough that which of the two halves is live is
+answered from the corner of an eye that is on the video, and not so far that it
+stops being readable, because it is still what the user is coming back to.
+
+The windows in the deck are *covered* for that rather than faded. Everything
+else in the menu is the shell's own drawing and a fade reaches it; the windows
+are the compositor's, and the shell only frames them. Fading the frame alone
+would leave the brightest thing in the menu — a live window, very often a moving
+picture — at full strength while everything around it went quiet, which reads as
+a fault rather than as a step back. So the same share of the same dark glass is
+laid over each card instead, and the whole menu arrives at one brightness.
+
+It is a position rather than a start time, in both directions, so a guide that
+gets its directions back before it has finished stepping away comes forward from
+where it is instead of snapping the rest of the way out first.
+
+**The right stick then carries the window**, exactly as a mouse button held on it
+does — the same arithmetic, the same limits, the same leaving of the column. It
+takes hold by itself, without a button to hold down, and lets go when the stick
+comes back to rest. The D-pad and the left stick walk between the videos on that
+screen, by **where they are** rather than by what order they were listed in: they
+stand in a column until somebody moves one, and after that they are wherever they
+were put. A direction with nothing that way moves nothing, which is what pushing
+into the end of any other list here does. Only that screen's, because the guide
+is only ever on the screen being driven and a window belongs to the screen it
+opened on; the videos on the other screen are reached by taking the guide there
+with the shoulder buttons.
+
+**The top face button raises the window's own menu**, which is the menu the right
+button raises, about the same window, with the same rows. Everything else on the
+pad goes on meaning what it means everywhere — the guide button is still the way
+out of all of it, the shoulder buttons still move between displays, the volume is
+still about the machine and the camera still photographs whatever is in front of
+the user.
+
+**One thing is allowed over such a window, and it is a menu about it.** A window
+made large enough covers the very menu that offers to make it small again —
+awkward with a mouse, and a dead end on a pad, where there is no pointer to find
+an unseen row with. So a context menu is drawn in front of the floating windows
+rather than behind them, and the pointer follows the picture: a press on the
+panel is the shell's, and one beside it is still the window's.
+
+**The menu gets a surface of its own** for this, a child of the display's, and
+nothing else is drawn on it. That is the part that had to be learned. A panel is
+rounded and a rectangle is not, so lifting the panel's bounding box out of the
+shell's main surface laid four square corners of the start screen over the video.
+Given a surface of its own the panel is exactly its own shape, everything around
+it is transparent, and the video shows through to its edge. The compositor is
+told which surface it is and nothing more: it never learns where the panel is or
+what shape it has, and the surface's own input region is what decides whose a
+press is, so what the eye finds and what the hand finds cannot drift apart.
+
+The surface is a *subsurface*, so it commits with the display's own and no frame
+can show the panel without the wash behind it or the wash without the panel. It
+is made the first time a menu is opened on that display, and its buffer comes
+back off when the last one goes — a session where nobody opens a menu pays
+nothing for any of this.
+
+**The right button raises a menu** — the same menu the rest of this session
+raises, drawn by the shell, because a compositor cannot draw the shell's glass.
+The compositor asks for it and is told what was chosen. Eight rows: *Move*,
+*Resize*, *Realign*, *Full screen*, *Move to next display*, *Move to previous
+display*, *Close*, and *Cancel* in a band of its own.
+
+*Move* hands the window to the pointer: the pointer is put in the middle of it,
+the window follows until the next click, and a click of any other button puts it
+back where it was. *Resize* does the same from a corner — the one with the most
+screen behind it, which is where the room to grow is — with the pointer put on
+that corner so it follows the hand rather than the window jumping to it. Nothing
+is held down through either, because the button that chose the row was let go of
+before the window ever moved.
+
+**On a controller those two rows are the same two acts with the stick instead.**
+Nothing is warped, because there is nothing to warp: the window follows the right
+stick from the moment the row is chosen, Accept leaves it where it ended up and
+Back puts it back where it started. Resize is the only way to resize a floating
+window with a pad at all, since the stick alone moves it.
+
+**The directions move the window inside that mode**, rather than walking the
+selection off it — walking it off is what they must not do, since it would leave
+a window being carried by nobody, but doing nothing at all was the answer to
+that only for as long as the one control here was a stick. A keyboard has no
+stick. So a direction is a step: eight logical pixels for the first press, and a
+key held down accelerates over about fourteen repeats to sixty-four, which
+crosses a 1080p display in about three seconds from a standing start. A step
+small enough to place a window to the pixel takes half a minute to cross a
+screen and one large enough to cross a screen cannot place anything; the ramp is
+what has both. It eases rather than climbing at a constant rate, and a different
+direction or a gap longer than a held key's starts the run again at walking
+pace.
+
+A resize pulls **the corner the compositor chose** — the one with the most room
+behind it — so the direction that makes a window in the bottom-right larger is
+up and left. That is the stick's behaviour exactly, and deliberately: which
+corner is held is a fact about where the window is standing on a display only
+the compositor has laid out, and a shell that mapped the keys some other way
+would be guessing at it.
+
+*Realign* undoes both of them: the window goes back to the size the Settings
+page asks for, in the corner it asks for, wherever it had been dragged or pulled
+to — and it springs there rather than snapping, the same spring the column moves
+on when a video arrives in it or leaves it. A window already standing in the
+column is already all of that, so the row simply confirms it.
+
+*Full screen* takes the window out of the corner altogether and gives it the
+display, as an ordinary application window: **maximized, listed in the guide,
+holding the keyboard, closed and switched to like every other one**. It grows out
+of its corner to get there, over the same three-tenths of a second and along the
+same flight a window makes when the guide brings it back from a tile, because
+what the row asks for is this window opened full screen and that is what opening
+one full screen looks like here. The flight waits for the client: what it grows
+*from* is the corner, and what it grows *to* is the window at its new size, so it
+begins on the first frame the client has actually drawn that size rather than on
+the frame it was told to.
+
+**What sends it back is on the menu of the deck it has just joined.** The
+guide's own window menu — the one raised on a card, in the table of
+[context menus](#the-context-menu) — carries *Open as Picture-in-Picture*, which
+is this row read the other way: the window leaves the layout and goes to sit in
+the corner, with the surround, the size and the column a browser's video gets.
+The two are one request in two directions, and what it carries is nothing more
+than *which windows float*.
+
+So it works on any window at all, which is the honest consequence of that rather
+than a second feature: the user is a better judge of what belongs in a corner
+than a title is. And what they say outranks the title from then on — a browser
+goes on calling that window `Picture-in-Picture` after they have said they want
+to watch it properly, and a session that read the title again would put the video
+straight back in the corner it had just been taken out of.
+
+The row is drawn only while this feature is switched on, and absent rather than
+greyed when it is not: a window given a corner on a session with no floating
+windows would have no menu to be got out of the corner with. That is the one
+thing a switched-off Settings page has to keep true.
+
+The two display rows send the same request the guide's own window menu sends,
+and follow the same rule: neither wraps, and the row that cannot be taken is
+disabled and still drawn, so the menu keeps its shape on every screen. A move
+between screens changes the screen and nothing else — a window still standing in
+the corner joins the new screen's column, and one that had been dragged keeps
+the place it was put in. *Close* asks the window to close, which is what puts
+the video back in the page it came from; it is deliberately not the Close the
+guide offers for an application, because that one ends the application and the
+application here is a browser with the rest of somebody's session in it.
+
+**A window that has been moved leaves the column.** It keeps where it was put, it
+is no longer counted in the corner it came from, and the place it used to stand
+in is free — the next video that starts floating takes it, and a window below it
+moves up into it exactly as it would have if the window had closed. Two things
+put a moved window back: the *Realign* row above, which is one window saying so,
+and the Settings page, which is all of them — choosing a size or a corner there
+is the user saying where they want their videos, and every floating window
+returns to the column when they do.
+
+The window is drawn with a hairline surround — **three pixels, fixed** — and a
+shadow, its corners rounded at eight. The surround is not decoration. A client's
+buffer is a rectangle with four square corners and nothing in a renderer can cut
+a curve out of one, so the corners are *covered* rather than cut: the window is
+configured to the opening in the surround, and the surround is painted over its
+edges — rounded on the outside at the full radius, rounded on the inside at what
+is left of it.
+
+**That is why the two numbers are one decision.** The client's square corner sits
+√2·(r − b) from the centre of the outer arc, so it is hidden only where
+√2·(r − b) ≤ r: a surround as thin as three pixels can only round a corner about
+eight, and rounding it further at that thickness brings the four corners of the
+client's buffer out through the curve. It is the shell's menu radius that this
+window is held *off the edges of the screen* by, not what its own corners are
+rounded at — those were one number while the surround was a share of the radius,
+and a hairline frame would have parked the window three pixels off the edge of
+the display. The arithmetic is in `crates/lxb-protocol/src/pip.rs`, shared with
+the compositor that paints it so the two cannot disagree about the shape.
+
+**Nothing is drawn outside that shape.** Two different clients make that worth
+saying. One draws its own decorations — Firefox's picture-in-picture window is a
+GTK window with its own rounded corners and its own drop shadow, spilling tens
+of pixels outside the window proper, which without this hangs out past the
+surround and is exactly the leak the surround exists to prevent. The other
+simply does not take the size it is given, or has not taken it yet. So the
+window is scaled down to fit its opening if it is drawing larger than one —
+shrink only, the way the overview scales a window into a card — and then clipped
+to it.
+
+**And nothing shows through it.** The surround is painted a shade *over* the
+picture, the way a mat lies on the edge of a photograph rather than beside it,
+because nothing at that edge lines up: the opening is a fractional rectangle —
+a quarter of the display's width inset by a third of a radius that is a share of
+its height — while the client is configured at a whole size, its buffer lands on
+whole pixels, and the surround's own edge softens itself over the one pixel it
+falls in. Butt those together and half a pixel belongs to nobody, which on screen
+is a one-pixel line of whatever the user is really doing, down one side of their
+video. Half a pixel is enough, now that both halves take the opening from the
+same arithmetic: it is what a fractional display scale leaves in the resampling,
+and it antialiases the surround's inner edge the way its outer edge always was.
+
+Behind the window, the opening is filled with the surround's own colour, for the
+other way a hole opens: a client that does not cover it at all — one still
+starting up, one that will not take its size, one with transparent corners of its
+own — is centred and letterboxed on more surround. What is behind a floating
+window is the application the user is actually using, and any of it seen *inside*
+the frame reads as the window being broken rather than as something showing
+through.
+
+**It arrives and it leaves.** A window that simply appeared in a corner at full
+size would read as a glitch rather than as something the user asked for, so it
+fades up out of nothing over 240 ms while it grows the last tenth of the way to
+its own size — eased out, so it is already travelling when the eye finds it and
+slows into place. Going takes 180 ms and is the same two numbers read the other
+way: it fades out and falls back a tenth, smoothstepped, so the last frame drawn
+of it is worth nothing at all rather than a fifth of a window blinking off.
+
+The frame, the picture and the colour behind the picture are one shape and go
+through **one** transform about one origin — the middle of the window — rather
+than three that agree by arithmetic; a surround three pixels thick has nothing
+to spare for two halves rounding a corner to different pixels. What it costs is
+a pixel: while the window is being scaled, the client's own drawing is cut one
+physical pixel inside its opening, so that a pixel lost to rounding is a pixel
+of *surround* over the video rather than a square corner of video outside the
+curve. What shows in its place is the surround's own colour, which is what is
+behind the video anyway.
+
+**And the column springs.** Two things move a floating window that nobody is
+dragging: another window arriving under it or leaving above it — which is what
+happens the moment somebody pulls one out of the column, and the column closes
+up behind it — and a press on the Settings page changing how large these
+windows are or which corner they sit in. Both take 480 ms and both are a
+*spring*: a decaying cosine that goes about a tenth of the way past its
+destination, comes back about a hundredth short of it, and lands. One good
+bounce and the ghost of a second, which reads as something soft rather than as
+something sprung.
+
+It lands *exactly*. The wobble is three and a half half-turns because a cosine
+is exactly zero there, so the curve arrives on its destination at the end of the
+480 ms rather than a fraction of a percent short — and a fraction of a percent
+of a five-hundred-pixel window is two pixels appearing from nowhere on the last
+frame of the animation, which is the jump the spring exists to remove.
+
+The window's own picture is scaled per axis while it springs, so a window
+springing into a shape of another proportion squashes on the way. That is the
+same one transform everything else goes through, so the surround, the video and
+the colour behind the video cannot come apart.
+
+Three windows never spring, and each for its own reason. One with a **hand on
+it** — dragging or resizing — is where the hand is, and only while the hand is
+still on it: a drag cancelled puts the window back the way everything else
+moves. One still **arriving** is already animating, and a browser answering what
+shape it wants to be a few frames in must not turn that into two animations at
+once. And one being laid out for the **first** time has nowhere to spring from.
+
+Leaving is the harder half, and it is worth saying why. **A browser does not
+stop calling its window picture-in-picture when the video goes back into the
+page — it destroys the window.** A destroyed surface has no buffer, no texture
+and no state, so a fade drawn from the window itself would have nothing to draw:
+the video would vanish on the first frame and the surround would fade out around
+a hole. So the compositor keeps a note of what each floating window last looked
+like — the texture handles the renderer already made, which outlive the client
+that gave them, and the numbers that say where on the screen they go — refreshed
+every frame at the cost of a reference count per surface, and nothing at all on
+a session with no video parked in a corner. When the client goes, that note is
+what is faded out. A renderer that did not take the note draws the surround
+fading with nothing inside it, which is the case on a second GPU and nowhere
+else.
+
+**Off** is the honest answer for somebody who does not want a video following
+them around: such a window becomes the application window it otherwise is —
+maximized, listed, focusable — which is what this session did before it could be
+asked. It is written to `~/.config/lxb/shell.toml`:
+
+```toml
+picture-in-picture = true
+picture-in-picture-size = "medium"
+picture-in-picture-place = "top-right"
+```
+
+Carried out by the compositor, which is what places windows, and remembered
+nowhere else: the shell says what this is as soon as it connects, which is long
+before any browser exists to put a video in — the same bargain the application
+scale above it is under.
+
 #### System information
 
-The second row of the page opens a panel rather than a column: the shell's own
+The last row of the page opens a panel rather than a column: the shell's own
 fennec mark over nine named facts about the machine, read at the moment it is
 pressed and dismissed with `Close`.
 
@@ -2230,9 +3020,11 @@ passes it to a neighbour.
 | `→` inside a subcategory                    | Open the subcategory under the cursor |
 | `←` inside a subcategory                    | Step back out one level             |
 | `Tab` / `Shift+Tab`, `L1` / `R1`            | Move to another display             |
+| `Alt+Tab` / `Alt+Shift+Tab`                 | Walk [the guide's cards](#the-cards) while Alt is held; letting it go switches to the one the walk landed on |
 | `Esc`, `Backspace` or controller `B`        | Step out, then open the guide overlay |
 | `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
 | `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](#the-context-menu) on what is selected |
+| `P`, controller right stick pressed, with the guide open | Hand the guide's directions to the [videos floating over it](#picture-in-picture), and hand them back |
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3`, controller Guide/STEAM + `R1` | [Photograph](#screenshots) the display being driven |
 | The volume keys, with anything held | Turn [the session](#quick-settings) up or down a step, or silence it |
 
@@ -2327,16 +3119,66 @@ report node too, reads of it are not exclusive, and there is no kernel
 interface for making them so — SDL will read a pad that way in preference to
 `/dev/input` when its HIDAPI drivers recognise it. So every application the
 shell starts is handed `SDL_HIDAPI_IGNORE_DEVICES` naming *the pads this shell
-is holding*, and only those: a listed pad still arrives complete through
-`/dev/input`, and a pad that was never taken — one with no gamepad node at all,
-such as the second-generation Steam Controller — is never listed, so nothing is
-ever asked to ignore the only route a controller has. Anything already in the
-environment is added to rather than replaced.
+is standing in front of*, and only those: a listed pad still arrives complete
+through `/dev/input`, and a pad with nothing standing in for it is never
+listed, so nothing is ever asked to ignore the only route a controller has.
+Anything already in the environment is added to rather than replaced.
 
-That last pad is the exception in every direction. It has no gamepad node to
-grab, so Steam reads its report exactly as the shell does and takes its own
-view of the Steam button; what the shell can do there it already does, which is
-to drop the pad's lizard-mode keyboard in the compositor.
+#### The pad with no driver at all
+
+The second-generation Steam Controller reaches the same place by the opposite
+road. `hid-steam` does not claim it, so the kernel makes it no gamepad node —
+there is nothing to grab, and nothing for a game to find either. LineXinBar
+drives that pad itself: it reads the pad's report off `hidraw` and **builds the
+gamepad the kernel did not**, a `uinput` device of an Xbox controller's exact
+shape, so that SDL, GilRs, RetroArch and any game find a complete controller
+where they look for one.
+
+The Steam button never reaches that device. It is declared on it, for the same
+button-numbering reason as above, and it is the one control the driver keeps —
+which needs no grab to enforce, because a stand-in this shell builds is only
+ever told what this shell chooses to tell it. The pad's own raw node joins the
+ignore list on the same terms as any other, now that there is somewhere else to
+read it.
+
+**Valve's client is the one reader that cannot be shut out**, and it is worth
+being plain about why. Steam reads this pad's raw HID reports with its own code
+rather than through SDL, so the ignore list above does not reach it, and a raw
+node cannot be held exclusively by anybody — there is no `EVIOCGRAB` for
+`hidraw`. Every other controller escapes this by having a device node to take
+away; this one has none, which is the whole reason the shell had to build it
+one. So the button reaches Steam whatever the shell does.
+
+What is left is to ask Steam not to act on it, and Steam has a setting for
+exactly that — *Guide button focuses Steam*, on its Controller page. The shell
+turns it off through the same interface it signs the client in through, every
+time it wakes the client, because the client keeps that setting in memory
+rather than on disk. Without it, every press of the guide button opens Big
+Picture behind the shell. Measured three presses either way: with the setting
+on, Steam goes to Big Picture on the first press; with it off, its window list
+does not move.
+
+The triggers are analogue over the pad's own fifteen bits rather than the
+single byte `xpad` gives one — every reader scales by the range a device
+declares, so declaring the true one costs nothing and keeps the part of a
+trigger that is not a button. The stand-in has no rumble: shaking the pad means
+writing to it, and the driver does not.
+
+The driver is deliberately **read-only**. Leaving lizard mode, rumbling, the
+gyro and the trackpad haptics all mean *writing* to the pad, which is what
+Steam does when it claims it, and two programs configuring one controller is
+one controller doing neither. Reading only is what lets the shell and Steam
+hold the same pad at once — so with Steam running the trackpads, the gyro and
+the haptics keep working through Steam, and with Steam closed the trackpads
+still move the pointer as the firmware's own mouse. The lizard-mode *keyboard*
+that would otherwise deliver every button a second time is dropped in the
+compositor.
+
+The shell reads this pad from its report and not from the gamepad it made: the
+report's layout was captured on the hardware, so which button is which is known
+exactly, where a mapping database asked about a pad it has never heard of gets
+two of the face buttons the wrong way round. Everything else on the machine
+reads the gamepad.
 
 Icons are resolved through the freedesktop icon theme spec, following
 `Inherits` from `index.theme` and falling back to hicolor and
@@ -2439,6 +3281,18 @@ switcher; `A` on the last card is the bar, over the running application or
 plainly if there is none. Close, and [the menu](#the-context-menu) the top face
 button raises, are both about the *selected* card rather than about whatever is
 in front.
+
+`Alt+Tab` is that switcher reached the way every desktop reaches it. The chord
+brings the overlay up with the deck already in front and the highlight on the
+card *behind* the one on screen; each further `Tab` while Alt is held steps one
+card on, `Alt+Shift+Tab` steps back, and letting Alt go takes whatever the walk
+landed on — that application coming to the front with the keyboard, or the start
+screen where the walk ended on the last card. The walk wraps, alone among the
+ways of moving in the deck: a held modifier is a question rather than a held
+direction, and a fourth `Tab` on three applications is asking to come back round
+to the first, not to be told there is nowhere further to go. The compositor
+watches for the modifier coming up, because by then the overlay it is being let
+go of over is the shell's and the application is no longer being sent the keys.
 
 They are the live windows rather than pictures of them. The compositor animates
 each window into its slot and draws it there, out of the same layout crate the
@@ -2675,8 +3529,9 @@ Six of them exist so far:
 | The bar | One of the user's own files, on a shelf | Open, Open with, Delete, [Rename](#changing-a-name) / Sort, Cancel |
 | The bar | One of the user's own files, inside a folder listing | Open, Open with, Delete, [Copy, Move](#carrying-a-file-somewhere-else), [Rename](#changing-a-name) / Sort, Cancel |
 | The bar | A folder inside a listing, out of the same disc | Copy, Move, Rename / Sort, Cancel |
-| The guide | The window under the selected card, out of that card | Move to next display, Move to previous display, Screenshot the app / Cancel |
+| The guide | The window under the selected card, out of that card | Move to next display, Move to previous display, [Open as Picture-in-Picture](#picture-in-picture), Screenshot the app / Cancel |
 | The guide | [Everything making a noise](#the-volume-mixer), out of the mixer tile | One row per application / the session's own output |
+| Anywhere | A [floating window](#picture-in-picture), out of the window itself | Move, Resize, Realign, Full screen, Move to next display, Move to previous display, Close / Cancel |
 
 The last is a menu in shape and material and not in kind: its rows are tracks
 rather than commands, so it is slid rather than pressed and it is raised by `A`
@@ -2708,6 +3563,23 @@ something you can still see behind it.
 It takes every button while it is up. `B` closes it and goes back to whatever
 raised it, one layer at a time; the guide button and the keyboard chord still
 outrank it, and both put it away on their way past.
+
+**Every one of them is drawn on a surface of its own**, a child of the display's,
+with nothing else on it. There is one context menu in this shell at a time and
+this is where it goes, whichever of the seven raised it — which is what lets the
+compositor put it in front of a [floating window](#picture-in-picture), the
+one thing otherwise drawn over everything the shell owns. A window somebody has
+made large enough covers the very menu that offers to make it small again, and on
+a pad, with no pointer to find an unseen row with, that is a dead end. The
+surface's own input region is cut to the panel, so what the eye finds and what
+the hand finds are the same shape, and nothing else about the panel — where it
+is, how large, what shape — ever reaches the compositor.
+
+The panel's glass shows what is behind it wherever that is, and it is the same
+answer for all seven: what the shell drew itself it reads back out of its own
+frame, its wallpaper it evaluates from the function that painted it, and what
+another client drew it is handed a small picture of by the compositor — see
+[What a pane of glass shows](#what-a-pane-of-glass-shows).
 
 ## The on-screen keyboard
 
@@ -2971,7 +3843,7 @@ touches a pixel.
 The three files that make a session find it are in
 [`share/`](share/xdg-desktop-portal): the `.portal` file that names the D-Bus
 backend, the `linexinbar-portals.conf` that says this backend answers screen
-sharing and leaves file choosers and the rest to whatever else the machine has,
+sharing and file choosing and leaves the rest to whatever else the machine has,
 and a D-Bus service file so anything asking early can start it. The compositor
 starts it beside the shell under `--shell`, because a portal is a client of
 this compositor and has to be given the session's own display.
@@ -3025,6 +3897,290 @@ through `consent.rs` that shares a screen because something was missing.
 One question at a time. The panel is modal and takes every button while it is
 up, so a second application asking while the first question is on screen is
 refused rather than queued behind a panel the user cannot see.
+
+## Choosing a file
+
+A browser wanting a photograph to upload, an editor wanting somewhere to save,
+a game wanting a folder for its mods: none of them opens a file dialog of its
+own on a Wayland session. It asks `xdg-desktop-portal`, which asks whichever
+backend the desktop installed — usually without the application knowing,
+because GTK's and Qt's own file dialogs quietly become portal calls when there
+is a portal to call. This is LineXinBar's:
+`org.freedesktop.impl.portal.FileChooser`, answering `OpenFile`, `SaveFile` and
+`SaveFiles`.
+
+**It is a session's own chooser because every other one needs a mouse.** GNOME's
+and KDE's are windows with a tree, a list and a text field, and not one of those
+is reachable from a controller. This session already has a file explorer that
+is — the Files column — so the question is answered in *that*, framed.
+
+**The panel is the explorer, at eight tenths of the display.** Cut from
+[the context menu's own glass](#the-context-menu) through `sidebar_surface`, so
+it is the same material as every other surface this shell raises. What is inside
+it is [`crate::files`](crates/lxb-desktop/src/files.rs) and nothing invented:
+the same listing, the same folders-first order, the same search field at the
+head of a column, the same New folder row where the folder can be written to.
+
+**And it is drawn as the bar draws itself**, by the very same `pick_row` the
+[folder picker](#carrying-a-file-somewhere-else) uses: a mark that grows under
+the cursor with a bloom breathing behind it and a disc of glass beneath it, the
+name beside it, and the line under the name only where the row is chosen. The
+cross is the bar's cross, read against the panel instead of the display — every
+column's chosen row sits on one line, so the trail reads straight across, and
+the list slides under it rather than paging. It walks the same way too: Right
+steps into a folder and opens a column beside the one it came from, Left steps
+back out, and the trail of columns *is* the path. A panel of its own kind of
+row would have been a second visual language for the one job this shell already
+has a language for.
+
+**A photograph is drawn as itself**, in the round hole its mark would have had
+— the very shape a picture met in a folder wears on the bar, made by the same
+worker for the rows around each column's cursor and no others. Which picture is
+this is the question a chooser exists to answer, and a column of identical page
+marks cannot. A row whose picture has not arrived yet, or never will, keeps the
+mark for its kind; nothing about the row's size or place depends on the answer,
+so the picture fades into a row that was already there.
+
+**The foot says where you are, in full.** The whole path of the folder being
+stood in — `/home/somebody/Downloads`, not `Downloads`, because a column headed
+with a folder's name is one of several folders on the disk called that and what
+the application is handed is a path. Under it goes what is showing, or what the
+file will be called. Where a path is too long for the panel it is the one run in
+the shell cut from the *front*: every path on a machine begins the same way, and
+one cut at the end names the disk and never reaches the folder. Each column's
+own heading sits over its **mark** rather than over its names — the mark is where
+a column begins and what every row of it lines up on.
+
+**The pane brings its own ground.** Every other pane in the shell is laid over
+something the shell drew — the wallpaper it chose to be dark, or its own bar
+over it. This one is laid over whatever the application that asked happens to be
+showing, which on a video or a game is bright, moving and nobody's choice. So it
+is cut to a panel's frost rather than the sidebar's (`FROST_PANEL` exists for
+exactly this: *a panel has to carry text over anything at all*) and laid on a
+sheet of near-black in its own shape. Neither is opaque: what is behind still
+comes through, still moves, and is still recognisably the application waiting.
+Over a test pattern filling the display, the two together took the variation
+across the panel's own face from 31 luminance levels to 11.
+
+Eight tenths rather than the whole display is the point of it: the application
+that asked goes on drawing and goes on being seen round the edges, which is what
+says it is still there and still waiting. The surface is lifted over that
+application and holds the keyboard — every button belongs to the panel until the
+question is answered, and the letters typed into its fields must not reach the
+application underneath — but it is never called opaque, so the application is
+not put to sleep behind it.
+
+**Three things are the panel's own, and each because the question came from
+outside.**
+
+*A head row that answers.* For every purpose but "one file" the answer is not a
+row of the listing — it is the folder being stood in, or the set that has been
+ticked — so every column carries a row at the top that ends the question. The
+same shape the [folder picker](#carrying-a-file-somewhere-else)'s Paste row has.
+A column never *opens* on it, for that picker's reason: it is the one row that
+acts, and a press of Accept out of habit would hand an application a folder
+nobody chose.
+
+Saving is the exception, and it is the only one. Walking into a folder in order
+to write into it is a walk whose whole point is the folder just reached, so a
+save opens the column on **Save here**, with the name already under it — and on
+the name itself where there is nothing to call the file yet, because that is the
+thing standing between the user and the answer. The rule holds everywhere else,
+where the folder is only the way to the row being chosen and pressing it again
+would answer with something nobody picked. A save cannot lose anything that way:
+what it does is write a file under a name the user can read on the row above.
+
+*The kinds.* An application may say it only accepts images; when it does, the
+files that are not are left out, which kind is in force is written at the foot,
+and the panel's own menu — the same button that raises one anywhere else, and
+the right mouse button anywhere inside the panel — carries them under one row
+called **Types**, which says what is showing and steps into the list. One row
+rather than one row each: an application may offer five filters, and laid out
+flat they pushed Sort and Show hidden files off the bottom of a short panel,
+which is a menu that hides its own controls the more the application asks for.
+**Everything** is always the last row of that list: a filter is the
+application's guess at what the user wants and it is sometimes wrong, and a
+chooser with no way past its own filter is one that hides the file the user is
+looking at.
+
+A kind is matched with `fnmatch`, brackets and all. That is not a nicety: a
+filter is written for whichever matcher the toolkit that sent it uses, and
+Firefox spells **every** filter it sends as a bracket per letter — an upload of
+a photograph asks for `*.[pP][nN][gG]`, because that is how a case-insensitive
+`*.png` is put to a matcher with no other way of asking. A matcher that read the
+brackets as characters answered every one of those questions with an empty
+column, which is what a folder full of photographs looked like here until the
+filters were read off the session bus and the tests written from the capture.
+
+*Nothing here destroys anything.* There is no Delete, no Rename, no Copy and no
+Move. An application's file question is not a file manager, and a panel raised by
+a web page should not be one press from emptying a folder. New folder is the one
+exception, and only where the answer is somewhere to *write*: a save that cannot
+make a folder is a save that can only ever go where something already is. The
+trash is not offered either, for the reason no walk that is choosing something
+offers it — an answer that disappears the next time the trash is emptied.
+
+**The foot says what the buttons do, and names the ones in hand.** Four acts —
+Select, Approve, Options, Cancel — each drawn as the control that performs it
+rather than lettered, because the same act is South on a pad and the space bar
+on a keyboard and no wording covers both: "press A" is wrong on a PlayStation
+pad and meaningless to somebody typing. So the panel draws whichever the user
+last reached for; see `settings::controller_in_hand`. Approve is absent where
+there is nothing to approve — choosing one file is answered by pressing the file
+— and a legend naming a button that does nothing would be worse than naming
+none. **Options is on the legend because without it there was nothing on the
+panel to say the menu existed**: an application asking for images showed a
+folder of images and no sign that the sort order and the rest of the disk were
+one press away. Its keyboard half is a mouse rather than a key, which is the one
+place the legend leaves the keyboard — a menu is raised with the right button by
+anybody holding a pointer, and no key printed on a keyboard says the same thing
+to as many people.
+
+Where a key is named it is named **as the key is labelled**: `Esc` is a word on
+every keyboard ever made, so the mark is that word, while Enter and the space
+bar carry the symbols printed on them. An earlier cut drew Escape as an arrow
+leaving a keycap and it named nothing anybody could go and find.
+
+**Where you are stands above the rule**, with the width of the whole panel to
+itself. It shared the foot with the legend once, and a path sharing a line with
+pictures of buttons is a path cut short to leave room for them.
+
+**Accept and Approve are two different acts here**, which they are nowhere else
+in the shell. Accept — South, or the space bar — presses the row under the
+cursor: it steps into a folder, ticks a file, puts a name in the field. Approve
+— Start, or Enter — ends the question with what has been chosen, from wherever
+in the walk the cursor is standing. That is what makes a save two presses rather
+than a walk back up the column to the row that answers, and it is why Enter and
+the space bar part company on this one screen.
+
+**Three ways out, and one of them is not announced.** Back cancels. A click past
+the panel cancels — clicking past a thing to dismiss it is what every panel on
+every desktop does, and one that ignored it read as one that had stopped
+responding. And opening the guide cancels, silently: the guide outranks every
+screen the shell draws and every grab an application can take, so a question
+that could hold it off would be the one screen with no way out of it. Nothing is
+said about that last one, because a panel explaining that the guide had
+cancelled something would be the guide apologising for opening.
+
+**Nothing is handed over until the user says so.** The road is
+[`ask_to_share`](#lxb_shell_v1)'s exactly: the portal cannot draw, so the
+question goes over `lxb_shell_v1`, the compositor carries it to the shell over
+the top of whatever is filling the screen, and carries the answer back as paths
+the portal turns into `file://` URIs. Back cancels, and so does a question
+nobody answers, a session with no shell, a shell that goes away mid-question,
+and a second application asking while a panel is already up. All of them reach
+the application as the same thing: it was given no file.
+
+It will not interrupt a journey the user is already in, either. A file being
+carried to a folder and a panel waiting on an answer are both the shell holding
+a question of its own, so an application that asks over one of those is told it
+was given nothing and may ask again. The guide and a context menu are not
+journeys and are simply taken away.
+
+`lxb-portal --debug-pick [one-file|many-files|folder|new-file]` puts a question
+to the shell without D-Bus or an application in front of it and prints what came
+back — the counterpart of `--debug-cast`, and how this half is proved by hand.
+`--kind 'Images=*.png'` offers a kind, `--at` opens it somewhere, `--called`
+names a new file.
+
+**And the registration has to name it**, which is its own trap. The `.portal`
+file is installed separately from the binary and `xdg-desktop-portal` reads it
+once at startup, so a backend that has grown an interface since the last install
+answers a front desk that has never heard of it — and the application is quietly
+handed another backend instead, which is exactly what a session with no portal
+of its own looks like. That is not hypothetical: this shipped against a
+registration naming ScreenCast alone, and every Save dialog in the session
+opened GTK's. `lxb-portal` now compares what it answers against what its own
+registration claims and says so in the log when they disagree.
+
+## Showing a file
+
+The other direction, and the one the desktop had backwards. A browser finishing
+a download offers **Show in folder**; an archiver that has just unpacked
+something offers **Open containing folder**. Neither opens a file manager. Each
+calls one method on one well-known bus name:
+
+```
+org.freedesktop.FileManager1.ShowItems(["file:///home/…/thing.zip"], "")
+```
+
+**On a machine with a normal desktop installed, that name is activatable.**
+Dolphin, Nautilus and Thunar each ship a D-Bus service file claiming it, so a
+session that answers nothing does not get silence — it gets Dolphin, started on
+demand, drawn over the shell, in a session with no window management for it and
+no way back. That is what pressing Show in folder used to do here.
+
+**So the shell holds the name.** It takes `org.freedesktop.FileManager1` at
+startup, on the session bus, beside the notification daemon and the polkit
+agent — and for the same reason all three are the shell rather than a process
+next to it: Files is not a program to start, it is a column of the bar, four
+rows into System, drawn by the shell out of the shell's own tree. Nothing else
+in the session can put it on a screen or knows which display the user is
+driving. A name already owned is never activated, so nothing else is started
+behind it. The name is taken without replacing an existing owner, so a
+LineXinBar run inside somebody else's desktop for testing leaves that desktop's
+file manager alone.
+
+**And then the shell walks there.** The cursor is carried into Files, the disk
+holding the path is chosen — the deepest one, so a download opens under Home
+rather than four columns down from Root — and one column is read and stepped
+into per part of the path. Only when it has arrived does the bar come forward,
+over whatever application was in front. That order is the point: what the user
+sees arrive is the folder they asked for, rather than the bar arriving on
+whatever it was last left on and then being seen to rummage through the disk.
+The columns still slide open, because that is what the bar does when a column is
+stepped into; nothing was invented for this.
+
+The file itself is left under the cursor, with its size and the date it was
+written on the row — which is also this desktop's answer to `ShowItemProperties`,
+the one method here that does something other than what its name says. There is
+no properties window in this shell, and what one would be opened to read is
+already on the row. `ShowFolders` stands *in* the folder instead of pointing at
+something in it.
+
+**Three methods, one place to stand.** Several URIs in one call come down to the
+first: the shell has one cursor per display and one row can be under it. A URI
+that is not `file://`, a path that is not absolute and a name that is not on
+this disk are each refused on the bus, on the call that made them, rather than
+becoming a bar pointed at nothing. The escaping is undone as *bytes* — a file
+name on Linux is bytes, and decoding into a string first would refuse every file
+this shell can list whose name is not UTF-8.
+
+It will not interrupt a journey the user is already in, on exactly the terms the
+[file chooser](#choosing-a-file) will not: a file being carried, a panel waiting
+on an answer, or an application's own file question each own the columns this
+walk would move, and each was started by the person at the machine — where this
+was started by a program behind whatever is on screen. Nor over a launch splash
+or a window still flying home, both of which own the display until they hand it
+over themselves.
+
+One thing is read differently from anywhere else in the shell. **Show hidden**
+is off by default, and a walk to something under `~/.local/share` with it off
+reaches a column where the very folder it needed next was left out — it would
+stop three levels short with nothing under the cursor, which is the shell
+appearing to have lost a file it was handed the whole path of. So a path with a
+dot-name anywhere in it is read with the dotfiles in, for that walk and no
+other. Nothing is written down and the setting is not touched.
+
+**The other road is `xdg-open` on a folder**, and that one is not a bus call. It
+looks up whatever the machine says opens `inode/directory` and starts it, which
+is also what `xdg-desktop-portal` falls back to when no file manager answers.
+Two files cover it, both in [`share/applications/`](share/applications):
+`linexinbar-files.desktop`, which claims the type and whose `Exec` is
+`lxb-desktop --show-in-files %u` — not a shell starting, but one call to the
+shell this session already has, and out — and `linexinbar-mimeapps.list`, which
+names it as the default.
+
+That list is deliberately *desktop-specific*. A file called
+`<desktop>-mimeapps.list` is read only while `XDG_CURRENT_DESKTOP` lowercases to
+`<desktop>`, and LineXinBar's session sets `XDG_CURRENT_DESKTOP=LineXinBar`. So
+installing this package takes folders away from nothing else on the machine, a
+KDE session on the same disk keeps Dolphin, and the user's own `mimeapps.list`
+is never written to. A package installs both files; a session run straight out
+of a checkout installs nothing, and
+[`scripts/install-file-manager.sh`](scripts/install-file-manager.sh) registers
+that build for the current user instead (`--uninstall` takes it back). The bus
+name half needs none of that — the running shell takes it either way.
 
 ## Authorisation prompts
 
@@ -3122,10 +4278,22 @@ protocol generated from one XML file for both sides:
 | event `share_request` | That question, on its way to the shell — the only client that can draw it. |
 | request `answer_share` | The shell's answer: a display, or nothing, which is a no. |
 | event `share_answered` | That answer, on its way back to whoever asked. |
+| request `offer_kind` | One kind of file an application will accept, ahead of the question that names it. Repeated once per pattern. |
+| event `pick_kind` | That kind, on its way to the shell, in the order it was offered. |
+| request `ask_to_pick_files` | The desktop portal asking for a file, some files, a folder, or somewhere to write. |
+| event `pick_request` | That question, on its way to the shell — the only client that can draw it. |
+| request `chose_file` | One file the user picked, repeated once each. |
+| request `answer_pick` | The end of the question: whatever was named before it, and which kind was in force. Nothing named at all is a cancellation. |
+| event `pick_chosen` / `pick_answered` | Those, on their way back to whoever asked. |
 | request `cover_output_in_black` | Fade one display to black, or bring it back — the sheet [OLED protection](#oled-protection) rests a screen behind. It takes no input away, unlike the curtain the session goes out behind. |
-| event `output_game` | Whether what is in front of one display is a game: something a supervisor started for the user, worked out from the process behind the window rather than from what the window calls itself. |
+| event `output_in_use` | Whether an application is in front of one display — anything the user opened, whatever started it — as against the shell being the whole of what is on the screen. |
 | event `output_drawing` | Whether anything on one display has painted recently — which is what tells a screen that can be rested from one somebody is watching. |
 | event `output_pointer` | The pointer is moving over this display. Sent on arrival and at most once every two seconds after, because the shell sees the pointer only where its own surfaces are in front. |
+| request `set_picture_in_picture` | Whether a browser's picture-in-picture window floats over everything, how large it is drawn and which corner it sits in. One request for all three, because they are one rectangle. |
+| request `set_window_floating` | The user's own word for whether one window floats, whatever it calls itself: a video told to fill the display it is in the corner of, and an application told to go and sit in that corner. One request in both directions. |
+| request `set_menu_surface` | Which surface of the shell's a context menu is being drawn on, so that one surface can go in front of a floating window. Said only while a menu is up, and null again after. |
+| request `ask_for_the_picture_behind` | Hands over a shared-memory buffer and asks the compositor to draw into it what it is compositing on one side of the shell's own surfaces — for the glass on them to refract. One ask, one picture. |
+| event `the_picture_behind` | That buffer now holds it, and how much of it was drawn into. A size of zero means there was nothing to draw. |
 
 `output_foreground` is what lets the menu say *Close KWrite* and notice when an
 application it started has exited. It is reported per display because the
@@ -3482,6 +4650,44 @@ default. Start music is rebuilt there from sample zero if the lattice still owns
 the display. A machine with no output at all is silent, and nothing else about
 the shell changes.
 
+## What a pane of glass shows
+
+Every pane in this shell refracts what is behind it, and "behind it" is three
+different things it reaches three different ways.
+
+What the **shell itself** drew is read straight back: the frame is built in an
+offscreen texture and a pane samples a snapshot of it, so a button refracts the
+panel it is resting on and a panel refracts the icons under it. What the shell
+draws on *another* of its surfaces is read the same way, at full resolution —
+that is how a context menu, which has a surface to itself, still refracts the
+start screen behind it.
+
+The **wallpaper** is not read at all: it is *evaluated*, from the same function
+that paints it, wherever the snapshot is transparent. That is sharp at any size
+and costs nothing, and it is why a game's key art — which is drawn as the
+wallpaper rather than as a layer over it — refracts correctly too.
+
+What **another client** drew, the shell can do neither with. A game's window, or
+the video in a floating one, is the compositor's pixels and this shell never sees
+them. So the compositor draws them and hands them over: `lxb_shell_v1`'s
+`ask_for_the_picture_behind` gives it a shared-memory buffer, it draws what it is
+compositing on one side of the shell's own surfaces into it, small, and says when
+it is done. One ask, one picture — a display whose shell is not drawing asks for
+nothing, so a game in front pays for none of this.
+
+Small on purpose. A pane frosts what it transmits — it samples several rungs down
+a blur chain — so what it wants back is something already blurred, and 256 pixels
+along the longer edge is a readback a shell can afford every frame. It is one
+frame behind, which is 16 ms of a picture about to be frosted past recognition.
+
+And it is **absorbed on the way in**. Everything here is designed against a
+wallpaper that is deliberately dark, which is what makes a pane's tint thin
+enough to be worth seeing through. A film or a game let through at full strength
+turns the same pane into a window: over a bright frame its own colour disappears
+and the white text on it stops being readable, which on a menu is a control that
+cannot be answered. Tinted glass absorbs what it transmits, and it absorbs the
+same amount whatever is behind it, so the material reads the same everywhere.
+
 ## What draws, and when
 
 A frame callback is how a Wayland client is told to draw its next frame, and
@@ -3540,6 +4746,7 @@ applications stop properly.
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3` | Photograph this display |
 | `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` (with anything held) | Turn the session up or down, or silence it |
 | `Super+Tab`            | Cycle windows on this output    |
+| `Alt+Tab`, `Alt+Shift+Tab` | Walk the [guide's deck](#the-cards) while the modifier is held, and take what it lands on |
 | `Super+←` / `Super+→`  | Focus the previous/next output  |
 | `Super+Shift+→`        | Move the window to the next output |
 | `Ctrl+Alt+F1`…`F12`    | Switch VT (udev backend only)   |
@@ -3575,8 +4782,8 @@ crates/lxb-compositor/
   teardown.rs     ending an application, as against ending a process
   capture.rs      photographing one window, or one whole display, into a PNG
   flash.rs        the white a display gives when it has just been photographed
-  blackout.rs     the black one display rests behind while a game is played
-                  on another — see OLED protection
+  blackout.rs     the black one display rests behind while another one is
+                  being used — see OLED protection
   screencopy.rs   wlr-screencopy: the standard way anything else reads the
                   screen, and what the portal is built on
   hdr.rs          the connector's metadata and the CRTC's colour pipeline
@@ -3602,7 +4809,7 @@ crates/lxb-desktop/
   secret.rs       a password, from the key that types it to the pipe that
                   consumes it
   icons.rs        icon theme lookup, PNG/SVG rasterisation
-  theme.rs        the palette: five accents, and every colour read as it is drawn
+  theme.rs        the palette: twelve accents, and every colour read as it is drawn
   settings.rs     the Settings column, written here rather than found on disk
   model.rs        the shared catalogue, and one cursor per display
   controller.rs   gamepads through gilrs, and what a button means

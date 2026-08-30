@@ -12,6 +12,8 @@ use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::backend::{ClientId, GlobalId};
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
@@ -20,7 +22,6 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
-use crate::input::window_accepts_keyboard_focus;
 use crate::outputs::DisplayMode;
 use crate::state::LxbState;
 use crate::teardown;
@@ -37,6 +38,19 @@ pub struct OverviewEntry {
     pub app_id: String,
     pub width: u32,
     pub height: u32,
+}
+
+/// One floating window as the shell is told about it: the id, and the whole
+/// rectangle the user sees — the surround included, since that is what a menu is
+/// grown out of and what a mark is drawn around.
+///
+/// Compared rather than merely carried: this is the list that changes every
+/// frame while somebody drags a window, and the diff on it is what keeps a
+/// session where nobody does from sending anything at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloatingEntry {
+    pub id: u32,
+    pub rect: lxb_protocol::overview::Rect,
 }
 
 /// Tracks every shell bound to the protocol, plus the state they were last
@@ -65,6 +79,11 @@ pub struct ShellControlState {
     output_app_id: Vec<(Output, String)>,
     /// Last window list broadcast per display, likewise.
     output_windows: Vec<(Output, Vec<OverviewEntry>)>,
+    /// Last floating window list broadcast per display, likewise — and diffed
+    /// harder than most, because these rectangles move: a window being dragged
+    /// is a new list every frame, and one standing still is the same list
+    /// forever.
+    output_pip: Vec<(Output, Vec<FloatingEntry>)>,
     /// Last HDR status broadcast per display. Diffed like the rest, because
     /// what it reports — whether the connector is in HDR — changes only when
     /// somebody asks it to, and a shell redrawing its Settings column on every
@@ -103,19 +122,11 @@ pub struct ShellControlState {
     /// into a game would otherwise wake it once per letter to say what the
     /// first letter already said.
     typing_is_news: bool,
-    /// Last answer broadcast per display to "is a game being played here":
-    /// whether the window in front of it is something a supervisor started for
-    /// the user. Diffed like the rest — it changes when a game starts or ends
-    /// and at no other time.
-    output_game: Vec<(Output, bool)>,
-    /// The process behind the window in front of each display, as of the last
-    /// time the answer above was worked out.
-    ///
-    /// The cache that makes this affordable. Deciding whether a window is a
-    /// game means walking `/proc`, and the refresh this rides on runs every
-    /// pass of the session's loop; the same pid in front is the same answer, so
-    /// the walk only happens when one of these changes.
-    output_front_pid: Vec<(Output, Option<i32>)>,
+    /// Last answer broadcast per display to "is an application in front of
+    /// this one": whether there is a window there at all, or whether the shell
+    /// is the whole of what is on the screen. Diffed like the rest — it changes
+    /// when something is opened or closed and at no other time.
+    output_in_use: Vec<(Output, bool)>,
     /// Last answer broadcast per display to "is anything moving here". Diffed
     /// like the rest, but unlike the rest it is a reading of the clock rather
     /// than of the desktop's shape, so it is taken once a pass of the loop.
@@ -131,6 +142,20 @@ pub struct ShellControlState {
     /// it is answering is "may this application see a screen", not "reply to
     /// that client".
     asked: Vec<Question>,
+    /// File questions in flight, on exactly the terms [`Self::asked`] holds
+    /// share questions — and a second list rather than a second kind of
+    /// [`Question`] in the first, because the two are answered by different
+    /// requests and an answer that found the wrong sort would be a screen
+    /// shared because somebody picked a file.
+    picking: Vec<Question>,
+    /// The files the shell has named for a question it has not yet ended.
+    ///
+    /// Held only between one `chose_file` and the `answer_pick` that follows
+    /// it, because that is the whole of what a wayland request can say: one
+    /// path each, in order, and then "that is all of them". Keyed by the
+    /// question, so two questions being answered at once cannot pour into one
+    /// another.
+    chosen: Vec<(u32, String)>,
 }
 
 /// One application waiting to be told whether it may see a display.
@@ -265,12 +290,12 @@ const APP_SCALE_SINCE: u32 = 25;
 /// wherever the kernel happened to catch it.
 const CURTAIN_SINCE: u32 = 26;
 
-/// First version that can rest one display behind black while a game is played
-/// on another, and that reports the two facts a shell cannot see for itself:
-/// which display has a game in front of it, and which has anything still
-/// painting. Below it the OLED protection page still remembers what it was set
-/// to — the file is read by whichever compositor comes next — but no screen is
-/// ever rested.
+/// First version that can rest one display behind black while another one is
+/// being used, and that reports the two facts a shell cannot see for itself:
+/// which display has an application in front of it, and which has anything
+/// still painting. Below it the OLED protection page still remembers what it
+/// was set to — the file is read by whichever compositor comes next — but no
+/// screen is ever rested.
 const RESTING_SINCE: u32 = 27;
 
 /// First version that can be told an application is playing something and must
@@ -279,6 +304,68 @@ const RESTING_SINCE: u32 = 27;
 /// middle of — which is what every session did before this and is still what a
 /// session with no shell does.
 const MEDIA_SINCE: u32 = 28;
+
+/// First version that can be told what to do with a browser's
+/// picture-in-picture window. Below it such a window is an application window
+/// like any other — maximized, listed, focusable — which is what every session
+/// did before this and is still what a session with no shell does.
+const PIP_SINCE: u32 = 29;
+
+/// First version that can be asked for the floating window's own menu, and that
+/// can answer with what the user chose. Below it the right button on such a
+/// window is the client's, as it is on every other window.
+const PIP_MENU_SINCE: u32 = 30;
+
+/// First version that lists the floating windows to the shell, that can be told
+/// which of them the user's own controls are on, and that will move one on a
+/// controller's word. Below it a floating window is something only a pointer can
+/// reach.
+const PIP_PAD_SINCE: u32 = 31;
+
+/// First version that will draw one surface of the shell's own in front of the
+/// floating windows instead of behind them: the one its context menu is on, and
+/// nothing else. Below it such a window covers every menu raised over it, which
+/// on a session with no pointer is a window that cannot be made small again.
+const MENU_SURFACE_SINCE: u32 = 32;
+
+/// First version that will draw, into a buffer the shell hands over, what it is
+/// compositing behind the shell's own surfaces.
+///
+/// The shell draws glass and glass shows what is behind it. What the shell
+/// draws it can read back, and the wallpaper it can evaluate — but another
+/// client's window it can do neither with, so below this a pane standing over a
+/// game or over somebody's video reproduces the wallpaper instead. See
+/// `lxb_shell_v1.ask_for_the_picture_behind`.
+const PICTURE_BEHIND_SINCE: u32 = 33;
+
+/// First version that will take the user's own word for whether one window
+/// floats: a video told to fill the display it is in the corner of, and an
+/// application told to go and sit in that corner instead. Below it the title is
+/// the whole of the answer, and a video put in a corner can only be got out of
+/// it by the browser that put it there.
+const WHICH_WINDOWS_FLOAT_SINCE: u32 = 34;
+
+/// First version that will put a *file* question to the shell: which file, or
+/// which folder, or what to call a new one. Below it the session has no file
+/// chooser of its own, and an application asking `xdg-desktop-portal` for one
+/// is answered by whatever other backend is installed — or, on a machine with
+/// none, by nothing at all.
+const PICK_SINCE: u32 = 35;
+
+/// First version that forwards the switch binding: one step of the walk the
+/// user makes along the session's applications with the modifier held down,
+/// and the modifier coming up at the end of it. Below it there is no deck to
+/// walk — the pictures of the running applications are the shell's overlay —
+/// so the binding rotates the compositor's own window stack instead, which is
+/// all a session with no shell has ever had.
+const SWITCH_SINCE: u32 = 36;
+
+/// What is answered when no kind of file was in force — because the
+/// application offered none, or because the user was looking at everything on
+/// the disk rather than at one of the kinds. `lxb_shell_v1.answer_pick`'s own
+/// number for it, quoted here so the two halves cannot disagree about which
+/// index means "not one of them".
+const NO_KIND: u32 = u32::MAX;
 
 /// How long a display may go without anything painting on it before it counts
 /// as still — the reading behind `lxb_shell_v1.output_drawing`.
@@ -300,7 +387,7 @@ const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = MEDIA_SINCE;
+const CURRENT_VERSION: u32 = SWITCH_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -315,6 +402,14 @@ const _: () = assert!(APP_SCALE_SINCE == TYPED_SINCE + 1);
 const _: () = assert!(CURTAIN_SINCE == APP_SCALE_SINCE + 1);
 const _: () = assert!(RESTING_SINCE == CURTAIN_SINCE + 1);
 const _: () = assert!(MEDIA_SINCE == RESTING_SINCE + 1);
+const _: () = assert!(PIP_SINCE == MEDIA_SINCE + 1);
+const _: () = assert!(PIP_MENU_SINCE == PIP_SINCE + 1);
+const _: () = assert!(PIP_PAD_SINCE == PIP_MENU_SINCE + 1);
+const _: () = assert!(MENU_SURFACE_SINCE == PIP_PAD_SINCE + 1);
+const _: () = assert!(PICTURE_BEHIND_SINCE == MENU_SURFACE_SINCE + 1);
+const _: () = assert!(WHICH_WINDOWS_FLOAT_SINCE == PICTURE_BEHIND_SINCE + 1);
+const _: () = assert!(PICK_SINCE == WHICH_WINDOWS_FLOAT_SINCE + 1);
+const _: () = assert!(SWITCH_SINCE == PICK_SINCE + 1);
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -329,18 +424,20 @@ impl ShellControlState {
             output_foreground: Vec::new(),
             output_app_id: Vec::new(),
             output_windows: Vec::new(),
+            output_pip: Vec::new(),
             output_hdr: Vec::new(),
             output_modes: Vec::new(),
             output_transform: Vec::new(),
             output_place: Vec::new(),
-            output_game: Vec::new(),
-            output_front_pid: Vec::new(),
+            output_in_use: Vec::new(),
             output_drawing: Vec::new(),
             pointer_output: None,
             launch_output: None,
             pressed_output: None,
             typing_is_news: true,
             asked: Vec::new(),
+            picking: Vec::new(),
+            chosen: Vec::new(),
         }
     }
 
@@ -370,6 +467,32 @@ impl ShellControlState {
     fn send_guide(&self) {
         for instance in &self.instances {
             instance.guide();
+        }
+    }
+
+    /// Whether any shell listening can draw the deck a walk along the
+    /// applications is made on. A compositor with none rotates its own stack
+    /// instead, so this decides between the two rather than explaining a key
+    /// that did nothing.
+    fn wants_switch(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|instance| instance.version() >= SWITCH_SINCE)
+    }
+
+    fn send_switch(&self, direction: lxb_shell_v1::SwitchDirection) {
+        for instance in &self.instances {
+            if instance.version() >= SWITCH_SINCE {
+                instance.switch_window(direction);
+            }
+        }
+    }
+
+    fn send_switch_done(&self) {
+        for instance in &self.instances {
+            if instance.version() >= SWITCH_SINCE {
+                instance.switch_done();
+            }
         }
     }
 
@@ -462,6 +585,48 @@ impl ShellControlState {
             tracing::debug!(display = %output.name(), "a press landed on an application here");
             self.pressed_output = Some(output.clone());
         }
+    }
+
+    /// Ask a shell to raise the floating window's menu over `rect`.
+    ///
+    /// `true` when some shell was actually told, which is what decides whether
+    /// the press is the compositor's at all: a session with no shell new enough
+    /// to draw the menu has no menu, and the right button on that window is
+    /// better left to the browser that owns it than swallowed for nothing.
+    ///
+    /// Sent to every bound shell, like everything else here. Two shells drawing
+    /// two menus is not a case this session has, and the alternative — picking
+    /// one — would be this deciding which of them the user is looking at.
+    pub(crate) fn send_pip_menu(
+        &self,
+        id: u32,
+        output: &Output,
+        rect: lxb_protocol::overview::Rect,
+    ) -> bool {
+        let mut sent = false;
+        for instance in &self.instances {
+            if instance.version() < PIP_MENU_SINCE {
+                continue;
+            }
+            let Some(client) = instance.client() else {
+                continue;
+            };
+            for wl_output in output.client_outputs(&client) {
+                instance.pip_menu(
+                    id,
+                    &wl_output,
+                    rect.x.round() as i32,
+                    rect.y.round() as i32,
+                    rect.w.round() as i32,
+                    rect.h.round() as i32,
+                );
+                sent = true;
+            }
+        }
+        if sent {
+            tracing::debug!(id, display = %output.name(), "asked the shell for the floating window's menu");
+        }
+        sent
     }
 
     /// Tell every shell that a key went down on a keyboard, so that whatever it
@@ -570,6 +735,151 @@ impl ShellControlState {
         }
     }
 
+    /// Carry one kind of file through to the shell, ahead of the question it
+    /// belongs to.
+    ///
+    /// Nothing is kept here. The order requests arrive in from one client is
+    /// the order events go out in to another, so the kinds land in front of
+    /// their own `pick_request` without this having to remember what a question
+    /// was made of — see `lxb_shell_v1.offer_kind`, which is where that is
+    /// written down and why.
+    fn send_pick_kind(
+        &mut self,
+        asker: &LxbShellV1,
+        id: u32,
+        name: &str,
+        pattern: &str,
+        matching: lxb_shell_v1::Matching,
+    ) {
+        for instance in &self.instances {
+            if instance == asker || instance.version() < PICK_SINCE {
+                continue;
+            }
+            instance.pick_kind(id, name.to_string(), pattern.to_string(), matching);
+        }
+    }
+
+    /// Put one client's file question to everybody else bound to this
+    /// interface, which in a running session is the shell.
+    ///
+    /// Never back to the asker, for the reason [`Self::send_share_request`] is
+    /// not: the portal binds this interface too, and a question that came back
+    /// to the client that asked it would be a portal answering itself.
+    #[allow(clippy::too_many_arguments)]
+    fn send_pick_request(
+        &mut self,
+        asker: &LxbShellV1,
+        id: u32,
+        app_id: &str,
+        purpose: lxb_shell_v1::Picking,
+        title: &str,
+        accept: &str,
+        name: &str,
+        at: &str,
+    ) -> bool {
+        let mut asked = false;
+        for instance in &self.instances {
+            if instance == asker || instance.version() < PICK_SINCE {
+                continue;
+            }
+            instance.pick_request(
+                id,
+                app_id.to_string(),
+                purpose,
+                title.to_string(),
+                accept.to_string(),
+                name.to_string(),
+                at.to_string(),
+            );
+            asked = true;
+        }
+        if asked {
+            self.picking.push(Question {
+                asker: asker.clone(),
+                id,
+            });
+        }
+        asked
+    }
+
+    /// Note one file the shell says the user chose, until the question it
+    /// belongs to is ended.
+    ///
+    /// Capped, because this is a list one client can add to without ever
+    /// finishing: a shell naming ten thousand files for a question it never
+    /// answers would be a shell filling the compositor's memory. Past the cap
+    /// the file is dropped and said so — the user gets the files they picked
+    /// first, which is a truthful subset, rather than the session growing
+    /// without bound.
+    fn note_chosen_file(&mut self, id: u32, path: String) {
+        /// How many files one unanswered question may name. A selection nobody
+        /// makes by hand is past this long before it matters.
+        const MOST: usize = 4096;
+        if self.chosen.iter().filter(|(named, _)| *named == id).count() >= MOST {
+            tracing::warn!(
+                id,
+                "too many files named for one question; dropping this one"
+            );
+            return;
+        }
+        self.chosen.push((id, path));
+    }
+
+    /// Tell whoever asked what the user chose, and end the question.
+    ///
+    /// The files go first and the answer last, which is the order the protocol
+    /// promises: a client reads `pick_chosen` until `pick_answered` arrives,
+    /// and what it has by then is the whole answer.
+    fn send_pick_answer(&mut self, id: u32, kind: u32) {
+        // The oldest outstanding question with this number, on exactly the
+        // terms a share answer finds its own — and, as there, this cannot tell
+        // a shell answering out of order from one answering in it, only keep it
+        // from answering the same question twice.
+        let Some(index) = self.picking.iter().position(|question| question.id == id) else {
+            // Nothing to answer, so nothing to keep either: files named for a
+            // question that was never asked would otherwise sit here for the
+            // life of the session.
+            self.chosen.retain(|(named, _)| *named != id);
+            return;
+        };
+        let question = self.picking.remove(index);
+        let mut files = Vec::new();
+        self.chosen.retain(|(named, path)| {
+            if *named == id {
+                files.push(path.clone());
+                return false;
+            }
+            true
+        });
+        for path in files {
+            question.asker.pick_chosen(id, path);
+        }
+        question.asker.pick_answered(id, kind);
+    }
+
+    /// Forget the file questions of a client that has gone, and the files named
+    /// for them. There is nobody left to tell.
+    fn forget_picks(&mut self, gone: &LxbShellV1) {
+        let dropped: Vec<u32> = self
+            .picking
+            .iter()
+            .filter(|question| &question.asker == gone)
+            .map(|question| question.id)
+            .collect();
+        self.picking.retain(|question| &question.asker != gone);
+        self.chosen.retain(|(id, _)| !dropped.contains(id));
+    }
+
+    /// Refuse every file question outstanding: the shell that was going to
+    /// answer has gone, and an application left waiting for a file it will
+    /// never be given is worse than one told plainly that it has none.
+    fn refuse_all_picks(&mut self) {
+        for question in std::mem::take(&mut self.picking) {
+            self.chosen.retain(|(id, _)| *id != question.id);
+            question.asker.pick_answered(question.id, NO_KIND);
+        }
+    }
+
     fn broadcast_foreground(&mut self, title: String) {
         if self.foreground == title {
             return;
@@ -644,6 +954,24 @@ impl ShellControlState {
         self.output_windows = current;
     }
 
+    /// Publish the floating windows on each display, so a shell with no pointer
+    /// has something to point its own controls at.
+    fn broadcast_output_pip(&mut self, current: Vec<(Output, Vec<FloatingEntry>)>) {
+        for (output, windows) in &current {
+            let known = self
+                .output_pip
+                .iter()
+                .any(|(seen, seen_windows)| seen == output && seen_windows == windows);
+            if known {
+                continue;
+            }
+            for instance in &self.instances {
+                send_output_pip(instance, output, windows);
+            }
+        }
+        self.output_pip = current;
+    }
+
     /// Publish what each display's colour pipeline can do and is doing.
     ///
     /// One list and one diff for two events, because it is one answer: HDR and
@@ -667,24 +995,24 @@ impl ShellControlState {
         self.output_hdr = current;
     }
 
-    /// Publish which displays have a game in front of them.
+    /// Publish which displays have an application in front of them.
     ///
-    /// Diffed like the rest, and it barely moves: the answer changes when a
-    /// game starts and when it ends, and never in between.
-    fn broadcast_output_game(&mut self, current: Vec<(Output, bool)>) {
-        for (output, playing) in &current {
+    /// Diffed like the rest, and it barely moves: the answer changes when
+    /// something is opened and when it is closed, and never in between.
+    fn broadcast_output_in_use(&mut self, current: Vec<(Output, bool)>) {
+        for (output, in_use) in &current {
             let known = self
-                .output_game
+                .output_in_use
                 .iter()
-                .any(|(seen, seen_playing)| seen == output && seen_playing == playing);
+                .any(|(seen, seen_in_use)| seen == output && seen_in_use == in_use);
             if known {
                 continue;
             }
             for instance in &self.instances {
-                send_output_game(instance, output, *playing);
+                send_output_in_use(instance, output, *in_use);
             }
         }
-        self.output_game = current;
+        self.output_in_use = current;
     }
 
     /// Publish which displays still have something painting on them.
@@ -815,12 +1143,15 @@ impl ShellControlState {
         for (output, windows) in &self.output_windows {
             sent |= send_output_windows(shell, output, windows);
         }
+        for (output, windows) in &self.output_pip {
+            sent |= send_output_pip(shell, output, windows);
+        }
         for (output, status) in &self.output_hdr {
             sent |= send_output_hdr(shell, output, status);
             sent |= send_output_night_light(shell, output, status);
         }
-        for (output, playing) in &self.output_game {
-            sent |= send_output_game(shell, output, *playing);
+        for (output, in_use) in &self.output_in_use {
+            sent |= send_output_in_use(shell, output, *in_use);
         }
         for (output, drawing) in &self.output_drawing {
             sent |= send_output_drawing(shell, output, *drawing);
@@ -956,9 +1287,9 @@ fn send_output_night_light(
     sent
 }
 
-/// Send whether a game is being played on one display, resolved through the
-/// receiving client's own `wl_output` for the reason the title is.
-fn send_output_game(shell: &LxbShellV1, output: &Output, playing: bool) -> bool {
+/// Send whether an application is in front of one display, resolved through
+/// the receiving client's own `wl_output` for the reason the title is.
+fn send_output_in_use(shell: &LxbShellV1, output: &Output, in_use: bool) -> bool {
     if shell.version() < RESTING_SINCE {
         return false;
     }
@@ -967,7 +1298,7 @@ fn send_output_game(shell: &LxbShellV1, output: &Output, playing: bool) -> bool 
     };
     let mut sent = false;
     for wl_output in output.client_outputs(&client) {
-        shell.output_game(&wl_output, playing as u32);
+        shell.output_in_use(&wl_output, in_use as u32);
         sent = true;
     }
     sent
@@ -1104,6 +1435,77 @@ fn output_transform_of(transform: lxb_shell_v1::Transform) -> Option<Transform> 
     })
 }
 
+/// How large a floating window was asked to be, read off the wire. `None` for a
+/// value this version has no meaning for — which a shell built against a later
+/// one could send, and which must leave the size where it is rather than become
+/// a guess.
+fn pip_size_of(size: lxb_shell_v1::PipSize) -> Option<lxb_protocol::pip::Size> {
+    use lxb_protocol::pip::Size;
+    Some(match size {
+        lxb_shell_v1::PipSize::Small => Size::Small,
+        lxb_shell_v1::PipSize::Medium => Size::Medium,
+        lxb_shell_v1::PipSize::Large => Size::Large,
+        _ => return None,
+    })
+}
+
+/// Which row of the floating window's menu was chosen, on the same terms.
+fn pip_command_of(command: lxb_shell_v1::PipCommand) -> Option<crate::pip::MenuCommand> {
+    use crate::pip::MenuCommand;
+    Some(match command {
+        lxb_shell_v1::PipCommand::Move => MenuCommand::Move,
+        lxb_shell_v1::PipCommand::Resize => MenuCommand::Resize,
+        lxb_shell_v1::PipCommand::Close => MenuCommand::Close,
+        lxb_shell_v1::PipCommand::Realign => MenuCommand::Realign,
+        _ => return None,
+    })
+}
+
+/// Which corner it was asked to sit in, on the same terms.
+fn pip_place_of(place: lxb_shell_v1::PipPlace) -> Option<lxb_protocol::pip::Place> {
+    use lxb_protocol::pip::Place;
+    Some(match place {
+        lxb_shell_v1::PipPlace::TopLeft => Place::TopLeft,
+        lxb_shell_v1::PipPlace::TopRight => Place::TopRight,
+        lxb_shell_v1::PipPlace::BottomLeft => Place::BottomLeft,
+        lxb_shell_v1::PipPlace::BottomRight => Place::BottomRight,
+        _ => return None,
+    })
+}
+
+/// Send one display's whole floating window list, ending with the done event
+/// that makes the batch replace whatever the shell knew before.
+///
+/// Deliberately not part of `send_output_windows`, though it looks like it:
+/// these windows are the ones that are *not* in that list — not something to
+/// switch to, not something to close, not a card in the guide — and a shell
+/// that read one batch as the other would offer the user their own video as an
+/// application to come back to.
+fn send_output_pip(shell: &LxbShellV1, output: &Output, windows: &[FloatingEntry]) -> bool {
+    if shell.version() < PIP_PAD_SINCE {
+        return false;
+    }
+    let Some(client) = shell.client() else {
+        return false;
+    };
+    let mut sent = false;
+    for wl_output in output.client_outputs(&client) {
+        for entry in windows {
+            shell.pip_window(
+                &wl_output,
+                entry.id,
+                entry.rect.x.round() as i32,
+                entry.rect.y.round() as i32,
+                entry.rect.w.round() as i32,
+                entry.rect.h.round() as i32,
+            );
+        }
+        shell.pip_windows_done(&wl_output);
+        sent = true;
+    }
+    sent
+}
+
 /// Send one display's whole window list, ending with the done event that
 /// makes the batch replace whatever the shell knew before.
 fn send_output_windows(shell: &LxbShellV1, output: &Output, windows: &[OverviewEntry]) -> bool {
@@ -1138,6 +1540,132 @@ fn send_output_windows(shell: &LxbShellV1, output: &Output, windows: &[OverviewE
 }
 
 impl LxbState {
+    /// Draw what this compositor is putting on one side of the shell's own
+    /// surfaces into a buffer the shell handed over, and say when it is done.
+    ///
+    /// **The shell draws glass, and glass shows what is behind it.** What the
+    /// shell drew itself it reads back out of its own frame; its wallpaper it
+    /// evaluates, because it is the same function that painted it. Another
+    /// client it can do neither with, so without this a pane standing over a
+    /// game or over somebody's video reproduces the wallpaper instead — a
+    /// picture that is not behind it. See `lxb_shell_v1.ask_for_the_picture_behind`.
+    ///
+    /// Done here and now rather than on the way to a frame, which is what makes
+    /// it free when nobody wants one: the work happens once per ask and a shell
+    /// that is not drawing glass over anything does not ask. The picture it gets
+    /// is therefore of the moment it asked, one frame before it uses it — which
+    /// a pane frosts into invisibility.
+    ///
+    /// A picture that cannot be drawn is answered with a size of zero rather
+    /// than an error. A pane refracting a stale game is worse than a pane
+    /// refracting nothing, and neither is worth ending a session over.
+    fn draw_the_picture_behind(
+        &mut self,
+        shell: &LxbShellV1,
+        output: &Output,
+        layer: smithay::reexports::wayland_server::WEnum<lxb_shell_v1::BehindLayer>,
+        buffer: &WlBuffer,
+    ) {
+        // Which of the shell's own displays this is, from its side of the
+        // connection: an event about a display is addressed with the client's
+        // own object for it, as every other one here is.
+        let Some(client) = shell.client() else {
+            return;
+        };
+        let wl_outputs: Vec<_> = output.client_outputs(&client).collect();
+        let asked = layer.into_result().ok();
+        // An answer goes back whatever was asked for, so a shell waiting on one
+        // is never left waiting. A layer this compositor does not know is
+        // answered as the one below, which is the harmless direction.
+        let layer = asked.unwrap_or(lxb_shell_v1::BehindLayer::Below);
+        let say = |shell: &LxbShellV1, width, height| {
+            for wl_output in &wl_outputs {
+                shell.the_picture_behind(wl_output, layer, width, height);
+            }
+        };
+        let Some(side) = asked.map(crate::capture::Side::from_wire) else {
+            tracing::warn!("the shell asked for a picture of nowhere");
+            say(shell, 0, 0);
+            return;
+        };
+        // The display has to still be one of ours: an output resource outlives
+        // the connector by however long it takes the client to hear about it.
+        if !self.lxb.space.outputs().any(|known| known == output) {
+            say(shell, 0, 0);
+            return;
+        }
+        // How large a picture the shell asked for is how large a buffer it sent.
+        let asked = match smithay::wayland::shm::with_buffer_contents(buffer, |_, _, data| {
+            (data.width, data.height, data.format)
+        }) {
+            Ok(asked) => asked,
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "the shell offered something that is not shared memory"
+                );
+                say(shell, 0, 0);
+                return;
+            }
+        };
+        let (width, height, format) = asked;
+        if !matches!(format, wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888) {
+            tracing::warn!(
+                ?format,
+                "the shell offered a buffer in a format with no picture in it"
+            );
+            say(shell, 0, 0);
+            return;
+        }
+
+        let size = smithay::utils::Size::from((width, height));
+        let shot = match self.backend.picture_behind(&self.lxb, output, side, size) {
+            Ok(shot) => shot,
+            Err(err) => {
+                tracing::debug!(?err, display = %output.name(), "no picture to draw behind the shell");
+                say(shell, 0, 0);
+                return;
+            }
+        };
+
+        // Into the shell's buffer, a row at a time: a buffer's stride is its own
+        // business and is not always its width. Nothing is swizzled on the way
+        // — `LAYER_FORMAT` is the order the renderer reads a picture back in,
+        // chosen so that this copy is the only thing between the two.
+        let written =
+            smithay::wayland::shm::with_buffer_contents_mut(buffer, |slice, len, data| {
+                let stride = data.stride as usize;
+                let rows = shot.height.min(data.height.max(0) as u32) as usize;
+                let columns = shot.width.min(data.width.max(0) as u32) as usize;
+                let mut drawn = 0;
+                for row in 0..rows {
+                    let from = row * shot.width as usize * 4;
+                    let to = data.offset.max(0) as usize + row * stride;
+                    if to + columns * 4 > len || from + columns * 4 > shot.rgba.len() {
+                        break;
+                    }
+                    // SAFETY: the slice is the client's own mapping, and both ends
+                    // of this row were bounds-checked against it just above.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            shot.rgba.as_ptr().add(from),
+                            slice.add(to),
+                            columns * 4,
+                        );
+                    }
+                    drawn += 1;
+                }
+                (columns as i32, drawn)
+            });
+        match written {
+            Ok((width, height)) => say(shell, width, height),
+            Err(err) => {
+                tracing::warn!(?err, "could not write the picture into the shell's buffer");
+                say(shell, 0, 0);
+            }
+        }
+    }
+
     /// Tell the shell the user asked for its overlay.
     pub fn open_guide(&mut self) {
         if !self.lxb.shell_control.has_shell() {
@@ -1145,6 +1673,42 @@ impl LxbState {
             return;
         }
         self.lxb.shell_control.send_guide();
+    }
+
+    /// One press of the key that walks the session's applications, with the
+    /// modifier still held down.
+    ///
+    /// The shell is asked because the walk is something to be *looked* at: the
+    /// pictures of what is running are the guide's window deck, and the guide
+    /// is the shell's. What is settled here is only that a walk is under way,
+    /// so that the modifier coming up has something to end.
+    ///
+    /// A session whose shell cannot draw one is not left without the chord.
+    /// The compositor rotates its own stack instead — the same thing Super+Tab
+    /// does, unseen and one window at a time — which is what this key did on
+    /// every session before there was a deck to show for it.
+    pub fn switch_window(&mut self, back: bool) {
+        if !self.lxb.shell_control.wants_switch() {
+            tracing::debug!("no shell can draw the deck; rotating the stack instead");
+            self.cycle_window();
+            return;
+        }
+        self.lxb.window_switch.begin();
+        self.lxb.shell_control.send_switch(if back {
+            lxb_shell_v1::SwitchDirection::Back
+        } else {
+            lxb_shell_v1::SwitchDirection::Forward
+        });
+    }
+
+    /// The modifier came up, so the walk is over and what it landed on is what
+    /// the user meant.
+    ///
+    /// Only ever reached from a walk that was under way — see
+    /// [`crate::input::WindowSwitch`] — so nothing is asked here about whether
+    /// there was one.
+    pub fn finish_switch(&mut self) {
+        self.lxb.shell_control.send_switch_done();
     }
 
     /// Tell the shell the user asked for its keyboard.
@@ -1381,6 +1945,62 @@ impl LxbState {
         self.queue_redraw();
     }
 
+    /// Float a browser's picture-in-picture window from now on, at this size and
+    /// in this corner — or stop floating it.
+    ///
+    /// A value the compositor has no meaning for leaves that half of the answer
+    /// where it is, which is what makes a shell built against a later version
+    /// of this protocol safe to run: it asks for a fourth corner, gets the one
+    /// it already had, and the window stays somewhere sensible.
+    ///
+    /// One layout does all of it. The window that floats is given the corner,
+    /// and every window that has stopped floating — the case of turning the
+    /// feature off — is given its display back, both by the same call in
+    /// [`crate::outputs::OutputManager::tile_window_on_output`].
+    ///
+    /// Nothing is written down here, for the reason
+    /// [`LxbState::set_application_scale`] writes nothing down: the shell says
+    /// what this is as soon as it connects, and it says it long before any
+    /// application exists to put a video in.
+    pub fn set_picture_in_picture(
+        &mut self,
+        floating: bool,
+        size: Option<lxb_protocol::pip::Size>,
+        place: Option<lxb_protocol::pip::Place>,
+    ) {
+        let held = self.lxb.outputs.pip().settings();
+        let settings = crate::pip::Settings {
+            floating,
+            size: size.unwrap_or(held.size),
+            place: place.unwrap_or(held.place),
+        };
+        if !self.lxb.outputs.set_pip(settings) {
+            return;
+        }
+        tracing::info!(
+            floating,
+            size = settings.size.key(),
+            place = settings.place.key(),
+            "the shell set what a picture-in-picture window does"
+        );
+        // Every window somebody had dragged out of the column goes back into
+        // it. A press on the Settings page is the user saying where they want
+        // their videos; a window left in the middle of the screen because it
+        // was once dragged there would be the session ignoring them. Nothing
+        // else puts one back — see [`crate::pip::Floating::reattach`].
+        for window in self.lxb.space.elements() {
+            if self.lxb.floating(window) {
+                crate::pip::floating_state(window).reattach();
+            }
+        }
+        self.lxb.outputs.relayout_windows(&mut self.lxb.space);
+        // A window that has just stopped floating is an ordinary window again
+        // and may well be the one in front now; one that has just started
+        // floating must not be holding the keyboard.
+        self.focus_topmost_window();
+        self.queue_redraw();
+    }
+
     /// Publish the foreground application's title, if it changed — both for
     /// the session as a whole and for each display.
     ///
@@ -1429,18 +2049,20 @@ impl LxbState {
             .shell_control
             .broadcast_output_app_id(per_output_app_id);
 
-        // And whether a game is being played on each display, which is the
-        // same window asked about a third time — what process is behind it.
-        let per_output_front = outputs
+        // And whether each display has an application in front of it at all,
+        // which is the same window asked about a third time — whether there is
+        // one. A display where the answer is no is showing the shell and
+        // nothing else, which is the still picture OLED protection exists for.
+        let per_output_in_use = outputs
             .iter()
             .map(|output| {
-                let pid = self
-                    .topmost_application(Some(output))
-                    .and_then(|window| self.window_pid(&window));
-                (output.clone(), pid)
+                let in_use = self.topmost_application(Some(output)).is_some();
+                (output.clone(), in_use)
             })
             .collect();
-        self.refresh_output_games(per_output_front);
+        self.lxb
+            .shell_control
+            .broadcast_output_in_use(per_output_in_use);
 
         // And whether anything on each display is still painting. A reading of
         // the clock rather than of the window stack, so it rides here for the
@@ -1478,6 +2100,35 @@ impl LxbState {
             .shell_control
             .broadcast_output_windows(per_output_windows);
 
+        // And the windows that are deliberately absent from that list: the ones
+        // floating over it. A shell driven by a controller has no pointer to
+        // reach one with, so it has to be told where they are — see
+        // `lxb_shell_v1.pip_window`. Diffed like the rest, and the diff earns
+        // its keep here: while a window is being dragged this is a fresh list
+        // every pass, and while one is merely sitting in a corner it is the same
+        // list for as long as the video plays.
+        let outputs: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        let per_output_pip = outputs
+            .into_iter()
+            .map(|output| {
+                let windows = self
+                    .lxb
+                    .space
+                    .elements_for_output(&output)
+                    .rev()
+                    .filter(|window| self.lxb.floating(window) && !self.lxb.out_of_sight(window))
+                    .filter_map(|window| {
+                        Some(FloatingEntry {
+                            id: crate::overview::window_id(window),
+                            rect: crate::pip::floating_state(window).frame()?.outer,
+                        })
+                    })
+                    .collect();
+                (output, windows)
+            })
+            .collect();
+        self.lxb.shell_control.broadcast_output_pip(per_output_pip);
+
         // What each display can do in HDR rides along too, for the same
         // reason: it is diffed, so a session where nobody touches it never
         // sends a second event.
@@ -1487,35 +2138,6 @@ impl LxbState {
         // not ready when it bound would otherwise wait for the desktop to
         // change before learning what is on it.
         self.lxb.shell_control.catch_up_new_shells();
-    }
-
-    /// Publish which displays have a game in front of them.
-    ///
-    /// `fronts` is the process behind each display's foreground window, and it
-    /// is the whole of why this is affordable: answering the question means
-    /// reading `/proc`, and the refresh above runs on every pass of the
-    /// session's loop. The same process in front is the same answer — a live
-    /// pid does not change which client is running it — so the walk happens
-    /// when a window changes and at no other time.
-    fn refresh_output_games(&mut self, fronts: Vec<(Output, Option<i32>)>) {
-        if self.lxb.shell_control.output_front_pid == fronts {
-            return;
-        }
-        let processes = teardown::Processes::read();
-        let boundary = teardown::Boundary {
-            shell: self.lxb.session_shell_pid,
-            compositor: Some(std::process::id() as i32),
-        };
-        let games = fronts
-            .iter()
-            .map(|(output, pid)| {
-                let playing = pid
-                    .is_some_and(|pid| teardown::supervised_application(&processes, pid, boundary));
-                (output.clone(), playing)
-            })
-            .collect();
-        self.lxb.shell_control.output_front_pid = fronts;
-        self.lxb.shell_control.broadcast_output_game(games);
     }
 
     /// Publish which displays still have something painting on them.
@@ -1658,7 +2280,7 @@ impl LxbState {
     }
 
     /// The window an overview id names, if it is still mapped.
-    fn window_by_overview_id(&self, id: u32) -> Option<Window> {
+    pub(crate) fn window_by_overview_id(&self, id: u32) -> Option<Window> {
         self.lxb
             .space
             .elements()
@@ -1811,7 +2433,7 @@ impl LxbState {
             .window_display(&self.lxb.space, &window)
             .map(|output| output.current_scale().fractional_scale())
             .unwrap_or(1.0)
-            * crate::scale::window_scale(self.lxb.outputs.app_scale(), &window);
+            * self.lxb.outputs.window_scale(&window);
 
         let shot = match self.backend.capture_window(&window, scale) {
             Ok(shot) => shot,
@@ -1910,8 +2532,7 @@ impl LxbState {
             .elements()
             .rev()
             .find(|window| {
-                window_accepts_keyboard_focus(window)
-                    && !self.lxb.out_of_sight(window)
+                self.lxb.takes_the_keyboard(window)
                     && match output {
                         Some(output) => self.primary_output(window).as_ref() == Some(output),
                         None => true,
@@ -2407,6 +3028,73 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     .shell_control
                     .send_share_answer(id, chosen.as_ref());
             }
+            lxb_shell_v1::Request::OfferKind {
+                id,
+                name,
+                pattern,
+                matching,
+            } => {
+                // How the pattern is read is passed on and never applied: it is
+                // the shell that matches a file, and a compositor that started
+                // vetting file types would be a second opinion about what an
+                // image is. What it cannot pass on is a number the protocol has
+                // no name for, which is the asking client at fault rather than
+                // the user, so the kind is dropped and the question still goes.
+                match matching.into_result() {
+                    Ok(matching) => state
+                        .lxb
+                        .shell_control
+                        .send_pick_kind(resource, id, &name, &pattern, matching),
+                    Err(unknown) => {
+                        tracing::warn!(
+                            id,
+                            ?unknown,
+                            "a file kind offered in a way this protocol has no name for"
+                        )
+                    }
+                }
+            }
+            lxb_shell_v1::Request::AskToPickFiles {
+                id,
+                app_id,
+                purpose,
+                title,
+                accept,
+                name,
+                at,
+            } => {
+                tracing::info!(id, %app_id, "an application is asking for a file");
+                // A purpose this protocol has no name for is the asking
+                // client at fault, and the safe reading of it is the narrowest
+                // one there is: a single file that is already on the disk. It
+                // is never "choose a folder and a name", which is the only
+                // purpose whose answer is somewhere to *write*.
+                let purpose = purpose
+                    .into_result()
+                    .unwrap_or(lxb_shell_v1::Picking::OneFile);
+                if !state
+                    .lxb
+                    .shell_control
+                    .send_pick_request(resource, id, &app_id, purpose, &title, &accept, &name, &at)
+                {
+                    // Nobody to ask, so nobody chose anything. Answered here
+                    // and now rather than left for a timeout somewhere else,
+                    // for the reason a share is: a session with no shell is not
+                    // one that is about to grow one mid-question.
+                    tracing::info!(
+                        id,
+                        "answering with nothing: no shell to put the question to"
+                    );
+                    resource.pick_answered(id, NO_KIND);
+                }
+            }
+            lxb_shell_v1::Request::ChoseFile { id, path } => {
+                state.lxb.shell_control.note_chosen_file(id, path);
+            }
+            lxb_shell_v1::Request::AnswerPick { id, kind } => {
+                tracing::info!(id, "the shell answered a file request");
+                state.lxb.shell_control.send_pick_answer(id, kind);
+            }
             lxb_shell_v1::Request::KeepOutOfSight { app_id, hidden } => {
                 state.keep_out_of_sight(&app_id, hidden == 1)
             }
@@ -2415,6 +3103,57 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             }
             lxb_shell_v1::Request::SetApplicationScale { scale } => {
                 state.set_application_scale(crate::scale::AppScale::from_percent(scale))
+            }
+            lxb_shell_v1::Request::SetPictureInPicture {
+                enabled,
+                size,
+                place,
+            } => state.set_picture_in_picture(
+                enabled == 1,
+                size.into_result().ok().and_then(pip_size_of),
+                place.into_result().ok().and_then(pip_place_of),
+            ),
+            lxb_shell_v1::Request::PipMenuCommand { id, command } => {
+                match command.into_result().ok().and_then(pip_command_of) {
+                    Some(command) => state.pip_menu_command(id, command),
+                    // A row this compositor has no meaning for, from a shell
+                    // built against a later version of this protocol. Left
+                    // alone rather than guessed at, exactly as an unknown size
+                    // or corner is.
+                    None => tracing::debug!(id, ?command, "an unknown floating window command"),
+                }
+            }
+            lxb_shell_v1::Request::SetWindowFloating { id, floating } => {
+                state.set_window_floating(id, floating == 1)
+            }
+            lxb_shell_v1::Request::PipSelect { id, accent } => {
+                state.select_floating_window(id, accent & 0x00ff_ffff)
+            }
+            lxb_shell_v1::Request::PipGrab { id, handle } => {
+                match handle.into_result().ok() {
+                    Some(lxb_shell_v1::PipHandle::Move) => state.grab_floating_window(id, false),
+                    Some(lxb_shell_v1::PipHandle::Resize) => state.grab_floating_window(id, true),
+                    // A way of holding a window this compositor has never heard
+                    // of, from a shell built against a later version of this
+                    // protocol. Left alone rather than guessed at: the one thing
+                    // worse than a grab that does nothing is one that resizes a
+                    // window somebody meant to move.
+                    _ => tracing::debug!(id, ?handle, "an unknown way to hold a floating window"),
+                }
+            }
+            lxb_shell_v1::Request::PipDrag { dx, dy } => {
+                state.drag_floating_window(smithay::utils::Point::from((dx, dy)))
+            }
+            lxb_shell_v1::Request::PipDrop { keep } => state.drop_floating_window(keep == 1),
+            lxb_shell_v1::Request::SetMenuSurface { surface } => state.set_menu_surface(surface),
+            lxb_shell_v1::Request::AskForThePictureBehind {
+                output,
+                layer,
+                buffer,
+            } => {
+                if let Some(output) = Output::from_resource(&output) {
+                    state.draw_the_picture_behind(resource, &output, layer, &buffer);
+                }
             }
             lxb_shell_v1::Request::HidePointer => state.pointer_put_down(),
             lxb_shell_v1::Request::ControllerUsed => {
@@ -2460,10 +3199,12 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             .retain(|instance| instance != resource);
         // Anything this client was waiting on is nobody's business now.
         state.lxb.shell_control.forget_shares(resource);
+        state.lxb.shell_control.forget_picks(resource);
         // And anything anybody else was waiting on has lost the client that
         // could have said yes to it. An unanswered question is a no.
         if state.lxb.shell_control.instances.len() < 2 {
             state.lxb.shell_control.refuse_all_shares();
+            state.lxb.shell_control.refuse_all_picks();
         }
 
         // With no shell left there is nobody to close the overview, and a

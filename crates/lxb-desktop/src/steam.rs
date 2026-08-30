@@ -216,11 +216,16 @@ pub enum Typed {
 impl Steam {
     pub fn start() -> Steam {
         // Before the worker can start anything: Valve's client is an
-        // application this shell starts, and it gets what the others get. It
-        // was the one that did not, and the whole of the difference was the
-        // guide button — see [`crate::model::hide_guarded_pads_from_hidapi`]
-        // and [`crate::pad_guard`].
-        lxb_steam::client::confine_children_with(crate::model::hide_guarded_pads_from_hidapi);
+        // application this shell starts, and it gets what the others get, less
+        // one line. It was the one that did not, and the whole of the
+        // difference was the guide button — but the pad this shell drives from
+        // `hidraw` is never on the list the client is handed, because the
+        // client is that pad's other driver and hiding it there is what leaves
+        // a Steam game with no controller at all. See
+        // [`crate::pad_guard::hidapi_ignore_list_for_valves_client`].
+        lxb_steam::client::confine_children_with(
+            crate::model::hide_guarded_pads_from_valves_client,
+        );
         Steam {
             client: lxb_steam::Steam::start(),
             account: None,
@@ -646,6 +651,8 @@ impl Steam {
                     place: None,
                     chosen: false,
                     over_the_list: false,
+                    person: None,
+                    portrait: None,
                 })
             })
             .collect();
@@ -665,6 +672,8 @@ impl Steam {
             // the first game, and this is above it. See
             // [`crate::apps::head_rows`].
             over_the_list: true,
+            person: None,
+            portrait: None,
         })
     }
 

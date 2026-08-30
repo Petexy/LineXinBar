@@ -1,0 +1,44 @@
+<!--
+  A plus: the mark on the row that makes one more of something.
+
+  The set had every verb for a thing that already exists — copy it, move it,
+  rename it, throw it away — and no mark at all for the one that brings a new
+  one into being. A row that adds was wearing whatever was nearest, and what
+  was nearest said something else: the two linked rings of setting-connect say
+  "join this to that", which is a different act with a different outcome.
+
+  Two bars crossing, and nothing more. There is no bead to pierce here because
+  the plus *is* the bead: it is one closed outline, so the material stands the
+  whole of it up as water rather than cutting a channel through a disc the way
+  chosen.svg does. That is deliberate and it is what makes this read at the
+  head of a column. A plus inside a circle is a button, and the row it sits on
+  is already the button.
+
+  The arms are 5.6 across and reach 24.4, which is the box every other mark in
+  this set sits in — setting-connect spans 23.2, chosen's disc 24.4 — so a plus
+  beside a drive or a folder sits on the same optical square instead of
+  floating small in the middle of one. The ends are fully round, at half the
+  arm: the language's one drawn stroke, chosen.svg's tick, is round-capped, and
+  a squared plus among these shapes reads as a mathematical sign rather than as
+  something made of the same stuff. The inner corners stay square, because the
+  union of two capsules is what a plus is and rounding the crotch of it turns
+  the shape into a four-petalled flower at any size worth drawing.
+
+  It is a plus and not a starburst or an arrow into a box, because a plus is
+  the one mark for this that needs no language: it is the same in every script
+  this shell is translated into.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <g id="bead">
+      <rect x="3.8" y="13.2" width="24.4" height="5.6" rx="2.8"/>
+      <rect x="13.2" y="3.8" width="5.6" height="24.4" rx="2.8"/>
+    </g>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

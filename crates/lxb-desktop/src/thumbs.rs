@@ -119,12 +119,26 @@ pub enum Want {
     /// standing on in Files. Pictures only — there is no such thing as a film
     /// behind the bar — and nothing is cached.
     Backdrop,
+    /// The same, blurred, for a screenshot of one of somebody's own games.
+    ///
+    /// Its own want rather than a flag on [`Want::Backdrop`], because the two
+    /// answers are different pictures of the same file and a shell that could
+    /// not tell them apart would put one where the other belongs. What makes it
+    /// a different picture is that the source is a screenshot of a console —
+    /// three hundred pixels tall, and a wall of squares if it is enlarged
+    /// honestly. See [`crate::art::blurred_scenery_from`].
+    Snapshot,
 }
 
 /// One finished picture of a file.
 pub enum Made {
     Thumbnail(Picture),
     Backdrop(crate::art::Scenery),
+    /// The blurred one. Two variants carrying the same thing, so that what
+    /// comes back says which of the two pictures of that file it is: the sight
+    /// it is filed under downstream differs, and a backdrop put into the
+    /// snapshot's layer would be a photograph nobody asked to have blurred.
+    Snapshot(crate::art::Scenery),
 }
 
 /// The worker pool, and what it has been asked for.
@@ -270,6 +284,7 @@ fn produce(path: &Path, want: Want) -> Option<Made> {
     match want {
         Want::Thumbnail => thumbnail(path).map(Made::Thumbnail),
         Want::Backdrop => backdrop(path).map(Made::Backdrop),
+        Want::Snapshot => snapshot(path).map(Made::Snapshot),
     }
 }
 
@@ -302,6 +317,22 @@ fn backdrop(path: &Path) -> Option<crate::art::Scenery> {
     }
     let image = full(path)?;
     Some(crate::art::scenery_from(image))
+}
+
+/// The picture behind the display, for a screenshot of one of somebody's own
+/// games.
+///
+/// The same read as a backdrop's and a different reduction: what is being read
+/// is a file this shell fetched into its own cache rather than one of the
+/// user's photographs, and it is a few hundred pixels across. See
+/// [`crate::art::blurred_scenery_from`], which is where the reason it is
+/// softened rather than enlarged honestly is written down.
+fn snapshot(path: &Path) -> Option<crate::art::Scenery> {
+    if crate::media::kind_of(path)? != Kind::Image {
+        return None;
+    }
+    let image = full(path)?;
+    Some(crate::art::blurred_scenery_from(image))
 }
 
 /// One of the user's pictures, decoded whole.
@@ -343,10 +374,27 @@ fn modified(path: &Path) -> Option<u64> {
 
 /// Make a picture of a file that has none cached.
 fn render(path: &Path) -> Option<Picture> {
-    match crate::media::kind_of(path)? {
-        Kind::Audio => None,
-        Kind::Video => from_film(path),
-        Kind::Image => from_picture(path),
+    match crate::media::kind_of(path) {
+        Some(Kind::Audio) => None,
+        Some(Kind::Video) => from_film(path),
+        Some(Kind::Image) => from_picture(path),
+        // A file whose name says nothing about what is in it. Looked inside
+        // rather than given up on, because the only files that reach here
+        // unnamed are ones something has already decided are pictures — an
+        // account's own portrait is `/var/lib/AccountsService/icons/<name>`,
+        // with no extension at all, and the daemon that keeps it is the thing
+        // saying it is a picture.
+        //
+        // It is not a widening of what gets thumbnailed. Nothing asks for a
+        // picture of a file it has not already judged: the shelves ask by
+        // [`Kind`], the file explorer asks only where [`crate::media::
+        // has_picture`] agrees, and neither of those can produce a path with no
+        // extension. What this adds is an answer for the one caller that can.
+        //
+        // [`decode`] sniffs the format from the bytes and fails quietly on
+        // anything that is not a picture, so the worst this can cost is one
+        // read of a file somebody pointed at.
+        None => decode(&std::fs::read(path).ok()?),
     }
 }
 
@@ -1089,6 +1137,45 @@ mod tests {
             backdrop(&film).is_none(),
             "a film has no picture to stand in"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file whose name says nothing about what is in it is looked inside.
+    ///
+    /// The one caller that produces such a path is an account's own portrait:
+    /// `accounts-daemon` keeps it at `/var/lib/AccountsService/icons/<name>`,
+    /// with no extension at all, and a thumbnailer that went by the name alone
+    /// drew the plain figure for every account on the machine that has a
+    /// picture. See [`render`].
+    #[test]
+    fn a_picture_with_no_extension_is_still_a_picture() {
+        let dir = std::env::temp_dir().join(format!("lxb-portrait-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("somewhere to write");
+        // Named the way `accounts-daemon` names one: no extension, no dot.
+        let portrait = dir.join("marta");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            256,
+            256,
+            image::Rgb([90, 40, 120]),
+        ))
+        .save_with_format(&portrait, image::ImageFormat::Png)
+        .expect("a picture on the disk");
+
+        assert_eq!(
+            crate::media::kind_of(&portrait),
+            None,
+            "its name really does say nothing"
+        );
+        let made = render(&portrait).expect("the bytes say it is a PNG");
+        assert!(made.width > 0 && made.height > 0);
+        assert_eq!(made.rgba.len(), (made.width * made.height * 4) as usize);
+
+        // And a file with no extension that is not a picture is still nothing,
+        // rather than a decoder being asked to make something of it.
+        let note = dir.join("README");
+        std::fs::write(&note, b"just some text").expect("a file");
+        assert!(render(&note).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

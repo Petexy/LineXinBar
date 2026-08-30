@@ -229,7 +229,13 @@ fn parse(record: &str) -> Result<Handoff, Rejection> {
     if !valid_boot_id(boot_id) {
         return Err(Rejection::InvalidBootId);
     }
-    if !matches!(accent, "Purple" | "Blue" | "Green" | "Yellow" | "Red") {
+    // Asked of the shared table rather than of a list spelled out here: the
+    // accent names have enough homes already, and one more is one more place
+    // for them to drift apart.
+    if !lxb_protocol::wallpaper::PALETTES
+        .iter()
+        .any(|palette| palette.name == accent)
+    {
         return Err(Rejection::InvalidAccent);
     }
 

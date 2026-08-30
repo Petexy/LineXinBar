@@ -16,10 +16,10 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::apps::{App, Category, Entry};
 use crate::settings::Setting;
@@ -152,6 +152,19 @@ pub enum Action {
     /// worked on the shell's own screens would work everywhere except where it
     /// is wanted.
     Screenshot,
+    /// Hand the guide's own directions to the videos floating over it, and take
+    /// them back.
+    ///
+    /// The right stick pressed. It is the one control on a pad that is free at
+    /// exactly the moment this is wanted: while the guide is up the stick is not
+    /// aiming a pointer — there is nothing of an application's for it to aim at
+    /// — and while it *is* aiming one this shell is not on screen to be asked.
+    ///
+    /// Not honoured from outside, for the reason [`Action::Menu`] is not: it is
+    /// about something the shell is showing, and a video floating over a game
+    /// with no overlay up is a window the user is deliberately not being offered
+    /// anything to do to.
+    Floating,
     /// Turn the session up or down by one step, or silence it.
     ///
     /// Honoured from outside for the same reason again, and the plainest of
@@ -245,7 +258,7 @@ fn read_into(
     entries: &mut [Entry],
     row: usize,
     query: &str,
-    sort: crate::media::Sort,
+    how: crate::files::How,
 ) -> Option<crate::media::Orders> {
     let Some(Entry::Folder(folder)) = entries.get_mut(row) else {
         return None;
@@ -253,7 +266,11 @@ fn read_into(
     let place = folder.place.clone()?;
     let shown = match place {
         crate::files::Place::Volumes(shows) => crate::files::volumes(query, shows),
-        crate::files::Place::Directory(at, shows) => crate::files::listing(&at, query, sort, shows),
+        crate::files::Place::Directory(at, shows) => crate::files::listing(&at, query, how, shows),
+        // No query: the trash carries no search field, for the reasons
+        // [`crate::files::trash`] gives. What is passed here would be the
+        // query of whatever column happened to be searched last.
+        crate::files::Place::Trash => crate::files::trash(how.sort),
     };
     folder.entries = shown.rows;
     // What was found, in place of the date the row was carrying: "14 folders,
@@ -263,6 +280,66 @@ fn read_into(
     // instead, which is the row that is doing the narrowing.
     folder.comment = Some(shown.note);
     Some(shown.orders)
+}
+
+/// Where Files is on this bar: the category holding it, and the row that opens
+/// the disks.
+///
+/// Found by what the row *is* and not by what it is called. The Files row is
+/// the one entry in the tree standing for the whole disk as it is —
+/// `Place::Volumes(Shows::Everything)` — and the other rows that open a list of
+/// disks are all somebody being asked to *choose* something: a wallpaper, a
+/// face, where a console's games are. Each carries what it is choosing, so none
+/// of them can be walked into by mistake, whatever any category on this machine
+/// happens to be titled. See [`crate::files::Shows`].
+fn the_files_row(categories: &[Category]) -> Option<(usize, usize)> {
+    categories.iter().enumerate().find_map(|(at, column)| {
+        let row = column.entries.iter().position(|entry| {
+            matches!(
+                entry,
+                Entry::Folder(folder)
+                    if folder.place
+                        == Some(crate::files::Place::Volumes(crate::files::Shows::Everything))
+            )
+        })?;
+        Some((at, row))
+    })
+}
+
+/// Which row of `entries` leads to `path`.
+///
+/// By where a row goes rather than by what it is called: two rows in one column
+/// can read the same — a folder and a file beside it, a name that differs only
+/// in case — and a walk that matched on names would step into whichever came
+/// first.
+fn row_leading_to(entries: &[Entry], path: &Path) -> Option<usize> {
+    entries.iter().position(|entry| match entry {
+        Entry::Folder(folder) => {
+            matches!(folder.place.as_ref(), Some(crate::files::Place::Directory(at, _)) if at == path)
+        }
+        Entry::File(file) => file.path == path,
+        _ => false,
+    })
+}
+
+/// The disk in `entries` that holds `path`, deepest first.
+///
+/// `$HOME` is inside `/`, so both rows hold a file in the user's own folder and
+/// only one of them is where anybody would look for it. The picker's own rule,
+/// and the same one word for word; see [`crate::picker::Picker::walk_to`].
+fn deepest_disk_holding(entries: &[Entry], path: &Path) -> Option<PathBuf> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Folder(folder) => match folder.place.as_ref() {
+                Some(crate::files::Place::Directory(at, _)) => Some(at),
+                _ => None,
+            },
+            _ => None,
+        })
+        .filter(|at| path.starts_with(at))
+        .max_by_key(|at| at.components().count())
+        .cloned()
 }
 
 /// One column below the category's own.
@@ -318,6 +395,29 @@ struct LaunchedApp {
     child: Child,
     started_at: Instant,
     wait_error_reported: bool,
+    /// The game this process is playing, where it is playing one.
+    ///
+    /// Everything else the bar starts is watched only to be tidied away. A
+    /// game is watched to be *answered*: an emulator that comes straight back
+    /// has told the shell something, and until this was here the only place it
+    /// said it was the log. See [`Played`].
+    played: Option<Played>,
+}
+
+/// One game a launched process was playing, and how quickly it stopped.
+///
+/// What the shell needs to answer a start that failed. Carried on the process
+/// rather than looked up afterwards, for the reason the argv is carried on the
+/// row: by the time it exits the cursor has very likely moved, and the answer
+/// has to be about the game that was pressed.
+#[derive(Debug, Clone)]
+pub struct Played {
+    /// The game, by the path its row is held under.
+    pub rom: PathBuf,
+    /// The console it came out of, under the name the shell calls it.
+    pub console: String,
+    /// How long it lasted.
+    pub lasted: Duration,
 }
 
 impl Lattice {
@@ -380,6 +480,16 @@ impl Lattice {
             let file = file.clone();
             return self.open_file(&file);
         }
+        // A game out of somebody's own ROM folder, which carries the whole
+        // command line that starts it — see [`crate::apps::Rom::start`]. It is
+        // filed under the *game's* name like the two above, and for the same
+        // reason: what the user pressed was a game, and a guide offering to
+        // close "RetroArch" would be about a program they never chose to think
+        // about.
+        if let Some(rom) = cursor.current_entry(self).and_then(Entry::rom) {
+            let rom = rom.clone();
+            return self.play_rom(&rom);
+        }
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -402,6 +512,7 @@ impl Lattice {
                     child,
                     started_at: Instant::now(),
                     wait_error_reported: false,
+                    played: None,
                 });
                 Some(pid)
             }
@@ -410,6 +521,37 @@ impl Lattice {
                 None
             }
         }
+    }
+
+    /// Start one game out of somebody's ROM folder.
+    ///
+    /// The argv is on the row, so nothing is asked of anything here: see
+    /// [`crate::apps::Rom::start`], which is where it was built and why. A row
+    /// with none is a console with no core installed, and its press is answered
+    /// by a panel rather than by this — `Shell::say_no_core`.
+    fn play_rom(&mut self, rom: &crate::apps::Rom) -> Option<u32> {
+        let argv = rom.start.as_ref()?;
+        let command = crate::retroarch::shell_command(argv);
+        tracing::info!(game = %rom.name, file = %rom.path.display(), "playing");
+        self.open_path_with(
+            &rom.path,
+            &rom.name,
+            crate::media::Opening {
+                name: "RetroArch".to_string(),
+                // Nothing offers this one off a list, so there is no row to
+                // draw a picture on: the splash is the game's, wearing the
+                // mark of the column it came out of.
+                icon: None,
+                command,
+            },
+            // The one launch on this bar whose failure is answered rather than
+            // only logged. See [`Played`].
+            Some(Played {
+                rom: rom.path.clone(),
+                console: rom.console.clone(),
+                lasted: Duration::ZERO,
+            }),
+        )
     }
 
     /// Start one command line the shell built itself, under a name of its own.
@@ -427,6 +569,42 @@ impl Lattice {
         self.open_media_with(file, opening)
     }
 
+    /// Open whatever `cursor` is pointing at in the application whose desktop
+    /// entry is called `entry` — `vlc.desktop` and the like.
+    ///
+    /// What the Open with list's *Other application* half comes down to. The
+    /// ordinary Open asks the desktop which program handles the type and takes
+    /// the answer; this is the press for the case where there is no answer to
+    /// take, which is every file with no extension on it.
+    ///
+    /// Only the two kinds of row that are files. A row that is not one is not
+    /// something an application can be handed, and the list is never raised
+    /// over one — but it is answered here as well as there, because the menu
+    /// that offered the row and the press that arrives are two separate
+    /// moments and the bar underneath goes on living between them.
+    ///
+    /// Nothing is written down. The file opens in what was chosen and the
+    /// desktop's own answer for the type is left exactly as it was; making the
+    /// choice stick is a second press on a row of its own, which is what
+    /// [`crate::menu::Command::OpenWithAlways`] is for.
+    pub fn open_selection_with(&mut self, cursor: &Cursor, entry: &str) -> Option<u32> {
+        let (path, title) = match cursor.current_entry(self)? {
+            Entry::Media(file) => (file.path.clone(), file.title.clone()),
+            Entry::File(file) => (file.path.clone(), file.name.clone()),
+            _ => return None,
+        };
+        // The borrow of the catalogue ends with this line: what comes out is
+        // an owned command line, and starting it needs the catalogue mutably.
+        let opening =
+            crate::media::opening_with(&path, crate::media::entry_named(entry, &self.categories)?);
+        tracing::info!(
+            file = %path.display(),
+            with = %opening.name,
+            "opening this in an application the user picked by name"
+        );
+        self.open_path_with(&path, &title, opening, None)
+    }
+
     /// The same, for a file the explorer found in a folder.
     ///
     /// Its own two lines rather than a shared one, because the two rows carry
@@ -435,7 +613,7 @@ impl Lattice {
     /// with it, which is what the column it was pressed in is *for*.
     fn open_file(&mut self, file: &crate::files::Item) -> Option<u32> {
         let opening = crate::media::opening(&file.path, file.mime, &self.categories)?;
-        self.open_path_with(&file.path, &file.name, opening)
+        self.open_path_with(&file.path, &file.name, opening, None)
     }
 
     /// The same, in an application the user has picked by name off the Open
@@ -450,7 +628,7 @@ impl Lattice {
         file: &crate::media::File,
         opening: crate::media::Opening,
     ) -> Option<u32> {
-        self.open_path_with(&file.path, &file.title, opening)
+        self.open_path_with(&file.path, &file.title, opening, None)
     }
 
     /// What both of those come down to: start `opening`, and file the process
@@ -460,6 +638,7 @@ impl Lattice {
         path: &Path,
         title: &str,
         opening: crate::media::Opening,
+        played: Option<Played>,
     ) -> Option<u32> {
         tracing::info!(
             file = %path.display(),
@@ -482,11 +661,52 @@ impl Lattice {
                     child,
                     started_at: Instant::now(),
                     wait_error_reported: false,
+                    played,
                 });
                 Some(pid)
             }
             Err(err) => {
                 tracing::warn!(command = %opening.command, ?err, "failed to start a player");
+                None
+            }
+        }
+    }
+
+    /// Start a program that is not opening anything, and file it under its own
+    /// name.
+    ///
+    /// The one launch here with no file behind it. Everything else on this bar
+    /// is a thing — an application's desktop entry, a song, a game — and is
+    /// filed under what that thing is called; this is a program being asked for
+    /// as itself, which the shell does in exactly one place: the row that
+    /// stands in for RetroArch offers RetroArch's own interface, because the
+    /// shell hides it from the list of installed applications and there would
+    /// otherwise be no way to reach it.
+    ///
+    /// It joins the launched applications on the same terms as anything else,
+    /// so the guide can close it like anything else.
+    pub fn open_command(&mut self, opening: crate::media::Opening) -> Option<u32> {
+        match launch(
+            &opening.command,
+            false,
+            &self.wayland_display,
+            self.xwayland_display.as_deref(),
+        ) {
+            Ok(child) => {
+                let pid = child.id();
+                tracing::info!(command = %opening.command, pid, "a program was started as itself");
+                self.launched_apps.push(LaunchedApp {
+                    name: opening.name,
+                    command: opening.command,
+                    child,
+                    started_at: Instant::now(),
+                    wait_error_reported: false,
+                    played: None,
+                });
+                Some(pid)
+            }
+            Err(err) => {
+                tracing::warn!(command = %opening.command, ?err, "it would not start");
                 None
             }
         }
@@ -562,14 +782,19 @@ impl Lattice {
     /// UI. Keeping the direct child makes failures such as `sh -c` exiting 127
     /// visible, while `setsid` and null stdio keep a running app independent of
     /// the shell's terminal and input lifecycle.
-    pub fn reap_children(&mut self) {
+    /// Answers the games that came back having failed — see [`Played`]. Every
+    /// other kind of exit is tidied away and logged, which is all any of them
+    /// has ever needed.
+    pub fn reap_children(&mut self) -> Vec<Played> {
         let now = Instant::now();
+        let mut failed = Vec::new();
         self.launched_apps
             .retain_mut(|launched| match launched.child.try_wait() {
                 Ok(None) => true,
                 Ok(Some(status)) => {
                     use std::os::unix::process::ExitStatusExt;
-                    let runtime_ms = now.duration_since(launched.started_at).as_millis();
+                    let lasted = now.duration_since(launched.started_at);
+                    let runtime_ms = lasted.as_millis();
                     match (status.success(), status.signal()) {
                         (true, _) => tracing::info!(
                             app = %launched.name,
@@ -589,13 +814,23 @@ impl Lattice {
                             runtime_ms,
                             "application process was ended"
                         ),
-                        (false, None) => tracing::warn!(
-                            app = %launched.name,
-                            command = %launched.command,
-                            %status,
-                            runtime_ms,
-                            "application process exited unsuccessfully"
-                        ),
+                        (false, None) => {
+                            tracing::warn!(
+                                app = %launched.name,
+                                command = %launched.command,
+                                %status,
+                                runtime_ms,
+                                "application process exited unsuccessfully"
+                            );
+                            // A game is the one kind of failure the shell has
+                            // something to say about. Reported with what it
+                            // was rather than acted on here: this is the
+                            // catalogue, and what to put on the screen is the
+                            // shell's business.
+                            if let Some(played) = launched.played.clone() {
+                                failed.push(Played { lasted, ..played });
+                            }
+                        }
                     }
                     false
                 }
@@ -613,6 +848,7 @@ impl Lattice {
                     true
                 }
             });
+        failed
     }
 }
 
@@ -632,16 +868,34 @@ impl Cursor {
         }
     }
 
-    /// A cursor for a display just coming up, resting on the first column that
+    /// A cursor for a display just coming up, resting on the column the user
+    /// asked a session to open on — or, failing that, on the first column that
     /// has anything in it.
     ///
-    /// The shell's own Settings column leads the bar and has nothing under it
-    /// yet, and opening every session onto an empty column would be a poor
-    /// greeting. It is placed rather than travelled to, so the bar is already
+    /// The setting is Settings > System > Startup category and it comes first,
+    /// whatever is in the column it names: somebody who chose to open on
+    /// Settings meant it, and Settings has nothing launchable in it by design.
+    ///
+    /// The fallback is what the shell did before there was a setting, and it is
+    /// still needed for two reasons. A column can be named by the setting and
+    /// not be on this bar — a Steam library nobody has signed in to, a Waydroid
+    /// that is not installed — and a shell that insisted would open on whatever
+    /// happened to have taken that column's index. And the shell's own Settings
+    /// column leads the bar with nothing under it, so a session that simply
+    /// took the first column would open onto an empty one, which is a poor
+    /// greeting.
+    ///
+    /// Either way it is placed rather than travelled to, so the bar is already
     /// where it belongs on the first frame.
     pub fn for_model(lattice: &Lattice) -> Self {
         let mut cursor = Self::new(lattice.categories.len());
-        if let Some(populated) = lattice.categories.iter().position(Category::has_launchable) {
+        let wanted = crate::settings::startup_category();
+        let opening = lattice
+            .categories
+            .iter()
+            .position(|column| column.id == wanted)
+            .or_else(|| lattice.categories.iter().position(Category::has_launchable));
+        if let Some(populated) = opening {
             cursor.selected_category = populated;
             cursor.category_position = populated as f32;
         }
@@ -796,6 +1050,23 @@ impl Cursor {
         Some(entries)
     }
 
+    /// The rows of the column the cursor is standing in, as the list they
+    /// really are — so a row can be put on it or taken off rather than only
+    /// changed.
+    ///
+    /// The one caller is the head row a marking stands at the top of a column
+    /// in place of the column's own; see [`crate::marks`]. Everything else in
+    /// this shell builds a column whole and replaces it whole, which is why
+    /// [`Self::level_entries_mut`] hands back a slice and this is separate
+    /// rather than the two being one call.
+    pub fn open_column_mut<'a>(&self, lattice: &'a mut Lattice) -> Option<&'a mut Vec<Entry>> {
+        let mut entries = &mut lattice.categories.get_mut(self.selected_category)?.entries;
+        for step in 0..self.open {
+            entries = entries.get_mut(self.row_at(step))?.entries_vec_mut()?;
+        }
+        Some(entries)
+    }
+
     /// Make the row under the cursor the one its column is set to, and say
     /// what that means — which is for the caller to put into force.
     ///
@@ -863,7 +1134,7 @@ impl Cursor {
     pub fn open_place(
         &mut self,
         lattice: &mut Lattice,
-        sort: crate::media::Sort,
+        how: crate::files::How,
     ) -> Option<crate::media::Orders> {
         let row = self.selected_item();
         let entries = self.level_entries_mut(lattice, self.open)?;
@@ -872,7 +1143,7 @@ impl Cursor {
         // out of one and into another is a different question, and a column
         // that arrived already narrowed by what was typed in the last one would
         // be hiding files with no field in sight to say so.
-        let orders = read_into(entries, row, "", sort)?;
+        let orders = read_into(entries, row, "", how)?;
 
         for (index, entry) in entries.iter_mut().enumerate() {
             if index == row {
@@ -886,6 +1157,94 @@ impl Cursor {
         }
         self.stack.truncate(self.open);
         Some(orders)
+    }
+
+    /// Walk into the file explorer, down to `folder`, and leave `item` under
+    /// the cursor.
+    ///
+    /// What "Show in folder" comes down to; see [`crate::reveal`], which is
+    /// where the question arrives from. `None` when there is no way there on
+    /// this bar — no Files row, a path on no disk the shell lists, a folder
+    /// that cannot be read — and otherwise what the column it ended in could
+    /// be ordered by, which is [`Self::open_place`]'s own answer for the last
+    /// read.
+    ///
+    /// The route is [`crate::picker::Picker::walk_to`]'s, made against the
+    /// bar's tree instead of a panel's columns: the disks are opened, the one
+    /// holding the path is chosen — the deepest of them, so a file in the
+    /// user's own folder opens under Home rather than four columns down from
+    /// Root — and then one column per part of what is left.
+    ///
+    /// Every one of those columns is read off the disk as it is stepped into,
+    /// exactly as a press reads one. That is one `readdir` per level of the
+    /// path, on the thread that draws — a folder is under a millisecond, and a
+    /// download is four levels down. See [`Self::open_place`] for what each of
+    /// those reads throws away.
+    ///
+    /// Arriving is standing in the folder. A file that is not among its rows —
+    /// a listing capped at [`crate::files`]'s ten-thousandth row, or something
+    /// deleted between the question and this frame — is still an arrival: the
+    /// folder is what the user is shown, which is most of what was asked for,
+    /// and a walk that reported failure would have them shown nothing at all.
+    ///
+    /// A walk that does *not* arrive leaves the cursor wherever it got to,
+    /// which is [`crate::Shell::walk_to_the_bios_row`]'s behaviour and is
+    /// deliberate on the same grounds: putting it back would mean restoring a
+    /// position into a tree this walk has already rewritten underneath it —
+    /// every column it read dropped the rows of the folders beside it. Nothing
+    /// is *shown* moving either way, because the caller only brings the bar
+    /// forward once this has answered.
+    pub fn walk_to_file(
+        &mut self,
+        lattice: &mut Lattice,
+        folder: &Path,
+        item: Option<&Path>,
+        how: crate::files::How,
+    ) -> Option<crate::media::Orders> {
+        let (category, row) = the_files_row(&lattice.categories)?;
+        // The column itself, and not whichever subcolumn of it somebody
+        // happened to be standing in — see [`Self::go_to_own_column`], which
+        // exists for this.
+        self.go_to_own_column(category, lattice);
+        self.point_at_row(row, lattice);
+        // The disks, which are worked out on the press that opens Files rather
+        // than kept: a drive plugged in an hour into the session has to be
+        // among them for a file on it to be reachable at all.
+        let mut orders = self.open_and_enter(lattice, how)?;
+
+        let root = deepest_disk_holding(self.current_entries(lattice), folder)?;
+        let rest = folder.strip_prefix(&root).ok()?;
+        let mut trail = vec![root.clone()];
+        let mut walked = root;
+        for part in rest.components() {
+            walked = walked.join(part);
+            trail.push(walked.clone());
+        }
+        for step in &trail {
+            let row = row_leading_to(self.current_entries(lattice), step)?;
+            self.point_at_row(row, lattice);
+            orders = self.open_and_enter(lattice, how)?;
+        }
+
+        if let Some(row) = item.and_then(|item| row_leading_to(self.current_entries(lattice), item))
+        {
+            self.point_at_row(row, lattice);
+        }
+        Some(orders)
+    }
+
+    /// Read the folder under the cursor off the disk and step into it.
+    ///
+    /// The two halves of opening one of the explorer's columns, in the order
+    /// every press does them in: what is on a disk is not known until it has
+    /// been looked at, and a column with no rows cannot be stepped into.
+    fn open_and_enter(
+        &mut self,
+        lattice: &mut Lattice,
+        how: crate::files::How,
+    ) -> Option<crate::media::Orders> {
+        let orders = self.open_place(lattice, how)?;
+        self.enter(lattice).then_some(orders)
     }
 
     /// Read the folder the cursor is standing *in* again, keeping only what
@@ -903,12 +1262,12 @@ impl Cursor {
         &self,
         lattice: &mut Lattice,
         query: &str,
-        sort: crate::media::Sort,
+        how: crate::files::How,
     ) -> Option<crate::media::Orders> {
         let level = self.open.checked_sub(1)?;
         let row = self.row_at(level);
         let entries = self.level_entries_mut(lattice, level)?;
-        read_into(entries, row, query, sort)
+        read_into(entries, row, query, how)
     }
 
     /// The row selected in the column at `level`.
@@ -1392,6 +1751,31 @@ impl Cursor {
         self.restore_column(lattice);
     }
 
+    /// Put the cursor on this category's *own* column, wherever it was.
+    ///
+    /// [`Cursor::select_category`] answers a walk along the category row, and a
+    /// walk that arrives where it started is not a move — so it returns without
+    /// doing anything when the cursor is already in that category. Which is
+    /// right for a walk and wrong for the shell reaching in and putting the
+    /// cursor somewhere: "take them to the RetroArch column" has to mean the
+    /// column and not the third subcolumn of it they happen to be standing in.
+    ///
+    /// The bug it was written for: a game that cannot start without a BIOS
+    /// raises a panel offering to go and find one, and the row that asks is on
+    /// the RetroArch column — two columns back out from the game whose press
+    /// raised the panel. Pressing the offer did nothing at all.
+    pub fn go_to_own_column(&mut self, at: usize, lattice: &Lattice) {
+        if at >= lattice.categories.len() {
+            return;
+        }
+        if at == self.selected_category {
+            self.leave_subcolumns();
+            self.restore_column(lattice);
+            return;
+        }
+        self.select_category(at, lattice);
+    }
+
     /// Come back out of every subcategory this cursor is standing in.
     fn leave_subcolumns(&mut self) {
         self.open = 0;
@@ -1444,6 +1828,117 @@ impl Cursor {
         }
         self.open -= 1;
         true
+    }
+
+    /// Come back out of any column the catalogue no longer reaches.
+    ///
+    /// A cursor stands in a *path* — a category, a row of it, a row of that —
+    /// and the catalogue under it is rewritten by things that have nothing to
+    /// do with where anybody is standing: a scan answering, a package saying
+    /// what it found, a folder being chosen out from under the very listing it
+    /// was chosen in. A rewrite that shortens the path leaves this cursor
+    /// standing at a depth the bar does not go to any more.
+    ///
+    /// Which is not a wrong row on screen but an empty screen. The whole chain
+    /// of columns is drawn one step to the left per level opened — see
+    /// [`crate::ui::bar_column_x`] — so a cursor two levels past the end of the
+    /// path draws every column it still has two steps off the left edge, and
+    /// what is left is the wallpaper with a shell running behind it. Nothing
+    /// says so, nothing recovers, and Back is the only way out.
+    ///
+    /// So the depth is brought back to what the catalogue actually holds,
+    /// every frame. `true` when it had to move, which is a frame to draw.
+    pub fn settle(&mut self, lattice: &Lattice) -> bool {
+        let mut moved = false;
+        // An empty column counts as one that is not there, on the same terms
+        // [`Self::enter`] refuses to step into one: a column with no rows is
+        // somewhere the cursor cannot be, whether it was never opened or has
+        // just been emptied.
+        while self.open > 0
+            && self
+                .level_entries(lattice, self.open)
+                .is_none_or(<[Entry]>::is_empty)
+        {
+            self.open -= 1;
+            moved = true;
+        }
+        if moved {
+            // The columns past where the cursor now stands are the ones being
+            // stepped out of, and these were never stepped out of: they are
+            // gone. Keeping them would leave the bar drawing a column of a path
+            // that no longer exists.
+            self.stack.truncate(self.open);
+        }
+
+        // And the columns kept for stepping straight back into, which are the
+        // other half of the same problem and the harder half to see.
+        //
+        // A cursor that has come out of a path keeps where it was in each
+        // column of it, so that going back in lands where it left. That memory
+        // is a row *number*, and the rows it counted are not promised to still
+        // be there — a folder chosen, a scan answering, a package arriving all
+        // rewrite them. Step back in then and the column opens on a row that
+        // does not exist: nothing under the highlight, and the list drawn
+        // scrolled off its own top, which is a column of games with no game in
+        // it. That is what a ROM folder chosen for the first time did, every
+        // time, because choosing it is a walk several columns deep and the
+        // column walked back out into is the one the walk had just replaced.
+        for level in 0..self.stack.len() {
+            let Some(entries) = self.level_entries(lattice, level + 1) else {
+                break;
+            };
+            let Some(last) = entries.len().checked_sub(1) else {
+                break;
+            };
+            let Some(column) = self.stack.get_mut(level) else {
+                break;
+            };
+            if column.selected <= last {
+                continue;
+            }
+            // Placed rather than travelled to, like every other arrival in a
+            // column that is not on screen: the position is what the drawing
+            // reads, and leaving it where it was is the whole of how a column
+            // ends up showing its rows from somewhere off the top.
+            column.selected = last;
+            column.position = last as f32;
+            column.speed = 0.0;
+            moved = true;
+        }
+
+        // And the category's own column, which the stack does not hold: that
+        // row lives in `selected_items`, one per category, and it goes stale
+        // the same way for the same reasons. A console that stops needing its
+        // BIOS takes the last row off the RetroArch column while somebody is
+        // standing on it — they answered the question that row asked — and what
+        // is left is a highlight over nothing, above a list drawn scrolled off
+        // its own top.
+        if self.open == 0 {
+            let last = self
+                .level_entries(lattice, 0)
+                .and_then(|entries| entries.len().checked_sub(1));
+            let standing = self.selected_items.get(self.selected_category).copied();
+            if let (Some(last), Some(Some(row))) = (last, standing) {
+                if row > last {
+                    self.select_row(last);
+                    self.item_position = last as f32;
+                    self.item_speed = 0.0;
+                    moved = true;
+                }
+            }
+        }
+        moved
+    }
+
+    /// Forget the columns kept for stepping straight back into.
+    ///
+    /// For a path that is not somewhere to go back to. Walking to a folder to
+    /// answer a question is the case this exists for: the columns of that walk
+    /// were a way of pointing at something, the question has been answered, and
+    /// where the cursor stood in each of them is not a place anybody is
+    /// returning to. See `Shell::leave_the_picker`.
+    pub fn forget_the_way_back(&mut self) {
+        self.stack.truncate(self.open);
     }
 
     /// Apply a navigation action. Returns `true` if anything moved.
@@ -1913,7 +2408,26 @@ fn confine_to_session(
 /// who has told SDL to ignore a device has told it for a reason, and this is
 /// not an argument with them.
 pub(crate) fn hide_guarded_pads_from_hidapi(command: &mut Command) {
-    let Some(guarded) = crate::pad_guard::hidapi_ignore_list() else {
+    ask_sdl_to_leave_them_alone(command, crate::pad_guard::hidapi_ignore_list());
+}
+
+/// The same for Valve's client, which is told about a shorter list.
+///
+/// One pad is missing from it: the Steam Controller this shell drives itself,
+/// which Valve's client is the other driver of and every Steam game's only road
+/// to. See [`crate::pad_guard::hidapi_ignore_list_for_valves_client`], which is
+/// where that difference is argued.
+pub(crate) fn hide_guarded_pads_from_valves_client(command: &mut Command) {
+    ask_sdl_to_leave_them_alone(
+        command,
+        crate::pad_guard::hidapi_ignore_list_for_valves_client(),
+    );
+}
+
+/// Put a list of pads in front of what is already there, or leave the
+/// environment as it stands when there are none.
+fn ask_sdl_to_leave_them_alone(command: &mut Command, guarded: Option<String>) {
+    let Some(guarded) = guarded else {
         return;
     };
     let ignore = match std::env::var("SDL_HIDAPI_IGNORE_DEVICES") {
@@ -1939,6 +2453,7 @@ mod tests {
             exec: "true".into(),
             terminal: false,
             categories: Vec::new(),
+            keywords: Vec::new(),
             mime_types: Vec::new(),
             path: PathBuf::from("/tmp/x.desktop"),
             wm_class: None,
@@ -1960,6 +2475,8 @@ mod tests {
             place: None,
             chosen: false,
             over_the_list: false,
+            person: None,
+            portrait: None,
         })
     }
 
@@ -1987,9 +2504,11 @@ mod tests {
             comment: None,
             icon: None,
             swatch: None,
+            material: None,
             chosen,
             acts: false,
             setting: Some(Setting::Accent(title)),
+            over_the_list: false,
         })
     }
 
@@ -2000,9 +2519,11 @@ mod tests {
             comment: None,
             icon: None,
             swatch: None,
+            material: None,
             chosen: false,
             acts: true,
             setting: Some(Setting::Accent(title)),
+            over_the_list: false,
         })
     }
 
@@ -2013,9 +2534,11 @@ mod tests {
             comment: None,
             icon: None,
             swatch: None,
+            material: None,
             chosen,
             acts: false,
             setting: None,
+            over_the_list: false,
         })
     }
 
@@ -2086,9 +2609,10 @@ mod tests {
         Some(dir)
     }
 
-    /// The order every folder opens in until somebody chooses another.
-    fn by_name() -> crate::media::Sort {
-        crate::media::Sort::NameAscending
+    /// How every folder is read until somebody chooses otherwise: A to Z, with
+    /// the names that begin with a dot left out.
+    fn by_name() -> crate::files::How {
+        crate::files::How::plain()
     }
 
     /// One column of two rows, both of them somewhere on the disk: the bar as
@@ -2106,6 +2630,8 @@ mod tests {
                 )),
                 chosen: false,
                 over_the_list: false,
+                person: None,
+                portrait: None,
             })
         };
         Lattice::with_wayland_display(
@@ -2149,13 +2675,13 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            ["Search", "inside", "a.txt"],
-            "the field stands over the folder"
+            ["New folder", "Search", "inside", "a.txt"],
+            "the field stands over the folder, and the row that makes one over that"
         );
         assert_eq!(
             cursor.selected_item(),
-            1,
-            "and the column opens on the folder, not on the field"
+            2,
+            "and the column opens on the folder, not on either row over it"
         );
         // What was found, on the row it was found under.
         assert_eq!(
@@ -2202,6 +2728,209 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // --- being shown a file from outside the session -----------------------
+
+    /// The bar as it stands at the start of a session: one category with the
+    /// Files row at the head of it, and nothing read yet.
+    fn with_a_files_row() -> Lattice {
+        Lattice::with_wayland_display(
+            vec![Category {
+                id: "system",
+                title: "System",
+                icon: "system",
+                entries: vec![Entry::Folder(crate::apps::Folder {
+                    title: "Files".into(),
+                    comment: None,
+                    icon: None,
+                    entries: Vec::new(),
+                    place: Some(crate::files::Place::Volumes(
+                        crate::files::Shows::Everything,
+                    )),
+                    chosen: false,
+                    over_the_list: false,
+                    person: None,
+                    portrait: None,
+                })],
+            }],
+            OsString::from("lxb-test"),
+        )
+    }
+
+    /// The whole of what "Show in folder" asks for: the folder open, and the
+    /// file itself under the cursor.
+    #[test]
+    fn a_file_is_shown_in_the_folder_that_holds_it() {
+        let Some(dir) = scratch("show-in-folder") else {
+            return;
+        };
+        let deep = dir.join("one").join("two");
+        std::fs::create_dir_all(&deep).unwrap();
+        for name in ["another.txt", "thing.zip"] {
+            std::fs::write(deep.join(name), b"x").unwrap();
+        }
+        let thing = deep.join("thing.zip");
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(
+            cursor
+                .walk_to_file(&mut lattice, &deep, Some(&thing), by_name())
+                .is_some(),
+            "the walk arrives"
+        );
+
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("thing.zip"),
+            "and leaves the file under the cursor"
+        );
+        // The trail behind it is the path: every column the walk opened is
+        // still there, each keeping the row it was opened from, which is what
+        // makes the path readable across the screen. Walked back out rather
+        // than counted, because how many columns deep the folder is depends on
+        // which disk it turned out to be under.
+        assert!(cursor.leave(), "out to the folder holding it");
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("two")
+        );
+        assert!(cursor.leave(), "and out again");
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("one")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder asked for by itself is stood *in* rather than pointed at, and
+    /// the column opens where any folder's does.
+    #[test]
+    fn a_folder_asked_for_alone_is_stood_in() {
+        let Some(dir) = scratch("show-folder") else {
+            return;
+        };
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor
+            .walk_to_file(&mut lattice, &dir, None, by_name())
+            .is_some());
+
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("a.txt"),
+            "standing in the folder, on its first row"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that is not there any more is still an arrival: the folder is
+    /// what the user is shown, which is most of what was asked for.
+    #[test]
+    fn a_file_that_has_gone_still_opens_its_folder() {
+        let Some(dir) = scratch("show-missing") else {
+            return;
+        };
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor
+            .walk_to_file(&mut lattice, &dir, Some(&dir.join("gone.txt")), by_name())
+            .is_some());
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("a.txt"),
+            "the folder is open, on the row any folder opens on"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A path on no disk this shell lists is no walk at all, and says so. The
+    /// cursor is left in Files rather than put back — see the note on
+    /// [`Cursor::walk_to_file`] — and nothing is shown moving, because the
+    /// caller does not bring the bar forward for a walk that answered `None`.
+    #[test]
+    fn a_path_with_no_row_leading_to_it_is_refused() {
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor
+            .walk_to_file(
+                &mut lattice,
+                Path::new("/nowhere-on-this-disk/at/all"),
+                None,
+                by_name()
+            )
+            .is_none());
+    }
+
+    /// A bar with no Files row on it — which is what a session looks like
+    /// before its catalogue has been built.
+    #[test]
+    fn there_is_no_walk_without_a_files_row() {
+        assert_eq!(the_files_row(&model().categories), None);
+    }
+
+    /// `$HOME` is inside `/`, and a file in the user's own folder belongs
+    /// under Home rather than four columns down from Root.
+    #[test]
+    fn the_deepest_disk_holding_a_path_wins() {
+        let disk = |at: &str| {
+            Entry::Folder(crate::apps::Folder {
+                title: at.into(),
+                comment: None,
+                icon: None,
+                entries: Vec::new(),
+                place: Some(crate::files::Place::Directory(
+                    PathBuf::from(at),
+                    crate::files::Shows::Everything,
+                )),
+                chosen: false,
+                over_the_list: false,
+                person: None,
+                portrait: None,
+            })
+        };
+        let disks = [disk("/home/somebody"), disk("/"), disk("/run/media/stick")];
+        assert_eq!(
+            deepest_disk_holding(&disks, Path::new("/home/somebody/Downloads/thing.zip")),
+            Some(PathBuf::from("/home/somebody"))
+        );
+        assert_eq!(
+            deepest_disk_holding(&disks, Path::new("/usr/lib")),
+            Some(PathBuf::from("/"))
+        );
+        assert_eq!(
+            deepest_disk_holding(&disks, Path::new("/run/media/stick/photos")),
+            Some(PathBuf::from("/run/media/stick"))
+        );
+    }
+
+    /// The row a walk steps into is the one that *goes* there, not the one
+    /// that reads like it.
+    #[test]
+    fn a_row_is_found_by_where_it_leads() {
+        let Some(dir) = scratch("row-by-place") else {
+            return;
+        };
+        std::fs::create_dir(dir.join("thing")).unwrap();
+        std::fs::write(dir.join("thing.txt"), b"x").unwrap();
+
+        let mut lattice = places(&dir, &dir);
+        let mut cursor = cursor(&lattice);
+        cursor.open_place(&mut lattice, by_name());
+        cursor.enter(&lattice);
+        let rows = cursor.current_entries(&lattice);
+
+        let folder = row_leading_to(rows, &dir.join("thing")).expect("the folder");
+        let file = row_leading_to(rows, &dir.join("thing.txt")).expect("the file");
+        assert_ne!(folder, file);
+        assert_eq!(rows[folder].title(), "thing");
+        assert_eq!(rows[file].title(), "thing.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A folder read again opens at the top of itself rather than at the row
     /// number it was left on: the listing it came back with is not the listing
     /// that number was about.
@@ -2220,15 +2949,15 @@ mod tests {
         cursor.enter(&lattice);
         cursor.navigate(Action::Down, &lattice);
         cursor.navigate(Action::Down, &lattice);
-        assert_eq!(cursor.selected_item(), 3);
+        assert_eq!(cursor.selected_item(), 4);
 
         assert!(cursor.leave(), "back out to the folder it came from");
         cursor.open_place(&mut lattice, by_name());
         cursor.enter(&lattice);
         assert_eq!(
             cursor.selected_item(),
-            1,
-            "the first row of the listing, under the field that stands over it"
+            2,
+            "the first row of the listing, under the two rows that stand over it"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2255,15 +2984,15 @@ mod tests {
             .iter()
             .map(Entry::title)
             .collect();
-        assert_eq!(rows, ["alp", "Clear search", "alpha.txt"]);
+        assert_eq!(rows, ["New folder", "alp", "Clear search", "alpha.txt"]);
 
         // And out again, without stepping anywhere: the row that empties the
         // field is the only thing that undoes one.
         assert!(cursor.search_here(&mut lattice, "", by_name()).is_some());
         assert_eq!(
             cursor.current_entries(&lattice).len(),
-            4,
-            "the field, and three"
+            5,
+            "New folder, the field, and three"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2285,15 +3014,16 @@ mod tests {
         cursor.open_place(&mut lattice, by_name());
         cursor.enter(&lattice);
         cursor.search_here(&mut lattice, "alpha", by_name());
-        assert_eq!(cursor.current_entries(&lattice).len(), 3);
+        assert_eq!(cursor.current_entries(&lattice).len(), 4);
 
         assert!(cursor.leave());
         cursor.open_place(&mut lattice, by_name());
         cursor.enter(&lattice);
         assert_eq!(
             cursor.current_entries(&lattice).len(),
-            3,
-            "the field, and both files"
+            4,
+            "New folder, the field, and both files — with the row that empties \
+             the field gone, because nothing is being searched for"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2684,6 +3414,8 @@ mod tests {
             place: None,
             chosen: false,
             over_the_list: true,
+            person: None,
+            portrait: None,
         })
     }
 
@@ -3097,6 +3829,8 @@ mod tests {
                     place: None,
                     chosen: false,
                     over_the_list: false,
+                    person: None,
+                    portrait: None,
                 })],
             }],
             OsString::from("lxb-test"),
@@ -3737,6 +4471,178 @@ mod tests {
 
     /// The step in is a move of the bar, so it is sprung like every other one:
     /// it travels, it never overshoots, and it stops.
+    /// A column stepped back into opens on a row that is still there.
+    ///
+    /// The remembered row is a *number*, and the rows it counted are rewritten
+    /// by everything that touches the catalogue. This is the bug a ROM folder
+    /// showed on the day it was chosen: the picker is a walk several columns
+    /// deep, answering it rebuilds the column it was opened from, and the first
+    /// console stepped into afterwards opened on a row left over from somebody
+    /// else's listing — a column of games with no game under the highlight and
+    /// its only row drawn off the top of the screen.
+    #[test]
+    fn stepping_back_into_a_column_lands_on_a_row_that_exists() {
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![folder("PlayStation Portable", vec![entry("T6 EU")])],
+        }]);
+        let mut cursor = Cursor::new(lattice.categories.len());
+
+        // Where a walk four rows deep left it — the shape `leave` leaves
+        // behind, with the row numbers of a listing that has since gone.
+        assert!(cursor.enter(&lattice));
+        cursor.stack[0].selected = 4;
+        cursor.stack[0].position = 4.0;
+        assert!(cursor.leave());
+
+        assert!(cursor.settle(&lattice), "the remembered row is not there");
+        assert!(cursor.enter(&lattice), "back into the console");
+        assert_eq!(cursor.selected_item(), 0);
+        assert_eq!(
+            cursor.position_at(1),
+            0.0,
+            "and the column is not drawn scrolled off its own top"
+        );
+
+        // And a walk that is not somewhere to go back to at all.
+        assert!(cursor.leave());
+        cursor.stack[0].selected = 4;
+        cursor.forget_the_way_back();
+        assert!(cursor.enter(&lattice));
+        assert_eq!(cursor.selected_item(), 0);
+    }
+
+    /// A row answered and then gone leaves the cursor somewhere that exists.
+    ///
+    /// The BIOS row is the case: it is the last row of the RetroArch column, it
+    /// asks a question, and answering it is what takes it off the column. So
+    /// the row somebody was standing on stops existing *because* they pressed
+    /// it, and the number remembered for that category points past the end —
+    /// a highlight over nothing, above a list drawn scrolled off its own top.
+    ///
+    /// The stack half of [`Cursor::settle`] has always covered the subcolumns.
+    /// The category's own column is held somewhere else and was not.
+    #[test]
+    fn a_cursor_on_a_row_that_goes_away_is_put_on_one_that_has_not() {
+        let full = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![
+                entry("PlayStation 2"),
+                entry("PlayStation Portable"),
+                entry("PlayStation 2 BIOS"),
+            ],
+        }]);
+        let mut cursor = Cursor::new(full.categories.len());
+        assert!(cursor.point_at_row(2, &full));
+        assert_eq!(cursor.selected_item(), 2);
+
+        // The firmware is put in place, the folder is read again, and the row
+        // that asked for it is not there any more.
+        let fewer = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![entry("PlayStation 2"), entry("PlayStation Portable")],
+        }]);
+        assert!(cursor.settle(&fewer), "it had to move");
+        assert_eq!(cursor.selected_item(), 1, "onto the last row there is");
+        assert_eq!(
+            cursor.position_at(0),
+            1.0,
+            "and the column is not drawn scrolled off its own top"
+        );
+        assert!(!cursor.settle(&fewer), "and it stays where it was put");
+    }
+
+    /// Being sent to a column means the column, not the third subcolumn of it
+    /// somebody is standing in.
+    ///
+    /// The bug: a game that cannot start without a BIOS raises a panel offering
+    /// to go and find one, and the row that asks is on the RetroArch column —
+    /// two columns back out from the game whose press raised the panel.
+    /// [`Cursor::select_category`] answers a *walk* along the category row, and
+    /// a walk that arrives where it started is not a move, so it returned
+    /// having done nothing and the offer pointed at a row of the column the
+    /// cursor was already deep inside. Pressing it did nothing at all.
+    #[test]
+    fn a_cursor_sent_to_a_column_comes_out_to_it() {
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![
+                folder("PlayStation 2", vec![entry("Tekken Tag")]),
+                entry("PlayStation 2 BIOS"),
+            ],
+        }]);
+        let mut cursor = Cursor::new(lattice.categories.len());
+
+        // Standing on the game, two columns in.
+        assert!(cursor.enter(&lattice));
+        assert_eq!(cursor.depth(), 1);
+
+        cursor.go_to_own_column(0, &lattice);
+        assert_eq!(cursor.depth(), 0, "back out to the column itself");
+        assert!(
+            cursor.point_at_row(1, &lattice),
+            "and the row it was sent to is one this column has"
+        );
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("PlayStation 2 BIOS")
+        );
+    }
+
+    /// A path the catalogue stops holding is one the cursor comes back out of.
+    ///
+    /// This is the black screen: the folder picker hangs off a row of the
+    /// RetroArch column, and answering it rebuilds that column — so the columns
+    /// the cursor was standing in stopped existing while it stood in them. The
+    /// bar draws one step to the left per level opened, so what was on screen
+    /// afterwards was the wallpaper and nothing else, with a shell running
+    /// behind it.
+    #[test]
+    fn a_cursor_does_not_stand_deeper_than_the_bar_goes() {
+        let deep = |leaf: Vec<Entry>| {
+            Lattice::new(vec![Category {
+                id: "retroarch",
+                title: "RetroArch",
+                icon: "r",
+                entries: vec![folder("Games folder", leaf)],
+            }])
+        };
+        let walked = deep(vec![entry("ROMs")]);
+        let mut cursor = Cursor::new(walked.categories.len());
+        assert!(cursor.enter(&walked));
+        assert_eq!(cursor.depth(), 1);
+        assert!(!cursor.settle(&walked), "nothing has gone anywhere");
+
+        // The listing the cursor was standing in, rebuilt out from under it.
+        let rebuilt = deep(Vec::new());
+        assert!(cursor.settle(&rebuilt), "the column it was in has gone");
+        assert_eq!(cursor.depth(), 0);
+        assert!(
+            !cursor.current_entries(&rebuilt).is_empty(),
+            "and it is on the bar"
+        );
+
+        // And a column that goes altogether, not merely its rows.
+        let mut cursor = Cursor::new(walked.categories.len());
+        assert!(cursor.enter(&walked));
+        let gone = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![entry("PlayStation Portable")],
+        }]);
+        assert!(cursor.settle(&gone));
+        assert_eq!(cursor.depth(), 0);
+    }
+
     #[test]
     fn depth_travels_and_settles_without_overshooting() {
         let lattice = nested();
@@ -3932,6 +4838,49 @@ mod tests {
         assert_eq!(Cursor::for_model(&bare).selected_category, 0);
     }
 
+    /// A session opens on the column the user asked for, and falls back to the
+    /// first column with something in it when that column is not on this bar.
+    ///
+    /// The fallback is not a nicety. A column named by the setting comes and
+    /// goes with an account or a package — Steam, RetroArch, Waydroid — and a
+    /// shell that insisted on an index would open on whichever column had taken
+    /// that place.
+    #[test]
+    fn a_display_opens_where_the_settings_say() {
+        let mut lattice = model();
+        lattice.categories.insert(
+            0,
+            Category {
+                id: "settings",
+                title: "Settings",
+                icon: "preferences-system",
+                entries: vec![folder("Appearance", vec![choice("Purple", true)])],
+            },
+        );
+        let last = lattice.categories.len() - 1;
+        let named = lattice.categories[last].id;
+
+        crate::settings::note_startup_category(Some(named));
+        let cursor = Cursor::for_model(&lattice);
+        assert_eq!(cursor.selected_category, last);
+        assert_eq!(
+            cursor.category_position, last as f32,
+            "it should start there rather than slide there"
+        );
+
+        // Even where that column has nothing to launch. Somebody who chose to
+        // open on Settings meant it, and Settings never has anything to launch.
+        crate::settings::note_startup_category(Some("settings"));
+        assert_eq!(Cursor::for_model(&lattice).selected_category, 0);
+
+        // And a column this bar has not got falls back to what the shell did
+        // before there was a setting at all.
+        crate::settings::note_startup_category(Some("no-such-column"));
+        assert_eq!(Cursor::for_model(&lattice).selected_category, 1);
+
+        crate::settings::note_startup_category(None);
+    }
+
     fn argv_strings(argv: Vec<OsString>) -> Vec<String> {
         argv.into_iter()
             .map(|arg| arg.into_string().expect("test argv should be UTF-8"))
@@ -4066,6 +5015,67 @@ mod tests {
             lattice.launched_apps.is_empty(),
             "finished application should be reaped"
         );
+    }
+
+    /// A game that comes straight back is reported; anything else is only
+    /// tidied away.
+    ///
+    /// The whole of what tells this shell a game did not start. Before it, an
+    /// emulator that exited half a second after the press left the screen back
+    /// on the bar with nothing anywhere saying why, and the only record was a
+    /// line in a log nobody on a sofa is reading.
+    #[test]
+    fn a_game_that_would_not_start_is_reported_and_a_program_is_not() {
+        let played = |lattice: &mut Lattice, exit: &str| {
+            lattice.play_rom(&crate::apps::Rom {
+                name: "Ridge Racer".to_string(),
+                path: PathBuf::from("/roms/ps1/Ridge Racer.chd"),
+                console: "PlayStation".to_string(),
+                note: "PlayStation".to_string(),
+                wanted: vec!["mednafen_psx".to_string()],
+                start: Some(vec!["sh".to_string(), "-c".to_string(), exit.to_string()]),
+                boxart: None,
+                snap: None,
+                own_cover: false,
+                own_background: false,
+                shape: None,
+                glyph: "lxb:console-ps1".to_string(),
+            })
+        };
+        let reap = |lattice: &mut Lattice| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut failed = Vec::new();
+            while !lattice.launched_apps.is_empty() && Instant::now() < deadline {
+                failed.extend(lattice.reap_children());
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            failed
+        };
+
+        let mut lattice = model();
+        assert!(played(&mut lattice, "exit 1").is_some());
+        let failed = reap(&mut lattice);
+        assert_eq!(failed.len(), 1, "the emulator came straight back");
+        assert_eq!(failed[0].console, "PlayStation");
+        assert_eq!(failed[0].rom, PathBuf::from("/roms/ps1/Ridge Racer.chd"));
+        assert!(
+            failed[0].lasted < Duration::from_secs(5),
+            "and how long it lasted is what says it was a start rather than a crash"
+        );
+
+        // A game somebody played and quit is not a failure.
+        assert!(played(&mut lattice, "exit 0").is_some());
+        assert!(reap(&mut lattice).is_empty(), "it ran and it ended");
+
+        // Nor is anything that is not a game: a program that will not start is
+        // its own business, and this shell has nothing to offer it.
+        match &mut lattice.categories[0].entries[0] {
+            Entry::App(app) => app.exec = "exit 1".into(),
+            other => panic!("the first row should be an application: {other:?}"),
+        }
+        let cursor = cursor(&lattice);
+        assert!(lattice.launch_selected(&cursor).is_some());
+        assert!(reap(&mut lattice).is_empty(), "not a game, not answered");
     }
 
     #[cfg(unix)]

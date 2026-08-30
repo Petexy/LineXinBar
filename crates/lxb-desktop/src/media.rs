@@ -700,6 +700,30 @@ impl Shelves {
         None
     }
 
+    /// The same for a folder that has gone, which is however many files at
+    /// once and can be files on all three shelves.
+    ///
+    /// So it answers with all three rather than the one it found the file on:
+    /// a folder somebody deletes is as likely as not to hold the photographs
+    /// *and* the film of one afternoon.
+    fn forget_below(&mut self, folder: &Path) -> [bool; 3] {
+        let mut dirtied = [false; 3];
+        for kind in [Kind::Audio, Kind::Video, Kind::Image] {
+            let shelf = match kind {
+                Kind::Audio => &mut self.audio,
+                Kind::Video => &mut self.video,
+                Kind::Image => &mut self.images,
+            };
+            let before = shelf.len();
+            // Whole components, which is what `Path::starts_with` compares:
+            // `~/Music/Live` is not a prefix of `~/Music/Liverpool`, and a
+            // rule written on the strings would have emptied that shelf too.
+            shelf.retain(|file| !file.path.starts_with(folder));
+            dirtied[shelf_index(kind)] = shelf.len() != before;
+        }
+        dirtied
+    }
+
     /// One shelf, ready to hang on the bar.
     fn made(&self, kind: Kind) -> Made {
         let shelf = self.shelf(kind);
@@ -793,6 +817,15 @@ enum Ask {
     /// themselves take must not be missing from their own shelf for five
     /// minutes.
     Found(PathBuf),
+    /// A whole folder has gone to the trash, so everything that was under it
+    /// is off the shelves.
+    ///
+    /// Its own question rather than [`Ask::Forget`] arriving once per file,
+    /// because the shell asking would have to walk the folder to know what to
+    /// ask about — and it has just been renamed into the trash, so the walk
+    /// would be of somewhere else. The shelves already hold every path they
+    /// know; the prefix is the whole of what has to cross.
+    ForgetBelow(PathBuf),
     /// Somebody has opened a shelf, so bring the next pass forward.
     ///
     /// Carries no kind. One walk answers for all three shelves — it is the
@@ -994,6 +1027,12 @@ impl Library {
     /// file they both found.
     pub fn found(&mut self, path: &Path) {
         self.ask(Ask::Found(path.to_path_buf()));
+    }
+
+    /// Take everything under `folder` off the shelves, because the folder has
+    /// just gone to the trash.
+    pub fn forget_below(&mut self, folder: &Path) {
+        self.ask(Ask::ForgetBelow(folder.to_path_buf()));
     }
 
     /// Somebody has stepped into a shelf: look at the disk again soon.
@@ -1324,6 +1363,19 @@ impl Worker<'_> {
                 self.reported.remove(&path);
                 if let Some(kind) = self.shelves.forget(&path) {
                     self.dirty[shelf_index(kind)] = true;
+                }
+            }
+            Ask::ForgetBelow(folder) => {
+                // What has been reported goes as well as what is shelved, or
+                // the next pass would find nothing changed under a folder that
+                // is no longer there and leave the shelves as they are.
+                self.reported.retain(|path, _| !path.starts_with(&folder));
+                for (dirty, gone) in self
+                    .dirty
+                    .iter_mut()
+                    .zip(self.shelves.forget_below(&folder))
+                {
+                    *dirty |= gone;
                 }
             }
             Ask::Found(path) => {
@@ -1738,9 +1790,16 @@ fn preferred<'a>(mime: &str, categories: &'a [Category]) -> Option<&'a App> {
 
 /// Every `mimeapps.list` that has a say, in the order the spec gives them.
 ///
-/// The desktop-specific files (`linexinbar-mimeapps.list`) are not looked for:
-/// nothing writes one for this session, and a file named after some other
-/// desktop is that desktop's answer rather than this one's.
+/// The desktop-specific files (`linexinbar-mimeapps.list`) are not looked for.
+/// This desktop ships one now, and there is a single line in it: which entry
+/// opens a folder. That line is for everything on the machine *outside* this
+/// shell — `xdg-open`, and the applications that fall back to launching
+/// whatever opens one — and it names a desktop entry that does nothing but ask
+/// the running shell to show the folder. Inside the shell a folder is a column
+/// to step into and is never opened *with* anything, so reading that file here
+/// could only answer a question this shell does not ask. A file named after
+/// some other desktop is that desktop's answer rather than this one's. See
+/// `share/applications/linexinbar-mimeapps.list`, and [`crate::reveal`].
 fn mimeapps_files() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
@@ -1805,7 +1864,7 @@ fn defaults(raw: &str, mime: &str) -> Vec<String> {
 }
 
 /// The installed application whose desktop entry is called `id`.
-fn entry_named<'a>(id: &str, categories: &'a [Category]) -> Option<&'a App> {
+pub fn entry_named<'a>(id: &str, categories: &'a [Category]) -> Option<&'a App> {
     apps_in(categories).find(|app| {
         app.path
             .file_name()
@@ -1853,6 +1912,22 @@ fn handler_rank(app: &App) -> u8 {
     } else {
         1
     }
+}
+
+/// Every installed application on the machine, in the catalogue's own order.
+///
+/// What the *Other application* list is built from. The catalogue's order is
+/// column order and then alphabetical, so it is the same list on every start
+/// rather than whichever order the disk answered in — and it is deliberately
+/// not [`ranked`]'s order: that one is answering "which of these is best for
+/// this type", and somebody reading this list has already decided which
+/// program they want and is looking for its name.
+///
+/// Nothing is filtered. A file with no extension is the case this exists for,
+/// nothing declares it, and a list that left out the applications which say
+/// they open nothing would leave out most of what somebody would reach for.
+pub fn every_application(categories: &[Category]) -> Vec<&App> {
+    apps_in(categories).collect()
 }
 
 /// Every installed application in the catalogue, subcategories included.
@@ -2532,6 +2607,7 @@ mod tests {
             exec: exec.to_string(),
             terminal: false,
             categories: Vec::new(),
+            keywords: Vec::new(),
             mime_types: mime.iter().map(|m| m.to_string()).collect(),
             path: PathBuf::from(format!("/usr/share/applications/{entry}")),
             wm_class: None,

@@ -109,6 +109,47 @@ pub struct Source {
     pub folder: bool,
 }
 
+/// What the one row left standing on the left of the screen says: the thing
+/// being carried, or the set of them.
+///
+/// Three strings rather than a borrow of a [`Source`], because half of what
+/// this describes is not one: a set of five has no single name, no single line
+/// under it and no mark of its own, and the row still has to say something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Carried {
+    /// What it is called: the one thing's own name, or "5 things".
+    pub name: String,
+    /// The line under it: the one thing's own note, or what the set is made of.
+    pub note: String,
+    /// The mark: the one thing's own, or the mark of a set having been picked.
+    pub glyph: &'static str,
+}
+
+impl Carried {
+    /// What `sources` looks like on that row.
+    ///
+    /// A set of one is drawn exactly as it always was — the row the user was
+    /// standing on, with the rest of the screen taken away from around it — so
+    /// an ordinary Copy is unchanged by the existence of the other case. See
+    /// [`crate::marks::how_many`], which is the one place a set is named.
+    pub fn of(sources: &[Source]) -> Self {
+        if let [one] = sources {
+            return Self {
+                name: one.name.clone(),
+                note: one.note.clone(),
+                glyph: one.glyph,
+            };
+        }
+        let folders = sources.iter().filter(|source| source.folder).count();
+        let only = sources.first().map_or("", |source| source.name.as_str());
+        Self {
+            name: crate::marks::how_many(sources.len(), only),
+            note: crate::marks::what_they_are(sources.len() - folders, folders),
+            glyph: crate::icons::SELECT_MULTIPLE,
+        }
+    }
+}
+
 /// One row of a destination column.
 ///
 /// Deliberately not [`crate::apps::Entry`]. Every row of that tree is a thing
@@ -238,7 +279,20 @@ pub const FLIGHT: f32 = crate::menu::FLIGHT;
 /// A transfer the user is in the middle of arranging.
 pub struct Transfer {
     kind: Kind,
-    source: Source,
+    /// Everything being carried, which is one thing on an ordinary press and
+    /// however many are ticked when the column is being marked. Never empty.
+    ///
+    /// A list rather than one, all the way down, instead of the set being
+    /// carried out one transfer at a time. The whole journey is about *where*
+    /// — the folder is chosen once, the name that is already taken is asked
+    /// about once, the copy is one act as far as the user is concerned — and a
+    /// picker per file would be the same walk five times over, with five
+    /// chances of the fifth one landing somewhere the first four did not.
+    ///
+    /// They always share a folder: they were ticked in one column. So the
+    /// picker opens in one place, and the two things that can refuse a
+    /// destination refuse it for the set — see [`blocked`].
+    sources: Vec<Source>,
     /// The path home, `/` first, the folder being stood in somewhere along it.
     levels: Vec<Level>,
     /// Which of them that is.
@@ -262,7 +316,10 @@ impl Transfer {
     /// folder, a folder that has gone away since the column was drawn — opens
     /// on a column that says so, because a picker that refused to appear would
     /// leave the user's press unanswered.
-    pub fn begin(kind: Kind, source: Source, from: &Path) -> Option<Self> {
+    pub fn begin(kind: Kind, sources: Vec<Source>, from: &Path) -> Option<Self> {
+        if sources.is_empty() {
+            return None;
+        }
         let levels = ancestry(from);
         if levels.is_empty() {
             return None;
@@ -270,7 +327,7 @@ impl Transfer {
         let open = levels.len() - 1;
         let mut picker = Self {
             kind,
-            source,
+            sources,
             levels,
             open,
             depth: open as f32,
@@ -293,8 +350,14 @@ impl Transfer {
         self.kind
     }
 
-    pub fn source(&self) -> &Source {
-        &self.source
+    /// Everything being carried, in the order it will be carried in.
+    pub fn sources(&self) -> &[Source] {
+        &self.sources
+    }
+
+    /// What the one row left on the screen says it is carrying.
+    pub fn carried(&self) -> Carried {
+        Carried::of(&self.sources)
     }
 
     /// The folder the user is standing in, which is the one Paste would put it
@@ -350,7 +413,7 @@ impl Transfer {
                 if level > self.open && self.depth <= self.open as f32 + SETTLED {
                     return None;
                 }
-                let blocked = blocked(self.kind, &self.source, &held.at);
+                let blocked = blocked(self.kind, &self.sources, &held.at);
                 Some(Column {
                     level,
                     rows,
@@ -485,7 +548,7 @@ impl Transfer {
 
     /// Why the thing cannot be put in the folder being stood in, if it cannot.
     pub fn blocked(&self) -> Option<&'static str> {
-        blocked(self.kind, &self.source, self.here())
+        blocked(self.kind, &self.sources, self.here())
     }
 
     /// Advance the springs and the arrival. Returns whether anything moved.
@@ -614,8 +677,16 @@ fn ancestry(from: &Path) -> Vec<Level> {
 /// The explorer's own order — see [`crate::files::listing`] — because it is the
 /// same folder the user was looking at a moment ago and a column that reordered
 /// itself between one screen and the next would be a different folder as far as
-/// the eye is concerned. Dotfiles are left out here as they are there, and for
-/// the same reason: nobody is filing a photograph in `~/.cache`.
+/// the eye is concerned.
+///
+/// A to Z rather than whatever order the shell is listing folders in, because
+/// these columns are a *path* and not a list: what the user is reading is where
+/// they are, and largest-first would put the way home somewhere different in
+/// every folder. The hidden names are the other half of that pair and they go
+/// the other way — they follow the switch, because a folder the user has asked
+/// to see is a folder they may want to put something in, and a picker that
+/// could not reach it would be the one place on the disk this shell shows and
+/// cannot write to.
 ///
 /// A folder that cannot be read comes back with Paste and nothing else, which
 /// is the honest column: there is nothing in it the shell may show, and putting
@@ -630,7 +701,10 @@ fn listing(at: &Path) -> Vec<Row> {
     let shown = crate::files::listing(
         at,
         "",
-        crate::media::Sort::NameAscending,
+        crate::files::How {
+            hidden: crate::settings::show_hidden(),
+            ..crate::files::How::plain()
+        },
         crate::files::Shows::Everything,
     );
     for entry in shown.rows.into_iter() {
@@ -665,14 +739,34 @@ fn listing(at: &Path) -> Vec<Row> {
 pub enum Ready {
     /// Nothing does.
     Clear,
-    /// Something of that name is already in the folder. What it is, so the
-    /// question can say so — a file and a folder of the same name are the same
-    /// obstacle and very different news.
-    Taken { folder: bool },
+    /// Something of that name is already in the folder — see [`Taken`].
+    Taken(Taken),
     /// The transfer cannot be made at all, and why, in a line to put on a
     /// panel. A folder being carried into itself is the one that matters: the
     /// copy would recurse until the disk was full.
     Refused(String),
+}
+
+/// The names already in the chosen folder, as the question about them needs
+/// them.
+///
+/// One question for the whole set rather than one per name, and asked before
+/// anything has moved. The alternative was stopping the copy at each clash and
+/// asking about that file by name — truer to what a single transfer does, and
+/// in practice a running transfer interrupted four times for the same answer,
+/// with the disk half way through the set while the user reads. This says how
+/// many are in the way while everything is still where it was, and the answer
+/// covers all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    /// How many of the names are already there.
+    pub count: usize,
+    /// The first of them, which is what a question about a single name says.
+    pub name: String,
+    /// And whether *that* one is a folder, so the question can say so: a file
+    /// and a folder of the same name are the same obstacle and very different
+    /// news. Only read where `count` is 1, for the reason `name` is.
+    pub folder: bool,
 }
 
 /// What to do about a name that is already taken.
@@ -692,31 +786,54 @@ pub enum Settle {
 /// machine and the only place a name is really claimed is in the transfer
 /// itself. What it is for is the question — the shell must not overwrite one of
 /// the user's files without having asked.
-pub fn ready(source: &Source, into: &Path) -> Ready {
-    if source.folder {
+pub fn ready(sources: &[Source], into: &Path) -> Ready {
+    for source in sources {
+        if !source.folder {
+            continue;
+        }
         // A folder carried into itself, or into anything inside itself. The
         // copy would walk into the copy it had just made, and go on doing it
         // until the disk was full or the path was too long to open.
+        //
+        // Named rather than counted, even out of a set of twenty: this is the
+        // one answer here that is about a particular row being impossible
+        // rather than about the folder being full, and "one of them cannot be
+        // put inside itself" would leave the user to work out which.
         if into == source.path || into.starts_with(&source.path) {
             return Ready::Refused(format!("{} cannot be put inside itself.", source.name));
         }
     }
-    let landing = into.join(&source.name);
-    // The name taken by the very thing being carried, which is a copy into the
-    // folder it is already in. That is not an obstacle — it is a duplicate,
-    // which is a thing people ask for — and it must never be answered with
-    // Replace: `fs::copy` from a file to itself empties it. It lands beside
-    // itself under a free name, and nothing is asked. (The same folder for a
-    // *move* never reaches here; the row says so under itself and refuses the
-    // press — see [`blocked`].)
-    if landing == source.path {
-        return Ready::Clear;
-    }
-    match std::fs::symlink_metadata(&landing) {
-        Ok(facts) => Ready::Taken {
+    let mut taken: Option<Taken> = None;
+    let mut count = 0usize;
+    for source in sources {
+        let landing = into.join(&source.name);
+        // The name taken by the very thing being carried, which is a copy into
+        // the folder it is already in. That is not an obstacle — it is a
+        // duplicate, which is a thing people ask for — and it must never be
+        // answered with Replace: `fs::copy` from a file to itself empties it.
+        // It lands beside itself under a free name, and nothing is asked. (The
+        // same folder for a *move* never reaches here; the row says so under
+        // itself and refuses the press — see [`blocked`].)
+        if landing == source.path {
+            continue;
+        }
+        let Ok(facts) = std::fs::symlink_metadata(&landing) else {
+            continue;
+        };
+        count += 1;
+        // The first one, kept for the wording a question about a single name
+        // uses. Every one after it only adds to the count: the panel over a set
+        // says how many are in the way rather than reading out a list nobody
+        // can act on one at a time.
+        taken.get_or_insert_with(|| Taken {
+            count: 0,
+            name: source.name.clone(),
             folder: facts.is_dir(),
-        },
-        Err(_) => Ready::Clear,
+        });
+    }
+    match taken {
+        Some(taken) => Ready::Taken(Taken { count, ..taken }),
+        None => Ready::Clear,
     }
 }
 
@@ -731,12 +848,30 @@ pub fn ready(source: &Source, into: &Path) -> Ready {
 ///
 /// A *copy* into its own folder is neither: it is a duplicate, which is a thing
 /// people ask for, and it lands under a free name — see [`free_name`].
-fn blocked(kind: Kind, source: &Source, into: &Path) -> Option<&'static str> {
-    if source.folder && (into == source.path || into.starts_with(&source.path)) {
-        return Some("It cannot be put inside itself");
+fn blocked(kind: Kind, sources: &[Source], into: &Path) -> Option<&'static str> {
+    let one = sources.len() == 1;
+    if sources
+        .iter()
+        .any(|source| source.folder && (into == source.path || into.starts_with(&source.path)))
+    {
+        return Some(if one {
+            "It cannot be put inside itself"
+        } else {
+            "One of them cannot be put inside itself"
+        });
     }
-    if kind == Kind::Move && already_there(source, into) {
-        return Some("It is already here");
+    // Asked of the first, and true of all of them: everything in a set was
+    // ticked in one column, so they all came out of the same folder.
+    if kind == Kind::Move
+        && sources
+            .first()
+            .is_some_and(|source| already_there(source, into))
+    {
+        return Some(if one {
+            "It is already here"
+        } else {
+            "They are already here"
+        });
     }
     None
 }
@@ -754,11 +889,25 @@ pub fn already_there(source: &Source, into: &Path) -> bool {
 /// How a transfer ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// It is there, under this name — which is not always the name it had, if
-    /// the user asked for both to be kept.
+    /// Everything arrived. The path is where the last of them landed — which
+    /// is not always the name it had, if the user asked for both to be kept —
+    /// and for the ordinary transfer of one thing it is the whole answer.
     Done(PathBuf),
-    /// It is not, and this is what the filesystem said about it.
+    /// None of it did, and this is what the filesystem said about it.
     Failed(String),
+    /// Some of it did.
+    ///
+    /// Its own answer rather than a failure with a number in it, because the
+    /// two need different things done about them: this one has moved files, so
+    /// the column behind has to be read again and the shelves told, and the
+    /// panel over it has to say what got through as well as what did not.
+    /// A set of one can never produce it.
+    Partly {
+        carried: usize,
+        failed: usize,
+        /// What the filesystem said about the first one that did not go.
+        why: String,
+    },
 }
 
 /// A transfer that has been started.
@@ -767,30 +916,58 @@ pub struct Run {
 }
 
 impl Run {
-    /// Carry `source` into `into`, on a thread.
+    /// Carry every one of `sources` into `into`, on a thread.
     ///
     /// `settle` is only consulted where something of that name is already
     /// there; where nothing is, both answers mean the same thing and the name
-    /// is the one the file already had.
-    pub fn start(kind: Kind, source: Source, into: PathBuf, settle: Settle) -> Self {
+    /// is the one the file already had. One answer for the whole set, because
+    /// it was given to one question about the whole set — see [`Taken`].
+    ///
+    /// A refusal does not stop the rest. See the loop, which says why.
+    pub fn start(kind: Kind, sources: Vec<Source>, into: PathBuf, settle: Settle) -> Self {
         let outcome = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&outcome);
         std::thread::spawn(move || {
-            let result = match landing(&source, &into, settle) {
-                Ok(landing) => match carry_out(kind, &source.path, &landing) {
-                    Ok(()) => Outcome::Done(landing),
-                    Err(err) => Outcome::Failed(said(&err)),
-                },
-                Err(err) => Outcome::Failed(said(&err)),
-            };
-            match &result {
-                Outcome::Done(at) => {
-                    tracing::info!(from = ?source.path, to = ?at, ?kind, "carried it over")
-                }
-                Outcome::Failed(why) => {
-                    tracing::warn!(from = ?source.path, to = ?into, ?kind, why, "the transfer failed")
+            let mut last = None;
+            let mut failed = 0usize;
+            let mut why = String::new();
+            for source in &sources {
+                let carried = landing(source, &into, settle)
+                    .and_then(|landing| carry_out(kind, &source.path, &landing).map(|()| landing));
+                match carried {
+                    Ok(landing) => {
+                        tracing::info!(from = ?source.path, to = ?landing, ?kind, "carried it over");
+                        last = Some(landing);
+                    }
+                    Err(err) => {
+                        // Kept going, exactly as emptying the trash does: the
+                        // one file the disk refuses must not strand the four
+                        // behind it, and the user is told at the end how many
+                        // got through. The first refusal is the one reported —
+                        // a panel carrying five copies of "Permission denied"
+                        // says nothing the first one did not.
+                        tracing::warn!(from = ?source.path, to = ?into, ?kind, %err, "the transfer failed");
+                        failed += 1;
+                        if why.is_empty() {
+                            why = said(&err);
+                        }
+                    }
                 }
             }
+            let carried = sources.len() - failed;
+            let result = match (carried, failed) {
+                (_, 0) => match last {
+                    Some(at) => Outcome::Done(at),
+                    // Unreachable: a picker with nothing in it never opens.
+                    None => Outcome::Failed("there was nothing to carry".to_string()),
+                },
+                (0, _) => Outcome::Failed(why),
+                (carried, failed) => Outcome::Partly {
+                    carried,
+                    failed,
+                    why,
+                },
+            };
             if let Ok(mut slot) = slot.lock() {
                 *slot = Some(result);
             }
@@ -846,7 +1023,7 @@ const TRIES: u32 = 100;
 /// picked apart. `Path::extension` gives the last one, the number lands before
 /// it, and `linux (2).pkg.tar.zst` is what the file managers alongside this
 /// produce too.
-fn free_name(into: &Path, name: &str) -> io::Result<PathBuf> {
+pub fn free_name(into: &Path, name: &str) -> io::Result<PathBuf> {
     let path = Path::new(name);
     let stem = path
         .file_stem()
@@ -1012,7 +1189,7 @@ mod tests {
         std::fs::write(inside.join("thing.txt"), b"x").unwrap();
         let mut picker = Transfer::begin(
             Kind::Copy,
-            source_of(&inside.join("thing.txt"), false),
+            vec![source_of(&inside.join("thing.txt"), false)],
             &inside,
         )
         .unwrap();
@@ -1044,8 +1221,12 @@ mod tests {
         let inside = dir.join("inside");
         std::fs::create_dir(&inside).unwrap();
         std::fs::create_dir(dir.join("another")).unwrap();
-        let mut picker =
-            Transfer::begin(Kind::Move, source_of(&inside.join("x"), false), &inside).unwrap();
+        let mut picker = Transfer::begin(
+            Kind::Move,
+            vec![source_of(&inside.join("x"), false)],
+            &inside,
+        )
+        .unwrap();
         assert!(picker.step_out());
         assert_eq!(picker.here(), dir);
         // The folder walked through, rather than the row a fresh column would
@@ -1068,7 +1249,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         std::fs::create_dir(dir.join("folder")).unwrap();
         let mut picker =
-            Transfer::begin(Kind::Copy, source_of(&dir.join("a.txt"), false), &dir).unwrap();
+            Transfer::begin(Kind::Copy, vec![source_of(&dir.join("a.txt"), false)], &dir).unwrap();
         let rows = picker.columns().pop().unwrap().rows.to_vec();
         assert!(rows.iter().any(|row| matches!(row, Row::File { .. })));
         // Paste, the folder, the file: the column opened on the folder, and
@@ -1091,8 +1272,12 @@ mod tests {
         };
         let empty = dir.join("empty");
         std::fs::create_dir(&empty).unwrap();
-        let picker =
-            Transfer::begin(Kind::Copy, source_of(&dir.join("a.txt"), false), &empty).unwrap();
+        let picker = Transfer::begin(
+            Kind::Copy,
+            vec![source_of(&dir.join("a.txt"), false)],
+            &empty,
+        )
+        .unwrap();
         assert!(matches!(picker.selected(), Some(Row::Paste)));
         assert_eq!(picker.chosen(), Some(empty.clone()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1108,9 +1293,21 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"one").unwrap();
         std::fs::write(into.join("a.txt"), b"two").unwrap();
         let source = source_of(&dir.join("a.txt"), false);
-        assert_eq!(ready(&source, &into), Ready::Taken { folder: false });
+        assert_eq!(
+            ready(std::slice::from_ref(&source), &into),
+            Ready::Taken(Taken {
+                count: 1,
+                name: "a.txt".to_string(),
+                folder: false
+            })
+        );
         // Keeping both leaves the one that was there exactly as it was.
-        let run = Run::start(Kind::Copy, source.clone(), into.clone(), Settle::KeepBoth);
+        let run = Run::start(
+            Kind::Copy,
+            vec![source.clone()],
+            into.clone(),
+            Settle::KeepBoth,
+        );
         let Outcome::Done(at) = finished(&run) else {
             panic!("the copy failed");
         };
@@ -1118,7 +1315,7 @@ mod tests {
         assert_eq!(std::fs::read(into.join("a.txt")).unwrap(), b"two");
         assert_eq!(std::fs::read(at).unwrap(), b"one");
         // And replacing writes over it.
-        let run = Run::start(Kind::Copy, source, into.clone(), Settle::Replace);
+        let run = Run::start(Kind::Copy, vec![source], into.clone(), Settle::Replace);
         assert!(matches!(finished(&run), Outcome::Done(_)));
         assert_eq!(std::fs::read(into.join("a.txt")).unwrap(), b"one");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1133,11 +1330,21 @@ mod tests {
         std::fs::create_dir(&into).unwrap();
         std::fs::write(dir.join("a.txt"), b"one").unwrap();
         let source = source_of(&dir.join("a.txt"), false);
-        let run = Run::start(Kind::Copy, source.clone(), into.clone(), Settle::KeepBoth);
+        let run = Run::start(
+            Kind::Copy,
+            vec![source.clone()],
+            into.clone(),
+            Settle::KeepBoth,
+        );
         assert!(matches!(finished(&run), Outcome::Done(_)));
         assert!(dir.join("a.txt").exists(), "a copy leaves the original");
 
-        let run = Run::start(Kind::Move, source, into.join("deeper"), Settle::KeepBoth);
+        let run = Run::start(
+            Kind::Move,
+            vec![source],
+            into.join("deeper"),
+            Settle::KeepBoth,
+        );
         // The folder does not exist, so the move fails and the file stays
         // exactly where it was — which is the property that matters.
         assert!(matches!(finished(&run), Outcome::Failed(_)));
@@ -1157,7 +1364,7 @@ mod tests {
         std::fs::create_dir(&into).unwrap();
         std::fs::write(from.join("nested").join("a.txt"), b"one").unwrap();
         let source = source_of(&from, true);
-        let run = Run::start(Kind::Copy, source, into.clone(), Settle::KeepBoth);
+        let run = Run::start(Kind::Copy, vec![source], into.clone(), Settle::KeepBoth);
         assert!(matches!(finished(&run), Outcome::Done(_)));
         assert_eq!(
             std::fs::read(into.join("from").join("nested").join("a.txt")).unwrap(),
@@ -1175,16 +1382,19 @@ mod tests {
         let from = dir.join("from");
         std::fs::create_dir_all(from.join("nested")).unwrap();
         let source = source_of(&from, true);
-        assert!(matches!(ready(&source, &from), Ready::Refused(_)));
         assert!(matches!(
-            ready(&source, &from.join("nested")),
+            ready(std::slice::from_ref(&source), &from),
+            Ready::Refused(_)
+        ));
+        assert!(matches!(
+            ready(std::slice::from_ref(&source), &from.join("nested")),
             Ready::Refused(_)
         ));
         // Its own folder is not that. The name there is taken by the very
         // folder being copied, which is not an obstacle: it is a duplicate,
         // and it lands beside itself under a free name with nothing asked.
-        assert_eq!(ready(&source, &dir), Ready::Clear);
-        let run = Run::start(Kind::Copy, source, dir.clone(), Settle::KeepBoth);
+        assert_eq!(ready(std::slice::from_ref(&source), &dir), Ready::Clear);
+        let run = Run::start(Kind::Copy, vec![source], dir.clone(), Settle::KeepBoth);
         let Outcome::Done(at) = finished(&run) else {
             panic!("the duplicate failed");
         };
@@ -1215,5 +1425,179 @@ mod tests {
         assert!(said.starts_with("Permission denied"), "{said}");
         assert!(said.ends_with('.'), "{said}");
         assert!(!said.contains("os error"), "{said}");
+    }
+
+    /// A set is carried in one journey, and everything in it lands.
+    #[test]
+    fn a_whole_set_is_carried_in_one_go() {
+        let Some(dir) = scratch("set") else {
+            return;
+        };
+        let into = dir.join("into");
+        std::fs::create_dir_all(&into).unwrap();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        std::fs::create_dir(dir.join("box")).unwrap();
+        std::fs::write(dir.join("box/inside.txt"), b"c").unwrap();
+        let sources = vec![
+            source_of(&dir.join("a.txt"), false),
+            source_of(&dir.join("b.txt"), false),
+            source_of(&dir.join("box"), true),
+        ];
+
+        assert_eq!(
+            ready(&sources, &into),
+            Ready::Clear,
+            "nothing of any of those names is in there"
+        );
+        let run = Run::start(Kind::Move, sources, into.clone(), Settle::KeepBoth);
+        assert!(matches!(finished(&run), Outcome::Done(_)));
+        assert!(into.join("a.txt").is_file());
+        assert!(into.join("b.txt").is_file());
+        assert!(into.join("box/inside.txt").is_file());
+        assert!(!dir.join("a.txt").exists(), "a move leaves nothing behind");
+        assert!(!dir.join("box").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The names already in the folder are counted before anything moves, so
+    /// the question about them can be asked once and answered once.
+    #[test]
+    fn every_name_already_there_is_counted_before_the_first_one_moves() {
+        let Some(dir) = scratch("set-taken") else {
+            return;
+        };
+        let into = dir.join("into");
+        std::fs::create_dir_all(&into).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), b"fresh").unwrap();
+        }
+        std::fs::write(into.join("a.txt"), b"old").unwrap();
+        std::fs::create_dir(into.join("c.txt")).unwrap();
+        let sources: Vec<Source> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|name| source_of(&dir.join(name), false))
+            .collect();
+
+        let Ready::Taken(taken) = ready(&sources, &into) else {
+            panic!("two of the three names are taken");
+        };
+        assert_eq!(taken.count, 2);
+        assert_eq!(taken.name, "a.txt", "the first of them, for the wording");
+        assert!(!taken.folder);
+
+        // One answer, and it covers every one of them.
+        let run = Run::start(Kind::Copy, sources, into.clone(), Settle::KeepBoth);
+        assert!(matches!(finished(&run), Outcome::Done(_)));
+        assert_eq!(
+            std::fs::read_to_string(into.join("a.txt")).unwrap(),
+            "old",
+            "keep both never writes over what was there"
+        );
+        assert!(into.join("a (2).txt").is_file());
+        assert!(into.join("b.txt").is_file());
+        assert!(into.join("c (2).txt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One the disk refuses does not strand the rest, and what comes back says
+    /// how many got through as well as what went wrong.
+    #[test]
+    fn one_that_cannot_be_carried_does_not_stop_the_others() {
+        let Some(dir) = scratch("set-partly") else {
+            return;
+        };
+        let into = dir.join("into");
+        std::fs::create_dir_all(&into).unwrap();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        // A row for something that is not on the disk at all, which is what a
+        // set read a moment before somebody else deleted one of them looks
+        // like.
+        let sources = vec![
+            source_of(&dir.join("gone.txt"), false),
+            source_of(&dir.join("a.txt"), false),
+            source_of(&dir.join("b.txt"), false),
+        ];
+        let run = Run::start(Kind::Copy, sources, into.clone(), Settle::KeepBoth);
+        match finished(&run) {
+            Outcome::Partly {
+                carried,
+                failed,
+                why,
+            } => {
+                assert_eq!((carried, failed), (2, 1));
+                assert!(!why.is_empty(), "and it says what the filesystem said");
+            }
+            other => panic!("expected a partial answer, got {other:?}"),
+        }
+        assert!(into.join("a.txt").is_file());
+        assert!(into.join("b.txt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder in the set refuses the whole destination, because the copy
+    /// would walk into the copy it had just made.
+    #[test]
+    fn a_folder_in_the_set_cannot_be_put_inside_itself() {
+        let Some(dir) = scratch("set-inside") else {
+            return;
+        };
+        std::fs::create_dir_all(dir.join("box/nested")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        let sources = vec![
+            source_of(&dir.join("a.txt"), false),
+            source_of(&dir.join("box"), true),
+        ];
+        // Named rather than counted: this is about one particular row being
+        // impossible, and the user has to be told which.
+        assert!(matches!(
+            ready(&sources, &dir.join("box/nested")),
+            Ready::Refused(why) if why.contains("box")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the one row left on the screen says it is carrying.
+    #[test]
+    fn the_row_left_standing_names_the_set() {
+        let one = source_of(Path::new("/home/somebody/notes.txt"), false);
+        let carried = Carried::of(std::slice::from_ref(&one));
+        assert_eq!(carried.name, "notes.txt", "a set of one is the row itself");
+        assert_eq!(carried.glyph, crate::icons::FILE_PAGE);
+
+        let mut many = vec![one.clone(), source_of(Path::new("/home/somebody/b"), true)];
+        let carried = Carried::of(&many);
+        assert_eq!(carried.name, "2 things");
+        assert_eq!(carried.note, "1 file and 1 folder");
+        assert_eq!(carried.glyph, crate::icons::SELECT_MULTIPLE);
+
+        many.push(source_of(Path::new("/home/somebody/c"), true));
+        many.remove(0);
+        assert_eq!(
+            Carried::of(&many).note,
+            "",
+            "a set that is all folders would be saying so twice"
+        );
+    }
+
+    /// A move into the folder they all came out of is refused for a set on the
+    /// terms it is refused for one, and the row says so in the plural.
+    #[test]
+    fn a_set_already_in_the_chosen_folder_cannot_be_moved_into_it() {
+        let Some(dir) = scratch("set-here") else {
+            return;
+        };
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        let sources: Vec<Source> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|name| source_of(&dir.join(name), false))
+            .collect();
+        let picker = Transfer::begin(Kind::Move, sources.clone(), &dir).unwrap();
+        assert_eq!(picker.blocked(), Some("They are already here"));
+        let one = Transfer::begin(Kind::Move, sources[..1].to_vec(), &dir).unwrap();
+        assert_eq!(one.blocked(), Some("It is already here"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,0 +1,30 @@
+<!--
+  The SG-1000: a small deck with the cartridge standing proud of the back of
+  it.
+
+  The cartridge on top is the mark. It is the earliest machine in this column
+  and the only one drawn with its game still in it, which is how it looked in
+  every photograph anybody took of one. See console-nes.svg for the set's
+  rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="cart" x="11.6" y="5.4" width="8.8" height="7.6" rx="1"/>
+    <rect id="deck" x="4" y="12.4" width="24" height="12.6" rx="2.2"/>
+    <rect id="notch" x="13.6" y="7.4" width="4.8" height="2.6" rx="0.7"/>
+    <g id="ports"><circle cx="9.4" cy="19.6" r="1.5"/><circle cx="22.6" cy="19.6" r="1.5"/></g>
+    <g id="bead"><use href="#cart"/><use href="#deck"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#notch" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,19 @@
+<!--
+  The south face button, as the four of them.
+
+  pad-west.svg with the bead moved round the cluster. South is Accept on every
+  layout — the button under the thumb, whatever its letter is where the pad was
+  sold — so this is the one that says a row is being chosen.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g fill="none" stroke="#fff" stroke-width="1.5">
+    <circle cx="12" cy="5.3" r="2.7"/>
+    <circle cx="18.7" cy="12" r="2.7"/>
+    <circle cx="5.3" cy="12" r="2.7"/>
+  </g>
+  <circle cx="12" cy="18.7" r="3.4" fill="#fff"/>
+</svg>

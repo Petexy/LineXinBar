@@ -1109,7 +1109,7 @@ impl Worker {
             return;
         };
         tracing::info!(device, ssid, "forgetting the network");
-        if call(bus, &profile, CONNECTION_IFACE, "Delete", &()).is_none() {
+        if alter::<_, ()>(bus, &profile, CONNECTION_IFACE, "Delete", &()).is_none() {
             tracing::warn!(device, ssid, "the saved network would not be deleted");
         }
         // A join in flight on this device is over either way: it was either for
@@ -1371,14 +1371,13 @@ impl Worker {
             tracing::warn!("the profile could not be read back");
             return false;
         };
-        if let Some(secrets) =
-            call(bus, profile, CONNECTION_IFACE, "GetSecrets", &("")).and_then(|reply| {
-                reply
-                    .body()
-                    .deserialize::<HashMap<String, HashMap<String, OwnedValue>>>()
-                    .ok()
-            })
-        {
+        if let Some(secrets) = alter::<_, HashMap<String, HashMap<String, OwnedValue>>>(
+            bus,
+            profile,
+            CONNECTION_IFACE,
+            "GetSecrets",
+            &(""),
+        ) {
             for (section, held) in secrets {
                 settings.entry(section).or_default().extend(held);
             }
@@ -1386,7 +1385,7 @@ impl Worker {
         if !change(&mut settings) {
             return false;
         }
-        if call(bus, profile, CONNECTION_IFACE, "Update", &(settings,)).is_none() {
+        if alter::<_, ()>(bus, profile, CONNECTION_IFACE, "Update", &(settings,)).is_none() {
             tracing::warn!("the profile would not take the change");
             return false;
         }
@@ -2423,6 +2422,54 @@ fn set_property(
     // The value goes in as a `Value` and not wrapped in anything: `Set` takes a
     // variant, and that is what a `Value` serialises as.
     call(bus, path, PROPERTIES, "Set", &(interface, name, value)).is_some()
+}
+
+/// One call that changes a *saved profile*, made in a way that lets polkit ask.
+///
+/// The three of them — reading a profile's secrets, writing it back, and
+/// deleting it — are the only calls this module makes that the machine's policy
+/// stops to think about. `settings.modify.system` is `auth_admin_keep` on a
+/// stock NetworkManager, and a profile with no `permissions` on it is a system
+/// profile, which is every profile anything but this shell created.
+///
+/// Everything else here is `network-control` and `settings.modify.own`, both
+/// `yes` for an active session: joining a network, bringing a socket up,
+/// disconnecting. Those never stop, so they never need to say they will wait.
+///
+/// The flag is the one bit that makes the difference. Without it polkit answers
+/// "a challenge is required" and never contacts an authentication agent at all,
+/// the caller gets a refusal with nothing on it, and no panel is ever raised —
+/// which is exactly the bug [`crate::users::change`] documents, found on the
+/// accounts page and latent here.
+fn alter<Body, Reply>(
+    bus: &zbus::blocking::Connection,
+    path: &str,
+    interface: &str,
+    method: &str,
+    body: &Body,
+) -> Option<Reply>
+where
+    Body: serde::ser::Serialize + zbus::zvariant::DynamicType,
+    Reply: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    let proxy = match zbus::blocking::Proxy::new(bus, NM, path, interface) {
+        Ok(proxy) => proxy,
+        Err(err) => {
+            tracing::warn!(path, interface, method, ?err, "NetworkManager is not there");
+            return None;
+        }
+    };
+    match proxy.call_with_flags::<_, _, Reply>(
+        method,
+        zbus::proxy::MethodFlags::AllowInteractiveAuth.into(),
+        body,
+    ) {
+        Ok(reply) => reply,
+        Err(err) => {
+            tracing::warn!(path, interface, method, ?err, "NetworkManager refused");
+            None
+        }
+    }
 }
 
 /// One call to NetworkManager, with whatever went wrong logged and swallowed.

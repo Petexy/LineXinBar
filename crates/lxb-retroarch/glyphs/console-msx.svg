@@ -1,0 +1,30 @@
+<!--
+  MSX: a home computer, which is a keyboard with a cartridge slot in it.
+
+  Four rows of this column are computers rather than consoles and they are told
+  apart by what is *around* the keys — this one has the slot. See
+  console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2.6" y="10" width="26.8" height="13" rx="1.8"/>
+    <rect id="slot" x="17.4" y="12.2" width="8.4" height="2.8" rx="0.8"/>
+    <g id="keys">
+      <rect x="5.2" y="17.4" width="4.6" height="3" rx="0.7"/>
+      <rect x="12.2" y="17.4" width="4.6" height="3" rx="0.7"/>
+      <rect x="19.2" y="17.4" width="4.6" height="3" rx="0.7"/>
+    </g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#keys" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

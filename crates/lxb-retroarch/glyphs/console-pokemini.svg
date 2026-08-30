@@ -1,0 +1,32 @@
+<!--
+  The Pokémon Mini: 58 by 74 mm, the smallest machine anybody sold, and chunky
+  with it rather than narrow.
+
+  It was drawn as a thin wand, which is the one thing it is not — the body is
+  four fifths as wide as it is tall, and the screen inside it is a stamp.  The
+  cross low on the left and the two buttons low on the right are what is left of
+  a handheld once there is no room for anything else.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="6.6" y="4" width="18.8" height="24" rx="3.4"/>
+    <rect id="screen" x="11.7" y="6.8" width="8.6" height="5.8" rx="0.6"/>
+    <path id="cross" d="M10.05 14.9h1.7v1.25h1.25v1.7h-1.25v1.25h-1.7v-1.25H8.8v-1.7h1.25z"/>
+    <g id="pips"><circle cx="17.8" cy="18.8" r="1.15"/><circle cx="21" cy="17.2" r="1.15"/></g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

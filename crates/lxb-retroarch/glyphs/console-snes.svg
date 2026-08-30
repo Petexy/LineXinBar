@@ -1,0 +1,40 @@
+<!--
+  The Super Nintendo Entertainment System (SNS-001), head on: the wide low deck
+  with the middle third raised over it.
+
+  It was drawn as its cartridge, which broke the one rule this set has — it is
+  the machine, and a cartridge is not one.  The machine's own silhouette is
+  enough on its own: nothing else in this column steps up in the middle.  The
+  front carries what the front carries, in the order it carries it — a
+  controller port at each end, and POWER, RESET and EJECT between them.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="2.4" y="15.4" width="27.2" height="9" rx="1.4"/>
+    <rect id="hump" x="9.4" y="12.2" width="13.2" height="5" rx="1.4"/>
+    <g id="ports">
+      <rect x="4.6" y="18.4" width="3.4" height="3.2" rx="0.9"/>
+      <rect x="24" y="18.4" width="3.4" height="3.2" rx="0.9"/>
+    </g>
+    <g id="controls">
+      <rect x="11.6" y="18.8" width="2.4" height="2.4" rx="0.6"/>
+      <rect x="14.8" y="18.8" width="2.4" height="2.4" rx="0.6"/>
+      <rect x="18" y="18.8" width="2.4" height="2.4" rx="0.6"/>
+    </g>
+    <g id="bead"><use href="#deck"/><use href="#hump"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#ports" fill="#000000"/>
+      <use href="#controls" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

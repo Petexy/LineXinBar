@@ -84,6 +84,11 @@ let
     alsa-utils
     ddcutil
   ];
+  # `lxb-retroarch` is deliberately not in this list: it links nothing that
+  # needs a driver runpath or a wrapper, and it looks for `flatpak` on the PATH
+  # of the session that started it rather than on one baked in here — a helper
+  # wrapped with this package's own PATH would be one that could not see the
+  # flatpak the user installed.
   binaries = if compositorOnly then [ "lxb" ] else [ "lxb" "lxb-desktop" "lxb-portal" ];
   crates = if compositorOnly then [ "-p" "lxb-compositor" ] else [ "--workspace" ];
 in
@@ -159,12 +164,44 @@ rustPlatform.buildRustPackage {
       share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service \
       "$out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service"
 
+    # Being the machine's file manager. The shell takes
+    # `org.freedesktop.FileManager1` while it runs, which is what a browser's
+    # Show in folder calls; these two cover `xdg-open` on a folder and every
+    # application that falls back to launching whatever opens one. The list is
+    # read only while XDG_CURRENT_DESKTOP lowercases to `linexinbar`, so it
+    # takes nothing away from any other desktop on the machine.
+    install -Dm0644 share/applications/linexinbar-files.desktop \
+      "$out/share/applications/linexinbar-files.desktop"
+    install -Dm0644 share/applications/linexinbar-mimeapps.list \
+      "$out/share/applications/linexinbar-mimeapps.list"
+
     install -Dm0644 README.md "$out/share/doc/$pname/README.md"
+
+    # The RetroArch integration's two marks. Its binary is installed by
+    # cargoInstallHook with the rest of the workspace's; these are what the
+    # shell reads out of the data directory to draw that column's rows, and
+    # without them every one of them falls back to the shell's own pad.
+    #
+    # Nix carries the integration inside this one derivation rather than in a
+    # package of its own, which is the same choice the compositor's own note
+    # explains: the distro packages split to keep a dependency graph and a file
+    # list apart on an installed system, and Nix has neither problem. The shell
+    # finds the helper the way it finds an installed one, on PATH.
+    install -Dm0644 crates/lxb-retroarch/glyphs/retroarch.svg \
+      "$out/share/lxb/glyphs/retroarch.svg"
+    install -Dm0644 crates/lxb-retroarch/glyphs/category-retroarch.svg \
+      "$out/share/lxb/glyphs/category-retroarch.svg"
 
     patchShebangs "$out/bin/lxb-session"
     substituteInPlace "$out/share/wayland-sessions/lxb.desktop" \
       --replace-fail "Exec=lxb-session" "Exec=$out/bin/lxb-session" \
       --replace-fail "TryExec=lxb-session" "TryExec=$out/bin/lxb-session"
+    # And the same for the folder handler, which is started by whatever opens a
+    # folder rather than by this package: a bare name would only be found if
+    # the shell happened to be on that program's PATH.
+    substituteInPlace "$out/share/applications/linexinbar-files.desktop" \
+      --replace-fail "Exec=lxb-desktop " "Exec=$out/bin/lxb-desktop " \
+      --replace-fail "TryExec=lxb-desktop" "TryExec=$out/bin/lxb-desktop"
   '';
 
   postFixup = ''

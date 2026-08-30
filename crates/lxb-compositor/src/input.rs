@@ -10,7 +10,9 @@ use smithay::backend::input::{
 };
 use smithay::desktop::{layer_map_for_output, Window, WindowSurfaceType};
 use smithay::input::keyboard::{keysyms, xkb, FilterResult, Keysym, ModifiersState};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, CursorIcon, MotionEvent, RelativeMotionEvent,
+};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -88,6 +90,22 @@ pub enum Action {
     MoveWindowToNextOutput,
     /// Cycle focus between windows on the focused output.
     CycleWindow,
+    /// Walk the session's applications with the modifier still held down, and
+    /// take whatever the walk lands on when it comes up: Alt+Tab.
+    ///
+    /// Forwarded to the shell rather than acted on here, unlike the rotation
+    /// above, because what the user is asking for is to *see* what they are
+    /// choosing between — and the pictures of the running applications are the
+    /// guide's, which is the shell's own overlay. The compositor's part is the
+    /// keyboard: the binding, and the modifier's release, which nothing else
+    /// in the session is in a position to notice. See [`WindowSwitch`].
+    ///
+    /// A compositor binding for the fifth time, and here the application in
+    /// front is not merely holding the keyboard — it is the one being switched
+    /// away from.
+    SwitchWindow {
+        back: bool,
+    },
     /// Ask the session shell to show its guide overlay.
     ///
     /// This is the console "home" button. It has to be a compositor binding
@@ -134,6 +152,8 @@ impl Action {
             "focus-prev-output" => Action::FocusPrevOutput,
             "move-to-next-output" => Action::MoveWindowToNextOutput,
             "cycle-window" => Action::CycleWindow,
+            "switch-window" => Action::SwitchWindow { back: false },
+            "switch-window-back" => Action::SwitchWindow { back: true },
             "guide" | "overlay" => Action::Guide,
             "keyboard" | "osk" => Action::Keyboard,
             "screenshot" | "capture-screen" => Action::Screenshot,
@@ -341,6 +361,68 @@ impl HomeTap {
     }
 }
 
+/// The modifier a walk along the session's applications is held under.
+///
+/// Alt+Tab is not one binding but a gesture with two ends, and only one of
+/// them is in the binding table. The Tab is a chord like any other and is
+/// looked up there; the Alt is the same key that is half of `Alt+Shift+3`,
+/// held down through a walk of any length, and what ends the walk is that key
+/// coming *up* — which is not an event any table can express.
+///
+/// So the modifier is watched rather than bound, and it is watched as a
+/// modifier rather than as a keysym: what the walk is held under is the alt
+/// bit of the seat's own state, so a user holding both Alt keys and letting go
+/// of one is still holding the walk, and a keyboard that spells the modifier
+/// with some other key is right for free.
+///
+/// Neither edge is swallowed. The press is half of every other chord in the
+/// table and the release is the shell's, which by then holds the keyboard: the
+/// deck is drawn on the overlay, and the overlay is what the modifier is being
+/// let go of over.
+///
+/// A walk that is interrupted rather than finished — the session losing the
+/// keyboard to another virtual terminal — takes nothing. Those keys come up on
+/// the compositor's word rather than under the user's hand, and an application
+/// switched to on the strength of one would be a switch nobody made.
+#[derive(Debug, Default)]
+pub struct WindowSwitch {
+    /// Whether a walk has begun and is waiting for the modifier to come up.
+    walking: bool,
+    /// Whether the modifier has just come up on one, waiting to be acted on
+    /// once the keyboard has finished with the event that let it go.
+    finished: bool,
+}
+
+impl WindowSwitch {
+    /// Note the modifiers as they stand after one key of the seat's keyboard.
+    fn modifiers(&mut self, alt: bool) {
+        self.finished = false;
+        if self.walking && !alt {
+            self.walking = false;
+            self.finished = true;
+        }
+    }
+
+    /// A walk has begun, or another press has carried the one under way on.
+    pub fn begin(&mut self) {
+        self.walking = true;
+    }
+
+    /// Whether a walk has just ended under the user's hand, clearing it.
+    fn take(&mut self) -> bool {
+        std::mem::take(&mut self.finished)
+    }
+
+    /// Whatever was under way, it was not finished.
+    ///
+    /// The session losing the keys, on the same terms as [`HomeTap::interrupt`]
+    /// and [`VolumeKey::interrupt`].
+    pub fn interrupt(&mut self) {
+        self.walking = false;
+        self.finished = false;
+    }
+}
+
 /// The volume key the user is holding down.
 ///
 /// A binding acts once and is done with — a guide button held down is a guide
@@ -408,6 +490,21 @@ impl VolumeKey {
 /// both would leave a browser running inside the session with no way forward.
 const BTN_SIDE: u32 = 0x113;
 
+/// The one a window is dragged with, as Linux numbers it.
+///
+/// The first button and no other. The middle and the right are the client's:
+/// a browser's picture-in-picture opens its own menu on one of them, and a
+/// window that could be towed away by any button is a window whose menu cannot
+/// be opened without moving it.
+const BTN_LEFT: u32 = 0x110;
+
+/// The one that asks what can be done to a thing rather than doing it.
+///
+/// On the floating window it raises the shell's context menu, which is what a
+/// right button has meant on every desktop since there were two of them — and
+/// what it already means everywhere on this shell's own screens.
+const BTN_RIGHT: u32 = 0x111;
+
 /// The compositor's keybinding table.
 #[derive(Debug, Default)]
 pub struct KeyBindings {
@@ -471,6 +568,12 @@ impl KeyBindings {
             ),
             ("Any+XF86AudioMute", Action::Volume(VolumeChange::Mute)),
             ("Super+Tab", Action::CycleWindow),
+            // The chord every desktop switches applications with, in both of
+            // its directions. Shift rewrites the key to `ISO_Left_Tab`, so the
+            // two are told apart by the raw symbol and the modifier rather
+            // than by the letter that arrives — see [`KeyPattern::matches`].
+            ("Alt+Tab", Action::SwitchWindow { back: false }),
+            ("Alt+Shift+Tab", Action::SwitchWindow { back: true }),
             ("Super+Right", Action::FocusNextOutput),
             ("Super+Left", Action::FocusPrevOutput),
             ("Super+Shift+Right", Action::MoveWindowToNextOutput),
@@ -666,6 +769,11 @@ impl LxbState {
             // tap is as much the keys that are *not* the Windows key.
             let logo = is_logo_key(&handle.raw_syms());
             state.lxb.home_tap.key(logo, pressed);
+            // And the modifier a walk along the applications is held under,
+            // which is read off the seat rather than off this key: it ends
+            // when the alt bit does, whichever key was holding it up. See
+            // [`WindowSwitch`].
+            state.lxb.window_switch.modifiers(mods.alt);
 
             // The modified symbol as well as the raw ones, so that both
             // `Super+Q` and shift-rewritten combos like `Super+Shift+Right`
@@ -720,6 +828,15 @@ impl LxbState {
         if self.lxb.home_tap.take() {
             self.run_action(Action::Guide);
         }
+
+        // And the end of a walk along the applications, on the release of the
+        // modifier it was held under. Last of all, after the binding table for
+        // the reason the tap is and after the tap because a Windows key let go
+        // of is not an Alt: the two watch different bits of the same state and
+        // neither can be the other.
+        if self.lxb.window_switch.take() {
+            self.finish_switch();
+        }
     }
 
     fn run_action(&mut self, action: Action) {
@@ -740,6 +857,7 @@ impl LxbState {
             Action::FocusPrevOutput => self.cycle_output(-1),
             Action::MoveWindowToNextOutput => self.move_window_to_next_output(),
             Action::CycleWindow => self.cycle_window(),
+            Action::SwitchWindow { back } => self.switch_window(back),
             Action::Guide => self.open_guide(),
             Action::Keyboard => self.open_keyboard(),
             Action::Screenshot => self.screenshot_focused_output(),
@@ -866,6 +984,11 @@ impl LxbState {
     /// screen, where it was last painted is where the pointer starts, which is
     /// the corner.
     fn cursor_moved(&mut self) {
+        // What shape the pointer is, first: the one thing this compositor ever
+        // asks for over a client's own answer is a resize arrow on the floating
+        // window's edges, and here is where the pointer has just arrived on one
+        // or left one. See [`LxbState::pointer_shape`].
+        self.lxb.cursor_override = self.pointer_shape();
         // And which display it has moved over, for the shell. It sees the
         // pointer only where its own surfaces are in front, which is exactly
         // not where this matters: over an application, and over a screen it has
@@ -944,6 +1067,13 @@ impl LxbState {
         self.apply_released_pointer_hint(&pointer);
 
         let old_location = self.lxb.pointer_location;
+        // A floating window being carried takes the pointer out of the session
+        // with it: nothing is delivered, no constraint applies, and the
+        // relative stream below stays silent. See
+        // [`Self::carry_a_floating_window`].
+        if self.carry_a_floating_window(old_location + delta, time_msec) {
+            return;
+        }
         let old_hit = self.surface_under(old_location);
         let old_under = old_hit
             .as_ref()
@@ -1060,6 +1190,20 @@ impl LxbState {
         };
 
         let old_location = self.lxb.pointer_location;
+        // Where the hand has moved to, worked out before anything at all is
+        // delivered: a floating window being carried takes the pointer with it
+        // and no client hears a word of it. See
+        // [`Self::carry_a_floating_window`].
+        let moved_to = if nested {
+            nested_delta
+                .map(|delta| old_location + delta)
+                .unwrap_or(reported_location)
+        } else {
+            reported_location
+        };
+        if self.carry_a_floating_window(moved_to, event.time_msec()) {
+            return;
+        }
         let old_hit = self.surface_under(old_location);
         let old_under = old_hit
             .as_ref()
@@ -1094,17 +1238,12 @@ impl LxbState {
             return;
         }
 
-        // Keep nested logical motion delta-based after the first sample. This
-        // preserves a client's cursor-position hint when a lock is released;
-        // snapping straight back to the host's stale absolute coordinate
-        // would otherwise erase the hint in this same event.
-        self.lxb.pointer_location = if nested {
-            nested_delta
-                .map(|delta| old_location + delta)
-                .unwrap_or(reported_location)
-        } else {
-            reported_location
-        };
+        // Nested logical motion stays delta-based after the first sample —
+        // which is what `moved_to` above is. That preserves a client's
+        // cursor-position hint when a lock is released; snapping straight back
+        // to the host's stale absolute coordinate would otherwise erase the
+        // hint in this same event.
+        self.lxb.pointer_location = moved_to;
         self.clamp_pointer();
         let location = self.lxb.pointer_location;
         let hit = self.surface_under(location);
@@ -1241,6 +1380,12 @@ impl LxbState {
     /// One pointer button, from wherever it came from — see
     /// [`Self::pointer_motion_by`] for why that is a distinction worth making.
     fn pointer_button_at(&mut self, button: u32, state: ButtonState, time_msec: u32) {
+        // The floating window is offered it first: an edge of it is this
+        // compositor's own, and a press there is a resize no client hears
+        // about. Everything else falls through unchanged.
+        if self.press_on_a_floating_window(button, state, time_msec) {
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
 
         if state == ButtonState::Pressed {
@@ -1259,6 +1404,445 @@ impl LxbState {
             );
             pointer.frame(self);
         }
+    }
+
+    // -- the hand on a floating window -----------------------------------
+    //
+    // The one window here that can be moved and resized by hand, because it is
+    // the one window that is not simply filling a display — see [`crate::pip`],
+    // where the arithmetic of both lives. None of this is a client's drag: no
+    // client asked for it, none is told it is happening, and the pointer stays
+    // this compositor's throughout.
+
+    /// A pointer button, offered to the floating window first. `true` when it
+    /// belongs to a drag and no client is to hear it.
+    ///
+    /// A press on an **edge** is swallowed outright: it is a resize, and the
+    /// browser whose window it is has no business being told the user took hold
+    /// of the frame around it. A press in the **middle** is not swallowed at
+    /// all — it goes on to the client like any other press, and only becomes a
+    /// move if the hand then travels. That fork is the whole of
+    /// [`crate::pip::TAKES`]: a video's play button has to answer the instant
+    /// it is pressed, and a window has to be draggable by the picture rather
+    /// than by a hairline of frame. The only way to have both is to let the
+    /// press through and take it back if it turns out to have been a drag.
+    fn press_on_a_floating_window(
+        &mut self,
+        button: u32,
+        state: ButtonState,
+        time_msec: u32,
+    ) -> bool {
+        if state == ButtonState::Released {
+            // The other half of a press this compositor took for itself: the
+            // right button that raised the menu, the click that ended a drag
+            // the menu started, and the release of the very click that chose
+            // the row. A client that never heard the press must not hear the
+            // release either — half a click is worse than none.
+            if self.lxb.swallow_release == Some(button) {
+                self.lxb.swallow_release = None;
+                return true;
+            }
+            let Some(drag) = self.lxb.pip_drag.clone() else {
+                return false;
+            };
+            // A drag the menu started is not ended by a button coming up,
+            // because nothing is being held down: it ends at the next click.
+            // See [`crate::pip::Until`].
+            let crate::pip::Until::Released(held) = drag.until else {
+                return drag.carrying;
+            };
+            // And an ordinary one ends when the button that started it is let
+            // go, and no other: a second button pressed while a window is being
+            // carried is neither the end of the carry nor the client's to hear.
+            if held != button {
+                return drag.carrying;
+            }
+            self.lxb.pip_drag = None;
+            if !drag.carrying {
+                // Nothing ever happened: the press went to the client and the
+                // release is its as well, which together are the click it has
+                // been waiting for.
+                return false;
+            }
+            // One line per drag, which is the rate a hand works at. Where a
+            // window ended up is the first thing asked of a session where one
+            // was dragged somewhere odd, and it is a fact no picture can be
+            // taken of after the window has been moved again.
+            tracing::debug!(
+                handle = ?drag.handle,
+                from = ?drag.origin,
+                to = ?crate::pip::floating_state(&drag.window).placed(),
+                "a floating window was moved by hand"
+            );
+            // Whatever is under the pointer now has to be told where it is: it
+            // was told the pointer left when the carry began and has heard
+            // nothing since.
+            self.settle_the_pointer(time_msec);
+            self.queue_redraw();
+            return true;
+        }
+
+        // A hand already on the window. A click finishes what the menu started
+        // or takes it back; a press during an ordinary drag is held back for
+        // the same reason the movement is.
+        if let Some(drag) = self.lxb.pip_drag.clone() {
+            // Anything but a hand holding the button down: the menu's own drag,
+            // and a controller's. Both end at a click, and a controller's ends
+            // at one because a session can have both controls plugged in — a
+            // mouse that could not put down what a pad had picked up would be a
+            // window stuck to the stick.
+            if !matches!(drag.until, crate::pip::Until::Released(_)) {
+                self.end_a_menu_drag(&drag, button == BTN_LEFT, time_msec);
+                // Whichever button it was, its release is not news either.
+                self.lxb.swallow_release = Some(button);
+                return true;
+            }
+            return drag.carrying;
+        }
+
+        // The menu. Raised before the drag below is even considered, because it
+        // is what the *other* button does to this window everywhere on it —
+        // edges included, since a menu is about the window and not about the
+        // pixel the hand landed on.
+        if button == BTN_RIGHT {
+            return self.raise_the_floating_windows_menu();
+        }
+        if button != BTN_LEFT {
+            return false;
+        }
+        let Some((window, output, handle)) = self.floating_under(self.lxb.pointer_location) else {
+            return false;
+        };
+        let Some(frame) = crate::pip::floating_state(&window).frame() else {
+            return false;
+        };
+        let Some(display) = self.lxb.space.output_geometry(&output) else {
+            return false;
+        };
+        // An edge is being carried from the first moment; the middle waits.
+        let carrying = matches!(handle, crate::pip::Handle::Edge { .. });
+        self.lxb.pip_drag = Some(crate::pip::Drag {
+            window: window.clone(),
+            handle,
+            output,
+            until: crate::pip::Until::Released(button),
+            was: crate::pip::floating_state(&window).placed(),
+            from: self.lxb.pointer_location - display.loc.to_f64(),
+            origin: frame.outer,
+            carrying,
+        });
+        if carrying {
+            // In front of the other floating windows, which the press would
+            // otherwise not do: a press on the middle is raised by the ordinary
+            // path a moment later, and a press on an edge never reaches it.
+            self.raise_window(&window, false);
+            self.queue_redraw();
+        }
+        carrying
+    }
+
+    /// Ask the shell for the floating window's own menu. `true` when the press
+    /// was spent on it.
+    ///
+    /// The whole window, edges included: a menu is about the window, not about
+    /// the pixel the hand landed on, and a band that resizes under the left
+    /// button has nothing else to mean under the right one.
+    ///
+    /// If no shell answered — none bound, or none new enough to draw it — the
+    /// press is *not* taken. A browser's picture-in-picture has a context menu
+    /// of its own, and one of those is better than a menu nobody drew.
+    fn raise_the_floating_windows_menu(&mut self) -> bool {
+        let Some((window, output, _)) = self.floating_under(self.lxb.pointer_location) else {
+            return false;
+        };
+        let Some(frame) = crate::pip::floating_state(&window).frame() else {
+            return false;
+        };
+        if !self.lxb.shell_control.send_pip_menu(
+            crate::overview::window_id(&window),
+            &output,
+            frame.outer,
+        ) {
+            return false;
+        }
+        // In front of the other floating windows, so the menu is about the one
+        // the user can see all of.
+        self.raise_window(&window, false);
+        self.lxb.swallow_release = Some(BTN_RIGHT);
+        self.queue_redraw();
+        true
+    }
+
+    /// Hand a floating window to the pointer, on the shell's word: the pointer
+    /// goes to `at` and the window follows it until the next click.
+    ///
+    /// The press that chose the menu row is still down as this arrives — the
+    /// shell acts on the press, as every button in it does — so its release is
+    /// spoken for before the window has moved at all. Without that, letting go
+    /// of the button that chose *Move* would end the move.
+    pub(crate) fn take_a_floating_window(
+        &mut self,
+        window: &Window,
+        output: &Output,
+        handle: crate::pip::Handle,
+        at: Point<f64, Logical>,
+    ) {
+        let Some(frame) = crate::pip::floating_state(window).frame() else {
+            return;
+        };
+        let Some(display) = self.lxb.space.output_geometry(output) else {
+            return;
+        };
+        let time = self.monotonic_msec();
+        // Warped first, and the drag measured from where the pointer *landed*:
+        // the far corner of a window against the edge of the screen is a place
+        // the pointer cannot quite go, and a drag measured from where it was
+        // asked to go would start with the window a pixel out.
+        self.put_the_pointer_at(at, time);
+        self.lxb.pip_drag = Some(crate::pip::Drag {
+            window: window.clone(),
+            handle,
+            output: output.clone(),
+            until: crate::pip::Until::Clicked,
+            was: crate::pip::floating_state(window).placed(),
+            from: self.lxb.pointer_location - display.loc.to_f64(),
+            origin: frame.outer,
+            carrying: true,
+        });
+        self.lxb.swallow_release = Some(BTN_LEFT);
+        self.raise_window(window, false);
+        self.cursor_moved();
+        self.queue_redraw();
+    }
+
+    /// End a drag no button is holding down — the menu's, or a controller's:
+    /// `keep` where the user clicked to leave the window as it is, and otherwise
+    /// put it back.
+    ///
+    /// What letting go *means* is [`crate::pip::LxbState::let_go_of_a_floating_window`],
+    /// which the controller's own drag ends through as well. This is that plus
+    /// the one thing a pointer needs afterwards: whatever is under it has to be
+    /// told where it is, having been told the pointer left when the carry began
+    /// and heard nothing since.
+    fn end_a_menu_drag(&mut self, drag: &crate::pip::Drag, keep: bool, time_msec: u32) {
+        self.let_go_of_a_floating_window(drag, keep);
+        self.settle_the_pointer(time_msec);
+    }
+
+    /// Put the pointer somewhere, on this compositor's own behalf.
+    ///
+    /// Whatever had it is told it left, because it did: from here the pointer
+    /// is carrying a window, and a client that went on hearing it would be a
+    /// client tracking a cursor that is busy elsewhere. And it is made visible
+    /// — a pointer put on a window by a menu is one the user is about to be
+    /// asked to move, and this session hides the cursor until something moves
+    /// it.
+    fn put_the_pointer_at(&mut self, at: Point<f64, Logical>, time_msec: u32) {
+        self.lxb.pointer_location = at;
+        self.clamp_pointer();
+        self.pointer_moved();
+        if let Some(pointer) = self.lxb.seat.get_pointer() {
+            let serial = SERIAL_COUNTER.next_serial();
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.lxb.pointer_location,
+                    serial,
+                    time: time_msec,
+                },
+            );
+            pointer.frame(self);
+        }
+        self.cursor_moved();
+    }
+
+    /// Carry or resize the window a hand has hold of, the pointer having moved
+    /// to `to`. `true` when the movement was the window's and no client is to
+    /// hear it.
+    ///
+    /// Called before anything else on both roads a pointer moves by, because a
+    /// window being carried takes the pointer out of the session entirely:
+    /// nothing is delivered, no constraint applies, and the relative stream
+    /// stays silent. A game that read a drag on somebody's video as camera
+    /// movement would be a game that spun while a window was moved over it.
+    fn carry_a_floating_window(&mut self, to: Point<f64, Logical>, time_msec: u32) -> bool {
+        let Some(drag) = self.lxb.pip_drag.clone() else {
+            return false;
+        };
+        // A controller has hold of it, and a controller's drag is not made of
+        // pointer movement: the window follows what the shell sends and the
+        // pointer goes on being the session's. See
+        // [`crate::pip::Until::Told`].
+        if drag.until == crate::pip::Until::Told {
+            return false;
+        }
+        // A window that has died under the hand, or stopped floating — which a
+        // browser does the moment the user puts the video back — is not being
+        // carried any more, and the pointer belongs to the session again.
+        if !drag.window.alive() || !self.lxb.floating(&drag.window) {
+            self.lxb.pip_drag = None;
+            return false;
+        }
+        let Some(display) = self.lxb.space.output_geometry(&drag.output) else {
+            return false;
+        };
+        if !drag.carrying {
+            // Still a click until the hand has gone far enough to be doing
+            // something else, and until then the client hears every movement —
+            // which is how its own controls light up under the pointer.
+            let travel = to - display.loc.to_f64() - drag.from;
+            if travel.x.abs().max(travel.y.abs()) < crate::pip::TAKES {
+                return false;
+            }
+            if let Some(drag) = self.lxb.pip_drag.as_mut() {
+                drag.carrying = true;
+            }
+            // And the client is told the pointer left. It was given the press
+            // and will never be given the release, so something has to say that
+            // the click it is in the middle of is not going to happen; a leave
+            // is what a toolkit reads as that. A synthetic release would be
+            // worse than saying nothing — it is a *completed* click, and on a
+            // video's own play button a completed click stops the video the
+            // user was moving out of the way.
+            if let Some(pointer) = self.lxb.seat.get_pointer() {
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.motion(
+                    self,
+                    None,
+                    &MotionEvent {
+                        location: to,
+                        serial,
+                        time: time_msec,
+                    },
+                );
+                pointer.frame(self);
+            }
+        }
+
+        self.lxb.pointer_location = to;
+        self.clamp_pointer();
+        // Measured from where the press landed rather than from the last
+        // movement, so that a window held against the edge of the screen goes
+        // back under the hand it is still being pulled by instead of drifting
+        // away from it.
+        let delta = self.lxb.pointer_location - display.loc.to_f64() - drag.from;
+        let state = crate::pip::floating_state(&drag.window);
+        let aspect = state.aspect();
+        let rect = match drag.handle {
+            crate::pip::Handle::Move => {
+                crate::pip::carried(drag.origin, delta, display.size, aspect)
+            }
+            crate::pip::Handle::Edge { x, y } => {
+                crate::pip::resized(drag.origin, x, y, delta, display.size, aspect)
+            }
+        };
+        if state.placed() != Some(rect) {
+            // The first movement is also what takes it out of the column — see
+            // [`crate::pip::Floating::placed`] — and the column it left has to
+            // close up behind it, exactly as it would have if the window had
+            // been closed. Only on the way out: every movement after that is
+            // this one window's.
+            let leaving = state.placed().is_none();
+            state.hold(true);
+            state.place_at(rect);
+            match leaving {
+                true => self.relayout_floating_windows(),
+                // Laid out through the ordinary door, so that a window being
+                // dragged is configured, mapped and told its scale exactly as
+                // one the layout placed is.
+                false => self.lxb.outputs.tile_window_on_output(
+                    &mut self.lxb.space,
+                    &drag.window,
+                    &drag.output,
+                ),
+            }
+        }
+        self.cursor_moved();
+        true
+    }
+
+    /// The floating window a press here would take hold of, and by what.
+    ///
+    /// Asked of the **frame** rather than of the surface under the pointer. The
+    /// mat is this compositor's own paint and belongs to no client, so the
+    /// outermost pixels of what the user sees as the window are in no surface
+    /// at all — and those are exactly the pixels an edge is grabbed by.
+    ///
+    /// `None` inside the shell's menu surface, which is drawn over these
+    /// windows and so is pressed before them.
+    fn floating_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(Window, Output, crate::pip::Handle)> {
+        let output = self.lxb.outputs.output_at(&self.lxb.space, location)?;
+        let display = self.lxb.space.output_geometry(&output)?;
+        let point = location - display.loc.to_f64();
+        // A context menu of the shell's is drawn in front of these windows, and
+        // is in front of them for the pointer too.
+        if self.a_menu_takes_the_press(location) {
+            return None;
+        }
+        let found = self
+            .lxb
+            .space
+            .elements_for_output(&output)
+            .rev()
+            .filter(|window| self.lxb.floating(window) && !self.lxb.out_of_sight(window))
+            .find_map(|window| {
+                let frame = crate::pip::floating_state(window).frame()?;
+                let handle = crate::pip::handle_at(&frame, point)?;
+                Some((window.clone(), handle))
+            });
+        found.map(|(window, handle)| (window, output, handle))
+    }
+
+    /// Deliver the pointer where it already is, having moved nothing.
+    ///
+    /// What ends a drag. The client under the pointer was told the pointer left
+    /// when the carry began and has heard nothing since, so it has to be told
+    /// where the pointer is before it will draw a hover or take a click again.
+    fn settle_the_pointer(&mut self, time_msec: u32) {
+        let Some(pointer) = self.lxb.seat.get_pointer() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let location = self.lxb.pointer_location;
+        let hit = self.surface_under(location);
+        let (under, delivered) = match hit.as_ref() {
+            Some(hit) => (
+                Some((self.input_target_for_surface(&hit.surface), hit.origin)),
+                hit.point,
+            ),
+            None => (None, location),
+        };
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: delivered,
+                serial,
+                time: time_msec,
+            },
+        );
+        pointer.frame(self);
+        self.cursor_moved();
+    }
+
+    /// The shape this compositor asks the pointer to be, over whatever the
+    /// client under it asked for — and `None` almost always, which is what
+    /// leaves the client's own answer standing.
+    ///
+    /// A resize arrow on the floating window's edges, and a closed hand while
+    /// one is being carried. Nothing else: the middle of the window belongs to
+    /// the browser drawing in it right up until the moment the user starts
+    /// moving it.
+    fn pointer_shape(&self) -> Option<CursorIcon> {
+        if let Some(drag) = self.lxb.pip_drag.as_ref().filter(|drag| drag.carrying) {
+            return Some(crate::pip::icon(drag.handle).unwrap_or(CursorIcon::Grabbing));
+        }
+        let (_, _, handle) = self.floating_under(self.lxb.pointer_location)?;
+        crate::pip::icon(handle)
     }
 
     // -- the shell's stick pointer ---------------------------------------
@@ -1498,7 +2082,7 @@ impl LxbState {
         self.lxb
             .space
             .elements()
-            .any(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
+            .any(|window| self.lxb.takes_the_keyboard(window))
     }
 
     /// Milliseconds since the compositor started, which is the clock every
@@ -1725,8 +2309,15 @@ impl LxbState {
         let output_loc = output_geo.loc.to_f64();
         let relative = location - output_loc;
 
-        let layers = layer_map_for_output(&output);
+        // The map is borrowed inside this closure and given back on the way
+        // out of it, rather than once around the whole search. What comes
+        // between the two calls below is the search for a window, and that
+        // asks for the same map again — see [`Self::a_menu_takes_the_press`],
+        // which is the question a window search now has to settle first. The
+        // map is behind an ordinary mutex, so a second ask from the same thread
+        // is not a wait, it is the end of the session.
         let layer_hit = |set: [WlrLayer; 2]| {
+            let layers = layer_map_for_output(&output);
             set.into_iter().find_map(|layer| {
                 let surface = layers.layer_under(layer, relative)?;
                 let layer_loc = layers
@@ -1746,6 +2337,38 @@ impl LxbState {
                     })
             })
         };
+
+        // **A floating window is pressed before the shell is.** It is drawn in
+        // front of everything the shell owns — that is what the feature is —
+        // and a press has to land where the eye says it will. Without this a
+        // click on a video was a click on whatever the start screen or the
+        // guide happened to have underneath it, which is a row pressed nobody
+        // aimed at. Pixels and presses come apart nowhere.
+        //
+        // Asked of the **frame**, which is [`Self::floating_under`]'s whole
+        // point: the mat is this compositor's own paint and lies in no
+        // surface, so the outermost pixels of what the user sees as the window
+        // belong to no client and must still be the window's. And the search
+        // stops here whether or not a surface answers — a point inside the
+        // frame that no client wants is a point *nobody* hears about, rather
+        // than one the application behind hears about.
+        //
+        // **Except while one of the shell's context menus is on screen.** Not
+        // only under the panel — [`Self::floating_under`] already refuses
+        // there — but anywhere at all, because a press past a menu is how a
+        // menu is dismissed, and that press has to reach the shell to do it.
+        // The alternative is a panel the user cannot get rid of by clicking
+        // beside it, which is worse than a video that ignores one click: a
+        // press outside a menu presses nothing and only closes it, so nothing
+        // is done to the shell that the user did not ask for.
+        //
+        // Before the borrow below rather than inside it: the layer map is an
+        // ordinary mutex and this asks for it again.
+        if !self.lxb.outputs.pip().has_a_menu() {
+            if let Some((window, _, _)) = self.floating_under(location) {
+                return self.hit_in(&window, location);
+            }
+        }
 
         if let Some(hit) = layer_hit([WlrLayer::Overlay, WlrLayer::Top]) {
             return Some(hit);
@@ -1773,6 +2396,35 @@ impl LxbState {
         layer_hit([WlrLayer::Bottom, WlrLayer::Background])
     }
 
+    /// The surface of `window` under a point already known to be on it.
+    ///
+    /// The tail of [`Self::surface_under`]'s window case, lifted out because
+    /// the floating windows now reach it by a different route: what says a
+    /// press is a video's is the frame around it, and the frame is drawn by
+    /// this compositor rather than by any client — so the window is settled
+    /// before there is any question of which of its surfaces answers.
+    ///
+    /// `None` where the window has nothing under that point, which is the mat:
+    /// the press is still the window's and simply goes nowhere.
+    fn hit_in(&self, window: &Window, location: Point<f64, Logical>) -> Option<Hit> {
+        let mapped = self.lxb.space.element_location(window)?;
+        // smithay's own geometry: a client drawing its own decorations puts the
+        // frame the user thinks of as the window inside a larger surface, so the
+        // surface starts before the mapped location does.
+        let render_location = mapped - window.geometry().loc;
+        let mapping =
+            crate::scale::Mapping::of(mapped.to_f64(), self.lxb.outputs.window_scale(window));
+        let point = mapping.into_window(location);
+        let (surface, at) =
+            window.surface_under(point - render_location.to_f64(), WindowSurfaceType::ALL)?;
+        Some(Hit {
+            surface,
+            origin: at.to_f64() + render_location.to_f64(),
+            point,
+            mapping,
+        })
+    }
+
     /// The topmost window the pointer is actually over.
     ///
     /// `Space::element_under` with one thing taken out of it: a window the
@@ -1798,12 +2450,85 @@ impl LxbState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(Window, Point<i32, Logical>, crate::scale::Mapping)> {
+        // The floating window is looked for first, and over the whole stack:
+        // it is drawn in front of everything, so it is pointed at in front of
+        // everything. Its own place in the stack cannot answer that — it is
+        // raised and lowered like any other window and drawn in front either
+        // way — so a press on a video would otherwise land in the maximized
+        // application behind it the moment that application was clicked on
+        // once. Pixels and presses must come apart nowhere.
+        //
+        // And nowhere is where they come apart inside one of the shell's
+        // context menus, which is the one thing drawn in front of those
+        // windows: a press there belongs to the shell, and is left to the
+        // layers below rather than answered here. See
+        // [`crate::render::push_menus_over_floating_windows`].
+        if self.a_menu_takes_the_press(location) {
+            return self.window_under_among(location, false);
+        }
+        self.window_under_among(location, true)
+            .or_else(|| self.window_under_among(location, false))
+    }
+
+    /// Whether one of the shell's context menus takes the press at `location`.
+    ///
+    /// Asked by everything that decides what a press or a movement is about, so
+    /// that what is nearest the hand and what is nearest the eye stay the same
+    /// thing: a compositor that drew a menu over a floating window and then gave
+    /// the press to the window would draw a menu that could be read and not
+    /// answered.
+    ///
+    /// **The menu's own input region is the answer**, rather than any rectangle
+    /// this compositor keeps: the shell cuts that region to the panel it is
+    /// drawing, so the shape the pointer finds is the shape the eye finds, and
+    /// there is nowhere for the two to drift apart. Cheap where there is no menu
+    /// at all, which is nearly every press on nearly every session.
+    fn a_menu_takes_the_press(&self, location: Point<f64, Logical>) -> bool {
+        if !self.lxb.outputs.pip().has_a_menu() {
+            return false;
+        }
+        let Some(output) = self.lxb.outputs.output_at(&self.lxb.space, location) else {
+            return false;
+        };
+        let Some(display) = self.lxb.space.output_geometry(&output) else {
+            return false;
+        };
+        let relative = location - display.loc.to_f64();
+        let layers = layer_map_for_output(&output);
+        [
+            WlrLayer::Overlay,
+            WlrLayer::Top,
+            WlrLayer::Bottom,
+            WlrLayer::Background,
+        ]
+        .into_iter()
+        .any(|layer| {
+            let Some(surface) = layers.layer_under(layer, relative) else {
+                return false;
+            };
+            let at = layers
+                .layer_geometry(surface)
+                .map(|geometry| geometry.loc)
+                .unwrap_or_default();
+            surface
+                .surface_under(relative - at.to_f64(), WindowSurfaceType::ALL)
+                .is_some_and(|(hit, _)| self.lxb.outputs.pip().is_a_menu(&hit))
+        })
+    }
+
+    /// The same search, over the floating windows or over everything else.
+    fn window_under_among(
+        &self,
+        location: Point<f64, Logical>,
+        floating: bool,
+    ) -> Option<(Window, Point<i32, Logical>, crate::scale::Mapping)> {
         use smithay::desktop::space::SpaceElement;
 
         self.lxb
             .space
             .elements()
             .rev()
+            .filter(|window| self.lxb.floating(window) == floating)
             .filter(|window| !self.lxb.out_of_sight(window))
             .find_map(|window| {
                 let mapped = self.lxb.space.element_location(window)?;
@@ -1813,7 +2538,7 @@ impl LxbState {
                 // presses have to come apart nowhere.
                 let mapping = crate::scale::Mapping::of(
                     mapped.to_f64(),
-                    crate::scale::window_scale(self.lxb.outputs.app_scale(), window),
+                    self.lxb.outputs.window_scale(window),
                 );
                 let point = mapping.into_window(location);
                 let mut bbox = window.bbox();
@@ -2067,6 +2792,10 @@ impl LxbState {
         // And a volume key that was down goes with them, or a session the user
         // has switched away from carries on turning itself down.
         self.lxb.volume_key.interrupt();
+        // And a walk along the applications is abandoned rather than finished:
+        // the Alt about to be released below is this function's, not a hand's,
+        // and it must not choose an application on the user's behalf.
+        self.lxb.window_switch.interrupt();
 
         let Some(keyboard) = self.lxb.seat.get_keyboard() else {
             return;
@@ -2155,14 +2884,28 @@ impl LxbState {
             let target = self.input_target_for_surface(&hit.surface);
             // Raise the owning window so click-to-focus also raises.
             if let Some(window) = self.window_for_input_target(&target) {
-                let accepts_focus = window_accepts_keyboard_focus(&window);
+                // The same three questions asked wherever focus is decided —
+                // see [`crate::state::Lxb::takes_the_keyboard`] — rather than
+                // the first of them alone, which is what this used to ask and
+                // which handed the keyboard to the floating window. A video
+                // parked in a corner is clicked on to press its own play
+                // button, and a click that took the keyboard with it would
+                // leave the game underneath deaf until something gave it back.
+                // It is still raised: it is clicked on, and it goes on being
+                // drawn in front whether it is raised or not.
+                let accepts_focus = self.lxb.takes_the_keyboard(&window);
                 self.raise_window(&window, accepts_focus);
                 if accepts_focus {
                     self.set_window_keyboard_focus(&window);
                 }
                 // The screen's own coordinate, not the window's: what this
-                // answers is which *display* the hand landed on.
-                self.tell_shell_where_the_press_landed(&window, location);
+                // answers is which *display* the hand landed on. Not for the
+                // floating window, for the reason it is not given the
+                // keyboard: pressing pause on a video in the corner of another
+                // screen is not the user going to work over there.
+                if !self.lxb.floating(&window) {
+                    self.tell_shell_where_the_press_landed(&window, location);
+                }
             } else if click_takes_keyboard_focus(self.layer_accepts_keyboard_focus(&hit.surface)) {
                 self.set_keyboard_target(Some(target));
             }
@@ -2219,7 +2962,7 @@ impl LxbState {
             .space
             .elements()
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
+            .find(|window| self.lxb.takes_the_keyboard(window))
             .cloned();
         if let Some(window) = topmost {
             self.raise_window(&window, true);
@@ -2245,7 +2988,7 @@ impl LxbState {
             .space
             .elements_for_output(output)
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
+            .find(|window| self.lxb.takes_the_keyboard(window))
             .cloned();
         if let Some(window) = topmost {
             self.raise_window(&window, true);
@@ -2380,7 +3123,7 @@ impl LxbState {
             .space
             .elements_for_output(target)
             .rev()
-            .find(|window| window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window))
+            .find(|window| self.lxb.takes_the_keyboard(window))
             .cloned();
         if let Some(window) = window {
             self.raise_window(&window, true);
@@ -2411,7 +3154,7 @@ impl LxbState {
         }
     }
 
-    fn cycle_window(&mut self) {
+    pub(crate) fn cycle_window(&mut self) {
         let Some(output) = self
             .lxb
             .outputs
@@ -2423,9 +3166,7 @@ impl LxbState {
             .lxb
             .space
             .elements_for_output(&output)
-            .filter(|window| {
-                window_accepts_keyboard_focus(window) && !self.lxb.out_of_sight(window)
-            })
+            .filter(|window| self.lxb.takes_the_keyboard(window))
             .cloned()
             .collect();
         if windows.len() < 2 {
@@ -3366,6 +4107,94 @@ mod tests {
         assert!(!tap.take());
         tap.key(false, false);
         assert!(!tap.take());
+    }
+
+    /// The chord every desktop switches applications with, in both of its
+    /// directions, and out of the box: a session where Alt+Tab does nothing is
+    /// a session whose users think it is broken.
+    ///
+    /// Shift rewrites the key — xkb turns `Shift+Tab` into `ISO_Left_Tab` —
+    /// so the two arrive as different symbols under different modifiers, and
+    /// they resolve because every spelling of the key is tried, the unshifted
+    /// one included.
+    #[test]
+    fn alt_tab_walks_the_applications_in_both_directions() {
+        let bindings = KeyBindings::from_config(&Config::default());
+        let alt = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            bindings.lookup(&alt, [Keysym::from(keysyms::KEY_Tab)]),
+            Some(Action::SwitchWindow { back: false })
+        );
+
+        let alt_shift = ModifiersState {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            bindings.lookup(
+                &alt_shift,
+                [
+                    Keysym::from(keysyms::KEY_ISO_Left_Tab),
+                    Keysym::from(keysyms::KEY_Tab),
+                ]
+            ),
+            Some(Action::SwitchWindow { back: true })
+        );
+
+        // And the key on its own is the key: a Tab typed into a game, or into
+        // this shell's own field, is not a request to switch away from it.
+        assert_eq!(
+            bindings.lookup(&ModifiersState::default(), [Keysym::from(keysyms::KEY_Tab)]),
+            None
+        );
+    }
+
+    /// The walk ends when the modifier does, and it is the modifier that is
+    /// watched rather than the key: somebody holding both Alt keys who lets go
+    /// of one is still holding the walk.
+    #[test]
+    fn a_walk_ends_when_the_modifier_comes_up() {
+        let mut walk = WindowSwitch::default();
+
+        // Nothing is owed before a walk has begun. Every key in the session
+        // passes through here, and most of them are pressed with no Alt down
+        // at all.
+        walk.modifiers(false);
+        assert!(!walk.take());
+
+        walk.begin();
+        // Further presses of the key, with the modifier still held.
+        walk.modifiers(true);
+        assert!(!walk.take());
+        walk.begin();
+        walk.modifiers(true);
+        assert!(!walk.take());
+
+        walk.modifiers(false);
+        assert!(walk.take(), "letting the modifier go is the choice");
+        // Taken once, not once per key afterwards.
+        assert!(!walk.take());
+        walk.modifiers(false);
+        assert!(!walk.take());
+    }
+
+    /// The session losing the keys abandons the walk instead of finishing it.
+    ///
+    /// Those releases are the compositor's own — see
+    /// [`LxbState::release_pressed_keys`] — and an application switched to on
+    /// the strength of one would be a switch nobody made. The overlay is left
+    /// standing, which every other control still reaches.
+    #[test]
+    fn an_interrupted_walk_chooses_nothing() {
+        let mut walk = WindowSwitch::default();
+        walk.begin();
+        walk.interrupt();
+        walk.modifiers(false);
+        assert!(!walk.take());
     }
 
     /// A hand on the mouse, or the keys being taken off the session, ends the

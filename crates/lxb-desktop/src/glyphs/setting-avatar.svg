@@ -1,0 +1,41 @@
+<!--
+  A face in a frame, on the row that chooses somebody's avatar.
+
+  Not category-images.svg, which the row wore before. That is the mark of *a
+  picture* — the mountain and the sun every photograph on this bar carries — and
+  it is right for a wallpaper, which is a picture and nothing else. An avatar is
+  a picture *of a person*, and which of the two it is is the whole question the
+  row asks: the walk behind it lists photographs, and the one to pick is the one
+  with a face in it.
+
+  So it is the frame of a picture with the single figure inside it, which makes
+  it legible beside both of its neighbours — setting-person.svg, which is what
+  the row falls back to with no avatar set, and the account rows above, which
+  wear the photograph itself.
+
+  The figure is cut *out* of the frame's mat rather than standing on it, on the
+  terms every opening in this set is cut: a body inside a body with no gap is
+  the one thing the field cannot see, and a hole gives its own wall for nothing.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="frame" x="3.2" y="4.4" width="25.6" height="23.2" rx="3.2"/>
+    <g id="holes">
+      <circle cx="16" cy="13.2" r="3.5"/>
+      <path d="M9.4 24.6A6.9 5.6 0 0 1 22.6 24.6Z"/>
+    </g>
+    <g id="bead"><use href="#frame"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

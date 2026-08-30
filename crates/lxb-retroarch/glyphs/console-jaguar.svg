@@ -1,0 +1,33 @@
+<!--
+  The Atari Jaguar: the pebble, with the cartridge slot the whole way across it
+  and two ports beneath.
+
+  Soft all the way round and wider than it is deep — the one console here whose
+  corners never became a corner.  Two ports, which is what it has; it was drawn
+  with three to hold it apart from the Mega Drive, and the silhouette does that
+  job on its own.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2.8" y="9.6" width="26.4" height="13.2" rx="6.2"/>
+    <rect id="slot" x="7.4" y="12" width="17.2" height="3.2" rx="1.1"/>
+    <g id="ports">
+      <circle cx="12.4" cy="19" r="1.5"/>
+      <circle cx="19.6" cy="19" r="1.5"/>
+    </g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,0 +1,35 @@
+<!--
+  The Famicom Disk System: the disk itself, 76 by 90 mm, shutter across the top
+  with its lug beside it.
+
+  The one console in this set whose medium is more recognisable than its
+  hardware — the drive is a featureless grey box and the disk is a card with a
+  shutter, which nothing else here is.
+
+  Its first drawing was a square with two windows in it and it was, at the size a
+  row is drawn, the Nintendo DS; the second clipped a corner off to escape that,
+  and became a document instead.  What separates it now is that the DS is two
+  bodies with a hinge between them and this is one card, nearly square, with a
+  wide shallow shutter high up and a label under it.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="card" x="5.8" y="3.9" width="20.4" height="24.2" rx="1.4"/>
+    <rect id="shutter" x="8.2" y="7.4" width="11" height="3.6" rx="0.5"/>
+    <rect id="lug" x="21.6" y="7.4" width="2.6" height="3.6" rx="0.5"/>
+    <mask id="pierced">
+      <use href="#card" fill="#ffffff"/>
+      <use href="#shutter" fill="#000000"/>
+      <use href="#lug" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#card" fill="#ffffff"/>
+  </g>
+</svg>

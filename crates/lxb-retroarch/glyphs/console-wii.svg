@@ -1,0 +1,34 @@
+<!--
+  The Wii, stood on its foot: the disc slot near the top and the eject button
+  below it.
+
+  It was drawn twice as wide as the machine ever was.  A Wii is 44 mm thick
+  against 215 tall — nearly five to one — and while a glyph that thin would melt
+  under the bevel, the one thing this drawing has to carry is that it is a
+  *slab*, thinner than the PlayStation 2 standing beside it in this column.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="10.8" y="2.6" width="10.4" height="23.8" rx="1.2"/>
+    <rect id="foot" x="6.8" y="25.4" width="18.4" height="3.2" rx="1.5"/>
+    <rect id="slot" x="13.2" y="6" width="5.6" height="2.8" rx="1.2"/>
+    <circle id="eject" cx="16" cy="11.8" r="1.3"/>
+    <rect id="card" x="13.6" y="15.8" width="4.8" height="2.6" rx="0.6"/>
+    <g id="bead"><use href="#body"/><use href="#foot"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#eject" fill="#000000"/>
+      <use href="#card" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

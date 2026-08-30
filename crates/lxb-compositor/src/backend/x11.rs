@@ -75,6 +75,18 @@ impl X11Backend {
     ) -> anyhow::Result<crate::capture::Shot> {
         crate::capture::output(&mut self.renderer, lxb, output)
     }
+
+    /// Draw, small, what is on one side of the shell's own surfaces. See
+    /// [`crate::capture::behind`].
+    pub fn picture_behind(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &Output,
+        side: crate::capture::Side,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        crate::capture::behind(&mut self.renderer, lxb, output, side, size)
+    }
 }
 
 /// Bring up the compositor with `count` nested windows.
@@ -342,7 +354,7 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
         ..
     } = &mut **x11;
 
-    cursor.status = state.lxb.cursor_status.clone();
+    cursor.status = state.lxb.cursor_now();
     let draw_cursor = state.lxb.config.general.draw_cursor;
     let clear_color = state.lxb.config.general.background;
 

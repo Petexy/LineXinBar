@@ -1,0 +1,30 @@
+<!--
+  The mark RetroArch's own row wears, over its column and everywhere in it that
+  no console has a mark of its own.
+
+  RetroArch's own path, verbatim out of the icon its package installs: this is
+  a mark to be recognised rather than read, so its geometry is not something to
+  have an opinion about — the same argument category-steam.svg makes in the
+  shell's own set.
+
+  It used to be two files, one for the column head and one for a row, four per
+  cent apart in scale and identical in every other respect. That is a
+  difference nobody could see at any size the shell draws a mark, bought with
+  two cells of the atlas and two drawings to keep in step; where a head really
+  does want more air than a row, the quad is what gives it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg in the shell's own set, which is where it is explained.
+
+  This file is not the shell's. It ships in the lxb-retroarch package and is
+  read at startup out of share/lxb/glyphs; a machine without that package draws
+  no RetroArch anything. See icons::from_packages.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="bead" transform="translate(-63.274 -110.881) scale(0.20800)" d="m 354.25,577.50561 8.125,10 -16.25,0 -3.75,15 -10,0 3.75,-15 -10,0 -7.5,30 10,0 2.5,0 7.5,0 -2.5,10 17.5,0 -13.125,15 14.6875,0 12.1875,-15 27.5,0 12.1875,15 14.6875,0 -13.125,-15 17.5,0 -2.5,-10 7.5,0 2.5,0 10,0 -7.5,-30 -10,0 3.75,15 -10,0 -3.75,-15 -16.25,0 8.125,-10 -10.625,0 -8.75,10 -15,0 -8.75,-10 z m 1.25,20 10,0 0,10.00045 -10,0 z m 41.277,0 10,0 0,10.00045 -10,-4.5e-4 z"/>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

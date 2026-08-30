@@ -1,0 +1,36 @@
+<!--
+  The WonderSwan: four buttons in a diamond where every other handheld here has
+  a cross, and A and B on a slant to the right of the screen.
+
+  It was drawn mirrored — screen left, controls right — which was a legibility
+  trick and not the machine.  Held across, a WonderSwan has its screen in the
+  middle like anything else; what it has that nothing else has is the X-pad, a
+  ring of four separate buttons, and that is a difference visible at any size
+  without moving anything to the wrong side.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="3" y="8" width="26" height="16" rx="2.6"/>
+    <rect id="screen" x="11" y="12.7" width="10" height="6.6" rx="0.6"/>
+    <g id="xpad">
+      <circle cx="7.6" cy="14.1" r="1"/><circle cx="9.5" cy="16" r="1"/>
+      <circle cx="7.6" cy="17.9" r="1"/><circle cx="5.7" cy="16" r="1"/>
+    </g>
+    <g id="pips"><circle cx="23.3" cy="17.5" r="1.05"/><circle cx="26" cy="15.1" r="1.05"/></g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#xpad" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

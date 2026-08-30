@@ -1,0 +1,38 @@
+<!--
+  The Atari VCS, from above: the cartridge slot dropped in at the back, and the
+  four switches in a row along the front.
+
+  They were the wrong way up.  A cartridge goes into the top of a VCS from
+  behind and the switches — power, television type, select and reset — stand
+  along the front edge where a hand falls on them, so the slot is at the back of
+  this drawing and the row is at the front.
+
+  They are switches, and they are drawn as switches: four narrow uprights.  The
+  7800 further down the column has four buttons instead, and round ones.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="3" y="9.4" width="26" height="13.6" rx="1.8"/>
+    <rect id="slot" x="8.4" y="11.4" width="15.2" height="3" rx="0.9"/>
+    <g id="switches">
+      <rect x="6.4" y="17.2" width="2.6" height="3.4" rx="0.7"/>
+      <rect x="11.6" y="17.2" width="2.6" height="3.4" rx="0.7"/>
+      <rect x="16.8" y="17.2" width="2.6" height="3.4" rx="0.7"/>
+      <rect x="22" y="17.2" width="2.6" height="3.4" rx="0.7"/>
+    </g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#switches" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

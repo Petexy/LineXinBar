@@ -36,9 +36,31 @@ lifetime=$(printf '%.0f' "$(echo "$last + 4" | bc)")
 home="$out/home"
 mkdir -p "$home/.config/lxb"
 rm -rf "$home/Pictures"
+
+# **Nothing in here may be heard.** This session has a shell in it that plays
+# interface sounds, and a run of this script is somebody watching a picture,
+# not listening to one — a nested shell chiming into the speakers of the
+# desktop it was started from is a bug report, and was one.
+#
+# Three doors, because the things in here do not all play the same way.
+# `.asoundrc` closes ALSA, which is the shell's own route (rodio -> cpal ->
+# ALSA -> the `pulse` plugin). It does *not* close libpulse or libpipewire,
+# which is how anything started by the third argument would play — mpv, a GTK
+# client — so those are pointed at a server that does not exist, and SDL is
+# told to play into nothing.
+#
+# None of it touches the real session: no sink is moved and no stream is
+# rerouted. This session simply has nowhere to play.
+cat > "$home/.asoundrc" <<'ASOUND'
+pcm.!default { type null }
+ctl.!default { type null }
+ASOUND
+# Anything else the shell should be started with — a `--debug-*` flag, or the
+# `--retroarch-helper` that stands in for an installed integration package.
+# One string, appended to the command line as written.
 cat > "$home/.config/lxb/config.toml" <<EOF
 [general]
-shell = "$root/target/release/lxb-desktop --debug-actions $actions"
+shell = "$root/target/release/lxb-desktop --debug-actions $actions ${LXB_SHOT_ARGS:-}"
 EOF
 
 # A socket name of this run's own, so a session left over from a previous one
@@ -46,6 +68,9 @@ EOF
 socket="lxb-shot-$$"
 
 env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
+    PULSE_SERVER=/nonexistent-lxb-harness \
+    PIPEWIRE_REMOTE=nonexistent-lxb-harness \
+    SDL_AUDIODRIVER=dummy \
     HOME="$home" XDG_CONFIG_HOME="$home/.config" DISPLAY="${LXB_SHOT_DISPLAY:-:1}" \
     dbus-run-session -- bash -c '
         root=$1; socket=$2; lifetime=$3; inside=$4

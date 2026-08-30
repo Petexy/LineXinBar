@@ -162,3 +162,8 @@ build_deb() {
 # it, and it is the half a display manager installs on its own.
 build_deb compositor lxb-compositor control-compositor.in lxb
 build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal
+# And the optional integration, which depends on the shell above for the reason
+# the shell depends on the compositor: what the two agree about is a protocol,
+# and a helper out of step with the shell beside it is refused rather than half
+# understood.
+build_deb retroarch lxb-retroarch control-retroarch.in lxb-retroarch

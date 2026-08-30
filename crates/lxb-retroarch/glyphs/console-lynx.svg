@@ -1,0 +1,31 @@
+<!--
+  The Atari Lynx: 274 by 108 mm, and nothing else here is that shape.
+
+  Two and a half times as wide as it is tall — a full head wider than the Game
+  Gear and lower with it — so the silhouette carries the machine on its own and
+  the openings only have to agree with it.  A and B are a row on the right, as
+  they are on the Game Gear; what separates the two is the outline round them.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2" y="10.5" width="28" height="11" rx="5.4"/>
+    <rect id="screen" x="11.6" y="13.05" width="8.8" height="5.9" rx="0.6"/>
+    <path id="cross" d="M6 13.7h1.8v1.4h1.4v1.8H7.8v1.4H6v-1.4H4.6v-1.8H6z"/>
+    <g id="pips"><circle cx="24.1" cy="16.6" r="1.25"/><circle cx="27" cy="16.6" r="1.25"/></g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

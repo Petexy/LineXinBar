@@ -202,6 +202,22 @@ impl UdevBackend {
             .map_err(|err| anyhow::anyhow!("no renderer to photograph the display with: {err}"))?;
         crate::capture::output(&mut renderer, lxb, output)
     }
+
+    /// Draw, small, what is on one side of the shell's own surfaces. See
+    /// [`crate::capture::behind`].
+    pub fn picture_behind(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &Output,
+        side: crate::capture::Side,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        let mut renderer = self
+            .gpus
+            .single_renderer(&self.primary_gpu)
+            .map_err(|err| anyhow::anyhow!("no renderer to draw the picture with: {err}"))?;
+        crate::capture::behind(&mut renderer, lxb, output, side, size)
+    }
 }
 
 /// Bring up the compositor on real hardware.
@@ -486,6 +502,44 @@ fn renderer_node(node: DrmNode) -> DrmNode {
         .unwrap_or(node)
 }
 
+/// What the primary GPU should be called, now that a device has registered its
+/// renderer under a name of its own.
+///
+/// A card has two names and they are arrived at by different routes. The
+/// primary GPU is named before any device is open, out of the DRM node alone:
+/// [`renderer_node`] asks the kernel for the card's `renderD*` node. The
+/// renderer is registered later, under whatever EGL says the device's render
+/// node is — and EGL answers for the *driver*, so a driver with no render node
+/// of its own says nothing at all and [`device_added`] falls back to the
+/// primary node. That is not an exotic case: it is every software renderer,
+/// which is to say most virtual machines.
+///
+/// When the two disagree the compositor mistakes one card for two. It looks up
+/// a renderer under the startup name, nothing was ever registered under it, the
+/// frame is refused — and refused again every vblank for the life of the
+/// session, which on screen is one wallpaper and then nothing. The same
+/// mismatch quietly withholds explicit synchronisation and the dmabuf global,
+/// both of which are only offered for the primary GPU.
+///
+/// So the name the renderer answers to wins, because it is the name every
+/// later lookup uses. Only for the card the primary GPU actually is, which is
+/// either of its two names; a second card keeps its own.
+///
+/// Generic over the node so the decision can be tested. `DrmNode` can only be
+/// built from a device that exists on the machine running the test.
+fn primary_after_adding<N: Copy + PartialEq>(
+    primary: N,
+    node: N,
+    node_render: N,
+    registered: N,
+) -> N {
+    if node == primary || node_render == primary {
+        registered
+    } else {
+        primary
+    }
+}
+
 // ---------------------------------------------------------------------------
 // device lifecycle
 // ---------------------------------------------------------------------------
@@ -578,6 +632,19 @@ fn device_added(state: &mut LxbState, node: DrmNode, path: &Path) -> anyhow::Res
         .as_mut()
         .add_node(render_node, gbm.clone())
         .map_err(|e| anyhow::anyhow!("failed to register GPU with the renderer: {e}"))?;
+
+    // The device is open, so this is the first moment anything knows what EGL
+    // calls it. See [`primary_after_adding`] for why that has to be reconciled
+    // with the name chosen at startup.
+    let renamed = primary_after_adding(udev.primary_gpu, node, renderer_node(node), render_node);
+    if renamed != udev.primary_gpu {
+        tracing::info!(
+            was = ?udev.primary_gpu,
+            now = ?renamed,
+            "primary GPU renamed to the node its renderer answers to"
+        );
+        udev.primary_gpu = renamed;
+    }
 
     // Disjoint fields: `udev` holds `state.backend`, this takes `state.lxb`.
     let primary_gpu = udev.primary_gpu;
@@ -1271,7 +1338,7 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     let output = surface.output.clone();
     let primary_gpu = udev.primary_gpu;
 
-    udev.cursor.status = state.lxb.cursor_status.clone();
+    udev.cursor.status = state.lxb.cursor_now();
     let draw_cursor = state.lxb.config.general.draw_cursor;
     let clear_color = state.lxb.config.general.background;
 
@@ -1753,5 +1820,41 @@ pub fn queue_redraw_all(state: &mut LxbState) {
     };
     for (node, crtc) in targets {
         schedule_render(state, node, crtc, Duration::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary_after_adding;
+
+    /// A card answers to one name, whichever route arrived at it.
+    ///
+    /// The middle case is the one that took a session away: `card1` resolves to
+    /// `renderD128` before anything is open, then EGL declines to name a render
+    /// node — every software renderer — and the renderer is registered under
+    /// `card1` after all. Two names, one card, and a compositor that draws one
+    /// frame and then refuses every vblank for the rest of the session.
+    #[test]
+    fn one_card_does_not_become_two() {
+        // Named `renderD128` at startup, registered under `card1`.
+        assert_eq!(
+            primary_after_adding("renderD128", "card1", "renderD128", "card1"),
+            "card1"
+        );
+        // Named `card1` at startup, registered under `renderD128`.
+        assert_eq!(
+            primary_after_adding("card1", "card1", "renderD128", "renderD128"),
+            "renderD128"
+        );
+        // Both routes already agree, which is every machine with a real driver.
+        assert_eq!(
+            primary_after_adding("renderD128", "card1", "renderD128", "renderD128"),
+            "renderD128"
+        );
+        // A second card is not the primary one and does not rename it.
+        assert_eq!(
+            primary_after_adding("renderD128", "card2", "renderD129", "renderD129"),
+            "renderD128"
+        );
     }
 }

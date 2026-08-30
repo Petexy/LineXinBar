@@ -18,8 +18,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     let Some(root) = Path::new(&manifest_dir).parent().and_then(Path::parent) else {
         eprintln!("cannot find the checkout root above {manifest_dir}");
         return ExitCode::FAILURE;

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::theme::Color;
+use lxb_protocol::wallpaper::Style;
 
 /// A launchable application.
 #[derive(Debug, Clone)]
@@ -20,6 +21,13 @@ pub struct App {
     pub exec: String,
     pub terminal: bool,
     pub categories: Vec<String>,
+    /// `Keywords`: the words a search would find this entry by. Read for two
+    /// questions and no others — whether this is a store, and whether the
+    /// entry has asked to be drawn in the shell's own material — because those
+    /// are the two things an author can say about an application that its
+    /// categories have no vocabulary for. See [`is_store`] and
+    /// [`App::wears_shell_material`].
+    pub keywords: Vec<String>,
     /// `MimeType`: what this application says it can open. Read for one
     /// question only — which program one of the user's own files should be
     /// handed to — and answered out of the catalogue rather than by asking a
@@ -216,6 +224,77 @@ pub enum Entry {
     /// the two are not the same row, and where both would exist this one takes
     /// the other's place — see [`offer_steam`].
     Steam(Service),
+    /// RetroArch, under Steam at the head of the Games column: the way in to
+    /// somebody's own ROM folder, and afterwards the way back out of it.
+    ///
+    /// The same row as [`Entry::Steam`] and for the same reasons — it is a way
+    /// in to a column rather than a program to start, and where RetroArch's own
+    /// desktop entry exists this one takes its place; see
+    /// [`hide_retroarch_client`]. What differs is that this row is not always
+    /// there at all: it exists on a machine that has the `lxb-retroarch`
+    /// package and on no other. See [`crate::retroarch`].
+    RetroArch(Emulation),
+    /// One game in somebody's own ROM folder.
+    ///
+    /// Its own kind of row for the reasons [`Entry::Game`] is one, arrived at
+    /// from the other end: nothing installed it, no `.desktop` file describes
+    /// it, and what starts it is a core and a path rather than a command
+    /// somebody wrote down. It is a *file* the shell knows how to play, which
+    /// is what makes it neither an application nor one of the files under
+    /// [`Entry::File`] — those are opened in whatever the desktop answers with,
+    /// and this one is opened in the emulator the folder's name asked for.
+    Rom(Rom),
+    /// The row at the head of a column of folders that says "this one".
+    ///
+    /// The picker's answer, and the only row in that column that acts. A row
+    /// rather than a control drawn over the column, on the terms
+    /// [`Entry::Search`] is one — on this bar a row is the only thing there is
+    /// — and it stands *over* the list for the reason the search field does:
+    /// it is about the column rather than one of the things in it, so the
+    /// column opens on the row below it and a press of A out of habit does not
+    /// answer a question nobody has read yet.
+    Pick(Pick),
+    /// The row at the head of a folder's own listing that makes a new folder
+    /// in it.
+    ///
+    /// Its own kind of row rather than a [`Pick`] wearing another word, and
+    /// for the reason those two are not one: a `Pick` *answers* a question
+    /// somebody else asked and takes the bar back out of the picker, and this
+    /// one asks a question of its own — what shall the folder be called — and
+    /// leaves the user standing exactly where they were.
+    ///
+    /// It stands over the list on the terms [`Entry::Pick`] and
+    /// [`Entry::Search`] do: it is about the column rather than one of the
+    /// things in it. And it is the reason an empty folder can be stepped into
+    /// at all — a column with nothing in it is the one shape this bar cannot
+    /// show, so before this row there was no way to make the first thing in an
+    /// empty directory. See [`crate::files::listing`].
+    Make(Make),
+    /// The row at the head of the Trash column that empties it.
+    ///
+    /// Its own kind of row beside [`Entry::Make`] and on the same argument:
+    /// they are both head rows that act, and what they do could not be less
+    /// alike. One of them creates something and the other destroys everything
+    /// in the column under it, and a single kind of row carrying which would
+    /// be one mis-routed press away from the worst outcome in this shell.
+    Sweep(Sweep),
+    /// The row at the head of a column being marked: how many are ticked, and
+    /// the way back out of the marking.
+    ///
+    /// A third acting head row beside [`Entry::Make`] and [`Entry::Sweep`], and
+    /// it is never on a column with either of those: while it is there it
+    /// stands in their place. See [`Done`].
+    Done(Done),
+    /// One thing somebody deleted, standing in the Trash column.
+    ///
+    /// A fourth kind of row about a file on this disk, and a fourth kind for
+    /// the reason the third is: what can be done to it is not what can be done
+    /// to a file. It cannot be opened — the program that would open it would be
+    /// handed a path inside `~/.local/share/Trash/files` and a name the trash
+    /// invented — it cannot be renamed, and it cannot be deleted, because it
+    /// already has been. What it can be is put back or destroyed, and those are
+    /// two rows no other kind of row in this shell carries.
+    Trashed(crate::trash::Trashed),
     /// One title in somebody's Steam library.
     ///
     /// Its own kind of row for the reason a file of the user's own is: nothing
@@ -359,6 +438,209 @@ pub struct Game {
     /// Without one, nothing in the Steam column can be played or fetched, and
     /// the row says so rather than doing nothing.
     pub steam_client: bool,
+}
+
+/// The RetroArch row, as the second row of the Games column.
+///
+/// It carries what it says and nothing else, unlike [`Service`], which carries
+/// the account. What pressing it does is decided by asking
+/// [`crate::retroarch::RetroArch`] on the press — install, choose a folder, or
+/// step across — because every one of those answers is a fact about a helper
+/// process and a disk rather than about a row, and a row that carried a copy of
+/// it would be a second opinion going stale between rebuilds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emulation {
+    /// The line under the name: what is there, or what pressing it would do.
+    comment: String,
+}
+
+impl Emulation {
+    pub fn new(comment: String) -> Emulation {
+        Emulation { comment }
+    }
+}
+
+/// One game out of somebody's ROM folder.
+///
+/// Compared but not equatable: [`Rom::shape`] is a measurement of a picture,
+/// and two measurements are alike or not alike rather than equal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rom {
+    /// The file's name without its extension, which is what somebody called
+    /// the game when they saved it.
+    pub name: String,
+    pub path: PathBuf,
+    /// The console it came out of, under the name this shell calls that console
+    /// — "PlayStation Portable" rather than `psp`. Carried plainly as well as
+    /// inside [`Rom::note`] because a panel raised over this row has to say it
+    /// in a sentence of its own.
+    pub console: String,
+    /// The line under the name: which console, or why it cannot be started.
+    pub note: String,
+    /// The whole command line that starts it — RetroArch, the core, and this
+    /// file — or `None` for a console with no core installed.
+    ///
+    /// Carried on the row rather than worked out on the press, and that is
+    /// what lets a game go through [`crate::model::Lattice::launch_selected`]
+    /// like every other row on this bar: the launcher has the catalogue and
+    /// nothing else, and asking a helper process what to run at the moment
+    /// somebody presses A would be a fork between the button going down and the
+    /// loading screen. The row is rebuilt whenever the answer could have
+    /// changed, which is whenever the folder is read again.
+    ///
+    /// The row exists either way: the game is still theirs, and a press says
+    /// what is missing rather than nothing happening.
+    pub start: Option<Vec<String>>,
+    /// The cores that would run this console, best first — whether or not any
+    /// of them is installed.
+    ///
+    /// What the press on a game with no [`Rom::start`] offers to fetch, and
+    /// carried here for the reason `start` is: the press is holding a row, and
+    /// the answer has to be on it. Which of these actually exists for this
+    /// machine is not decided here; the whole list goes to the helper, which
+    /// takes the first that libretro publishes. See
+    /// [`crate::retroarch::RetroArch::fetch`].
+    pub wanted: Vec<String>,
+    /// The game's cover on this disk, where there is one — what the row *is*,
+    /// rather than the mark every row of the column would otherwise wear.
+    ///
+    /// A path to a file in the shell's own cache rather than a picture, and it
+    /// goes through the same worker and the same band of the same atlas as a
+    /// thumbnail of any other file: a cover is a picture on a card, and so is a
+    /// photograph. See [`crate::retroarch`], which is where it comes from, and
+    /// [`crate::thumbs`], which decodes it.
+    ///
+    /// `None` for a game nothing has a picture of, which is a row that looks
+    /// exactly as it did before any of this existed.
+    pub boxart: Option<PathBuf>,
+    /// A screenshot of it on this disk, on the same terms. It stands behind the
+    /// whole display while the cursor is on the row, blurred — see
+    /// [`crate::thumbs::Want::Snapshot`].
+    pub snap: Option<PathBuf>,
+    /// Whether [`Rom::boxart`] is a picture somebody chose themselves rather
+    /// than one libretro published — see `crate::retroarch::Shown`.
+    pub own_cover: bool,
+    /// The same for [`Rom::snap`], and this one changes how it is *drawn*.
+    ///
+    /// What libretro holds is a photograph of a console's screen, three hundred
+    /// pixels tall, which is blurred on its way across a television because
+    /// enlarged honestly it is a wall of squares. A picture somebody chose is
+    /// theirs, at whatever size they chose it, and blurring it would be the
+    /// shell smearing a photograph nobody asked it to touch. See
+    /// `Shell::sight_of`, which is where the two part.
+    pub own_background: bool,
+    /// The shape this console's covers are: the width of one over its height.
+    ///
+    /// Not one number for all of them, because a console's boxes are its own. A
+    /// Nintendo DS case is wider than it is tall, a Wii case is taller than a
+    /// PlayStation 2 one, and a UMD case is taller again. Drawn at a single
+    /// shape, every shelf but the one that shape was taken from showed a cover
+    /// that did not fill the card it stood on — a square DS box in a portrait
+    /// card, with a band of glass above and below it that read as the picture
+    /// having been put down carelessly rather than as a mount.
+    ///
+    /// Measured off the covers on this disk rather than looked up in a table of
+    /// consoles, which is the rule the whole of this integration keeps: the
+    /// picture already knows what shape it is, and a table would be this shell
+    /// asserting the dimensions of somebody else's artwork. See
+    /// [`crate::retroarch::shelf_shape`].
+    ///
+    /// A fact about the *console* rather than about this row, and carried on
+    /// every row of the shelf because the shelf is laid out from the first of
+    /// them: one card shape per column, or the rows would step in and out from
+    /// one to the next. `None` where nothing has been measured — a shelf whose
+    /// covers have not been fetched is a column of marks, and it keeps the
+    /// shape a column of covers had before any of this.
+    pub shape: Option<f32>,
+    /// The mark to draw where there is no cover: this game's console.
+    ///
+    /// Never empty — the integration resolves it to RetroArch's own mark where
+    /// the console has none, so a row always has something to wear. It is a
+    /// `String` rather than a `&'static str` because it names a drawing that
+    /// arrived with a *package*, and there is no static list of those.
+    pub glyph: String,
+}
+
+/// The row that answers a folder picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    /// The folder it is in, which is what pressing it answers with. Carried
+    /// rather than read back off the column, because by the time the press is
+    /// answered the panel raised over it is what is on screen.
+    pub at: PathBuf,
+    /// What the answer is for.
+    pub about: crate::settings::Picking,
+    /// The line under it: what choosing this folder would mean.
+    pub comment: String,
+}
+
+/// The row that makes a new folder in the one the column is of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Make {
+    /// The folder the new one goes in, which is the folder this column is a
+    /// listing of. Carried rather than read back off the column, for the
+    /// reason [`Pick`] carries its own: by the time a name has been typed the
+    /// listing has been rebuilt under the caret more than once.
+    pub at: PathBuf,
+}
+
+/// The row that empties the trash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sweep {
+    /// How many things are in there, which is the line under the row: a press
+    /// that would destroy four hundred files should say four hundred before it
+    /// is made and not after.
+    pub items: usize,
+    /// That count, written out. Held rather than formatted where the row is
+    /// drawn, because [`Entry::comment`] hands back a borrow of what the row
+    /// is carrying.
+    note: String,
+}
+
+impl Sweep {
+    pub fn new(items: usize) -> Self {
+        let note = match items {
+            1 => "1 item".to_string(),
+            items => format!("{items} items"),
+        };
+        Self { items, note }
+    }
+
+    fn note(&self) -> &str {
+        &self.note
+    }
+}
+
+/// The row at the head of a column that is being marked, which says how many
+/// rows are ticked and is the way back out.
+///
+/// It stands where the column's own acting head row stands, and while it is
+/// there that row is gone: a folder being marked has no New folder and the
+/// trash being marked has no Empty trash. One acting row at the top, and while
+/// the marking is on it is the marking's — anything else would be a column
+/// offering to make a folder in the middle of somebody counting up what they
+/// are about to move out of it.
+///
+/// The field stays. Narrowing a column while marking it is a reasonable thing
+/// to want, the marks are held by path and survive the read, and the search is
+/// not a thing that *acts*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Done {
+    /// How many are ticked, which is the line under the row.
+    pub picked: usize,
+    /// That count, written out — held rather than formatted where the row is
+    /// drawn, for the reason [`Sweep`] holds its own.
+    note: String,
+}
+
+impl Done {
+    pub fn new(picked: usize, note: String) -> Self {
+        Self { picked, note }
+    }
+
+    fn note(&self) -> &str {
+        &self.note
+    }
 }
 
 /// The field at the head of a shelf, or the row beneath it that clears the
@@ -547,6 +829,29 @@ pub struct Folder {
     /// — see [`head_rows`], which is where the two are counted together, and
     /// [`Entry::over_the_list`], which is the question asked of a row.
     pub over_the_list: bool,
+    /// Which account this row opens the form for, where it opens one.
+    ///
+    /// `None` for every subcategory in the shell but the ones under Settings >
+    /// Users. It is on the row for the reason [`Folder::place`] is: what is
+    /// behind this column is not a list the tree wrote but a *draft* held
+    /// elsewhere, and the shell has to be able to tell, from the trail the
+    /// cursor has walked, that the column it is standing in is that form — see
+    /// [`crate::users`], and `Shell::sync_user_form`, which is where the draft
+    /// is opened and thrown away.
+    pub person: Option<crate::users::Whose>,
+    /// The picture this row wears *instead of* its glyph, cut round.
+    ///
+    /// One page uses it, and it is the whole of what that page looks like: an
+    /// account is a person, and the thing that says which person is their own
+    /// picture rather than any mark the shell could draw. Where there is none
+    /// the row falls back to its icon, which is the single figure — and
+    /// deliberately not the two figures the page itself is reached by, or every
+    /// row on it would wear the heading above it.
+    ///
+    /// A path rather than a picture, and it goes through the same worker and
+    /// the same band of the same atlas as the thumbnail of any other file. See
+    /// [`crate::thumbs`].
+    pub portrait: Option<PathBuf>,
 }
 
 /// One of a set of alternatives, exactly one of which is in force.
@@ -563,6 +868,19 @@ pub struct Choice {
     /// swatch drawn in this comes out as the colour itself — which is the one
     /// label a colour cannot be given in words.
     pub swatch: Option<Color>,
+    /// The material this row stands for, when the setting is a material.
+    ///
+    /// The same argument as [`Self::swatch`], made about the other thing a row
+    /// can stand for that no word describes. A colour's row is drawn *in* that
+    /// colour; a material's row is drawn *in* that material — the mark on it is
+    /// shaded as a bead of water or laid down flat according to what pressing
+    /// the row would do, whatever the shell is set to at the time. It is what
+    /// lets the two rows of a Theme column carry the same drawing, which they
+    /// do: the difference between the materials is not in the shape.
+    ///
+    /// `None` everywhere else, which is every row in the tree but four. See
+    /// [`crate::gpu::Quad::mark`], which is where it ends up.
+    pub material: Option<Style>,
     /// Whether this is the one currently in force.
     pub chosen: bool,
     /// Whether pressing this row *does* something rather than answering the
@@ -584,6 +902,17 @@ pub struct Choice {
     /// not change, which stays inert rather than taking the mark off a row
     /// that describes something true.
     pub setting: Option<crate::settings::Setting>,
+    /// Whether this row stands *over* the column rather than being one of the
+    /// rows it is a list of — the same question [`Folder::over_the_list`]
+    /// answers, asked of a row that acts.
+    ///
+    /// One row in the shell: *Use no avatar*, at the head of the walk that
+    /// chooses somebody's picture. It belongs there because it is the other
+    /// answer to what that whole column asks — not a file, but a way of having
+    /// no file — and it must not be what the column opens on, for the reason
+    /// [`Entry::Pick`] gives: a press of A out of habit would answer a question
+    /// nobody has read yet.
+    pub over_the_list: bool,
 }
 
 /// A value on a scale, and the two steps either side of where it stands.
@@ -662,6 +991,52 @@ pub struct Category {
     pub entries: Vec<Entry>,
 }
 
+/// A column with its rows left behind: what it is called, and what it is drawn
+/// with.
+///
+/// The Settings tree needs the bar to build one row — Startup category, which
+/// is a list of the columns this machine has — and it cannot be handed the bar
+/// itself: the tree is built *into* the bar, so a page holding a lattice would
+/// be a lattice holding itself. This is the part of a column that page needs,
+/// and all three fields are already `&'static str`, so a list of these borrows
+/// nothing and can be taken before the column it came from is reached for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Column {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub icon: &'static str,
+}
+
+/// Every column the shell can put on a bar, in bar order.
+///
+/// Not what *this* machine has — that is the bar, and it is what the page is
+/// built from. This is the wider set, asked one question only: a setting naming
+/// a column that is not on the bar this session has to be able to say what it
+/// named, or somebody who set the shell to open on Steam and then signed out
+/// would find the page showing nothing chosen. See [`known_column`].
+pub fn every_column() -> Vec<Column> {
+    let mut ranked: Vec<Column> = CATEGORY_TABLE
+        .iter()
+        .map(|(id, title, icon, _)| Column { id, title, icon })
+        .chain([STEAM, retroarch_column_id()].map(|(id, title, icon)| Column { id, title, icon }))
+        .collect();
+    ranked.sort_by_key(|column| rank(column.id).unwrap_or(usize::MAX));
+
+    // The shell's own column is not ranked and is always first — which is the
+    // whole of what it needs from [`rank`], there and here. See
+    // [`column_place`].
+    let (id, title, icon) = SHELL_SETTINGS;
+    let mut columns = vec![Column { id, title, icon }];
+    columns.extend(ranked);
+    columns
+}
+
+/// What a column of this name is called and drawn with, whether or not this
+/// machine has one.
+pub fn known_column(id: &str) -> Option<Column> {
+    every_column().into_iter().find(|column| column.id == id)
+}
+
 /// The shell's own column, for settings that belong to LineXinBar itself rather
 /// than to anything installed on the system.
 ///
@@ -684,6 +1059,12 @@ const SYSTEM: &str = "system";
 /// *found* for it, but the Steam row goes at its head whether or not a single
 /// game is installed, so the column has to be nameable from outside the table.
 const GAMES: &str = "games";
+/// Software and Waydroid are named here for a fourth reason: an entry is filed
+/// into either of them by something other than an XDG main category, so
+/// [`App::category_id`] has to be able to say their names before the table is
+/// consulted at all. See [`is_store`] and [`is_android`].
+const SOFTWARE: &str = "software";
+const WAYDROID: &str = "waydroid";
 
 /// Where installed applications go, in lattice order.
 ///
@@ -691,6 +1072,14 @@ const GAMES: &str = "games";
 /// match wins. `Settings` and `System` share a column, as they do in Plasma —
 /// its menu has no Settings menu of its own, and the shell's own Settings
 /// column is not somewhere an installed application belongs.
+///
+/// Two columns name no categories at all. Software and Waydroid are not
+/// questions a main category answers — a store says `System` like every other
+/// administrative tool, and an Android application says nothing a menu has ever
+/// heard of — so both are claimed before this table is consulted and their
+/// lists are deliberately empty. See [`App::category_id`]. They are in the
+/// table all the same, because this is also the order the bar is in and both of
+/// them are places for something rather than consequences of something.
 const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
     (
         SYSTEM,
@@ -723,6 +1112,10 @@ const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
         &["Office"],
     ),
     (GAMES, "Games", crate::icons::CATEGORY_GAMES, &["Game"]),
+    // Where the machine gets more of itself from. Its list is empty because
+    // nothing is filed here by a main category: a store is recognised by
+    // [`is_store`] and claimed before this table is read.
+    (SOFTWARE, "Software", crate::icons::CATEGORY_SOFTWARE, &[]),
     (
         "development",
         "Development",
@@ -741,6 +1134,10 @@ const CATEGORY_TABLE: &[(&str, &str, &str, &[&str])] = &[
         crate::icons::CATEGORY_UTILITIES,
         &["Utility"],
     ),
+    // The Android applications this session can run, for the reason above:
+    // Waydroid writes `X-WayDroid-App` and no main category at all, so its
+    // entries are claimed by [`is_android`] rather than found here.
+    (WAYDROID, "Waydroid", crate::icons::CATEGORY_WAYDROID, &[]),
     ("other", "Other", crate::icons::CATEGORY_OTHER, &[]),
 ];
 
@@ -805,6 +1202,8 @@ fn subcategories(id: &str) -> Vec<Entry> {
                 place: None,
                 chosen: false,
                 over_the_list: false,
+                person: None,
+                portrait: None,
             })
         })
         .collect()
@@ -833,6 +1232,8 @@ fn files_row() -> Entry {
         )),
         chosen: false,
         over_the_list: false,
+        person: None,
+        portrait: None,
     })
 }
 
@@ -884,9 +1285,35 @@ pub fn media_rows(
 /// still carries the two rows that say why. A folder with nothing in it at all
 /// gets neither: there is nothing there to search, and a column holding only
 /// the offer to search it is a column worth stepping into for nothing.
-pub fn place_rows(listing: Vec<Entry>, query: &str, found: usize) -> Vec<Entry> {
-    let mut rows = Vec::with_capacity(listing.len() + 2);
-    head(&mut rows, Searched::Folder, query, listing.len(), found);
+pub fn place_rows(
+    listing: Vec<Entry>,
+    query: &str,
+    found: usize,
+    pick: Option<Pick>,
+    make: Option<Make>,
+) -> Vec<Entry> {
+    let mut rows = Vec::with_capacity(listing.len() + 3);
+    // Above the field, where the picker's Paste row sits, and for the reason
+    // Paste sits there: it is the row that is not about the list at all. The
+    // field keeps the place it has always had — directly over the files — so
+    // Up from the first row of a folder still lands on the search it has
+    // always landed on, and the new row is one further up for somebody who
+    // went looking for it.
+    //
+    // It is also the only row an empty folder has. A column with nothing in it
+    // cannot be stepped into, so before this the first thing in an empty
+    // directory was one somebody had to make from a terminal.
+    if let Some(make) = make {
+        rows.push(Entry::Make(make));
+    }
+    match pick {
+        // A column being walked to *choose* it carries the answer at its head
+        // and no field: the rows are not what the user came for, the folder is
+        // — the same argument the folder picker a file is carried to makes, and
+        // the same shape. See [`crate::transfer`].
+        Some(pick) => rows.push(Entry::Pick(pick)),
+        None => head(&mut rows, Searched::Folder, query, listing.len(), found),
+    }
     rows.extend(listing);
     rows
 }
@@ -1090,7 +1517,27 @@ pub fn carried_media(categories: &mut [Category]) -> Vec<crate::media::Made> {
 pub fn forget_file(categories: &mut [Category], path: &std::path::Path) -> bool {
     let mut dropped = false;
     for category in categories {
-        dropped |= forget_below(&mut category.entries, path);
+        dropped |= forget_below(&mut category.entries, &|at| at == path);
+    }
+    dropped
+}
+
+/// The same for a whole folder that has gone: every row for anything that was
+/// inside it, wherever on the bar it is.
+///
+/// Deleting a folder is the one act in this shell that takes rows off columns
+/// the user was not looking at. `~/Music/Live at Leeds` is twelve songs on the
+/// Music shelf, and a shelf still offering to play them after the folder has
+/// gone to the trash is twelve rows that would each start a player pointed at
+/// nothing.
+///
+/// `starts_with`, which on a `Path` compares whole components rather than
+/// characters: `~/Music/Live` is not a prefix of `~/Music/Liverpool`, and a
+/// rule written on the strings would have taken that folder as well.
+pub fn forget_folder(categories: &mut [Category], folder: &std::path::Path) -> bool {
+    let mut dropped = false;
+    for category in categories {
+        dropped |= forget_below(&mut category.entries, &|at| at.starts_with(folder));
     }
     dropped
 }
@@ -1102,17 +1549,23 @@ pub fn forget_file(categories: &mut [Category], path: &std::path::Path) -> bool 
 /// the folder the explorer is listing — and a deletion that took the row the
 /// user was looking at and left the other would be a shell that had half
 /// understood.
-fn forget_below(entries: &mut Vec<Entry>, path: &std::path::Path) -> bool {
+fn forget_below(entries: &mut Vec<Entry>, gone: &dyn Fn(&std::path::Path) -> bool) -> bool {
     let before = entries.len();
     entries.retain(|row| match row {
-        Entry::Media(file) => file.path != path,
-        Entry::File(file) => file.path != path,
+        Entry::Media(file) => !gone(&file.path),
+        Entry::File(file) => !gone(&file.path),
+        // A game in a console's column is a file on somebody's disk like the
+        // other two, and a bar still offering to play one that has just been
+        // deleted is a bar that has not understood. The column is rebuilt from
+        // the helper's answer a moment later; this is what takes the row off it
+        // in the meantime.
+        Entry::Rom(rom) => !gone(&rom.path),
         _ => true,
     });
     let mut dropped = entries.len() != before;
     for entry in entries {
         if let Entry::Folder(folder) = entry {
-            dropped |= forget_below(&mut folder.entries, path);
+            dropped |= forget_below(&mut folder.entries, gone);
         }
     }
     dropped
@@ -1125,6 +1578,24 @@ fn forget_below(entries: &mut Vec<Entry>, path: &std::path::Path) -> bool {
 /// consequence of an account being signed in, and it goes away again when that
 /// account does.
 const STEAM: (&str, &str, &str) = ("steam", "Steam", crate::icons::CATEGORY_STEAM);
+
+/// The column somebody's own ROM folder hangs in.
+///
+/// Not in [`CATEGORY_TABLE`] either, and for one reason more than Steam's: it
+/// is a consequence of a *package* being installed as well as of a folder
+/// having been chosen, so on most machines this column can never exist at all.
+/// Its mark arrives with that package — see [`crate::retroarch::mark`], which
+/// is the same mark its rows wear.
+fn retroarch_column_id() -> (&'static str, &'static str, &'static str) {
+    ("retroarch", "RetroArch", crate::retroarch::mark())
+}
+
+/// What that column is called on the bar, for the two things outside this
+/// module that have to find it: pressing the RetroArch row takes the display
+/// to it, and so does finishing the setup it asks for.
+pub fn retroarch_column() -> &'static str {
+    retroarch_column_id().0
+}
 
 /// What that column is called on the bar, for the one thing outside this
 /// module that has to find it: pressing the Steam row takes the display to it.
@@ -1287,6 +1758,190 @@ pub fn shelve_steam(categories: &mut Vec<Category>, games: Vec<Entry>) -> Shifte
     shifted
 }
 
+/// Take RetroArch's own `.desktop` entry off the bar.
+///
+/// The same act as [`hide_steam_client`] and for the same reason: two rows
+/// called RetroArch wearing one mark is the bar saying the same thing twice,
+/// and of the two it is the shell's own that leads somewhere — a column of the
+/// user's games, which is what somebody pressing a row called RetroArch on a
+/// games console is after.
+///
+/// Called only on a session that has a RetroArch row of its own to offer,
+/// which is one whose machine has the `lxb-retroarch` package. Without it the
+/// entry stays where the scan filed it and is the only way to RetroArch, which
+/// is exactly right.
+///
+/// `true` when there was one to take.
+pub fn hide_retroarch_client(categories: &mut Vec<Category>) -> bool {
+    let mut taken = false;
+    let mut emptied = Vec::new();
+    for (at, column) in categories.iter_mut().enumerate() {
+        let before = column.entries.len();
+        column.entries.retain(|entry| {
+            // A machine with both the distribution package and the flatpak has
+            // two entries, and both go: which of them would be *used* is the
+            // helper's answer rather than this one — see `lxb-retroarch`'s
+            // `find`, which prefers the native package.
+            let is_retroarch = entry.app().is_some_and(|app| app.owns_window("retroarch"));
+            taken |= is_retroarch;
+            !is_retroarch
+        });
+        if column.entries.len() != before && !column.has_launchable() {
+            emptied.push(at);
+        }
+    }
+    for at in emptied.into_iter().rev() {
+        categories.remove(at);
+    }
+    taken
+}
+
+/// Put the RetroArch row under the Steam row in the Games column, or take it
+/// away.
+///
+/// `comment` is the line under the name, which is the whole of what the row
+/// carries — see [`Emulation`]. `None` takes the row off, which is what a
+/// session whose helper has gone does.
+///
+/// Under Steam and not above it: Steam is the row every session has and this
+/// one is a package, and a row that arrived with an install must not push the
+/// one that was always there down a place. The row is rebuilt rather than
+/// edited, exactly as the Steam row above it is.
+pub fn offer_retroarch(categories: &mut Vec<Category>, comment: Option<String>) -> Shifted {
+    let mut shifted = Shifted::default();
+
+    let standing = categories.iter().position(|column| column.id == GAMES);
+    let at = match (standing, &comment) {
+        (Some(at), _) => at,
+        // Nothing to say and no column to say it in: the ordinary state of a
+        // machine without the package.
+        (None, None) => return shifted,
+        // The offer is enough to earn a column, on the terms the Steam row
+        // earns one: from that row a whole other column is one press away.
+        (None, Some(_)) => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| *own == GAMES)
+                .expect("the Games column is in the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: Vec::new(),
+                },
+            );
+            shifted.added = Some(at);
+            at
+        }
+    };
+
+    let column = &mut categories[at];
+    column
+        .entries
+        .retain(|entry| !matches!(entry, Entry::RetroArch(_)));
+    if let Some(comment) = comment {
+        // Under the Steam row where there is one, and at the head where there
+        // is not — a session started with `--no-steam` has no Steam row, and
+        // this row would then be standing under nothing.
+        let under = usize::from(
+            column
+                .entries
+                .first()
+                .is_some_and(|first| matches!(first, Entry::Steam(_))),
+        );
+        column
+            .entries
+            .insert(under, Entry::RetroArch(Emulation::new(comment)));
+    }
+    shifted
+}
+
+/// Hang somebody's ROM folder in a column of its own, or take the column away.
+///
+/// The same shape as [`shelve_steam`] and for the same reasons; the rows
+/// arrive already in the order they go in, because that order belongs to the
+/// library rather than to the bar — see [`crate::retroarch::RetroArch::rows`].
+pub fn shelve_retroarch(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let (id, title, icon) = retroarch_column_id();
+    let standing = categories.iter().position(|column| column.id == id);
+
+    match (standing, rows.is_empty()) {
+        (None, true) => {}
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = rows,
+        (None, false) => {
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: rows,
+                },
+            );
+            shifted.added = Some(at);
+        }
+    }
+    shifted
+}
+
+/// Whether this row opens a column of a folder chooser.
+///
+/// Which is what the head of the chooser is, and what every folder in it is:
+/// the walk is folders all the way down, and each of them is listed by the same
+/// rules — folders only, with the row that answers the question standing over
+/// them.
+///
+/// What it is for is knowing how far to come back out when the question has
+/// been answered. A column is one of the chooser's when the row it was *opened
+/// from* is one of these, which is the question this answers and the reason it
+/// is asked of a row rather than of a column's contents: the page under
+/// Settings > Games > RetroArch has this row in it and is not part of any walk,
+/// so a shell that asked "does this column contain one" would come back out of
+/// the settings page the row belongs to as well. See `Shell::leave_the_picker`.
+pub fn opens_a_picker(entry: &Entry) -> bool {
+    match entry {
+        Entry::Folder(folder) => folder
+            .place
+            .as_ref()
+            .is_some_and(|place| place.shows().picking().is_some()),
+        _ => false,
+    }
+}
+
+/// Where the row that opens this picker stands, if the column has one.
+///
+/// Looked for rather than counted to, because these rows come and go: the head
+/// of the RetroArch column is the games chooser until somebody has chosen a
+/// folder with games in it, and then it is the first console. A shell that
+/// opened "the row at the top" would open a console the day the setup was
+/// finished.
+///
+/// And by *which* picker, because a column may hold two: the RetroArch column
+/// carries the games folder and, on a machine missing one, a console's BIOS.
+/// They ask different questions and a press meant for one must not open the
+/// other.
+pub fn picker_row_for(entries: &[Entry], about: crate::settings::Picking) -> Option<usize> {
+    entries.iter().position(|entry| match entry {
+        Entry::Folder(folder) => {
+            folder
+                .place
+                .as_ref()
+                .and_then(|place| place.shows().picking())
+                == Some(about)
+        }
+        _ => false,
+    })
+}
+
 /// What putting a column on the bar, or taking one off it, disturbed.
 ///
 /// Never both at once: each of the two functions that returns one of these
@@ -1325,21 +1980,31 @@ fn column_place(categories: &[Category], id: &str) -> usize {
         .unwrap_or(categories.len())
 }
 
-/// How far along the bar a column belongs, in half-steps.
+/// How far along the bar a column belongs, in quarter-steps.
 ///
-/// The table's own order, doubled, so that a column which is not in the table
-/// can sit *between* two that are without either of them having to move.
-/// There is exactly one such column: Steam, which belongs immediately after
-/// Games because that is what it is a library of — a person who has just been
-/// looking at what is installed and steps right lands in what they own.
+/// The table's own order, times four, so that a column which is not in the
+/// table can sit *between* two that are without either of them having to move.
+/// There are two such columns and they are both libraries of games, so they
+/// both belong immediately after Games — a person who has just been looking at
+/// what is installed and steps right lands in what they own. Steam is first of
+/// the two because it is the one every session has; RetroArch is a package a
+/// machine may not have at all, and a column that comes and goes with a
+/// package must not move the one that does not.
+///
+/// Four rather than three because the room is worth having: the next column
+/// that is a consequence of something rather than a place for something has
+/// somewhere to go without this being re-solved.
 fn rank(id: &str) -> Option<usize> {
     if id == STEAM.0 {
         return rank(GAMES).map(|games| games + 1);
     }
+    if id == retroarch_column_id().0 {
+        return rank(GAMES).map(|games| games + 2);
+    }
     CATEGORY_TABLE
         .iter()
         .position(|(own, ..)| *own == id)
-        .map(|place| place * 2)
+        .map(|place| place * 4)
 }
 
 impl App {
@@ -1402,6 +2067,21 @@ impl App {
             })
             .unwrap_or_default();
 
+        // The same list, spelled the same way. `Keywords` is localised like
+        // `Name` is, and the localised copy is the one a user searching in
+        // their own language would find the entry by — so it is the one read,
+        // and the two questions asked of it below are both asked
+        // case-insensitively for that reason.
+        let keywords = localised(&fields, "Keywords")
+            .map(|list| {
+                list.split(';')
+                    .map(str::trim)
+                    .filter(|word| !word.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mime_types = fields
             .get("MimeType")
             .map(|list| {
@@ -1420,6 +2100,7 @@ impl App {
             exec,
             terminal: is_true(fields.get("Terminal")),
             categories,
+            keywords,
             mime_types,
             path: path.to_path_buf(),
             wm_class: fields.get("StartupWMClass").cloned(),
@@ -1427,7 +2108,22 @@ impl App {
     }
 
     /// Which column this app belongs in.
+    ///
+    /// Two questions come before the table, and both are asked first because
+    /// they are *more specific* claims than anything a main category makes. An
+    /// Android application says `X-WayDroid-App` and nothing else a menu
+    /// understands, so left to the table it would fall through to Other — which
+    /// is where they were. And a store says `System` like every other
+    /// administrative tool on the machine, so left to the table it would be
+    /// filed with the disk utilities, which is not what somebody looking for
+    /// somewhere to get software from is after.
     fn category_id(&self) -> &'static str {
+        if self.is_android() {
+            return WAYDROID;
+        }
+        if self.is_store() {
+            return SOFTWARE;
+        }
         for (id, _, _, xdg) in CATEGORY_TABLE {
             if xdg
                 .iter()
@@ -1438,7 +2134,134 @@ impl App {
         }
         "other"
     }
+
+    /// Whether this entry is one Waydroid wrote for an Android application.
+    ///
+    /// One category and nothing else. `X-WayDroid-App` is what Waydroid puts on
+    /// every entry it generates and on its own launcher, it is in the `X-`
+    /// namespace so nothing else on the machine can be using it by accident,
+    /// and it is the only thing those entries have in common — a calculator, a
+    /// browser and a game share no subject, only where they come from.
+    ///
+    /// Waydroid's own launcher is one of them, and belongs here: a row that
+    /// starts the whole Android session standing at the head of the column of
+    /// what that session runs is the same arrangement Steam has in Games.
+    pub fn is_android(&self) -> bool {
+        self.categories
+            .iter()
+            .any(|own| own.eq_ignore_ascii_case(ANDROID_CATEGORY))
+    }
+
+    /// Whether this entry is a store or a software hub.
+    ///
+    /// Two ways to be one, because the registered answer does not cover the
+    /// stores people actually have.
+    ///
+    /// The first is `PackageManager`, which is the XDG additional category for
+    /// exactly this and is what a well-described store says. The spec requires
+    /// it to be paired with `System` or `Settings`, and that pairing is
+    /// enforced here rather than ignored — it is what keeps a game's mod
+    /// manager, which declares `Game;PackageManager`, in Games where somebody
+    /// looking for it would go.
+    ///
+    /// The second is a short list of the stores that do not declare it. Plasma
+    /// Discover says `Qt;KDE;System` and nothing more, and a column that could
+    /// not hold Discover would be a Software column on a Plasma machine with
+    /// nothing in it. The list is matched against the entry's own file name,
+    /// which is the one part of a `.desktop` file that is an identity rather
+    /// than a description — see [`KNOWN_STORES`].
+    pub fn is_store(&self) -> bool {
+        let says = |wanted: &str| {
+            self.categories
+                .iter()
+                .any(|own| own.eq_ignore_ascii_case(wanted))
+        };
+        if says("PackageManager") && (says("System") || says("Settings")) {
+            return true;
+        }
+        let Some(stem) = self.path.file_stem().and_then(|stem| stem.to_str()) else {
+            return false;
+        };
+        KNOWN_STORES
+            .iter()
+            .any(|known| stem.eq_ignore_ascii_case(known))
+    }
+
+    /// Whether this application has asked for its icon to be drawn in the
+    /// shell's own material rather than as the picture the theme holds.
+    ///
+    /// The word is `lxb`, in `Keywords` or in `Categories`, and it is the one
+    /// thing in a `.desktop` file an application can say *to this shell*. What
+    /// it buys is what every mark the shell draws itself gets: the drawing is
+    /// measured into a distance field and the quad shader cuts a bead of water
+    /// to it, so the row wears the same material as the column heading above
+    /// it. See [`crate::icons::shaped`].
+    ///
+    /// Opt-in, and it has to be. What the shader is handed is the *silhouette*
+    /// of the icon and nothing else — a photograph or a full-bleed square logo
+    /// comes out as a rounded slab of glass, which is the right answer only for
+    /// a drawing that was made to be one. An application that says the word has
+    /// said its icon is a shape.
+    ///
+    /// `Categories` as well as `Keywords` because an entry is entitled to say
+    /// it either way and neither spelling is more true than the other. `lxb` is
+    /// not a registered main category, so a file naming it there loses nothing:
+    /// [`Self::category_id`] never matches on it.
+    pub fn wears_shell_material(&self) -> bool {
+        let mark = |word: &String| word.eq_ignore_ascii_case(SHELL_MATERIAL_KEYWORD);
+        self.keywords.iter().any(mark) || self.categories.iter().any(mark)
+    }
 }
+
+/// What Waydroid writes on every entry it generates. See [`App::is_android`].
+const ANDROID_CATEGORY: &str = "X-WayDroid-App";
+
+/// The word an application puts in its `Keywords` or `Categories` to ask for
+/// the shell's own material. See [`App::wears_shell_material`].
+const SHELL_MATERIAL_KEYWORD: &str = "lxb";
+
+/// The stores that do not say `PackageManager`, by the name of their entry.
+///
+/// A list rather than a rule, and it is worth being honest about what that
+/// costs: a store this does not know and that does not declare itself is filed
+/// wherever its categories put it, which on nearly every one of them is System.
+/// That is the state the whole machine was in before this column existed, so
+/// the list can only improve on it — but it is a list, and a machine's package
+/// manager is exactly the sort of thing there is one more of every year.
+///
+/// By file name because that is the one field of a `.desktop` file that
+/// identifies rather than describes: `Name` is localised and changes with the
+/// user's language, `Exec` is a path that differs between a distribution
+/// package and a flatpak, and the file name is the id every other desktop keys
+/// its own overrides off.
+const KNOWN_STORES: &[&str] = &[
+    // Plasma's, under both the name it has now and the one it shipped under.
+    "org.kde.discover",
+    "plasma-discover",
+    // GNOME's, and Ubuntu's and Mint's re-skins of the same idea.
+    "org.gnome.Software",
+    "gnome-software",
+    "snap-store",
+    "io.snapcraft.SnapStore",
+    "ubuntu-software",
+    "mintinstall",
+    // elementary's.
+    "io.elementary.appcenter",
+    // The Flatpak managers that are hubs rather than permission editors.
+    "io.github.flattool.Warehouse",
+    // Arch's two, and Manjaro's spelling of the first.
+    "octopi",
+    "pamac-manager",
+    "org.manjaro.pamac.manager",
+    // Fedora's, and the desktop front end PackageKit ships.
+    "dnfdragora",
+    "yumex",
+    "gpk-application",
+    // Debian's oldest, still installed on a great many machines.
+    "synaptic",
+    // The one that takes them all at once.
+    "bauh",
+];
 
 impl Entry {
     /// What the row is called.
@@ -1452,7 +2275,18 @@ impl Entry {
             Entry::Bar(bar) => &bar.title,
             Entry::Search(search) => search.label(),
             Entry::Steam(_) => "Steam",
+            Entry::RetroArch(_) => "RetroArch",
             Entry::Game(game) => &game.name,
+            Entry::Rom(rom) => &rom.name,
+            Entry::Pick(_) => "Select folder",
+            Entry::Make(_) => "New folder",
+            Entry::Sweep(_) => "Empty trash",
+            Entry::Done(_) => "Done",
+            // What it was called before it was deleted, which is not what it
+            // is filed as: two files of one name are `holiday.mp4` and
+            // `holiday.mp4.2` in `files/`, and a column showing the second one
+            // that would be showing a name the trash invented.
+            Entry::Trashed(item) => &item.name,
             Entry::Facts(facts) => &facts.title,
             Entry::Typed(typed) => &typed.title,
         }
@@ -1474,7 +2308,20 @@ impl Entry {
             Entry::Bar(bar) => bar.comment.as_deref(),
             Entry::Search(search) => Some(&search.note),
             Entry::Steam(service) => Some(&service.comment),
+            Entry::RetroArch(emulation) => Some(&emulation.comment),
             Entry::Game(game) => Some(&game.note),
+            Entry::Rom(rom) => Some(&rom.note),
+            Entry::Pick(pick) => Some(&pick.comment),
+            // Where it will go, said plainly, because the row is a press away
+            // from a keyboard and somebody standing on it has not read a menu.
+            Entry::Make(_) => Some("Make a folder in this one"),
+            Entry::Sweep(sweep) => Some(sweep.note()),
+            Entry::Done(done) => Some(done.note()),
+            // Where it came from and when it went — see
+            // [`crate::trash::Trashed`]. Empty for an entry whose ticket the
+            // shell could not read, which is a row that says nothing rather
+            // than a row that guesses.
+            Entry::Trashed(item) => Some(item.note.as_str()).filter(|note| !note.is_empty()),
             Entry::Facts(facts) => Some(&facts.comment),
             Entry::Typed(typed) => Some(&typed.comment),
         }
@@ -1493,6 +2340,29 @@ impl Entry {
             Entry::Bar(_) => None,
             Entry::Search(search) => Some(search.icon()),
             Entry::Steam(_) | Entry::Game(_) => Some(crate::icons::STEAM),
+            // The mark that arrived with the package, which is the one thing
+            // every row of that column has in common. A machine whose package
+            // is there but whose drawing is not falls back to the pad — see
+            // [`crate::retroarch::mark`].
+            Entry::RetroArch(_) => Some(crate::retroarch::mark()),
+            // Its console's mark, not the emulator's: a shelf of PlayStation
+            // games whose covers have not arrived should still look like
+            // PlayStation games. See [`Rom::glyph`].
+            Entry::Rom(rom) => Some(&rom.glyph),
+            // The folder it would answer with, drawn as a folder: what is
+            // being chosen is the column the row stands over.
+            // The tick and not a folder: every other row in the column it
+            // stands over is a folder, and the one row that is an *answer* has
+            // to look like one. See [`crate::icons::CHOSEN`], which is the mark
+            // every value in force on this bar wears.
+            Entry::Pick(_) => Some(crate::icons::CHOSEN),
+            Entry::Make(_) => Some(crate::icons::NEW_FOLDER),
+            Entry::Sweep(_) => Some(crate::icons::TRASH_EMPTY),
+            Entry::Done(_) => Some(crate::icons::SELECT_MULTIPLE),
+            // Whatever the file's own name says it is, which is the table the
+            // explorer draws a listing with: a song looks like a song in the
+            // trash as well, and a folder looks like a folder.
+            Entry::Trashed(item) => Some(item.glyph()),
             Entry::Facts(facts) => Some(&facts.icon),
             Entry::Typed(typed) => Some(&typed.icon),
         }
@@ -1508,8 +2378,13 @@ impl Entry {
     /// and not about its kind. See [`head_rows`].
     pub fn over_the_list(&self) -> bool {
         match self {
-            Entry::Search(_) => true,
+            Entry::Search(_)
+            | Entry::Pick(_)
+            | Entry::Make(_)
+            | Entry::Sweep(_)
+            | Entry::Done(_) => true,
             Entry::Folder(folder) => folder.over_the_list,
+            Entry::Choice(choice) => choice.over_the_list,
             _ => false,
         }
     }
@@ -1540,6 +2415,21 @@ impl Entry {
         }
     }
 
+    /// And the same column as the list it really is, for the one thing that
+    /// needs to put a row on it or take one off rather than change one.
+    ///
+    /// A `Vec` where [`Entry::entries_mut`] hands back a slice, and the caller
+    /// is the head row a marking stands at the top of a column — see
+    /// [`crate::marks`]. Nothing else in this shell adds a row to a column that
+    /// is already on screen: every other column is built whole and replaced
+    /// whole.
+    pub fn entries_vec_mut(&mut self) -> Option<&mut Vec<Entry>> {
+        match self {
+            Entry::Folder(folder) => Some(&mut folder.entries),
+            _ => None,
+        }
+    }
+
     /// What this row would launch, if launching is what it does.
     pub fn app(&self) -> Option<&App> {
         match self {
@@ -1561,6 +2451,80 @@ impl Entry {
     pub fn service(&self) -> Option<&Service> {
         match self {
             Entry::Steam(service) => Some(service),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the RetroArch row itself.
+    ///
+    /// It carries no state to hand back — see [`Emulation`] — so this answers
+    /// with the row and the caller asks [`crate::retroarch::RetroArch`] what
+    /// pressing it should do.
+    pub fn emulation(&self) -> Option<&Emulation> {
+        match self {
+            Entry::RetroArch(emulation) => Some(emulation),
+            _ => None,
+        }
+    }
+
+    /// The game out of somebody's ROM folder this row is, if it is one.
+    pub fn rom(&self) -> Option<&Rom> {
+        match self {
+            Entry::Rom(rom) => Some(rom),
+            _ => None,
+        }
+    }
+
+    /// The column this row opens, where the row carries it itself.
+    ///
+    /// What reads it is the press that opens a folder chooser: a chooser is a
+    /// row with a [`crate::files::Place`] on it, and which question it is
+    /// asking is written there rather than anywhere the walk can reach.
+    pub fn folder(&self) -> Option<&Folder> {
+        match self {
+            Entry::Folder(folder) => Some(folder),
+            _ => None,
+        }
+    }
+
+    /// The folder this row would answer a picker with, if it is that row.
+    pub fn pick(&self) -> Option<&Pick> {
+        match self {
+            Entry::Pick(pick) => Some(pick),
+            _ => None,
+        }
+    }
+
+    /// The folder a new one would be made in, if this is the row that makes
+    /// one.
+    pub fn make(&self) -> Option<&Make> {
+        match self {
+            Entry::Make(make) => Some(make),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the row that empties the trash, and how much it would
+    /// destroy.
+    pub fn sweep(&self) -> Option<&Sweep> {
+        match self {
+            Entry::Sweep(sweep) => Some(sweep),
+            _ => None,
+        }
+    }
+
+    /// The row that ends a marking, if this is it.
+    pub fn done(&self) -> Option<&Done> {
+        match self {
+            Entry::Done(done) => Some(done),
+            _ => None,
+        }
+    }
+
+    /// The trashed thing this row stands for, if it stands for one.
+    pub fn trashed(&self) -> Option<&crate::trash::Trashed> {
+        match self {
+            Entry::Trashed(item) => Some(item),
             _ => None,
         }
     }
@@ -1604,8 +2568,31 @@ impl Entry {
         // column is separately exempt from being dropped; see `offer_steam`.
         matches!(
             self,
-            Entry::App(_) | Entry::Media(_) | Entry::File(_) | Entry::Game(_)
+            Entry::App(_) | Entry::Media(_) | Entry::File(_) | Entry::Game(_) | Entry::Rom(_)
         )
+    }
+
+    /// The picture this row wears instead of its glyph — see
+    /// [`Folder::portrait`].
+    ///
+    /// Asked of every row rather than only of folders, because the place that
+    /// draws it is asking one question about a whole column: is there a picture
+    /// to put in the round hole where a mark would be. A file in the explorer
+    /// answers it with its own thumbnail, and an account answers it with a
+    /// photograph of the person.
+    pub fn portrait(&self) -> Option<&std::path::Path> {
+        match self {
+            Entry::Folder(folder) => folder.portrait.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Which account's form this row opens — see [`Folder::person`].
+    pub fn person(&self) -> Option<crate::users::Whose> {
+        match self {
+            Entry::Folder(folder) => folder.person,
+            _ => None,
+        }
     }
 
     /// The colour this row stands for — see [`Choice::swatch`].
@@ -1613,6 +2600,15 @@ impl Entry {
         match self {
             Entry::Choice(choice) => choice.swatch,
             Entry::Bar(bar) => bar.swatch,
+            _ => None,
+        }
+    }
+
+    /// The material this row stands for, if it stands for one: see
+    /// [`Choice::material`].
+    pub fn material(&self) -> Option<Style> {
+        match self {
+            Entry::Choice(choice) => choice.material,
             _ => None,
         }
     }
@@ -1735,6 +2731,15 @@ impl Category {
     ///
     /// Only ever seen in the shell's own column, since a scanned one with no
     /// applications in it is dropped rather than drawn.
+    /// The column with its rows left behind. See [`Column`].
+    pub fn named(&self) -> Column {
+        Column {
+            id: self.id,
+            title: self.title,
+            icon: self.icon,
+        }
+    }
+
     pub fn empty_note(&self) -> &'static str {
         if self.id == SHELL_SETTINGS.0 {
             "LineXinBar's own settings will live here"
@@ -1873,14 +2878,6 @@ pub fn scan() -> Vec<Category> {
 /// Split from [`scan`] so the arrangement can be exercised without a
 /// filesystem to arrange.
 fn assemble(apps: Vec<App>) -> Vec<Category> {
-    let (id, title, icon) = SHELL_SETTINGS;
-    let shell_settings = Category {
-        id,
-        title,
-        icon,
-        entries: crate::settings::column(),
-    };
-
     let mut sorted: Vec<Vec<App>> = CATEGORY_TABLE.iter().map(|_| Vec::new()).collect();
     for app in apps {
         let id = app.category_id();
@@ -1920,7 +2917,25 @@ fn assemble(apps: Vec<App>) -> Vec<Category> {
     // somebody has walked down to a file, which is exactly the state a column
     // dropped here would never let them reach.
     categories.retain(|column| column.id == SYSTEM || column.has_launchable());
-    categories.insert(0, shell_settings);
+
+    // Last, because one row of it is a list of the columns there are — see
+    // [`crate::settings::column`] — and until the retain above has run there is
+    // no answer to that. The bar it is shown is the scanned columns and its own
+    // place at the head of them, which is every column a machine has before an
+    // account is signed in or a package puts one up; those arrive later and
+    // rebuild this column when they do.
+    let (id, title, icon) = SHELL_SETTINGS;
+    let mut bar = vec![Column { id, title, icon }];
+    bar.extend(categories.iter().map(Category::named));
+    categories.insert(
+        0,
+        Category {
+            id,
+            title,
+            icon,
+            entries: crate::settings::column(&bar),
+        },
+    );
     categories
 }
 
@@ -2003,6 +3018,177 @@ mod tests {
 
     fn column<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category> {
         categories.iter().find(|column| column.id == id)
+    }
+
+    // --- Software and Waydroid ----------------------------------------------
+
+    /// An entry, as a machine really writes one.
+    fn entry(file: &str, body: &str) -> App {
+        App::parse(
+            &format!("[Desktop Entry]\nType=Application\n{body}"),
+            &Path::new("/usr/share/applications").join(file),
+        )
+        .unwrap_or_else(|| panic!("{file} should parse"))
+    }
+
+    /// The stores and the software hubs go in Software, whether or not they say
+    /// the word the specification has for it.
+    ///
+    /// Discover is the case the known-store list exists for: it declares
+    /// `Qt;KDE;System` and nothing else, so a rule that only read
+    /// `PackageManager` would leave Plasma's own store filed with the disk
+    /// utilities and the Software column on a Plasma machine empty.
+    #[test]
+    fn a_store_is_filed_under_software_however_it_describes_itself() {
+        let declared = entry(
+            "distribumpy.desktop",
+            "Name=Software Hub\nExec=distribumpy\nCategories=System;PackageManager;\n",
+        );
+        assert_eq!(declared.category_id(), SOFTWARE);
+
+        let known = entry(
+            "org.kde.discover.desktop",
+            "Name=Discover\nExec=plasma-discover\nCategories=Qt;KDE;System;\n",
+        );
+        assert_eq!(known.category_id(), SOFTWARE, "and it is not a system tool");
+
+        // Case, because a `.desktop` file is written by hand and the
+        // specification's own names are upper case by convention rather than by
+        // rule.
+        let shouted = entry(
+            "bauh.desktop",
+            "Name=bauh\nExec=bauh\nCategories=system;packagemanager;\n",
+        );
+        assert_eq!(shouted.category_id(), SOFTWARE);
+    }
+
+    /// A mod manager for one game is not a software hub, and the specification
+    /// is what says so: `PackageManager` has to be paired with `System` or
+    /// `Settings`, and CKAN pairs it with `Game`.
+    ///
+    /// Worth a test of its own because the loose reading of that rule is the
+    /// obvious one, and it puts a Kerbal Space Program tool on the page
+    /// somebody opens looking for their distribution's store.
+    #[test]
+    fn a_games_own_package_manager_stays_in_games() {
+        let ckan = entry(
+            "ckan.desktop",
+            "Name=CKAN\nExec=ckan\nCategories=Game;PackageManager;\n",
+        );
+        assert_eq!(ckan.category_id(), GAMES);
+    }
+
+    /// Waydroid's entries carry one category nothing else on the machine uses,
+    /// and no main category at all — so before this column they fell through to
+    /// Other, which is where they were found.
+    ///
+    /// Waydroid's own launcher goes with them. It says `X-WayDroid-App;Utility`
+    /// and would otherwise be filed under Utilities, one column away from
+    /// everything it runs.
+    #[test]
+    fn every_entry_waydroid_wrote_is_in_the_waydroid_column() {
+        let android = entry(
+            "waydroid.com.termux.desktop",
+            "Name=Termux\nExec=waydroid app launch com.termux\nCategories=X-WayDroid-App;\n",
+        );
+        assert_eq!(android.category_id(), WAYDROID);
+
+        let launcher = entry(
+            "Waydroid.desktop",
+            "Name=Waydroid\nExec=waydroid\nCategories=X-WayDroid-App;Utility;\n",
+        );
+        assert_eq!(
+            launcher.category_id(),
+            WAYDROID,
+            "the way in belongs with what it leads to"
+        );
+
+        // And a name that merely starts like Waydroid's is not Waydroid: the
+        // category is what says so, not the file.
+        let helper = entry(
+            "com.jaoushingan.WaydroidHelper.desktop",
+            "Name=Waydroid Helper\nExec=waydroid-helper\nCategories=Utility;\n",
+        );
+        assert_eq!(helper.category_id(), "utilities");
+    }
+
+    /// The entries Waydroid hides stay hidden. Nine of the seventeen on the
+    /// machine this was written on carry `NoDisplay=true` — Android's own
+    /// settings, its gallery, its clock — and they were hidden by the system
+    /// that generated them rather than by this shell.
+    #[test]
+    fn a_hidden_android_entry_is_still_hidden() {
+        assert!(App::parse(
+            "[Desktop Entry]\nType=Application\nName=Settings\n\
+             Exec=waydroid app launch com.android.settings\n\
+             Categories=X-WayDroid-App;\nNoDisplay=true\n",
+            Path::new("/tmp/waydroid.com.android.settings.desktop"),
+        )
+        .is_none());
+    }
+
+    /// The two new columns stand where they were asked to stand: Software after
+    /// the libraries of games, and Waydroid at the end in front of Other.
+    ///
+    /// Asserted through [`rank`] rather than by building a bar, because that is
+    /// the one place the order is written and every column that comes and goes
+    /// is placed by it — see [`column_place`].
+    #[test]
+    fn the_two_new_columns_stand_where_they_belong() {
+        let at = |id: &str| rank(id).unwrap_or_else(|| panic!("{id} is placeable"));
+        assert!(at(GAMES) < at(STEAM.0));
+        assert!(at(STEAM.0) < at(retroarch_column_id().0));
+        assert!(
+            at(retroarch_column_id().0) < at(SOFTWARE),
+            "Software comes after everything that is a library of games"
+        );
+        assert!(at(SOFTWARE) < at("development"));
+        assert!(at("utilities") < at(WAYDROID));
+        assert!(at(WAYDROID) < at("other"), "and Other is still last");
+
+        // And the same order, read off the whole set the Startup category page
+        // is built from.
+        let names: Vec<&str> = every_column().iter().map(|column| column.id).collect();
+        let place = |id: &str| {
+            names
+                .iter()
+                .position(|had| *had == id)
+                .unwrap_or_else(|| panic!("{id} is a column"))
+        };
+        assert_eq!(place(SHELL_SETTINGS.0), 0, "the shell's own leads the bar");
+        assert!(place(GAMES) < place(SOFTWARE));
+        assert!(place(SOFTWARE) < place(WAYDROID));
+        assert_eq!(place("other"), names.len() - 1);
+    }
+
+    /// An application can ask for its icon to be drawn in the shell's own
+    /// material, in either of the two fields it is entitled to say it in.
+    #[test]
+    fn an_application_can_ask_for_the_shells_material() {
+        let asked = entry(
+            "distribumpy.desktop",
+            "Name=Software Hub\nExec=distribumpy\nCategories=System;PackageManager;\n\
+             Keywords=flatpak;store;lxb;\n",
+        );
+        assert!(asked.wears_shell_material());
+
+        let said_it_the_other_way = entry(
+            "thing.desktop",
+            "Name=Thing\nExec=thing\nCategories=Utility;LXB;\n",
+        );
+        assert!(said_it_the_other_way.wears_shell_material());
+        assert_eq!(
+            said_it_the_other_way.category_id(),
+            "utilities",
+            "and the word is not a category anything is filed under"
+        );
+
+        // A word that merely contains it is not the word.
+        let did_not = entry(
+            "other.desktop",
+            "Name=Other\nExec=other\nCategories=Utility;\nKeywords=lxbar;toolbox;\n",
+        );
+        assert!(!did_not.wears_shell_material());
     }
 
     /// The Steam row goes at the head of the Games column, and says which
@@ -2161,6 +3347,289 @@ mod tests {
         assert!(
             column(&categories, SHELL_SETTINGS.0).is_some(),
             "the shell's own column has nothing launchable in it and was dropped"
+        );
+    }
+
+    // --- RetroArch ----------------------------------------------------------
+
+    /// One game out of somebody's own folder, as the shell holds it.
+    fn rom(name: &str, startable: bool) -> Entry {
+        Entry::Rom(Rom {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/roms/psp/{name}.iso")),
+            console: "PlayStation Portable".to_string(),
+            note: "PlayStation Portable".to_string(),
+            wanted: vec!["ppsspp".to_string()],
+            boxart: None,
+            snap: None,
+            own_cover: false,
+            own_background: false,
+            shape: None,
+            glyph: "lxb:console-psp".to_string(),
+            start: startable.then(|| {
+                vec![
+                    "retroarch".to_string(),
+                    "-L".to_string(),
+                    "/usr/lib/libretro/ppsspp_libretro.so".to_string(),
+                    format!("/roms/psp/{name}.iso"),
+                ]
+            }),
+        })
+    }
+
+    /// A game deleted off the disk goes from the bar at once, exactly as a
+    /// photograph does.
+    ///
+    /// The console's column is rebuilt from the helper's answer a moment later,
+    /// so this is what takes the row off in the meantime — and a bar still
+    /// offering to play a file the user has just watched themselves delete is a
+    /// bar that has not understood.
+    #[test]
+    fn a_deleted_game_leaves_the_bar_with_its_file() {
+        let mut categories = catalogue();
+        offer_retroarch(&mut categories, Some("2 games".to_string()));
+        shelve_retroarch(&mut categories, vec![rom("t8", true), rom("smb", true)]);
+        let gone = std::path::PathBuf::from("/roms/psp/t8.iso");
+        assert!(forget_file(&mut categories, &gone));
+        let left: Vec<&str> = categories
+            .iter()
+            .flat_map(|column| &column.entries)
+            .filter_map(Entry::rom)
+            .map(|rom| rom.name.as_str())
+            .collect();
+        assert_eq!(left, ["smb"]);
+        // And a second deletion of the same file changes nothing, which is what
+        // says the walk is looking at the path rather than at a row number.
+        assert!(!forget_file(&mut categories, &gone));
+    }
+
+    /// The RetroArch row goes *under* the Steam row, not above it: Steam is the
+    /// row every session has and this one arrived with a package.
+    #[test]
+    fn the_retroarch_row_stands_under_the_steam_row() {
+        let mut categories = catalogue();
+        offer_steam(&mut categories, None);
+        assert_eq!(
+            offer_retroarch(&mut categories, Some("Looking for RetroArch".to_string())),
+            Shifted::default(),
+            "the Games column was already there"
+        );
+
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["Steam", "RetroArch", "A Puzzle"]);
+        assert_eq!(
+            games.entries[1].comment(),
+            Some("Looking for RetroArch"),
+            "the row carries what it was given and nothing else"
+        );
+
+        // Rebuilt rather than added to, so a session that hears twice from its
+        // helper has one row and not two.
+        offer_retroarch(&mut categories, Some("Not installed".to_string()));
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["Steam", "RetroArch", "A Puzzle"]);
+
+        // And nothing to say takes it off again, which is what a session whose
+        // package has gone does.
+        offer_retroarch(&mut categories, None);
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["Steam", "A Puzzle"]);
+    }
+
+    /// A session started with `--no-steam` has no Steam row for this one to
+    /// stand under, and it goes at the head rather than under nothing.
+    #[test]
+    fn without_a_steam_row_it_stands_at_the_head() {
+        let mut categories = catalogue();
+        offer_retroarch(&mut categories, Some("Looking for RetroArch".to_string()));
+
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["RetroArch", "A Puzzle"]);
+    }
+
+    /// The column lands after Steam's and before whatever came after Games,
+    /// which is the whole of what [`rank`] had to be re-solved for.
+    #[test]
+    fn the_column_lands_after_steam() {
+        let mut categories = catalogue();
+        offer_steam(&mut categories, Some("someone".to_string()));
+        shelve_steam(&mut categories, vec![game(1, "A Game", true)]);
+        let shifted = shelve_retroarch(&mut categories, vec![rom("t8", true)]);
+
+        let at = categories
+            .iter()
+            .position(|column| column.id == retroarch_column())
+            .expect("the RetroArch column");
+        assert_eq!(shifted.added, Some(at));
+        assert_eq!(
+            categories[at - 1].id,
+            STEAM.0,
+            "it did not land after Steam"
+        );
+        assert_eq!(categories[at - 2].id, GAMES, "nor Steam after Games");
+        assert!(
+            categories[at + 1..]
+                .iter()
+                .any(|column| column.id == "development"),
+            "everything the table puts after Games is still after it"
+        );
+
+        // And it goes away again with what was in it, like every other column
+        // that is a consequence of something.
+        let shifted = shelve_retroarch(&mut categories, Vec::new());
+        assert_eq!(shifted.removed, Some(at));
+        assert!(categories
+            .iter()
+            .all(|column| column.id != retroarch_column()));
+    }
+
+    /// A column of games is a column of covers whether or not there is a core
+    /// to play them with, and a game that cannot be started is still the user's
+    /// game.
+    #[test]
+    fn a_game_with_no_core_is_still_a_row() {
+        let mut categories = catalogue();
+        shelve_retroarch(&mut categories, vec![rom("t8", false)]);
+        let games = column(&categories, retroarch_column()).expect("the column");
+        let row = &games.entries[0];
+        assert_eq!(row.title(), "t8");
+        assert!(row.starts_something(), "it is a game, whatever runs it");
+        assert!(
+            row.rom().expect("a game").start.is_none(),
+            "and there is nothing to start it with"
+        );
+    }
+
+    /// RetroArch's own entry comes off the bar so that two rows do not say the
+    /// same thing, and the shell's own row stands in its place.
+    #[test]
+    fn retroarchs_own_entry_comes_off_the_bar() {
+        let mut categories = assemble(vec![
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=RetroArch\nExec=/usr/bin/flatpak run org.libretro.RetroArch\nStartupWMClass=retroarch\nCategories=Game;Emulator;\n",
+                Path::new("/usr/share/applications/org.libretro.RetroArch.desktop"),
+            )
+            .expect("a well-formed entry"),
+            App::parse(
+                "[Desktop Entry]\nType=Application\nName=A Puzzle\nExec=puzzle\nCategories=Game;\n",
+                Path::new("/usr/share/applications/puzzle.desktop"),
+            )
+            .expect("a well-formed entry"),
+        ]);
+
+        assert!(hide_retroarch_client(&mut categories), "its own entry");
+        let games = column(&categories, GAMES).expect("the Games column");
+        let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+        assert_eq!(rows, vec!["A Puzzle"], "its own entry is still on the bar");
+
+        // A machine without RetroArch has nothing to take, and says so rather
+        // than emptying a column.
+        assert!(!hide_retroarch_client(&mut categories));
+        assert!(column(&categories, GAMES).is_some());
+    }
+
+    /// Every row a folder chooser's column was opened from says so, which is
+    /// how far the cursor comes back out when the question has been answered.
+    #[test]
+    fn a_pickers_own_columns_are_the_ones_it_comes_back_out_of() {
+        let picking = crate::files::Shows::Folders(crate::settings::Picking::RomsFolder);
+        let walking = |shows| {
+            Entry::Folder(Folder {
+                title: "Home".to_string(),
+                comment: None,
+                icon: None,
+                entries: Vec::new(),
+                place: Some(crate::files::Place::Directory(
+                    PathBuf::from("/home"),
+                    shows,
+                )),
+                chosen: false,
+                over_the_list: false,
+                person: None,
+                portrait: None,
+            })
+        };
+
+        // A folder of the walk, which is what every column of the chooser but
+        // its first was opened from.
+        assert!(opens_a_picker(&walking(picking)));
+        // Its head, which is what the first was opened from: the same row,
+        // standing under Settings and over the RetroArch column.
+        assert!(opens_a_picker(&crate::retroarch::folder_row()));
+        // The file explorer, which is the same walk for another reason and is
+        // not one of these.
+        assert!(!opens_a_picker(&walking(crate::files::Shows::Everything)));
+        // And a page that merely *holds* the row, which is where the cursor
+        // has to stop: Settings > Games > RetroArch is not a column of
+        // somebody's disk.
+        let page = Entry::Folder(Folder {
+            title: "RetroArch".to_string(),
+            comment: None,
+            icon: None,
+            entries: vec![crate::retroarch::folder_row()],
+            place: None,
+            chosen: false,
+            over_the_list: false,
+            person: None,
+            portrait: None,
+        });
+        assert!(!opens_a_picker(&page));
+        let games = crate::settings::Picking::RomsFolder;
+        assert_eq!(picker_row_for(std::slice::from_ref(&page), games), None);
+        assert_eq!(
+            picker_row_for(page.entries().expect("its rows"), games),
+            Some(0)
+        );
+        assert_eq!(
+            picker_row_for(
+                page.entries().expect("its rows"),
+                crate::settings::Picking::Firmware
+            ),
+            None,
+            "and a press meant for the BIOS does not open the games folder"
+        );
+    }
+
+    /// The row at the head of a folder picker stands *over* the column, so the
+    /// column opens on the folder below it and a press of A out of habit does
+    /// not answer a question nobody has read.
+    #[test]
+    fn the_picker_never_opens_on_the_row_that_answers_it() {
+        let rows = place_rows(
+            vec![Entry::Folder(Folder {
+                title: "psp".to_string(),
+                comment: None,
+                icon: None,
+                entries: Vec::new(),
+                place: None,
+                chosen: false,
+                over_the_list: false,
+                person: None,
+                portrait: None,
+            })],
+            "",
+            1,
+            Some(Pick {
+                at: PathBuf::from("/home/someone/ROMs"),
+                about: crate::settings::Picking::RomsFolder,
+                comment: "Look for games in this folder".to_string(),
+            }),
+            // And no New folder row either, for the same reason there is no
+            // field: a walk that is choosing a folder is not one where a brand
+            // new empty one could be the answer. See
+            // [`crate::files::can_make_a_folder`].
+            None,
+        );
+        assert_eq!(rows[0].title(), "Select folder");
+        assert!(rows[0].over_the_list(), "it stands over the list");
+        assert_eq!(head_rows(&rows), 1, "so the column opens below it");
+        assert!(
+            rows[1].search().is_none() && rows[0].search().is_none(),
+            "and there is no field: the rows are not what the user came for"
         );
     }
 
@@ -2499,6 +3968,8 @@ mod tests {
                 place: None,
                 chosen: false,
                 over_the_list: false,
+                person: None,
+                portrait: None,
             })],
         };
         assert!(buried.has_launchable());
@@ -2513,6 +3984,8 @@ mod tests {
                 place: None,
                 chosen: false,
                 over_the_list: false,
+                person: None,
+                portrait: None,
             })],
             ..buried.clone()
         };

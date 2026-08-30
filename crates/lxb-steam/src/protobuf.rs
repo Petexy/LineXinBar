@@ -98,6 +98,24 @@ impl Writer {
         self.varint(field, u64::from(value))
     }
 
+    /// A `false` that goes on the wire, rather than being left out of it.
+    ///
+    /// Not the same thing as [`bool`](Self::bool), and the difference is a
+    /// setting that silently refuses to change. Proto3 reads an absent field
+    /// and a default one as the same, which is why every writer above drops a
+    /// zero — but a message whose fields have *explicit presence* does not,
+    /// and Valve's client settings are one: a field left out means "do not
+    /// touch this setting", so a `false` written the ordinary way is an empty
+    /// message asking the client to change nothing at all.
+    ///
+    /// Only for a field known to be declared that way. Everything else in this
+    /// crate is proto3 and wants [`bool`](Self::bool).
+    pub fn bool_even_when_false(&mut self, field: u32, value: bool) -> &mut Self {
+        self.tag(field, Shape::Varint);
+        put_varint(&mut self.bytes, u64::from(value));
+        self
+    }
+
     /// A number that is always eight bytes wide. Steam spells a SteamID this
     /// way in some messages and as a varint in others; which one a field is is
     /// part of that message's definition and not a choice.
@@ -337,6 +355,50 @@ pub fn every(message: &Message, number: u32) -> Vec<&Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `false` that has to survive being written, and the ordinary one that
+    /// deliberately does not.
+    ///
+    /// The bytes are spelled out because they were verified against a running
+    /// client rather than derived here: field `14002` — Valve's "Guide button
+    /// focuses Steam" — sent as `90 eb 06 00` turns that setting off, and the
+    /// setting reads back `false` afterwards. Sent the ordinary way it is no
+    /// bytes at all, the client is asked to change nothing, and the guide
+    /// button goes on opening Big Picture.
+    #[test]
+    fn a_false_can_be_written_or_left_out_and_the_two_are_not_the_same() {
+        const GUIDE_BUTTON_FOCUSES_STEAM: u32 = 14002;
+
+        let mut explicit = Writer::new();
+        explicit.bool_even_when_false(GUIDE_BUTTON_FOCUSES_STEAM, false);
+        let bytes = explicit.finish();
+        assert_eq!(bytes, [0x90, 0xeb, 0x06, 0x00], "the tag, then the false");
+        assert_eq!(crate::base64::encode(&bytes), "kOsGAA==");
+        assert_eq!(
+            read(&bytes)
+                .iter()
+                .find(|(number, _)| *number == GUIDE_BUTTON_FOCUSES_STEAM)
+                .and_then(|(_, value)| value.as_bool()),
+            Some(false),
+            "and it reads back as the false it is"
+        );
+
+        // The same field, written the way every other message here writes one.
+        let mut proto3 = Writer::new();
+        proto3.bool(GUIDE_BUTTON_FOCUSES_STEAM, false);
+        assert!(
+            proto3.finish().is_empty(),
+            "a proto3 false is an empty message, which asks for nothing"
+        );
+
+        // A `true` is the same either way, which is why only the `false` needed
+        // a second method.
+        let mut one = Writer::new();
+        one.bool(GUIDE_BUTTON_FOCUSES_STEAM, true);
+        let mut other = Writer::new();
+        other.bool_even_when_false(GUIDE_BUTTON_FOCUSES_STEAM, true);
+        assert_eq!(one.finish(), other.finish());
+    }
 
     /// The shapes this crate actually sends, written and read back.
     #[test]

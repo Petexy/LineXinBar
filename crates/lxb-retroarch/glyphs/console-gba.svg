@@ -1,0 +1,43 @@
+<!--
+  The Game Boy Advance (AGB-001): the brick turned on its side, 144.5 by 82 mm,
+  with the shoulders wrapped right round the ends.
+
+  The screen is the correction worth naming.  It was drawn square, and the
+  Advance's is not: 240 by 160 pixels behind a bezel half again as wide as it is
+  tall, which is the whole reason the machine turned sideways in the first
+  place.  A and B sit on a slant with A above and to the right, as they do on
+  every Game Boy.
+
+  The two nicks in the top edge are L and R.  This machine and the Game Gear are
+  within a hair of the same proportions and both hold a screen with a cross
+  beside it, so the shoulder buttons are doing real work here: nothing else in
+  this column is broken along its top edge.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="2.4" y="8.3" width="27.2" height="15.4" rx="5.6"/>
+    <g id="shoulders">
+      <rect x="4.2" y="6.6" width="4.6" height="2.6" rx="0.8"/>
+      <rect x="23.2" y="6.6" width="4.6" height="2.6" rx="0.8"/>
+    </g>
+    <rect id="screen" x="9.8" y="11.7" width="12.4" height="8.6" rx="0.7"/>
+    <path id="cross" d="M5.5 13.3h2.2v1.6h1.6v2.2h-1.6v1.6h-2.2v-1.6H3.9v-2.2h1.6z"/>
+    <g id="pips"><circle cx="24.6" cy="16.8" r="1.3"/><circle cx="26.7" cy="15.6" r="1.3"/></g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#shoulders" fill="#000000"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 [package]
 name = "lxb-portal"
-description = "LineXinBar's xdg-desktop-portal backend: screen sharing and screenshots for applications"
+description = "LineXinBar's xdg-desktop-portal backend: screen sharing and file choosing for applications"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

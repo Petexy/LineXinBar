@@ -45,6 +45,43 @@ pub const NOTIFICATIONS: &str = "lxb:notifications";
 /// branded Back, View, Share, Create or `−` depending on whose pad it is.
 pub const PAD_SELECT: &str = "lxb:pad-select";
 pub const PAD_WEST: &str = "lxb:pad-west";
+/// The three more a panel names when it says what its buttons do: the two face
+/// buttons that mean Accept and Back on every layout, and Start.
+///
+/// By position for the reason above, and Start by *where it sits on the pad*
+/// for the same reason once more removed — it is a bar, a line, three lines or
+/// a house depending on whose pad it is, and only its place is common to all.
+pub const PAD_SOUTH: &str = "lxb:pad-south";
+pub const PAD_EAST: &str = "lxb:pad-east";
+pub const PAD_START: &str = "lxb:pad-start";
+/// And the one that raises a menu — the top of the cluster, `Y` where a pad has
+/// letters.
+pub const PAD_NORTH: &str = "lxb:pad-north";
+/// And the one in the middle of the pad, which is the way back to this shell
+/// from anything running.
+///
+/// By where it sits once more, and this one has no other choice: it is a
+/// sphere, a house, a logo, an oval or a letter depending on whose pad it is,
+/// and not one of those is common to two of them.
+pub const PAD_GUIDE: &str = "lxb:pad-guide";
+/// The right mouse button, which is what raises a menu for anybody using a
+/// pointer. Not a keyboard key: no key printed on a keyboard says "menu" to as
+/// many people as the right button does.
+pub const MOUSE_RIGHT: &str = "lxb:mouse-right";
+/// And the same three said to somebody with their hands on a keyboard instead.
+///
+/// A cap rather than a letter, because the shell has no text to draw inside one
+/// and three characters in a cap at the size a hint is drawn are three smudges.
+/// The family is a rounded square where the pad's is a circle, which is what
+/// says which kind of thing is being named — the two are never on screen
+/// together, so the shape has to carry it alone.
+pub const KEY_ESCAPE: &str = "lxb:key-escape";
+pub const KEY_SPACE: &str = "lxb:key-space";
+pub const KEY_ENTER: &str = "lxb:key-enter";
+/// And the key that is this shell's guide button on a keyboard, drawn with the
+/// diamond a Unix keyboard prints on it. The one mark for that key that is not
+/// somebody's logo; see key-super.svg.
+pub const KEY_SUPER: &str = "lxb:key-super";
 /// The four arrow keys of the on-screen keyboard.
 ///
 /// Drawn rather than lettered because Roboto — which the shell bundles so it
@@ -82,9 +119,16 @@ pub const CATEGORY_GRAPHICS: &str = "lxb:category-graphics";
 pub const CATEGORY_INTERNET: &str = "lxb:category-internet";
 pub const CATEGORY_OFFICE: &str = "lxb:category-office";
 pub const CATEGORY_GAMES: &str = "lxb:category-games";
+/// Where the machine gets more of itself from, and — at the other end of the
+/// row — the other machine it can run inside itself. The two columns added
+/// after this row was first drawn, and both drawn to the same standard for the
+/// reason above: the row is the map, and a map with two theme icons in the
+/// middle of it is eleven objects under one lamp and two under somebody else's.
+pub const CATEGORY_SOFTWARE: &str = "lxb:category-software";
 pub const CATEGORY_DEVELOPMENT: &str = "lxb:category-development";
 pub const CATEGORY_EDUCATION: &str = "lxb:category-education";
 pub const CATEGORY_UTILITIES: &str = "lxb:category-utilities";
+pub const CATEGORY_WAYDROID: &str = "lxb:category-waydroid";
 pub const CATEGORY_OTHER: &str = "lxb:category-other";
 
 /// The subcategories a column carries, which are rows inside a column rather
@@ -344,11 +388,116 @@ pub const SETTING_ROTATION_270: &str = "lxb:setting-rotation-270";
 pub const SETTING_SYSTEM: &str = "lxb:setting-system";
 pub const SETTING_SCALE: &str = "lxb:setting-scale";
 
+/// Settings > Users: the accounts this machine is for, and what makes another
+/// one.
+///
+/// Three marks rather than one, and the division is the whole of what makes the
+/// page readable. [`SETTING_USERS`] is *two* figures, because the row leads to a
+/// set; [`SETTING_PERSON`] is one, because a row on that page is one account.
+/// The page would be unreadable if the two were the same drawing: every row
+/// under it either wears a photograph of somebody or wears this, and a fallback
+/// that matched the heading above it would say only "a user" on a page where
+/// every row is one.
+///
+/// [`SETTING_PERSON`] is also what Account type wears, on both forms. That is
+/// the same drawing meaning the same thing — what kind of person this account is
+/// — rather than a reuse: the values inside it are a set of alternatives and
+/// wear the bead [`SWATCH`], like every other set in the tree.
+///
+/// [`SETTING_ADD_USER`] is that figure with a plus beside it, at the foot of the
+/// column. Beside rather than cut into it: an opening in this set is a *control*
+/// taken out of a bead — the pad's buttons, the padlock's keyhole — and a
+/// person with a plus-shaped hole in them reads as something removed.
+pub const SETTING_USERS: &str = "lxb:setting-users";
+pub const SETTING_PERSON: &str = "lxb:setting-person";
+pub const SETTING_ADD_USER: &str = "lxb:setting-add-user";
+/// The rows a Users form is made of.
+///
+/// Six marks for seven rows, and the division is what makes a form legible at a
+/// glance: three of its rows are typed into, and before this they wore
+/// [`SETTING_TYPED`] — one drawing three times over, so the page read as a
+/// stack of identical wells and the only thing telling them apart was the word
+/// beside each.
+///
+/// [`SETTING_NAME`] is a name card, [`SETTING_USERNAME`] the at sign every
+/// machine already means "the name you log in as" by, and [`SETTING_PASSWORD`]
+/// a key — which both password rows share, because they are one question asked
+/// twice.
+///
+/// The key is deliberately not [`AUTHENTICATE`]'s padlock. A padlock is the
+/// thing that is *locked*, and it is what the panel polkit raises wears; a key
+/// is what somebody types to get past one. Two marks for two moments.
+///
+/// The row that hands the form over wears [`CHOSEN`], which is the shell's one
+/// tick. It wore the padlock once, and that read as the obstacle rather than as
+/// agreeing to it; then it wore a bare tick of its own, which was a second
+/// drawing for a job this set already had a drawing for. `CHOSEN` is not only
+/// the badge on a value in force — it is what [`crate::apps::Entry::Pick`]
+/// wears, the row pressed to commit a picker, which is the same act as the row
+/// at the foot of a form. One tick, both places.
+///
+/// [`SETTING_AVATAR`] is a face in a picture frame rather than
+/// [`CATEGORY_IMAGES`]'s mountain and sun. That one is the mark of *a picture*,
+/// which is right for a wallpaper; an avatar is a picture of a *person*, and
+/// which of the two it is is the whole question the row asks.
+///
+/// [`SETTING_ACCOUNT_TYPE`] is a shield. That row used to wear
+/// [`SETTING_PERSON`], which is also what an account with no avatar falls back
+/// to — one drawing standing for two different things two rows apart on one
+/// page.
+pub const SETTING_NAME: &str = "lxb:setting-name";
+pub const SETTING_USERNAME: &str = "lxb:setting-username";
+pub const SETTING_PASSWORD: &str = "lxb:setting-password";
+pub const SETTING_AVATAR: &str = "lxb:setting-avatar";
+pub const SETTING_ACCOUNT_TYPE: &str = "lxb:setting-account-type";
+
+/// Settings > System > Picture-in-Picture: the small window a browser puts a
+/// video into, floating over everything else.
+///
+/// One object across all six: a screen drawn as a frame, with the small window
+/// standing inside it as a body. The window is what is made of water because
+/// the window is what every one of these rows is about.
+///
+/// [`SETTING_PIP`] carries a play mark cut into that window, and the mark is
+/// the whole difference between it and the four corners. This page asks whether
+/// a video floats at all; those rows ask which corner it floats in, and a play
+/// mark repeated four times down one column would say the first thing four more
+/// times and the second not at all. It goes on the page and on the switch
+/// inside it, the way the moon is kept to the night light.
+///
+/// [`SETTING_PIP_SIZE`] is the same screen with the same window drawn twice,
+/// larger and smaller, both against the same edge — the edge, because moving it
+/// as well would be answering the corner row's question here. Deliberately
+/// unlike [`SETTING_SCALE`], the other size on this page: that one has an arrow
+/// along a diagonal because it is about every application growing, and this is
+/// two sizes of one small thing to choose between.
+///
+/// The four corners are the second set of values in the Settings tree with
+/// drawings of their own, after the four orientations, and they earn it the
+/// same way: what is being chosen is a place, and a place has a shape. The row
+/// they hang on wears whichever of them is chosen — see
+/// `settings::picture_in_picture_place`, and the battery's row, which is the
+/// other mark in this shell that moves.
+pub const SETTING_PIP: &str = "lxb:setting-pip";
+pub const SETTING_PIP_SIZE: &str = "lxb:setting-pip-size";
+pub const SETTING_PIP_TOP_LEFT: &str = "lxb:setting-pip-top-left";
+pub const SETTING_PIP_TOP_RIGHT: &str = "lxb:setting-pip-top-right";
+pub const SETTING_PIP_BOTTOM_LEFT: &str = "lxb:setting-pip-bottom-left";
+pub const SETTING_PIP_BOTTOM_RIGHT: &str = "lxb:setting-pip-bottom-right";
+
 /// A read-only explanation in Settings, visually distinct from the control it
 /// sits beneath so an unavailable mode or capability is not mistaken for HDR.
 pub const SETTING_INFO: &str = "lxb:setting-info";
 pub const SWATCH: &str = "lxb:swatch";
 pub const CHOSEN: &str = "lxb:chosen";
+
+/// The row that makes one more of something.
+///
+/// The set has every verb for a thing that already exists and had none for
+/// this one, so a row that adds wore whatever was nearest and said something
+/// else by it. A plus needs no language: it is the same in every script this
+/// shell is translated into.
+pub const ADD: &str = "lxb:add";
 
 /// The two context-menu rows that act on the application itself: removing it
 /// from the machine, and starting it.
@@ -358,11 +507,17 @@ pub const CHOSEN: &str = "lxb:chosen";
 /// `media-playback-start` come from however many hands drew whatever theme is
 /// installed, and the menu they sit in has one lamp over it.
 ///
-/// [`UNINSTALL`] is the one mark in this set used from two places. Settings >
+/// [`UNINSTALL`] is the one mark in this set used from three places. Settings >
 /// Network > Wi-Fi > Networks > *a saved network* > Forget wears it too, and
 /// deliberately: what the bin means is *this is taken off the machine*, which
 /// is as true of a network's saved profile as it is of a program. A second
 /// drawing for the same act would be a second thing to learn.
+///
+/// The third is the Trash row under Files, which is the literal case — it is a
+/// bin, and it is where everything the other two rows destroy would have gone
+/// if it had been one of the user's own files. What that column's *own* head
+/// row wears is [`TRASH_EMPTY`], and that one is a second drawing for a
+/// reason: see it.
 pub const UNINSTALL: &str = "lxb:uninstall";
 pub const LAUNCH: &str = "lxb:launch";
 
@@ -400,6 +555,39 @@ pub const PASTE: &str = "lxb:paste";
 /// upright marks that far apart in one panel are two rows the eye has to read
 /// rather than recognise.
 pub const RENAME: &str = "lxb:rename";
+
+/// The row at the head of a folder's column that makes a new folder in it.
+///
+/// A folder with a cross cut through it, which is what every file manager
+/// draws for this — the mark has to say "a folder, and one that is not there
+/// yet", and the only part of that the drawing can carry is the cross.
+///
+/// It is [`FILE_FOLDER`] with the cross pierced through the pocket rather than
+/// a drawing of its own, because the row is about the rows underneath it: the
+/// column it stands over is a column of folders wearing that mark, and a head
+/// row drawn from a different family would be a row about something else.
+pub const NEW_FOLDER: &str = "lxb:new-folder";
+
+/// The row at the head of the Trash column that empties it.
+///
+/// [`UNINSTALL`]'s bin with the lid lifted off it, and a second bin rather
+/// than that one for the one reason a second drawing is ever worth it: both
+/// are on the screen at once. The Trash row in the column to the left wears
+/// [`UNINSTALL`] and stays lit while this column is open, so two identical
+/// marks one step apart would leave the head row saying what the row it hangs
+/// from already said.
+pub const TRASH_EMPTY: &str = "lxb:trash-empty";
+
+/// The row that starts picking several rows at once, and the row at the head
+/// of a column while somebody is.
+///
+/// [`CHOSEN`]'s tick in a square bead instead of a round one. It is the same
+/// tick deliberately — what a tick means here is "this one", and this row is
+/// the offer of that mark to rows the user picks out themselves — and it is a
+/// different body because the two are on one panel together: Show hidden files
+/// wears the round one when it is on, and at the size a menu draws a mark the
+/// silhouette is the only thing that tells two ticks apart.
+pub const SELECT_MULTIPLE: &str = "lxb:select-multiple";
 
 /// The two rows at the head of a column of the user's own files: the field
 /// that searches it, and the row that empties the field.
@@ -545,7 +733,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 98] = [
+pub const BUILTIN: [(&str, &str); 128] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -560,6 +748,16 @@ pub const BUILTIN: [(&str, &str); 98] = [
     (NOTIFICATIONS, include_str!("glyphs/notifications.svg")),
     (PAD_SELECT, include_str!("glyphs/pad-select.svg")),
     (PAD_WEST, include_str!("glyphs/pad-west.svg")),
+    (PAD_SOUTH, include_str!("glyphs/pad-south.svg")),
+    (PAD_EAST, include_str!("glyphs/pad-east.svg")),
+    (PAD_START, include_str!("glyphs/pad-start.svg")),
+    (PAD_NORTH, include_str!("glyphs/pad-north.svg")),
+    (PAD_GUIDE, include_str!("glyphs/pad-guide.svg")),
+    (MOUSE_RIGHT, include_str!("glyphs/mouse-right.svg")),
+    (KEY_ESCAPE, include_str!("glyphs/key-escape.svg")),
+    (KEY_SPACE, include_str!("glyphs/key-space.svg")),
+    (KEY_ENTER, include_str!("glyphs/key-enter.svg")),
+    (KEY_SUPER, include_str!("glyphs/key-super.svg")),
     (ARROW_LEFT, include_str!("glyphs/arrow-left.svg")),
     (ARROW_DOWN, include_str!("glyphs/arrow-down.svg")),
     (ARROW_UP, include_str!("glyphs/arrow-up.svg")),
@@ -587,6 +785,10 @@ pub const BUILTIN: [(&str, &str); 98] = [
     (CATEGORY_OFFICE, include_str!("glyphs/category-office.svg")),
     (CATEGORY_GAMES, include_str!("glyphs/category-games.svg")),
     (
+        CATEGORY_SOFTWARE,
+        include_str!("glyphs/category-software.svg"),
+    ),
+    (
         CATEGORY_DEVELOPMENT,
         include_str!("glyphs/category-development.svg"),
     ),
@@ -597,6 +799,10 @@ pub const BUILTIN: [(&str, &str); 98] = [
     (
         CATEGORY_UTILITIES,
         include_str!("glyphs/category-utilities.svg"),
+    ),
+    (
+        CATEGORY_WAYDROID,
+        include_str!("glyphs/category-waydroid.svg"),
     ),
     (CATEGORY_OTHER, include_str!("glyphs/category-other.svg")),
     // Then the rows that stand inside a column rather than along the row.
@@ -700,9 +906,51 @@ pub const BUILTIN: [(&str, &str); 98] = [
     ),
     (SETTING_SYSTEM, include_str!("glyphs/setting-system.svg")),
     (SETTING_SCALE, include_str!("glyphs/setting-scale.svg")),
+    (SETTING_USERS, include_str!("glyphs/setting-users.svg")),
+    (SETTING_PERSON, include_str!("glyphs/setting-person.svg")),
+    (
+        SETTING_ADD_USER,
+        include_str!("glyphs/setting-add-user.svg"),
+    ),
+    (SETTING_NAME, include_str!("glyphs/setting-name.svg")),
+    (
+        SETTING_USERNAME,
+        include_str!("glyphs/setting-username.svg"),
+    ),
+    (
+        SETTING_PASSWORD,
+        include_str!("glyphs/setting-password.svg"),
+    ),
+    (SETTING_AVATAR, include_str!("glyphs/setting-avatar.svg")),
+    (
+        SETTING_ACCOUNT_TYPE,
+        include_str!("glyphs/setting-account-type.svg"),
+    ),
+    (SETTING_PIP, include_str!("glyphs/setting-pip.svg")),
+    (
+        SETTING_PIP_SIZE,
+        include_str!("glyphs/setting-pip-size.svg"),
+    ),
+    (
+        SETTING_PIP_TOP_LEFT,
+        include_str!("glyphs/setting-pip-top-left.svg"),
+    ),
+    (
+        SETTING_PIP_TOP_RIGHT,
+        include_str!("glyphs/setting-pip-top-right.svg"),
+    ),
+    (
+        SETTING_PIP_BOTTOM_LEFT,
+        include_str!("glyphs/setting-pip-bottom-left.svg"),
+    ),
+    (
+        SETTING_PIP_BOTTOM_RIGHT,
+        include_str!("glyphs/setting-pip-bottom-right.svg"),
+    ),
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
     (SWATCH, include_str!("glyphs/swatch.svg")),
     (CHOSEN, include_str!("glyphs/chosen.svg")),
+    (ADD, include_str!("glyphs/add.svg")),
     // The context menu's own rows.
     (UNINSTALL, include_str!("glyphs/uninstall.svg")),
     (LAUNCH, include_str!("glyphs/launch.svg")),
@@ -712,6 +960,9 @@ pub const BUILTIN: [(&str, &str); 98] = [
     (MOVE, include_str!("glyphs/move.svg")),
     (PASTE, include_str!("glyphs/paste.svg")),
     (RENAME, include_str!("glyphs/rename.svg")),
+    (NEW_FOLDER, include_str!("glyphs/new-folder.svg")),
+    (TRASH_EMPTY, include_str!("glyphs/trash-empty.svg")),
+    (SELECT_MULTIPLE, include_str!("glyphs/select-multiple.svg")),
     (SCREENSHOT, include_str!("glyphs/screenshot.svg")),
     // The rows a column of the user's own files carries above the files.
     (SEARCH, include_str!("glyphs/search.svg")),
@@ -919,6 +1170,36 @@ impl IconLoader {
         None
     }
 
+    /// The same icon, measured as the *shape* of itself rather than loaded as a
+    /// picture of one.
+    ///
+    /// For an application that asked for the shell's own material — see
+    /// [`crate::apps::App::wears_shell_material`]. The drawing is rasterised at
+    /// [`SDF_SUPERSAMPLE`] times the cell, thresholded at half alpha into a
+    /// silhouette, and measured by the same transform every built-in mark goes
+    /// through, so what comes back is the same kind of thing as a glyph and the
+    /// shader treats it as one.
+    ///
+    /// Thresholded coverage rather than the drawing's own geometry, which is
+    /// what lets this take a `.png` as happily as a `.svg`: an icon theme holds
+    /// both, an application does not choose which of its files the shell finds,
+    /// and half alpha is where a rasteriser's own edge sits.
+    ///
+    /// `None` where the icon could not be found or could not be measured, and
+    /// the caller must then fall back to [`Self::load`] rather than registering
+    /// the name — a name registered without a field behind it is a picture the
+    /// shader reads as a measurement.
+    pub fn load_shape(&mut self, name: &str, size: u32) -> Option<Icon> {
+        let fine = size.checked_mul(SDF_SUPERSAMPLE)?;
+        let coverage = self.load(name, fine)?;
+        let inside: Vec<bool> = coverage
+            .rgba
+            .chunks_exact(4)
+            .map(|px| px[3] >= 128)
+            .collect();
+        distance_field(&inside, fine, size)
+    }
+
     fn candidates(&self, name: &str) -> Vec<PathBuf> {
         let path = Path::new(name);
         if path.is_absolute() {
@@ -1007,7 +1288,7 @@ pub fn shaped(name: &str) -> bool {
         return true;
     }
     static SHAPES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    SHAPES
+    if SHAPES
         .get_or_init(|| {
             BUILTIN
                 .iter()
@@ -1016,6 +1297,141 @@ pub fn shaped(name: &str) -> bool {
                 .collect()
         })
         .contains(&name)
+    {
+        return true;
+    }
+    // And the marks that arrived with an integration package, which are shapes
+    // on exactly the same terms.
+    if package_glyphs()
+        .iter()
+        .any(|(had, drawing)| had == name && is_shape(drawing))
+    {
+        return true;
+    }
+    // And an application's own icon, where the application asked for it and the
+    // atlas was able to measure it. See [`remember_shaped_icon`].
+    SHAPED_ICONS
+        .read()
+        .is_ok_and(|shaped| shaped.iter().any(|had| had == name))
+}
+
+/// The icons out of the theme that are being drawn as shapes rather than as
+/// pictures, by the name they were looked up under.
+///
+/// Not a `lxb:` name, which is the whole reason this list exists: everything
+/// else the shader cuts glass to is one of the shell's own marks and answers to
+/// its own namespace, and these are somebody else's file in somebody else's
+/// theme. What makes one of them a shape is that its `.desktop` file asked —
+/// see [`crate::apps::App::wears_shell_material`] — and the *name* is all
+/// [`shaped`] gets, so the answer has to be written down where a name can reach
+/// it.
+///
+/// A lock rather than a `OnceLock`, because this is filled as the atlas is
+/// built and the atlas is built more than once: a session that rescans what is
+/// installed measures whatever it found again. It only ever grows, and it is a
+/// handful of short strings — a machine with one such application has one
+/// entry.
+static SHAPED_ICONS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// Write down that this icon has been measured into a field, so that every
+/// quad carrying it is given the material.
+///
+/// Called by whoever put the measurement in the atlas, and only where that
+/// succeeded: a name registered without a field behind it is a picture the
+/// shader would read as a distance field, which comes out as a pale smear. See
+/// [`crate::icons::shape_of`].
+pub fn remember_shaped_icon(name: &str) {
+    let Ok(mut shaped) = SHAPED_ICONS.write() else {
+        return;
+    };
+    if shaped.iter().any(|had| had == name) {
+        return;
+    }
+    tracing::debug!(icon = name, "an application asked for the shell's material");
+    shaped.push(name.to_string());
+}
+
+/// Where a package that is not the shell's own puts a mark of its own, under
+/// each of the XDG data directories.
+///
+/// One directory and one rule: an integration ships `lxb/glyphs/<name>.svg`,
+/// and the shell draws it as `lxb:<name>`. There is no manifest, no
+/// registration and nothing in the shell that names the file — a package is
+/// installed or it is not, and the mark is there or it is not.
+///
+/// This exists because the shell is one binary and its integrations are not.
+/// `lxb-retroarch` is a package a machine may not have; the mark every row of
+/// that column wears has to arrive with it rather than being compiled into a
+/// shell that would draw it on nine machines out of ten that never emulate
+/// anything. See [`BUILTIN`], which is the other half of the argument: what
+/// the shell needs *whatever* is installed is compiled in, and this is
+/// deliberately not that.
+pub const PACKAGE_GLYPHS: &str = "lxb/glyphs";
+
+/// Every mark an installed integration brought with it, as `(name, drawing)`.
+///
+/// Read from the disk once and held, because three separate things ask for it
+/// — the atlas that rasterises them, [`shaped`] on every quad that carries
+/// one, and the integration itself asking whether its own mark is here at all
+/// — and a set of marks that changed under a running shell would be a row
+/// whose material changed while somebody was looking at it.
+pub fn package_glyphs() -> &'static [(String, String)] {
+    static FOUND: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    FOUND.get_or_init(from_packages)
+}
+
+/// The same, read fresh. [`package_glyphs`] is what everything else calls.
+///
+/// Most specific directory first, and the first spelling of a name wins — the
+/// order [`crate::xdg_data_dirs`] answers in, so a mark under the user's own
+/// data directory stands in front of the package's. A name one of the shell's
+/// own marks already has is refused outright: a package may add to this set and
+/// may not redraw it, or an installed integration could change what the volume
+/// bar looks like.
+fn from_packages() -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for dir in crate::xdg_data_dirs(PACKAGE_GLYPHS) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut here: Vec<std::path::PathBuf> =
+            entries.flatten().map(|entry| entry.path()).collect();
+        // A directory listing is in whatever order the filesystem likes, and
+        // the atlas's slots are handed out in the order they arrive.
+        here.sort();
+        for path in here {
+            if path.extension().and_then(|kind| kind.to_str()) != Some("svg") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            // `lxb:` is the shell's own namespace and the package's marks are
+            // in it: what a name says is that this is a mark of the interface
+            // rather than an icon out of a theme, which is as true of one that
+            // arrived with an integration as of one compiled in.
+            let name = format!("lxb:{stem}");
+            if BUILTIN.iter().any(|(had, _)| *had == name) {
+                tracing::warn!(
+                    glyph = %name,
+                    at = %path.display(),
+                    "a package tried to redraw one of the shell's own marks"
+                );
+                continue;
+            }
+            if found.iter().any(|(had, _)| *had == name) {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(drawing) => {
+                    tracing::info!(glyph = %name, at = %path.display(), "a package brought a mark");
+                    found.push((name, drawing));
+                }
+                Err(err) => tracing::warn!(at = %path.display(), ?err, "could not read a mark"),
+            }
+        }
+    }
+    found
 }
 
 /// Half the range a glyph's distance field spans, as a fraction of the cell.
@@ -1763,6 +2179,67 @@ mod tests {
         }
     }
 
+    /// An application's own icon can be measured as a shape and drawn in the
+    /// shell's material, which is what a `.desktop` file asks for by naming
+    /// `lxb` — see [`crate::apps::App::wears_shell_material`].
+    ///
+    /// Two halves and both matter. The measurement has to be a real signed
+    /// distance field or the shader reads a picture as one and draws a pale
+    /// smear; and [`shaped`] has to answer for the name afterwards, because the
+    /// layout never sees the drawing and a slot alone cannot say what it holds.
+    ///
+    /// A theme's icon that nobody asked about stays a picture. That is the
+    /// whole of what makes this opt-in: what the shader is handed is the
+    /// silhouette, and a photograph's silhouette is a rounded slab of glass.
+    #[test]
+    fn an_application_that_asks_gets_its_icon_measured_as_a_shape() {
+        let tree = TestTree::new("shaped-app-icon");
+        let drawing = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\">",
+            "<circle cx=\"16\" cy=\"16\" r=\"9\" fill=\"#ffffff\"/></svg>"
+        );
+        write(&tree.join("apps/lxb-test-shaped.svg"), drawing);
+        let mut loader = loader_with_dirs(vec![tree.join("apps")]);
+
+        // Nothing has asked yet, so the name is a picture like every other
+        // icon out of a theme.
+        assert!(!shaped("lxb-test-shaped"));
+
+        let size = 64usize;
+        let icon = loader
+            .load_shape("lxb-test-shaped", size as u32)
+            .expect("the drawing should measure");
+        assert_eq!(icon.size, size as u32);
+
+        // Back out of the encoding, the way the built-in glyphs' own test does.
+        let at = |x: usize, y: usize| {
+            let stored = f32::from(icon.rgba[(y * size + x) * 4 + 3]) / 255.0;
+            (stored - 0.5) * 2.0 * SDF_RANGE * size as f32
+        };
+        assert!(
+            at(size / 2, size / 2) < 0.0,
+            "the middle is inside the mark"
+        );
+        assert!(at(1, 1) > 0.0, "and the corner is air");
+        for y in 1..size - 1 {
+            for x in 1..size - 1 {
+                let step = (at(x, y) - at(x + 1, y))
+                    .abs()
+                    .max((at(x, y) - at(x, y + 1)).abs());
+                assert!(step <= 1.35, "it steps {step} at {x},{y}");
+            }
+        }
+
+        // And once the atlas has said so, every quad carrying the name is given
+        // the material.
+        remember_shaped_icon("lxb-test-shaped");
+        assert!(shaped("lxb-test-shaped"));
+        assert!(
+            !shaped("lxb-test-not-shaped"),
+            "and a theme's icon nobody asked about is still a picture"
+        );
+    }
+
     /// A machine with no desktop on it still gets a theme, because hicolor is
     /// not a working default — it is where a program puts its own icon, and it
     /// has never carried the standard names an announcement asks for.
@@ -1969,21 +2446,33 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            98,
+            128,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
              moon, a \
-             bell, two \
-             controller buttons, four arrows, a keyboard folding away, a power \
-             symbol, one per column of the category row, the two subcategories \
+             bell, seven \
+             controller buttons, a mouse, four keycaps, four arrows, a \
+             keyboard folding away, a power \
+             symbol, one per column of the category row — the open carton with \
+             an arrow coming down into it that Software wears and the head of \
+             the small machine Waydroid runs among them — the two subcategories \
              Multimedia is divided into and the one under Graphics, the two \
              folders that stand for System's Files with the folder, page, drum \
              and house its own rows are drawn with, the \
-             twenty-six marks the Settings column is drawn from — the brush at \
+             forty-one marks the Settings column is drawn from — the brush at \
              the head of its Theme page, and under it the wave for the \
              wallpaper's own material and four of the shell's marks in one \
-             cell for the material of the marks — plus its four \
+             cell for the material of the marks, the small window a video \
+             floats in with the two sizes it is offered at and the four \
+             corners of a screen it can be put in, the two figures the \
+             accounts on this machine are reached through with the one figure \
+             an account with no picture of its own wears and that figure again \
+             with a plus beside it for the account that does not exist yet, \
+             and the five an account's own form is made of — a name card, the \
+             at sign it logs in by, the key its password is, the framed face of \
+             its avatar and the shield \
+             saying what it may do — plus its four \
              turns of a monitor, the two links of a chain, hooked and \
              snapped, that a network is joined and left by and the rune \
              everything Bluetooth is reached through wears, the three \
@@ -1993,7 +2482,10 @@ mod tests {
              the context menu's bin, play mark, ellipsis, sort bars \
              and camera, its two sheets and its sheet with an arrow leaving \
              it with the clipboard the folder they are carried to is chosen \
-             under and the pencil a name is changed with, the magnifier at the \
+             under and the pencil a name is changed with, the folder with a \
+             cross through it at the head of a listing and the bin with its \
+             lid off at the head of the trash, the plus a row that makes one \
+             more of something wears, the magnifier at the \
              head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
              that asks for a password, and the Steam column with the mark every \
@@ -2063,6 +2555,16 @@ mod tests {
                 NOTIFICATIONS,
                 PAD_SELECT,
                 PAD_WEST,
+                PAD_SOUTH,
+                PAD_EAST,
+                PAD_START,
+                PAD_NORTH,
+                PAD_GUIDE,
+                MOUSE_RIGHT,
+                KEY_ESCAPE,
+                KEY_SPACE,
+                KEY_ENTER,
+                KEY_SUPER,
                 ARROW_LEFT,
                 ARROW_DOWN,
                 ARROW_UP,
@@ -2076,9 +2578,11 @@ mod tests {
                 CATEGORY_INTERNET,
                 CATEGORY_OFFICE,
                 CATEGORY_GAMES,
+                CATEGORY_SOFTWARE,
                 CATEGORY_DEVELOPMENT,
                 CATEGORY_EDUCATION,
                 CATEGORY_UTILITIES,
+                CATEGORY_WAYDROID,
                 CATEGORY_OTHER,
                 CATEGORY_MUSIC,
                 CATEGORY_VIDEO,
@@ -2127,9 +2631,24 @@ mod tests {
                 SETTING_BLUETOOTH,
                 SETTING_SYSTEM,
                 SETTING_SCALE,
+                SETTING_USERS,
+                SETTING_PERSON,
+                SETTING_ADD_USER,
+                SETTING_NAME,
+                SETTING_USERNAME,
+                SETTING_PASSWORD,
+                SETTING_AVATAR,
+                SETTING_ACCOUNT_TYPE,
+                SETTING_PIP,
+                SETTING_PIP_SIZE,
+                SETTING_PIP_TOP_LEFT,
+                SETTING_PIP_TOP_RIGHT,
+                SETTING_PIP_BOTTOM_LEFT,
+                SETTING_PIP_BOTTOM_RIGHT,
                 SETTING_INFO,
                 SWATCH,
                 CHOSEN,
+                ADD,
                 UNINSTALL,
                 LAUNCH,
                 OPEN_WITH,
@@ -2138,6 +2657,9 @@ mod tests {
                 MOVE,
                 PASTE,
                 RENAME,
+                NEW_FOLDER,
+                TRASH_EMPTY,
+                SELECT_MULTIPLE,
                 SCREENSHOT,
                 SEARCH,
                 SEARCH_CLEAR,

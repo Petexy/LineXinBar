@@ -251,12 +251,89 @@ pub const PALETTES: &[Palette] = &[
         accent: [Color(0xEF4444), Color(0xFCA5A5), Color(0x7F1D1D)],
         glow: Color(0x991B1B),
     },
+    Palette {
+        name: "Teal",
+        sky: [
+            Color(0x08302B),
+            Color(0x020F0D),
+            Color(0x0B4038),
+            Color(0x041614),
+        ],
+        accent: [Color(0x14B8A6), Color(0x5EEAD4), Color(0x134E4A)],
+        glow: Color(0x115E59),
+    },
+    Palette {
+        name: "Indigo",
+        sky: [
+            Color(0x101128),
+            Color(0x030409),
+            Color(0x15163A),
+            Color(0x070813),
+        ],
+        accent: [Color(0xA5B4FC), Color(0xC7D2FE), Color(0x312E81)],
+        glow: Color(0x252270),
+    },
+    Palette {
+        name: "Pink",
+        sky: [
+            Color(0x2C0A1E),
+            Color(0x0C0207),
+            Color(0x3E0D28),
+            Color(0x160410),
+        ],
+        accent: [Color(0xEC4899), Color(0xF9A8D4), Color(0x831843)],
+        glow: Color(0x861042),
+    },
+    Palette {
+        name: "Orange",
+        sky: [
+            Color(0x301206),
+            Color(0x0D0402),
+            Color(0x421A07),
+            Color(0x160702),
+        ],
+        accent: [Color(0xF97316), Color(0xFDBA74), Color(0x7C2D12)],
+        glow: Color(0x842C0F),
+    },
+    Palette {
+        name: "White",
+        sky: [
+            Color(0x151515),
+            Color(0x040404),
+            Color(0x1E1E1E),
+            Color(0x090909),
+        ],
+        accent: [Color(0xE4E4E4), Color(0xF5F5F5), Color(0x3D3D3D)],
+        glow: Color(0x444444),
+    },
+    Palette {
+        name: "Silver",
+        sky: [
+            Color(0x2A2A2A),
+            Color(0x0B0B0B),
+            Color(0x383838),
+            Color(0x131313),
+        ],
+        accent: [Color(0xA6A6A6), Color(0xD6D6D6), Color(0x4A4A4A)],
+        glow: Color(0x6B6B6B),
+    },
+    Palette {
+        name: "Black",
+        sky: [
+            Color(0x141414),
+            Color(0x030303),
+            Color(0x1C1C1C),
+            Color(0x070707),
+        ],
+        accent: [Color(0x525252), Color(0x8A8A8A), Color(0x1F1F1F)],
+        glow: Color(0x2E2E2E),
+    },
 ];
 
 /// The palette saved under `name`, or the default when it is not one of them.
 ///
 /// Exact, case-sensitive matching, the same rule the shell and the display
-/// manager both apply: the five names are the whole of the setting's domain,
+/// manager both apply: the names above are the whole of the setting's domain,
 /// and quietly accepting `blue` would make two spellings of one value.
 pub fn palette(name: &str) -> &'static Palette {
     PALETTES

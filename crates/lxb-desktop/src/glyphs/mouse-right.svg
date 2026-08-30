@@ -1,0 +1,24 @@
+<!--
+  The right mouse button, as the mouse it is on.
+
+  The same distinction pad-select.svg makes and for the same reason: the button
+  in question filled, its neighbour left open, and the body round them because
+  neither half of a mouse has a shape of its own to be recognised by. It is
+  *where it sits* that names it, on every mouse ever made.
+
+  Not a keyboard key, and deliberately so. A menu is raised with the right
+  button by anybody using a pointer, and there is no key printed on a keyboard
+  that says the same thing to as many people.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path d="M12 3.2A5.8 5.8 0 0 1 17.8 9v2H12z" fill="#fff"/>
+  <g fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round">
+    <path d="M6.2 9a5.8 5.8 0 0 1 11.6 0v6a5.8 5.8 0 0 1-11.6 0z"/>
+    <path d="M6.2 11h11.6"/>
+    <path d="M12 3.2V11"/>
+  </g>
+</svg>

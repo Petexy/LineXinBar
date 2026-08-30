@@ -1,0 +1,31 @@
+<!--
+  The Mega Drive, from above: the cartridge slot across the back, the big round
+  badge Sega embossed to the right of it, and two controller ports at the front.
+
+  That circle is the machine.  Every other 16-bit deck of the period is a box
+  with a slot in it; only this one carries a disc the width of a hand on its
+  own lid.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="3" y="7" width="26" height="18" rx="2.2"/>
+    <rect id="slot" x="6.2" y="9.4" width="12.4" height="3.2" rx="0.9"/>
+    <circle id="badge" cx="23.6" cy="13" r="3.2"/>
+    <g id="ports"><circle cx="8.4" cy="21.2" r="1.4"/><circle cx="13.4" cy="21.2" r="1.4"/></g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#badge" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

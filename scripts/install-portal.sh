@@ -3,14 +3,16 @@
 # Register LineXinBar's desktop portal for the current user, from a build in
 # this checkout.
 #
-# Screen sharing is not something an application does by itself: it asks
-# `xdg-desktop-portal`, and that hands the question to whichever backend the
-# desktop *registered*. The registration is three files, and without them a
-# LineXinBar session has a portal running that nothing ever calls — the
-# front desk answers every application with a portal that has no ScreenCast
-# interface on it at all, which looks exactly like an application that cannot
-# capture screens. OBS shows no screen-capture source; Discord's picker never
-# appears.
+# Neither sharing a screen nor choosing a file is something an application does
+# by itself: it asks `xdg-desktop-portal`, and that hands the question to
+# whichever backend the desktop *registered*. The registration is three files,
+# and without them a LineXinBar session has a portal running that nothing ever
+# calls — the front desk answers every application with a portal that has
+# neither the ScreenCast nor the FileChooser interface on it, which looks
+# exactly like an application that cannot capture screens and a session with no
+# file chooser. OBS shows no screen-capture source, Discord's picker never
+# appears, and every open-file button falls back to whatever dialog the
+# application has of its own.
 #
 # A packaged LineXinBar installs these into /usr (see packaging/install.sh).
 # This is for a session run straight out of a git checkout, which installs

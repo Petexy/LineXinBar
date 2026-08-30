@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Comment=Show a folder in LineXinBar's Files column
+# Not a program that opens: the session already has a shell, and this asks that
+# shell over `org.freedesktop.FileManager1` and exits. See `--show-in-files` in
+# lxb-desktop, and crates/lxb-desktop/src/reveal.rs for why the shell is what
+# answers. `%u` and not `%U`: one folder is one place to stand.
+Exec=lxb-desktop --show-in-files %u
+TryExec=lxb-desktop
+Terminal=false
+# There is no Files application to put in a menu — Files is a column of the
+# bar, four rows into System. This entry exists only so that the machine has
+# something to name as the handler for a folder, and a row for it on the bar
+# beside the real one would be the shell offering itself twice.
+NoDisplay=true
+MimeType=inode/directory;
+Categories=System;FileTools;FileManager;
+Keywords=files;folder;explorer;

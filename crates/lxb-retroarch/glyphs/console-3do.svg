@@ -1,0 +1,33 @@
+<!--
+  The 3DO (Panasonic FZ-1), head on: the disc door standing nearly the full
+  height of the front, and the controls in a column beside it.
+
+  It was drawn with a round lid on top, which belongs to the PlayStation and the
+  Dreamcast.  Panasonic built a compact-disc player: the disc goes in through a
+  door in the front, and that door is tall where the NES's flap higher up the
+  column is wide and shallow.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="2.6" y="10.2" width="26.8" height="11.6" rx="1.8"/>
+    <rect id="door" x="5" y="12.4" width="17.2" height="7.2" rx="0.8"/>
+    <g id="controls">
+      <circle cx="25.8" cy="14.2" r="1.35"/>
+      <circle cx="25.8" cy="17.8" r="1.35"/>
+    </g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#door" fill="#000000"/>
+      <use href="#controls" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

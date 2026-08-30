@@ -1,4 +1,4 @@
-//! The black a screen rests behind while somebody is playing on another one.
+//! The black a screen rests behind while somebody is using another one.
 //!
 //! An OLED panel keeps what it is shown. The start screen is the worst thing
 //! there is to keep: the bar sits in the same row of pixels every second it is

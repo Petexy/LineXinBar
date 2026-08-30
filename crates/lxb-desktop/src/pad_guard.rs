@@ -60,10 +60,13 @@
 //! application the shell starts is told to ignore the raw nodes *of the pads
 //! this guard holds*, and only those. See [`hidapi_ignore_list`].
 //!
-//! The second-generation Steam Controller is the pad none of this touches. It
-//! has no gamepad node to grab (see [`crate::steam_hid`]), so there is nothing
-//! here to guard and nothing to tell an application to ignore: Steam reads that
-//! pad's report as the shell does, and takes its own view of the Steam button.
+//! The second-generation Steam Controller is the pad none of *this* touches,
+//! and it is guarded anyway, from the other end. It has no gamepad node to
+//! grab, so [`crate::steam_hid`] drives it from its raw report and makes the
+//! gamepad itself — one that has the guide button declared on it and never
+//! sends it, which is the same bargain reached without a grab, because a device
+//! this shell builds needs nothing taken away from it. Its ids join the ignore
+//! list below on the same terms as any other pad the shell stands in front of.
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -165,13 +168,22 @@ struct Shared {
     edges: Mutex<Edges>,
 }
 
-/// The pads the guard currently holds, for [`hidapi_ignore_list`].
+/// The pads the guard currently holds, for [`hidapi_ignore_list`] and
+/// [`grabbed_nodes`].
 ///
 /// A static because it is read where the environment of a launched application
 /// is assembled ([`crate::model`]) rather than anywhere the guard is threaded
 /// through, and because there is one set of controllers on a machine however
 /// many parts of the shell want to know about them.
-static GUARDED: Mutex<Vec<PadId>> = Mutex::new(Vec::new());
+static GUARDED: Mutex<Vec<Held>> = Mutex::new(Vec::new());
+
+/// One pad the guard has, as the two things anything else needs to know about
+/// it: which pad it is, and which node is the one it has gone quiet on.
+#[derive(Debug, Clone)]
+struct Held {
+    id: PadId,
+    node: PathBuf,
+}
 
 /// A pad as USB names it. Two of them make one entry in SDL's ignore list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,8 +249,27 @@ impl Drop for PadGuard {
     }
 }
 
-/// Every pad the guard holds, as `SDL_HIDAPI_IGNORE_DEVICES` spells it —
-/// `None` when it holds none.
+/// The device nodes the guard has grabbed — the pads that are silent to
+/// everything on this machine that is not this shell.
+///
+/// What wants them is anything that has to tell another program *which* of two
+/// identical controllers to listen to. A grab does not take a pad off the
+/// machine: the node is still there, still enumerated, still opened by whatever
+/// looks for controllers, and still answers with its name and its ids — it
+/// simply never says anything again. So a program that binds the first pad it
+/// finds to player one binds this one, and the copy that actually works ends up
+/// on player three. See [`crate::pads`].
+pub fn grabbed_nodes() -> Vec<PathBuf> {
+    GUARDED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .iter()
+        .map(|held| held.node.clone())
+        .collect()
+}
+
+/// Every pad this shell stands in front of, as `SDL_HIDAPI_IGNORE_DEVICES`
+/// spells it — `None` when it stands in front of none.
 ///
 /// This is the other half of the grab, and it exists because a grab only
 /// covers `/dev/input`. SDL prefers its own HIDAPI drivers to the kernel's
@@ -246,20 +277,111 @@ impl Drop for PadGuard {
 /// where no grab reaches — a game would see the guide button after all, on
 /// exactly the popular controllers the HIDAPI drivers exist for.
 ///
-/// Only the pads the guard actually holds are listed, which is what makes this
-/// safe to hand to every application. A listed pad still arrives through
-/// `/dev/input`, where the guard's replacement is waiting with everything but
-/// the one button; a pad the guard could not take — one with no gamepad node
-/// at all, such as the second-generation Steam Controller — is not listed, so
-/// nothing is ever asked to ignore the only route a controller has.
+/// Two sources, and the same rule for both: a pad is listed only while
+/// something of this shell's is waiting for the application in `/dev/input`
+/// with everything but the one button on it. The guard's replacements are one
+/// source; [`crate::steam_hid::hidapi_ignore_ids`] is the other, for the pad
+/// with no gamepad node at all, which this shell gives one. A pad neither
+/// covers is not listed, so nothing is ever asked to ignore the only route a
+/// controller has.
 pub fn hidapi_ignore_list() -> Option<String> {
-    let guarded = GUARDED.lock().unwrap_or_else(|err| err.into_inner());
-    if guarded.is_empty() {
+    spelled(pads_to_ignore(
+        Reader::AnApplication,
+        &guarded_pads(),
+        &pads_this_shell_drives(),
+    ))
+}
+
+/// The same list for Valve's client, which is not only a reader of pads.
+///
+/// Everything above holds for the client too — it walks around a grab over
+/// `hidraw` like any other program, which is why it is told about the pads the
+/// guard holds. It does *not* hold for the one pad this shell drives itself.
+/// That pad has no kernel driver, so Valve's client is not one more program
+/// looking for a controller: it is the controller's *other* driver, and the
+/// only road a Steam game has to it. Naming it here does not move the client
+/// onto the stand-in — nothing moves the client onto anything — it takes the
+/// pad off the client altogether, and every game the client launches with it.
+///
+/// Measured, on the pad this was written for: `SDL_hid_enumerate` returns five
+/// interfaces of `28de:1304` and none at all with the id on this list, and
+/// Valve's client reads controllers through exactly that call. Its log says the
+/// same from the other side — five `Local Device Found` lines in a session
+/// started from a desktop, and not one in a session started from this shell.
+///
+/// The guide button, which is the whole reason the list exists, has its own
+/// answer here and does not need this one: `lxb_steam::webui`'s
+/// `leave_the_guide_button_alone` asks the client not to act on the button, and
+/// the shell reads it from the pad's report either way.
+pub fn hidapi_ignore_list_for_valves_client() -> Option<String> {
+    spelled(pads_to_ignore(
+        Reader::ValvesClient,
+        &guarded_pads(),
+        &pads_this_shell_drives(),
+    ))
+}
+
+/// Who is being asked to leave a pad alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reader {
+    /// Anything this shell starts, which reads controllers and nothing more.
+    AnApplication,
+    /// Valve's client, which reads them and drives one.
+    ValvesClient,
+}
+
+/// Which of the pads this shell stands in front of `reader` is asked to ignore.
+///
+/// `guarded` are the pads taken from `/dev/input` and given back without their
+/// guide button; `driven` are the ones with no kernel driver, which this shell
+/// reads from `hidraw` and gives a gamepad to. The difference between the two
+/// readers is the second list, and only the second list.
+fn pads_to_ignore(reader: Reader, guarded: &[PadId], driven: &[PadId]) -> Vec<PadId> {
+    let mut ids: Vec<PadId> = Vec::new();
+    // One entry per *pad*, not per node: two identical controllers are one line
+    // in this list, and a list that repeated itself would be a list SDL reads
+    // twice.
+    let mut add = |id: PadId| {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    };
+    for id in guarded {
+        add(*id);
+    }
+    if reader == Reader::AnApplication {
+        for id in driven {
+            add(*id);
+        }
+    }
+    ids
+}
+
+/// The pads the guard is holding this moment.
+fn guarded_pads() -> Vec<PadId> {
+    GUARDED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .iter()
+        .map(|held| held.id)
+        .collect()
+}
+
+/// The pads this shell is the driver of, because the kernel is not.
+fn pads_this_shell_drives() -> Vec<PadId> {
+    crate::steam_hid::hidapi_ignore_ids()
+        .into_iter()
+        .map(|(vendor, product)| PadId { vendor, product })
+        .collect()
+}
+
+/// A list of pads the way `SDL_HIDAPI_IGNORE_DEVICES` reads — `None` for none.
+fn spelled(ids: Vec<PadId>) -> Option<String> {
+    if ids.is_empty() {
         return None;
     }
     Some(
-        guarded
-            .iter()
+        ids.iter()
             .map(|id| format!("0x{:04x}/0x{:04x}", id.vendor, id.product))
             .collect::<Vec<_>>()
             .join(","),
@@ -583,14 +705,15 @@ impl Worker {
 
     /// Write the guarded pads where the launcher can read them.
     fn publish(&self) {
-        let mut ids: Vec<PadId> = Vec::new();
+        let mut held: Vec<Held> = Vec::new();
         for slot in self.known.values() {
             let Slot::Guarded(pad) = slot else { continue };
-            if !ids.contains(&pad.id) {
-                ids.push(pad.id);
-            }
+            held.push(Held {
+                id: pad.id,
+                node: pad.path.clone(),
+            });
         }
-        *GUARDED.lock().unwrap_or_else(|err| err.into_inner()) = ids;
+        *GUARDED.lock().unwrap_or_else(|err| err.into_inner()) = held;
     }
 }
 
@@ -816,22 +939,29 @@ fn build_replacement(device: &Device) -> std::io::Result<VirtualDevice> {
     builder.build()
 }
 
-/// Wait until the replacement has a device node an application can open.
+/// Wait until a `uinput` device has a node an application can open, and say
+/// which node that is.
 ///
 /// udev makes the node and then gives it the permissions that let a session
 /// read it, and both happen after the device itself exists. Until they have,
 /// the pad has been taken and nothing has been given back.
-fn wait_for_node(replacement: &mut VirtualDevice) -> std::io::Result<()> {
+///
+/// Shared with [`crate::steam_stand_in`], which makes a gamepad for a pad the
+/// kernel drives no part of. Its wait is not this one's — nothing has been
+/// taken away there, so a node that never arrives costs an application a
+/// controller rather than the user their own — but the waiting is the same
+/// waiting, and one of it is enough.
+pub(crate) fn wait_for_node(device: &mut VirtualDevice) -> std::io::Result<PathBuf> {
     let deadline = Instant::now() + REPLACEMENT_PATIENCE;
     let mut last = std::io::Error::new(ErrorKind::NotFound, "the replacement pad got no node");
     loop {
-        let nodes = replacement
+        let nodes = device
             .enumerate_dev_nodes_blocking()
             .map(|nodes| nodes.flatten().collect::<Vec<_>>())
             .unwrap_or_default();
-        for node in &nodes {
-            match std::fs::File::open(node) {
-                Ok(_) => return Ok(()),
+        for node in nodes {
+            match std::fs::File::open(&node) {
+                Ok(_) => return Ok(node),
                 Err(err) => last = err,
             }
         }
@@ -849,7 +979,7 @@ fn wait_for_node(replacement: &mut VirtualDevice) -> std::io::Result<()> {
 /// is. Nothing else distinguishes a replacement pad from the pad it replaces —
 /// that is the whole point of one — so this is the test that keeps the guard
 /// from cloning its own work.
-fn is_virtual(path: &Path) -> bool {
+pub(crate) fn is_virtual(path: &Path) -> bool {
     let Some(name) = path.file_name() else {
         return false;
     };
@@ -881,9 +1011,31 @@ fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
 #[cfg(test)]
 static SERIAL: Mutex<()> = Mutex::new(());
 
+/// Holds [`SERIAL`], and leaves [`GUARDED`] the way it was found.
+///
+/// The clearing is the half that earns its keep after a failure. A test that
+/// panics never reaches its own tidying, and what it leaves behind is a
+/// process-wide list naming pads that are not there — which surfaces as a
+/// failure in whichever test asks for that list next, about something that
+/// test never touched. One broken thing should be one failing test, so the
+/// list goes back to empty on the way out of every test that is allowed to
+/// write it, panic or no panic, and while [`SERIAL`] is still held.
 #[cfg(test)]
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|err| err.into_inner())
+struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for Serial {
+    fn drop(&mut self) {
+        GUARDED
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clear();
+    }
+}
+
+#[cfg(test)]
+fn serial() -> Serial {
+    Serial(SERIAL.lock().unwrap_or_else(|err| err.into_inner()))
 }
 
 #[cfg(test)]
@@ -904,6 +1056,63 @@ mod tests {
             .iter()
             .map(|event| (event.event_type().0, event.code(), event.value()))
             .collect()
+    }
+
+    /// A pad, spelled the way `SDL_HIDAPI_IGNORE_DEVICES` spells one.
+    fn pad(vendor: u16, product: u16) -> PadId {
+        PadId { vendor, product }
+    }
+
+    /// The list an application is handed holds both halves: the pads the guard
+    /// took from `/dev/input`, and the pad this shell drives because the kernel
+    /// does not. Both have somewhere else for a controller to be read.
+    #[test]
+    fn an_application_is_asked_to_ignore_every_pad_the_shell_stands_in_front_of() {
+        let guarded = [pad(0x045e, 0x028e)];
+        let driven = [pad(0x28de, 0x1304)];
+        assert_eq!(
+            spelled(pads_to_ignore(Reader::AnApplication, &guarded, &driven)).as_deref(),
+            Some("0x045e/0x028e,0x28de/0x1304")
+        );
+    }
+
+    /// Valve's client is handed the first half and never the second. The pad
+    /// this shell drives is the pad the client drives, and a client that cannot
+    /// see it is a client with no controller to give a game — which is the whole
+    /// of why the two lists are not one.
+    #[test]
+    fn valves_client_is_never_asked_to_ignore_the_pad_it_drives() {
+        let guarded = [pad(0x045e, 0x028e)];
+        let driven = [pad(0x28de, 0x1304)];
+        assert_eq!(
+            spelled(pads_to_ignore(Reader::ValvesClient, &guarded, &driven)).as_deref(),
+            Some("0x045e/0x028e")
+        );
+    }
+
+    /// With nothing to name, nothing is said at all — an empty variable would
+    /// be an argument with whatever the user set.
+    #[test]
+    fn a_reader_with_nothing_to_ignore_is_told_nothing() {
+        assert_eq!(
+            spelled(pads_to_ignore(Reader::AnApplication, &[], &[])),
+            None
+        );
+        assert_eq!(
+            spelled(pads_to_ignore(Reader::ValvesClient, &[], &[])),
+            None
+        );
+    }
+
+    /// Two identical controllers are one line: SDL reads the list once per
+    /// entry, and a repeated pad would be read twice.
+    #[test]
+    fn the_same_pad_twice_is_one_entry() {
+        let guarded = [pad(0x054c, 0x0ce6), pad(0x054c, 0x0ce6)];
+        assert_eq!(
+            spelled(pads_to_ignore(Reader::AnApplication, &guarded, &guarded)).as_deref(),
+            Some("0x054c/0x0ce6")
+        );
     }
 
     /// The whole rule, in one direction: an application sees the pad's other
@@ -1004,26 +1213,54 @@ mod tests {
     }
 
     /// The list handed to applications names pads the way SDL's hint is
-    /// spelled, and says nothing at all when the guard holds nothing.
+    /// spelled, and says nothing at all while nothing stands in front of one.
+    ///
+    /// Both of its sources are held still for the length of this: the guard's
+    /// own pads, and the gamepad [`crate::steam_hid`] makes for the pad with no
+    /// gamepad node. The two locks are always taken in this order — the guard's
+    /// tests reach for the driver's and never the other way about — so there is
+    /// no pair of tests that could wait on each other.
     #[test]
     fn the_ignore_list_is_empty_until_a_pad_is_held() {
         let _serial = serial();
+        let _driver = crate::steam_hid::serial();
         assert_eq!(hidapi_ignore_list(), None);
+        let held = |vendor, product, node: &str| Held {
+            id: PadId { vendor, product },
+            node: PathBuf::from(node),
+        };
         *GUARDED.lock().unwrap() = vec![
-            PadId {
-                vendor: 0x28de,
-                product: 0x1205,
-            },
-            PadId {
-                vendor: 0x054c,
-                product: 0x0ce6,
-            },
+            held(0x28de, 0x1205, "/dev/input/event20"),
+            held(0x054c, 0x0ce6, "/dev/input/event21"),
+            // The same pad twice is one line, not two: a machine can have two
+            // of one model, and SDL reads this hint as a list of *models*.
+            held(0x054c, 0x0ce6, "/dev/input/event22"),
         ];
         assert_eq!(
             hidapi_ignore_list().as_deref(),
             Some("0x28de/0x1205,0x054c/0x0ce6")
         );
+
+        // And the nodes themselves, which is what says which of two identical
+        // controllers is the one that has gone quiet.
+        assert_eq!(
+            grabbed_nodes(),
+            vec![
+                PathBuf::from("/dev/input/event20"),
+                PathBuf::from("/dev/input/event21"),
+                PathBuf::from("/dev/input/event22"),
+            ]
+        );
+        // And the driver's own stand-in joins the same list, on the same
+        // terms, for a pad the guard could never take: it has no gamepad node
+        // to grab, so what stands in front of it is a gamepad this shell built.
         GUARDED.lock().unwrap().clear();
+        crate::steam_hid::pretend_a_stand_in_exists(true);
+        assert_eq!(hidapi_ignore_list().as_deref(), Some("0x28de/0x1304"));
+        crate::steam_hid::pretend_a_stand_in_exists(false);
+
+        assert_eq!(hidapi_ignore_list(), None);
+        assert!(grabbed_nodes().is_empty());
     }
 
     /// A guard that was never started is a guard that reports nothing, rather
@@ -1352,7 +1589,11 @@ mod hardware_tests {
             eprintln!("skipped: /dev/uinput cannot be opened here");
             return;
         }
+        // Both sources of the ignore list this asserts on, held still, and in
+        // the order every test that needs both takes them. See
+        // [`tests::the_ignore_list_is_empty_until_a_pad_is_held`].
         let _serial = serial();
+        let _driver = crate::steam_hid::serial();
 
         let (fake, node) = make_pad().expect("a test pad can be made");
         let dir = std::env::temp_dir().join(format!("lxb-pad-guard-{}", std::process::id()));
@@ -1388,11 +1629,30 @@ mod hardware_tests {
 
         // Unplugged. The node goes, and the guard lets go of everything it was
         // holding on the pad's behalf.
+        //
+        // Waited out by inode rather than by name, and then taken away rather
+        // than left dangling, because `eventN` is handed straight back: the
+        // kernel gives the very next `uinput` device made on this machine the
+        // name this one just released, measured at forty tries out of forty,
+        // with a new inode each time. The other hardware tests here make those
+        // devices, in parallel, out of the same fixture — so a symlink left
+        // pointing at the name resolves to somebody else's pad, which the scan
+        // takes, correctly, and which this test would then read as its own pad
+        // that the guard had failed to let go of.
+        let was = std::fs::metadata(&seen_as).map(|meta| meta.ino()).ok();
         drop(fake);
         let deadline = Instant::now() + PATIENCE;
-        while seen_as.exists() && Instant::now() < deadline {
+        while std::fs::metadata(&seen_as).map(|meta| meta.ino()).ok() == was
+            && Instant::now() < deadline
+        {
             std::thread::sleep(REPLACEMENT_POLL);
         }
+        assert_ne!(
+            std::fs::metadata(&seen_as).map(|meta| meta.ino()).ok(),
+            was,
+            "the test pad's node never went away"
+        );
+        std::fs::remove_file(&seen_as).expect("the node goes with the pad");
         worker.scan();
         assert!(
             !worker

@@ -1,0 +1,39 @@
+<!--
+  A screen with the same small window drawn twice, larger and smaller, for the
+  Picture-in-Picture size rows.
+
+  setting-pip.svg's screen and setting-pip.svg's window, with a second window
+  under the first. Both hug the same edge, because what the row changes is how
+  much of the screen the window takes and not where it sits — the corner is the
+  row below this one, and a drawing that moved the window as well would be
+  answering both questions at once.
+
+  Deliberately unlike setting-scale.svg, which is the other row on this page
+  about a size. That one is a window being drawn out to a larger window with an
+  arrow along the diagonal, because it is about *every* application growing.
+  This has no arrow and no diagonal: it is two sizes of one small thing to
+  choose between.
+
+  The two panes are two bodies with air between them rather than one shape, so
+  neither needs a crevice cut round it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
+          d="M4.2 6.4h23.6a1.8 1.8 0 0 1 1.8 1.8v15.6a1.8 1.8 0 0 1-1.8 1.8H4.2a1.8 1.8 0 0 1-1.8-1.8V8.2a1.8 1.8 0 0 1 1.8-1.8z
+             M4.2 8.2v15.6h23.6V8.2z"/>
+    <rect id="large" x="15.4" y="9.6" width="10.8" height="5.8" rx="1"/>
+    <rect id="small" x="19.6" y="17.6" width="6.6" height="4" rx="0.8"/>
+    <g id="bead"><use href="#frame"/><use href="#large"/><use href="#small"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

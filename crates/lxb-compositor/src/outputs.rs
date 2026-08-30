@@ -16,6 +16,8 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 use smithay::wayland::shell::xdg::ToplevelStateSet;
 
+use lxb_protocol::pip;
+
 use crate::config::{Config, OutputLayout};
 use crate::input::window_is_x11_chrome;
 
@@ -150,16 +152,20 @@ pub struct OutputManager {
     /// which is where the rest of that bargain — what the client is told, and
     /// how its pixels are drawn back out — is written down.
     scale: crate::scale::AppScale,
+    /// What a browser's picture-in-picture window is given, and the mat drawn
+    /// round it.
+    ///
+    /// Here for the reason the scale above it is here: it is part of the
+    /// layout. The floating window is the one window on this session that is
+    /// not tiled to its display, and what this holds is the rectangle it is
+    /// tiled to instead — asked at exactly the same moment, in exactly the same
+    /// call. See [`crate::pip`], which is where the shape of it is argued.
+    pip: crate::pip::Pip,
 }
 
 impl OutputManager {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// How much larger than life applications are drawing.
-    pub fn app_scale(&self) -> crate::scale::AppScale {
-        self.scale
     }
 
     /// Draw applications this much larger than life from now on. `true` when
@@ -168,6 +174,23 @@ impl OutputManager {
         let changed = self.scale != scale;
         self.scale = scale;
         changed
+    }
+
+    /// What the shell has asked a picture-in-picture window to look like.
+    pub fn pip(&self) -> &crate::pip::Pip {
+        &self.pip
+    }
+
+    /// The same, to be written to — which only [`crate::pip`] itself does, to
+    /// keep the note of which windows were floating last time it looked.
+    pub fn pip_mut(&mut self) -> &mut crate::pip::Pip {
+        &mut self.pip
+    }
+
+    /// Take a new answer. `true` when it is a change, which is what the caller
+    /// lays the windows out and redraws on.
+    pub fn set_pip(&mut self, settings: crate::pip::Settings) -> bool {
+        self.pip.set(settings)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -344,6 +367,17 @@ impl OutputManager {
             return;
         }
 
+        // The one window that is not tiled to the display: a browser's
+        // picture-in-picture, which is given a corner of the *whole* screen
+        // rather than of what the layer surfaces leave over. It floats over
+        // those too — see [`crate::render`] — so measuring it against their
+        // exclusive zones would hold it off an edge nothing is on, which is
+        // also why it is answered before the usable area is asked for at all.
+        if self.floats(window) {
+            self.float_window(space, window, output);
+            return;
+        }
+
         let Some(area) = Self::usable_area(space, output) else {
             return;
         };
@@ -391,6 +425,204 @@ impl OutputManager {
             }
         }
         remap_window_preserving_stack(space, window, area.loc);
+    }
+
+    /// How much larger than life `window` draws itself: the session's factor
+    /// for an application, and one to one for the floating window.
+    ///
+    /// The exception is the whole reason this is asked here rather than of
+    /// [`crate::scale::window_scale`] directly. The application scale answers
+    /// how far the user is sitting from a screen full of interface; a video
+    /// already shrunk into a corner has no interface to enlarge, and enlarging
+    /// it would only crop the picture. Everything that has to agree about a
+    /// window's size on screen — what the client is told over
+    /// `wp_fractional_scale_v1`, where its pixels are drawn, and where a press
+    /// on them lands — asks this one question.
+    pub fn window_scale(&self, window: &Window) -> f64 {
+        match self.floats(window) {
+            true => 1.0,
+            false => crate::scale::window_scale(self.scale, window),
+        }
+    }
+
+    /// Whether this window is the floating one, which is the shell's setting
+    /// and the window's own title. See [`crate::state::Lxb::floating`], which
+    /// is the same question asked where the whole compositor is in hand.
+    pub fn floats(&self, window: &Window) -> bool {
+        self.pip.settings().floating && crate::pip::can_float(window)
+    }
+
+    /// Put the floating window in its corner of `display`, at the size the shell
+    /// asked for and the shape its own client asked for.
+    ///
+    /// The opening in the mat rather than the whole shape: the mat is drawn
+    /// over the window's own edges, so a client configured at the outer
+    /// rectangle would have the outermost tenth of its picture painted over.
+    /// What it is handed is the rectangle that is actually left visible.
+    ///
+    /// Not maximized and not tiled, unlike every other window here. Those
+    /// states are how a client is told its size is binding and that there is no
+    /// desktop behind it for a shadow to fall on; this window has both the
+    /// opposite facts about it, and a browser told it was maximized squares off
+    /// the very corners this exists to round.
+    ///
+    /// **The first configure carries no size at all.** That is the question in
+    /// [`crate::pip::Floating`]: this window arrives having been tiled to the
+    /// whole display, so its shape is our shape and not its own, and xdg-shell's
+    /// way of asking a client what size it wants is to send none. The answer
+    /// arrives as the next size it draws that is not one of ours, and from then
+    /// on the rectangle is worked out from it and sent like any other — and it
+    /// is still listened for, because a browser puts a video of another shape
+    /// into the same window. What is sent is written down
+    /// ([`crate::pip::Floating::told`]) so that the client drawing it is read as
+    /// agreement rather than as something new to say.
+    ///
+    /// The application scale is deliberately not applied. It answers how far
+    /// the user is sitting from a *full screen* of interface; a video already
+    /// scaled down to a quarter of the display has no interface to enlarge, and
+    /// enlarging it would only crop the picture.
+    ///
+    /// **A window the user has moved by hand is placed where they put it**, and
+    /// takes no part in the column — see [`crate::pip::Floating::placed`]. Its
+    /// rectangle is still brought back onto the display every time through,
+    /// because that is a fact that can change under a window long after the
+    /// hand let go of it: a mode change, a rotation, a screen unplugged.
+    fn float_window(&self, space: &mut Space<Window>, window: &Window, output: &Output) {
+        let Some(display) = space.output_geometry(output) else {
+            return;
+        };
+        let drawn = space
+            .element_geometry(window)
+            .map(|geometry| geometry.size)
+            .unwrap_or_default();
+        let state = crate::pip::floating_state(window);
+        let asking = state.ask(drawn);
+        let since = state.since(|| self.pip.next_in_order());
+        let (width, height) = (display.size.w as f64, display.size.h as f64);
+        let frame = match state.placed() {
+            // Where the user dragged it to, brought back onto the display it is
+            // on — which is a fact that can change under a window long after
+            // the hand let go of it, from a mode change or a rotation. The
+            // clamped rectangle is written back, so that what the next drag
+            // starts from is what is on the screen.
+            Some(rect) => {
+                let rect = pip::hand_placed(rect, width, height, state.aspect());
+                state.place_at(rect);
+                pip::frame_at(rect, width, height, state.aspect())
+            }
+            // The whole column, and this window's place in it. Both come from
+            // the same list so they cannot disagree about which shape belongs to
+            // which window — see [`OutputManager::floating_column`].
+            None => {
+                let (shapes, place) = self.floating_column(space, output, since, state.aspect());
+                match self
+                    .pip
+                    .frames(display.size, &shapes)
+                    .into_iter()
+                    .nth(place)
+                {
+                    Some(frame) => frame,
+                    None => return,
+                }
+            }
+        };
+        state.placed_in(frame, std::time::Instant::now());
+
+        let inner = frame.inner;
+        let size = Size::<i32, Logical>::from((inner.w.round() as i32, inner.h.round() as i32));
+        let at = display.loc
+            + Point::<i32, Logical>::from((inner.x.round() as i32, inner.y.round() as i32));
+
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|state| {
+                // No size while the question is out: that *is* the question.
+                state.size = (!asking).then_some(size);
+                state.bounds = Some(size);
+                // Whatever it was configured with while it was an ordinary
+                // window, which it may well have been a moment ago: a browser
+                // titles this window after it maps.
+                state.states.unset(xdg_toplevel::State::Maximized);
+                state.states.unset(xdg_toplevel::State::Fullscreen);
+                state.states.unset(xdg_toplevel::State::TiledLeft);
+                state.states.unset(xdg_toplevel::State::TiledRight);
+                state.states.unset(xdg_toplevel::State::TiledTop);
+                state.states.unset(xdg_toplevel::State::TiledBottom);
+            });
+            // Told the display's own scale and no application scale, which is
+            // the buffer this window's size really asks for.
+            crate::scale::tell(window, output.current_scale().fractional_scale(), 1.0);
+            toplevel.send_pending_configure();
+            // What it has been told to be, so that it drawing exactly this is
+            // read as agreement rather than as a fresh answer.
+            if !asking {
+                state.told(size);
+            }
+        } else if let Some(surface) = window.x11_surface() {
+            // X11 has no way to ask a window what size it would like and no
+            // separate geometry to ask it about, so there is no question to put
+            // here: the window is sized, as it always was.
+            if let Err(err) = surface.set_maximized(false) {
+                tracing::warn!(?err, "failed to unmark an X11 window maximized");
+            }
+            if let Err(err) = surface.configure(Rectangle::new(at, size)) {
+                tracing::warn!(?err, "failed to place an X11 window as picture-in-picture");
+            }
+            state.told(size);
+        }
+        remap_window_preserving_stack(space, window, at);
+    }
+
+    /// The shapes of every floating window on `output`, in the order they
+    /// started floating, and which of them the window at `since` is.
+    ///
+    /// Per display, because a corner is a corner of one screen: two videos on
+    /// two screens each keep the corner they were put in. In the order they
+    /// started floating and not the order they are stacked in, because a window
+    /// is raised by being clicked on — and a second video that jumped into the
+    /// corner because somebody pressed pause on the first one would be two
+    /// windows swapping places under the hand doing it.
+    ///
+    /// The display is read from what each window was **assigned**, never from
+    /// which output the space says it overlaps. A window that has just been
+    /// mapped or moved has no refreshed output association yet — the same trap
+    /// [`OutputManager::tile_window_on_output`] is written against — and a
+    /// window missing from its own column is a column with nothing in it, which
+    /// is a floating window that is never given a rectangle at all. What that
+    /// looked like on screen was a video drawn over the whole display, which is
+    /// why it is written down here rather than remembered.
+    ///
+    /// `aspect` is the asking window's own shape, used if it is somehow not in
+    /// the column at all: a window laid out on its own is better than one laid
+    /// out nowhere.
+    fn floating_column(
+        &self,
+        space: &Space<Window>,
+        output: &Output,
+        since: u64,
+        aspect: f64,
+    ) -> (Vec<f64>, usize) {
+        let mut column: Vec<(u64, f64)> = space
+            .elements()
+            .filter(|window| self.floats(window))
+            .filter(|window| assigned_output(window).as_ref() == Some(output))
+            // And a window the user has dragged somewhere is not in the column
+            // at all: it left, and the place it stood in is free. That is what
+            // makes the next video that starts floating take the corner rather
+            // than stand below a window that is no longer under it.
+            .filter(|window| crate::pip::floating_state(window).placed().is_none())
+            .filter_map(|window| {
+                let state = crate::pip::floating_state(window);
+                Some((state.floating_since()?, state.aspect()))
+            })
+            .collect();
+        column.sort_by_key(|(since, _)| *since);
+        match column.iter().position(|(other, _)| *other == since) {
+            Some(place) => (
+                column.into_iter().map(|(_, aspect)| aspect).collect(),
+                place,
+            ),
+            None => (vec![aspect], 0),
+        }
     }
 
     /// Turn one display's picture, and rebuild everything the turn moved.

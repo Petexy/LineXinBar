@@ -10,6 +10,7 @@
 //! to be in scope.
 
 pub mod overview;
+pub mod pip;
 pub mod wallpaper;
 
 #[cfg(feature = "client")]

@@ -1,0 +1,44 @@
+<!--
+  A screen with a small window standing in the corner of it and a play mark cut
+  into that window, for the Picture-in-Picture rows.
+
+  The frame is the screen, cut by its own path, and the small window is a body
+  standing in that hole with air all round it. That is the way round it has to
+  be here: this page is about the *window* — whether there is one, floating over
+  everything — so the window is the thing made of water and the screen is only
+  what it is floating over.
+
+  The play mark is what tells this drawing from the four beside it, and it is
+  the honest difference between them: those rows say which corner of the screen
+  a window goes in, and this one says whether a video floats there at all. It is
+  an opening rather than a body, so the shader beads the same wall round it that
+  it beads round the screen — a mark this small painted as a body would have no
+  flat face to catch the lamp.
+
+  Big enough to survive the bevel: the triangle is nearly six of the drawing's
+  thirty-two units across, which at the size a settings row draws a mark is
+  wider than the two walls that meet in it. A smaller one closes up and comes
+  out as a dimple.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="frame" fill-rule="evenodd" clip-rule="evenodd"
+          d="M4.2 6.4h23.6a1.8 1.8 0 0 1 1.8 1.8v15.6a1.8 1.8 0 0 1-1.8 1.8H4.2a1.8 1.8 0 0 1-1.8-1.8V8.2a1.8 1.8 0 0 1 1.8-1.8z
+             M4.2 8.2v15.6h23.6V8.2z"/>
+    <rect id="pane" x="15" y="9.8" width="11.2" height="7.6" rx="1.2"/>
+    <path id="play" d="M18.7 11.1 24.6 13.6 18.7 16.1z"/>
+    <g id="bead"><use href="#frame"/><use href="#pane"/></g>
+    <g id="holes"><use href="#play"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

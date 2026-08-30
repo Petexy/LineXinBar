@@ -1,0 +1,18 @@
+<!--
+  The space bar, as the key it is.
+
+  The same cap as the other two, holding the bracket that has meant a space
+  since typesetters marked one by hand: a line with a tick turned up at each
+  end. A wide empty cap would have been truer to the bar's own shape and would
+  have read as a cap with nothing on it, which is a mark saying nothing.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect x="2.75" y="5.5" width="18.5" height="13" rx="3.2"
+        fill="none" stroke="#fff" stroke-width="1.5"/>
+  <path d="M7.9 10.5v3.6h8.2v-3.6" fill="none" stroke="#fff" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

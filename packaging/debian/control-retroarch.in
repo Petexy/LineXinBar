@@ -1,0 +1,21 @@
+Package: lxb-retroarch
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Section: x11
+Priority: optional
+Depends: @SHLIB_DEPENDS@, lxb-desktop (= @VERSION@-1)
+Recommends: flatpak
+Suggests: retroarch
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/Petexy/LineXinBar
+Description: RetroArch integration for the LineXinBar shell
+ Adds RetroArch to the LineXinBar shell: a row under Steam in the Games column,
+ a column of the consoles found in a ROM folder of the user's own, and the
+ games in each of them.
+ .
+ The shell looks for this package on PATH and mentions RetroArch only when it
+ is installed. Where RetroArch itself is missing, the shell offers to install
+ the Flathub build into the user's own flatpak installation, which needs no
+ administrative rights; a distribution package of RetroArch is preferred over
+ it when both are present.

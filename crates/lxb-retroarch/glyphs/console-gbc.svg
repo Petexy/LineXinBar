@@ -1,0 +1,34 @@
+<!--
+  The Game Boy Color: narrower than the brick above it, square-cornered, and
+  with the infra-red window cut into the top edge.
+
+  78 by 133.5 mm against the Game Boy's 90 by 148, which is a difference of
+  proportion too small to read on its own — so the two are told apart by their
+  corners (tight here, worn away there) and by that notch in the top edge,
+  which nothing else in this column has.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="brick" x="8.4" y="3" width="15.2" height="26" rx="2.2"/>
+    <rect id="window" x="14.2" y="2" width="3.6" height="2.8" rx="0.9"/>
+    <rect id="screen" x="11.3" y="5.9" width="9.4" height="8.4" rx="0.7"/>
+    <path id="cross" d="M11.45 17.35h2.1v1.7h1.7v2.1h-1.7v1.7h-2.1v-1.7h-1.7v-2.1h1.7z"/>
+    <g id="pips"><circle cx="18.5" cy="20.9" r="1.2"/><circle cx="20.7" cy="19.6" r="1.2"/></g>
+    <mask id="pierced">
+      <use href="#brick" fill="#ffffff"/>
+      <use href="#window" fill="#000000"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#brick" fill="#ffffff"/>
+  </g>
+</svg>

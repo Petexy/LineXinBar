@@ -1,0 +1,46 @@
+<!--
+  The Nintendo DS (NTR-001), opened: two halves of equal width, joined by the
+  hinge barrel between them.
+
+  Both screens are 256 by 192 — four to three, the same shape as a television of
+  the time, and each only about two fifths of the width of the machine.  They
+  were drawn as letterboxes, which is a screen the DS never had, and the error
+  cost the machine its speakers: what fills the width beside the top screen is a
+  grille on either side, and that is the difference between this and any other
+  slab with two windows in it.
+
+  See console-nes.svg for the set's rules, and console-3ds.svg for the machine
+  that replaced it — narrower on top, and wide-screen where this one is not.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="lid" x="4.6" y="3" width="22.8" height="12.2" rx="1.8"/>
+    <rect id="base" x="4.6" y="16.8" width="22.8" height="12.2" rx="1.8"/>
+    <rect id="hinge" x="9" y="14.4" width="14" height="3" rx="0.6"/>
+    <g id="screens">
+      <rect id="upper" x="11.7" y="5.55" width="9.4" height="7.1" rx="0.6"/>
+      <rect id="lower" x="11.7" y="19.35" width="9.4" height="7.1" rx="0.6"/>
+    </g>
+    <g id="speakers"><circle cx="8" cy="9.1" r="1.1"/><circle cx="24" cy="9.1" r="1.1"/></g>
+    <path id="cross" d="M7.15 20.55h1.9v1.4h1.4v1.9h-1.4v1.4h-1.9v-1.4h-1.4v-1.9h1.4z"/>
+    <g id="pips">
+      <circle cx="24.2" cy="21" r="0.9"/><circle cx="26.1" cy="22.9" r="0.9"/>
+      <circle cx="24.2" cy="24.8" r="0.9"/><circle cx="22.3" cy="22.9" r="0.9"/>
+    </g>
+    <g id="bead"><use href="#lid"/><use href="#base"/><use href="#hinge"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#screens" fill="#000000"/>
+      <use href="#speakers" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn an_unusable_record_is_declined_rather_than_guessed_at() {
         let sample_ns = monotonic_now_ns().expect("monotonic clock");
-        assert!(read(&record("Orange", sample_ns, 1)).is_none());
+        assert!(read(&record("Chartreuse", sample_ns, 1)).is_none());
         assert!(read(&record("green", sample_ns, 1)).is_none());
         assert!(read(&record("Green", sample_ns, 1).replace("scene-ns=1", "")).is_none());
         assert!(read("nonsense").is_none());
@@ -928,12 +928,17 @@ mod tests {
             .finished
             .replace((long_ago, backdrop.painter.draw(long_ago)));
 
+        // The clock as the correction starts, which is the moment the frame
+        // that reaches the screen has to be for. Read here and not afterwards:
+        // `catch_up` samples the clock once and stamps the frame it draws with
+        // that sample, so reading the clock again at the end would be
+        // measuring how long this machine takes to paint a wallpaper — nearly
+        // two seconds in a debug build, on top of whatever else the suite has
+        // the cores doing — and not whether the frame was stale.
+        let began = backdrop.painter.scene();
         backdrop.catch_up();
 
-        let behind = backdrop
-            .painter
-            .scene()
-            .saturating_sub(backdrop.drawn_at.get());
+        let behind = began.saturating_sub(backdrop.drawn_at.get());
         assert!(
             behind < TOO_OLD,
             "an hour-old wallpaper went to the screen: {behind:?} behind the clock"

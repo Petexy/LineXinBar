@@ -1,0 +1,42 @@
+<!--
+  The ZX Spectrum: the little black slab, its rubber keys, and the corner it is
+  known by.
+
+  That corner carried a band of colour, which this material has none of — a
+  glyph is neutral grey and takes what colour it shows from the tile behind it.
+  So the corner is *cut off* instead: the flash is a fact about the silhouette
+  here, which is the one place it can survive.
+
+  Forty keys will not go into a cell this size, so what stands for them is their
+  grain — small square keys in two rows of four, against the Commodore's two rows of
+  three wide ones further along the shelf.  The machine is 233 by 144 mm, which is
+  small, and it is drawn small.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="body" d="M5.6 8.6h20.8a1.6 1.6 0 0 1 1.6 1.6v7.2l-6 6H5.6A1.6 1.6 0 0 1 4 21.8V10.2a1.6 1.6 0 0 1 1.6-1.6z"/>
+    <g id="keys">
+      <rect x="6.8" y="11.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="11.6" y="11.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="16.4" y="11.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="21.2" y="11.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="6.8" y="15.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="11.6" y="15.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="16.4" y="15.6" width="3" height="2.6" rx="0.5"/>
+      <rect x="21.2" y="15.6" width="3" height="2.6" rx="0.5"/>
+    </g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#keys" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

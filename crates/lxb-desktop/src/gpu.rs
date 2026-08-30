@@ -26,7 +26,8 @@ use glyphon::{
     Weight,
 };
 use raw_window_handle::{
-    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, RawDisplayHandle, RawWindowHandle,
+    WaylandDisplayHandle, WaylandWindowHandle,
 };
 use wgpu::util::DeviceExt;
 
@@ -127,6 +128,25 @@ pub struct Quad {
     /// cover its colour back without the atlas being touched — and because the
     /// same cover is a single copy shared by every display.
     pub drain: f32,
+    /// Which material one of the shell's own marks is drawn in, when this quad
+    /// is not to take the answer from the theme: [`MARK_FROM_THEME`] for every
+    /// mark in the shell but four rows.
+    ///
+    /// Those four are the Theme page's own values — Wallpaper and Icons, each
+    /// Default and Simple — and they are the reason this exists. Each of those
+    /// rows wears the mark of the half it belongs to, and the two rows of a
+    /// column carry the *same* drawing; what tells them apart is that each is
+    /// drawn in the material it stands for. It is the argument the accent's
+    /// swatches make — a row painted in the colour it applies — asked of a
+    /// material rather than of a colour, and it is the only honest way to draw
+    /// the difference, because the difference is not in the shape: see
+    /// `glyph_material` in shaders.wgsl, where the two branches read the same
+    /// distance field at the same edge.
+    ///
+    /// Read only where a mark is shaded out of its own shape. Nothing else the
+    /// shell draws looks at it, so setting it on a picture or a pane is inert
+    /// rather than wrong.
+    pub mark: f32,
     /// Which part of what this quad samples is actually drawn, as fractions of
     /// the whole: left, top, right, bottom.
     ///
@@ -181,6 +201,9 @@ impl Default for Quad {
             gloss: 0.0,
             face_curve: 0.0,
             drain: 0.0,
+            // Whatever the user has set the marks to, which is what every quad
+            // in the shell but the four rows that *are* that setting wants.
+            mark: MARK_FROM_THEME,
             // The whole of whatever this quad samples, which is what every
             // drawing in the shell but a round preview wants.
             crop: WHOLE,
@@ -782,6 +805,10 @@ struct TextKey {
     /// how many they are allowed. A row growing to be read would otherwise
     /// keep the cut-off shaping it had while it was one of a column.
     lines: u8,
+    /// And which end is cut, for the same reason: the same words in the same
+    /// box are shaped to a different string depending on which end the ellipsis
+    /// takes the place of.
+    cut: Cut,
 }
 
 impl TextKey {
@@ -794,6 +821,7 @@ impl TextKey {
             bold: text.bold,
             align: text.align,
             lines: text.lines.max(1),
+            cut: text.cut,
         }
     }
 }
@@ -904,6 +932,23 @@ fn halo_copies(size: f32, halo: f32) -> Vec<(f32, f32, f32)> {
     copies
 }
 
+/// Which end of a run is given up where it will not fit in its box.
+///
+/// Two, and the difference is what kind of thing the run *is*. A label — a
+/// name, a title, a heading — is told apart from its neighbours by how it
+/// begins, so a label too long for its column keeps its beginning and loses its
+/// end. A **path** is the other way round: every path on a machine begins the
+/// same way, and `/home/somebody/Documents/…` cut at the end has said which
+/// disk the user is on and nothing whatever about where they are standing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cut {
+    /// The end of it. Every run in this shell but one.
+    #[default]
+    Tail,
+    /// The beginning of it, with the ellipsis leading.
+    Head,
+}
+
 /// A run of text to draw.
 ///
 /// Cloneable because a run a panel stands across is drawn twice, once for the
@@ -962,6 +1007,8 @@ pub struct Text {
     /// sentence cut off with an ellipsis is a sentence the user opened the
     /// panel to see the end of.
     pub lines: u8,
+    /// Which end is given up where the run will not fit. See [`Cut`].
+    pub cut: Cut,
 }
 
 impl Default for Text {
@@ -978,6 +1025,7 @@ impl Default for Text {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         }
     }
 }
@@ -1001,6 +1049,10 @@ struct Instance {
     face_curve: f32,
     /// How much of the colour is taken out of what is sampled.
     drain: f32,
+    /// Which material a mark is drawn in, or a negative to take the theme's.
+    /// See [`Quad::mark`]. Fourth of the four scalars, which also lands `cut`
+    /// back on a sixteen-byte boundary.
+    mark: f32,
     /// The rectangle this pane is cut to, as its two corners rather than as a
     /// size: that is the comparison the shader makes against each pixel, and
     /// the conversion belongs here rather than once per fragment. A pane with
@@ -1010,6 +1062,15 @@ struct Instance {
 
 /// All of what a quad samples: see [`Quad::crop`].
 pub const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// A mark drawn in whatever material the user has set the shell's marks to:
+/// see [`Quad::mark`].
+///
+/// Negative because the materials themselves are counted from nought, the way
+/// they are counted in the uniform the shader falls back to — so "no answer of
+/// my own" cannot collide with an answer however many materials there come to
+/// be.
+pub const MARK_FROM_THEME: f32 = -1.0;
 
 /// The part of an atlas rectangle a quad's [`crop`](Quad::crop) keeps.
 ///
@@ -1238,6 +1299,59 @@ fn scenery_group(
     })
 }
 
+/// What stands behind the surface being drawn, which is three questions with
+/// one answer between them.
+///
+/// See [`Gpu::render`], the only thing that takes one.
+#[derive(Default, Clone, Copy)]
+pub struct Behind<'a> {
+    /// The animated background pass: how blurred, and which region of the
+    /// surface it fills. `None` leaves the surface transparent wherever the
+    /// scene does not paint — the overlay drawn over a running application, or
+    /// a surface whose backdrop lives on another surface.
+    pub backdrop: Option<Backdrop>,
+    /// What the wallpaper currently *is* on this display, wanted whether or not
+    /// this surface draws the backdrop pass: the panes of glass in the scene
+    /// re-create the wallpaper to refract it, so a surface handed the wrong one
+    /// shows a pane full of a picture that is not behind it.
+    pub hero: Hero,
+    /// Everything drawn behind this surface and in front of the wallpaper, back
+    /// to front — what the glass on it has to refract and cannot reach for
+    /// itself. See [`Gpu::snapshot`].
+    pub layers: &'a [Underneath<'a>],
+}
+
+/// One thing drawn behind a surface, and how much of it a pane lets through.
+#[derive(Clone, Copy)]
+pub enum Underneath<'a> {
+    /// Another surface of this shell's, whose finished frame it can read at full
+    /// resolution — see [`Target::scene_source`]. Shown as it is: the shell drew
+    /// it, against the same dark ground everything else here is drawn against.
+    Surface(&'a wgpu::BindGroup),
+    /// A picture of what the *compositor* drew: an application's window, or the
+    /// video in a floating one. The shell can neither read it back nor evaluate
+    /// it, so the compositor draws it small and hands it over — see [`Picture`]
+    /// and `lxb_shell_v1.ask_for_the_picture_behind`.
+    ///
+    /// **Absorbed on the way in**, by [`TRANSMITTED`]. Everything this shell
+    /// draws is designed against a wallpaper that is deliberately dark, and a
+    /// pane's tint is thin enough to be worth seeing through because of it. Let
+    /// a film or a game through at full strength and the same pane becomes a
+    /// window: over a bright frame its own colour disappears and the white text
+    /// on it stops being readable, which on a menu is a control that cannot be
+    /// answered. Tinted glass absorbs what it transmits, and this is that.
+    Picture(&'a wgpu::BindGroup),
+}
+
+/// How much of another client's picture a pane of this shell's glass lets
+/// through. See [`Underneath::Picture`].
+///
+/// Chosen by eye against the brightest thing to hand — a menu standing over a
+/// video filling the display — and it is a single number on purpose: every pane
+/// in the shell absorbs the same amount, so the material reads the same whatever
+/// happens to be behind it.
+const TRANSMITTED: f64 = 0.34;
+
 /// How a surface's backdrop pass should be drawn.
 #[derive(Debug, Clone, Copy)]
 pub struct Backdrop {
@@ -1342,6 +1456,10 @@ pub struct Gpu {
     paper_downsample_pipeline: wgpu::RenderPipeline,
     /// The finished frame, from the texture it was built in onto the display.
     blit_pipeline: wgpu::RenderPipeline,
+    /// The same copy, blended rather than replacing. See [`Gpu::snapshot`].
+    compose_pipeline: wgpu::RenderPipeline,
+    /// And the same again, absorbed on the way. See [`Underneath::Picture`].
+    absorb_pipeline: wgpu::RenderPipeline,
     globals_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
     atlas_sampler: wgpu::Sampler,
@@ -1461,6 +1579,44 @@ struct Offscreen {
     height: u32,
 }
 
+/// A picture of what the compositor drew behind one of this shell's surfaces.
+///
+/// The shell draws glass, and glass shows what is behind it. What the shell drew
+/// itself it reads back out of its own frame, and its wallpaper it evaluates —
+/// but another client's window it can do neither with, and without this a pane
+/// standing over a game or over somebody's video reproduces the wallpaper
+/// instead, which is a picture that is not there.
+///
+/// So the compositor draws it and hands it over. Deliberately **small**: a pane
+/// frosts what it transmits, so what it wants back is something already blurred,
+/// and small is what makes a readback affordable every frame. The sampler's own
+/// filtering is what stretches it back out, which is one more blur on a thing
+/// that wanted blurring. See `lxb_shell_v1.ask_for_the_picture_behind`.
+///
+/// `Rgba8UnormSrgb` for the reason [`PAPER_FORMAT`] is: it is the order a
+/// renderer reads a picture back in, so nothing is swizzled between the
+/// compositor's framebuffer and this, and sRGB because that is what the sampler
+/// needs in order to hand the shell the linear light it mixes in.
+pub struct Picture {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
+
+impl Picture {
+    /// It, bound as something a pane can read.
+    pub fn source(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Whether anything has been put in it. An empty one is left out of
+    /// [`Behind::layers`] rather than composited as a sheet of nothing.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+}
+
 /// One display's swapchain and the per-display state that goes with it.
 pub struct Target {
     surface: wgpu::Surface<'static>,
@@ -1483,6 +1639,37 @@ pub struct Target {
     text_buffers: Vec<(TextKey, TextBuffer)>,
 }
 
+/// The `wl_display` this shell is already connected on, wrapped so that it can
+/// be handed to wgpu when the *instance* is made rather than only when a
+/// surface is.
+///
+/// wgpu's GL backend builds its EGL display at instance creation. Given no
+/// display handle there, it falls through every platform arm to
+/// `EGL_MESA_platform_surfaceless`, whose configs are pbuffer-only; every
+/// Wayland surface made against that display is then marked not presentable,
+/// and `request_adapter` refuses GL with "not compatible with provided
+/// surface". GL is the whole of what a machine with no Vulkan driver has left
+/// — a virtual machine on llvmpipe, most of all — so the connection has to be
+/// given to the instance or the fallback does not exist.
+#[derive(Debug, Clone, Copy)]
+struct WaylandDisplay(std::ptr::NonNull<std::ffi::c_void>);
+
+// SAFETY: the pointer is never dereferenced here. It is handed back out as a
+// raw handle and read only by wgpu's EGL backend, and libwayland's display is
+// itself safe to use from more than one thread.
+unsafe impl Send for WaylandDisplay {}
+unsafe impl Sync for WaylandDisplay {}
+
+impl HasDisplayHandle for WaylandDisplay {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        // SAFETY: `Gpu::new_wallpaper` requires the `wl_display` to outlive the
+        // renderer, which is what owns this.
+        Ok(unsafe {
+            DisplayHandle::borrow_raw(RawDisplayHandle::Wayland(WaylandDisplayHandle::new(self.0)))
+        })
+    }
+}
+
 impl Gpu {
     /// Bring up the device against a first Wayland surface, and return that
     /// surface's render target with it.
@@ -1497,13 +1684,18 @@ impl Gpu {
         width: u32,
         height: u32,
     ) -> anyhow::Result<(Self, Target)> {
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        let display =
+            std::ptr::NonNull::new(display).ok_or_else(|| anyhow::anyhow!("null wl_display"))?;
+
+        // The display handle goes to the instance as well as to the surface:
+        // without it there is no GL backend to fall back to. See
+        // [`WaylandDisplay`].
+        let mut instance_descriptor =
+            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(WaylandDisplay(display)));
         instance_descriptor.backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
         let instance = wgpu::Instance::new(instance_descriptor);
 
-        let display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
-            std::ptr::NonNull::new(display).ok_or_else(|| anyhow::anyhow!("null wl_display"))?,
-        ));
+        let display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(display));
         let window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
             std::ptr::NonNull::new(surface).ok_or_else(|| anyhow::anyhow!("null wl_surface"))?,
         ));
@@ -1534,13 +1726,7 @@ impl Gpu {
         .map_err(|e| anyhow::anyhow!("could not open GPU device: {e}"))?;
 
         let capabilities = surface.get_capabilities(&adapter);
-        // Prefer a straightforward sRGB target; the shader writes linear values.
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb)
-            .or_else(|| capabilities.formats.first().copied())
+        let format = preferred_format(&capabilities.formats)
             .ok_or_else(|| anyhow::anyhow!("surface offers no formats"))?;
 
         let config = surface_config(&capabilities, format, width, height);
@@ -1776,38 +1962,74 @@ impl Gpu {
             bind_group_layouts: &[Some(&sample_layout)],
             immediate_size: 0,
         });
+        let offscreen_pipeline_blending =
+            |label: &str, entry: &str, format: wgpu::TextureFormat, blend| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&offscreen_layout),
+                    vertex: wgpu::VertexState {
+                        module: &offscreen_shader,
+                        entry_point: Some("vs_fullscreen"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &offscreen_shader,
+                        entry_point: Some(entry),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        // Replaces what is there rather than blending into it: a blur rung and
+        // a finished frame are each the whole answer, premultiplied alpha and
+        // all.
         let offscreen_pipeline = |label: &str, entry: &str, format: wgpu::TextureFormat| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&offscreen_layout),
-                vertex: wgpu::VertexState {
-                    module: &offscreen_shader,
-                    entry_point: Some("vs_fullscreen"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &offscreen_shader,
-                    entry_point: Some(entry),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        // Both replace what is there rather than blending into
-                        // it: a blur rung and a finished frame are each the
-                        // whole answer, premultiplied alpha and all.
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+            offscreen_pipeline_blending(label, entry, format, None)
         };
         let downsample_pipeline = offscreen_pipeline("downsample", "fs_downsample", format);
         let blit_pipeline = offscreen_pipeline("blit", "fs_blit", format);
+        // The one copy that *is* laid over something rather than replacing it:
+        // one of this shell's surfaces composited onto the one it is drawn in
+        // front of, so the glass on it can refract what the eye finds behind
+        // it. See [`Gpu::snapshot`].
+        let compose_pipeline = offscreen_pipeline_blending(
+            "compose",
+            "fs_blit",
+            format,
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        );
+        // The same, with what it lays down absorbed by the blend constant: a
+        // picture of another client, dimmed to the ground this shell's glass was
+        // designed against. See [`Underneath::Picture`]. The alpha channel is
+        // left alone — how *much* of a pane is covered is not what is being
+        // absorbed, only how brightly it comes through.
+        let absorb_pipeline = offscreen_pipeline_blending(
+            "compose, absorbed",
+            "fs_blit",
+            format,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Constant,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+        );
         // The same halving again, for the one texture in the shell that is not
         // in the surface's own format: the user's own wallpaper, which arrives
         // as decoded RGBA. A pipeline's colour target has to be the format it
@@ -1845,7 +2067,8 @@ impl Gpu {
                         5 => Float32,
                         6 => Float32,
                         7 => Float32,
-                        8 => Float32x4,
+                        8 => Float32,
+                        9 => Float32x4,
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -1906,6 +2129,8 @@ impl Gpu {
                 downsample_pipeline,
                 paper_downsample_pipeline,
                 blit_pipeline,
+                compose_pipeline,
+                absorb_pipeline,
                 globals_layout,
                 atlas_layout,
                 atlas_sampler: sampler,
@@ -2003,6 +2228,23 @@ impl Gpu {
     /// See [`crate::machine::Facts::read`], which is where it is shortened.
     pub fn graphics(&self) -> String {
         self.adapter.get_info().name
+    }
+
+    /// Whether this shell is drawing through Vulkan.
+    ///
+    /// Asked by the RetroArch integration, and it is the whole of what that
+    /// integration knows about this machine's graphics: it wants to set the
+    /// emulator to draw with Vulkan, and the honest test for whether Vulkan
+    /// works here is that something already is. The instance is opened for
+    /// `VULKAN | GL` and takes whichever it gets — see [`Renderer::new`] — so a
+    /// machine with no Vulkan at all answers false, and nothing tells an
+    /// emulator to use a driver that is not there.
+    ///
+    /// Nothing is probed for this. A separate look at what the machine supports
+    /// would be a second answer to a question already answered, and it could
+    /// disagree with the one the shell is running on.
+    pub fn vulkan(&self) -> bool {
+        self.adapter.get_info().backend == wgpu::Backend::Vulkan
     }
 
     /// Atlas slot for an icon name, if it was loaded.
@@ -2349,6 +2591,25 @@ impl Gpu {
         self.thumbs.retain(|path, _| wanted.contains(path));
     }
 
+    /// Throw away the thumbnail of one file, so the next look re-reads it.
+    ///
+    /// The counterpart of [`Self::retain_thumbnails`], and needed for the one
+    /// case that policy cannot see: a file whose *contents* change while its
+    /// path stays the same. What the atlas holds is keyed by path and the shell
+    /// never asks twice for a path it already holds, so an avatar — which
+    /// `accounts-daemon` keeps at one fixed name per account, whatever picture
+    /// is chosen — would go on being the picture it was when the session
+    /// started. The disk cache underneath is stamped by modification time and
+    /// re-renders on its own; only this layer had to be told.
+    pub fn forget_thumbnail(&mut self, path: &Path) {
+        for block in &mut self.thumb_blocks {
+            if block.as_deref() == Some(path) {
+                *block = None;
+            }
+        }
+        self.thumbs.remove(path);
+    }
+
     /// The layer holding one picture, if it is resident.
     pub fn scenery(&self, of: &crate::art::Sight) -> Option<u32> {
         self.scenery_layers
@@ -2580,27 +2841,101 @@ impl Gpu {
         ((block % per_row) * cells, band + (block / per_row) * cells)
     }
 
+    /// Put a picture of what is behind a surface on the GPU.
+    ///
+    /// Made afresh whenever the size changes and written into otherwise, the
+    /// way [`Gpu::put_paper`] treats a frame of the user's own wallpaper. A
+    /// width or height of zero empties it: the compositor says that when there
+    /// was nothing to draw, and a pane must stop refracting a game that has
+    /// closed rather than go on showing the last frame of it.
+    pub fn put_picture(&self, picture: &mut Option<Picture>, width: u32, height: u32, rgba: &[u8]) {
+        if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+            if let Some(picture) = picture.as_mut() {
+                picture.width = 0;
+                picture.height = 0;
+            }
+            return;
+        }
+        let fresh = !picture
+            .as_ref()
+            .is_some_and(|held| held.texture.width() == width && held.texture.height() == height);
+        if fresh {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("what is behind a surface"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: PAPER_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("what is behind a surface"),
+                layout: &self.sample_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            *picture = Some(Picture {
+                texture,
+                bind_group,
+                width,
+                height,
+            });
+        }
+        let Some(held) = picture.as_mut() else {
+            return;
+        };
+        held.width = width;
+        held.height = height;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &held.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba[..(width * height * 4) as usize],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     /// Draw one frame.
-    ///
-    /// `backdrop` is the animated background pass: how blurred, and which
-    /// region of the surface it fills. `None` leaves the surface transparent
-    /// wherever the scene does not paint — the overlay drawn over a running
-    /// application, or a surface whose backdrop lives on another surface.
-    ///
-    /// `hero` is what the wallpaper currently *is* on this display, and it is
-    /// wanted whether or not this surface draws the backdrop pass: the panes
-    /// of glass in the scene re-create the wallpaper to refract it, so a
-    /// surface handed the wrong one shows a pane full of a picture that is not
-    /// behind it.
     pub fn render(
         &mut self,
         target: &mut Target,
         quads: &[Quad],
         texts: &[Text],
         time: f32,
-        backdrop: Option<Backdrop>,
-        hero: Hero,
+        behind: Behind<'_>,
     ) -> anyhow::Result<()> {
+        let Behind {
+            backdrop,
+            hero,
+            layers,
+        } = behind;
         let params = backdrop.unwrap_or_default();
         let theme = crate::theme::theme();
         let covers_surface = backdrop.is_some_and(|backdrop| backdrop.window_rect == [0.0; 4]);
@@ -2652,6 +2987,7 @@ impl Gpu {
                 corner: q.corner,
                 face_curve: q.face_curve,
                 drain: q.drain,
+                mark: q.mark,
                 cut: q.clip.map_or(UNCUT, |[x, y, w, h]| [x, y, x + w, y + h]),
             })
             .collect();
@@ -2766,7 +3102,7 @@ impl Gpu {
         let mut drawn = 0;
         for batch in glass_batches(quads, MAX_GLASS_BATCHES) {
             if batch.reads {
-                self.snapshot(&mut encoder, off);
+                self.snapshot(&mut encoder, off, layers);
             }
             if batch.end == drawn {
                 continue;
@@ -2831,16 +3167,78 @@ impl Gpu {
     /// for it. A pane refracts and scatters *outwards* — it reaches a good way
     /// past its own rim — and working out how far, per pane, to save a copy
     /// that a GPU does in well under a millisecond is the wrong trade.
-    fn snapshot(&self, encoder: &mut wgpu::CommandEncoder, off: &Offscreen) {
-        encoder.copy_texture_to_texture(
-            whole(&off.scene),
-            whole(&off.backdrop),
-            wgpu::Extent3d {
-                width: off.width,
-                height: off.height,
-                depth_or_array_layers: 1,
-            },
-        );
+    ///
+    /// `layers` is everything drawn behind this surface and in front of the
+    /// wallpaper, back to front. Where there is none — the ordinary frame — the
+    /// scene is copied, because everything a pane may refract is already in it.
+    /// Where there is, they are laid down first and this surface's own scene
+    /// composited over them, which is both what the eye finds behind the pane
+    /// and what keeps a second pane on top of the first reading the first.
+    ///
+    /// The wallpaper is deliberately not among them. It is on a surface of its
+    /// own, and a pane does not read it at all: it *evaluates* it, from the same
+    /// function that painted it, wherever this snapshot is transparent — which
+    /// is sharp at any size and free. See `behind_at` in `shaders.wgsl`.
+    fn snapshot(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        off: &Offscreen,
+        layers: &[Underneath<'_>],
+    ) {
+        if layers.is_empty() {
+            encoder.copy_texture_to_texture(
+                whole(&off.scene),
+                whole(&off.backdrop),
+                wgpu::Extent3d {
+                    width: off.width,
+                    height: off.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        } else {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("backdrop from what is behind this surface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &off.rungs[0],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // Back to front, each laid over the last, alpha and all — the pass
+            // was cleared to nothing, so the first needs no special case — and
+            // this surface's own scene last of all, because it is in front of
+            // every one of them.
+            pass.set_blend_constant(wgpu::Color {
+                r: TRANSMITTED,
+                g: TRANSMITTED,
+                b: TRANSMITTED,
+                a: 1.0,
+            });
+            for layer in layers {
+                match layer {
+                    Underneath::Surface(source) => {
+                        pass.set_pipeline(&self.compose_pipeline);
+                        pass.set_bind_group(0, *source, &[]);
+                    }
+                    Underneath::Picture(source) => {
+                        pass.set_pipeline(&self.absorb_pipeline);
+                        pass.set_bind_group(0, *source, &[]);
+                    }
+                }
+                pass.draw(0..3, 0..1);
+            }
+            pass.set_pipeline(&self.compose_pipeline);
+            pass.set_bind_group(0, &off.scene_source, &[]);
+            pass.draw(0..3, 0..1);
+        }
 
         for rung in 1..off.rungs.len() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3058,6 +3456,19 @@ struct Shared<'a> {
 }
 
 impl Target {
+    /// This surface's finished frame, bound as something to read.
+    ///
+    /// For the one surface that is drawn in front of another of this shell's
+    /// and has to refract it — see [`Gpu::snapshot`]. It is the *last* frame
+    /// this surface drew, because the surface in front commits first: a
+    /// synchronised subsurface's contents are applied with its parent's commit,
+    /// so the child is drawn first or it arrives a frame late. What that costs
+    /// is a refraction one frame behind the thing it refracts, which is 16 ms
+    /// of a wallpaper's drift and nothing anybody can see.
+    pub fn scene_source(&self) -> &wgpu::BindGroup {
+        &self.offscreen.scene_source
+    }
+
     fn new(
         shared: Shared<'_>,
         text_atlas: &mut TextAtlas,
@@ -3235,9 +3646,11 @@ fn lay_out(
     content: &str,
     cap: u8,
 ) {
-    buffer.set_ellipsize(glyphon::cosmic_text::Ellipsize::End(
-        glyphon::cosmic_text::EllipsizeHeightLimit::Lines(cap.max(1) as usize),
-    ));
+    let allowed = glyphon::cosmic_text::EllipsizeHeightLimit::Lines(cap.max(1) as usize);
+    buffer.set_ellipsize(match text.cut {
+        Cut::Tail => glyphon::cosmic_text::Ellipsize::End(allowed),
+        Cut::Head => glyphon::cosmic_text::Ellipsize::Start(allowed),
+    });
     let attrs = Attrs::new()
         .family(Family::Name(UI_FONT))
         .weight(if text.bold {
@@ -3356,6 +3769,37 @@ fn shape_texts(
             None => pool.push((key, buffer)),
         }
     }
+}
+
+/// Which of a surface's formats to draw into.
+///
+/// The shader writes linear values and the encoding is the swapchain's to do,
+/// so this wants an sRGB target — `Bgra8UnormSrgb` for preference, since that
+/// is what every display then has to agree on in [`Gpu::add_target`].
+///
+/// Any sRGB format will do, though, and saying so matters. Falling straight
+/// from the preferred format to whatever happens to be first would hand the
+/// shader a *linear* target on a driver that offers `Rgba8UnormSrgb` without
+/// the `Bgra` spelling, and darken the whole shell — an exchange the palette
+/// would be blamed for. A driver with no sRGB swapchain at all is still taken,
+/// because a shell in the wrong colours beats no shell, but it says so on the
+/// way past.
+fn preferred_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    formats
+        .iter()
+        .copied()
+        .find(|format| *format == wgpu::TextureFormat::Bgra8UnormSrgb)
+        .or_else(|| formats.iter().copied().find(|format| format.is_srgb()))
+        .or_else(|| {
+            let first = formats.first().copied();
+            if let Some(format) = first {
+                tracing::warn!(
+                    ?format,
+                    "no sRGB swapchain format; colours will be too dark"
+                );
+            }
+            first
+        })
 }
 
 /// Swapchain settings shared by every display the shell draws on.
@@ -3748,6 +4192,36 @@ pub struct Thumb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shader's output is linear, so the swapchain has to be the thing
+    /// that encodes it.
+    ///
+    /// The middle case is the one worth pinning. It is unreachable on the
+    /// Vulkan backend of any desktop driver and on GL, where the two sRGB
+    /// spellings are offered together or not at all — but the fallthrough it
+    /// replaces was silent, and a shell that renders every colour too dark
+    /// looks like a palette that was got wrong rather than a format that was.
+    #[test]
+    fn the_swapchain_is_asked_to_do_the_srgb_encoding() {
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb};
+
+        // What the GL backend offers, in the order it offers it.
+        assert_eq!(
+            preferred_format(&[Rgba8UnormSrgb, Bgra8UnormSrgb, Rgba8Unorm, Bgra8Unorm]),
+            Some(Bgra8UnormSrgb),
+        );
+        // The preferred spelling missing is not a reason to go linear.
+        assert_eq!(
+            preferred_format(&[Rgba8Unorm, Bgra8Unorm, Rgba8UnormSrgb]),
+            Some(Rgba8UnormSrgb),
+        );
+        // With no sRGB target at all there is nothing to do but say so.
+        assert_eq!(
+            preferred_format(&[Rgba8Unorm, Bgra8Unorm]),
+            Some(Rgba8Unorm),
+        );
+        assert_eq!(preferred_format(&[]), None);
+    }
 
     /// The transition atlas is a valid binding and nothing more: exactly the
     /// two procedural cells in one row, with no storage reserved for pictures
@@ -4179,6 +4653,7 @@ mod tests {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         }
     }
 
@@ -4329,6 +4804,44 @@ mod tests {
             reached.is_some_and(|reached| reached < title.len()),
             "the whole title was drawn after all"
         );
+    }
+
+    /// A path too long for its box gives up its *beginning*, not its end.
+    ///
+    /// Every path on a machine starts the same way, so a location cut at the
+    /// end names the disk and never reaches the folder the user is standing in
+    /// — which is the whole of what the line is for. See [`Cut`].
+    #[test]
+    fn a_path_too_long_for_its_box_is_cut_from_the_front() {
+        let mut font_system = shell_fonts();
+        let path = "/home/somebody/Documents/Projects/the one with the long name/pictures/holidays";
+        let mut pool = Vec::new();
+        let cut_head = Text {
+            cut: Cut::Head,
+            ..label(path, 200.0)
+        };
+        shape_texts(&mut font_system, &mut pool, &[cut_head, label(path, 200.0)]);
+
+        let ends = |index: usize| -> (usize, usize) {
+            let (_, buffer) = &pool[index];
+            let runs: Vec<_> = buffer.layout_runs().collect();
+            assert_eq!(runs.len(), 1, "a location is one line, never two");
+            let glyphs = &runs[0].glyphs;
+            (
+                glyphs.iter().map(|glyph| glyph.start).min().unwrap(),
+                glyphs.iter().map(|glyph| glyph.end).max().unwrap(),
+            )
+        };
+        let (head_start, head_end) = ends(0);
+        let (tail_start, tail_end) = ends(1);
+        // Cut from the front: the run reaches the last character of the path
+        // and does not begin at its first.
+        assert_eq!(head_end, path.len(), "the folder itself was cut off");
+        assert!(head_start > 0, "nothing was given up at all");
+        // And the other way round, which is what every other run in the shell
+        // does and what this one deliberately does not.
+        assert_eq!(tail_start, 0);
+        assert!(tail_end < path.len());
     }
 
     /// No line of a wrapped run begins with the space it was wrapped at.

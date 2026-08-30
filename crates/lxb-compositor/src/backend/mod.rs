@@ -91,6 +91,27 @@ impl Backend {
             Backend::Udev(b) => b.capture_output(lxb, output),
         }
     }
+
+    /// Draw, small, what this backend is compositing on one side of the shell's
+    /// own surfaces — so a pane of the shell's glass can refract it.
+    ///
+    /// Here for the reason [`Backend::capture_output`] is here: it is a render
+    /// pass into an offscreen buffer, which needs a renderer and the session
+    /// state and nothing about how this session reaches its displays. See
+    /// [`crate::capture::behind`].
+    pub fn picture_behind(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &smithay::output::Output,
+        side: crate::capture::Side,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        match self {
+            Backend::Winit(b) => b.picture_behind(lxb, output, side, size),
+            Backend::X11(b) => b.picture_behind(lxb, output, side, size),
+            Backend::Udev(b) => b.picture_behind(lxb, output, side, size),
+        }
+    }
 }
 
 impl crate::state::LxbState {

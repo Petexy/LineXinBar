@@ -5,18 +5,26 @@
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::utils::RescaleRenderElement;
-use smithay::backend::renderer::element::{
-    default_primary_scanout_output_compare, AsRenderElements, Kind, RenderElementStates,
+use smithay::backend::renderer::element::surface::{
+    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
 };
-use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
+use smithay::backend::renderer::element::utils::{
+    CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
+};
+use smithay::backend::renderer::element::{
+    default_primary_scanout_output_compare, AsRenderElements, Element, Id, Kind,
+    RenderElementStates,
+};
+use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::utils::{update_surface_primary_scanout_output, OutputPresentationFeedback};
 use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{Logical, Rectangle, Scale};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
@@ -34,11 +42,35 @@ smithay::render_elements! {
     /// mid-flight in the overview, on its way into or out of a card, or an
     /// application drawing larger than life for [`crate::scale`].
     Scaled = RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// The same, cut to a rectangle and then put wherever the window is
+    /// standing on this frame: the floating picture-in-picture window, which
+    /// may draw neither larger than its corner nor outside it. See
+    /// [`push_floating_windows`] and [`Standing`].
+    Floating = RelocateRenderElement<
+        RescaleRenderElement<
+            CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
+        >,
+    >,
+    /// The last picture of a floating window whose client has gone, put back on
+    /// the screen exactly where the window was so that it can be faded out of
+    /// it. See [`crate::pip::LastPicture`].
+    Kept = RelocateRenderElement<
+        RescaleRenderElement<
+            CropRenderElement<RescaleRenderElement<TextureRenderElement<R::TextureId>>>,
+        >,
+    >,
     /// A CPU-side image: the themed cursor.
     Memory = MemoryRenderBufferRenderElement<R>,
+    /// The mat that rounds a floating window, standing exactly where the window
+    /// inside it stands.
+    Matte = RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<R>>>,
     /// One flat colour over the whole display: the flash a screenshot answers
     /// with, and the black a session goes out behind.
     Solid = SolidColorRenderElement,
+    /// And the mat's own colour behind a floating window, filling its opening —
+    /// moved with the rest of the shape, and by the very same transform, so
+    /// that nothing can open a seam between the two.
+    Backing = RelocateRenderElement<RescaleRenderElement<SolidColorRenderElement>>,
 }
 
 /// The windows the overview shows for `output`, topmost first — the same
@@ -54,6 +86,12 @@ pub fn overview_windows(lxb: &Lxb, output: &Output) -> Vec<Window> {
         .elements_for_output(output)
         .rev()
         .filter(|window| window_accepts_keyboard_focus(window) && !lxb.out_of_sight(window))
+        // And the floating window is left out too, for the opposite reason to
+        // an unseen one: it is not something to come back to. It is already on
+        // screen, it stays on screen while the cards fly, and a card offering
+        // to switch to the video the user is watching over the top of this
+        // very overview would be offering them nothing.
+        .filter(|window| !lxb.floating(window))
         .cloned()
         .collect()
 }
@@ -98,8 +136,8 @@ where
         )));
     }
 
-    // Then the black one display rests behind while a game is played on
-    // another — under the curtain, because the session leaving is over every
+    // Then the black one display rests behind while another one is being
+    // used — under the curtain, because the session leaving is over every
     // screen and outranks one screen sleeping, and over everything else on
     // this one for the reason the curtain is over everything: a cursor left
     // lit on a resting OLED panel is the brightest thing on it. See
@@ -148,7 +186,22 @@ where
     // startup wallpaper at the bottom of this function answers.
     let session_content_starts_at = elements.len();
 
+    // In front of every other thing the session draws: the floating window, and
+    // the mat that rounds it. Before the overlay layer, which is where the
+    // shell's guide is — the one surface nothing else in this compositor is
+    // allowed in front of, and the one this is deliberately in front of. A
+    // video the user parked in a corner has to still be there while they open
+    // the guide, or parking it there was pointless.
+    //
+    // Above the flight below it too, so a window growing back out of its tile
+    // passes *under* the video rather than swallowing it.
+    // The one thing allowed in front of a floating window: the surface the shell
+    // draws its context menu on. See [`push_the_menu_over_floating_windows`].
+    push_the_menu_over_floating_windows(&mut elements, renderer, lxb, output, scale);
+    let floating = push_floating_windows(&mut elements, renderer, lxb, output, now, scale);
+
     let layer_map = layer_map_for_output(output);
+    let a_menu_is_up = lxb.outputs.pip().has_a_menu();
 
     let push_layer = |elements: &mut Vec<LxbRenderElement<R>>, layer: Layer, renderer: &mut R| {
         for surface in layer_map.layers_on(layer).rev() {
@@ -156,6 +209,24 @@ where
                 continue;
             };
             let location = geometry.loc.to_physical_precise_round(scale);
+            // A tree with a menu in it is walked by hand, so the menu can be
+            // left out of it: it has already been drawn, in front of the
+            // floating windows. Every other surface on the session takes
+            // smithay's own walk, which is the same walk without the question.
+            if a_menu_is_up {
+                elements.extend(
+                    elements_of_all_but_the_menu(
+                        renderer,
+                        lxb,
+                        surface.wl_surface(),
+                        location,
+                        scale,
+                    )
+                    .into_iter()
+                    .map(LxbRenderElement::Surface),
+                );
+                continue;
+            }
             elements.extend(
                 surface
                     .render_elements::<WaylandSurfaceRenderElement<R>>(
@@ -178,63 +249,16 @@ where
     push_layer(&mut elements, Layer::Overlay, renderer);
     push_layer(&mut elements, Layer::Top, renderer);
 
-    // Windows, topmost first — either where they really are, or (in the
-    // overview) somewhere between there and their card.
-    let overview = lxb.overview.progress(output, now);
-    if overview > 0.0 {
-        push_overview_windows(&mut elements, renderer, lxb, output, overview, scale);
-    } else {
-        for window in space.elements_for_output(output).rev() {
-            // Already drawn, mid-flight, in front of the shell.
-            if flying.contains(&crate::overview::window_id(window)) {
-                continue;
-            }
-            // An application the shell runs without showing. It is mapped,
-            // configured and drawing exactly as it would be; the pixels simply
-            // never leave it. See `lxb_shell_v1.keep_out_of_sight`.
-            if lxb.out_of_sight(window) {
-                continue;
-            }
-            let Some(location) = space.element_location(window) else {
-                continue;
-            };
-            // A window is mapped by its *geometry* — the frame the user thinks
-            // of as the window. A client drawing its own decorations puts that
-            // frame inside a larger surface, with the drop shadow spilling
-            // above and to the left of it, so the surface starts before the
-            // geometry does. Rendering from the geometry's location instead
-            // would push the whole window down and right by the width of its
-            // own shadow, hanging its far edge off the display — and leave the
-            // pixels disagreeing with input, which does subtract this.
-            let relative = (location - output_geo.loc - window.geometry().loc)
-                .to_physical_precise_round(scale);
-            let surfaces = window
-                .render_elements::<WaylandSurfaceRenderElement<R>>(renderer, relative, scale, 1.0);
-            // The third part of drawing an application larger than life: it was
-            // configured at a fraction of the display and told to fill that
-            // fraction with the display's own pixels, so what comes back has to
-            // be laid over the whole of it again. Anchored at the window's own
-            // corner, which is where the display's usable area begins — the
-            // shadow spilling before it grows with the window, as it does when
-            // the same window shrinks into an overview card below.
-            //
-            // A client that honoured the scale is then drawn pixel for pixel:
-            // its buffer already has as many pixels as the rectangle this puts
-            // it in. One that did not is enlarged, softly, which is the same
-            // answer it gets from every compositor.
-            let factor = crate::scale::window_scale(lxb.outputs.app_scale(), window);
-            if factor == 1.0 {
-                elements.extend(surfaces.into_iter().map(LxbRenderElement::Surface));
-                continue;
-            }
-            let anchor = (location - output_geo.loc).to_physical_precise_round(scale);
-            elements.extend(surfaces.into_iter().map(|element| {
-                LxbRenderElement::Scaled(RescaleRenderElement::from_element(
-                    element, anchor, factor,
-                ))
-            }));
-        }
-    }
+    push_windows(
+        &mut elements,
+        renderer,
+        lxb,
+        output,
+        now,
+        scale,
+        &flying,
+        &floating,
+    );
 
     push_layer(&mut elements, Layer::Bottom, renderer);
     push_layer(&mut elements, Layer::Background, renderer);
@@ -268,6 +292,804 @@ where
     elements
 }
 
+/// How much larger than its opening a client may draw before it is scaled down
+/// to fit rather than trimmed to it, in logical pixels.
+///
+/// A pixel, because a pixel is what rounding an opening to whole ones costs and
+/// the crop takes it back for nothing. Anything more is a client drawing
+/// something other than what it was asked to draw, and cropping *that* would
+/// show the top left corner of a window and call it a video.
+const OVERDRAWS_BY: f64 = 1.0;
+
+/// Draw the floating window — a browser's picture-in-picture — in its corner,
+/// with the mat that rounds it, and return which windows were drawn so no later
+/// pass draws them again.
+///
+/// The mat first, because elements are drawn front to back and the mat is over
+/// the window's own edges: that is what rounds the corners. See [`crate::pip`],
+/// where the whole of that argument lives.
+///
+/// The rectangle comes from the layout rather than being worked out again here
+/// — [`crate::pip::Floating::frame`] — so the mat is painted round exactly the
+/// opening the client was configured into. Two halves computing the same shape
+/// from the same inputs is a way of saying they can disagree, and the shape now
+/// depends on a conversation with the client that only one of them is having.
+///
+/// **Everything is clipped to that opening, and nothing may draw larger than
+/// it.** Both are about a client that is not drawing what it was asked to draw,
+/// and each is a different way of not drawing it:
+///
+/// - A window with its own decorations puts its geometry *inside* a larger
+///   surface, with a drop shadow spilling out on every side. Firefox's
+///   picture-in-picture window is one. That shadow is tens of pixels and the mat
+///   is ten, so without the crop the client's own shadow — and the antialiased
+///   edge of its own rounded corners — hangs outside the rounded frame, which is
+///   exactly the leak this fixes.
+/// - A client that has not answered the configure yet, or will not, is drawing
+///   at some other size entirely. Cropping alone would show the top left corner
+///   of it and call that a video, so it is scaled down to fit first, the way the
+///   overview scales a window into a card. Shrink only: a client drawing smaller
+///   than it was asked to is left at its own size rather than blown up soft.
+///
+/// **And nothing shows through it.** The opening is filled with the mat's own
+/// colour behind the window, so a client that does not cover it — one still
+/// starting up, one that will not take the size it was given, one with
+/// transparent corners of its own, or one an edge's worth of rounding short —
+/// is centred and letterboxed on more frame. What is behind a floating window
+/// is the application the user is actually using, and any of it seen *inside*
+/// the frame reads as the window being broken.
+fn push_floating_windows<R>(
+    elements: &mut Vec<LxbRenderElement<R>>,
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    now: std::time::Instant,
+    scale: Scale<f64>,
+) -> Vec<u32>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let mut drawn = Vec::new();
+    let space = &lxb.space;
+
+    for window in space.elements_for_output(output).rev() {
+        if !lxb.floating(window) || lxb.out_of_sight(window) {
+            continue;
+        }
+        // Where the layout put it. A window that has started floating and has
+        // not been laid out yet is left to the ordinary pass for this one frame,
+        // rather than drawn against a rectangle nothing agreed to.
+        let Some(frame) = crate::pip::floating_state(window).frame() else {
+            continue;
+        };
+        let Some(geometry) = space.element_geometry(window) else {
+            continue;
+        };
+        // How far into its arrival this window is: how much of it there is, and
+        // the fraction of its own size it is drawn at. Nothing at all once it
+        // has arrived, which is every frame of a video but the first handful —
+        // and asking is what starts the clock, so the animation begins on the
+        // frame this window is first drawn on. See [`crate::pip::arrival`].
+        let (alpha, depth) = crate::pip::floating_state(window)
+            .arriving(now)
+            .unwrap_or((1.0, 1.0));
+
+        // Everything below is measured from the frame the layout settled, in
+        // logical coordinates relative to this output.
+        let opening: Rectangle<f64, Logical> = Rectangle::new(
+            (frame.inner.x, frame.inner.y).into(),
+            (frame.inner.w, frame.inner.h).into(),
+        );
+        let corner = opening.loc;
+        // The rectangle the client's own buffer is snapped to, which is what the
+        // mat's opening is painted at and what stands behind the window. One
+        // answer, asked once: see [`crate::pip::backing`].
+        let backing = crate::pip::backing(opening, scale.x);
+        // And where this window is standing on this frame, as one transform for
+        // all three pieces of it: the shape the layout settled, sprung towards
+        // from wherever it used to stand, and then taken to whatever fraction
+        // of its own size an arrival or a departure has it at. See
+        // [`Standing`], where both of those are argued for.
+        let settling = crate::pip::floating_state(window).standing_in(now);
+        let standing = Standing::of(
+            frame.outer,
+            crate::pip::deepened(settling.unwrap_or(frame.outer), depth),
+            scale,
+            depth < 1.0 || settling.is_some(),
+        );
+        // The mark that says this is the window the guide handed its directions
+        // to, over the mat rather than under it: it is the *frame* that turns
+        // accent, and a picture drawn behind an opaque one would only be the
+        // glow around it. Nothing at all on a session where nobody has selected
+        // anything, which is every session with a mouse in it.
+        if let Some((selected, accent)) = lxb.outputs.pip().selected() {
+            if selected == crate::overview::window_id(window) {
+                // Its own breath, times however much of the window there is:
+                // a mark at full strength around a window that is still arriving
+                // would be the accent turning up before the video it is about.
+                let breath = crate::pip::mark_alpha(lxb.start_time.elapsed()) * alpha;
+                if let Some(mark) = lxb
+                    .outputs
+                    .pip()
+                    .mark(renderer, &frame, scale.x, backing, accent, breath)
+                {
+                    elements.push(LxbRenderElement::Matte(standing.put(mark)));
+                }
+            }
+        }
+        if let Some(mat) = lxb
+            .outputs
+            .pip()
+            .mat(renderer, &frame, scale.x, backing, alpha)
+        {
+            elements.push(LxbRenderElement::Matte(standing.put(mat)));
+        }
+
+        // Shrink to fit, and only ever shrink — but only a client that is
+        // *materially* larger than its opening, because the crop below trims a
+        // pixel or two for nothing and scaling a video by a ninety-ninth to save
+        // them would soften every frame of it. See [`OVERDRAWS_BY`].
+        let over =
+            (geometry.size.w as f64 - opening.size.w).max(geometry.size.h as f64 - opening.size.h);
+        let factor = match over > OVERDRAWS_BY {
+            true => (opening.size.w / geometry.size.w.max(1) as f64)
+                .min(opening.size.h / geometry.size.h.max(1) as f64)
+                .min(1.0),
+            false => 1.0,
+        };
+        // Centred in what is left over, which is a client that would not take
+        // the size it was given: a video half the height of its opening reads as
+        // letterboxed, and the same video pinned to the top of one reads as a
+        // window with something wrong with it.
+        let over_by = |whole: f64, part: f64| ((whole - part) / 2.0).max(0.0);
+        let corner = corner
+            + Point::<f64, Logical>::from((
+                over_by(opening.size.w, geometry.size.w as f64 * factor),
+                over_by(opening.size.h, geometry.size.h as f64 * factor),
+            ));
+        let anchor = corner.to_physical(scale).to_i32_round();
+        // The same subtraction the ordinary window pass makes: a client drawing
+        // its own decorations puts its geometry inside a larger surface, so the
+        // surface starts before the geometry does — and here that spill is what
+        // the crop below is for.
+        let placed = crate::pip::Placed {
+            frame,
+            corner,
+            origin: corner - window.geometry().loc.to_f64(),
+            factor,
+        };
+        let relative = placed.origin.to_physical_precise_round(scale);
+        let cut = standing.cut_to(opening, scale);
+        elements.extend(
+            window
+                .render_elements::<WaylandSurfaceRenderElement<R>>(renderer, relative, scale, alpha)
+                .into_iter()
+                .filter_map(|element| {
+                    CropRenderElement::from_element(
+                        RescaleRenderElement::from_element(element, anchor, factor),
+                        scale,
+                        cut,
+                    )
+                })
+                .map(|element| LxbRenderElement::Floating(standing.put(element))),
+        );
+        // And the mat's own colour behind all of it, filling the opening.
+        //
+        // Nothing may show through the frame. What is behind a floating window
+        // is the application the user is actually using, and any of it seen
+        // *inside* the frame reads as the window being broken rather than as
+        // something showing through: a client that has not drawn yet, one that
+        // will not take the size it was given, one whose own corners are
+        // transparent, and the half pixel that rounding the opening to whole
+        // ones leaves along an edge — all four looked like a hole cut in the
+        // video. Painted in the mat's colour rather than in black, so what is
+        // left over reads as more frame.
+        elements.push(LxbRenderElement::Backing(standing.put(
+            SolidColorRenderElement::new(
+                crate::pip::floating_state(window).backdrop(),
+                backing,
+                CommitCounter::default(),
+                // Premultiplied, as everything else this compositor hands a
+                // renderer is: the mat's colour at this alpha is that colour
+                // scaled by it.
+                faded(crate::pip::BACKDROP, alpha),
+                Kind::Unspecified,
+            ),
+        )));
+        // And a note of what all that came to, so that this window can still be
+        // drawn on the day its client goes away without warning — which is
+        // every day, because that is how a browser closes one. See
+        // [`keep_the_last_picture`].
+        keep_the_last_picture(renderer, lxb, window, output, placed);
+        drawn.push(crate::overview::window_id(window));
+    }
+
+    // And then the ones that have already gone, drawn from the last picture
+    // taken of them. Behind the windows still floating, because a video put
+    // back into a corner the moment another left it is the new one arriving
+    // over the old one leaving.
+    push_leaving_windows(elements, renderer, lxb, output, now, scale);
+    drawn
+}
+
+/// Where a floating window is standing on this frame, as one transform.
+///
+/// Everything about such a window is painted for the rectangle the *layout*
+/// settled — the mat at that size, the client configured to that opening, the
+/// colour behind it filling that opening — and then all three are moved
+/// together onto wherever the window actually is at this moment. Three things,
+/// one transform, one origin: a mat three pixels thick has nothing to spare for
+/// three separate pieces of arithmetic agreeing about where a corner is.
+///
+/// Two animations end up in here, and they compose because both of them are
+/// only ever a rectangle:
+///
+/// - **Arriving and leaving** ([`crate::pip::arrival`]), which is the shape at
+///   a fraction of its own size about its own middle.
+/// - **Settling** ([`crate::pip::settling`]), which is the shape springing from
+///   where it used to stand to where the layout has just put it — the column
+///   closing up behind a window pulled out of it, or the whole column changing
+///   size because somebody moved a slider on the Settings page. The spring goes
+///   *past* its destination and comes back, so the rectangle this is asked
+///   about is regularly outside both ends of the journey.
+///
+/// Never repainted, always transformed. Painting a mat is a few hundred
+/// thousand distance fields and they are cached by size, so a window whose
+/// shape was re-derived every frame of a spring would repaint one on every
+/// frame of it — which on a 4K panel is a tenth of a second of processor, per
+/// frame, for half a second.
+#[derive(Debug, Clone, Copy)]
+struct Standing {
+    /// The corner of the shape everything is painted for, which is what the
+    /// scale below is taken about.
+    origin: Point<i32, Physical>,
+    /// How much larger or smaller than that shape this frame's is — per axis,
+    /// because a spring from one shape to another of a different proportion is
+    /// exactly the squash that makes it read as something soft.
+    scale: Scale<f64>,
+    /// And how far the whole thing has moved.
+    shift: Point<i32, Physical>,
+    /// Whether this is anything at all, which it is not on any frame of a video
+    /// simply sitting in its corner.
+    moved: bool,
+}
+
+impl Standing {
+    /// The transform that takes `target` — the shape everything is painted for
+    /// — onto `visible`, the shape it is to appear in this frame.
+    fn of(
+        target: lxb_protocol::overview::Rect,
+        visible: lxb_protocol::overview::Rect,
+        scale: Scale<f64>,
+        moved: bool,
+    ) -> Self {
+        let corner = |rect: &lxb_protocol::overview::Rect| {
+            Point::<f64, Logical>::from((rect.x, rect.y))
+                .to_physical(scale)
+                .to_i32_round()
+        };
+        let origin = corner(&target);
+        Self {
+            origin,
+            scale: Scale::from((
+                visible.w / target.w.max(f64::EPSILON),
+                visible.h / target.h.max(f64::EPSILON),
+            )),
+            shift: corner(&visible) - origin,
+            moved,
+        }
+    }
+
+    /// One piece of the window, put where the window is.
+    fn put<E: Element>(self, element: E) -> RelocateRenderElement<RescaleRenderElement<E>> {
+        RelocateRenderElement::from_element(
+            RescaleRenderElement::from_element(element, self.origin, self.scale),
+            self.shift,
+            Relocate::Relative,
+        )
+    }
+
+    /// The rectangle a floating window's own drawing is cut to.
+    ///
+    /// Its opening exactly while the window is standing still, and one physical
+    /// pixel inside it while it is being moved.
+    ///
+    /// That pixel is the price of the transform. Scaling rounds a rectangle's
+    /// corner and its size to whole pixels separately, so two rectangles that
+    /// shared an edge before can be a pixel apart afterwards, and the two here
+    /// are the mat's painted opening and the video inside it. A pixel of *mat*
+    /// over the video is nothing — the mat lies on the edge of the picture
+    /// already, which is [`crate::pip::OVERLAP`]. A pixel of *video* outside the
+    /// mat is a square corner on a rounded window. So the video gives way, for
+    /// as long as the window is moving, and what shows in its place is the mat's
+    /// own colour behind it.
+    fn cut_to(
+        self,
+        opening: Rectangle<f64, Logical>,
+        scale: Scale<f64>,
+    ) -> Rectangle<i32, Physical> {
+        let mut cut: Rectangle<i32, Physical> = opening.to_physical_precise_round(scale);
+        if self.moved {
+            cut.loc += Point::from((1, 1));
+            cut.size.w = (cut.size.w - 2).max(0);
+            cut.size.h = (cut.size.h - 2).max(0);
+        }
+        cut
+    }
+}
+
+/// A premultiplied colour with `alpha` of it left.
+fn faded(colour: [f32; 4], alpha: f32) -> [f32; 4] {
+    [
+        colour[0] * alpha,
+        colour[1] * alpha,
+        colour[2] * alpha,
+        colour[3] * alpha,
+    ]
+}
+
+/// Take a note of what a floating window looks like on this frame: the picture
+/// itself, and where on the display it was put.
+///
+/// One texture handle cloned per surface of the window — a reference count, not
+/// a copy of anything — and nothing at all on a session with no video parked in
+/// a corner. What it buys is a window that can be faded *out*, which nothing
+/// else here could give: a browser does not stop calling its window
+/// picture-in-picture when the video goes back into the page, it destroys the
+/// window, and a destroyed surface has no picture to fade. See
+/// [`crate::pip::LastPicture`], where the whole of that argument lives.
+///
+/// The tree is walked exactly as smithay walks it to build the elements above —
+/// same offsets, same order — because what is kept has to land where the live
+/// window was standing. The offsets are kept in logical coordinates so that the
+/// same note can be drawn at any scale: this is also asked while the small
+/// picture behind the shell's glass is being built, which is the same frame at
+/// a different size.
+fn keep_the_last_picture<R>(
+    renderer: &R,
+    lxb: &Lxb,
+    window: &Window,
+    output: &Output,
+    placed: crate::pip::Placed,
+) where
+    R: Renderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    let Some(surface) = window.wl_surface() else {
+        return;
+    };
+    let mut picture = crate::pip::KeptPicture::new(renderer.context_id());
+    with_surface_tree_downward(
+        &surface,
+        Point::<i32, Logical>::default(),
+        |_, states, offset| {
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return TraversalAction::SkipChildren;
+            };
+            match data.lock().unwrap().view() {
+                Some(view) => TraversalAction::DoChildren(*offset + view.offset),
+                None => TraversalAction::SkipChildren,
+            }
+        },
+        |surface, states, offset| {
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return;
+            };
+            let data = data.lock().unwrap();
+            let Some(view) = data.view() else {
+                return;
+            };
+            picture.keep(
+                Id::from_wayland_resource(surface),
+                *offset + view.offset,
+                &data,
+            );
+        },
+        |_, _, _| true,
+    );
+    if picture.is_empty() {
+        return;
+    }
+    lxb.outputs.pip().keep(
+        crate::overview::window_id(window),
+        crate::pip::LastPicture::new(
+            output.name(),
+            placed,
+            crate::pip::floating_state(window).backdrop(),
+            picture,
+        ),
+    );
+}
+
+/// Draw every floating window that has gone, fading and falling back out of the
+/// corner it was in.
+///
+/// Nothing of the window itself is left by now — see [`keep_the_last_picture`]
+/// for why — so all three parts of it come from somewhere else. The picture is
+/// the note taken on the last frame it was drawn; the mat is painted for the
+/// shape it was in, which is the very same picture the live window was using
+/// and so is still in hand; and the colour behind it is a rectangle.
+fn push_leaving_windows<R>(
+    elements: &mut Vec<LxbRenderElement<R>>,
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    now: std::time::Instant,
+    scale: Scale<f64>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    if !lxb.outputs.pip().anything_going() {
+        return;
+    }
+    let name = output.name();
+    for (kept, alpha, depth) in lxb.outputs.pip().going_on(&name, now) {
+        let placed = kept.placed();
+        let opening: Rectangle<f64, Logical> = Rectangle::new(
+            (placed.frame.inner.x, placed.frame.inner.y).into(),
+            (placed.frame.inner.w, placed.frame.inner.h).into(),
+        );
+        let backing = crate::pip::backing(opening, scale.x);
+        // No spring here: a window on its way out has nowhere left to be laid
+        // out to. Only the fall back out of the screen.
+        let standing = Standing::of(
+            placed.frame.outer,
+            crate::pip::deepened(placed.frame.outer, depth),
+            scale,
+            true,
+        );
+        if let Some(mat) = lxb
+            .outputs
+            .pip()
+            .mat(renderer, &placed.frame, scale.x, backing, alpha)
+        {
+            elements.push(LxbRenderElement::Matte(standing.put(mat)));
+        }
+        // The picture, if it was this renderer that took it. One that does not
+        // recognise the note — a second GPU on a session that drives two — draws
+        // the frame fading out with nothing inside it, which is a worse fade
+        // than this one and a better one than none.
+        if let Some(picture) = kept.picture::<R::TextureId>() {
+            let anchor = placed.corner.to_physical(scale).to_i32_round();
+            let cut = standing.cut_to(opening, scale);
+            elements.extend(
+                picture
+                    .elements(
+                        renderer.context_id(),
+                        placed.origin.to_physical(scale),
+                        scale,
+                        alpha,
+                    )
+                    .into_iter()
+                    .filter_map(|element| {
+                        CropRenderElement::from_element(
+                            RescaleRenderElement::from_element(element, anchor, placed.factor),
+                            scale,
+                            cut,
+                        )
+                    })
+                    .map(|element| LxbRenderElement::Kept(standing.put(element))),
+            );
+        }
+        elements.push(LxbRenderElement::Backing(standing.put(
+            SolidColorRenderElement::new(
+                kept.backdrop(),
+                backing,
+                CommitCounter::default(),
+                faded(crate::pip::BACKDROP, alpha),
+                Kind::Unspecified,
+            ),
+        )));
+    }
+}
+
+/// Everything the compositor draws on one side of the shell's own surfaces.
+///
+/// What a pane of the shell's glass has to be able to see and cannot: another
+/// client. The shell reads back what it drew itself and evaluates its own
+/// wallpaper, so those two it has; a game, or the video in a floating window,
+/// it can do neither with — see [`crate::capture::behind`], which draws this
+/// small and hands it over.
+///
+/// Front to back, as the display's own list is, and made of the same builders:
+/// what is in this picture is what the display is drawing there, at another
+/// size. The shell's own surfaces are not in it in either direction — it has
+/// those already, at full resolution, and drawing them here would be handing
+/// the shell a blurred copy of its own frame.
+pub fn elements_behind_the_shell<R>(
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    side: crate::capture::Side,
+    scale: Scale<f64>,
+) -> Vec<LxbRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let now = std::time::Instant::now();
+    // What is in front of the shell's session surface and behind its menu: the
+    // floating windows, and anything flying back out of a tile. Built either
+    // way round, because the pass behind needs to know what these two already
+    // took — which is the same reason the display's own frame draws them first.
+    // The menu is deliberately in neither: a pane on it cannot refract itself.
+    let mut ahead = Vec::new();
+    let floating = push_floating_windows(&mut ahead, renderer, lxb, output, now, scale);
+    let flying = push_restoring_windows(&mut ahead, renderer, lxb, output, now, scale);
+    if side == crate::capture::Side::Above {
+        return ahead;
+    }
+
+    let mut elements = Vec::new();
+    push_windows(
+        &mut elements,
+        renderer,
+        lxb,
+        output,
+        now,
+        scale,
+        &flying,
+        &floating,
+    );
+    elements
+}
+
+/// The application windows on `output`, topmost first — either where they
+/// really are, or, in the overview, somewhere between there and their card.
+///
+/// Its own function because it is asked for twice: once for the display, and
+/// once at a fraction of the size for the picture a pane of the shell's glass
+/// refracts. See [`crate::capture::behind`], which is why every builder here
+/// takes the scale to draw at rather than reading the output's own.
+///
+/// `flying` and `floating` are what has already been drawn in front of the
+/// shell and must not be drawn again here.
+#[allow(clippy::too_many_arguments)]
+fn push_windows<R>(
+    elements: &mut Vec<LxbRenderElement<R>>,
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    now: std::time::Instant,
+    scale: Scale<f64>,
+    flying: &[u32],
+    floating: &[u32],
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let space = &lxb.space;
+    let Some(output_geo) = space.output_geometry(output) else {
+        return;
+    };
+    let overview = lxb.overview.progress(output, now);
+    if overview > 0.0 {
+        push_overview_windows(elements, renderer, lxb, output, overview, scale);
+        return;
+    }
+    for window in space.elements_for_output(output).rev() {
+        // Already drawn, mid-flight, in front of the shell.
+        if flying.contains(&crate::overview::window_id(window)) {
+            continue;
+        }
+        // An application the shell runs without showing. It is mapped,
+        // configured and drawing exactly as it would be; the pixels simply
+        // never leave it. See `lxb_shell_v1.keep_out_of_sight`.
+        if lxb.out_of_sight(window) {
+            continue;
+        }
+        // Already drawn, in its corner, over everything above.
+        if floating.contains(&crate::overview::window_id(window)) {
+            continue;
+        }
+        let Some(location) = space.element_location(window) else {
+            continue;
+        };
+        // A window is mapped by its *geometry* — the frame the user thinks
+        // of as the window. A client drawing its own decorations puts that
+        // frame inside a larger surface, with the drop shadow spilling
+        // above and to the left of it, so the surface starts before the
+        // geometry does. Rendering from the geometry's location instead
+        // would push the whole window down and right by the width of its
+        // own shadow, hanging its far edge off the display — and leave the
+        // pixels disagreeing with input, which does subtract this.
+        let relative =
+            (location - output_geo.loc - window.geometry().loc).to_physical_precise_round(scale);
+        let surfaces = window
+            .render_elements::<WaylandSurfaceRenderElement<R>>(renderer, relative, scale, 1.0);
+        // The third part of drawing an application larger than life: it was
+        // configured at a fraction of the display and told to fill that
+        // fraction with the display's own pixels, so what comes back has to
+        // be laid over the whole of it again. Anchored at the window's own
+        // corner, which is where the display's usable area begins — the
+        // shadow spilling before it grows with the window, as it does when
+        // the same window shrinks into an overview card below.
+        //
+        // A client that honoured the scale is then drawn pixel for pixel:
+        // its buffer already has as many pixels as the rectangle this puts
+        // it in. One that did not is enlarged, softly, which is the same
+        // answer it gets from every compositor.
+        let factor = lxb.outputs.window_scale(window);
+        if factor == 1.0 {
+            elements.extend(surfaces.into_iter().map(LxbRenderElement::Surface));
+            continue;
+        }
+        let anchor = (location - output_geo.loc).to_physical_precise_round(scale);
+        elements.extend(surfaces.into_iter().map(|element| {
+            LxbRenderElement::Scaled(RescaleRenderElement::from_element(element, anchor, factor))
+        }));
+    }
+}
+
+/// Draw the shell's context menu in front of the floating windows.
+///
+/// **The one exception to "a floating window is over everything".** A window the
+/// user has made large enough covers the very menu that offers to make it small
+/// again, and on a session driven by a controller that is a dead end: there is
+/// no pointer to find an unseen row with, so a menu that cannot be seen cannot
+/// be answered. One surface is therefore allowed through, and it is the one the
+/// shell draws its menu on and nothing else.
+///
+/// **A surface of its own, and not a rectangle of the shell's main one**, which
+/// is not the obvious choice and is the one that survived contact. A panel is
+/// rounded and a rectangle is not, so a crop to its bounding box lifts four
+/// square corners of whatever else the shell was drawing and lays them over the
+/// video — the video being what should be showing there. Given its own surface
+/// the panel is exactly its own shape, whatever that shape is.
+///
+/// It is drawn here and *not* in its parent's pass, which is what
+/// [`elements_of_all_but_the_menu`] is for: this is a move, not a copy.
+fn push_the_menu_over_floating_windows<R>(
+    elements: &mut Vec<LxbRenderElement<R>>,
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    scale: Scale<f64>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    if !lxb.outputs.pip().has_a_menu() {
+        return;
+    }
+    let layer_map = layer_map_for_output(output);
+    for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+        for surface in layer_map.layers_on(layer).rev() {
+            let Some(geometry) = layer_map.layer_geometry(surface) else {
+                continue;
+            };
+            let location = geometry.loc.to_physical_precise_round(scale);
+            if let Some(menu) = menu_under(lxb, surface.wl_surface()) {
+                // Where the parent is, because that is where the shell puts it:
+                // a subsurface of the whole display, offset by nothing. A shell
+                // that moved it would have to say so, and none does.
+                elements.extend(
+                    render_elements_from_surface_tree::<R, WaylandSurfaceRenderElement<R>>(
+                        renderer,
+                        &menu,
+                        location,
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .map(LxbRenderElement::Surface),
+                );
+            }
+        }
+    }
+}
+
+/// The menu surface inside one layer surface's tree, if it is in this one.
+///
+/// Asked of every layer surface on the display rather than answered from the
+/// shell's word alone, because the shell names a *surface* and never says which
+/// display it is on — which display a surface belongs to is a question the
+/// layer map already answers, and answering it twice is how the two come to
+/// disagree.
+fn menu_under(lxb: &Lxb, root: &WlSurface) -> Option<WlSurface> {
+    let mut found = None;
+    with_surface_tree_downward(
+        root,
+        (),
+        |surface, _, ()| match lxb.outputs.pip().is_a_menu(surface) {
+            true => TraversalAction::SkipChildren,
+            false => TraversalAction::DoChildren(()),
+        },
+        |surface, _, ()| {
+            if lxb.outputs.pip().is_a_menu(surface) {
+                found = Some(surface.clone());
+            }
+        },
+        |_, _, ()| true,
+    );
+    found
+}
+
+/// One layer surface's render elements, with the context menu in it left out.
+///
+/// Smithay's own [`render_elements_from_surface_tree`] walks the whole tree and
+/// has no opinion about any of it, which is right for every other surface on the
+/// session and wrong for this one: the menu inside it is drawn somewhere else
+/// entirely — see [`push_the_menu_over_floating_windows`] — and a tree walked
+/// whole would draw it twice.
+///
+/// A transcription of that function with one thing added: a subtree the caller
+/// names is skipped, root and children alike. The rest of it is smithay's, down
+/// to the order the offsets accumulate in, because the two have to put every
+/// other surface in exactly the same place.
+fn elements_of_all_but_the_menu<R>(
+    renderer: &mut R,
+    lxb: &Lxb,
+    root: &WlSurface,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> Vec<WaylandSurfaceRenderElement<R>>
+where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    let mut surfaces = Vec::new();
+    with_surface_tree_downward(
+        root,
+        location.to_f64(),
+        |surface, states, location| {
+            // The whole subtree, skipped where it begins. `SkipChildren` still
+            // offers the surface itself to the processor below, which is where
+            // it is turned away.
+            if lxb.outputs.pip().is_a_menu(surface) {
+                return TraversalAction::SkipChildren;
+            }
+            let mut location = *location;
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return TraversalAction::SkipChildren;
+            };
+            match data.lock().unwrap().view() {
+                Some(view) => {
+                    location += view.offset.to_f64().to_physical(scale);
+                    TraversalAction::DoChildren(location)
+                }
+                None => TraversalAction::SkipChildren,
+            }
+        },
+        |surface, states, location| {
+            if lxb.outputs.pip().is_a_menu(surface) {
+                return;
+            }
+            let mut location = *location;
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return;
+            };
+            let has_view = match data.lock().unwrap().view() {
+                Some(view) => {
+                    location += view.offset.to_f64().to_physical(scale);
+                    true
+                }
+                None => false,
+            };
+            if !has_view {
+                return;
+            }
+            match WaylandSurfaceRenderElement::from_surface(
+                renderer,
+                surface,
+                states,
+                location,
+                1.0,
+                Kind::Unspecified,
+            ) {
+                Ok(Some(element)) => surfaces.push(element),
+                Ok(None) => {}
+                Err(err) => tracing::warn!(?err, "could not import a surface of the shell's"),
+            }
+        },
+        |_, _, _| true,
+    );
+    surfaces
+}
+
 /// Draw every window mid-flight back out of the tile it was asked for on, and
 /// return which ones were drawn so the pass below does not draw them twice.
 ///
@@ -297,6 +1119,9 @@ where
     };
 
     for window in space.elements_for_output(output).rev() {
+        if lxb.floating(window) {
+            continue;
+        }
         let id = crate::overview::window_id(window);
         let Some((from, left)) = lxb.restores.flight(output, id, now) else {
             continue;
@@ -311,7 +1136,7 @@ where
         // larger than life is not the rectangle it was configured at: the
         // flight has to start from what the user can see, or a window scaled
         // to 150% would jump to two thirds of its size before setting off.
-        let factor = crate::scale::window_scale(lxb.outputs.app_scale(), window);
+        let factor = lxb.outputs.window_scale(window);
         let current = Rectangle::<f64, smithay::utils::Logical>::new(
             (geometry.loc - output_geo.loc).to_f64(),
             crate::scale::visual_geometry(geometry, factor)
@@ -398,7 +1223,7 @@ fn push_overview_windows<R>(
         // however much larger than life its application is drawing — see the
         // flight home in [`push_restoring_windows`], which starts from the same
         // rectangle this one ends at.
-        let factor = crate::scale::window_scale(lxb.outputs.app_scale(), window);
+        let factor = lxb.outputs.window_scale(window);
         let current = Rectangle::<f64, smithay::utils::Logical>::new(
             (geometry.loc - output_geo.loc).to_f64(),
             crate::scale::visual_geometry(geometry, factor)
@@ -609,7 +1434,13 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
     // one has flown home.
     let overview_up = lxb.overview.progress(output, std::time::Instant::now()) > 0.0;
     if !overview_up && shell_hides_the_display(lxb, output) {
-        return Vec::new();
+        // Except the floating window, which the shell is not painting over: it
+        // is drawn in front of the shell's own surfaces. Saying otherwise here
+        // would stop the video the moment the start screen came up — this list
+        // is also what [`crate::sleep`] reads to decide what may be put to
+        // sleep — which is the one thing a window that floats over everything
+        // must never do.
+        return floating_windows(lxb, output);
     }
     let front = (!overview_up)
         .then(|| front_application(lxb, output))
@@ -920,8 +1751,26 @@ fn front_application(lxb: &Lxb, output: &Output) -> Option<Window> {
     lxb.space
         .elements_for_output(output)
         .rev()
-        .find(|window| window_accepts_keyboard_focus(window) && !lxb.out_of_sight(window))
+        .find(|window| {
+            window_accepts_keyboard_focus(window)
+                && !lxb.out_of_sight(window)
+                // The floating window is topmost and is never the front
+                // application. It is a corner of the screen, not the thing the
+                // user is doing — and calling it the front would take the
+                // frames away from the game behind it and hand them to a video.
+                && !lxb.floating(window)
+        })
         .cloned()
+}
+
+/// The floating windows on `output`, which are on screen whatever else is.
+fn floating_windows(lxb: &Lxb, output: &Output) -> Vec<Window> {
+    lxb.space
+        .elements_for_output(output)
+        .rev()
+        .filter(|window| lxb.floating(window) && !lxb.out_of_sight(window))
+        .cloned()
+        .collect()
 }
 
 /// The rectangle a window actually occupies on screen.
@@ -935,7 +1784,7 @@ fn front_application(lxb: &Lxb, output: &Output) -> Option<Window> {
 /// the moment somebody asked for larger windows.
 fn on_screen(lxb: &Lxb, window: &Window) -> Option<Rectangle<i32, Logical>> {
     let geometry = lxb.space.element_geometry(window)?;
-    let factor = crate::scale::window_scale(lxb.outputs.app_scale(), window);
+    let factor = lxb.outputs.window_scale(window);
     Some(crate::scale::visual_geometry(geometry, factor))
 }
 
@@ -1188,11 +2037,157 @@ pub(crate) fn same_application(window: &Window, other: &Window) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{covered, region_hides};
-    use smithay::utils::{Logical, Rectangle};
+    use super::{covered, region_hides, Standing};
+    use lxb_protocol::overview::Rect;
+    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    fn a_frame() -> lxb_protocol::pip::Frame {
+        lxb_protocol::pip::Frame {
+            outer: Rect {
+                x: 1400.0,
+                y: 760.0,
+                w: 480.0,
+                h: 280.0,
+            },
+            inner: Rect {
+                x: 1403.0,
+                y: 763.0,
+                w: 474.0,
+                h: 274.0,
+            },
+            radius: 12.0,
+            border: 3.0,
+            shadow: 24.0,
+        }
+    }
+
+    /// Where a corner of the shape everything is painted for lands once this
+    /// transform has been applied to it — the same arithmetic smithay's own two
+    /// wrappers do, in one place so a test can ask about the result.
+    fn lands(
+        standing: Standing,
+        at: Point<f64, Logical>,
+        scale: Scale<f64>,
+    ) -> Point<f64, Physical> {
+        let at = at.to_physical(scale);
+        let origin = standing.origin.to_f64();
+        Point::from((
+            origin.x + (at.x - origin.x) * standing.scale.x + standing.shift.x as f64,
+            origin.y + (at.y - origin.y) * standing.scale.y + standing.shift.y as f64,
+        ))
+    }
+
+    /// The one thing this transform has to do: take the shape everything is
+    /// painted for onto the shape the window is standing in.
+    ///
+    /// Asked of both corners, because a scale that is right about one corner and
+    /// wrong about the other is a window of the wrong size — and asked of a
+    /// spring that has overshot, which is a rectangle *outside* both ends of the
+    /// journey and the case the arithmetic is easiest to get wrong on.
+    #[test]
+    fn a_floating_window_lands_on_the_shape_it_is_standing_in() {
+        let target = a_frame().outer;
+        let cases = [
+            ("at rest", target),
+            ("behind the screen", crate::pip::deepened(target, 0.88)),
+            (
+                "sprung past a smaller shape",
+                Rect {
+                    x: 1180.0,
+                    y: 700.0,
+                    w: 620.0,
+                    h: 361.0,
+                },
+            ),
+            (
+                "sprung past a larger one",
+                Rect {
+                    x: 1470.0,
+                    y: 800.0,
+                    w: 360.0,
+                    h: 210.0,
+                },
+            ),
+        ];
+        for scale in [1.0, 1.5, 2.0] {
+            let scale = Scale::from(scale);
+            for (name, visible) in cases {
+                let standing = Standing::of(target, visible, scale, visible != target);
+                for (corner, expected) in [
+                    ((target.x, target.y), (visible.x, visible.y)),
+                    (
+                        (target.x + target.w, target.y + target.h),
+                        (visible.x + visible.w, visible.y + visible.h),
+                    ),
+                ] {
+                    let landed = lands(standing, Point::from(corner), scale);
+                    let want = Point::<f64, Logical>::from(expected).to_physical(scale);
+                    assert!(
+                        (landed.x - want.x).abs() <= 1.0 && (landed.y - want.y).abs() <= 1.0,
+                        "{name} at {scale:?}: {landed:?} should be {want:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A window standing still is not transformed at all — no scale, no shift,
+    /// and its own drawing cut to its opening and no less.
+    #[test]
+    fn a_window_standing_still_is_left_exactly_where_it_is() {
+        let target = a_frame().outer;
+        let opening: Rectangle<f64, Logical> =
+            Rectangle::new((1403.0, 763.0).into(), (474.0, 274.0).into());
+        for scale in [1.0, 1.5, 2.0] {
+            let scale = Scale::from(scale);
+            let standing = Standing::of(target, target, scale, false);
+            assert_eq!(standing.scale, Scale::from(1.0));
+            assert_eq!(standing.shift, Point::from((0, 0)));
+            assert_eq!(
+                standing.cut_to(opening, scale),
+                opening.to_physical_precise_round(scale),
+                "a window standing still is cut to its opening and no less"
+            );
+        }
+    }
+
+    /// And one that is moving gives the mat a pixel to round it with — see
+    /// [`Standing::cut_to`], where that pixel is argued for.
+    #[test]
+    fn a_window_being_moved_gives_the_mat_a_pixel_to_round_it_with() {
+        let target = a_frame().outer;
+        let opening: Rectangle<f64, Logical> =
+            Rectangle::new((1403.0, 763.0).into(), (474.0, 274.0).into());
+        for scale in [1.0, 1.5, 2.0] {
+            let scale = Scale::from(scale);
+            let whole: Rectangle<i32, Physical> = opening.to_physical_precise_round(scale);
+            let cut = Standing::of(target, target, scale, true).cut_to(opening, scale);
+            assert!(
+                whole.contains_rect(cut),
+                "a window being moved is cut inside its opening: {cut:?} in {whole:?}"
+            );
+            assert_eq!(cut.loc - whole.loc, Point::from((1, 1)));
+            assert_eq!(whole.size.w - cut.size.w, 2);
+            assert_eq!(whole.size.h - cut.size.h, 2);
+        }
+    }
+
+    /// And an opening too small to give a pixel away gives none: a rectangle of
+    /// negative size is not a smaller rectangle.
+    #[test]
+    fn an_opening_with_no_pixel_to_spare_is_not_cut_to_nothing() {
+        let target = a_frame().outer;
+        for edge in [0.0, 1.0, 2.0] {
+            let opening: Rectangle<f64, Logical> =
+                Rectangle::new((0.0, 0.0).into(), (edge, edge).into());
+            let cut = Standing::of(target, target, Scale::from(1.0), true)
+                .cut_to(opening, Scale::from(1.0));
+            assert!(cut.size.w >= 0 && cut.size.h >= 0, "{edge}: {cut:?}");
+        }
     }
 
     #[test]

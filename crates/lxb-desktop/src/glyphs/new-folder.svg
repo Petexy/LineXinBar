@@ -1,0 +1,37 @@
+<!--
+  The folder with a cross cut through its pocket, on the row at the head of a
+  listing that makes a new folder in it.
+
+  file-folder.svg exactly — the same tab, back and pocket, so the row reads as
+  being about *those* rows — with the cross pierced through the front the way
+  the bin's slots are pierced through its body. Cut out rather than laid on
+  top, because a bar sitting over the pocket would be a second body catching a
+  crevice of its own and the mark is 27 px across at the head of a column.
+
+  The two arms are one shape rather than two overlapping rectangles: two bodies
+  crossing would take a crevice along the join and read as a hash.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="tab" x="4.0" y="7.4" width="11.6" height="6.6" rx="1.9"/>
+    <rect id="back" x="4.0" y="10.0" width="24.0" height="14.6" rx="2.2"/>
+    <rect id="pocket" x="4.0" y="12.6" width="24.0" height="12.0" rx="2.2"/>
+    <path id="cross" d="M14.85 14.55h2.3v2.75h2.75v2.3h-2.75v2.75h-2.3v-2.75
+                        h-2.75v-2.3h2.75z"/>
+    <g id="bead"><use href="#tab"/><use href="#back"/><use href="#pocket"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#pocket" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#pocket" fill="#ffffff"/>
+      <use href="#cross" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

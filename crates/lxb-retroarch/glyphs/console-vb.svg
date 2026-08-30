@@ -1,0 +1,34 @@
+<!--
+  The Virtual Boy: the visor on its stand, two eyepieces close together in the
+  middle of it.
+
+  254 mm across and about 100 tall, which is why the visor is a bar rather than
+  a mask, and the lenses are set near the middle of it rather than out at the
+  ends — a person's eyes being where they are.  Nothing else in this column
+  stands on a leg.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="visor" x="3.2" y="6.2" width="25.6" height="10.1" rx="3"/>
+    <rect id="stem" x="13.6" y="15.8" width="4.8" height="5.4"/>
+    <rect id="foot" x="8" y="20.8" width="16" height="3.2" rx="1.5"/>
+    <g id="eyes">
+      <circle cx="12.3" cy="11.25" r="2.4"/>
+      <circle cx="19.7" cy="11.25" r="2.4"/>
+    </g>
+    <g id="bead"><use href="#visor"/><use href="#stem"/><use href="#foot"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#eyes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

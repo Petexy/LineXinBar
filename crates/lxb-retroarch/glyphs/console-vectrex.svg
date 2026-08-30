@@ -1,0 +1,30 @@
+<!--
+  The Vectrex: the upright cabinet, its screen standing on end, and the
+  controller in the well at its foot.
+
+  The screen is the correction.  A Vectrex has a nine-inch tube turned on its
+  side so it is taller than it is wide, which is why every game on it is played
+  up the screen — drawn square it was any small television.  No marquee, which
+  is what separates it from the arcade cabinet in this column.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="6.4" y="3" width="19.2" height="26" rx="2.2"/>
+    <rect id="screen" x="10.2" y="5.4" width="11.6" height="14" rx="0.8"/>
+    <rect id="well" x="8.6" y="21.6" width="14.8" height="4.2" rx="0.8"/>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#well" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

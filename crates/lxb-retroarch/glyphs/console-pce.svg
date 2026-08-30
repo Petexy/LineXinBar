@@ -1,0 +1,30 @@
+<!--
+  The PC Engine: 140 by 138 mm, square as a coaster, with the HuCard slot across
+  the back and one controller port at the front.
+
+  One port is the machine.  NEC sold the smallest console anybody made and only
+  gave it a socket for a single pad — everything else went through a multitap —
+  and next to the wide decks either side of it in this column, both the size and
+  that lone opening are the whole drawing.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="6.8" y="6.8" width="18.4" height="18.4" rx="2"/>
+    <rect id="slot" x="9.2" y="9.2" width="13.6" height="3" rx="0.9"/>
+    <rect id="port" x="15" y="18.4" width="6.8" height="3" rx="0.9"/>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#port" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

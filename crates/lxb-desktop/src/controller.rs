@@ -15,6 +15,13 @@
 //! every keystroke stops. So the whole pad is read from its HID report now, and
 //! the compositor drops the lizard keyboard so the two cannot both arrive.
 //!
+//! That driver also makes the gamepad the kernel never did, so that the pad
+//! works in a game and not only in this menu. Which puts a third copy of it on
+//! the machine, and the shell must not read that one: it would be every press
+//! arriving twice, once exactly and once through a mapping database that has
+//! never heard of this pad. So GilRs is asked to skip it wherever GilRs is
+//! read — see [`is_a_stand_in`].
+//!
 //! Reading a pad this way means every application on the machine can read the
 //! same pad, because a controller never passes through the compositor at all.
 //! That is fine for every button but one: the guide button is the way *out* of
@@ -138,6 +145,26 @@ pub struct ControllerInput {
     /// control however many controllers are plugged in — and because a chord
     /// is answered once, not once per device that could have spelled it.
     guide_chorded: bool,
+    /// The pad a thumb was last on.
+    ///
+    /// Which controller a person is *using* is not a question a machine with
+    /// four of them plugged in can answer any other way, and something has to:
+    /// an emulator gives one pad to player one, and the pad in somebody's hands
+    /// is the one that should be it. See [`ControllerInput::in_hand`].
+    last_touched: Option<Touched>,
+}
+
+/// Which controller the last thumb was on.
+///
+/// Two arms because the Steam Controller is read from its report rather than
+/// through GilRs, and so has no `GamepadId` to be named by — see the module
+/// note. It still has to be nameable: the pad an emulator binds to player one
+/// is the stand-in this shell makes for it, and a hand on the controller is a
+/// hand on that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Touched {
+    Pad(gilrs::GamepadId),
+    SteamController,
 }
 
 impl ControllerInput {
@@ -149,6 +176,7 @@ impl ControllerInput {
                 navigation: Navigation::default(),
                 dpad_held: [false; Direction::COUNT],
                 guide_chorded: false,
+                last_touched: None,
                 pad: SteamPad::new(false),
                 guard: PadGuard::new(false),
             };
@@ -163,6 +191,7 @@ impl ControllerInput {
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
                     guide_chorded: false,
+                    last_touched: None,
                     pad: SteamPad::new(true),
                     guard: PadGuard::new(true),
                 }
@@ -174,6 +203,7 @@ impl ControllerInput {
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
                     guide_chorded: false,
+                    last_touched: None,
                     // Still worth watching: this pad's Steam button never came
                     // through GilRs in the first place, so whatever stopped
                     // GilRs from starting has not cost us this.
@@ -238,9 +268,20 @@ impl ControllerInput {
         // pad has no gamepad node for GilRs to have opened, so it is reachable
         // whether or not GilRs started at all — and once Steam claims the pad
         // and writes lizard mode off, this is the *only* way any of it arrives.
-        let pad = self.pad.poll(now);
+        let pad = self.pad.poll();
         if let Some(frame) = &pad {
             stirred |= !frame.held.is_empty();
+            // Which controller the hand is on, for the same reason a GilRs
+            // press says so below: the pad somebody has picked up is the pad an
+            // emulator should give player one. Held rather than pressed, and
+            // the sticks with it, because a thumb resting on a direction is a
+            // hand on the controller too.
+            if !frame.held.is_empty()
+                || stick_is_pushed(frame.left_stick)
+                || stick_is_pushed(frame.right_stick)
+            {
+                self.last_touched = Some(Touched::SteamController);
+            }
             actions.extend(pad_actions(frame, &mut chorded));
             for (button, code) in PAD_CLICKS {
                 if frame.pressed.has(*button) {
@@ -257,6 +298,13 @@ impl ControllerInput {
 
         if let Some(gilrs) = self.gilrs.as_mut() {
             while let Some(event) = gilrs.next_event() {
+                // The stand-in this shell makes for the Steam Controller, which
+                // it has already read above and exactly. Drained rather than
+                // skipped outright: GilRs' cached state and hot-plug list have
+                // to stay current for a device it will keep being offered.
+                if is_a_stand_in(&gilrs.gamepad(event.id)) {
+                    continue;
+                }
                 match event.event {
                     EventType::Connected => {
                         let gamepad = gilrs.gamepad(event.id);
@@ -273,8 +321,11 @@ impl ControllerInput {
                     EventType::ButtonPressed(button, code) => {
                         let code = code.into_u32();
                         // Before anything is made of it: a button this shell
-                        // has no use for is still a thumb on the pad.
+                        // has no use for is still a thumb on the pad — and it
+                        // is a thumb on *this* pad, which is the one a game
+                        // started from here should answer to.
                         stirred = true;
+                        self.last_touched = Some(Touched::Pad(event.id));
                         if let Some(click) = pointer_button(button, code) {
                             clicks.push((click, true));
                         }
@@ -362,6 +413,13 @@ impl ControllerInput {
         stirred |= sticks.dpad.iter().any(|held| *held)
             || stick_is_pushed(sticks.left)
             || stick_is_pushed(sticks.right);
+        // And which pad it is on. Buttons say so as they arrive; a stick is
+        // read rather than delivered, so the pad it is on has to be looked for
+        // — and it has to be, because a bar walked with the stick alone would
+        // otherwise never say which controller was doing the walking.
+        if let Some(touched) = self.gilrs.as_ref().and_then(pushed_pad) {
+            self.last_touched = Some(Touched::Pad(touched));
+        }
         let arrows = self.arrow_edges(sticks.dpad);
         self.guide_chorded = chorded;
 
@@ -393,6 +451,143 @@ impl ControllerInput {
             arrows,
             stirred,
         }
+    }
+
+    /// The pad somebody is holding, as much of it as GilRs will say.
+    ///
+    /// The one last touched, or — where nothing has been touched yet this
+    /// session — the first pad on the machine, which is the best guess there
+    /// is and is right on the machine that has one. `None` where there is no
+    /// controller at all.
+    ///
+    /// What it is for is telling a game which of several controllers is the
+    /// one in front of the television. See [`crate::pads::order`].
+    pub fn in_hand(&self) -> Option<crate::pads::InHand> {
+        // The Steam Controller first, and outside GilRs, because that is where
+        // it is read: the device an emulator will bind is the stand-in this
+        // shell makes for it, and this names that. `None` where there is no
+        // stand-in — a pad only this shell can read is not a pad to give
+        // anybody player one.
+        if self.last_touched == Some(Touched::SteamController) {
+            if let Some(stand_in) = crate::steam_hid::stand_in() {
+                return Some(crate::pads::InHand {
+                    name: stand_in.name,
+                    vendor: Some(stand_in.vendor),
+                    product: Some(stand_in.product),
+                });
+            }
+        }
+
+        let gilrs = self.gilrs.as_ref()?;
+        let named = |gamepad: gilrs::Gamepad<'_>| crate::pads::InHand {
+            // The name the *operating system* gave it, not the one a mapping
+            // database did: what this is compared against is the kernel's own
+            // list of devices, and the two names are not always the same.
+            name: gamepad.os_name().to_string(),
+            vendor: gamepad.vendor_id(),
+            product: gamepad.product_id(),
+        };
+        if let Some(Touched::Pad(id)) = self.last_touched {
+            let gamepad = gilrs.gamepad(id);
+            if gamepad.is_connected() {
+                return Some(named(gamepad));
+            }
+        }
+        gilrs.gamepads().next().map(|(_, gamepad)| named(gamepad))
+    }
+
+    /// Where that pad's controls are, as a mapping database has them.
+    ///
+    /// What this is for is telling an emulator which button is which — see
+    /// [`crate::retroarch::controllers`]. The emulator will guess for itself
+    /// if nobody tells it, and its guess is a list of pads it has heard of;
+    /// this shell has a *different* list, kept by SDL and carried by GilRs, and
+    /// the two lists do not have the same pads on them.
+    ///
+    /// `None` unless the database really knows this pad. GilRs answers for one
+    /// it does not by falling back to the kernel's positional names, which are
+    /// a coin toss on the two middle face buttons — see [`Layout`] — and a
+    /// coin toss written into an emulator's settings is worse than leaving it
+    /// to guess, because the emulator's guess at least gets the pads on *its*
+    /// list right.
+    ///
+    /// Controls the device itself never said it had are left out. A database
+    /// names a D-pad by the buttons it would be if it were buttons, whatever
+    /// the pad actually sends, so some of what comes back names nothing.
+    pub fn mapping(&self, pad: &crate::pads::Pad) -> Option<crate::pads::Mapping> {
+        use crate::pads::Control;
+
+        let gilrs = self.gilrs.as_ref()?;
+        let same = |gamepad: &gilrs::Gamepad<'_>| {
+            if gamepad.os_name() != pad.name {
+                return false;
+            }
+            match (gamepad.vendor_id(), gamepad.product_id()) {
+                (Some(vendor), Some(product)) => vendor == pad.vendor && product == pad.product,
+                _ => true,
+            }
+        };
+        let Some((_, gamepad)) = gilrs.gamepads().find(|(_, gamepad)| same(gamepad)) else {
+            return crate::pads::xinput(pad);
+        };
+        if Layout::of(gilrs, gamepad.id()) != Layout::Mapped {
+            // GilRs will answer for a pad no database knows by reading the
+            // codes back at us under the kernel's own names for them, and on a
+            // controller of Xbox's shape two of those names are the wrong way
+            // round — see [`crate::pads::xinput`], which works the same pad out
+            // from what it declares and gets those two right.
+            return crate::pads::xinput(pad);
+        }
+
+        let buttons = [
+            (Control::South, Button::South),
+            (Control::East, Button::East),
+            (Control::North, Button::North),
+            (Control::West, Button::West),
+            (Control::LeftBumper, Button::LeftTrigger),
+            (Control::RightBumper, Button::RightTrigger),
+            (Control::LeftTrigger, Button::LeftTrigger2),
+            (Control::RightTrigger, Button::RightTrigger2),
+            (Control::Select, Button::Select),
+            (Control::Start, Button::Start),
+            (Control::LeftStick, Button::LeftThumb),
+            (Control::RightStick, Button::RightThumb),
+            (Control::DPadUp, Button::DPadUp),
+            (Control::DPadDown, Button::DPadDown),
+            (Control::DPadLeft, Button::DPadLeft),
+            (Control::DPadRight, Button::DPadRight),
+        ];
+        let axes = [
+            (Control::LeftX, Axis::LeftStickX),
+            (Control::LeftY, Axis::LeftStickY),
+            (Control::RightX, Axis::RightStickX),
+            (Control::RightY, Axis::RightStickY),
+            (Control::DPadX, Axis::DPadX),
+            (Control::DPadY, Axis::DPadY),
+        ];
+        // The guide button is not among them, on purpose. It is the way out of
+        // whatever is in front, it is held back from every application the
+        // shell starts, and handing an emulator a binding for it would be
+        // handing over the one button that is not an application's to have.
+        let mut at = Vec::new();
+        for (control, button) in buttons {
+            if let Some(code) = gamepad.button_code(button).and_then(where_it_is) {
+                at.push((control, code));
+            }
+        }
+        for (control, axis) in axes {
+            if let Some(code) = gamepad.axis_code(axis).and_then(where_it_is) {
+                at.push((control, code));
+            }
+        }
+        at.retain(|(_, code)| pad.has(*code));
+        // Nothing left is the same answer as nothing known: it is a pad whose
+        // database entry names controls this device does not have, and there
+        // is no line worth writing for it.
+        if at.is_empty() {
+            return None;
+        }
+        Some(crate::pads::Mapping::new(at))
     }
 
     /// Which arrow keys went down or came up since the last poll.
@@ -428,6 +623,30 @@ struct Sticks {
     dpad: [bool; Direction::COUNT],
 }
 
+/// Which pad has a stick or a D-pad pushed, if any has.
+///
+/// The first one found: two hands on two pads is not a thing this has to
+/// resolve, and the shell has been asking "is anybody holding anything" with
+/// one answer for as long as it has asked at all.
+fn pushed_pad(gilrs: &Gilrs) -> Option<gilrs::GamepadId> {
+    gilrs.gamepads().find_map(|(id, gamepad)| {
+        if is_a_stand_in(&gamepad) {
+            return None;
+        }
+        let pushed = stick_is_pushed((
+            gamepad.value(Axis::LeftStickX),
+            gamepad.value(Axis::LeftStickY),
+        )) || stick_is_pushed((
+            gamepad.value(Axis::RightStickX),
+            gamepad.value(Axis::RightStickY),
+        )) || gamepad.is_pressed(Button::DPadLeft)
+            || gamepad.is_pressed(Button::DPadRight)
+            || gamepad.is_pressed(Button::DPadUp)
+            || gamepad.is_pressed(Button::DPadDown);
+        pushed.then_some(id)
+    })
+}
+
 impl Sticks {
     /// Fold the Steam Controller's own reading in, on the same terms as a
     /// second GilRs pad: whichever is further from rest wins, and any D-pad
@@ -461,6 +680,11 @@ impl Sticks {
         // between displays, which is a press rather than something that
         // repeats while held.
         for (_, gamepad) in gilrs.gamepads() {
+            // Read from its report instead, and merged in by
+            // [`Sticks::merge_pad`]. See the module note.
+            if is_a_stand_in(&gamepad) {
+                continue;
+            }
             dpad[Direction::Left.index()] |= gamepad.is_pressed(Button::DPadLeft);
             dpad[Direction::Right.index()] |= gamepad.is_pressed(Button::DPadRight);
             dpad[Direction::Up.index()] |= gamepad.is_pressed(Button::DPadUp);
@@ -489,6 +713,16 @@ impl Sticks {
             dpad,
         }
     }
+}
+
+/// Whether a controller GilRs is offering is the gamepad this shell makes for
+/// the Steam Controller, which the shell reads from that pad's report instead.
+///
+/// Not a rule about ignoring a controller — the pad works, and everything else
+/// on the machine reads exactly this device. It is a rule about reading one pad
+/// once. See [`crate::steam_hid::is_a_stand_in`], which owns the answer.
+fn is_a_stand_in(gamepad: &gilrs::Gamepad<'_>) -> bool {
+    crate::steam_hid::is_a_stand_in(gamepad.vendor_id(), gamepad.product_id())
 }
 
 /// How far a D-pad reported as an axis has to be pushed to count as pressed.
@@ -530,6 +764,11 @@ const PAD_ACTIONS: &[(Buttons, Action)] = &[
     (Buttons::MENU, Action::Submit),
     (Buttons::L1, Action::PrevScreen),
     (Buttons::R1, Action::NextScreen),
+    // The right stick pressed, which is the videos floating over the guide. See
+    // [`Action::Floating`], and note that the same button is the pointer's left
+    // click while the stick is aiming one — the two never overlap, because the
+    // stick aims nothing while any of the shell is on screen.
+    (Buttons::R3, Action::Floating),
 ];
 
 /// What one frame of the Steam Controller is worth to the shell.
@@ -823,6 +1062,24 @@ impl Layout {
     }
 }
 
+/// A code GilRs gives for a control, as the kernel's own key or axis.
+///
+/// GilRs carries the event type in the top half of the number — see
+/// [`gilrs::ev::Code`] — and nothing else is a control an emulator can bind.
+fn where_it_is(code: gilrs::ev::Code) -> Option<crate::pads::At> {
+    let raw = code.into_u32();
+    let (kind, code) = ((raw >> 16) as u16, u16::try_from(raw & 0xffff).ok()?);
+    match kind {
+        EV_KEY => Some(crate::pads::At::Key(code)),
+        EV_ABS => Some(crate::pads::At::Axis(code)),
+        _ => None,
+    }
+}
+
+/// The kernel's two event types a controller's controls come as.
+const EV_KEY: u16 = 0x01;
+const EV_ABS: u16 = 0x03;
+
 /// Whether a press is the chord's other half: the left-hand face button, the
 /// one with `X` printed on it.
 fn is_left_face(button: Button, code: u32, layout: Layout) -> bool {
@@ -955,6 +1212,11 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
         // `LeftTrigger`; the analogue triggers behind them are `*Trigger2`.
         Button::LeftTrigger => return Some(Action::PrevScreen),
         Button::RightTrigger => return Some(Action::NextScreen),
+        // The right stick pressed: the videos floating over the guide. See
+        // [`Action::Floating`]. It is also the pointer's left click — see
+        // [`pointer_button`] — and the two cannot collide, because the stick
+        // aims no pointer while any of this shell is on screen.
+        Button::RightThumb => return Some(Action::Floating),
         Button::Unknown => {}
         _ => return None,
     }
@@ -965,6 +1227,7 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
         evdev::BTN_EAST | evdev::BTN_THUMB => Some(Action::Back),
         evdev::BTN_TL => Some(Action::PrevScreen),
         evdev::BTN_TR => Some(Action::NextScreen),
+        evdev::BTN_THUMBR => Some(Action::Floating),
         _ => None,
     }
 }
@@ -1610,16 +1873,26 @@ mod tests {
             "with an application in front, A and B reach nothing but the pointer"
         );
 
-        // Neither stick press means anything to the bar in any state, so those
-        // two can never be both a click and a navigation.
+        // The right stick press is the pointer's left click *and* the videos
+        // floating over the guide, on exactly the terms `A` is a click and
+        // Launch: the two are never listened to on the same poll. The click is
+        // only ever sent while the stick is aiming at an application, and this
+        // action is dropped the moment one is in front.
         assert_eq!(
             action_for_button(Button::RightThumb, 0, Layout::Mapped),
-            None
+            Some(Action::Floating)
         );
+        assert_eq!(pointer_button(Button::RightThumb, 0), Some(BTN_LEFT));
+        assert!(
+            !survives_an_application(&Action::Floating),
+            "with an application in front the stick press is the pointer's alone"
+        );
+        // The left one means nothing to the shell in any state.
         assert_eq!(
             action_for_button(Button::LeftThumb, 0, Layout::Mapped),
             None
         );
+        // And the chord's modifier does not change what either of them is.
         assert_eq!(
             chord_action(Button::RightThumb, 0, Layout::Mapped, true),
             None
@@ -1847,9 +2120,12 @@ mod tests {
     fn the_pads_chord_halves_do_nothing_apart() {
         assert_eq!(pad_action(Buttons::X), None);
         assert_eq!(pad_action(Buttons::VIEW), None);
-        // Nor do the stick presses, which are the pointer's alone.
+        // Nor does the left stick press, which is the pointer's alone. The
+        // right one is the videos floating over the guide as well — and is the
+        // same button on this pad as on every other, which is the whole of why
+        // it is asserted here too.
         assert_eq!(pad_action(Buttons::L3), None);
-        assert_eq!(pad_action(Buttons::R3), None);
+        assert_eq!(pad_action(Buttons::R3), Some(Action::Floating));
     }
 
     /// The pad's mouse buttons are the same two pairs the mapped pads lend the

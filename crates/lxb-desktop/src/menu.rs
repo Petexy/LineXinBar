@@ -65,6 +65,151 @@ pub enum Command {
     /// destroys something, and a shell where those are one name is a shell one
     /// mis-routed press away from removing an application nobody asked about.
     ConfirmUninstall,
+    /// Put RetroArch on this machine, the user having said yes.
+    ///
+    /// Its own command for the reason [`Command::ConfirmUninstall`] is: one
+    /// press opens a question and this one downloads several hundred
+    /// megabytes, and a shell where those are one name is a shell one
+    /// mis-routed press away from doing it unasked.
+    InstallRetroArch,
+    /// Fetch the core a game needs, from the panel raised by pressing that
+    /// game. See `Shell::say_no_core`.
+    GetCore,
+    /// Look at a different kind of file, from the menu of the panel an
+    /// application's file question is being answered in.
+    ///
+    /// `None` is everything on the disk, which is the row under the kinds the
+    /// application named. It is a command of its own rather than a kind
+    /// numbered past the end of the list, because "show me the whole disk" is a
+    /// different sentence from "show me images" and the two are answered by
+    /// different halves of [`crate::picker::Picker::show_kind`].
+    PickKind(Option<usize>),
+    /// Step into the list of them, from the row that stands for all of them.
+    ///
+    /// The kinds used to be the top of that menu, one row each, with Sort and
+    /// Show hidden files under them — and an application offering five filters
+    /// pushed everything else off the bottom of a short panel. One row that
+    /// says what is showing and steps into the list is what a menu does with a
+    /// list that is not a fixed length; the same shape [`Command::Sort`] has.
+    PickKinds,
+    /// Read somebody's ROM folder again, from the menu over the RetroArch row.
+    ///
+    /// The counterpart of Steam's *Refresh the library*, and it exists for the
+    /// same reason: the shell reads that folder when it starts and when the
+    /// folder is chosen, and a game copied onto the machine in between is a
+    /// game the bar has no way of hearing about.
+    RetroArchRescan,
+    /// Fetch whatever cores the games in that folder need and this machine has
+    /// not got — every console at once, rather than one game's at a time.
+    ///
+    /// Its own command rather than [`Command::GetCore`] arriving from a
+    /// different row: that one is answered by a panel about *one* game and
+    /// knows which core it is for, and this one is about the whole collection.
+    RetroArchCores,
+    /// Fetch the cover and the screenshot of the game the menu is about, from
+    /// libretro's collection.
+    ///
+    /// Its own command rather than [`Command::RetroArchCores`] wearing another
+    /// name: that one is about a whole collection and downloads emulators, and
+    /// this one is about the row under the cursor and downloads two pictures.
+    ///
+    /// It is on a game's menu at all because the shell's own attempt can miss:
+    /// a game is matched to libretro's name for it by reducing both to what two
+    /// people spelling it differently would agree on, and somebody who called
+    /// their file `smb.nes` has written down less than that needs. This is the
+    /// row that says "try again for this one" once they have called it what it
+    /// is.
+    RetroArchArt,
+    /// The same for every game of one console at once, from the menu over that
+    /// console's row.
+    ///
+    /// Its own command rather than [`Command::RetroArchArt`] raised from
+    /// another row, and the difference is what the press costs: that one is
+    /// about the game under the cursor and fetches two pictures, and this one
+    /// is about a shelf and fetches two hundred. A single name for both would
+    /// be one mis-routed press away from a collection coming down the wire
+    /// because somebody asked about one game.
+    RetroArchConsoleArt,
+    /// Take the cursor to the settings page of the emulator that plays this
+    /// console — Settings > Games > RetroArch > the emulator's own name.
+    ///
+    /// On the menu over a console and over one of its games, and it means the
+    /// same thing on both: what a game looks like is decided by the emulator
+    /// running it, and that page is where those settings are. It moves the bar
+    /// rather than opening anything, which is why it is one command and not
+    /// two — a row that took the user somewhere else depending on which of two
+    /// rows raised it would be two rows sharing a name.
+    RetroArchCoreSettings,
+    /// Choose a picture of the user's own for this game's cover.
+    ///
+    /// What libretro has is what nearly every game gets, and the two cases this
+    /// answers are the ones it cannot: a game whose name is too far from the
+    /// database's for any match, and a game whose published cover is not the
+    /// edition somebody owns.
+    RetroArchCover,
+    /// The same for the picture that stands behind the display while the cursor
+    /// is on the game.
+    ///
+    /// Its own command rather than a cover with a flag on it, for the reason
+    /// every other pair in this list is two names: the two pictures are drawn
+    /// in different places and are chosen in two separate journeys, and a
+    /// single name would be one mis-routed press away from a screenshot
+    /// arriving where a cover was asked for.
+    RetroArchBackground,
+    /// Take away the picture somebody chose for this game, so the row goes
+    /// back to what libretro published — or to its console's mark, where
+    /// libretro has nothing.
+    ///
+    /// Its own command rather than [`Command::RetroArchCover`] pressed a second
+    /// time, and the menu shows one or the other and never both: a row that
+    /// meant "choose" on a game with no picture of its own and "forget the one
+    /// I chose" on a game with one would be a row whose meaning the user has to
+    /// work out from what the row beside it is wearing.
+    RetroArchDropCover,
+    /// The same for the picture behind the display.
+    RetroArchDropBackground,
+    /// Start RetroArch's own interface.
+    ///
+    /// The shell hides RetroArch from the list of installed applications and
+    /// stands its own row in its place, so without this row there is no way to
+    /// reach the emulator's own screens — and there are things only they can
+    /// do. Steam's row makes the same offer for the same reason.
+    RetroArchOpen,
+    /// Open the picker that says where somebody's games are.
+    ///
+    /// Raised from the panel that explains what the folder has to look like,
+    /// which is the one place that explanation belongs — a row's line under it
+    /// has room for the folder's name and not for a sentence about how to sort
+    /// a collection.
+    ChooseRomsFolder,
+    /// Open the picker that says where somebody's BIOS dumps are.
+    ///
+    /// Raised from the panel over a game that cannot start without one, which
+    /// is the one moment anybody cares: a console needing a file nobody may
+    /// distribute is a sentence in a settings page until the day it stops a
+    /// game, and then it is the only thing on screen worth answering.
+    ChooseBiosFolder,
+    /// Take RetroArch off this machine, with everything it and this
+    /// integration kept.
+    ///
+    /// Raises a panel spelling out what goes before anything happens — see
+    /// `Shell::offer_to_remove_retroarch`. The row is on the menu over the
+    /// RetroArch row under Games, and only where there is a RetroArch to
+    /// remove.
+    RemoveRetroArch,
+    /// They read that panel and said yes.
+    ///
+    /// Its own command rather than the same one pressed twice, because the two
+    /// presses mean different things and the difference is a program being
+    /// deleted: one asks a question and one answers it. Nothing but the panel's
+    /// own button carries this.
+    ReallyRemoveRetroArch,
+    /// Stop looking for a BIOS, and put the question away with the panel.
+    ///
+    /// Not [`Command::Dismiss`], because there is something to forget: which
+    /// console every folder chooser on the bar is currently answering for. See
+    /// `Shell::cancel_bios_folder`.
+    CancelBiosFolder,
     /// Hand what has been typed into the password field to the thing waiting
     /// for it. The one command that carries nothing with it: what was typed
     /// lives where the shell can look after it, not in a menu entry.
@@ -121,6 +266,52 @@ pub enum Command {
     /// to arrive from.
     MoveToNextDisplay,
     MoveToPreviousDisplay,
+    /// Hand the floating window to the pointer: it follows until it is clicked
+    /// down. The compositor's to carry out — see `lxb_shell_v1.pip_command`.
+    PipMove,
+    /// The same, resizing it from the corner with the most room to grow into.
+    PipResize,
+    /// Move it to the display beside the one it is on.
+    ///
+    /// Its own commands rather than [`Command::MoveToNextDisplay`] arriving
+    /// from another row: that pair acts on the card the *guide* has selected,
+    /// and this window is deliberately not in that deck. One name for both
+    /// would be one mis-routed press away from moving whichever application
+    /// happened to be selected behind the video.
+    PipToNextDisplay,
+    PipToPreviousDisplay,
+    /// Put it back in the column: the size the Settings page asks for, in the
+    /// corner it asks for, wherever it had been dragged or pulled to.
+    ///
+    /// The one row here that undoes the other rows rather than doing something
+    /// of its own. It is the compositor's to carry out for the reason all of
+    /// these are: where a window is on a display is a fact only the compositor
+    /// has.
+    PipRealign,
+    /// Take it out of its corner and give it the whole display, as an ordinary
+    /// application window: listed in the guide, holding the keyboard, closed and
+    /// switched to like any other.
+    ///
+    /// Its counterpart is [`Command::FloatWindow`], and they are one request in
+    /// two directions — see `lxb_shell_v1.set_window_floating`. A video sent
+    /// this way has no floating menu left to be got back with, so the row that
+    /// sends it back lives on the menu of the deck it has just joined.
+    PipFullScreen,
+    /// The other direction: the window the *guide* has selected leaves the
+    /// layout and goes to sit in a corner, as a browser's picture-in-picture
+    /// window does — whatever it happens to call itself.
+    ///
+    /// Drawn only where the session has floating windows at all. A window given
+    /// a corner on a session that has switched them off would be one with no
+    /// menu to be got out of the corner with.
+    FloatWindow,
+    /// Ask the floating window to close, which puts the video back in the page
+    /// it came out of.
+    ///
+    /// Not what the guide's own Close does: that one ends the *application*
+    /// behind the window, and the application here is a browser with the rest
+    /// of somebody's session in it.
+    PipClose,
     /// Photograph the selected window and put the picture with the user's
     /// other ones.
     Screenshot,
@@ -203,6 +394,35 @@ pub enum Command {
     /// indexes is the one the shell built when it raised the menu, and a menu
     /// that is not up has no list to index.
     OpenWithHandler(usize),
+    /// Ask *which* application again, this time out of everything installed
+    /// rather than out of what says it opens this type.
+    ///
+    /// Its own command rather than [`Command::OpenWith`] with a flag, because
+    /// what the two lists are *for* is different and the rows below say so.
+    /// That one answers "which of these should open every file of this kind
+    /// from now on" and every row of it writes the answer down. This one
+    /// answers "open this one file with that", which is the only question a
+    /// file with no extension can be asked — nothing declares it, so the list
+    /// above it is empty and the type it would be recorded under is
+    /// `application/octet-stream`, which is every unrecognised file on the
+    /// machine.
+    OpenWithOther,
+    /// Open the selected file with the `n`th of the applications *that* list
+    /// offered.
+    ///
+    /// An index rather than a name, for the reason
+    /// [`Command::OpenWithHandler`] carries one — and a separate command from
+    /// that one for the reason above: this press starts a program and that one
+    /// edits a preferences file.
+    OpenWithApp(usize),
+    /// Turn on, or off, the row at the head of that list which says the
+    /// application chosen next should also become the default for the type.
+    ///
+    /// A tick that holds the panel rather than a command that acts. It changes
+    /// nothing on its own — what it changes is what the *next* press means —
+    /// which is why it can be pressed twice with no consequence, and why it is
+    /// safe for it to be the row the list opens on.
+    OpenWithAlways,
     /// Put the selected file in the trash — after asking.
     Delete,
     /// Answer that question with yes. Separate from [`Command::Delete`] for the
@@ -236,6 +456,37 @@ pub enum Command {
     /// something nobody asked about.
     ReplaceFile,
     KeepBothFiles,
+    /// Put a trashed thing back where it came from.
+    ///
+    /// No question in front of it, unlike every other row that moves one of the
+    /// user's files: this is the one act in the shell that *undoes* a loss.
+    /// The worst it can do is put a file somewhere the user did not want it,
+    /// and the row that put it in the trash is still there to press again.
+    Restore,
+    /// Destroy a trashed thing for good, and the question that leads to it.
+    ///
+    /// Two commands for the reason [`Command::Delete`] and
+    /// [`Command::ConfirmDelete`] are two: one of them opens a question and the
+    /// other takes somebody's photograph off the disk with nothing left to get
+    /// it back from. This pair is the graver of the two — Delete leaves the
+    /// file in the trash, and there is nowhere further down than this.
+    Purge,
+    ConfirmPurge,
+    /// Yes to the question the row at the head of the Trash column raises: get
+    /// rid of everything in there.
+    ///
+    /// Its own command rather than [`Command::ConfirmPurge`] arriving from
+    /// another panel, for the reason [`Command::DismissNotifications`] is its
+    /// own: a press that destroys one thing and a press that destroys four
+    /// hundred are as different as any two presses in this shell, and one name
+    /// for both would be one mis-routed answer away from emptying a trash
+    /// somebody was reading.
+    ///
+    /// It has no opening half. The question is raised by pressing the row
+    /// itself rather than by a row of a menu — that head row *is* the command,
+    /// the way the search field at the head of a folder is — so there is
+    /// nothing for a second name to be carried on.
+    ConfirmEmptyTrash,
     /// Put the caret on the selected row's name, so it can be changed.
     ///
     /// It opens a field rather than doing anything, which is why it is one
@@ -244,8 +495,76 @@ pub enum Command {
     /// See [`crate::main::Renaming`] for why the row goes on saying what the
     /// file is really called while it is being typed over.
     Rename,
+    /// Turn the column into one that is being marked, with the row the menu was
+    /// raised over already ticked.
+    ///
+    /// What changes is what a press *means* in that column: it ticks and
+    /// unticks rows instead of opening them, the menu raised while it is on is
+    /// about the whole set, and the row at the head says how many there are and
+    /// is the way back out. See [`crate::marks`].
+    ///
+    /// It is on the menu rather than being a button of its own because there is
+    /// no button of its own to be had: every control a pad offers this shell
+    /// already means something in a column, and a mode nobody can find is worse
+    /// than a row nobody presses.
+    SelectMultiple,
+    /// Tick every row of the column that can be ticked.
+    SelectAll,
+    /// Take every tick off, leaving the marking on.
+    ///
+    /// Its own command rather than [`Command::SelectAll`] pressed again, and
+    /// deliberately not the way *out* of the marking either: those are three
+    /// different things — one fills the set, one empties it, one ends the
+    /// picking — and a single row that did whichever of them fitted would be a
+    /// row whose meaning the user works out afterwards.
+    ClearMarks,
+    /// Put everything ticked in the trash — after asking.
+    ///
+    /// Its own command beside [`Command::Delete`], for the reason that one is
+    /// separate from [`Command::ConfirmDelete`]: the two act on different
+    /// things — one on the row the menu was raised over, one on a set the user
+    /// built — and one name for both would be one mis-routed press away from
+    /// forty files going where one was meant to.
+    DeleteMarked,
+    ConfirmDeleteMarked,
+    /// Carry everything ticked somewhere else on the disk, leaving a copy of it
+    /// where it is, or not.
+    ///
+    /// Their own commands beside [`Command::Copy`] and [`Command::Move`], on
+    /// the same argument, and neither carries its subject: the set is whatever
+    /// is ticked when the press lands, and the picker takes a copy of it there
+    /// and then — see [`crate::transfer::Transfer::sources`].
+    CopyMarked,
+    MoveMarked,
+    /// Put everything ticked back where it came from.
+    ///
+    /// No question in front of it, for the reason [`Command::Restore`] has
+    /// none: it is the one act in this shell that undoes a loss.
+    RestoreMarked,
+    /// Destroy everything ticked for good, and the question that leads to it.
+    ///
+    /// The gravest press in the shell after emptying the trash, and it is two
+    /// commands for the reason that one is: one of them opens a question and
+    /// the other takes a set of somebody's files off the disk with nothing left
+    /// to get them back from.
+    PurgeMarked,
+    ConfirmPurgeMarked,
     /// Ask what order the column should be listed in.
     Sort,
+    /// Turn the names that begin with a dot on, or off, in every folder this
+    /// shell lists.
+    ///
+    /// A tick that holds the panel, on the terms [`Command::OpenWithAlways`] is
+    /// one: pressing it changes what is on the column behind the menu, and a
+    /// panel that folded away would take the answer with it before it could be
+    /// read. Unlike that one it acts at once and is written down — it is a
+    /// preference about reading a listing, the same kind of thing
+    /// [`Command::Sort`] leads to, which is why it stands beside Sort in the
+    /// band that is about the column rather than about the file.
+    ///
+    /// One command and not a pair, because there is only one of it: what it
+    /// answers is which way it is being turned, and the switch itself knows.
+    ShowHidden,
     /// List it in this one.
     SortBy(crate::media::Sort),
     /// Raise the panel that signs somebody in to Steam, on its first question.
@@ -332,6 +651,17 @@ pub enum Command {
     /// the menu is about whatever was selected when it was raised, and the
     /// shell can look that up again.
     SteamDo(lxb_steam::Doing),
+    /// Take an account off the machine, leaving what is in its home directory
+    /// where it is — and the same, taking that with it.
+    ///
+    /// Two commands rather than one carrying a flag, for the reason
+    /// [`Command::ConfirmUninstall`] is separate from [`Command::Uninstall`]:
+    /// one of them removes an account and the other removes years of somebody's
+    /// work, nothing in this shell can put the second back, and a single name
+    /// for both would be one mis-routed press away from doing it. See
+    /// `Shell::ask_about_removing_account`, which is the panel that offers them.
+    RemoveAccountKeepingFiles,
+    RemoveAccountAndFiles,
     /// Put the menu away and do nothing else. The row that says so out loud,
     /// for a user who has opened the menu and changed their mind; `B` does the
     /// same thing and is not discoverable.
@@ -591,6 +921,51 @@ impl Entry {
     pub fn group(mut self, group: u8) -> Self {
         self.group = group;
         self
+    }
+}
+
+/// The light under the chosen row: where it is, and how fast it is travelling.
+///
+/// One critically damped spring, the same one the guide's chip rides: it leans
+/// into a move rather than leaving at full speed, and a second press part-way
+/// carries the first one's momentum on instead of starting again from rest. The
+/// first frame snaps, so the glide is only ever between two real positions
+/// rather than in from nowhere.
+///
+/// Its own type because two things in this shell carry one — a menu's rows, and
+/// the rows of the panel an application's file question is answered in — and two
+/// springs written out twice would be two places for the rate to drift apart.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Glide {
+    at: Option<[f32; 4]>,
+    speed: [f32; 4],
+}
+
+impl Glide {
+    /// One frame of the glide towards `target`.
+    pub fn towards(&mut self, target: [f32; 4], dt: f32) -> [f32; 4] {
+        let Some(current) = self.at else {
+            self.speed = [0.0; 4];
+            self.at = Some(target);
+            return target;
+        };
+        let mut next = [0.0; 4];
+        for ((slot, velocity), (from, to)) in next
+            .iter_mut()
+            .zip(self.speed.iter_mut())
+            .zip(current.iter().zip(&target))
+        {
+            let (at, moving) = lxb_protocol::overview::spring(
+                *from as f64,
+                *velocity as f64,
+                *to as f64,
+                HIGHLIGHT_EASE_RATE as f64,
+                dt as f64,
+            );
+            (*slot, *velocity) = (at as f32, moving as f32);
+        }
+        self.at = Some(next);
+        next
     }
 }
 
@@ -1236,6 +1611,21 @@ impl Menu {
     ///
     /// Reports whether anything at all changed, so the caller can leave the
     /// display alone when nothing did.
+    /// Its own call for the header, which [`Menu::refresh`] leaves alone: the
+    /// one panel whose header changes while it is up is the one over a column
+    /// being marked, where the header is the count — see
+    /// `Shell::refresh_the_marking_menu`. Everywhere else the header names the
+    /// thing the menu was raised over, which cannot change while the menu is
+    /// standing over it, so a refresh that rewrote it would be a call the
+    /// caller has to remember to pass the same string to every time.
+    pub fn retitle(&mut self, title: Title) -> bool {
+        if self.title.as_ref() == Some(&title) {
+            return false;
+        }
+        self.title = Some(title);
+        true
+    }
+
     pub fn refresh(&mut self, entries: Vec<Entry>) -> bool {
         if entries == self.entries {
             return false;
@@ -1372,35 +1762,16 @@ impl Menu {
         crate::ui::ease(self.expansion)
     }
 
-    /// One frame of the highlight's glide towards `target`, on the same
-    /// critically damped spring the guide's chip rides: it leans into a move
-    /// rather than leaving at full speed, and a second press part-way carries
-    /// the first one's momentum on instead of starting again from rest.
-    ///
-    /// The first frame after opening snaps, so the glide is only ever between
-    /// two real positions rather than in from nowhere.
+    /// One frame of the highlight's glide towards `target`. See [`Glide`],
+    /// which is the spring and the whole of the rule.
     pub fn animate_highlight(&mut self, target: [f32; 4], dt: f32) -> [f32; 4] {
-        let Some(current) = self.highlight else {
-            self.highlight_speed = [0.0; 4];
-            self.highlight = Some(target);
-            return target;
+        let mut glide = Glide {
+            at: self.highlight,
+            speed: self.highlight_speed,
         };
-        let mut next = [0.0; 4];
-        for ((slot, velocity), (from, to)) in next
-            .iter_mut()
-            .zip(self.highlight_speed.iter_mut())
-            .zip(current.iter().zip(&target))
-        {
-            let (at, moving) = lxb_protocol::overview::spring(
-                *from as f64,
-                *velocity as f64,
-                *to as f64,
-                HIGHLIGHT_EASE_RATE as f64,
-                dt as f64,
-            );
-            (*slot, *velocity) = (at as f32, moving as f32);
-        }
-        self.highlight = Some(next);
+        let next = glide.towards(target, dt);
+        self.highlight = glide.at;
+        self.highlight_speed = glide.speed;
         next
     }
 

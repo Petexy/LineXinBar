@@ -1,0 +1,30 @@
+<!--
+  The Escape key, as the key is labelled.
+
+  The word, because the word is what is printed on it. The first cut drew a cap
+  with an arrow leaving it, up and to the left, and the user threw it out for
+  the only reason that matters: no keyboard has a key with that on it, so the
+  mark named nothing anybody could go and find.
+
+  No cap round the letters, on pad-west.svg's rule — at the size a hint is
+  drawn, a body round a mark only takes room from it, and here the room is what
+  decides whether three letters are legible at all. Nothing else in the shell
+  says ESC, so the word needs no container to say which key it is.
+
+  Set in caps rather than as "Esc": at this size a lowercase pair is x-height —
+  two thirds of the room the capitals get — and their counters close up under
+  the material long before the capitals' do.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g fill="none" stroke="#fff" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.0 7.0H3.0v8.8h5.0"/>
+    <path d="M3.0 11.4h4.2"/>
+    <path d="M14.2 8.0a2.5 2.2 0 1 0-2.2 3.4 2.5 2.2 0 1 1-2.2 3.6"/>
+    <path d="M20.11 8.03a2.5 4.4 0 1 0 0 6.74"/>
+  </g>
+</svg>

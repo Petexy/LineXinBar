@@ -1,0 +1,24 @@
+<!--
+  The Super key, as the key it is.
+
+  key-enter.svg's plain cap with the diamond that has meant Meta on a Unix
+  keyboard since the machines the word comes from. It is what a keyboard sold
+  for Linux prints on this key, and it is the only mark for it that is not
+  somebody's logo.
+
+  The cap is kept, unlike key-escape.svg, and for that file's own reason read
+  the other way round: a body round a mark takes room from it, and only a mark
+  that says which key it is *without* one can afford to lose it. ESC can — no
+  other three letters in this shell spell that word. A diamond cannot: on its
+  own it is a shape, and what makes it a key is being drawn on one.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect x="2.75" y="5.5" width="18.5" height="13" rx="3.2"
+        fill="none" stroke="#fff" stroke-width="1.5"/>
+  <path fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"
+        d="M12 8.35 15.65 12 12 15.65 8.35 12z"/>
+</svg>

@@ -55,6 +55,7 @@ use crate::apps::{Category, Choice, Entry, Folder};
 use crate::icons;
 use crate::system::{Devices, Direction, Level};
 use crate::theme::{self, Color};
+use lxb_protocol::pip;
 use lxb_protocol::wallpaper;
 
 /// What choosing a row does.
@@ -79,6 +80,54 @@ pub enum Setting {
     /// reason the two are separate: a machine that cannot pay for the water
     /// behind everything can very well pay for the marks in front of it.
     Style(theme::Part, &'static str),
+    /// One press on one of the two forms under Settings > Users — see
+    /// [`UserValue`], which is where the whole of that page's oddity is argued.
+    ///
+    /// Carried out by the shell rather than by [`apply_with`], on the terms
+    /// [`Setting::Network`] is: what has to happen is a draft being written or a
+    /// daemon being asked, and `settings` records what the shell *remembers*,
+    /// which is neither of those.
+    User(UserValue),
+    /// Set one of an emulator core's own settings — PPSSPP's rendering
+    /// resolution, Mesen's overclock.
+    ///
+    /// Nothing about these is written down in this shell. The core declares
+    /// what it can be set to, the helper asks it, and the rows are built from
+    /// the answer — see [`crate::retroarch::tunables`]. What is carried here is
+    /// only enough to write the chosen value into the file the emulator reads
+    /// it from: which core, which key, which value.
+    ///
+    /// `core` is what the core calls *itself* — `PPSSPP` — because that is the
+    /// name RetroArch files its settings under, and not the `ppsspp` that names
+    /// its file on the disk.
+    CoreOption {
+        core: &'static str,
+        key: &'static str,
+        value: &'static str,
+    },
+    /// Set one of RetroArch's own settings, which belong to no core: the
+    /// aspect every game is drawn at, the driver it draws with.
+    ///
+    /// Written into the emulator's own configuration and kept, unlike the
+    /// controller order — see [`crate::retroarch::set_setting`], which is where
+    /// that difference is argued.
+    Emulator {
+        key: &'static str,
+        value: &'static str,
+    },
+    /// Fetch the cover and the screenshot of every game in somebody's ROM
+    /// folder again, from libretro's collection.
+    ///
+    /// The one row in this tree that sets nothing at all: it carries no value,
+    /// nothing is marked afterwards, and pressing it twice does the same thing
+    /// twice. It is here rather than in a menu because that is where somebody
+    /// goes looking for it — the covers are a thing about the whole collection,
+    /// and the collection's other settings are on this page.
+    ///
+    /// Applied by the shell rather than by [`apply_with`], on the terms
+    /// [`Setting::Network`] is: what has to happen is a helper process being
+    /// run, and this module writes down what the shell remembers.
+    EmulatorArt,
     /// Play the Start screen's background music, or leave that screen quiet.
     ///
     /// Carries no display, unlike everything under Display: the music belongs
@@ -97,6 +146,37 @@ pub enum Setting {
     /// machine that has a battery — see [`battery_percent_switch`], and
     /// [`note_battery`], which is what says so.
     BatteryPercent(bool),
+    /// Which column of the start screen the shell opens on.
+    ///
+    /// The id of the column, which is what a column is called on the bar and
+    /// never what it is called on screen: a title is what the user reads and is
+    /// entitled to change with their language, and this is written into a file
+    /// that has to still mean the same column next year.
+    ///
+    /// Carries no display, like the switches around it. A session comes up on
+    /// one place whichever screen is being looked at, and two screens opening
+    /// on two different columns would be answering a question about a person
+    /// with a fact about a monitor.
+    ///
+    /// Nothing is carried out when this is pressed. The value is what the next
+    /// cursor to be made is built from — see [`crate::model::Cursor::for_model`]
+    /// — so a press moves the mark, is written down, and is seen the next time
+    /// a display comes up. That is the whole of it, and it is why the row says
+    /// what it is for rather than appearing to do nothing.
+    StartupCategory(&'static str),
+    /// Whether the start screen writes what its buttons do at its foot.
+    ///
+    /// Carries no display, like the two above it: the legend is drawn on
+    /// whichever screen is being driven, and a session where one screen
+    /// explained the buttons and the other did not would be answering a
+    /// question about a person with a fact about a monitor.
+    ///
+    /// Under System rather than under Appearance, which is the one thing about
+    /// it worth arguing over. What it changes is not how the shell *looks* but
+    /// how much it says about itself — the same kind of answer as how large an
+    /// application is drawn, which is the row above it, and not the same kind
+    /// as an accent colour. See [`button_hints`].
+    ButtonHints(bool),
     /// Draw every application this much larger than life, in per cent of its
     /// own size. 100 is one to one, and the least this can be.
     ///
@@ -154,12 +234,39 @@ pub enum Setting {
     /// Carried out by the caller for the reason the network is. See
     /// [`crate::bluetooth`].
     Bluetooth(BluetoothValue),
+    /// Change what happens to a browser's picture-in-picture window: whether it
+    /// floats over everything, how large it is drawn, and which corner it sits
+    /// in.
+    ///
+    /// Carried out by the compositor and recorded here, which is the bargain
+    /// [`Setting::AppScale`] is under and for the same two reasons: where a
+    /// window goes is not the shell's to do, and a module holding a Wayland
+    /// connection could not be tested without one. `main` sends whatever
+    /// [`picture_in_picture`] then returns.
+    ///
+    /// Carries no display. The window floats on the screen its browser is on,
+    /// and the setting is about what such a window *is* rather than about any
+    /// one screen — the same argument the application scale is under.
+    PictureInPicture(PipValue),
     /// Change one display's picture. Carries the connector the change belongs
     /// to, because every one of these is a property of one screen.
     Display {
         display: &'static str,
         value: DisplayValue,
     },
+}
+
+/// One thing that can be changed about the floating window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipValue {
+    /// Float such a window at all. Off, a window a browser has put a video into
+    /// is an application window like any other — maximized, listed in the
+    /// guide, and given the keyboard.
+    Floating(bool),
+    /// How much of the display's width it takes.
+    Size(pip::Size),
+    /// Which corner it sits in.
+    Place(pip::Place),
 }
 
 /// One thing that can be changed about a display's picture.
@@ -202,8 +309,8 @@ pub enum DisplayValue {
     NightLightFrom(u8),
     /// The hour of local time it goes off again, 0 to 23.
     NightLightUntil(u8),
-    /// Rest this display behind black once it has been left alone, while a game
-    /// is being played on another one.
+    /// Rest this display behind black once it has been left alone, while
+    /// another one is being used.
     ///
     /// Per display like everything else here, and it has to be: what this
     /// protects against is a panel keeping the still picture it is shown, and
@@ -312,6 +419,35 @@ pub enum BluetoothValue {
     Startup(Startup),
 }
 
+/// One press on the two forms under Settings > Users.
+///
+/// The odd one out in this whole enum, and worth saying why. Every other
+/// [`Setting`] here *is* the change — pressing it moves a mark and something
+/// happens. Three of these four move nothing at all: they write into a draft
+/// held in [`crate::users`], and the account is not touched until the row at the
+/// foot of the form is pressed. That is what a form is, and it is the reason the
+/// draft exists rather than each row acting on its own.
+///
+/// They are settings all the same because of what carries them: the bar knows
+/// how to move a mark from one row of a column to another and nothing else, and
+/// the Account type rows are exactly that — a column of two answers, one of
+/// which is in force. Making them a different kind of row would be writing that
+/// column's behaviour a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserValue {
+    /// Which kind of account the form is for. The one row of the form that is
+    /// chosen from a list rather than typed or walked to.
+    Admin(bool),
+    /// Hand the form over: make the account, or save the changes.
+    Accept,
+    /// Take the chosen picture back off, so the row wears the figure again.
+    DropPicture,
+    /// Ask whether to remove this account. The question, not the answer — see
+    /// [`crate::menu::Command::ConfirmUninstall`], which is the same division:
+    /// one of these opens a panel and something else destroys an account.
+    Remove(u64),
+}
+
 /// One of the values in this tree that is typed rather than chosen: which one,
 /// and whose.
 ///
@@ -340,6 +476,17 @@ pub enum Typing {
     /// looking for something to pair with puts on its own screen. See
     /// [`crate::bluetooth::Bt::rename`].
     BluetoothName { controller: &'static str },
+    /// One of the values typed into an account form — a name, a user name, or
+    /// one of the two passwords.
+    ///
+    /// It carries *whose* as well as which, and that is not decoration: two of
+    /// the checks a field makes depend on it. A user name is taken or free for
+    /// this account, and a password may be left empty on one that already exists
+    /// and may not on one that does not. See [`crate::users::fault`].
+    User {
+        whose: crate::users::Whose,
+        field: crate::users::Field,
+    },
 }
 
 impl Typing {
@@ -350,6 +497,22 @@ impl Typing {
             Typing::BluetoothName { .. } => {
                 "What other devices call this machine when they look for it."
             }
+            Typing::User { field, .. } => field.note(),
+        }
+    }
+
+    /// Whether the field is drawn as a count of marks rather than as what was
+    /// typed.
+    ///
+    /// True for exactly two rows in the tree, and they are the only two values
+    /// the shell collects that are *secrets*. Everything else typed here is an
+    /// address or a name — see [`crate::dialog::Line::Entry`], which is where
+    /// the argument for showing those is made, and which this is the exception
+    /// to rather than the rule for.
+    pub fn secret(self) -> bool {
+        match self {
+            Typing::Network { .. } | Typing::BluetoothName { .. } => false,
+            Typing::User { field, .. } => field.secret(),
         }
     }
 
@@ -363,6 +526,7 @@ impl Typing {
         match self {
             Typing::Network { field, .. } => crate::network::fault(field, text),
             Typing::BluetoothName { .. } => crate::bluetooth::fault(text),
+            Typing::User { whose, field } => crate::users::fault(whose, field, text),
         }
     }
 }
@@ -978,7 +1142,7 @@ static PLACE: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
 /// newly plugged screen to be missing.
 static NIGHT: Mutex<BTreeMap<String, NightLight>> = Mutex::new(BTreeMap::new());
 
-/// Which displays are to be rested while a game is played on another, for the
+/// Which displays are to be rested while another one is being used, for the
 /// displays somebody has answered the question on.
 ///
 /// Filed on its own, like [`MODE`], [`TURN`] and [`NIGHT`], with nothing
@@ -1074,6 +1238,120 @@ fn sort_of(what: &str) -> Option<crate::media::Sort> {
     sort
 }
 
+/// Whether a folder is listed with the names that begin with a dot in it.
+///
+/// Off, which is what every file manager on the machine opens with and what
+/// the explorer has always done: a home directory listed with them in it opens
+/// on forty rows of program state before the first thing the user recognises,
+/// and nobody's photographs are in `~/.cache`.
+///
+/// Here beside [`MEDIA_SORT`] because it is the same kind of preference chosen
+/// from the same row of the same menu, and it is held the same way: one switch
+/// for every folder rather than one per directory. Somebody who wants to see
+/// what is in `~/.config` wants to see it in the folder under it too, and a
+/// setting kept per folder would be a settings file that grew every time
+/// anybody looked in one.
+///
+/// Written down for the reason an order is: nobody turns this on meaning
+/// "until I next start the shell".
+static SHOW_HIDDEN: Mutex<bool> = Mutex::new(false);
+
+/// Whether the start screen writes what its buttons do in the corner opposite
+/// the clock.
+///
+/// **On.** A console shell is the one kind of interface nobody arrives at
+/// already knowing: there is no menu bar to read, no tooltip to hover, and the
+/// buttons that do the work are on a pad whose letters differ between the three
+/// companies that make them. The legend is how the shell says which one, and it
+/// has to be there before anybody thinks to look for it — somebody who does not
+/// need it is exactly the person who will find the switch, and somebody who
+/// does will never go hunting for a setting to reveal what they do not know is
+/// missing.
+///
+/// Session-wide beside the switches above it, and written down for the reason
+/// they are: nobody turns this off meaning "until I next start the shell".
+static BUTTON_HINTS: Mutex<bool> = Mutex::new(true);
+
+/// Whether the start screen says what its buttons do.
+///
+/// Read only. There is one row in the shell that changes it — Settings >
+/// System > Button hints — and it goes through [`apply`] like every other
+/// value on that column, which is also what writes it down. Nothing else in
+/// the session has a reason to reach in, unlike [`show_hidden`] below, whose
+/// second route is the Sort menu over a folder.
+pub fn button_hints() -> bool {
+    *BUTTON_HINTS.lock().unwrap()
+}
+
+/// The column the start screen opens on.
+///
+/// **Games.** A console is a machine for playing things, and the column a
+/// person wants is the one holding what they came to the machine to do. The
+/// shell opened on the first column with anything in it before this setting
+/// existed, which on nearly every machine is System — the disk and the
+/// administrative tools, which is where somebody goes when something is wrong
+/// rather than when it is right.
+///
+/// The id and not the column, because the bar is not built yet when this is
+/// read from the file, and because a column that is not there this session
+/// still has to go on being the setting: a machine whose Steam account has been
+/// signed out has no Steam column, and a shell that quietly rewrote the setting
+/// to something else would lose the answer for good. What happens when the
+/// named column is not on the bar is [`crate::model::Cursor::for_model`]'s
+/// business, and it is what the shell did before this existed — the first
+/// column with something in it.
+///
+/// Held as a `String` rather than a `&'static str` for the reason
+/// [`STEAM_SORT`] is: a file naming a column this shell does not have keeps
+/// naming it, so that a session which read a later version's setting, changed
+/// the accent and wrote the file back does not silently throw the user's choice
+/// away.
+static STARTUP_CATEGORY: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the start screen opens on.
+pub fn startup_category() -> String {
+    STARTUP_CATEGORY
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| DEFAULT_STARTUP_CATEGORY.to_string())
+}
+
+/// Where a shell nobody has told opens. See [`STARTUP_CATEGORY`].
+const DEFAULT_STARTUP_CATEGORY: &str = "games";
+
+/// Set it without writing anything down.
+///
+/// For the tests, and reached from [`crate::model`]'s as well as this module's:
+/// what the setting *does* is decide where a cursor is built standing, and that
+/// is `model`'s to assert. `None` puts it back to having never been asked.
+/// Never [`apply`], which writes to the config directory of whoever is running
+/// the suite.
+#[cfg(test)]
+pub fn note_startup_category(id: Option<&str>) {
+    *STARTUP_CATEGORY.lock().unwrap() = id.map(str::to_string);
+}
+
+/// Whether the explorer is listing the names that begin with a dot.
+pub fn show_hidden() -> bool {
+    *SHOW_HIDDEN.lock().unwrap()
+}
+
+/// Turn it over, and write it down. Reports where it ended up, which is what
+/// the tick on the menu row draws.
+pub fn set_show_hidden(on: bool) -> bool {
+    {
+        let mut held = SHOW_HIDDEN.lock().unwrap();
+        if *held == on {
+            return on;
+        }
+        *held = on;
+    }
+    tracing::info!(on, "listing the hidden names");
+    save(&stored());
+    on
+}
+
 /// What order the Steam column is listed in, by the name the order goes under
 /// in the file.
 ///
@@ -1166,6 +1444,75 @@ static START_MUSIC: Mutex<bool> = Mutex::new(true);
 /// picture away, and the shell that comes up in Custom tomorrow reads this to
 /// know what to draw. It is the *style* that says whether it is on screen.
 static CUSTOM_WALLPAPER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where somebody keeps their ROMs, if they have said.
+///
+/// The folder itself and not what is in it: what consoles are in there is a
+/// question for the helper that reads the disk, asked again whenever this
+/// changes — see [`crate::retroarch`]. A shell that wrote down the answer as
+/// well would come up tomorrow listing a game that was deleted last night.
+///
+/// Kept whether or not RetroArch is still installed, on the terms the
+/// wallpaper's file is kept: somebody who removes RetroArch for a week has not
+/// re-sorted their collection, and being asked for the folder again afterwards
+/// would be the shell forgetting something it was told.
+static ROMS_FOLDER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The folder somebody's games are in, if they have chosen one.
+pub fn roms_folder() -> Option<PathBuf> {
+    ROMS_FOLDER.lock().unwrap().clone()
+}
+
+/// Their games are in there from now on.
+///
+/// Written the moment it is chosen rather than when the folder has been read:
+/// the user answered a question and the answer is theirs whatever the scan
+/// finds in it, including nothing.
+pub fn choose_roms_folder(at: &Path) {
+    *ROMS_FOLDER.lock().unwrap() = Some(at.to_path_buf());
+    save(&stored());
+    tracing::info!(at = %at.display(), "the ROM folder");
+}
+
+/// Forget where they are, because the thing that read it has gone.
+///
+/// The only setting in this file that belongs to the RetroArch integration and
+/// to nothing else, so it goes when RetroArch does — see
+/// `Shell::retroarch_removed`. Their games are not touched and the folder is
+/// not touched; what is forgotten is one line saying where to look.
+pub fn forget_roms_folder() {
+    *ROMS_FOLDER.lock().unwrap() = None;
+    save(&stored());
+    tracing::info!("the ROM folder is forgotten");
+}
+
+/// What a column of folders is being walked *for*.
+///
+/// One answer today and it is an enum anyway, for the reason [`Setting`] is
+/// one: the picker is a walk over the disk that ends in a press, and what that
+/// press means has to travel with the walk — see [`crate::files::Shows`],
+/// which is what carries it down each step. A second thing to choose a folder
+/// for is a variant here and an arm in `Shell::picked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picking {
+    /// Where somebody's ROMs are, for Settings > Games > RetroArch and for the
+    /// setup the RetroArch row asks for the first time it is pressed.
+    RomsFolder,
+    /// Where somebody's BIOS dumps are, for the console that cannot start
+    /// without one. What is chosen is copied — see `Shell::take_the_firmware`.
+    Firmware,
+}
+
+impl Picking {
+    /// The line under the row that answers the picker, which is what pressing
+    /// it would mean.
+    pub fn note(self) -> &'static str {
+        match self {
+            Picking::RomsFolder => "Look for games in this folder",
+            Picking::Firmware => "Copy the BIOS out of this folder",
+        }
+    }
+}
 
 /// The picture or film the wallpaper is set to, if the user has chosen one.
 ///
@@ -1333,6 +1680,54 @@ static APP_SCALE: Mutex<u16> = Mutex::new(NATURAL_SCALE);
 /// that could not read its own display's size.
 pub fn app_scale() -> u16 {
     *APP_SCALE.lock().unwrap()
+}
+
+/// What a browser's picture-in-picture window is given: whether it floats at
+/// all, how large it is drawn and which corner it sits in.
+///
+/// Kept here for the reason [`APP_SCALE`] is: the settings file is built out of
+/// the live values at the moment it is written, so a value the writer cannot see
+/// is one the next change to anything else drops. Carried out by the compositor
+/// — `main` sends it over `lxb_shell_v1` — and remembered by nothing else.
+static PICTURE_IN_PICTURE: Mutex<Pip> = Mutex::new(Pip::DEFAULT);
+
+/// What the floating window is set to.
+///
+/// The default is the feature switched on, at a quarter of the display's width,
+/// in the upper right corner. On, because a shell that came up ignoring the
+/// button a browser offers would look like one whose picture-in-picture is
+/// broken; upper right, because that is the corner the feature is named after
+/// everywhere it exists.
+pub fn picture_in_picture() -> Pip {
+    *PICTURE_IN_PICTURE.lock().unwrap()
+}
+
+/// What the shell remembers about the floating window.
+///
+/// The three halves of one page, in one value rather than three, because they
+/// are sent to the compositor in one request: a size without its corner would
+/// move the window twice for one press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pip {
+    pub floating: bool,
+    pub size: pip::Size,
+    pub place: pip::Place,
+}
+
+impl Pip {
+    /// What a machine nobody has set this on comes up with. A `const` rather
+    /// than a `Default`, because a `Mutex` in a static has to be built in one.
+    const DEFAULT: Self = Self {
+        floating: true,
+        size: pip::Size::Medium,
+        place: pip::Place::TopRight,
+    };
+}
+
+impl Default for Pip {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Whether anything is allowed to interrupt: the guide's do-not-disturb tile.
@@ -1715,7 +2110,7 @@ pub fn night_light_for(display: &str) -> NightLight {
         .unwrap_or_default()
 }
 
-/// Whether one display is to be rested while a game is played on another. A
+/// Whether one display is to be rested while another one is being used. A
 /// display nobody has answered for is left alone, which is what a page that
 /// has never been visited should do.
 pub fn oled_protection_for(display: &str) -> bool {
@@ -1929,18 +2324,30 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// Network is fourth: a console can be used without it, and it cannot be used
 /// without a picture.
 ///
+/// Games follows the pair because it is about neither the machine nor the
+/// shell but the programs the console is for — and it is in front of System
+/// because a setting about the games is one somebody came looking for.
+///
+/// Users follows Games because it is the first page here about *people* rather
+/// than about the machine or the programs on it — and it is in front of System
+/// for the reason Games is: somebody who came to make an account for the person
+/// they live with came looking for it, and a page somebody comes looking for
+/// should not be behind the one nobody does.
+///
 /// System comes last because it is the one page about neither: what a display
 /// is doing and what the speakers are doing are things the user can point at,
 /// and how large the programs on the machine draw themselves is a setting they
 /// go looking for.
-pub fn column() -> Vec<Entry> {
+pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
     vec![
         appearance(),
         display(),
         sounds(),
         network(),
         bluetooth(),
-        system(),
+        games(),
+        users(),
+        system(bar),
     ]
 }
 
@@ -1957,10 +2364,15 @@ pub fn column() -> Vec<Entry> {
 /// and clamped by the bar, which is the same thing that happens when an
 /// application is uninstalled while its row is selected.
 pub fn refresh(categories: &mut [Category]) {
+    // The columns there are, taken before the one being rebuilt is reached for:
+    // one row of this tree is a list of them — see [`startup_category_page`] —
+    // and a column cannot be handed the bar it is standing in. Nothing here
+    // borrows the catalogue; a [`crate::apps::Column`] is three static names.
+    let bar: Vec<crate::apps::Column> = categories.iter().map(Category::named).collect();
     let (id, ..) = crate::apps::SHELL_SETTINGS;
     if let Some(settings) = categories.iter_mut().find(|category| category.id == id) {
         let mut worn = std::mem::take(&mut settings.entries);
-        let mut fresh = column();
+        let mut fresh = column(&bar);
         carry_over_listings(&mut worn, &mut fresh);
         settings.entries = fresh;
     }
@@ -2090,6 +2502,21 @@ fn theme_row() -> Entry {
 /// The row marked is the applied one rather than the one being previewed, like
 /// every other list of values in this tree: what is drawn on screen while the
 /// cursor walks is the preview, and what is ticked is the setting.
+///
+/// The two material rows carry the *same* drawing — the mark at the head of
+/// this row, the one that stands for the thing being changed — and are told
+/// apart by being drawn in the material each of them applies. That is not a
+/// shortage of drawings. The difference between Default and Simple is not a
+/// difference of shape: it is the same silhouette read at the same edge, beaded
+/// out of its own distance field or laid down flat, so a pair of drawings could
+/// only ever have *described* the difference where this one shows it. It is the
+/// argument the accent's swatches make, asked of a material — see
+/// [`crate::apps::Choice::material`] and [`crate::gpu::Quad::mark`].
+///
+/// Which also means these four rows are the one place in the shell where a mark
+/// is drawn in something other than the theme in force. That is on purpose and
+/// it is the same liberty a swatch takes: a column of colours shows five, and
+/// only one of them is the accent.
 fn material_row(part: theme::Part) -> Entry {
     let in_force = theme::applied_style(part).name();
     let (comment, icon, of_default, of_simple) = match part {
@@ -2114,12 +2541,14 @@ fn material_row(part: theme::Part) -> Entry {
             .iter()
             .map(|name| match wallpaper::style(name) {
                 wallpaper::Style::Custom => custom_wallpaper_row(*name == in_force),
-                style => value(
+                style => material_value(
                     name,
-                    Some(match style {
+                    match style {
                         wallpaper::Style::Simple => of_simple,
                         _ => of_default,
-                    }),
+                    },
+                    icon,
+                    style,
                     *name == in_force,
                     Setting::Style(part, name),
                 ),
@@ -2235,8 +2664,8 @@ fn display() -> Entry {
     )
 }
 
-/// OLED protection: rest a screen nobody is watching while a game is being
-/// played on another one.
+/// OLED protection: rest a screen nobody is watching while another one is
+/// being used.
 ///
 /// Last of the Display pages, and it earns that place the way HDR earns
 /// second-to-last: the ones above it are about the picture every display has,
@@ -2315,7 +2744,7 @@ fn resting_of(display: &str) -> String {
 fn oled_protection_switch(display: &'static str, on: bool) -> Entry {
     folder(
         "OLED protection",
-        "Fade this screen to black while a game is played on another",
+        "Fade this screen to black while another screen is being used",
         icons::SETTING_SCREEN_REST,
         vec![
             value(
@@ -5185,6 +5614,411 @@ fn startup_row() -> Entry {
     )
 }
 
+/// Games: the settings belonging to the games on this machine, as opposed to
+/// the machine itself.
+///
+/// Empty for now, and here anyway. Steam and the games beside it ask the shell
+/// for things nothing else does, and the alternative to a page of their own is
+/// System — which is the page about how the *machine* behaves, and would then
+/// be a page about two unrelated subjects with a user walking past one to reach
+/// the other. A console's games are what the console is for; the settings that
+/// belong to them are not settings about the hardware.
+///
+/// It stands in front of System for the reason System is last: a setting about
+/// the games is one somebody came here looking for, and the page about the
+/// machine itself is the one they arrive at having read past everything they
+/// can use.
+///
+/// The page is not *empty* even so — see [`nothing_to_set_about_games`]. A
+/// subcategory the bar refuses to step into is a row that does nothing when
+/// pressed, which is the argument [`resolution`] makes about a screen list with
+/// no screens in it.
+fn games() -> Entry {
+    let mut rows = Vec::new();
+    // Only where the package is installed. A page listing a setting belonging
+    // to a program this machine has not got would be a page about somebody
+    // else's machine — and the row under it opens a picker for a folder
+    // nothing would ever read. See [`crate::retroarch::offered`].
+    if crate::retroarch::offered() {
+        rows.push(retroarch());
+    }
+    if rows.is_empty() {
+        rows.push(nothing_to_set_about_games());
+    }
+    folder(
+        "Games",
+        "Steam, and the games on this machine",
+        icons::CATEGORY_GAMES,
+        rows,
+    )
+}
+
+/// The page belonging to the RetroArch integration, which exists on a machine
+/// that has its package and on no other.
+///
+/// One row today, and a page anyway rather than that row standing directly
+/// under Games: what is under here belongs to *RetroArch* rather than to the
+/// games on this machine in general, and a Steam setting arriving beside it
+/// would then be two programs' settings in one list with nothing saying which
+/// was whose.
+fn retroarch() -> Entry {
+    let mut rows = Vec::new();
+    // The emulators first, one page each, because a person who came to this
+    // page came about a game — and what a game looks like is the emulator
+    // running it, not the frontend around it. A machine with no core yet has
+    // none of these and the page is the shorter for it.
+    for core in crate::retroarch::tunables() {
+        rows.push(core_page(&core));
+    }
+    // Then the settings that belong to no core: they are true of every game at
+    // once, which is exactly why they come after the pages that are true of
+    // one console each.
+    rows.push(aspect_ratio());
+    rows.push(video_driver());
+    rows.push(integer_scale());
+    rows.push(vertical_sync());
+    rows.push(roms_path());
+    rows.push(game_art());
+    folder(
+        RETROARCH_PAGE,
+        "Your own games, and how they are played",
+        crate::retroarch::mark(),
+        rows,
+    )
+}
+
+/// What that page is called, for the two things that have to find it.
+///
+/// It is built here and walked to from the shell — the menu over a console
+/// takes the cursor to the page of the emulator that plays it, and that walk
+/// looks for the emulator's own name *inside* this one rather than anywhere in
+/// the Settings tree. Written once so the two cannot drift apart; a page
+/// renamed here would otherwise be a menu row that quietly stopped working.
+pub const RETROARCH_PAGE: &str = "RetroArch";
+
+/// One emulator's own settings.
+///
+/// Nothing on this page is written down in this shell. The core declares what
+/// it can be set to and the helper asks it — see [`crate::retroarch::tunables`]
+/// — so this page is whatever that emulator's authors put in it, in their
+/// order, under their names, and it is right about a version of the core that
+/// came out after this shell did.
+///
+/// Grouped the way the core groups them where it says how, and flat where it
+/// does not: an emulator with seventy-five settings sorted into five subjects
+/// is a page somebody can walk; the same seventy-five in one column is a list
+/// nobody finds anything in.
+fn core_page(core: &crate::retroarch::CoreOptions) -> Entry {
+    // The console's own BIOS, where this emulator declares one. Above whatever
+    // it can be set to, and on this page rather than beside somebody's games,
+    // because it belongs to *this* emulator: pcsx2 reads a PlayStation 2 BIOS
+    // and the page next to it does not. It is a job rather than a setting, and
+    // the one thing on here that decides whether a game starts at all.
+    let bios = crate::retroarch::bios_row(&crate::retroarch::firmware_for(&core.core));
+    // A core that handed over no table is a row that says so rather than a
+    // folder that opens on nothing, because an installed emulator missing from
+    // this page altogether reads as an install that failed.
+    //
+    // Not every emulator answers, even asked all the way. The helper takes a
+    // core that declares nothing through `retro_init` and then through
+    // `retro_load_game` with no game at all, which is what LRPS2 and dolphin
+    // need; one that still says nothing is one that will only speak with a real
+    // game in it, and its settings live where that game is running. So the row
+    // says where they are and does not promise that playing something will make
+    // them turn up here — it will not.
+    if core.options.is_empty() {
+        // Still a page where there is a BIOS to ask about — which is LRPS2, the
+        // one core on this machine that declares nothing and needs a file.
+        let Some(bios) = bios else {
+            return reading(
+                &core.display,
+                "Its settings are in RetroArch's own menu, with a game running",
+            );
+        };
+        return folder(
+            &core.display,
+            "Its BIOS. Everything else is in RetroArch's own menu",
+            &crate::retroarch::mark_for_core(&core.core),
+            vec![bios],
+        );
+    }
+    let mut rows = Vec::new();
+    rows.extend(bios);
+    for group in &core.categories {
+        let held: Vec<&crate::retroarch::CoreSetting> = core
+            .options
+            .iter()
+            .filter(|option| option.category.as_deref() == Some(group.key.as_str()))
+            .collect();
+        // A group the core named and then put nothing in is not a row.
+        if held.is_empty() {
+            continue;
+        }
+        rows.push(folder(
+            &group.title,
+            &format!(
+                "{} {}",
+                held.len(),
+                crate::retroarch::plural(held.len(), "setting", "settings")
+            ),
+            icons::CATEGORY_GAMES,
+            held.into_iter()
+                .map(|option| core_option_row(&core.display, option))
+                .collect(),
+        ));
+    }
+    // Everything the core sorted nowhere — every setting of a core too old to
+    // sort them at all, and the odd one left out of a core that does.
+    let known: Vec<&str> = core.categories.iter().map(|at| at.key.as_str()).collect();
+    let loose: Vec<&crate::retroarch::CoreSetting> = core
+        .options
+        .iter()
+        .filter(|option| match option.category.as_deref() {
+            Some(group) => !known.contains(&group),
+            None => true,
+        })
+        .collect();
+    if !loose.is_empty() {
+        let rest: Vec<Entry> = loose
+            .into_iter()
+            .map(|option| core_option_row(&core.display, option))
+            .collect();
+        // Straight onto the page where there is nothing else on it, rather
+        // than one folder called "Other" holding the whole emulator.
+        if rows.is_empty() {
+            rows = rest;
+        } else {
+            rows.push(folder(
+                "Other",
+                &format!(
+                    "{} {}",
+                    rest.len(),
+                    crate::retroarch::plural(rest.len(), "setting", "settings")
+                ),
+                icons::CATEGORY_GAMES,
+                rest,
+            ));
+        }
+    }
+
+    let count = core.options.len();
+    folder(
+        &core.display,
+        &format!(
+            "{count} {}",
+            crate::retroarch::plural(count, "setting", "settings")
+        ),
+        // The console's own mark rather than RetroArch's. Four emulators under
+        // one page all wearing the frontend's drawing is four rows told apart
+        // only by reading them, and what somebody is looking for on this page
+        // is the machine — see [`crate::retroarch::mark_for_core`].
+        &crate::retroarch::mark_for_core(&core.core),
+        rows,
+    )
+}
+
+/// One of a core's settings, and the values it will take.
+///
+/// The line under the name is what it is set to *now*, which is the one thing
+/// a row like this has to say: a page of thirty names with no answers beside
+/// them is a page somebody has to walk into thirty times to read.
+fn core_option_row(core: &str, option: &crate::retroarch::CoreSetting) -> Entry {
+    // What the emulator would use: the value somebody chose, or the core's own
+    // default where nobody has. RetroArch reads an absent line exactly that
+    // way, which is why an absent line is not worth writing.
+    let now = crate::retroarch::core_option(core, &option.key)
+        .or_else(|| option.default.clone())
+        .unwrap_or_default();
+    let said = option
+        .values
+        .iter()
+        .find(|value| value.value == now)
+        .map(|value| value.label.clone())
+        .unwrap_or_else(|| now.clone());
+
+    let core = intern(core);
+    let key = intern(&option.key);
+    let values = option
+        .values
+        .iter()
+        .map(|value| {
+            self::value(
+                &value.label,
+                None,
+                value.value == now,
+                Setting::CoreOption {
+                    core,
+                    key,
+                    value: intern(&value.value),
+                },
+            )
+        })
+        .collect();
+    folder(&option.title, &said, icons::SWATCH, values)
+}
+
+/// A setting of RetroArch's own: one key, and the values it takes.
+///
+/// `values` are `(what is written, what it is called)`, in the order they are
+/// offered. `fallback` is what RetroArch uses when the line is not in its
+/// configuration at all, so that the page says which value is in force on a
+/// machine where nobody has ever set it.
+fn emulator_choice(
+    title: &str,
+    icon: &str,
+    key: &'static str,
+    fallback: &str,
+    values: &[(&str, &str)],
+) -> Entry {
+    let now = crate::retroarch::setting(key).unwrap_or_else(|| fallback.to_string());
+    let said = values
+        .iter()
+        .find(|(value, _)| *value == now)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| now.clone());
+    let rows = values
+        .iter()
+        .map(|(written, label)| {
+            self::value(
+                label,
+                None,
+                *written == now,
+                Setting::Emulator {
+                    key,
+                    value: intern(written),
+                },
+            )
+        })
+        .collect();
+    folder(title, &said, icon, rows)
+}
+
+/// The shape every game is drawn at.
+///
+/// A short list out of RetroArch's own long one. Its values are *positions* in
+/// a table the emulator carries, so only the ones worth offering are offered:
+/// what somebody in front of a television wants is the console's own shape, a
+/// television's shape, or pixels that are square — and the twenty ratios
+/// between those are a menu nobody reads.
+///
+/// `22` is Core provided, and it is RetroArch's own default — which is how it
+/// is known to be 22 rather than assumed: it is the number in the
+/// configuration of a machine where nobody has ever touched this.
+fn aspect_ratio() -> Entry {
+    emulator_choice(
+        "Aspect ratio",
+        icons::SETTING_RESOLUTION,
+        "aspect_ratio_index",
+        "22",
+        &[
+            ("22", "As the console had it"),
+            ("21", "Square pixels"),
+            ("0", "4:3"),
+            ("1", "16:9"),
+            ("24", "Fill the screen"),
+        ],
+    )
+}
+
+/// What RetroArch draws with.
+///
+/// The three this machine's build has, which `retroarch --features` is what
+/// says. A driver that is not there is not a row: RetroArch would fall back to
+/// one that is and the page would be saying something untrue.
+fn video_driver() -> Entry {
+    emulator_choice(
+        "Video driver",
+        icons::SETTING_DISPLAY,
+        "video_driver",
+        "gl",
+        &[
+            ("gl", "OpenGL"),
+            ("glcore", "OpenGL (core profile)"),
+            ("vulkan", "Vulkan"),
+            ("sdl2", "Software"),
+        ],
+    )
+}
+
+/// Whether a game is drawn at a whole multiple of its own size.
+fn integer_scale() -> Entry {
+    emulator_choice(
+        "Whole-number scaling",
+        icons::SETTING_SCALE,
+        "video_scale_integer",
+        "false",
+        &[("false", "Off"), ("true", "On")],
+    )
+}
+
+/// Whether a game waits for the screen.
+fn vertical_sync() -> Entry {
+    emulator_choice(
+        "Wait for the screen",
+        icons::SETTING_REFRESH,
+        "video_vsync",
+        "true",
+        &[("true", "On"), ("false", "Off")],
+    )
+}
+
+/// Where somebody keeps their games.
+///
+/// The row is built by the integration itself and used in two places — here,
+/// and at the head of the RetroArch column — because it is one setting: two
+/// rows that opened the same picker and said different things about it would
+/// be two settings on screen. See [`crate::retroarch::RetroArch::folder_row`].
+///
+/// It opens a column of folders rather than a panel, which is what the wallpaper
+/// picker two pages away does and for the same reason: a place on the disk is
+/// answered by walking to it, and this bar walks with a column.
+fn roms_path() -> Entry {
+    let Entry::Folder(mut row) = crate::retroarch::folder_row() else {
+        unreachable!("it is a folder");
+    };
+    // Under Settings it is a row of the page like any other rather than
+    // something standing over a list: there is no list here for it to stand
+    // over, and a page whose only row could not be landed on would be a page
+    // that cannot be used.
+    row.over_the_list = false;
+    row.title = "ROMs path".to_string();
+    Entry::Folder(row)
+}
+
+/// The row that fetches every game's cover and screenshot again.
+///
+/// The shell asks for these itself, once per folder per session, for whatever
+/// has not got them — so this row is not how somebody gets their artwork. It is
+/// how they get it *again*, and there are two reasons to want that: libretro's
+/// collection grows, so a game that had no cover last year may have one now;
+/// and a game the shell could not put a name to has very often been renamed
+/// since, which is what the Rename row over it is for.
+///
+/// It sits at the bottom, under the folder it is about, because it is the one
+/// row on this page that is a press rather than an answer — see [`action`].
+fn game_art() -> Entry {
+    action(
+        "Get the artwork again",
+        "Look for a cover and a picture for every game, from libretro",
+        icons::SETTING_WALLPAPER,
+        Setting::EmulatorArt,
+    )
+}
+
+/// The row that stands in for the Games page until there is something on it.
+///
+/// It says what the page is *going* to hold rather than only that it is empty:
+/// a user who opens this page has a question, and "nothing here" alone would
+/// leave them wondering whether they had come to the wrong place or whether
+/// this machine had nothing to offer.
+fn nothing_to_set_about_games() -> Entry {
+    reading(
+        "Nothing to set here yet",
+        "The settings for Steam and the other games on this machine will be on \
+         this page",
+    )
+}
+
 /// System: how the machine behaves, as opposed to what its picture and its
 /// speakers are doing.
 ///
@@ -5202,13 +6036,291 @@ fn startup_row() -> Entry {
 /// about a display and is not about how the shell looks — and because a console
 /// that cannot say what it is is a console nobody can be helped over a
 /// telephone with.
-fn system() -> Entry {
+fn system(bar: &[crate::apps::Column]) -> Entry {
     folder(
         "System",
         "How the machine behaves",
         icons::SETTING_SYSTEM,
-        vec![application_scale(), system_information()],
+        vec![
+            startup_category_page(bar),
+            application_scale(),
+            picture_in_picture_page(),
+            button_hints_switch(),
+            system_information(),
+        ],
     )
+}
+
+/// Startup category: which column of the start screen a session opens on.
+///
+/// First on this page, in front of the two settings about applications. It is
+/// the one setting here about the *shell's own front door* — what a person sees
+/// before they have pressed anything — and everything else on the page is about
+/// what happens after that.
+///
+/// The rows are the columns this machine has, in the order they stand on the
+/// bar, each wearing its own mark. There is no other honest list: which columns
+/// exist is a fact about what is installed, what is signed in and what is
+/// plugged in, and a fixed list would offer Waydroid on a machine that has none
+/// and hide a Steam library from somebody who has one.
+///
+/// The row itself wears the mark of the column that is chosen, and its comment
+/// names it — the third row in this tree whose glyph moves, after the battery's
+/// and the floating window's corner, and it moves for their reason: what is
+/// being chosen *is* a column, so the row somebody opens is headed by the answer
+/// they are deciding about rather than by a picture of the whole bar.
+///
+/// A column named by the setting but not on the bar this session is offered all
+/// the same, at the end and marked, so that a setting somebody chose is a
+/// setting they can still see. It is what happens when an account is signed out
+/// or a package removed, and the alternative is a page with nothing chosen on
+/// it and no explanation.
+fn startup_category_page(bar: &[crate::apps::Column]) -> Entry {
+    let chosen = startup_category();
+    let mut columns: Vec<crate::apps::Column> = bar.to_vec();
+    if !columns.iter().any(|column| column.id == chosen) {
+        if let Some(absent) = crate::apps::known_column(&chosen) {
+            columns.push(absent);
+        }
+    }
+
+    let named = columns
+        .iter()
+        .find(|column| column.id == chosen)
+        .copied()
+        // A hand-edited file naming a column no version of this shell has ever
+        // had. Nothing is marked and the page says so, which is the honest
+        // answer: the file is one the user is entitled to open.
+        .unwrap_or(crate::apps::Column {
+            id: "",
+            title: "Not on this machine",
+            icon: icons::CATEGORY_OTHER,
+        });
+
+    folder(
+        "Startup category",
+        named.title,
+        named.icon,
+        columns
+            .iter()
+            .map(|column| {
+                drawn_value(
+                    column.title,
+                    startup_note(column, bar),
+                    column.icon,
+                    column.id == chosen,
+                    Setting::StartupCategory(column.id),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// What one row of that page says under its title.
+///
+/// Two things, and only one of them per row. A column that is not on the bar
+/// says so, because a row offering to open on something that is not there owes
+/// the user that much. Everything else says nothing: the row is a column's name
+/// and its own mark, which is exactly how that column is drawn on the bar, and
+/// a sentence under each one explaining what Multimedia is would be the bar
+/// described back to somebody who is looking at it.
+fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Option<&'static str> {
+    (!bar.iter().any(|had| had.id == column.id)).then_some("Not on this machine just now")
+}
+
+/// The start screen's legend, on or off.
+///
+/// Off and On in that order and marked the way every other switch in this tree
+/// is — see [`battery_percent_switch`], which is the same question asked about
+/// the corner.
+///
+/// After the two settings about applications and before the machine's own
+/// facts, which is the order this page keeps: it is a setting, so it comes
+/// above the row that changes nothing, and it is about the shell rather than
+/// about what the shell runs, so it comes below the two that are not.
+///
+/// The rows say what the legend *is* rather than what the switch does, because
+/// somebody who has turned it off can no longer see the thing being described.
+/// "What Select, Options and Guide do" is the answer to "what did I just turn
+/// off", and a row reading "Show hints" would not be.
+fn button_hints_switch() -> Entry {
+    let on = button_hints();
+    folder(
+        "Button hints",
+        "What the buttons do, in the corner of the start screen",
+        icons::PAD_SOUTH,
+        vec![
+            value(
+                "Off",
+                Some("Nothing is written at the foot of the start screen"),
+                !on,
+                Setting::ButtonHints(false),
+            ),
+            value(
+                "On",
+                Some("Select, Options and the way back to the guide"),
+                on,
+                Setting::ButtonHints(true),
+            ),
+        ],
+    )
+}
+
+/// Picture-in-Picture: what happens to the small window a browser puts a video
+/// into when the user asks for one.
+///
+/// Under System rather than under Appearance, and it is worth saying why: what
+/// this changes is not how the shell looks but what the *compositor* does with
+/// a window — where it puts it, how large it configures it, whether it is given
+/// the keyboard and what it is drawn in front of. That is the same kind of
+/// setting as the application scale it stands beside, and the same half of the
+/// session carries both out.
+///
+/// After the scale and before the machine's own facts, which is the order this
+/// page keeps everywhere: the setting somebody came here to change first, and
+/// the row that changes nothing last.
+///
+/// Three rows, and the page's comment says what all three are set to at once.
+/// A user who opens System is deciding whether to come in here at all, and
+/// "On, medium, top right" answers that without a press.
+fn picture_in_picture_page() -> Entry {
+    let pip = picture_in_picture();
+    folder(
+        "Picture-in-Picture",
+        &floating_summary(pip),
+        icons::SETTING_PIP,
+        vec![
+            picture_in_picture_switch(pip),
+            picture_in_picture_size(pip),
+            picture_in_picture_place(pip),
+        ],
+    )
+}
+
+/// What the floating window is set to, in the few words a row's comment has.
+///
+/// Off is the whole answer when it is off: a size and a corner for a window
+/// that never floats would be describing something the user cannot see.
+fn floating_summary(pip: Pip) -> String {
+    if !pip.floating {
+        return "Off".to_string();
+    }
+    format!(
+        "On, {}, {}",
+        pip.size.title().to_lowercase(),
+        pip.place.title().to_lowercase()
+    )
+}
+
+/// The switch itself, on or off.
+///
+/// Off and On in that order and marked the way every other switch in this tree
+/// is. What Off means is spelled out on the row rather than left to be
+/// discovered: the window does not disappear, it stops being *special* — it
+/// fills the screen like every other window, and the video is then something
+/// the user has to switch away from rather than something beside what they are
+/// doing.
+fn picture_in_picture_switch(pip: Pip) -> Entry {
+    folder(
+        "Picture-in-Picture",
+        "Float a browser's video window over everything else",
+        icons::SETTING_PIP,
+        vec![
+            value(
+                "Off",
+                Some("Such a window fills the screen, like every other one"),
+                !pip.floating,
+                Setting::PictureInPicture(PipValue::Floating(false)),
+            ),
+            value(
+                "On",
+                Some("It floats in a corner, over applications and over the guide"),
+                pip.floating,
+                Setting::PictureInPicture(PipValue::Floating(true)),
+            ),
+        ],
+    )
+}
+
+/// How large it is drawn: three shares of the display's width.
+///
+/// A list and not a bar, unlike the application scale above it. The scale is a
+/// quantity with no steps in it — every five per cent is a sensible answer — and
+/// this is three answers to *how much of the screen am I willing to give up*,
+/// which is a question with about three answers in it. Each row says what its
+/// share is, because a size named Medium tells nobody anything.
+///
+/// A width, and only a width. How tall the window is at that width is the
+/// window's own business — the compositor asks it what shape it wants to be —
+/// so there is nothing here for a user to set about it, and a page that asked
+/// would be asking them the aspect ratio of their own video.
+fn picture_in_picture_size(pip: Pip) -> Entry {
+    folder(
+        "Size",
+        pip.size.title(),
+        icons::SETTING_PIP_SIZE,
+        pip::Size::ALL
+            .iter()
+            .map(|size| {
+                value(
+                    size.title(),
+                    Some(match size {
+                        pip::Size::Small => "A sixth of the screen across",
+                        pip::Size::Medium => "A quarter of it",
+                        pip::Size::Large => "A third of it",
+                    }),
+                    pip.size == *size,
+                    Setting::PictureInPicture(PipValue::Size(*size)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Which corner it sits in: the four of them, drawn.
+///
+/// The second set of values in this tree with drawings of their own, after the
+/// four orientations — and they earn the exception the same way. What is being
+/// chosen *is* a place, so the row that matches the corner somebody wants can
+/// be picked out without reading it, and four rows reading Top left, Top right,
+/// Bottom left, Bottom right are four rows nobody can tell apart at a glance.
+///
+/// Reading order, which is also the order the corners are numbered in on the
+/// wire: the two at the top, then the two at the bottom.
+///
+/// The row itself wears the corner that is chosen, so the list somebody opens
+/// is headed by the answer they are deciding about rather than by a picture of
+/// four corners at once. It is the second row in this tree whose glyph moves —
+/// the battery's is the first — and it moves for the same reason.
+fn picture_in_picture_place(pip: Pip) -> Entry {
+    folder(
+        "Placement",
+        pip.place.title(),
+        corner_glyph(pip.place),
+        pip::Place::ALL
+            .iter()
+            .map(|place| {
+                drawn_value(
+                    place.title(),
+                    None,
+                    corner_glyph(*place),
+                    pip.place == *place,
+                    Setting::PictureInPicture(PipValue::Place(*place)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The drawing for one corner: a screen with the small window standing in that
+/// corner of it.
+fn corner_glyph(place: pip::Place) -> &'static str {
+    match place {
+        pip::Place::TopLeft => icons::SETTING_PIP_TOP_LEFT,
+        pip::Place::TopRight => icons::SETTING_PIP_TOP_RIGHT,
+        pip::Place::BottomLeft => icons::SETTING_PIP_BOTTOM_LEFT,
+        pip::Place::BottomRight => icons::SETTING_PIP_BOTTOM_RIGHT,
+    }
 }
 
 /// System information: what this machine is, as a panel to read.
@@ -5332,6 +6444,512 @@ fn scale_note(percent: u16) -> &'static str {
     }
 }
 
+// --- Settings > Users -------------------------------------------------------
+
+/// Who this machine is for: every account on it, and the row that makes
+/// another.
+///
+/// The page is a list of *people*, and it is the only page in this tree whose
+/// rows wear photographs rather than marks. That is not decoration: an account
+/// is a person, and the thing that says which person is their own picture. A
+/// row with no picture falls back to the single figure — deliberately not the
+/// two figures this row itself wears, or every row on the page would be wearing
+/// the heading above it. See [`icons::SETTING_USERS`].
+///
+/// Add user is at the foot rather than the head, unlike the field over a shelf
+/// or the row that answers a folder picker. Those stand over their columns
+/// because they are *about* the column; this one is not — it is one more thing
+/// the page can do, and the people are what somebody came here to find. A page
+/// that opened on it would begin every visit one step below where it meant to.
+fn users() -> Entry {
+    let listing = crate::users::listing();
+    if !listing.daemon {
+        // Never an empty column: the bar refuses to step into one, so a machine
+        // with no account service would have a row that silently did nothing.
+        // The same bargain the Network page states, in the same words.
+        return folder(
+            "Users",
+            "Who this machine is for",
+            icons::SETTING_USERS,
+            vec![reading(
+                "No account service is running",
+                "Without accounts-daemon nothing here can read or change who has \
+                 an account on this machine; they are managed outside this session",
+            )],
+        );
+    }
+    let mut rows = Vec::new();
+    // What went wrong with the last press, on a row of its own at the head of
+    // the page. At the head because it is about the page rather than about one
+    // account, and because a refusal that appeared below the fold would be a
+    // press that looked as though it had done nothing.
+    if let Some(trouble) = listing.trouble.as_ref() {
+        rows.push(reading(&trouble.what, &trouble.why));
+    }
+    rows.extend(
+        listing
+            .people
+            .iter()
+            .map(|person| person_row(person, &listing)),
+    );
+    rows.push(add_user_row(&listing));
+    folder("Users", &users_note(&listing), icons::SETTING_USERS, rows)
+}
+
+/// What the Users row says before it is stepped into.
+fn users_note(listing: &crate::users::Listing) -> String {
+    match listing.people.len() {
+        0 => "No accounts on this machine".to_string(),
+        1 => "1 account on this machine".to_string(),
+        many => format!("{many} accounts on this machine"),
+    }
+}
+
+/// One account's row: their picture, their name, and the form behind it.
+fn person_row(person: &crate::users::Person, listing: &crate::users::Listing) -> Entry {
+    let whose = crate::users::Whose::Existing(person.uid);
+    let Entry::Folder(mut inner) = folder(
+        person.title(),
+        &person.note(),
+        icons::SETTING_PERSON,
+        form_rows(whose, Some(person), listing),
+    ) else {
+        unreachable!("folder builds a folder");
+    };
+    // The picture the account names, where it names one that is really there.
+    // A row that asked the thumbnailer for a file somebody had deleted would
+    // ask once a frame for the rest of the session; the check is in
+    // [`crate::users::Person::picture`], which is where the file is read.
+    inner.portrait = person.picture.clone();
+    inner.person = Some(whose);
+    Entry::Folder(inner)
+}
+
+/// The row at the foot of the page that makes an account.
+fn add_user_row(listing: &crate::users::Listing) -> Entry {
+    let whose = crate::users::Whose::New;
+    let Entry::Folder(mut inner) = folder(
+        "Add user",
+        "Make another account on this machine",
+        icons::SETTING_ADD_USER,
+        form_rows(whose, None, listing),
+    ) else {
+        unreachable!("folder builds a folder");
+    };
+    // The picture chosen on the form, once one has been. It is the only row on
+    // this page that is not an account and still wears a face — which is the
+    // point: the row is what the account is going to be.
+    inner.portrait = crate::users::form_for(whose).and_then(|form| form.picture);
+    inner.person = Some(whose);
+    Entry::Folder(inner)
+}
+
+/// The form: everything an account is, and the row that hands it over.
+///
+/// Drawn from the draft where one is open for this account, and from the
+/// account itself where none is. Both, rather than one or the other, because
+/// this column is built long before anybody steps into it — the whole Settings
+/// tree is rebuilt several times a minute — and it has to say something true on
+/// every one of those rebuilds. Before the press it says what the account *is*;
+/// after it, what the form has been made to say. See [`crate::users`], where the
+/// draft lives, and `Shell::sync_user_form`, which opens and closes it.
+///
+/// The order is what somebody fills in, in the order they think of it: who this
+/// is, what they log in as, what they are allowed to do, what they type to get
+/// in, and last the picture — which is the one thing on the form that is not
+/// needed for the account to work.
+fn form_rows(
+    whose: crate::users::Whose,
+    person: Option<&crate::users::Person>,
+    listing: &crate::users::Listing,
+) -> Vec<Entry> {
+    use crate::users::Field;
+    let form = crate::users::form_for(whose);
+    let real = match form.as_ref() {
+        Some(form) => form.real.clone(),
+        None => person.map(|person| person.real.clone()).unwrap_or_default(),
+    };
+    let name = match form.as_ref() {
+        Some(form) => form.name.clone(),
+        None => person.map(|person| person.name.clone()).unwrap_or_default(),
+    };
+    let admin = match form.as_ref() {
+        Some(form) => form.admin,
+        None => person.is_some_and(|person| person.admin),
+    };
+    let picture = match form.as_ref() {
+        Some(form) => form.picture.clone(),
+        None => person.and_then(|person| person.picture.clone()),
+    };
+    let whom = whose_form(person);
+
+    let mut rows = vec![
+        typed_user(whose, Field::Name, &real, &whom),
+        username_row(whose, person, &name, &whom),
+    ];
+    rows.push(account_type_row(whose, person, admin, listing));
+    rows.push(password_row(
+        whose,
+        Field::Password,
+        form.as_ref().map_or(0, |form| form.typed),
+        person.is_some(),
+        &whom,
+    ));
+    // The second field only where the password is being set on an account
+    // nobody can get into yet — see [`crate::users::asks_twice`], which is
+    // where that is argued and which the check at the foot of the form reads
+    // too, so the two cannot disagree.
+    if crate::users::asks_twice(whose) {
+        rows.push(password_row(
+            whose,
+            Field::Confirm,
+            form.as_ref().map_or(0, |form| form.confirmed),
+            person.is_some(),
+            &whom,
+        ));
+    }
+    rows.push(avatar_row(picture.as_deref()));
+    rows.push(accept_row(whose, person, listing));
+    if let Some(person) = person {
+        rows.push(removal_row(person, listing));
+    }
+    rows
+}
+
+/// What the panel raised over a form's field is subtitled — see
+/// [`crate::apps::Typed::whose`].
+///
+/// The account it is about, because a field raised over the bar covers the trail
+/// that would otherwise say so, and "Username" on its own is the same panel on
+/// both forms.
+fn whose_form(person: Option<&crate::users::Person>) -> String {
+    match person {
+        Some(person) => person.title().to_string(),
+        None => "New account".to_string(),
+    }
+}
+
+/// One of the two fields on a form that is typed and is not a secret.
+/// What they log in as — a field, unless it is one nothing could change.
+///
+/// An account somebody is signed in to cannot be renamed: `usermod -l` refuses
+/// for anything with a process running, and no flag overrides it. So the row
+/// does not offer it. Refusing on the panel afterwards was the first version of
+/// this and it was the wrong half of the bargain — a row that opens a keyboard,
+/// takes a name and then says no is a row that wasted somebody's time to tell
+/// them what it knew before they pressed it.
+///
+/// It still *says* the name, which is why this is a reading and not a row that
+/// disappears. What somebody logs in as is worth knowing on a page about them,
+/// and a form that silently lost a field between one account and the next would
+/// read as a shell that had failed to draw it. The same shape the sole
+/// administrator's Account type takes, and for the same reason.
+fn username_row(
+    whose: crate::users::Whose,
+    person: Option<&crate::users::Person>,
+    name: &str,
+    whom: &str,
+) -> Entry {
+    use crate::users::Field;
+    if let Some(person) = person.filter(|person| person.here) {
+        let why = match person.you {
+            true => "you are signed in as it",
+            false => "they are signed in",
+        };
+        return reading_marked(
+            Field::Username.title(),
+            &format!(
+                "{} — {why}, and Linux will not rename an account in use",
+                person.name
+            ),
+            icons::SETTING_USERNAME,
+        );
+    }
+    typed_user(whose, Field::Username, name, whom)
+}
+
+fn typed_user(
+    whose: crate::users::Whose,
+    field: crate::users::Field,
+    value: &str,
+    whom: &str,
+) -> Entry {
+    Entry::Typed(crate::apps::Typed {
+        title: field.title().to_string(),
+        whose: whom.to_string(),
+        comment: match value.trim().is_empty() {
+            // A value nobody has set says so in words rather than leaving the
+            // line blank, which reads as a row that failed to load.
+            true => "Not set".to_string(),
+            false => value.trim().to_string(),
+        },
+        icon: match field {
+            crate::users::Field::Username => icons::SETTING_USERNAME.to_string(),
+            _ => icons::SETTING_NAME.to_string(),
+        },
+        value: value.to_string(),
+        about: Typing::User { whose, field },
+    })
+}
+
+/// One of the two that is.
+///
+/// It carries no value, and that is the difference that matters: every other
+/// typed row in this tree opens holding what the setting already is, so that
+/// changing the last number of an address does not mean typing the other three
+/// again. A password cannot, because the shell has not got it — what is in
+/// `/etc/shadow` is a hash, and nothing anywhere can turn one back into what was
+/// typed. The line under the row says how many characters are waiting instead.
+fn password_row(
+    whose: crate::users::Whose,
+    field: crate::users::Field,
+    typed: usize,
+    exists: bool,
+    whom: &str,
+) -> Entry {
+    let comment = match (typed, exists) {
+        (0, true) => "Unchanged".to_string(),
+        (0, false) => "Not set".to_string(),
+        (1, _) => "1 character".to_string(),
+        (typed, _) => format!("{typed} characters"),
+    };
+    Entry::Typed(crate::apps::Typed {
+        title: field.title().to_string(),
+        whose: whom.to_string(),
+        comment,
+        // The key, not the padlock. A padlock is the thing that is *locked* —
+        // which is what the panel polkit raises wears, and what the row at the
+        // foot of this form now leads to — and a key is what somebody types to
+        // get past one. Both password rows share it: they are one question
+        // asked twice.
+        icon: icons::SETTING_PASSWORD.to_string(),
+        // Never anything: see the note above. `Written::for_field` in `main`
+        // ignores it for a secret field and opens an empty one.
+        value: String::new(),
+        about: Typing::User { whose, field },
+    })
+}
+
+/// What the account is allowed to do — or the line saying why it cannot be
+/// changed.
+///
+/// The one row on this page that is a set of alternatives, and the one that can
+/// be missing. An account that is the only administrator left does not get the
+/// choice, because taking it away would leave a machine nobody can install
+/// anything on, change the clock on, or make another account on — and it could
+/// not be undone from here, since every one of those needs an administrator to
+/// agree to it. The row still appears, saying what the account is and why that
+/// is fixed: a row that vanished would answer "where has the account type gone"
+/// with silence.
+fn account_type_row(
+    whose: crate::users::Whose,
+    person: Option<&crate::users::Person>,
+    admin: bool,
+    listing: &crate::users::Listing,
+) -> Entry {
+    let sole = person.is_some_and(|person| listing.only_admin(person.uid));
+    if sole {
+        return reading_marked(
+            "Account type",
+            "Administrator — and the only one on this machine, so this cannot \
+             be changed. Make another administrator first.",
+            icons::SETTING_ACCOUNT_TYPE,
+        );
+    }
+    let _ = whose;
+    folder(
+        "Account type",
+        match admin {
+            true => "Administrator",
+            false => "Standard",
+        },
+        icons::SETTING_ACCOUNT_TYPE,
+        vec![
+            value(
+                "Standard",
+                Some("Can use this machine, and change their own settings"),
+                !admin,
+                Setting::User(UserValue::Admin(false)),
+            ),
+            value(
+                "Administrator",
+                Some("Can also install software and manage the other accounts"),
+                admin,
+                Setting::User(UserValue::Admin(true)),
+            ),
+        ],
+    )
+}
+
+/// The avatar, chosen by walking to it.
+///
+/// A subcategory whose column is the disk itself, exactly as the wallpaper's own
+/// picker is and for the same reason: the value is a file, there is no list of
+/// files to put in a column beforehand, and standing on one is how somebody sees
+/// which it is. See [`crate::files::Shows::Portrait`], which is what narrows the
+/// walk to pictures.
+///
+/// *Avatar* rather than *Picture*, and the word is doing work. Every other
+/// picture this shell offers to choose is a picture of *something* — a
+/// wallpaper, a game's cover, the still behind a shelf. This one is a picture of
+/// a **person**, it is the thing every row on the page above is drawn with, and
+/// it is the word a console user already has for it.
+///
+/// Taking one off lives *inside* this column rather than beside it — see
+/// [`no_avatar_row`]. It used to be a sibling row on the form, which put two
+/// rows on every form about one value and left the form asking two questions
+/// where there is one: what is this person's avatar, of which "none" is an
+/// answer like any other.
+fn avatar_row(picture: Option<&Path>) -> Entry {
+    let comment = picture
+        .and_then(|file| file.file_name())
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "None — the plain mark".to_string());
+    let Entry::Folder(mut inner) = folder("Avatar", &comment, icons::SETTING_AVATAR, Vec::new())
+    else {
+        unreachable!("folder builds a folder");
+    };
+    // The face itself on the row, once one has been chosen: the row is what the
+    // account is going to look like, and saying so in a file name is saying it
+    // in the one language a picture cannot be read in.
+    inner.portrait = picture.map(Path::to_path_buf);
+    // Read on the press that opens it rather than now — walking somebody's home
+    // directory every time any setting anywhere changed is the cost this avoids.
+    inner.place = Some(crate::files::Place::Volumes(crate::files::Shows::Portrait));
+    Entry::Folder(inner)
+}
+
+/// The other answer at the head of that walk: no avatar at all.
+///
+/// It stands inside the picker rather than beside the row that opens it, because
+/// it is an answer to the question the picker asks. A column of photographs asks
+/// "which one", and "none of them" belongs in it — the same argument the
+/// wallpaper's own Default row makes one column further out.
+///
+/// Over the list rather than in it, on the terms [`crate::apps::Entry::Pick`] is
+/// — see [`crate::apps::Choice::over_the_list`]. The column opens on the first
+/// disk below it, so a press of A on the way in cannot clear somebody's avatar
+/// before they have read the row.
+///
+/// `None` where there is nothing to take off, which is a walk somebody opened
+/// from a form with no avatar on it: a row offering to remove nothing is a row
+/// that does nothing, and the column is one place where that would be pressed.
+pub fn no_avatar_row() -> Option<Entry> {
+    crate::users::form()?.picture?;
+    let Entry::Choice(mut choice) = action(
+        "Use no avatar",
+        "Go back to the plain mark",
+        icons::SETTING_PERSON,
+        Setting::User(UserValue::DropPicture),
+    ) else {
+        unreachable!("action builds a choice");
+    };
+    choice.over_the_list = true;
+    Some(Entry::Choice(choice))
+}
+
+/// The row at the foot of the form that hands it over.
+///
+/// Three shapes, and only one of them can be pressed. While something is in
+/// flight it says so and does nothing: on this page "in flight" nearly always
+/// means polkit is asking somebody for a password, which can take as long as
+/// typing one takes, and a row that could be pressed again in the meantime would
+/// ask the machine to make the same account twice.
+///
+/// Where the form is not yet a valid account it says what is missing, as a line
+/// that cannot be pressed rather than a press that fails. That is the whole of
+/// why the check is here as well as on each field's own panel: a field is
+/// checked when somebody presses Set on it, and a form can be filled in by
+/// pressing nothing at all — walking straight to the bottom and pressing once.
+///
+/// It wears the padlock, which is the mark of the panel that asks for a
+/// password. That is what pressing it raises: the change goes to
+/// `accounts-daemon`, the daemon asks polkit, and polkit asks this shell's own
+/// agent. See [`crate::polkit`].
+fn accept_row(
+    whose: crate::users::Whose,
+    person: Option<&crate::users::Person>,
+    listing: &crate::users::Listing,
+) -> Entry {
+    let title = match whose {
+        crate::users::Whose::New => "Accept and create",
+        crate::users::Whose::Existing(_) => "Save changes",
+    };
+    if listing.working {
+        return reading(
+            title,
+            "Waiting for permission to change the accounts on this machine",
+        );
+    }
+    if let Some(fault) = crate::users::fault_in_form_for(whose) {
+        return reading(title, fault);
+    }
+    let note = match person {
+        Some(person) => format!("Save this to {}'s account", person.title()),
+        None => "Make the account on this machine".to_string(),
+    };
+    // The shell's one tick, the same one a picker's answer row wears — see
+    // [`crate::apps::Entry::Pick`], which is pressed to commit a walk exactly as
+    // this is pressed to commit a form. Not the padlock it wore first: a padlock
+    // is the thing that is *locked*, so a form whose last row was one was drawn
+    // as the obstacle rather than as agreeing to it. And not a second tick of
+    // its own, which is what it wore next — one drawing for one act.
+    action(
+        title,
+        &note,
+        icons::CHOSEN,
+        Setting::User(UserValue::Accept),
+    )
+}
+
+/// The row that takes an account off the machine, or the line saying why it
+/// cannot be.
+///
+/// Two things stop it, and they are refused rather than hidden for the reason
+/// the account type is: a row that vanished would answer "how do I remove this
+/// account" with silence.
+///
+/// Somebody who is signed in cannot be removed. Their session is running, their
+/// files are open, and the daemon would refuse it anyway — what this adds is the
+/// reason, on the row, before the press.
+///
+/// Nor can the only administrator, on exactly the terms
+/// [`crate::users::Listing::only_admin`] argues: it would leave a machine
+/// nobody can administer, and nothing in this shell could put it right
+/// afterwards.
+fn removal_row(person: &crate::users::Person, listing: &crate::users::Listing) -> Entry {
+    if person.you {
+        return reading(
+            "Remove account",
+            "This is the account this session is running as; it cannot remove \
+             itself",
+        );
+    }
+    if person.here {
+        return reading(
+            "Remove account",
+            "They are signed in on this machine. They have to sign out first.",
+        );
+    }
+    if listing.only_admin(person.uid) {
+        return reading(
+            "Remove account",
+            "The only administrator on this machine cannot be removed. Make \
+             another administrator first.",
+        );
+    }
+    action(
+        "Remove account",
+        // What the press costs, on the row: there is a panel between this and
+        // the act, and it is the panel that asks about the files — but the row
+        // has to say what it is before it is pressed all the same.
+        "Take this account off the machine",
+        icons::UNINSTALL,
+        Setting::User(UserValue::Remove(person.uid)),
+    )
+}
+
 fn setting(display: &'static str, value: DisplayValue) -> Setting {
     Setting::Display { display, value }
 }
@@ -5347,6 +6965,8 @@ fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry 
         place: None,
         chosen: false,
         over_the_list: false,
+        person: None,
+        portrait: None,
     })
 }
 
@@ -5373,9 +6993,11 @@ fn swatch(title: &str, colour: Color, chosen: bool, setting: Setting) -> Entry {
         comment: None,
         icon: Some(icons::SWATCH.to_string()),
         swatch: Some(colour),
+        material: None,
         chosen,
         acts: false,
         setting: Some(setting),
+        over_the_list: false,
     })
 }
 
@@ -5408,10 +7030,33 @@ fn drawn_value(
         comment: comment.map(str::to_string),
         icon: Some(icon.to_string()),
         swatch: None,
+        material: None,
         chosen,
         acts: false,
         setting: Some(setting),
+        over_the_list: false,
     })
+}
+
+/// One value in a list of them, where the value is a *material*.
+///
+/// Four rows in the tree, and they are the Theme page's own: the row is drawn
+/// in the material it applies, so the two rows of a column can carry the same
+/// drawing. See [`crate::apps::Choice::material`] for the argument and
+/// [`material_row`] for what it looks like on the page.
+fn material_value(
+    title: &str,
+    comment: &str,
+    icon: &str,
+    material: wallpaper::Style,
+    chosen: bool,
+    setting: Setting,
+) -> Entry {
+    let Entry::Choice(mut choice) = drawn_value(title, Some(comment), icon, chosen, setting) else {
+        unreachable!("drawn_value builds a choice");
+    };
+    choice.material = Some(material);
+    Entry::Choice(choice)
 }
 
 /// Something the shell can show but not change.
@@ -5420,14 +7065,29 @@ fn drawn_value(
 /// That is the whole point of the distinction: a row that describes something
 /// true must not be one the user can un-choose.
 fn reading(title: &str, note: &str) -> Entry {
+    reading_marked(title, note, icons::SETTING_INFO)
+}
+
+/// The same, keeping the mark the row would have worn if it could be pressed.
+///
+/// For the rows that are not *explanations* but settings with nothing to be
+/// done about them — a user name on an account somebody is signed in to, the
+/// account type of the last administrator. The information mark says "here is
+/// something to read"; these rows are still the field they always were, and
+/// three of them wearing one mark is the failure this page has already been
+/// through once. What says they cannot be pressed is that they cannot be
+/// pressed, and the note that says why.
+fn reading_marked(title: &str, note: &str, icon: &str) -> Entry {
     Entry::Choice(Choice {
         title: title.to_string(),
         comment: Some(note.to_string()),
-        icon: Some(icons::SETTING_INFO.to_string()),
+        icon: Some(icon.to_string()),
         swatch: None,
+        material: None,
         chosen: false,
         acts: false,
         setting: None,
+        over_the_list: false,
     })
 }
 
@@ -5449,9 +7109,11 @@ fn action(title: &str, comment: &str, icon: &str, setting: Setting) -> Entry {
         comment: Some(comment.to_string()),
         icon: Some(icon.to_string()),
         swatch: None,
+        material: None,
         chosen: false,
         acts: true,
         setting: Some(setting),
+        over_the_list: false,
     })
 }
 
@@ -5521,10 +7183,34 @@ pub fn preview(setting: Option<Setting>) {
             Setting::Display { .. }
             | Setting::StartMusic(_)
             | Setting::BatteryPercent(_)
+            | Setting::ButtonHints(_)
             | Setting::SoundDevice { .. }
             | Setting::Network(_)
             | Setting::Bluetooth(_)
-            | Setting::AppScale(_),
+            // Nor does an account form. Highlighting Administrator must not make
+            // somebody one, and there is nowhere for a preview of it to show:
+            // what a form row changes is a draft two rows further down the same
+            // column, which is already on screen saying what it says.
+            | Setting::User(_)
+            // Neither emulator setting previews, and neither could: what they
+            // change is a file an emulator reads when it starts, and the
+            // emulator is not running while somebody is walking down this
+            // list. Writing one on every highlight would be writing four
+            // settings to get to the fifth.
+            | Setting::CoreOption { .. }
+            | Setting::Emulator { .. }
+            | Setting::EmulatorArt
+            | Setting::AppScale(_)
+            // The floating window is the compositor's too, and there is a
+            // second reason not to preview it: what a highlighted row there
+            // would move is somebody's video, and a cursor walking down the
+            // four corners would throw it round the screen four times.
+            | Setting::PictureInPicture(_)
+            // And the startup column, which has nothing to preview: what it
+            // changes is where the next cursor is built, and a preview of that
+            // would be the bar walking off under the hand of somebody reading
+            // the list.
+            | Setting::StartupCategory(_),
         )
         | None => {
             theme::restore_accent();
@@ -5633,6 +7319,26 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // accent's: the shell asks this of itself once a frame — see
         // [`crate::sound::Sounds::sync_music`] — so the answer is acted on by
         // the loop that was about to draw the frame this row was chosen in.
+        // Both of these are written straight into RetroArch's own files, and
+        // neither is remembered here: the emulator is what reads them, and a
+        // second copy in this shell's settings would be a second answer to a
+        // question with one.
+        Setting::CoreOption { core, key, value } => {
+            if !crate::retroarch::set_core_option(core, key, value) {
+                tracing::warn!(core, key, value, "the core setting could not be written");
+                return false;
+            }
+        }
+        Setting::Emulator { key, value } => {
+            if !crate::retroarch::set_setting(key, value) {
+                tracing::warn!(key, value, "the RetroArch setting could not be written");
+                return false;
+            }
+        }
+        // Nothing is written down and nothing is remembered: what the press
+        // means is a helper being run, and the shell is what runs it. See
+        // [`Setting::EmulatorArt`].
+        Setting::EmulatorArt => {}
         Setting::StartMusic(playing) => {
             *START_MUSIC.lock().unwrap() = playing;
             tracing::info!(playing, "Start music");
@@ -5644,6 +7350,23 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::BatteryPercent(written) => {
             *BATTERY_PERCENT.lock().unwrap() = written;
             tracing::info!(written, "battery percentage");
+        }
+        // Nothing to tell anybody either, and for the corner's own reason: the
+        // legend is laid out from this value every time the bar is drawn, so
+        // the frame this row was pressed on is the frame the row appears or
+        // goes. See [`crate::ui::StartLegend`].
+        Setting::ButtonHints(shown) => {
+            *BUTTON_HINTS.lock().unwrap() = shown;
+            tracing::info!(shown, "the start screen's button hints");
+        }
+        // Nothing to tell anybody, and nothing to carry out. What this changes
+        // is where the *next* cursor is built standing — see
+        // [`crate::model::Cursor::for_model`] — so the press moves the mark,
+        // this writes it down, and the bar under the user's hands does not
+        // move. That is the setting working, not the setting failing.
+        Setting::StartupCategory(id) => {
+            *STARTUP_CATEGORY.lock().unwrap() = Some(id.to_string());
+            tracing::info!(column = id, "the column the start screen opens on");
         }
         // Recorded here and carried out by the compositor, which the caller
         // tells — the same division the Display settings are under, and for the
@@ -5659,6 +7382,25 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             let percent = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
             *APP_SCALE.lock().unwrap() = percent;
             tracing::info!(percent, "application scale");
+        }
+        // Recorded here and carried out by the compositor, on the same terms as
+        // the scale above: what a window's rectangle is belongs to the half of
+        // the session that draws windows. One field of the three at a time,
+        // because the page asks three questions and the request carries all
+        // three — see [`picture_in_picture`], which is what the caller sends.
+        Setting::PictureInPicture(value) => {
+            let mut held = PICTURE_IN_PICTURE.lock().unwrap();
+            match value {
+                PipValue::Floating(floating) => held.floating = floating,
+                PipValue::Size(size) => held.size = size,
+                PipValue::Place(place) => held.place = place,
+            }
+            tracing::info!(
+                floating = held.floating,
+                size = held.size.key(),
+                place = held.place.key(),
+                "picture-in-picture"
+            );
         }
         // The one row here that is neither carried out nor written down by this
         // module. It is passed to the sound server — the caller does that, the
@@ -5713,6 +7455,16 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // spoke to and it is running before either of them.
         Setting::Network(value) => {
             tracing::info!(?value, "network");
+            return true;
+        }
+        // And an account form, on the same terms once more — except that three
+        // of its four presses do not reach a daemon at all. They write into a
+        // draft, and the draft is `crate::users`'s. Nothing here is remembered
+        // between sessions: an account is a fact about the machine, kept by the
+        // machine, and a copy of it in this shell's settings file would be a
+        // second opinion about who may log in.
+        Setting::User(value) => {
+            tracing::info!(?value, "account form");
             return true;
         }
         // And the rest of Bluetooth, on exactly the terms the network is under:
@@ -5969,6 +7721,12 @@ fn adopt_theme(stored: &Stored) {
 fn adopt(stored: Stored) {
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
+    // Whatever it says, without asking the disk whether the folder is still
+    // there. A collection on a drive that is not plugged in this morning is
+    // still where the user said it was, and the row that says so is where they
+    // would go to change it — see [`crate::retroarch`], which reads the folder
+    // and says what it found.
+    *ROMS_FOLDER.lock().unwrap() = stored.retroarch_roms.as_deref().map(PathBuf::from);
 
     // Before any display's section is read: a night light following the sun is
     // only kept where there is a sun to follow, and this is what decides that.
@@ -6027,6 +7785,27 @@ fn adopt(stored: Stored) {
     if let Some(written) = stored.battery_percent {
         *BATTERY_PERCENT.lock().unwrap() = written;
     }
+    // And a file that says nothing about the hidden names leaves them hidden,
+    // which is where a session that has never been asked has them.
+    if let Some(written) = stored.show_hidden {
+        *SHOW_HIDDEN.lock().unwrap() = written;
+    }
+    // And one that says nothing about the button hints leaves them on, which is
+    // where a session that has never been asked has them — including every
+    // session written by a shell from before this setting existed. See
+    // [`button_hints`], where the default is argued.
+    if let Some(shown) = stored.button_hints {
+        *BUTTON_HINTS.lock().unwrap() = shown;
+    }
+    // And one that says nothing about the startup column leaves it on Games,
+    // which is where a session that has never been asked has it — including
+    // every session written by a shell from before this setting existed. The
+    // name is not checked against the columns this machine has: the bar is not
+    // built yet, and a column that is not there this session is not a mistake
+    // in the file. See [`STARTUP_CATEGORY`].
+    if let Some(column) = stored.startup_category.clone() {
+        *STARTUP_CATEGORY.lock().unwrap() = Some(column);
+    }
     // Which radio the machine's Bluetooth is, what to do with it at startup,
     // and what it was doing last time. A hand-edited word this shell does not
     // know is dropped with a warning rather than refused, as a mistyped mode is:
@@ -6054,6 +7833,33 @@ fn adopt(stored: Stored) {
     // screen agree.
     if let Some(percent) = stored.application_scale {
         *APP_SCALE.lock().unwrap() = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
+    }
+    // And what the floating window is given. Each half is taken on its own, so
+    // a file that names a size nobody has heard of still keeps the corner
+    // beside it — and says so, rather than refusing the file: this is a text
+    // file the user is entitled to open.
+    {
+        let mut held = PICTURE_IN_PICTURE.lock().unwrap();
+        if let Some(floating) = stored.picture_in_picture {
+            held.floating = floating;
+        }
+        if let Some(size) = stored.picture_in_picture_size.as_deref() {
+            match pip::Size::from_key(size) {
+                Some(size) => held.size = size,
+                None => tracing::warn!(size, "ignoring a picture-in-picture size with no meaning"),
+            }
+        }
+        if let Some(place) = stored.picture_in_picture_place.as_deref() {
+            match pip::Place::from_key(place) {
+                Some(place) => held.place = place,
+                None => {
+                    tracing::warn!(
+                        place,
+                        "ignoring a picture-in-picture corner with no meaning"
+                    )
+                }
+            }
+        }
     }
 
     // The flat keys a single-display version of this page wrote, which become
@@ -6215,7 +8021,7 @@ fn adopt(stored: Stored) {
                 },
             );
         }
-        // And whether this screen rests while a game is played on another,
+        // And whether this screen rests while another one is being used,
         // which is a plain switch and needs none of the care above it. A
         // section that says nothing about it leaves that display alone, which
         // is what the setting does when nobody has answered it.
@@ -6296,6 +8102,17 @@ struct Stored {
     /// says so in the log. A drive that was not plugged in this morning is the
     /// case that rule is for.
     wallpaper_file: Option<String>,
+    /// The folder somebody's ROMs are in — see [`ROMS_FOLDER`]. Read by this
+    /// shell alone, and only where the `lxb-retroarch` package is installed;
+    /// on every other machine it is a line in the file that nothing reads,
+    /// which is the honest way for a setting belonging to an optional package
+    /// to be remembered across *that package* being uninstalled and put back.
+    ///
+    /// Removing RetroArch itself is a different act and does clear it — see
+    /// [`forget_roms_folder`]. That is somebody saying "take this off my
+    /// machine", and a shell that came back knowing where their games were
+    /// would not have taken it off.
+    retroarch_roms: Option<String>,
     /// What a display with no section of its own is set to.
     ///
     /// These four are where the first, single-display version of this page
@@ -6324,6 +8141,28 @@ struct Stored {
     /// without a bubble and without a chime. Session-wide, like the three keys
     /// above it and unlike anything in `apps.toml`.
     do_not_disturb: Option<bool>,
+    /// Whether the start screen writes what its buttons do at its foot.
+    /// Session-wide, like the switches around it, and written on every machine:
+    /// a console handed to somebody else is the case this exists for, and it
+    /// must not come back on because the shell was restarted.
+    button_hints: Option<bool>,
+    /// Which column of the start screen a session opens on, by the name the
+    /// column goes under on the bar rather than the one it is drawn with.
+    ///
+    /// Not checked against the columns this machine has, on the way in or on
+    /// the way out. A name this shell has never heard of goes on being written
+    /// back, for the reason [`Stored::steam_sort`] does: a session that read a
+    /// later version's setting, changed the accent and wrote the file back
+    /// would otherwise throw the user's choice away. And a column that is real
+    /// but not here — a Steam library nobody is signed in to — is not a mistake
+    /// in the file at all; the shell opens where it always did and the setting
+    /// waits. See [`STARTUP_CATEGORY`].
+    startup_category: Option<String>,
+    /// Whether the file explorer lists the names that begin with a dot.
+    /// Session-wide beside the orders in `media_sort`, because it is the same
+    /// kind of preference about how a folder is read and it is held the same
+    /// way: one answer for every folder, not one per directory.
+    show_hidden: Option<bool>,
     /// Whether the corner writes the battery's charge out in figures beside
     /// the level it draws. Session-wide, and written on every machine — a
     /// desktop has no row for it and no mark to apply it to, and neither is a
@@ -6341,6 +8180,22 @@ struct Stored {
     /// remembers nothing about it, because every application is started after
     /// the shell has connected and said what it is.
     application_scale: Option<u16>,
+    /// What a browser's picture-in-picture window is given: whether it floats
+    /// over everything at all, how large it is drawn — `small`, `medium` or
+    /// `large` — and which of the four corners it sits in.
+    ///
+    /// Session-wide, beside the application scale and for the same reason: it
+    /// is a statement about what such a window *is*, not about one screen.
+    /// Written by this shell and read by the next one; the compositor remembers
+    /// nothing about it, because the shell says what it is as soon as it
+    /// connects and long before any application exists to put a video in.
+    ///
+    /// A size or a corner this shell has no name for is ignored with a word
+    /// about it, and that half keeps the value it had — the same answer a
+    /// mistyped display mode gets.
+    picture_in_picture: Option<bool>,
+    picture_in_picture_size: Option<String>,
+    picture_in_picture_place: Option<String>,
     /// Whether the controller is the control the user last reached for, or a
     /// keyboard is. Nothing chooses it; the shell watches for it. See
     /// [`CONTROLLER_IN_HAND`], and note that `false` is the one that does
@@ -6446,7 +8301,7 @@ struct StoredDisplay {
     /// hours are neither a whole day nor none of one, and are dropped.
     night_light_from: Option<u8>,
     night_light_until: Option<u8>,
-    /// Rest this display behind black while a game is played on another one.
+    /// Rest this display behind black while another one is being used.
     ///
     /// No top-level default stands behind it, as none stands behind the night
     /// light's keys: a display this file has never heard of is never rested,
@@ -6552,6 +8407,7 @@ fn stored() -> Stored {
         ),
         theme_icons: Some(theme::applied_style(theme::Part::Icons).name().to_string()),
         wallpaper_file: custom_wallpaper().map(|file| file.display().to_string()),
+        retroarch_roms: roms_folder().map(|at| at.display().to_string()),
         // Never written. See [`Stored::theme`]: this is the key the two above
         // replaced, and writing it as well would be a third opinion about a
         // setting that now has two.
@@ -6561,8 +8417,14 @@ fn stored() -> Stored {
         start_music: Some(playing),
         do_not_disturb: Some(do_not_disturb()),
         battery_percent: Some(battery_percent()),
+        show_hidden: Some(show_hidden()),
+        button_hints: Some(button_hints()),
+        startup_category: Some(startup_category()),
         controller_in_hand: Some(controller_in_hand()),
         application_scale: Some(app_scale()),
+        picture_in_picture: Some(picture_in_picture().floating),
+        picture_in_picture_size: Some(picture_in_picture().size.key().to_string()),
+        picture_in_picture_place: Some(picture_in_picture().place.key().to_string()),
         hdr: Some(inherited.enabled),
         hdr_sdr_brightness: Some(inherited.sdr_brightness),
         hdr_srgb_intensity: Some(inherited.srgb_intensity),
@@ -6896,6 +8758,24 @@ const PREAMBLE: &str = "\
 # neither, and this key is kept for it anyway so that a file carried between
 # the two does not lose the setting on the way.
 #
+# button-hints: whether the start screen writes what its buttons do in the
+# corner opposite its clock — Select, Options where the row has a menu, and the
+# way back to the guide — which is Settings > System > Button hints. On unless
+# this says false, and on for a file written before the key existed: a console
+# is the one kind of machine nobody arrives at already knowing which button
+# does what, so the legend has to be there before anybody thinks to look for a
+# setting that would reveal it.
+#
+# startup-category: which column of the start screen a session opens on, by the
+# name that column goes under on the bar — settings, system, software,
+# multimedia, graphics, internet, office, games, steam, retroarch, development,
+# education, utilities, waydroid, other. Games unless this says otherwise,
+# including for a file written before the key existed. A name naming a column
+# this machine has not got is not an error and is not rewritten: the shell opens
+# on the first column with anything in it, as it always did, and the setting
+# waits for the account to be signed in or the package to be installed again.
+# Settings > System > Startup category.
+#
 # do-not-disturb: whether anything may interrupt, which is the moon tile at the
 # head of the guide overlay's column rather than a row of the Settings column.
 # On, an announcement is filed without a bubble in the corner and without a
@@ -6928,6 +8808,30 @@ const PREAMBLE: &str = "\
 # picture is not affected, and neither are windows running under Xwayland:
 # X11 has no per-surface scale to be told about, so the only thing that could
 # be done to those is to magnify pixels they have already drawn.
+#
+# picture-in-picture, picture-in-picture-size and picture-in-picture-place:
+# what happens to the small window a browser puts a video into, which is
+# Settings > System > Picture-in-Picture. It floats over everything unless the
+# first says false — over applications, over a fullscreen game, over the start
+# screen and over the guide — at small, medium or large, which is a sixth, a
+# quarter or a third of the display's width, in the corner named by top-left,
+# top-right, bottom-left or bottom-right. Without them it floats, medium, top
+# right.
+#
+# How tall the window is at that width is the window's own business: the
+# compositor asks it what shape it wants to be and follows the answer, so a
+# four-to-three video is not letterboxed into a widescreen box. A second such
+# window, opened while the first is still up, stands below it in a column from
+# the same corner.
+#
+# The window is found by its title, which is Picture-in-Picture and is what
+# every browser that has the feature calls it. Turned off, such a window is an
+# application window like any other: it fills the screen, it is listed in the
+# guide, and it takes the keyboard. A size or a corner spelled some other way
+# is ignored with a line in the log, and that half keeps the answer it had.
+#
+# It is carried out by the compositor, which is what places windows; this file
+# is only where the answer is remembered between sessions.
 #
 # Everything under [display.NAME] is Settings > Display for the connector of
 # that name, and is carried out by the compositor rather than by the shell.
@@ -6997,8 +8901,8 @@ const PREAMBLE: &str = "\
 #                         a file that says they are keeps no hours at all.
 #
 # oled-protection is Settings > Display > OLED protection: fade this screen to
-# black once it has been left alone for five seconds, while a game is being
-# played on another one. Off unless this says true, and it has no top-level
+# black once it has been left alone for five seconds, while another one is
+# being used. Off unless this says true, and it has no top-level
 # default for the reason the night light's keys have none — a display this file
 # has never heard of is never rested.
 #
@@ -7011,12 +8915,13 @@ const PREAMBLE: &str = "\
 # it back in a quarter of a second, as does taking that display over or
 # pressing anything on it.
 #
-# Four things stop a screen being rested, and none of them can be set here:
-# the screen the game is on is never rested, nor is the one being driven, nor
-# is one with something still painting on it — a film playing on the second
-# screen is exactly what a second screen is for — and nothing is rested at all
-# unless a game is actually running. A film somebody paused is deliberately not
-# spared: a paused film is a still picture, which is the thing this exists for.
+# Three things stop a screen being rested, and none of them can be set here:
+# the screen being driven is never rested, nor is one with something still
+# painting on it — a film playing on the second screen is exactly what a second
+# screen is for — and nothing is rested at all unless something is open
+# somewhere, whatever it is: a game, a film, a browser or an emulator all count
+# equally. A film somebody paused is deliberately not spared: a paused film is
+# a still picture, which is the thing this exists for.
 #
 # night-light-latitude and night-light-longitude, at the top level, are where
 # this machine is, in degrees — north and east positive. They are what
@@ -7054,6 +8959,18 @@ mod tests {
     use super::*;
 
     use crate::system::Device;
+
+    /// The Settings column, built against a bar with every column the shell can
+    /// have on it.
+    ///
+    /// Shadows [`super::column`], which takes the bar it is being built into —
+    /// see [`startup_category_page`], the one row that needs it. Every test here
+    /// is about a page rather than about which columns this machine happens to
+    /// have, so they are all handed the whole set: it is fixed, it does not read
+    /// the filesystem, and it means a test can name any column and find it.
+    fn column() -> Vec<Entry> {
+        super::column(&crate::apps::every_column())
+    }
 
     /// Made-up connector names, and a made-up peak.
     ///
@@ -7138,9 +9055,13 @@ mod tests {
         screen_rest: bool,
         sound: Level,
         app_scale: u16,
+        pip: Pip,
         start_music: bool,
         do_not_disturb: bool,
         battery_percent: bool,
+        show_hidden: bool,
+        button_hints: bool,
+        startup_category: Option<String>,
         battery: Option<crate::power::Charge>,
         controller_in_hand: bool,
         devices: Devices,
@@ -7164,9 +9085,13 @@ mod tests {
             screen_rest: screen_rest_available(),
             sound: *SOUND.lock().unwrap(),
             app_scale: app_scale(),
+            pip: picture_in_picture(),
             start_music: start_music(),
             do_not_disturb: do_not_disturb(),
             battery_percent: battery_percent(),
+            show_hidden: show_hidden(),
+            button_hints: button_hints(),
+            startup_category: STARTUP_CATEGORY.lock().unwrap().clone(),
             battery: *BATTERY.lock().unwrap(),
             controller_in_hand: controller_in_hand(),
             devices: DEVICES.lock().unwrap().clone(),
@@ -7184,12 +9109,14 @@ mod tests {
         // [`a_session_that_cannot_rest_a_screen_says_so`].
         note_screen_rest(true);
         *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
+        *PICTURE_IN_PICTURE.lock().unwrap() = Pip::DEFAULT;
         note_turned(Vec::new());
         note_places(Vec::new());
         note_devices(Devices::none());
         note_network(crate::network::Listing::none());
         note_bluetooth(crate::bluetooth::Listing::none());
         note_battery(None);
+        note_startup_category(None);
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
     }
@@ -7205,9 +9132,13 @@ mod tests {
         note_screen_rest(saved.screen_rest);
         *SOUND.lock().unwrap() = saved.sound;
         *APP_SCALE.lock().unwrap() = saved.app_scale;
+        *PICTURE_IN_PICTURE.lock().unwrap() = saved.pip;
         *START_MUSIC.lock().unwrap() = saved.start_music;
         *DO_NOT_DISTURB.lock().unwrap() = saved.do_not_disturb;
         *BATTERY_PERCENT.lock().unwrap() = saved.battery_percent;
+        *SHOW_HIDDEN.lock().unwrap() = saved.show_hidden;
+        *BUTTON_HINTS.lock().unwrap() = saved.button_hints;
+        *STARTUP_CATEGORY.lock().unwrap() = saved.startup_category;
         note_battery(saved.battery);
         *CONTROLLER_IN_HAND.lock().unwrap() = saved.controller_in_hand;
         note_support(saved.support);
@@ -7892,6 +9823,31 @@ mod tests {
                 "a row about what a machine can afford has to say so"
             );
 
+            // The two materials carry the *same* drawing — the mark of the half
+            // they are under — and are told apart by being drawn in the
+            // material each of them applies. The third row, where there is one,
+            // is not a material and keeps the mark of a picture.
+            let materials = &rows[..2];
+            assert!(
+                materials
+                    .iter()
+                    .all(|row| row.icon() == halves()[half].icon()),
+                "both materials wear the mark of the thing they change"
+            );
+            assert_eq!(
+                materials.iter().map(Entry::material).collect::<Vec<_>>(),
+                [
+                    Some(wallpaper::Style::Default),
+                    Some(wallpaper::Style::Simple)
+                ],
+                "and each is drawn in the one it applies, which is all that \
+                 tells one row from the other"
+            );
+            assert!(
+                rows[2..].iter().all(|row| row.material().is_none()),
+                "the user's own picture is a file and not a material"
+            );
+
             // Highlighted: drawn in, not chosen.
             preview(rows[1].setting());
             assert_eq!(theme::style(part), wallpaper::Style::Simple);
@@ -8346,8 +10302,8 @@ mod tests {
                 }
             );
             assert_eq!(mode_for(FIRST), Some(mode(2560, 1440, 144)));
-            // And the switch that rests this screen while a game is played on
-            // another, which is written and read like anything else per
+            // And the switch that rests this screen while another one is
+            // being used, which is written and read like anything else per
             // display — see [`oled_protection_for`].
             assert!(oled_protection_for(FIRST));
             assert!(
@@ -8591,6 +10547,82 @@ mod tests {
                 assert!(!battery_percent());
             },
         );
+    }
+
+    /// The start screen says what its buttons do until somebody turns it off,
+    /// and the switch under System is what turns it.
+    ///
+    /// Never through [`apply`], for the reason the volume test gives: that one
+    /// writes to the config directory of whoever is running the tests.
+    #[test]
+    fn the_button_hints_switch_turns_the_legend_over() {
+        with_displays(&[], || {
+            // Where a session that has never been asked has it — see the
+            // argument on [`BUTTON_HINTS`], which is where the default is
+            // declared and where it belongs.
+            *BUTTON_HINTS.lock().unwrap() = true;
+
+            let page = || {
+                system_page()
+                    .into_iter()
+                    .find(|entry| entry.title() == "Button hints")
+                    .expect("the System page offers the button hints")
+                    .entries()
+                    .expect("Button hints opens onto its two values")
+                    .to_vec()
+            };
+            let rows = page();
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Off", "On"],
+                "the switch every other switch in this tree is",
+            );
+            assert!(rows[1].chosen(), "and a shell nobody has asked opens on On");
+            assert!(!rows[0].chosen());
+
+            preview(rows[0].setting());
+            assert!(button_hints(), "highlighting Off is not choosing it");
+
+            let mut persisted = None;
+            assert!(apply_with(
+                rows[0].setting().expect("Off sets something"),
+                |stored| persisted = stored.button_hints,
+            ));
+            assert!(!button_hints());
+            assert_eq!(persisted, Some(false), "and it is written down");
+
+            let rows = page();
+            assert!(rows[0].chosen(), "the mark has moved with it");
+            assert!(!rows[1].chosen());
+
+            // Off survives being written out and read back, which is the whole
+            // point of writing it down: nobody turns this off meaning "until I
+            // next start the shell".
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("button-hints"), "{body}");
+            *BUTTON_HINTS.lock().unwrap() = true;
+            adopt(toml::from_str(&body).unwrap());
+            assert!(!button_hints(), "and it comes back off");
+
+            // A file that says nothing about it changes nothing — which is how
+            // a session whose settings were written before this key existed
+            // keeps the hints it has always had. See [`adopt`].
+            assert_eq!(Stored::default().button_hints, None);
+            adopt(Stored::default());
+            assert!(
+                !button_hints(),
+                "a silent file answers nothing for the user"
+            );
+            *BUTTON_HINTS.lock().unwrap() = true;
+            adopt(Stored::default());
+            assert!(button_hints(), "in either direction");
+
+            assert!(apply_with(
+                page()[0].setting().expect("Off sets something"),
+                |_| {},
+            ));
+            assert!(!button_hints());
+        });
     }
 
     /// Whether the charge is written out survives a session, and comes back off
@@ -11530,8 +13562,133 @@ hdr = true
         });
     }
 
-    /// The System page offers the scale and then the page about the machine,
-    /// and the second is a door rather than a setting.
+    /// The Startup category page is the bar itself: one row per column this
+    /// machine has, in the order they stand in, each wearing its own mark. And
+    /// the row it was opened from wears the mark of whichever is chosen.
+    ///
+    /// Games unless somebody has said otherwise, which is the whole reason the
+    /// setting exists: the shell opened on the first column with anything in it
+    /// before, and on nearly every machine that is System.
+    #[test]
+    fn the_startup_page_is_the_bar_with_one_of_them_marked() {
+        with_displays(&[], || {
+            let bar = crate::apps::every_column();
+            let page = || {
+                system(&bar)
+                    .entries()
+                    .expect("System opens a column")
+                    .iter()
+                    .find(|entry| entry.title() == "Startup category")
+                    .expect("the System page offers where the shell opens")
+                    .clone()
+            };
+
+            let opened = page();
+            let rows = opened.entries().expect("it opens onto the columns");
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                bar.iter().map(|column| column.title).collect::<Vec<_>>(),
+                "the page is the bar, in the bar's own order"
+            );
+            for (row, column) in rows.iter().zip(&bar) {
+                assert_eq!(
+                    row.icon(),
+                    Some(column.icon),
+                    "{} should wear its own mark",
+                    column.title
+                );
+            }
+
+            fn marked(rows: &[Entry]) -> Vec<&str> {
+                rows.iter()
+                    .filter(|row| row.chosen())
+                    .map(Entry::title)
+                    .collect()
+            }
+            assert_eq!(
+                marked(rows),
+                ["Games"],
+                "a shell nobody has asked opens on the games"
+            );
+            assert_eq!(opened.icon(), Some(icons::CATEGORY_GAMES));
+
+            // A press moves the mark and writes the id down. Never through
+            // `apply`, for the reason the volume test gives.
+            let waydroid = rows
+                .iter()
+                .find(|row| row.title() == "Waydroid")
+                .expect("Waydroid is a column the shell can have");
+            let mut persisted = None;
+            assert!(apply_with(
+                waydroid.setting().expect("the row sets something"),
+                |stored| persisted = stored.startup_category.clone(),
+            ));
+            assert_eq!(persisted.as_deref(), Some("waydroid"));
+
+            let opened = page();
+            assert_eq!(
+                marked(opened.entries().expect("it still opens")),
+                ["Waydroid"]
+            );
+            assert_eq!(
+                opened.icon(),
+                Some(icons::CATEGORY_WAYDROID),
+                "and the row it was opened from wears what was chosen"
+            );
+
+            // Highlighting one changes nothing. There is nothing to preview —
+            // what it sets is where the next cursor is built — and a bar that
+            // walked off under somebody reading the list would be worse than
+            // no preview at all.
+            preview(rows[0].setting());
+            assert_eq!(startup_category(), "waydroid");
+        });
+    }
+
+    /// A column the setting names and this machine has not got is still offered,
+    /// still marked, and says why it is not there.
+    ///
+    /// The case is a Steam account signed out, or a package removed. A page
+    /// with nothing marked on it would be the shell losing the answer in front
+    /// of the person who gave it.
+    #[test]
+    fn a_column_that_is_not_here_is_still_the_answer() {
+        with_displays(&[], || {
+            note_startup_category(Some(crate::apps::steam_column()));
+            let bar = [crate::apps::Column {
+                id: "system",
+                title: "System",
+                icon: icons::CATEGORY_SYSTEM,
+            }];
+            let opened = system(&bar)
+                .entries()
+                .expect("System opens a column")
+                .iter()
+                .find(|entry| entry.title() == "Startup category")
+                .expect("the System page offers where the shell opens")
+                .clone();
+            let rows = opened.entries().expect("it opens onto the columns");
+
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["System", crate::apps::steam_title()],
+                "the bar, and then the answer that is not on it"
+            );
+            let absent = rows.last().expect("the row that is not here");
+            assert!(absent.chosen(), "it is still what was chosen");
+            assert_eq!(absent.comment(), Some("Not on this machine just now"));
+            assert_eq!(
+                rows[0].comment(),
+                None,
+                "and a column that is here says nothing"
+            );
+            assert_eq!(opened.icon(), Some(icons::CATEGORY_STEAM));
+        });
+    }
+
+    /// The System page offers where the shell opens, the scale, and then the
+    /// page about the machine — and the last of them is a door rather than a
+    /// setting.
     ///
     /// Everything this asserts is something a press depends on. The row carries
     /// no [`Setting`], so choosing it moves no mark and writes no file; it opens
@@ -11547,8 +13704,14 @@ hdr = true
             let titles: Vec<&str> = page.iter().map(|entry| entry.title()).collect();
             assert_eq!(
                 titles,
-                ["Application scaling", "System information"],
-                "the setting comes first and the page to read comes last"
+                [
+                    "Startup category",
+                    "Application scaling",
+                    "Picture-in-Picture",
+                    "Button hints",
+                    "System information"
+                ],
+                "the settings come first and the page to read comes last"
             );
 
             let row = page.last().expect("the page has a last row");
@@ -11746,6 +13909,466 @@ hdr = true
                 ..Stored::default()
             });
             assert_eq!(app_scale(), LARGEST_SCALE);
+        });
+    }
+
+    /// The floating window's page: a switch, a size and a corner, in that order,
+    /// and the page's own comment saying what all three are.
+    ///
+    /// The order is the argument. Whether such a window floats at all is the
+    /// question somebody came here with; how large it is and where it sits are
+    /// only questions once the answer to the first is yes.
+    #[test]
+    fn the_floating_window_is_a_switch_and_two_answers() {
+        with_displays(&[], || {
+            let Some(page) = column()
+                .into_iter()
+                .find(|entry| entry.title() == "System")
+                .and_then(|system| {
+                    system.entries().and_then(|rows| {
+                        rows.iter()
+                            .find(|row| row.title() == "Picture-in-Picture")
+                            .cloned()
+                    })
+                })
+            else {
+                panic!("System offers the floating window")
+            };
+            assert_eq!(page.comment(), Some("On, medium, top right"));
+            assert_eq!(page.icon(), Some(icons::SETTING_PIP));
+
+            let rows = page.entries().expect("it opens onto its three rows");
+            let titles: Vec<&str> = rows.iter().map(|row| row.title()).collect();
+            assert_eq!(titles, ["Picture-in-Picture", "Size", "Placement"]);
+
+            // The switch is marked where the setting is, and both halves say
+            // what they mean rather than only Off and On.
+            let switch = rows[0].entries().expect("the switch is a pair of values");
+            assert_eq!(
+                switch.iter().map(|row| row.chosen()).collect::<Vec<_>>(),
+                [false, true],
+                "it floats until somebody says otherwise"
+            );
+            assert!(switch.iter().all(|row| row.comment().is_some()));
+
+            // And the corner rows are drawn rather than spelled, each with its
+            // own corner — which is the whole reason they are drawn.
+            let corners = rows[2].entries().expect("four corners");
+            let marks: Vec<Option<&str>> = corners.iter().map(|row| row.icon()).collect();
+            assert_eq!(
+                marks,
+                [
+                    Some(icons::SETTING_PIP_TOP_LEFT),
+                    Some(icons::SETTING_PIP_TOP_RIGHT),
+                    Some(icons::SETTING_PIP_BOTTOM_LEFT),
+                    Some(icons::SETTING_PIP_BOTTOM_RIGHT),
+                ]
+            );
+            // The row they hang on wears the corner that is chosen, so the list
+            // is headed by the answer rather than by a picture of all four.
+            assert_eq!(rows[2].icon(), Some(icons::SETTING_PIP_TOP_RIGHT));
+        });
+    }
+
+    /// Each of the three is set on its own and the other two are left alone,
+    /// which is what makes them three rows rather than one.
+    #[test]
+    fn each_half_of_the_floating_window_is_set_on_its_own() {
+        with_displays(&[], || {
+            assert!(apply_with(
+                Setting::PictureInPicture(PipValue::Place(pip::Place::BottomLeft)),
+                |_| {}
+            ));
+            assert_eq!(
+                picture_in_picture(),
+                Pip {
+                    place: pip::Place::BottomLeft,
+                    ..Pip::DEFAULT
+                }
+            );
+            assert!(apply_with(
+                Setting::PictureInPicture(PipValue::Size(pip::Size::Small)),
+                |_| {}
+            ));
+            assert!(apply_with(
+                Setting::PictureInPicture(PipValue::Floating(false)),
+                |_| {}
+            ));
+            assert_eq!(
+                picture_in_picture(),
+                Pip {
+                    floating: false,
+                    size: pip::Size::Small,
+                    place: pip::Place::BottomLeft,
+                }
+            );
+            // And with the whole of it off, the page says so and stops
+            // describing a window nobody can see.
+            assert_eq!(floating_summary(picture_in_picture()), "Off");
+        });
+    }
+
+    /// It survives the file, and a file that says nothing leaves it floating.
+    #[test]
+    fn the_floating_window_survives_the_file() {
+        with_displays(&[], || {
+            assert!(apply_with(
+                Setting::PictureInPicture(PipValue::Size(pip::Size::Large)),
+                |_| {}
+            ));
+            assert!(apply_with(
+                Setting::PictureInPicture(PipValue::Place(pip::Place::BottomRight)),
+                |_| {}
+            ));
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(
+                body.contains("picture-in-picture-size = \"large\""),
+                "{body}"
+            );
+            assert!(
+                body.contains("picture-in-picture-place = \"bottom-right\""),
+                "{body}"
+            );
+
+            *PICTURE_IN_PICTURE.lock().unwrap() = Pip::DEFAULT;
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(
+                picture_in_picture(),
+                Pip {
+                    floating: true,
+                    size: pip::Size::Large,
+                    place: pip::Place::BottomRight,
+                }
+            );
+
+            // Session-wide: no screen went into the file for it.
+            assert!(!body.contains("[display."), "{body}");
+
+            // A file that says nothing leaves what is in force alone, as it
+            // does for the scale and the Start music.
+            adopt(Stored::default());
+            assert_eq!(picture_in_picture().size, pip::Size::Large);
+
+            // And a hand-edited word nobody has heard of is ignored on its own,
+            // without taking the half beside it down with it.
+            adopt(Stored {
+                picture_in_picture_size: Some("enormous".to_string()),
+                picture_in_picture_place: Some("top-left".to_string()),
+                ..Stored::default()
+            });
+            assert_eq!(
+                picture_in_picture(),
+                Pip {
+                    floating: true,
+                    size: pip::Size::Large,
+                    place: pip::Place::TopLeft,
+                }
+            );
+        });
+    }
+
+    /// An emulator that handed over no settings is still on the page.
+    ///
+    /// Play! is the one: it makes no answer at all until a game is loaded, so
+    /// the helper has nothing to report but the core's name. Left off the page
+    /// entirely — which is what happened — somebody who had just installed it
+    /// went looking for their PlayStation 2 emulator and found nothing, which
+    /// reads as the install having failed rather than as an emulator with
+    /// nothing to set.
+    #[test]
+    fn an_emulator_with_nothing_to_set_is_still_on_the_page() {
+        let _held = crate::retroarch::GLOBALS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        // Nothing this core cannot start without, which is what puts it down
+        // the branch being tested rather than the one with a BIOS row on it.
+        crate::retroarch::set_firmware(Vec::new());
+        let silent: crate::retroarch::CoreOptions = serde_json::from_str(
+            r#"{"protocol":1,"core":"pcsx2","display":"LRPS2","categories":[],"options":[]}"#,
+        )
+        .expect("the helper's own wire format");
+
+        let Entry::Choice(row) = core_page(&silent) else {
+            panic!("a core with nothing in it must not open as a folder");
+        };
+        assert_eq!(row.title, "LRPS2");
+        assert!(!row.acts, "there is nothing here to press");
+        let note = row.comment.expect("a row that says why it is empty");
+        // The one thing this row exists to say. An emulator that declares
+        // nothing until a game is loaded is not an emulator without settings,
+        // and a row reading "no settings" would send somebody looking for a
+        // page that is one press of a game away.
+        assert!(
+            note.contains("RetroArch's own menu"),
+            "it says where they actually are, and got {note:?}"
+        );
+        // And does not promise that playing something brings them here. A core
+        // that answers neither the cheap ask nor the deep one only speaks with
+        // a real game in it, and nothing the shell does afterwards will hear it.
+        assert!(
+            !note.to_lowercase().contains("play a game"),
+            "and promises nothing it cannot do, but got {note:?}"
+        );
+    }
+
+    /// A core's page is built from what the core itself said, sorted into the
+    /// groups the core itself named.
+    ///
+    /// The record is parsed from the helper's own wire format rather than
+    /// built field by field, so this also says the two sides still agree about
+    /// what a core's settings look like on the way over.
+    fn ppsspp() -> crate::retroarch::CoreOptions {
+        serde_json::from_str(
+            r#"{
+              "protocol": 1,
+              "core": "ppsspp",
+              "display": "PPSSPP",
+              "categories": [
+                {"key": "video", "title": "Video"},
+                {"key": "system", "title": "System"},
+                {"key": "empty", "title": "Nothing In Here"}
+              ],
+              "options": [
+                {"key": "ppsspp_internal_resolution", "title": "Rendering Resolution",
+                 "category": "video", "default": "480x272",
+                 "values": [{"value": "480x272", "label": "1x (480x272)"},
+                            {"value": "960x544", "label": "2x (960x544)"}]},
+                {"key": "ppsspp_texture_scaling_level", "title": "Texture Upscaling Level",
+                 "category": "video", "default": "disabled",
+                 "values": [{"value": "disabled", "label": "disabled"},
+                            {"value": "2x", "label": "2x"}]},
+                {"key": "ppsspp_cpu_core", "title": "CPU Core",
+                 "category": "system", "default": "JIT",
+                 "values": [{"value": "JIT", "label": "Dynarec (JIT)"},
+                            {"value": "Interpreter", "label": "Interpreter"}]},
+                {"key": "ppsspp_loose", "title": "Sorted Nowhere",
+                 "category": null, "default": "off",
+                 "values": [{"value": "off", "label": "off"},
+                            {"value": "on", "label": "on"}]}
+              ]
+            }"#,
+        )
+        .expect("the helper's own record")
+    }
+
+    #[test]
+    fn a_cores_page_is_the_groups_that_core_named() {
+        // Which console this emulator plays, as the scan would have said.
+        // Stated before the page is drawn because the page reaches for it.
+        let _held = crate::retroarch::GLOBALS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        crate::retroarch::set_core_marks(vec![(
+            "ppsspp".to_string(),
+            "lxb:console-psp".to_string(),
+        )]);
+        let page = core_page(&ppsspp());
+        assert_eq!(page.title(), "PPSSPP");
+        assert_eq!(page.comment(), Some("4 settings"));
+        // And it wears that console's mark rather than RetroArch's own. The
+        // whole point of the row: four emulators under one page all wearing the
+        // frontend's drawing are four rows told apart only by reading them.
+        //
+        // Guarded on the drawing having shipped, because the atlas a unit test
+        // asks is this machine's — a package installed without its data
+        // directory falls back, and that is correct rather than a failure.
+        if crate::icons::shaped("lxb:console-psp") {
+            assert_eq!(page.icon(), Some("lxb:console-psp"));
+            assert_ne!(
+                page.icon(),
+                Some(crate::retroarch::mark()),
+                "and not the frontend's"
+            );
+        }
+
+        let rows = page.entries().expect("a core opens a column");
+        let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
+        // The core's own order, the group it filled but named last left out,
+        // and everything it sorted nowhere gathered at the end.
+        assert_eq!(titles, vec!["Video", "System", "Other"]);
+
+        let video = rows[0].entries().expect("a group opens a column");
+        assert_eq!(
+            video.iter().map(Entry::title).collect::<Vec<_>>(),
+            vec!["Rendering Resolution", "Texture Upscaling Level"]
+        );
+    }
+
+    /// An emulator that declares nothing and still wants a BIOS opens as a
+    /// page with that one row on it, wearing its console's mark.
+    ///
+    /// LRPS2 exactly: it hands over no table until a game is loaded into it,
+    /// and it cannot start one without a PlayStation 2 BIOS. Both halves are
+    /// pinned here because this is the page somebody arrives at from a game
+    /// that would not play.
+    #[test]
+    fn an_emulator_with_only_a_bios_is_a_page_wearing_its_console() {
+        let _held = crate::retroarch::GLOBALS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        crate::retroarch::set_core_marks(vec![(
+            "pcsx2".to_string(),
+            "lxb:console-ps2".to_string(),
+        )]);
+        crate::retroarch::set_firmware(vec![crate::retroarch::Firmware {
+            console: "PlayStation 2".to_string(),
+            core: "pcsx2".to_string(),
+            note: "'pcsx2/bios' folder".to_string(),
+            into: std::path::PathBuf::from("/system/pcsx2/bios"),
+            here: false,
+        }]);
+
+        let core: crate::retroarch::CoreOptions = serde_json::from_str(
+            r#"{"protocol":1,"core":"pcsx2","display":"LRPS2","categories":[],"options":[]}"#,
+        )
+        .expect("the helper's own wire format");
+        let page = core_page(&core);
+        assert_eq!(page.title(), "LRPS2");
+        let rows = page.entries().expect("a page rather than a row");
+        assert_eq!(
+            rows.iter().map(Entry::title).collect::<Vec<_>>(),
+            vec!["PlayStation 2 BIOS"],
+            "the one thing on it"
+        );
+        if crate::icons::shaped("lxb:console-ps2") {
+            assert_eq!(
+                page.icon(),
+                Some("lxb:console-ps2"),
+                "and the page wears the console rather than the frontend"
+            );
+        }
+
+        crate::retroarch::set_firmware(Vec::new());
+        crate::retroarch::set_core_marks(Vec::new());
+    }
+
+    /// A core too old to sort its settings puts them straight on its page,
+    /// rather than one folder called Other holding the whole emulator.
+    #[test]
+    fn a_core_that_sorts_nothing_has_a_flat_page() {
+        let mut core = ppsspp();
+        core.categories.clear();
+        for option in &mut core.options {
+            option.category = None;
+        }
+        let page = core_page(&core);
+        let rows = page.entries().expect("a core opens a column");
+        assert_eq!(rows.len(), 4, "every setting, and no folder around them");
+        assert_eq!(rows[0].title(), "Rendering Resolution");
+    }
+
+    /// The row says what the setting is set to, and the value in force is the
+    /// one wearing the tick.
+    ///
+    /// Nothing has been chosen here, so what it reads is the core's own
+    /// default — which is what RetroArch itself does with a line that is not in
+    /// the file.
+    #[test]
+    fn an_unset_option_reads_as_the_cores_own_default() {
+        let core = ppsspp();
+        let row = core_option_row(&core.display, &core.options[0]);
+        assert_eq!(row.title(), "Rendering Resolution");
+        assert_eq!(row.comment(), Some("1x (480x272)"));
+
+        let values = row.entries().expect("a setting opens its values");
+        assert_eq!(
+            values.iter().map(Entry::title).collect::<Vec<_>>(),
+            vec!["1x (480x272)", "2x (960x544)"]
+        );
+        assert!(values[0].chosen(), "the default is in force");
+        assert!(!values[1].chosen());
+        assert_eq!(
+            values[1].setting(),
+            Some(Setting::CoreOption {
+                core: "PPSSPP",
+                key: "ppsspp_internal_resolution",
+                value: "960x544",
+            }),
+            "and choosing it writes that value under the name RetroArch files \
+             this core's settings by"
+        );
+    }
+
+    /// The settings that belong to no core come after the ones that do, and
+    /// each says what is in force.
+    #[test]
+    fn the_settings_belonging_to_no_core_come_after_the_cores() {
+        let page = retroarch();
+        let rows = page.entries().expect("RetroArch opens a column");
+        let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
+        // No core has answered in a test, so this is the whole page.
+        assert_eq!(
+            titles,
+            vec![
+                "Aspect ratio",
+                "Video driver",
+                "Whole-number scaling",
+                "Wait for the screen",
+                "ROMs path",
+                "Get the artwork again"
+            ]
+        );
+
+        let aspect = &rows[0];
+        assert_eq!(
+            aspect.comment(),
+            Some("As the console had it"),
+            "RetroArch's own default, which is what an unset machine uses"
+        );
+        let values = aspect.entries().expect("it opens its values");
+        assert!(values[0].chosen(), "and it is the one ticked");
+        assert_eq!(
+            values[2].setting(),
+            Some(Setting::Emulator {
+                key: "aspect_ratio_index",
+                value: "0",
+            }),
+            "4:3 is index 0 in RetroArch's own table"
+        );
+    }
+
+    /// Games is a page of its own, in front of System, and it is not a dead
+    /// end while it waits to be filled.
+    ///
+    /// The emptiness is the whole of what this asserts. A subcategory the bar
+    /// will not step into is a row that does nothing when pressed — see
+    /// `Cursor::enter`, which refuses an empty column outright — so the page
+    /// carries the shell's read-only mark and says in words what is coming,
+    /// and nothing on it sets anything.
+    #[test]
+    fn the_games_page_says_it_is_empty_rather_than_being_empty() {
+        with_displays(&[], || {
+            let column = column();
+            let titles: Vec<&str> = column.iter().map(Entry::title).collect();
+            let at = |title: &str| {
+                titles
+                    .iter()
+                    .position(|had| *had == title)
+                    .unwrap_or_else(|| panic!("the Settings column has a {title} row"))
+            };
+            assert!(
+                at("Bluetooth") < at("Games") && at("Games") < at("System"),
+                "the games sit between what the machine talks to and the machine: {titles:?}"
+            );
+
+            let row = &column[at("Games")];
+            assert_eq!(row.icon(), Some(icons::CATEGORY_GAMES), "the pad");
+            assert!(row.comment().is_some(), "and it says what is behind it");
+
+            let page = row.entries().expect("Games opens a column");
+            assert_eq!(page.len(), 1, "one row, and it is the stand-in");
+            let waiting = &page[0];
+            assert_eq!(
+                waiting.icon(),
+                Some(icons::SETTING_INFO),
+                "the shell's read-only mark"
+            );
+            assert!(waiting.comment().is_some(), "which says what is coming");
+            assert_eq!(waiting.setting(), None, "there is nothing here to set");
+            assert!(!waiting.chosen(), "and therefore no mark to carry");
+            assert!(!waiting.starts_something(), "nor anything to start");
+            assert!(waiting.entries().is_none(), "and no further column");
         });
     }
 
@@ -11969,6 +14592,584 @@ hdr = true
             .unwrap_or_else(|| panic!("{title} is not on this page: {:?}", titles(entries)))
             .entries()
             .unwrap_or_else(|| panic!("{title} opens a column"))
+    }
+
+    // --- Settings > Users ---------------------------------------------------
+
+    fn account(uid: u64, name: &str, admin: bool) -> crate::users::Person {
+        crate::users::Person {
+            uid,
+            path: format!("/org/freedesktop/Accounts/User{uid}"),
+            name: name.to_string(),
+            real: String::new(),
+            admin,
+            picture: None,
+            stamp: None,
+            home: PathBuf::from(format!("/home/{name}")),
+            here: false,
+            you: false,
+        }
+    }
+
+    fn accounts(people: Vec<crate::users::Person>) -> crate::users::Listing {
+        crate::users::Listing {
+            daemon: true,
+            people,
+            trouble: None,
+            working: false,
+        }
+    }
+
+    /// The page, built against a machine the test describes.
+    ///
+    /// The listing goes through [`crate::users::note`], which is the same door
+    /// the worker's own answers come through — so what is being tested is the
+    /// page the shell would really draw and not a second way of building one.
+    fn users_page(listing: crate::users::Listing) -> Vec<Entry> {
+        crate::users::note(listing);
+        let Entry::Folder(page) = users() else {
+            panic!("Users is a subcategory");
+        };
+        page.entries
+    }
+
+    /// Every account is listed, the row that makes another is at the foot, and
+    /// each account's row wears its own picture rather than a mark.
+    ///
+    /// The mark a picture-less account falls back to is the *single* figure and
+    /// never the two the page itself is reached by — see
+    /// [`icons::SETTING_USERS`]. A page whose every row wore the heading above
+    /// it would say only "a user" on a page where every row is one.
+    #[test]
+    fn every_account_is_listed_with_its_own_face_and_a_way_to_add_another() {
+        let _alone = crate::users::one_form_at_a_time();
+        let mut marta = account(1000, "marta", true);
+        marta.real = "Marta Kowalska".to_string();
+        // A picture the shell can really see, so the row carries it: the check
+        // that the file exists is the worker's, and this page draws what it is
+        // handed.
+        let face = std::env::temp_dir().join("lxb-users-test-face.png");
+        std::fs::write(&face, b"not really a picture, but a file").expect("a scratch file");
+        marta.picture = Some(face.clone());
+
+        let page = users_page(accounts(vec![marta, account(1001, "jan", false)]));
+        assert_eq!(titles(&page), ["Marta Kowalska", "jan", "Add user"]);
+
+        let Entry::Folder(first) = &page[0] else {
+            panic!("an account opens a column");
+        };
+        assert_eq!(first.portrait.as_deref(), Some(face.as_path()));
+        assert_eq!(first.comment.as_deref(), Some("marta — Administrator"));
+        assert_eq!(
+            first.icon.as_deref(),
+            Some(icons::SETTING_PERSON),
+            "the mark under a face is the single figure"
+        );
+        assert_eq!(first.person, Some(crate::users::Whose::Existing(1000)));
+
+        let Entry::Folder(second) = &page[1] else {
+            panic!("an account opens a column");
+        };
+        assert_eq!(second.portrait, None, "no picture, so it wears the figure");
+        assert_eq!(second.icon.as_deref(), Some(icons::SETTING_PERSON));
+
+        let Entry::Folder(add) = &page[2] else {
+            panic!("Add user opens a column");
+        };
+        assert_eq!(add.icon.as_deref(), Some(icons::SETTING_ADD_USER));
+        assert_eq!(add.person, Some(crate::users::Whose::New));
+
+        // And the page itself is the two figures, which is the one mark on it
+        // that says "a set of people" rather than "a person".
+        let Entry::Folder(page) = users() else {
+            panic!("Users is a subcategory");
+        };
+        assert_eq!(page.icon.as_deref(), Some(icons::SETTING_USERS));
+        assert_ne!(
+            icons::SETTING_USERS,
+            icons::SETTING_PERSON,
+            "a face's fallback must not be the mark of the page it is on"
+        );
+    }
+
+    /// An account somebody is using does not offer to rename itself.
+    ///
+    /// `usermod -l` refuses for anything with a process running, so there is
+    /// nothing behind the row: it says the name and says why, rather than
+    /// opening a keyboard to take a value it will refuse a column later. The
+    /// row stays — what somebody logs in as is worth reading on a page about
+    /// them — and the two sentences differ, because for your own account the
+    /// thing that has to happen next is yours to do.
+    #[test]
+    fn a_signed_in_account_is_not_offered_a_new_user_name() {
+        let _alone = crate::users::one_form_at_a_time();
+        let mine = crate::users::Person {
+            here: true,
+            you: true,
+            ..account(1000, "marta", true)
+        };
+        let theirs = crate::users::Person {
+            here: true,
+            ..account(1001, "jan", true)
+        };
+        let away = account(1002, "ola", false);
+        let page = users_page(accounts(vec![mine, theirs, away]));
+
+        let ours = &under(&page, "marta")[1];
+        assert_eq!(ours.title(), "Username");
+        assert!(ours.typed().is_none(), "nothing to type into");
+        // Still the field's own mark. A row that cannot be pressed is not an
+        // explanation, and this form has been a stack of identical marks once.
+        assert_eq!(ours.icon(), Some(icons::SETTING_USERNAME));
+        assert!(ours
+            .comment()
+            .is_some_and(|note| note.starts_with("marta —") && note.contains("you are signed in")));
+
+        let theirs = &under(&page, "jan")[1];
+        assert!(theirs.typed().is_none());
+        assert!(
+            theirs
+                .comment()
+                .is_some_and(|note| note.contains("they are signed in")),
+            "somebody else signing out is not something you do"
+        );
+
+        // And an account nobody is using is a field like any other.
+        let away = &under(&page, "ola")[1];
+        assert_eq!(away.title(), "Username");
+        assert!(away.typed().is_some(), "this one can still be renamed");
+        assert_eq!(away.comment(), Some("ola"));
+    }
+
+    /// Both forms carry the same rows, in the same order — and the one an
+    /// account already has opens holding what that account is.
+    #[test]
+    fn both_forms_ask_the_same_things_in_the_same_order() {
+        let _alone = crate::users::one_form_at_a_time();
+        let mut marta = account(1000, "marta", true);
+        marta.real = "Marta Kowalska".to_string();
+        let page = users_page(accounts(vec![marta, account(1001, "jan", true)]));
+
+        let new = under(&page, "Add user");
+        assert_eq!(
+            titles(new),
+            [
+                "Name",
+                "Username",
+                "Account type",
+                "Password",
+                "Confirm password",
+                "Avatar",
+                "Accept and create",
+            ]
+        );
+        // Nothing is set on a form for an account that does not exist.
+        assert_eq!(new[0].comment(), Some("Not set"));
+        assert_eq!(new[3].comment(), Some("Not set"), "no password yet");
+        assert_eq!(under(new, "Account type")[0].title(), "Standard");
+        assert!(
+            under(new, "Account type")[0].chosen(),
+            "Standard by default"
+        );
+
+        // An account that already exists is not asked twice — see
+        // [`crate::users::asks_twice`]. Everything else is the same form.
+        let existing = under(&page, "Marta Kowalska");
+        assert_eq!(
+            titles(existing),
+            [
+                "Name",
+                "Username",
+                "Account type",
+                "Password",
+                "Avatar",
+                "Save changes",
+                "Remove account",
+            ]
+        );
+        assert_eq!(existing[0].comment(), Some("Marta Kowalska"));
+        assert_eq!(existing[1].comment(), Some("marta"));
+        // An account that already has a password says the field would leave it
+        // alone, which is what an empty one means there.
+        assert_eq!(existing[3].comment(), Some("Unchanged"));
+        // And each row wears a mark of its own. Three rows sharing one drawing
+        // is a form nobody can read at a glance, which is what these were.
+        let marks: Vec<Option<&str>> = existing.iter().map(Entry::icon).collect();
+        assert_eq!(
+            marks,
+            [
+                Some(icons::SETTING_NAME),
+                Some(icons::SETTING_USERNAME),
+                Some(icons::SETTING_ACCOUNT_TYPE),
+                Some(icons::SETTING_PASSWORD),
+                Some(icons::SETTING_AVATAR),
+                // The shell's one tick, which a picker's answer row wears
+                // too: both are pressed to commit. Not the padlock it wore
+                // first — a padlock is the thing that is locked, and this row
+                // is agreeing to get past one.
+                Some(icons::CHOSEN),
+                // The bin, because this machine has a second administrator on
+                // it and Marta can therefore be removed.
+                Some(icons::UNINSTALL),
+            ]
+        );
+        assert_ne!(
+            icons::SETTING_PASSWORD,
+            icons::AUTHENTICATE,
+            "the key and the padlock are two moments, not one"
+        );
+        assert!(
+            under(existing, "Account type")[1].chosen(),
+            "Marta is an administrator"
+        );
+    }
+
+    /// The last administrator cannot be made a standard account, and cannot be
+    /// removed — and both say why on the row rather than by not being there.
+    ///
+    /// This is the whole of the guard the page carries. Either press would leave
+    /// a machine nobody can administer, and nothing in this shell could put that
+    /// right afterwards: every way back needs an administrator to agree to it.
+    #[test]
+    fn the_last_administrator_cannot_be_demoted_or_removed() {
+        let _alone = crate::users::one_form_at_a_time();
+        let alone = users_page(accounts(vec![
+            account(1000, "marta", true),
+            account(1001, "jan", false),
+        ]));
+        let marta = under(&alone, "marta");
+        // The row is there, and it is a line rather than a way further in.
+        let kind = marta
+            .iter()
+            .find(|row| row.title() == "Account type")
+            .expect("the row is still on the page");
+        assert!(kind.entries().is_none(), "it does not open a column");
+        assert!(kind.setting().is_none(), "and it cannot be pressed");
+        assert!(kind.comment().unwrap_or_default().contains("only one"));
+
+        let removal = marta
+            .iter()
+            .find(|row| row.title() == "Remove account")
+            .expect("the row is still on the page");
+        assert!(removal.setting().is_none(), "it cannot be pressed");
+
+        // A standard account beside them has both.
+        let jan = under(&alone, "jan");
+        assert!(under(jan, "Account type").len() == 2);
+        assert_eq!(
+            under(&alone, "jan")
+                .iter()
+                .find(|row| row.title() == "Remove account")
+                .and_then(Entry::setting),
+            Some(Setting::User(UserValue::Remove(1001)))
+        );
+
+        // With a second administrator on the machine, Marta gets both back.
+        let shared = users_page(accounts(vec![
+            account(1000, "marta", true),
+            account(1001, "jan", true),
+        ]));
+        let marta = under(&shared, "marta");
+        assert_eq!(under(marta, "Account type").len(), 2);
+        assert_eq!(
+            marta
+                .iter()
+                .find(|row| row.title() == "Remove account")
+                .and_then(Entry::setting),
+            Some(Setting::User(UserValue::Remove(1000)))
+        );
+    }
+
+    /// Somebody signed in cannot be removed, and neither can the account the
+    /// session is running as — each saying which of the two it is.
+    #[test]
+    fn an_account_in_use_cannot_be_removed() {
+        let _alone = crate::users::one_form_at_a_time();
+        let mut here = account(1001, "jan", false);
+        here.here = true;
+        let mut yours = account(1002, "ola", false);
+        yours.here = true;
+        yours.you = true;
+
+        let page = users_page(accounts(vec![
+            account(1000, "marta", true),
+            here,
+            yours,
+            account(1003, "piotr", false),
+        ]));
+
+        let removal = |name: &str| {
+            let rows = under(&page, name);
+            let row = rows
+                .iter()
+                .find(|row| row.title() == "Remove account")
+                .expect("every account has the row");
+            (row.setting(), row.comment().unwrap_or_default().to_string())
+        };
+
+        let (setting, why) = removal("jan");
+        assert!(setting.is_none(), "signed in");
+        assert!(why.contains("signed in"), "{why}");
+
+        let (setting, why) = removal("ola");
+        assert!(setting.is_none(), "this session's own account");
+        assert!(why.contains("this session"), "{why}");
+
+        // And one who is neither can be.
+        let (setting, _) = removal("piotr");
+        assert_eq!(setting, Some(Setting::User(UserValue::Remove(1003))));
+        // The row that says so is an *action*: it does a thing rather than
+        // answering the question its column asks, so it never takes the mark.
+        let rows = under(&page, "piotr");
+        let row = rows
+            .iter()
+            .find(|row| row.title() == "Remove account")
+            .expect("the row");
+        assert!(row.acts(), "a removal is not one of a set of answers");
+        assert!(!row.chosen());
+    }
+
+    /// The row at the foot of a form cannot be pressed until the form describes
+    /// an account, and says what is missing while it does not.
+    #[test]
+    fn the_accept_row_says_what_is_missing_until_there_is_nothing() {
+        let _alone = crate::users::one_form_at_a_time();
+        let page = users_page(accounts(vec![account(1000, "marta", true)]));
+        let new = under(&page, "Add user");
+        let accept = new.last().expect("the last row on the form");
+        assert_eq!(accept.title(), "Accept and create");
+        assert!(
+            accept.setting().is_none(),
+            "an empty form cannot be handed over"
+        );
+        assert!(
+            accept.comment().unwrap_or_default().contains("user name"),
+            "it says what is missing: {:?}",
+            accept.comment()
+        );
+    }
+
+    /// While a change is in flight the whole form stops offering to make it
+    /// again — which on this page nearly always means polkit is waiting for
+    /// somebody to type a password.
+    #[test]
+    fn nothing_can_be_pressed_twice_while_polkit_is_asking() {
+        let _alone = crate::users::one_form_at_a_time();
+        let page = users_page(crate::users::Listing {
+            working: true,
+            ..accounts(vec![account(1000, "marta", true)])
+        });
+        let accept = under(&page, "Add user").last().cloned().expect("a row");
+        assert!(accept.setting().is_none());
+        assert!(
+            accept.comment().unwrap_or_default().contains("permission"),
+            "{:?}",
+            accept.comment()
+        );
+    }
+
+    /// A machine with no account service says so in words, in a column that can
+    /// still be stepped into — the same bargain the Network page states.
+    #[test]
+    fn a_machine_with_no_account_service_says_so() {
+        let _alone = crate::users::one_form_at_a_time();
+        let page = users_page(crate::users::Listing::default());
+        assert_eq!(page.len(), 1, "one row, not an empty column");
+        assert!(page[0].title().contains("No account service"));
+        assert!(page[0].setting().is_none(), "and it cannot be pressed");
+    }
+
+    /// What went wrong with the last press is said at the head of the page.
+    ///
+    /// At the head because it is about the page rather than about one account,
+    /// and because a refusal below the fold would be a press that looked as
+    /// though it had done nothing.
+    #[test]
+    fn a_refused_change_is_reported_at_the_head_of_the_page() {
+        let _alone = crate::users::one_form_at_a_time();
+        let page = users_page(crate::users::Listing {
+            trouble: Some(crate::users::Trouble {
+                what: "The account could not be created".to_string(),
+                why: "Not authorized.".to_string(),
+            }),
+            ..accounts(vec![account(1000, "marta", true)])
+        });
+        // Both halves, and this way round: the row is titled with what the
+        // shell was doing and noted with what the machine said about it. It
+        // read "That did not work" over the shell's own half once, and a page
+        // that never showed the machine's half is how a refused password went
+        // a morning without an explanation.
+        assert_eq!(page[0].title(), "The account could not be created");
+        assert_eq!(page[0].comment(), Some("Not authorized."));
+        assert_eq!(titles(&page)[1..], ["marta", "Add user"]);
+    }
+
+    /// The avatar is chosen by walking the disk, and the walk lists only what a
+    /// face can be.
+    #[test]
+    fn an_avatar_is_chosen_by_walking_to_it() {
+        let _alone = crate::users::one_form_at_a_time();
+        let page = users_page(accounts(vec![account(1000, "marta", true)]));
+        let rows = under(&page, "marta");
+        let avatar = rows
+            .iter()
+            .find(|row| row.title() == "Avatar")
+            .expect("the row");
+        let Entry::Folder(folder) = avatar else {
+            panic!("Avatar opens a column");
+        };
+        assert_eq!(
+            folder.place.as_ref().map(crate::files::Place::shows),
+            Some(crate::files::Shows::Portrait)
+        );
+        assert_eq!(folder.comment.as_deref(), Some("None — the plain mark"));
+        // Taking one off is not a row on the form. It is an answer to the
+        // question the picker asks, and it lives in there.
+        assert!(!titles(rows).iter().any(|title| title.contains("no avatar")));
+    }
+
+    /// Taking the avatar off is the other answer at the head of the picker —
+    /// offered only where there is one to take off, and never the row the
+    /// column opens on.
+    #[test]
+    fn no_avatar_is_an_answer_inside_the_picker_rather_than_a_row_beside_it() {
+        let _alone = crate::users::one_form_at_a_time();
+        let marta = account(1000, "marta", true);
+        crate::users::note(accounts(vec![marta.clone()]));
+
+        // A form with no avatar has nothing to offer.
+        crate::users::open_form(crate::users::Whose::Existing(1000), Some(&marta));
+        assert!(no_avatar_row().is_none());
+
+        // One with an avatar does, and that row stands over the list — so the
+        // column still opens on the first disk and a press of A on the way in
+        // cannot clear somebody's avatar before they have read it.
+        crate::users::set_picture(Path::new("/tmp/face.png"));
+        let row = no_avatar_row().expect("there is an avatar to take off");
+        assert_eq!(row.title(), "Use no avatar");
+        assert!(
+            row.over_the_list(),
+            "it must not be what the column opens on"
+        );
+        assert!(
+            row.acts(),
+            "it does a thing rather than answering the column"
+        );
+        assert!(!row.chosen());
+        assert_eq!(row.setting(), Some(Setting::User(UserValue::DropPicture)));
+
+        // And with no form open at all there is nothing to say.
+        crate::users::close_form();
+        assert!(no_avatar_row().is_none());
+    }
+
+    /// A password typed into an account that already exists is enough on its
+    /// own: the row says how many characters are waiting, and the row at the
+    /// foot lets the change through.
+    ///
+    /// This is the bug the Confirm rule was written for. The form used to carry
+    /// a Confirm row on *both* kinds of account and check the two against each
+    /// other whatever the form was — so setting a password on somebody who
+    /// already had one left the second field empty, and Save was refused with
+    /// "The two passwords are not the same" for a field that was not on the
+    /// page. The account could not be changed at all.
+    #[test]
+    fn a_password_on_an_existing_account_needs_no_second_field() {
+        let _alone = crate::users::one_form_at_a_time();
+        let marta = account(1000, "marta", true);
+        crate::users::note(accounts(vec![marta.clone(), account(1001, "jan", true)]));
+        crate::users::open_form(crate::users::Whose::Existing(1000), Some(&marta));
+
+        let mut typed = crate::secret::Secret::default();
+        for character in "hunter2".chars() {
+            typed.push(character);
+        }
+        crate::users::write_secret(crate::users::Field::Password, typed);
+
+        let page = users_page(accounts(vec![marta, account(1001, "jan", true)]));
+        let rows = under(&page, "marta");
+        // The row says what is waiting rather than going on saying "Unchanged",
+        // which is what it said before anything was typed.
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.title() == "Password")
+                .and_then(Entry::comment),
+            Some("7 characters")
+        );
+        // And the change goes through.
+        let save = rows
+            .iter()
+            .find(|row| row.title() == "Save changes")
+            .expect("the row at the foot");
+        assert_eq!(
+            save.setting(),
+            Some(Setting::User(UserValue::Accept)),
+            "refused with: {:?}",
+            save.comment()
+        );
+        crate::users::close_form();
+    }
+
+    /// A new account still is asked twice, and is refused until the two agree —
+    /// which is what a confirmation is for: nobody can get into that account
+    /// yet, so a typo is only discovered at the login screen.
+    #[test]
+    fn a_new_account_is_asked_twice_and_refused_until_they_agree() {
+        let _alone = crate::users::one_form_at_a_time();
+        crate::users::note(accounts(vec![account(1000, "marta", true)]));
+        crate::users::open_form(crate::users::Whose::New, None);
+        crate::users::write(crate::users::Field::Username, "jan");
+
+        let secret = |text: &str| {
+            let mut secret = crate::secret::Secret::default();
+            for character in text.chars() {
+                secret.push(character);
+            }
+            secret
+        };
+        crate::users::write_secret(crate::users::Field::Password, secret("hunter2"));
+
+        let accept = |page: &[Entry]| {
+            under(page, "Add user")
+                .iter()
+                .find(|row| row.title() == "Accept and create")
+                .expect("the row at the foot")
+                .clone()
+        };
+
+        let page = users_page(accounts(vec![account(1000, "marta", true)]));
+        assert!(
+            accept(&page).setting().is_none(),
+            "one password and no confirmation"
+        );
+
+        crate::users::write_secret(crate::users::Field::Confirm, secret("hunter3"));
+        let page = users_page(accounts(vec![account(1000, "marta", true)]));
+        assert!(accept(&page).setting().is_none(), "they do not agree");
+
+        crate::users::write_secret(crate::users::Field::Confirm, secret("hunter2"));
+        let page = users_page(accounts(vec![account(1000, "marta", true)]));
+        assert_eq!(
+            accept(&page).setting(),
+            Some(Setting::User(UserValue::Accept)),
+            "refused with: {:?}",
+            accept(&page).comment()
+        );
+        crate::users::close_form();
+    }
+
+    /// Users sits between Games and System, which is where somebody looking for
+    /// it comes to rest — see [`column`], where the whole order is argued.
+    #[test]
+    fn users_stands_between_the_games_and_the_machine() {
+        let column = column();
+        let at = |title: &str| {
+            column
+                .iter()
+                .position(|entry| entry.title() == title)
+                .unwrap_or_else(|| panic!("{title} is not in the Settings column"))
+        };
+        assert!(at("Games") < at("Users") && at("Users") < at("System"));
     }
 
     /// The whole of what the user asked for, in one test: a machine with both

@@ -142,6 +142,90 @@ where
     )
 }
 
+/// Which side of the shell's own surfaces a picture is of.
+///
+/// The shell draws its session on one surface, and the compositor draws
+/// something on each side of it: the application windows behind, the windows a
+/// picture-in-picture setting floats in front. A pane of glass on the shell's
+/// surface refracts what is behind that surface; one on the surface its context
+/// menu is drawn on refracts both, with the shell's own frame between them. So
+/// they are two pictures, not one — see `lxb_shell_v1.ask_for_the_picture_behind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// The application windows: between the shell's wallpaper and the surface
+    /// it draws its session on.
+    Below,
+    /// The floating windows, and anything flying back out of a tile in front of
+    /// the shell: drawn over that surface and under its context menu.
+    Above,
+}
+
+impl Side {
+    /// The same thing, as the protocol names it.
+    pub fn from_wire(layer: lxb_protocol::server::lxb_shell_v1::BehindLayer) -> Self {
+        match layer {
+            lxb_protocol::server::lxb_shell_v1::BehindLayer::Above => Self::Above,
+            _ => Self::Below,
+        }
+    }
+}
+
+/// Draw what the compositor is putting on one side of the shell's own surfaces,
+/// small, so a pane of the shell's glass can refract it.
+///
+/// **The same builders the display's own frame is made of**, called with a
+/// smaller scale rather than drawn large and shrunk afterwards. An element
+/// carries where it goes and how big it is as a function of the scale it is
+/// asked at, so asking for a fraction of one is a picture a fraction of the
+/// size, drawn by the GPU in one pass at that size. Drawing it full size and
+/// blitting it down would be a second whole composite and an offscreen the size
+/// of the display to keep.
+///
+/// Small on purpose. A pane frosts what it transmits, so what it wants back is
+/// something already blurred; the shell chooses how small by how large a buffer
+/// it hands over, and a readback it can afford every frame is the whole point.
+///
+/// Transparent where nothing was drawn, because the shell composites this over
+/// the wallpaper it evaluates for itself: what nothing covers must arrive
+/// covering nothing.
+pub fn behind<R>(
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    side: Side,
+    size: Size<i32, Physical>,
+) -> anyhow::Result<Shot>
+where
+    R: Renderer + ImportAll + ImportMem + ExportMem + Offscreen<GlesTexture>,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: Send + Sync + 'static,
+{
+    if size.w <= 0 || size.h <= 0 {
+        anyhow::bail!("no room in the buffer to draw a picture");
+    }
+    let shown = crate::screencopy::picture_size(output)
+        .ok_or_else(|| anyhow::anyhow!("the display has no size to draw"))?;
+    if shown.w <= 0 || shown.h <= 0 {
+        anyhow::bail!("the display has no size to draw");
+    }
+    // How much smaller than the display this picture is, and so the scale every
+    // element is asked to place itself at.
+    let shrink = f64::min(
+        size.w as f64 / shown.w as f64,
+        size.h as f64 / shown.h as f64,
+    );
+    let scale = Scale::from(output.current_scale().fractional_scale() * shrink);
+
+    let elements = crate::render::elements_behind_the_shell(renderer, lxb, output, side, scale);
+    shoot(
+        renderer,
+        size,
+        &mut OutputDamageTracker::new(size, scale, Transform::Normal),
+        &elements,
+        [0.0; 4],
+    )
+}
+
 /// Draw `elements` into an offscreen buffer `size` pixels across and read the
 /// result back into main memory.
 ///

@@ -1,0 +1,29 @@
+<!--
+  Arcade: the cabinet, marquee to control panel.
+
+  The one row in this column that is not a machine anybody owned, so it is
+  drawn as the thing you stood in front of. Three openings stacked in a tall
+  box is a shape nothing else here comes near. See console-nes.svg for the
+  set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="cabinet" x="5.6" y="3" width="20.8" height="26" rx="2.2"/>
+    <rect id="marquee" x="8.4" y="5.4" width="15.2" height="3" rx="0.8"/>
+    <rect id="screen" x="8" y="10.2" width="16" height="8.6" rx="0.8"/>
+    <rect id="panel" x="7.6" y="21.4" width="16.8" height="3.4" rx="0.9"/>
+    <mask id="pierced">
+      <use href="#cabinet" fill="#ffffff"/>
+      <use href="#marquee" fill="#000000"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#panel" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#cabinet" fill="#ffffff"/>
+  </g>
+</svg>

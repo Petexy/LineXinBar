@@ -87,6 +87,11 @@ pointer_accel = 0.0
 # guide's chords, either can be given to something else instead.
 "Super+Shift+S" = "screenshot"
 "Super+Tab" = "cycle-window"
+# Walks the guide's window deck while Alt is held, and takes whichever card the
+# walk landed on when it comes up — the chord every desktop switches
+# applications with, drawn on the overlay this shell already has for it.
+"Alt+Tab" = "switch-window"
+"Alt+Shift+Tab" = "switch-window-back"
 "Super+Left" = "focus-prev-output"
 "Super+Right" = "focus-next-output"
 "Super+Shift+Right" = "move-to-next-output"

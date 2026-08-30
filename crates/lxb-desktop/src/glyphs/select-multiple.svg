@@ -1,0 +1,44 @@
+<!--
+  The row that turns a column into one being marked, and the row at the head of
+  it while it is: a tick cut through a square bead.
+
+  The same tick chosen.svg carries, in a different body, and that is the whole
+  statement. What a tick means in this shell is "this one" — see chosen.svg,
+  which is the badge on the value in force — and what this row does is offer
+  that mark to rows the user picks out for themselves. Drawing a second,
+  different tick for it would be saying the two are unrelated when they are the
+  same act, one of them chosen by the shell and the other by the person.
+
+  Square rather than round because they do appear together. Show hidden files
+  wears the round one when it is on, three rows below this in the same panel,
+  and at the size a menu draws a mark the silhouette is all there is to tell
+  two of them apart. So one is a disc and the other is a square, which reads at
+  27 px where nothing subtler does.
+
+  The bodies that were tried first and thrown out were both stacks — two
+  squares offset like copy.svg's sheets, and copy.svg's own sheets — on the
+  argument that the row says *multiple*. At 27 px the two bodies melt into one
+  another and the tick inside the front one becomes a smudge: the mark loses
+  the half that carries its meaning to say something the label already says.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="box" x="3.6" y="3.6" width="24.8" height="24.8" rx="4.2"/>
+    <path id="tick" d="M10.3 16.4L14.2 20.3L21.7 11.9"
+          fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <g id="bead"><use href="#box"/></g>
+    <g id="holes"><use href="#tick" stroke="#000000"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

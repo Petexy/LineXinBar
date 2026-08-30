@@ -186,6 +186,17 @@ pub enum Sight {
     /// what it is handed back under, and what says two photographs called
     /// `IMG_0001.jpg` in two folders are not the same photograph.
     Picture(PathBuf),
+    /// A screenshot of one of somebody's own games, off libretro's collection —
+    /// by the file it was fetched into, exactly as a photograph is.
+    ///
+    /// Its own kind rather than a [`Sight::Picture`] with a different path, and
+    /// the difference is the whole reason it exists: this one is **blurred**.
+    /// The pictures libretro holds are screenshots of consoles, which is to say
+    /// they are three hundred pixels tall, and a three-hundred-pixel picture
+    /// stretched across a television is a wall of squares. Softened it is what
+    /// it was always going to be — the colour and the shape of the game, behind
+    /// the row that is the game. See [`blurred_scenery_from`].
+    Snapshot(PathBuf),
 }
 
 impl Sight {
@@ -193,7 +204,7 @@ impl Sight {
     pub fn game(&self) -> Option<u32> {
         match self {
             Sight::Game(app_id) => Some(*app_id),
-            Sight::Picture(_) => None,
+            Sight::Picture(_) | Sight::Snapshot(_) => None,
         }
     }
 }
@@ -664,6 +675,56 @@ pub fn scenery_from(image: image::DynamicImage) -> Scenery {
     Scenery { levels }
 }
 
+/// The same, for a picture that is far too small for the place it is going.
+///
+/// A screenshot of a console is three hundred pixels tall. Filling a television
+/// with one is a four-fold enlargement at best, and what an enlargement of a
+/// small picture looks like is squares — every one of them a pixel of a machine
+/// that had a hundred and fifty thousand of them, blown up to the size of a
+/// thumbnail. Nobody wants to look at that behind the row they are choosing.
+///
+/// So it is deliberately not sharpened: it is reduced until there is nothing
+/// left of the grid, softened once more to take the last of the steps out of
+/// what remains, and then enlarged. What comes out is the colour and the
+/// massing of the game — light where the sky was, dark where the cave was —
+/// which is exactly as much as a picture standing behind a bar at a quarter
+/// brightness was ever going to say.
+///
+/// The reduction is what makes it cheap as well as what makes it right: the
+/// blur happens at [`BLURRED`] of the box's width, which is a few thousand
+/// pixels rather than a million.
+pub fn blurred_scenery_from(image: image::DynamicImage) -> Scenery {
+    // Cropped to the box's shape *before* the reduction, so the crop is the
+    // same one every other picture behind the bar gets and the enlargement at
+    // the end is a plain scale with nothing else happening in it.
+    let (width, height) = (HERO_WIDTH / BLURRED, HERO_HEIGHT / BLURRED);
+    let small = image.resize_to_fill(width, height, image::imageops::FilterType::Triangle);
+    // Gaussian on a picture this size is thousands of pixels, not millions.
+    // What it is for is the last of the steps between one reduced pixel and the
+    // next, which a box filter leaves behind and an enlargement would then
+    // spread out into visible bands.
+    let softened = small.blur(BLUR);
+    scenery_from(softened)
+}
+
+/// How far a screenshot is reduced before it is softened and enlarged again.
+///
+/// An eighth of the box, which is 240 × 77. Chosen by looking at the result
+/// rather than by argument: a sixteenth loses the composition — a forest and
+/// two fighters become a green wash — and a quarter keeps enough of the grid
+/// that the softening has to be strong enough to smear it, which costs the
+/// same composition by the other road. An eighth is smaller than the picture
+/// went in for every console libretro holds screenshots of, so the reduction
+/// really is averaging pixels together rather than inventing them.
+const BLURRED: u32 = 8;
+
+/// How much softening the reduced copy is given, in pixels of it.
+///
+/// Enough that no two neighbouring averages can be told apart as squares once
+/// the copy is enlarged eightfold, and not so much that the massing goes with
+/// them.
+const BLUR: f32 = 2.4;
+
 /// Decode a picture Steam sent, with a ceiling on what it may cost.
 ///
 /// The ceiling is the point: this is a file from the network, and a decoder
@@ -688,6 +749,71 @@ fn decode(bytes: &[u8]) -> Option<image::DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A screenshot of a console comes out the size every other picture behind
+    /// the bar is, and comes out *soft*.
+    ///
+    /// The softness is measured rather than asserted, because it is the whole
+    /// point: the source here is a chequerboard of single pixels, which is the
+    /// worst case an enlargement can be handed, and what must not survive the
+    /// journey is the grid. The honest route keeps it — that is what makes it
+    /// honest — so the two are compared against each other rather than against
+    /// a number nobody could defend.
+    #[test]
+    fn a_screenshot_comes_back_soft_and_the_right_size() {
+        let mut source = image::RgbaImage::new(240, 136);
+        for (x, y, pixel) in source.enumerate_pixels_mut() {
+            let value = if (x + y) % 2 == 0 { 255 } else { 0 };
+            *pixel = image::Rgba([value, value, value, 255]);
+        }
+        let source = image::DynamicImage::ImageRgba8(source);
+
+        let soft = blurred_scenery_from(source.clone());
+        assert_eq!(soft.levels.len(), HERO_LEVELS as usize);
+        assert_eq!(
+            soft.levels[0].len(),
+            (HERO_WIDTH * HERO_HEIGHT * 4) as usize
+        );
+
+        // How different one pixel is from the one beside it, averaged over a
+        // rung — which for a grid that has survived is enormous and for one
+        // that has not is nearly nothing.
+        fn roughness(rung: &[u8], width: u32) -> f64 {
+            let stride = (width * 4) as usize;
+            let mut total = 0f64;
+            let mut counted = 0usize;
+            for row in rung.chunks_exact(stride) {
+                for pixel in 1..width as usize {
+                    let (here, before) = (row[pixel * 4], row[(pixel - 1) * 4]);
+                    total += f64::from(here.abs_diff(before));
+                    counted += 1;
+                }
+            }
+            total / counted as f64
+        }
+
+        let honest = scenery_from(source);
+        let (soft, honest) = (
+            roughness(&soft.levels[0], HERO_WIDTH),
+            roughness(&honest.levels[0], HERO_WIDTH),
+        );
+        assert!(
+            soft < honest / 4.0,
+            "the softened copy still has the grid in it: {soft} against {honest}"
+        );
+    }
+
+    /// What a picture behind the bar is *of* is never a game and a file at
+    /// once, and the two kinds of file are two kinds — a photograph the user
+    /// owns is not blurred, and a screenshot of a console is.
+    #[test]
+    fn a_screenshot_and_a_photograph_are_not_the_same_sight() {
+        let at = PathBuf::from("/cache/snap.png");
+        assert_ne!(Sight::Picture(at.clone()), Sight::Snapshot(at.clone()));
+        assert_eq!(Sight::Snapshot(at.clone()).game(), None);
+        assert_eq!(Sight::Picture(at).game(), None);
+        assert_eq!(Sight::Game(7).game(), Some(7));
+    }
 
     /// Every rung is the size the GPU expects a mip level to be, and the chain
     /// ends well before it runs out of pixels.

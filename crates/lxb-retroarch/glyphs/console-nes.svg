@@ -1,0 +1,54 @@
+<!--
+  The Nintendo Entertainment System, and the drawing the rest of the console
+  set is measured against.
+
+  Why the set exists: every column under RetroArch used to wear the same mark,
+  so a shelf of nine consoles was nine identical rows and the only thing saying
+  which machine you were about to step into was the name. A glyph is read
+  before a name is, and from further away.
+
+  How each one is drawn:
+
+    * It is the **machine**, not its logo and not its controller. A wordmark is
+      illegible at the size a row is drawn and belongs to somebody else; a
+      controller is the Games category's own mark and would say "a game" forty
+      times over. What is left is the object itself, which is what a person
+      pictures when they think of a console.
+    * It is drawn as a **front or top elevation**, flat on, in as few parts as
+      the machine can be recognised from — a body, and one to four openings
+      that are its signature: a door, a disc lid, a screen, a row of ports.
+    * Anything that only a photograph could carry is left out. At 84 px the
+      whole drawing is a hundred pixels across and the material takes a bevel
+      off every edge, so a part narrower than about two and a half units of
+      this cell never gets a flat face and comes out melted.
+
+  This one: the deck lying flat, its front-loading door across the middle and
+  the two controller ports beneath it. The door is the machine — no other
+  console in the set opens like that — and two ports rather than four is what
+  separates it from the Nintendo 64 further down the column.
+
+  lxb:shape — the material is computed from this outline, not painted into it.
+  See category-games.svg in the shell's own set, which is where the whole of
+  that is explained.
+
+  These files are not the shell's. They ship in the lxb-retroarch package and
+  are read at startup out of share/lxb/glyphs; a machine without that package
+  has no console columns to put them on. See icons::from_packages.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="2.6" y="9.4" width="26.8" height="14" rx="1.6"/>
+    <rect id="door" x="6.8" y="11.6" width="18.4" height="4.8" rx="0.7"/>
+    <g id="ports"><circle cx="13.4" cy="19.8" r="1.35"/><circle cx="18.6" cy="19.8" r="1.35"/></g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#door" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

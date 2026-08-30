@@ -299,6 +299,68 @@ pub fn sign_in(account: &str, refresh_token: &str) -> Result<(), Problem> {
     took_it(&answer)
 }
 
+/// The number Valve's settings message gives "Guide button focuses Steam".
+///
+/// A number and not a name, because the name exists only in the interface. The
+/// client reads this setting on the C++ side and `steamclient.so` carries no
+/// string for it; `steamui`'s own settings table is where the two are tied
+/// together, as
+/// `controller_guide_button_focus_steam: { n: 14002, br: readBool, bw: writeBool }`,
+/// beside the Controller page's `#Settings_Controller_GuideButtonFocus` toggle.
+const GUIDE_BUTTON_FOCUSES_STEAM: u32 = 14002;
+
+/// Ask Valve's client to stop answering the guide button itself.
+///
+/// This is the one hole in [the shell's rule that the guide button is its
+/// alone](crate::client), and it is here rather than anywhere nearer that rule
+/// because it cannot be closed the way the others are. Every controller the
+/// kernel drives is taken away and handed back a button short — the pad is
+/// grabbed, and applications find a stand-in with the guide button declared and
+/// never sent. The second-generation Steam Controller has no such node to take:
+/// Valve's client reads that pad's *raw HID reports*, with its own code rather
+/// than SDL, and a raw node cannot be held exclusively by anybody. So the
+/// button reaches the client whatever this shell does, and the only thing left
+/// to ask is that the client not act on it.
+///
+/// Measured on the hardware, three presses in each state, seconds apart: with
+/// the setting on, `GetDesiredSteamUIWindows` goes from the desktop window to
+/// Big Picture's on the first press — UI mode 7 to mode 4 — and with it off the
+/// window list does not move. The client logs `Guide button sent to JS` either
+/// way, so its log is not what says whether this worked; the window is.
+///
+/// The value is read back rather than assumed. The field is a number, and a
+/// number Valve is free to reuse — a client that renumbered it would take this
+/// setting silently, which is exactly the failure that is worth a line in the
+/// log rather than a user wondering why Big Picture keeps opening.
+pub fn leave_the_guide_button_alone() -> Result<(), Problem> {
+    let socket = context()?;
+    let mut settings = crate::protobuf::Writer::new();
+    // Explicitly, because "off" is what is being asked for: a settings message
+    // that leaves the field out is a message asking for nothing. See
+    // [`crate::protobuf::Writer::bool_even_when_false`].
+    settings.bool_even_when_false(GUIDE_BUTTON_FOCUSES_STEAM, false);
+    let message = crate::base64::encode(&settings.finish());
+
+    let call = format!(
+        "(async () => {{ \
+           await SteamClient.Settings.SetSetting({}); \
+           return JSON.stringify(\
+             window.settingsStore.m_ClientSettings.controller_guide_button_focus_steam); \
+         }})()",
+        json_string(&message)
+    );
+    match evaluate(&socket, &call)?.as_str() {
+        "false" => {
+            tracing::info!("Valve's client will leave the guide button to this shell");
+            Ok(())
+        }
+        other => Err(Problem::Refused(format!(
+            "the guide button setting reads {other} after being turned off; \
+             Valve may have renumbered it"
+        ))),
+    }
+}
+
 /// Whether the running client still has the methods this crate calls.
 ///
 /// These are Valve's own internals and are not promised to anybody, so a
@@ -309,8 +371,9 @@ pub fn sign_in(account: &str, refresh_token: &str) -> Result<(), Problem> {
 /// Returns the names that are missing, so an empty list is a client this shell
 /// can drive.
 pub fn missing_methods() -> Result<Vec<String>, Problem> {
-    const WANTED: [&str; 7] = [
+    const WANTED: [&str; 8] = [
         "Auth.SetLoginToken",
+        "Settings.SetSetting",
         "Installs.RegisterForShowInstallWizard",
         "Installs.OpenInstallWizard",
         "Installs.SetCreateShortcuts",

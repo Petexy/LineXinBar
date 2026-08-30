@@ -18,7 +18,7 @@
 
 use crate::apps::{Entry, Role, Searched};
 use crate::dialog::{Dialog, Line};
-use crate::gpu::{Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
+use crate::gpu::{Cut, Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
 use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
 use crate::icons;
 use crate::keyboard;
@@ -85,6 +85,12 @@ const CARD_ASPECT: f32 = 16.0 / 9.0;
 /// And the shape of a Steam cover, which is Valve's portrait capsule: 600 by
 /// 900, the one picture every game in a library has and the one a person
 /// recognises a game by.
+///
+/// A Steam library is drawn at this and nothing else, because every cover in
+/// one really is this shape. A shelf of somebody's own games is not: the boxes
+/// consoles came in are all different, so those shelves are drawn at the shape
+/// their own covers turn out to be and this is only what they fall back to
+/// while there is nothing to measure. See [`crate::apps::Rom::shape`].
 const COVER_ASPECT: f32 = 600.0 / 900.0;
 
 /// The border of glass a picture stands on, as a share of the picture's own
@@ -337,6 +343,35 @@ const COLUMN_MARGIN: f32 = ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 24.0;
 /// How much of the gap between two columns belongs to the one in front — its
 /// own row's glass, and a little air before the label behind it reaches that.
 const COLUMN_CLEAR: f32 = ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 10.0;
+
+/// The same, measured off whatever the column in front is actually made of.
+///
+/// A card is half again as wide as a disc, so a column of them reaches back
+/// towards the trail by a good deal more than [`COLUMN_CLEAR`] leaves it — and
+/// what stands in that gap is a name. Measured rather than constant is the
+/// whole of the fix: the names behind a column of covers were printed over the
+/// covers, which is not a tight layout but two things drawn in one place.
+///
+/// The air is wider, too, and for the reason [`CATEGORY_LABEL_TO_CARDS`] is: a
+/// card's edge is straight and a disc's is a curve that comes close at one
+/// point only, so the same measured gap beside a card reads as half as much.
+fn column_clear(cards: Option<Cards>) -> f32 {
+    match cards {
+        Some(cards) => cards.reach() / 2.0 + 20.0,
+        None => COLUMN_CLEAR,
+    }
+}
+
+/// How much sooner a column gives up its half of the screen than the column in
+/// front arrives in it.
+///
+/// Both are the one glide, and that was the trouble: a label that let go of its
+/// room at exactly the pace the next column took it was a name drawn across a
+/// card sliding in underneath it, for the whole of the step. The room has to be
+/// clear *before* the thing that is moving into it gets there — which is what
+/// giving way means — so the label is at its final width by the time the column
+/// in front is a quarter of the way in.
+const COLUMN_CONCEDE: f32 = 4.0;
 
 /// How far a subcategory's column stands to the right of the one it was
 /// opened from.
@@ -639,9 +674,15 @@ const SHUTDOWN_INK: f32 = 0.775;
 /// their radius is half their own height — so what is left to name is the
 /// card, which follows the shape of the window inside it.
 pub const CARD_RADIUS: f32 = 18.0;
-/// Panels — the guide's sidebar and the power dialog — are the largest shapes
-/// the shell draws and carry the largest radius.
-const PANEL_RADIUS: f32 = 30.0;
+/// Panels — the guide's sidebar, the power dialog and every context menu — are
+/// the largest shapes the shell draws and carry the largest radius.
+///
+/// Read from [`lxb_protocol::pip::MENU_RADIUS`] rather than written here,
+/// because it is no longer only this process's number: the compositor rounds
+/// the floating picture-in-picture window with it, and a window rounded to some
+/// radius of its own choosing would be the one shape on screen that does not
+/// belong to the shell it floats over. One place for it to be wrong.
+const PANEL_RADIUS: f32 = lxb_protocol::pip::MENU_RADIUS as f32;
 /// How far the sidebar floats clear of the screen's edges. Glass reads as a
 /// slab laid *over* the wallpaper, which needs the wallpaper to run past it.
 const PANEL_INSET: f32 = 14.0;
@@ -1578,6 +1619,21 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 Searched::Library => return Some(Cards::of(COVER_ASPECT)),
             },
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
+            // A console's games are covers on the same terms, and on the same
+            // card whether or not the picture on it has arrived: libretro
+            // publishes box art for most of what anybody owns, and the rest
+            // wear the mark every row of that column used to. The shape is
+            // decided by what the column *is* rather than by what happens to be
+            // in the atlas this frame, which is what stops a shelf changing
+            // shape as its covers come down. See [`crate::retroarch`].
+            //
+            // At the console's own shape, and not at Valve's: a Nintendo DS box
+            // is wider than it is tall and a UMD case is half again as tall as
+            // it is wide, so one card shape for every shelf is a card the
+            // picture cannot fill on all but one of them. The row carries the
+            // answer — see [`crate::apps::Rom::shape`] — and a shelf nothing
+            // has been measured for keeps the shape it had before.
+            Entry::Rom(rom) => return Some(Cards::of(rom.shape.unwrap_or(COVER_ASPECT))),
             _ => {}
         }
     }
@@ -1798,6 +1854,8 @@ pub fn build(
     time: f32,
     slots: &impl SlotLookup,
     typing: Typing<'_>,
+    marks: Option<&crate::marks::Marks>,
+    legend: Option<StartLegend>,
 ) -> Scene {
     let mut quads = Vec::new();
     let mut texts = Vec::new();
@@ -1919,6 +1977,42 @@ pub fn build(
         }
     }
 
+    // **What the buttons do**, in the corner opposite the clock.
+    //
+    // On the wallpaper rather than on a pane, like the clock and the two marks
+    // beside it, and it is laid out as the mirror of them: the same inset from
+    // the edge it hugs, and its middle the same distance up from the bottom of
+    // the display as the clock's line is down from the top. Two things written
+    // on the wallpaper, one in each corner, on lines that answer to each other.
+    //
+    // Drawn on the frame of whichever display is being driven and no other —
+    // the caller decides, because whether this row belongs on screen at all is
+    // a question about panels, splashes and the guide that a scene builder
+    // cannot see. See `Shell::start_legend`.
+    if let Some(legend) = legend {
+        let hints = start_hints(legend.pad, legend.options);
+        legend_row(
+            &mut quads,
+            &mut texts,
+            &hints,
+            slots,
+            width - CORNER_INSET * scale,
+            height - mark_middle,
+            &LegendSize {
+                glyph: START_HINT_GLYPH * scale,
+                label: START_HINT_LABEL * scale,
+                gap: START_HINT_GAP * scale,
+                step: START_HINT_STEP * scale,
+            },
+            // The corner's own ink, for the reason the inset is the corner's:
+            // this is writing on the wallpaper rather than on something that
+            // could hold it up, and two weights of it in two corners would read
+            // as one of them having been left brighter by accident.
+            theme.text.a(CORNER_INK * attention),
+            theme.text_soft.a(CORNER_INK * attention),
+        );
+    }
+
     // Nothing found to launch. Said at the foot of the display rather than in
     // place of the bar, which is where it used to be said: the shell's own
     // Settings column has rows in it now, and a machine with no applications
@@ -1938,6 +2032,7 @@ pub fn build(
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -1981,6 +2076,7 @@ pub fn build(
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
     }
@@ -2044,12 +2140,25 @@ pub fn build(
             None => x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near,
         };
         // A column gives up its half of the screen to the one opened in front
-        // of it, over the same glide: a label that snapped to the shorter box
-        // the instant a subcategory opened would re-wrap in front of the user.
+        // of it, over the glide but ahead of it — see [`COLUMN_CONCEDE`]. Not
+        // at once, because a label that snapped to the shorter box the instant
+        // a subcategory opened would re-cut itself in front of the user; and
+        // not in step with the slide either, because the room has to be empty
+        // by the time the column arrives in it.
+        //
+        // What it gives up is measured off what is arriving: a column of covers
+        // stands a good deal wider than a column of icons, and the name behind
+        // it has to stop where the cards begin rather than where an icon would
+        // have. Clamped rather than trusted, because a column three steps back
+        // is three of these glides behind and would otherwise be handed a box
+        // of negative width.
+        let ahead = columns
+            .get(level + 1)
+            .and_then(|next| cards_in(next.entries));
         let text_max = lerp(
             (width - text_x - 48.0 * scale).max(0.0),
-            (column_x(level + 1) - COLUMN_CLEAR * scale - text_x).max(0.0),
-            depth - level as f32,
+            (column_x(level + 1) - column_clear(ahead) * scale - text_x).max(0.0),
+            ((depth - level as f32) * COLUMN_CONCEDE).clamp(0.0, 1.0),
         );
 
         // Only the rows that can be on screen are looked at at all. A shelf of
@@ -2286,6 +2395,11 @@ pub fn build(
                 // is to a film: the thing the row is, rather than a mark
                 // standing in for it.
                 Entry::Game(game) => slots.cover(game.app_id),
+                // And one of somebody's own games, whose cover is a file this
+                // shell fetched into its own cache — so it is asked for by path
+                // like a photograph rather than by an id like a Steam title.
+                // See [`crate::retroarch`].
+                Entry::Rom(rom) => rom.boxart.as_deref().and_then(|at| slots.thumbnail(at)),
                 _ => entry.media().and_then(|file| slots.thumbnail(&file.path)),
             };
             // And whether that cover is drawn in colour. A game that is not on
@@ -2340,9 +2454,17 @@ pub fn build(
             // be. The shelves answer the same question the other way round,
             // with cards, because everything on one of those *is* a picture and
             // the column can be made of them.
+            //
+            // An account is the second kind of row that answers it, and for the
+            // same reason arrived at from the other end: a column of people is
+            // not a column of pictures either — it is a list of accounts, one of
+            // which may have no photograph at all — so the face goes in the hole
+            // the figure would have had and the rows stay rows.
             let preview = entry
                 .file()
-                .and_then(|file| slots.thumbnail(&file.path))
+                .map(|file| file.path.as_path())
+                .or_else(|| entry.portrait())
+                .and_then(|at| slots.thumbnail(at))
                 .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
             if let Some(thumb) = preview {
                 let size = icon_size * ITEM_PREVIEW;
@@ -2376,7 +2498,7 @@ pub fn build(
                 // a film strip stamped over the frame it stands for.
                 let mut icon = icon_quad(
                     entry_slot(entry, slots),
-                    entry_glyph(entry),
+                    own_mark(entry_glyph(entry), slots),
                     x - icon_size / 2.0,
                     y - icon_size / 2.0,
                     icon_size,
@@ -2388,14 +2510,29 @@ pub fn build(
                     // glyph `color` is the stain and `fade` is how solid it is.
                     icon.color = [tint[0], tint[1], tint[2], icon.color[3]];
                 }
+                // A row that stands for a material is drawn *in* that material,
+                // the way a row standing for a colour is drawn in that colour.
+                // Four rows in the shell — the Theme page's own values, which
+                // carry the same drawing as each other and are told apart by
+                // this alone. See [`crate::apps::Choice::material`].
+                if let Some(material) = entry.material() {
+                    icon.mark = crate::theme::flag(material);
+                }
                 quads.push(icon);
             }
 
-            // The mark that says this row is the value in force. On the icon
-            // rather than beside the label, because what it is marking is the
-            // swatch: the colour is the answer, and the word beside it is only
-            // its name.
-            if entry.chosen() {
+            // The mark that says this row is the value in force, or that it is
+            // one of the rows the user has ticked. On the icon rather than
+            // beside the label, because what it is marking is the swatch: the
+            // colour is the answer, and the word beside it is only its name.
+            //
+            // One badge for the two, in the same corner of the same icon, and
+            // it is the same statement both times: this one. What differs is
+            // who chose it — the shell, out of a column of alternatives, or the
+            // person, out of a folder — and that is a difference the column
+            // itself makes plain. See [`crate::marks`], which is where a
+            // person's ticks live and why they are not on the rows.
+            if entry.chosen() || marks.is_some_and(|marks| marks.holds(entry)) {
                 let badge = icon_size * CHOSEN_BADGE;
                 quads.push(icon_quad(
                     slots.glyph(icons::CHOSEN),
@@ -2458,6 +2595,7 @@ pub fn build(
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
                 if let Some(comment) = comment {
                     texts.push(Text {
@@ -2472,6 +2610,7 @@ pub fn build(
                         clip: None,
                         halo: 0.0,
                         lines: 1,
+                        cut: Cut::Tail,
                     });
                 }
             } else {
@@ -2492,6 +2631,7 @@ pub fn build(
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
         }
@@ -2656,6 +2796,7 @@ pub fn build(
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
 
@@ -2858,8 +2999,12 @@ fn column_hit(
             .get(level + 1)
             .filter(|next| next.standing != Standing::Leaving)
         {
-            Some(_) => {
-                bar_column_x(level as f32 + 1.0, depth, width, height) - COLUMN_CLEAR * scale
+            // Where that column's own rows begin, which is further back for a
+            // column of cards than for one of icons: a press on the left edge
+            // of a cover has to be that cover and not the name behind it.
+            Some(next) => {
+                bar_column_x(level as f32 + 1.0, depth, width, height)
+                    - column_clear(cards_in(next.entries)) * scale
             }
             None => width,
         };
@@ -3070,7 +3215,7 @@ pub fn build_transfer(view: TransferView, width: f32, height: f32) -> Scene {
     // recession leaves that row, so what the user sees is the row they were
     // standing on with the rest of the screen taken away from around it rather
     // than a second, different drawing of the same file.
-    let source = view.transfer.source();
+    let source = view.transfer.carried();
     let [ax, ay, aw, ah] = launch_origin(width, height);
     let near = 1.0 - CONTEXT_DEPTH;
     scene.quads.extend(pick_glow(
@@ -3084,8 +3229,16 @@ pub fn build_transfer(view: TransferView, width: f32, height: f32) -> Scene {
             at: [ax + aw * 0.5, ay + ah * 0.5],
             near,
             title: &source.name,
-            note: Some(&source.note),
+            // Nothing under the name where there is nothing to say: a set that
+            // is all files is "5 things" and a line saying "5 files" under it
+            // would be the same sentence twice. See [`transfer::Carried`].
+            note: (!source.note.is_empty()).then_some(source.note.as_str()),
             glyph: source.glyph,
+            // The picker a file is *carried* to keeps its marks. It was left
+            // out of the file panel's changes deliberately — see the settled
+            // scope of that panel — and a picture here would be the one row on
+            // this screen that grew one.
+            preview: None,
             selected: true,
             alpha: arrived,
             ink: 1.0,
@@ -3213,6 +3366,7 @@ fn build_pick_columns(scene: &mut Scene, view: &TransferView, width: f32, height
                         other => other.note(),
                     },
                     glyph: row.glyph(),
+                    preview: None,
                     selected,
                     alpha,
                     ink,
@@ -3254,6 +3408,10 @@ struct PickRow<'a> {
     title: &'a str,
     note: Option<&'a str>,
     glyph: &'static str,
+    /// The file this row is *of*, where a picture of it would say more than a
+    /// mark for its kind. `None` for every row that is not a file, and for the
+    /// files a picture cannot be made of.
+    preview: Option<&'a std::path::Path>,
     /// Whether it is the row the picker is standing on, which is what decides
     /// whether the second line is drawn at all — the bar's own rule, so a
     /// column reads the same in both halves of the screen.
@@ -3296,15 +3454,45 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
             ..Quad::default()
         });
     }
-    scene.quads.push(icon_quad(
-        slots.glyph(row.glyph),
-        Some(row.glyph),
-        x - icon_size / 2.0,
-        y - icon_size / 2.0,
-        icon_size,
-        row.alpha,
-        theme.accent_deep.a(row.alpha * 0.75),
-    ));
+    // The picture the file is *of*, in the round hole its mark would have had —
+    // the very shape a photograph met in a folder wears on the bar, and it is
+    // the same shape for the bar's own reason: this is not a column of
+    // pictures. A folder holds folders, documents and photographs together, so
+    // the rows stay rows and only what fills the hole changes.
+    //
+    // `None` far more often than not, and that is the ordinary case rather than
+    // a failure: the picture is made by a worker for the rows around the cursor
+    // and lands a frame or two later. Nothing about the row's size or place
+    // depends on the answer, so it fades into a row that was already there.
+    let preview = row
+        .preview
+        .and_then(|at| slots.thumbnail(at))
+        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+    match preview {
+        Some(thumb) => {
+            let size = icon_size * ITEM_PREVIEW;
+            scene.quads.push(Quad {
+                x: x - size / 2.0,
+                y: y - size / 2.0,
+                w: size,
+                h: size,
+                slot: thumb.slot,
+                color: [1.0, 1.0, 1.0, row.alpha],
+                radius: size / 2.0,
+                crop: round_crop(thumb.aspect),
+                ..Quad::default()
+            });
+        }
+        None => scene.quads.push(icon_quad(
+            slots.glyph(row.glyph),
+            Some(row.glyph),
+            x - icon_size / 2.0,
+            y - icon_size / 2.0,
+            icon_size,
+            row.alpha,
+            theme.accent_deep.a(row.alpha * 0.75),
+        )),
+    }
 
     let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * row.near;
     if row.selected {
@@ -3326,6 +3514,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
         if let Some(note) = row.note {
             scene.texts.push(Text {
@@ -3340,6 +3529,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
         return;
@@ -3357,6 +3547,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
 }
 
@@ -3687,6 +3878,32 @@ pub struct GuideView<'a> {
     pub power: f32,
     /// The global clock, for the selection pulse.
     pub time: f32,
+    /// How far the directions have been handed to the videos floating over this
+    /// guide rather than to the guide itself: 0 with the guide in charge, 1
+    /// with a video in charge, and in between while the answer is changing.
+    ///
+    /// Three things at once, because they are one thing said three ways —
+    /// *the thumb is somewhere else*:
+    ///
+    /// - The selection stops breathing. It does not go away — the user is
+    ///   coming back to it, and a guide that forgot where they were standing
+    ///   would be a guide they had to find their place in again — but a menu
+    ///   pulsing beside a video that is also pulsing is two things claiming the
+    ///   same thumb.
+    /// - **The frame around the selected window card goes.** That frame is the
+    ///   whole of what says *this card answers the next press*, and while the
+    ///   directions are on a video it does not: the shell was drawing a lit
+    ///   ring around a card the D-pad no longer reached, which is a lie about
+    ///   where the user is standing. The mark on the video is the compositor's
+    ///   and is what replaces it.
+    /// - And the guide is dimmed, by [`ELSEWHERE_DIM`]. Slightly: it is still
+    ///   the thing the user is coming back to and has to stay readable, and a
+    ///   half-lit menu says *not this one* at a glance from across a room, from
+    ///   the corner of an eye that is on the video.
+    ///
+    /// A distance rather than a switch so all three can be watched arriving —
+    /// see `ELSEWHERE_FLIGHT`, which is what advances it. Nothing here may cut.
+    pub elsewhere: f32,
     /// For the shell's own glyphs — the two on the quick-settings bars.
     pub slots: &'a dyn SlotLookup,
 }
@@ -3771,7 +3988,12 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // Every rectangle in the column below them depends on it.
     let media_open = view.guide.media();
     let pane = view.guide.pane();
-    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+    // Still where the user left it, and still lit, but no longer breathing: see
+    // [`GuideView::elsewhere`]. The bottom of the breath rather than the middle
+    // of it, so the difference is legible from across a room.
+    let elsewhere = view.elsewhere.clamp(0.0, 1.0);
+    let breath = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+    let pulse = breath * (1.0 - elsewhere);
 
     // The entrance: the sidebar slides in decelerating while it fades up, and
     // the card decorations hold back until the windows have landed.
@@ -3816,6 +4038,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
     // The day, on the clock's own line and pushed to the far side of the
     // column. Sharing the line keeps the header two rows tall — the sidebar is
@@ -3835,6 +4058,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
     // What is left in the battery, under the day and on the same line as the
@@ -3897,6 +4121,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
         }
@@ -3919,6 +4144,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
     if let Some(screen) = view.screen {
         texts.push(Text {
@@ -3933,6 +4159,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -4235,6 +4462,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
             continue;
         }
@@ -4256,6 +4484,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -4302,6 +4531,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -4309,7 +4539,11 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // of a scroll — the caller hands over that card's own rectangle, which is
     // already gliding, so the frame travels *with* it rather than chasing it.
     if let (Some([x, y, w, h]), false) = (view.highlight, view.cards.is_empty()) {
-        let focus = if pane == Pane::Windows { 1.0 } else { 0.30 };
+        // Quiet while the sidebar has the selection, and gone outright while a
+        // video has it: see [`GuideView::elsewhere`]. One factor on all three
+        // rings rather than a branch that skips them, so the frame fades out
+        // where it stands instead of being deleted between two frames.
+        let focus = if pane == Pane::Windows { 1.0 } else { 0.30 } * (1.0 - elsewhere);
         let gap = 5.0 * scale;
 
         // Outside the frame, a halo that breathes. Concentric rings rather
@@ -4365,6 +4599,43 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // dialog still has to fall back into the button it came out of.
     if view.power > 0.0 {
         push_power_dialog(&mut scene, &view, width, height, scale, pulse);
+    }
+    // And the whole of it steps back while a video has the directions. See
+    // [`GuideView::elsewhere`]. The last thing done to the scene, so nothing
+    // added after this escapes it.
+    if elsewhere > 0.0 {
+        scene.fade(lerp(1.0, ELSEWHERE_DIM, elsewhere));
+        // The windows in the deck are not in this scene to be faded: the
+        // compositor draws them and the shell only frames them, so fading the
+        // frame would leave the brightest thing in the menu — a live window,
+        // very often a moving picture — at full strength while everything
+        // around it went quiet, which reads as a fault rather than as a step
+        // back. So they are covered instead, in the same dark glass and by the
+        // same share. The one place in the guide where a quad has to do what a
+        // fade does everywhere else, exactly as the transfer screen's scrim
+        // does — see [`build_transfer`].
+        //
+        // After the fade rather than before it, so what lands on the card is
+        // the share meant rather than that share of itself. And the text runs
+        // are unaffected wherever they are pushed: every quad draws before
+        // every text, and the titles have already been faded with the rest.
+        let over = theme.glass.a((1.0 - ELSEWHERE_DIM) * elsewhere);
+        for card in view.cards {
+            let [x, y, w, h] = card.rect;
+            if w <= 0.0 || h <= 0.0 || y >= height || y + h <= 0.0 {
+                continue; // the same cards the pass above skipped
+            }
+            scene.quads.push(Quad {
+                x,
+                y,
+                w,
+                h,
+                slot: SOLID_SLOT,
+                color: over,
+                radius: CARD_RADIUS * scale,
+                ..Quad::default()
+            });
+        }
     }
     scene
 }
@@ -4531,6 +4802,7 @@ fn push_power_dialog(
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
 
     let label_size = 22.0 * scale;
@@ -4576,6 +4848,7 @@ fn push_power_dialog(
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -4684,6 +4957,17 @@ const CONTEXT_SCROLL_ARROW: f32 = 14.0;
 /// power dialog's: that is a question about ending the session, this is a note
 /// pinned to something the user can still see.
 const CONTEXT_DIM: f32 = 0.42;
+
+/// How far down the guide is turned while the videos floating over it have its
+/// directions. See [`GuideView::elsewhere`].
+///
+/// Nothing like as far as [`CONTEXT_DIM`] takes the screen behind a panel, and
+/// for the opposite reason: a screen behind a panel has been *replaced* for as
+/// long as the panel is up, and this one has not. The user is reading it — it
+/// is where the video they are moving came from and where they are going back
+/// to — so it stays legible from a couch. Far enough that which of the two
+/// halves is live is answered from the corner of an eye.
+const ELSEWHERE_DIM: f32 = 0.62;
 /// How dark the scrim over a running application is, for the same reason —
 /// the shell's own surfaces are dimmed by the line above, and this is what
 /// dims whatever the compositor is drawing *under* this surface.
@@ -5311,6 +5595,27 @@ pub fn context_menu_bounds(width: f32, height: f32, menu: &Menu, progress: f32) 
     ]
 }
 
+/// The wash a context menu lays over everything behind it.
+///
+/// On the surface the menu is *not* drawn on, which is the whole of why it is
+/// its own function rather than the first quad of the panel's scene. The panel
+/// has a surface to itself so a compositor can draw it in front of a floating
+/// window without dragging the rest of the session with it — see
+/// `lxb_shell_v1.set_menu_surface` — and a scrim on that surface would be a
+/// whole display of dark laid over the very video the menu is about. It belongs
+/// with what it dims.
+pub fn context_menu_scrim(scene: &mut Scene, width: f32, height: f32, open: f32) {
+    scene.quads.push(Quad {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        slot: SOLID_SLOT,
+        color: theme().glass.a(CONTEXT_SCRIM * open.clamp(0.0, 1.0)),
+        ..Quad::default()
+    });
+}
+
 /// Push a scene behind the context menu: dim it, and drop the text the panel
 /// would otherwise print through.
 ///
@@ -5325,6 +5630,30 @@ pub fn recede_behind_context_menu(
     progress: f32,
 ) {
     scene.fade(lerp(1.0, CONTEXT_DIM, progress));
+    hide_text_under_context_menu(scene, width, height, menu, progress);
+}
+
+/// The second half of that on its own: take the text the menu would be laid
+/// over, and leave everything else exactly as it was.
+///
+/// **For a scene that is itself glass.** Fading a scene is how the *start
+/// screen* steps back behind a menu, and it works there because what the bar is
+/// drawn on is the shell's own wallpaper. A pane of glass faded is a pane that
+/// stops being there: the file panel's scrim, its ground and its frost all went
+/// to four tenths together, and what came through was the application behind it
+/// at full strength with unreadable writing over the top. That is what the user
+/// saw, and it is why this half is separate.
+///
+/// Nothing dims the panel under its own menu, then. It does not need it — the
+/// menu is its own pane of glass standing on the panel, which is the same thing
+/// every menu in this shell is over whatever raised it.
+pub fn hide_text_under_context_menu(
+    scene: &mut Scene,
+    width: f32,
+    height: f32,
+    menu: &Menu,
+    progress: f32,
+) {
     scene.hide_text_behind(context_menu_bounds(width, height, menu, progress));
 }
 
@@ -5678,6 +6007,7 @@ fn mixer_row(
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
 
     // The speaker says which way the track runs and whether the sound is on at
@@ -5775,8 +6105,24 @@ pub fn mixer_level_at(
     slots: &dyn SlotLookup,
     x: f32,
 ) -> Option<f32> {
+    let [track_x, _, _, _] = mixer_track_line(chip, entry, level, guide_scale(height), slots);
+    (x >= track_x)
+        .then(|| mixer_level_along(chip, entry, level, height, slots, x))
+        .flatten()
+}
+
+/// The same for a press that is being *held*, on the same terms as
+/// [`bar_level_along`]: the groove's ends stop the value, not the drag.
+pub fn mixer_level_along(
+    chip: [f32; 4],
+    entry: &MenuEntry,
+    level: Level,
+    height: f32,
+    slots: &dyn SlotLookup,
+    x: f32,
+) -> Option<f32> {
     let [track_x, _, track_w, _] = mixer_track_line(chip, entry, level, guide_scale(height), slots);
-    (x >= track_x && track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
+    (track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
 }
 
 /// Draw the context menu: a panel out of the control it is about, and a short
@@ -5800,20 +6146,6 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
     let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
 
     let mut scene = Scene::default();
-    // The scrim dims what the *compositor* is drawing under this surface — a
-    // running application, or the guide's live window cards. The shell's own
-    // scenes are dimmed by `recede_behind_context_menu` instead, which can also
-    // take their text away.
-    scene.quads.push(Quad {
-        x: 0.0,
-        y: 0.0,
-        w: width,
-        h: height,
-        slot: SOLID_SLOT,
-        color: theme.glass.a(CONTEXT_SCRIM * open),
-        ..Quad::default()
-    });
-
     let [panel_x, panel_y, panel_w, panel_h] = context_menu_rect(width, height, menu);
     if panel_w <= 0.0 || panel_h <= 0.0 {
         return scene;
@@ -5863,6 +6195,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             // its own program wrote, and an ellipsis there hides the thing the
             // user pressed the row to read.
             lines: menu.title_lines(),
+            cut: Cut::Tail,
         });
         inside.quads.push(Quad {
             x: panel_x + GUIDE_MARGIN * scale,
@@ -6231,6 +6564,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
                 // One, always. It is "now" or "3m", and a row that opened out
                 // to hold more of it would be opening out for nothing.
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
 
@@ -6246,6 +6580,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             clip: None,
             halo: 0.0,
             lines: label_lines,
+            cut: Cut::Tail,
         });
         if let Some(detail) = &entry.detail {
             // The whole of it, wrapped into however many lines the row has
@@ -6278,6 +6613,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
                 clip: None,
                 halo: 0.0,
                 lines: lines_in(detail_grown, CONTEXT_DETAIL_LINE * scale),
+                cut: Cut::Tail,
             });
         }
     }
@@ -6414,7 +6750,7 @@ const DIALOG_CONTENT_IN: f32 = 0.45;
 /// And the share over which the glass itself arrives. Everything behind the
 /// panel is taken away on exactly this ramp, so nothing is hidden before the
 /// thing hiding it can be seen — see [`Scene::dim_text_behind`].
-const DIALOG_PANEL_IN: f32 = 0.25;
+pub const DIALOG_PANEL_IN: f32 = 0.25;
 /// How tall one line of the panel is, in reference pixels.
 fn dialog_line_height(line: &Line) -> f32 {
     match line {
@@ -6695,6 +7031,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
             Line::Note(text) => {
@@ -6711,6 +7048,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
             // The label and the value are one row read across, so they sit on
@@ -6735,6 +7073,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
                 inside.texts.push(Text {
                     content: value.clone(),
@@ -6748,6 +7087,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
             // A field being typed into: a well sunk into the panel, with one
@@ -6876,6 +7216,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 });
             }
             // The sign-in code, on a white card.
@@ -7070,6 +7411,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -7385,6 +7727,7 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
     }
@@ -7490,6 +7833,7 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             });
             at += label * 0.6 + gap;
         }
@@ -7525,9 +7869,182 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
 
     Scene { quads, texts }
+}
+
+// --- the legend: what the buttons do ---------------------------------------
+
+/// One thing a button does, as a legend says it: the word, and a picture of the
+/// button itself.
+///
+/// **Drawn rather than lettered, and named by which control is in hand.** The
+/// same act is South on a pad and the space bar on a keyboard, and there is no
+/// wording that covers both without naming neither — "press A" is wrong on a
+/// PlayStation pad and meaningless to somebody typing. So the shell says the
+/// one the user's hands are actually on; see `settings::controller_in_hand`.
+struct Hint {
+    label: &'static str,
+    glyph: &'static str,
+}
+
+/// How large a legend is drawn, which is the only thing the two places that
+/// draw one disagree about.
+struct LegendSize {
+    /// The picture of the button.
+    glyph: f32,
+    /// The word beside it.
+    label: f32,
+    /// Between a word and the button it names.
+    gap: f32,
+    /// And between one pair and the next.
+    step: f32,
+}
+
+/// Roughly how wide one character of a legend is, as a share of its size.
+///
+/// [`HINT_ADVANCE`]'s own estimate and it is here for the same reason: the
+/// shell cannot measure a run before the GPU shapes it, and this row is laid
+/// out from its right-hand end leftwards. Each word is set right-aligned in a
+/// box, so it lands exactly where it should whatever its true width — the
+/// estimate only decides how much air is left before the pair to its left,
+/// where there is nothing to collide with.
+const LEGEND_ADVANCE: f32 = 0.58;
+
+/// Lay a legend out from `right` leftwards, centred on `middle`, and say where
+/// its left-hand end came out.
+///
+/// Right to left because of what a legend is made of: each pair is a word and
+/// then a picture, the words are different lengths, and the shell cannot
+/// measure a run before the GPU shapes it. Built from the right, the pair
+/// nearest the margin lands exactly on it whatever the words turned out to
+/// measure.
+///
+/// One function for the two places that draw one — the file panel's foot and
+/// the foot of the start screen — because it is one promise. Somebody who has
+/// learned that the filled bead at the bottom of the cluster chooses a row must
+/// not have to learn it again in a file dialog, and two layouts of the same row
+/// would be two chances to spell it differently.
+#[allow(clippy::too_many_arguments)]
+fn legend_row(
+    quads: &mut Vec<Quad>,
+    texts: &mut Vec<Text>,
+    hints: &[Hint],
+    slots: &dyn SlotLookup,
+    right: f32,
+    middle: f32,
+    size: &LegendSize,
+    glyph_ink: [f32; 4],
+    label_ink: [f32; 4],
+) -> f32 {
+    let mut at = right;
+    for hint in hints.iter().rev() {
+        // A glyph the shell could not rasterise leaves a gap rather than the
+        // fallback application icon, which in a row like this would read as
+        // "press the app".
+        if let Some(slot) = slots.glyph(hint.glyph) {
+            quads.push(shaded(
+                Quad {
+                    x: at - size.glyph,
+                    y: middle - size.glyph * 0.5,
+                    w: size.glyph,
+                    h: size.glyph,
+                    slot,
+                    color: glyph_ink,
+                    ..Quad::default()
+                },
+                Some(hint.glyph),
+            ));
+        }
+        let word = hint.label.chars().count() as f32 * size.label * LEGEND_ADVANCE;
+        let ends = at - size.glyph - size.gap;
+        texts.push(Text {
+            content: hint.label.to_string(),
+            x: ends - word,
+            y: middle - size.label * 0.5 - size.label * 0.12,
+            size: size.label,
+            color: label_ink,
+            bold: false,
+            max_width: word,
+            // Right-aligned, which is what makes the estimate above harmless:
+            // the word ends where it is told to whatever it really measures.
+            align: TextAlign::Right,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+        at = ends - word - size.step;
+    }
+    at
+}
+
+/// The legend at the foot of the start screen: how large its pieces are drawn,
+/// and how far in from the corner the row stands.
+///
+/// The file panel's own sizes, because it is the file panel's own row — see
+/// [`legend_row`]. The inset is [`CORNER_INSET`] rather than a number of this
+/// row's own, so the legend and the clock hug the same edge of the wallpaper:
+/// they are the two things written on it, one in each corner, and an edge they
+/// disagreed about would read as one of them being out of place.
+const START_HINT_GLYPH: f32 = PICKER_HINT_GLYPH;
+const START_HINT_LABEL: f32 = PICKER_HINT_LABEL;
+const START_HINT_GAP: f32 = PICKER_HINT_GAP;
+const START_HINT_STEP: f32 = PICKER_HINT_STEP;
+
+/// What the start screen's buttons do, read left to right.
+///
+/// Three acts, and they are the three a person has to be told: the one that
+/// takes a row, the one that asks what *else* can be done to it, and the one
+/// that gets back out to the guide. Nothing about moving — the cross under the
+/// cursor is a picture of a stick and a d-pad, and a legend explaining which
+/// direction is up would be explaining the one thing already on screen.
+///
+/// **Options comes and goes with the row.** Most of this bar is objects — an
+/// application, a song, a file, a game — and every one of them has a menu; a
+/// settings value and a subcategory are not objects and have none. A legend
+/// naming a button that does nothing there is worse than naming none, which is
+/// the rule the file panel's own Approve is left off under. See
+/// `Shell::bar_entry_menu`, which is what answers `options`.
+///
+/// **Guide never does.** It is the one press that works from everywhere in this
+/// session, including out of an application that has taken the whole screen,
+/// and a legend that dropped it on some rows would be hiding the way out.
+fn start_hints(pad: bool, options: bool) -> Vec<Hint> {
+    let one = |label, on_a_pad, otherwise| Hint {
+        label,
+        glyph: if pad { on_a_pad } else { otherwise },
+    };
+    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_ENTER)];
+    if options {
+        // The picker's own pair, said the same way — including its keyboard
+        // half being a mouse rather than a key. See [`picker_hints`], where the
+        // reason is written down: no key printed on a keyboard says "menu" to
+        // as many people as the right button does.
+        hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+    }
+    // The button in the middle of the pad, and on a keyboard the one this shell
+    // is reached by — see `action_for_keysym`, and the compositor's own
+    // binding, which is what holds `Super` back from whatever is running.
+    hints.push(one("Guide", icons::PAD_GUIDE, icons::KEY_SUPER));
+    hints
+}
+
+/// What the start screen's legend is drawn from, or nothing where it is not
+/// being drawn at all.
+///
+/// Two facts, and neither is the scene's to work out. Which control is in hand
+/// is a session-wide answer the shell keeps — see `settings::controller_in_hand`
+/// — and whether the row under the cursor has a menu is a question about the
+/// catalogue that only the shell can ask. See [`start_hints`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartLegend {
+    /// Whether the row under the cursor has a context menu.
+    pub options: bool,
+    /// Whether the user's hands are on a pad rather than on a keyboard.
+    pub pad: bool,
 }
 
 /// What a tile has to say about itself.
@@ -7974,8 +8491,24 @@ fn bar_track_line(chip: [f32; 4], scale: f32) -> [f32; 4] {
 /// speaker, and a click there means silence — which is what pressing the bar
 /// has always meant — rather than "as quiet as this display can express".
 pub fn bar_level_at(chip: [f32; 4], height: f32, x: f32) -> Option<f32> {
+    let [track_x, _, _, _] = bar_track_line(chip, guide_scale(height));
+    (x >= track_x)
+        .then(|| bar_level_along(chip, height, x))
+        .flatten()
+}
+
+/// The same for a press that is being *held*: where the hand has dragged the
+/// handle to, clamped to the ends of the groove.
+///
+/// The difference from [`bar_level_at`] is what happens off the control. A
+/// press asks what is under the pointer and has to answer "the glyph, not the
+/// groove" for a point at the head; a drag has already been told what it is
+/// about — the handle is in the hand — so a hand that has run past either end
+/// of the track is asking for that end, which is how every slider ever drawn
+/// has behaved and the only way the last step of one is reachable without care.
+pub fn bar_level_along(chip: [f32; 4], height: f32, x: f32) -> Option<f32> {
     let [track_x, _, track_w, _] = bar_track_line(chip, guide_scale(height));
-    (x >= track_x && track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
+    (track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
 }
 
 /// A level drawn as a track: the groove, the part of it that is filled, and the
@@ -8117,18 +8650,28 @@ fn entry_slot(entry: &Entry, slots: &impl SlotLookup) -> Option<u32> {
     }
 }
 
-/// The name of the shell's own glyph a row is drawn with, if it is one of those
-/// rather than an application's icon.
+/// The name a row's drawing was found under, for a row that may be drawn as a
+/// shape rather than sampled as a picture.
 ///
-/// The pair of [`entry_slot`], and the same split: what is on an application's
-/// row came out of a theme and is a picture of whatever that theme draws, and
-/// what is on one of the shell's own rows is a mark it drew itself and so may
-/// be a shape for the shader to stand a bead of water in.
+/// The pair of [`entry_slot`]. What is on one of the shell's own rows is a mark
+/// it drew itself, and so may be a shape for the shader to stand a bead of
+/// water in.
+///
+/// An application's row goes through here too, and that is a change from
+/// answering `None` for every one of them. Nearly all of them still come back
+/// as pictures — [`shaded`] asks [`icons::shaped`], which knows only the marks
+/// the shell drew and the few icons an application *asked* to have measured as
+/// shapes by naming `lxb` in its desktop entry. Without this the measurement
+/// would be in the atlas and nothing would ever be told to read it as one,
+/// which is the pale smear from the other side: a distance field sampled as a
+/// drawing comes out as a white cell with the mark as a dark blob in it.
+///
+/// The name still has to survive [`own_mark`] at the call site, for
+/// [`entry_slot`]'s own reason: an application's slot has the generic
+/// executable picture behind it, and a name whose slot came from that fallback
+/// is a name over somebody else's drawing.
 fn entry_glyph(entry: &Entry) -> Option<&str> {
-    match entry {
-        Entry::App(_) => None,
-        _ => entry.icon(),
-    }
+    entry.icon()
 }
 
 /// The name a row's picture was found under, but only when the atlas really
@@ -8209,13 +8752,70 @@ fn column_bar_box(x: f32, y: f32, height: f32, scale: f32) -> [f32; 4] {
 /// which is what keeps a press on the track from being one on the wallpaper
 /// beside it. Past the ends of the track there is no value to be asking for,
 /// so the length is the track itself.
-fn column_bar_level_at([left, top, w, h]: [f32; 4], reach: f32, x: f32, y: f32) -> Option<f32> {
+fn column_bar_level_at(track: [f32; 4], reach: f32, x: f32, y: f32) -> Option<f32> {
+    let [left, top, w, h] = track;
     if (x - (left + w / 2.0)).abs() > reach / 2.0 || y < top || y > top + h {
         return None;
     }
+    column_bar_level_along(track, y)
+}
+
+/// The same for a press that is being *held*: where the hand has dragged the
+/// handle to along the groove at `track`, clamped to its ends and answered
+/// wherever across the display the pointer has since travelled.
+///
+/// The counterpart of [`bar_level_along`] standing up, and for the same
+/// reason — a drag is not asking what is under the pointer, it is carrying a
+/// handle that was picked up when the button went down. The width still comes
+/// into it because the channel the fill is laid in is inset from the groove by
+/// a share of it, and the level is measured against that channel.
+pub fn column_bar_level_along([_, top, w, h]: [f32; 4], y: f32) -> Option<f32> {
     let inset = w * COLUMN_BAR_INSET;
     let room = h - inset * 2.0;
     (room > 0.0).then(|| ((top + inset + room - y) / room).clamp(0.0, 1.0))
+}
+
+/// Where the groove of the bar on `row` of the column the cursor is standing in
+/// is drawn, or `None` where that row is not a bar.
+///
+/// The same rectangle [`column_hit`] measures a press against, worked out again
+/// for a press that is still being held: a drag is one press that goes on being
+/// made, and the groove may have moved under it in the meantime — the column
+/// glides, and a display can be resized with a button down. Reading it fresh on
+/// every motion is what keeps the handle under the hand rather than under where
+/// the hand started.
+pub fn column_bar_track(
+    lattice: &Lattice,
+    cursor: &Cursor,
+    row: usize,
+    width: f32,
+    height: f32,
+) -> Option<[f32; 4]> {
+    let columns = cursor.columns(lattice);
+    // The open column, and only it: a bar in a column stepped out of is on its
+    // way off the screen, and one behind the path shows nothing but the row it
+    // was opened from.
+    let level = columns
+        .iter()
+        .position(|column| column.standing == Standing::Open)?;
+    let column = columns.get(level)?;
+    column.entries.get(row)?.bar()?;
+    let depth = cursor.depth_position();
+    let (near, _) = receded(depth - level as f32);
+    let column_x = bar_column_x(level as f32, depth, width, height);
+    let row_y = bar_item_y(
+        row as f32 - column.position,
+        level,
+        near,
+        height,
+        cards_in(column.entries),
+    );
+    Some(column_bar_box(
+        column_x,
+        row_y,
+        height,
+        guide_scale(height) * near,
+    ))
 }
 
 /// The bar itself: the groove, the part of it that is filled, and the handle
@@ -8756,6 +9356,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
             // both.
             halo: TOAST_HALO * alpha,
             lines: 1,
+            cut: Cut::Tail,
         });
         if has_body {
             // One line of it. A notification body can be a paragraph — some
@@ -8775,6 +9376,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
                 clip: None,
                 halo: TOAST_BODY_HALO * alpha,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
     }
@@ -9001,6 +9603,7 @@ pub fn build_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         clip: None,
         halo: 0.0,
         lines: 1,
+        cut: Cut::Tail,
     });
 
     // The ring, round the icon it is waiting on.
@@ -9106,6 +9709,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
                 // outline the shell could leave behind.
                 halo: LAUNCH_NAME_HALO * arrived * view.fade,
                 lines: 1,
+                cut: Cut::Tail,
             });
         }
     }
@@ -9173,6 +9777,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
             // of that, onto whatever Valve painted along the bottom.
             halo: LAUNCH_NAME_HALO * arrived * view.fade,
             lines: 1,
+            cut: Cut::Tail,
         });
     }
 
@@ -9267,6 +9872,808 @@ fn launch_ring(
         .collect()
 }
 
+// -- the portal's file panel ------------------------------------------------
+
+/// The head of the panel, where the question is written, and the foot, where
+/// what is showing and the way out are.
+///
+/// Both in the drawing's own units, and both a band rather than a measured
+/// height: the heading is one line whatever the application called its dialog,
+/// because a title that wrapped would push the columns about, and the foot is
+/// one line for the same reason.
+const PICKER_HEAD: f32 = 78.0;
+const PICKER_FOOT: f32 = 58.0;
+/// The band **above** the rule, holding the full location of the folder being
+/// stood in.
+///
+/// Above rather than below it, because the foot's right-hand end is the legend
+/// of what the buttons do and a path is as long as it is: below the rule the two
+/// ran into each other, with the location cut short to make room for pictures of
+/// buttons. Above it the path has the whole width of the panel and the legend
+/// has the whole foot. It is a band of the panel rather than a line floating over
+/// the columns — [`picker_body_rect`] gives it up, so nothing of the walk is
+/// drawn under it.
+const PICKER_WHERE: f32 = 38.0;
+/// The legend at the right of the foot: what the buttons do.
+///
+/// It stands in the **middle** of the foot rather than on the line of either
+/// piece of writing beside it. The two on the left are facts about the answer —
+/// where you are, what the file will be called — and this is not one: it is a
+/// legend for the panel as a whole, and sitting it on the second line made it
+/// read as a third fact about the folder.
+/// Bigger than [`HINT_GLYPH`], which is the same drawing in the corner chip.
+/// A face-button cluster is mostly air — four small rings in a square — so at
+/// the chip's own size beside a word it read as a smudge rather than as a
+/// picture of a pad. Judged on screen at 1280x800, which is the hardest case
+/// the harness offers.
+const PICKER_HINT_GLYPH: f32 = 34.0;
+const PICKER_HINT_LABEL: f32 = 19.0;
+/// Between a word and the button it names, and between one pair and the next.
+const PICKER_HINT_GAP: f32 = 8.0;
+const PICKER_HINT_STEP: f32 = 24.0;
+/// What the panel's buttons do, read left to right.
+///
+/// Drawn rather than lettered and named by whichever control is in hand — see
+/// [`Hint`], where that rule is written down, and [`start_hints`], which is the
+/// same row said about the bar.
+fn picker_hints(approves: bool, pad: bool) -> Vec<Hint> {
+    let one = |label, on_a_pad, otherwise| Hint {
+        label,
+        glyph: if pad { on_a_pad } else { otherwise },
+    };
+    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_SPACE)];
+    if approves {
+        hints.push(one("Approve", icons::PAD_START, icons::KEY_ENTER));
+    }
+    // Between the acts and the way out, because it is neither: it is where the
+    // *other* answers live — how the column is ordered, and which kinds of file
+    // are being shown at all. It is on the legend because without it there was
+    // nothing on the panel to say that a filter could be got past: an
+    // application asking for images showed a folder of images and no sign that
+    // the rest of the disk was one press away.
+    //
+    // Its keyboard half is a mouse rather than a key, which is the one place
+    // this legend leaves the keyboard. A menu is raised with the right button
+    // by anybody holding a pointer, and no key printed on a keyboard says the
+    // same thing to as many people. See `icons::MOUSE_RIGHT`.
+    hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+    hints.push(one("Cancel", icons::PAD_EAST, icons::KEY_ESCAPE));
+    hints
+}
+/// Where the cross falls inside the panel's body: the column being stood in,
+/// and the row of it the cursor is on.
+///
+/// The bar's own two ([`BAR_CROSS_X`], [`BAR_CROSS_Y`]) read against the body
+/// rather than against the display, because that is what the panel is a display
+/// of. The upright one is a little lower than the bar's third, since there is no
+/// category row above it to make room for; the sideways one is a little further
+/// in than the bar's, because the trail has one fewer thing to hold — there is
+/// no row of categories behind the first column here.
+const PICKER_CROSS_X: f32 = 0.34;
+const PICKER_CROSS_Y: f32 = 0.38;
+/// How far the display behind is dimmed, and how far the shell's own scenes
+/// are faded behind it.
+///
+/// A context menu is a note pinned to something the user can still see; this
+/// has *replaced* the screen for as long as it is up. The second is the centred
+/// panel's own constant, because how far the shell's own scenes step back
+/// behind a panel is one answer for both.
+/// Deeper than the centred panel's, which is the one place this differs from
+/// it. A dialog is a short panel with a sentence on it and the screen around it
+/// is still worth a glance; this has taken the display for as long as somebody
+/// is walking their disk, and what is left showing round its edges is only the
+/// application still waiting — worth seeing, not worth reading. Taking it down
+/// this far is also what keeps the glass legible, because it is what the glass
+/// reads: see [`PICKER_FROST`].
+const PICKER_SCRIM: f32 = 0.78;
+const PICKER_DIM: f32 = DIALOG_DIM;
+/// How small the panel starts. Not from nothing: a panel that grew from a point
+/// would read as an object flying in from far away, and this one is already
+/// here — it is the shell coming forward over the application, not something
+/// arriving from off the screen.
+const PICKER_FROM: f32 = 0.88;
+
+/// How the file panel's pane is cut, over the guide sidebar's own.
+///
+/// The recipe is [`sidebar_surface`] and stays it — the two glows under the
+/// glass, the shallow curvature, the rim, the gloss — because this pane, the
+/// context menu's and the centred panel's must not drift apart. Two things are
+/// added, and both because of what this pane is *over*.
+///
+/// **A ground under it.** Every other pane in this shell is laid over something
+/// the shell drew: the wallpaper it chose to be dark, or its own bar over it.
+/// This one is laid over whatever the application that asked happens to be
+/// showing — a video, a game, a white document — which is bright, moving and
+/// nobody's choice. Glass is only readable over a ground, so the panel brings
+/// one: a sheet of the same near-black the panes are stained with, in the
+/// panel's own shape, under the glass. It is not opaque, and deliberately: what
+/// is behind still comes through it, still moves, and is still recognisably the
+/// application waiting — which is the whole point of the panel covering only
+/// [`crate::picker::SHARE`] of the display. It is simply no longer competing
+/// with the file names.
+///
+/// **A deeper frost.** [`FROST_SIDEBAR`] is shallow because the guide's sidebar
+/// is a strip with the shell's own animated wallpaper behind it and the current
+/// is meant to be seen through it. This is the case [`FROST_PANEL`] exists for:
+/// *a panel has to carry text over anything at all*. It is the on-screen
+/// keyboard's own cut, which is the closest thing in this shell — a large face
+/// drawn over whatever is running, whose whole job is to stay legible on top of
+/// it.
+///
+/// Measured rather than guessed, and measured on the right thing. What makes
+/// writing hard to read on glass is not how bright the face is but how much it
+/// *varies* across itself — the bands of a picture showing through. Over a test
+/// pattern filling the display, the standard deviation of the panel's own face
+/// was 31 luminance levels at the sidebar's cut, spanning 40 to 131; the deeper
+/// frost took it to 17, and the ground with it to 11, spanning 54 to 104. A
+/// third of the variation, with the application still plainly moving behind it.
+///
+/// Note which lever did the work. Staining the pane darker was tried first and
+/// moved the face by seven levels: the stain governs how much of the *snapshot*
+/// the pane mixes in, and what needed changing was the snapshot.
+const PICKER_FROST: f32 = FROST_PANEL;
+const PICKER_GROUND: f32 = 0.62;
+
+/// The panel's glass: a ground, and [`sidebar_surface`] cut deeper over it.
+/// See [`PICKER_FROST`].
+fn picker_surface(rect: [f32; 4], scale: f32, behind: f32) -> Vec<Quad> {
+    let [x, y, w, h] = rect;
+    let pane = sidebar_surface(rect, scale, behind, 1.0);
+    let mut quads = Vec::with_capacity(pane.len() + 1);
+    // Before the glass, so the glass refracts it: what a pane of this shows is
+    // the application seen *through* the ground, rather than the application.
+    quads.push(Quad {
+        x,
+        y,
+        w,
+        h,
+        slot: SOLID_SLOT,
+        color: theme().glass.a(PICKER_GROUND),
+        radius: PANEL_RADIUS * scale,
+        ..Quad::default()
+    });
+    quads.extend(pane);
+    // The fourth of the five is the slab itself — the ground and the two lights
+    // come before it and its rim after, and none of those is what decides
+    // whether a name can be read off the face.
+    quads[3].frost = PICKER_FROST;
+    quads
+}
+
+/// The panel: [`crate::picker::SHARE`] of the display, centred.
+///
+/// A share of each side rather than a fixed size, because what it is a share
+/// *of* is the thing that matters — the point of the panel is that the
+/// application underneath is still visibly there, and a fixed panel would cover
+/// all of a small display and a corner of a large one.
+pub fn picker_panel_rect(width: f32, height: f32) -> [f32; 4] {
+    let w = width * crate::picker::SHARE;
+    let h = height * crate::picker::SHARE;
+    [(width - w) * 0.5, (height - h) * 0.5, w, h]
+}
+
+/// The part of the panel the columns stand in: everything between the heading
+/// and the line at the foot.
+pub fn picker_body_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [px, py, pw, ph] = picker_panel_rect(width, height);
+    let margin = GUIDE_MARGIN * scale;
+    let head = PICKER_HEAD * scale;
+    let foot = (PICKER_FOOT + PICKER_WHERE) * scale;
+    [
+        px + margin,
+        py + head,
+        (pw - margin * 2.0).max(0.0),
+        (ph - head - foot).max(0.0),
+    ]
+}
+
+/// The line every column's chosen row is drawn on.
+///
+/// One line for the whole trail, which is what makes this read as the bar: the
+/// row a column was opened from stands level with the row the cursor is on, all
+/// the way back, so the path can be read straight across the panel.
+fn picker_cross_y(width: f32, height: f32) -> f32 {
+    let [_, by, _, bh] = picker_body_rect(width, height);
+    by + bh * PICKER_CROSS_Y
+}
+
+/// How far apart one column of the trail stands from the next.
+///
+/// [`SUBCOLUMN_STEP`]'s own arithmetic, read against the body: everything from
+/// the body's left edge up to the cross, less the clearance the outermost
+/// column's own glass needs. It shrinks with the panel rather than being a
+/// fixed distance, so the trail keeps its proportions on a small display.
+fn picker_step(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [_, _, bw, _] = picker_body_rect(width, height);
+    let margin = COLUMN_MARGIN * scale;
+    (bw * PICKER_CROSS_X - margin).max(margin)
+}
+
+/// Where the column at `level` stands, its mark's own centre line, when the
+/// trail is drawn at `depth`.
+///
+/// [`bar_column_x`] in the body's coordinates and nothing else: the column being
+/// stood in sits on the cross, the whole chain slides one step left per column
+/// opened, and the level is a float because nothing is at a whole number of
+/// steps while a path is being walked into or out of.
+///
+/// So the room to the *right* of the cross belongs to the names, which is what
+/// a column is read by. An earlier cut spaced the columns evenly across the
+/// body instead; it left the trail stranded in the middle of the panel and the
+/// column being stood in jammed against the right edge with its names running
+/// off it.
+fn picker_column_x(level: f32, depth: f32, width: f32, height: f32) -> f32 {
+    let [bx, _, bw, _] = picker_body_rect(width, height);
+    bx + bw * PICKER_CROSS_X + (level - depth) * picker_step(width, height)
+}
+
+/// How far a column's names may run: up to the column in front of it, or to the
+/// panel's own edge where it is the one being stood in.
+///
+/// The two are different questions and the bar answers them differently for the
+/// same reason: a name on a column that has been stepped past has to stop before
+/// the next column's glass, and a name on the column the user is *in* has the
+/// whole rest of the panel — which is the point of the cross being where it is.
+///
+/// **Measured where the trail has landed, not where it has got to.** `standing`
+/// is [`crate::picker::Picker::standing`] and never the eased depth: a name
+/// budgeted against a column still sliding is a name whose room changes under
+/// it mid-animation, and the room a column gives up on the way out is small.
+/// Stepping back out of a folder therefore drew every name in it cut short,
+/// with the ellipsis of a name too long to fit, until the slide finished and
+/// they sprang out whole. A name is as long as it is, so its room has to be
+/// settled before it is drawn rather than after.
+fn picker_text_max(level: f32, standing: f32, width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [bx, _, bw, _] = picker_body_rect(width, height);
+    let (near, _) = receded(standing - level);
+    let x = picker_column_x(level, standing, width, height);
+    let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near;
+    let stops = match level >= standing {
+        true => bx + bw,
+        false => picker_column_x(level + 1.0, standing, width, height) - COLUMN_CLEAR * scale,
+    };
+    (stops - text_x).max(0.0)
+}
+
+/// How much of a column standing at `x` has not yet left the panel.
+///
+/// [`leaving`] measured against the body's own left edge rather than the
+/// display's, which is the whole difference and the whole reason it exists: the
+/// bar's trail walks off the side of the screen and there is nothing past it,
+/// where this one walks off the side of a *panel* with a display carrying on
+/// around it. Without this the outermost column of a walk three deep was drawn
+/// on the wallpaper beside the panel, which is where it was found.
+fn picker_leaving(x: f32, width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [bx, _, _, _] = picker_body_rect(width, height);
+    let band = ITEM_ICON * scale;
+    ((x - bx + band) / band).clamp(0.0, 1.0)
+}
+
+/// Where one row of one column is drawn, given how far it is from that column's
+/// own position and how near the front the column stands.
+fn picker_row_y(offset: f32, near: f32, width: f32, height: f32) -> f32 {
+    picker_cross_y(width, height) + offset * ITEM_SPACING * guide_scale(height) * near
+}
+
+/// Where the panel is when it is `open` of the way in.
+///
+/// It grows from the middle of the display rather than out of a control,
+/// because there is no control: the question arrived from another process while
+/// somebody was doing something else, and there is nothing on screen it came
+/// out of. The centre is the honest anchor for a thing with no origin — the
+/// same shape [`dialog_bounds`] carries, with the anchor being the panel's own
+/// middle.
+pub fn picker_bounds(width: f32, height: f32, open: f32) -> [f32; 4] {
+    let [px, py, pw, ph] = picker_panel_rect(width, height);
+    let factor = lerp(PICKER_FROM, 1.0, open.clamp(0.0, 1.0));
+    let (cx, cy) = (px + pw * 0.5, py + ph * 0.5);
+    [
+        cx - pw * factor * 0.5,
+        cy - ph * factor * 0.5,
+        pw * factor,
+        ph * factor,
+    ]
+}
+
+/// The line at the foot that says what is being shown, as a rectangle.
+///
+/// It is a rectangle because the panel's own menu grows out of it: what that
+/// menu changes is what this line says, so that is where it belongs — the same
+/// rule every other menu in this shell follows, which is that a panel comes out
+/// of the control it is about. Anchoring it on the whole panel instead left it
+/// hanging off the left-hand edge, standing beside a rectangle with no room on
+/// either side of it.
+pub fn picker_showing_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [px, py, pw, ph] = picker_panel_rect(width, height);
+    let margin = GUIDE_MARGIN * scale;
+    let foot = PICKER_FOOT * scale;
+    let line = 20.0 * scale;
+    [
+        px + margin,
+        py + ph - foot * 0.5 - line * 0.5,
+        (pw - margin * 2.0) * 0.4,
+        line,
+    ]
+}
+
+/// Push a scene behind the panel: dim it, and drop the text it would otherwise
+/// print through.
+///
+/// Every quad is drawn before every text run, so a panel laid over the start
+/// screen does not hide the start screen's words unless they are taken away.
+/// See [`Scene::hide_text_behind`], and note which of the two this uses: the
+/// clipping one, because a panel that deleted the runs it crossed would blank
+/// labels either side of it. That defect has been had once already.
+pub fn recede_behind_picker(scene: &mut Scene, width: f32, height: f32, open: f32) {
+    let open = open.clamp(0.0, 1.0);
+    scene.fade(lerp(1.0, PICKER_DIM, open));
+    scene.hide_text_behind(picker_bounds(width, height, open));
+}
+
+/// What a press on the panel has landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerSpot {
+    /// One row of the column being stood in.
+    Row(usize),
+    /// The row a column further out was opened from — the trail. Carries how
+    /// many steps out it is, which is how many presses of Left reach it.
+    Trail(usize),
+    /// Past the panel altogether, on the application it has taken the screen
+    /// from. The way out of the question — see `Shell::press_file_row`.
+    Outside,
+    /// The panel, but not a row of it. Taken and ignored, so a click that
+    /// misses a row does not fall through to whatever is underneath.
+    Panel,
+}
+
+/// What is under the pointer at `(x, y)`.
+///
+/// Bands rather than the drawn marks, exactly as [`bar_hit`] and
+/// [`transfer_hit`] measure their own: a user aiming at a row is aiming at the
+/// row and not at the circle of glass under its mark.
+pub fn picker_hit(
+    picker: &crate::picker::Picker,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> PickerSpot {
+    let [px, py, pw, ph] = picker_panel_rect(width, height);
+    if x < px || x > px + pw || y < py || y > py + ph {
+        return PickerSpot::Outside;
+    }
+    let scale = guide_scale(height);
+    let [_, by, _, bh] = picker_body_rect(width, height);
+    let depth = picker.depth();
+    let columns = picker.columns();
+    let standing = columns.last().map(|column| column.level).unwrap_or(0);
+    // Front to back, so a point in the band two columns share belongs to the
+    // nearer of the two.
+    for column in columns.iter().rev() {
+        let level = column.level;
+        let (near, _) = receded(depth - level as f32);
+        let column_x = picker_column_x(level as f32, depth, width, height);
+        // A column that has walked off the panel is not aimed at: it is not
+        // drawn, and a band that answered for it would be one the user cannot
+        // see. See [`picker_leaving`].
+        if picker_leaving(column_x, width, height) <= 0.01 {
+            continue;
+        }
+        let reach = ITEM_ICON_FOCUSED * ITEM_DISC * scale * near;
+        let left = column_x - reach * 0.5;
+        // As far as the names run, which is where the column in front of this
+        // one begins: the whole width of a row is what can be aimed at, not the
+        // mark at the head of it.
+        let right = column_x
+            + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near
+            + picker_text_max(level as f32, standing as f32, width, height);
+        if x < left || x > right {
+            continue;
+        }
+        // A column the path runs *through* has given up every row but the one
+        // it was opened from, so the trail is the only thing on it a press can
+        // be about — and what it means is going back to it.
+        let rows = match level == standing {
+            true => 0..column.rows,
+            false => column.selected..column.selected + 1,
+        };
+        let pitch = ITEM_SPACING * scale * near;
+        for index in rows {
+            let row_y = picker_row_y(index as f32 - column.position, near, width, height);
+            if row_y < by || row_y > by + bh {
+                continue;
+            }
+            if (y - row_y).abs() > pitch * 0.5 {
+                continue;
+            }
+            return match level == standing {
+                true => PickerSpot::Row(index),
+                false => PickerSpot::Trail(standing - level),
+            };
+        }
+    }
+    PickerSpot::Panel
+}
+
+/// Everything [`build_picker`] draws from.
+pub struct PickerView<'a> {
+    pub picker: &'a crate::picker::Picker,
+    /// The line across the top: who is asking, and for what.
+    pub heading: &'a str,
+    /// What the line at the foot says is being shown: the kind of file in
+    /// force, or that it is everything.
+    pub showing: &'a str,
+    /// The name of the file being saved, where one is being saved, and whether
+    /// the caret is in it.
+    pub name: Option<(&'a str, bool)>,
+    /// Whether the controller is what the user last reached for, which is what
+    /// decides whether the legend at the foot names pad buttons or keys.
+    pub pad: bool,
+    /// How far the panel is in, 0 shut and 1 open. Already eased.
+    pub open: f32,
+    /// How softly the wallpaper behind the overlay is being drawn, so the
+    /// panel's glass bends the same wallpaper the layer below is showing.
+    pub behind: f32,
+    /// The global clock, for the selection pulse.
+    pub time: f32,
+    pub slots: &'a dyn SlotLookup,
+}
+
+/// Draw the file panel: the question, the trail of columns, and what is showing.
+///
+/// The glass is cut from the guide sidebar's through [`sidebar_surface`],
+/// exactly as the context menu and the centred panel are — three surfaces of
+/// one shell made of different material would read as three different shells.
+///
+/// **What is inside it is the bar.** The rows are the bar's own rows, drawn by
+/// the same [`pick_row`] the folder picker uses: a mark that grows under the
+/// cursor with a bloom breathing behind it and a disc of glass beneath it, the
+/// name beside it, and the line under the name only where the row is chosen.
+/// Every column's chosen row sits on one cross line, so the trail reads straight
+/// across, and the list slides under it rather than paging. A panel of chips
+/// would have been a second visual language for the one job this shell already
+/// has a language for.
+pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let open = view.open.clamp(0.0, 1.0);
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+
+    let mut scene = Scene::default();
+    // The scrim dims what the *compositor* is drawing under this surface —
+    // which here is the application that asked. The shell's own scenes are
+    // dimmed by `recede_behind_picker` instead, which can also take their text
+    // away.
+    scene.quads.push(Quad {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        slot: SOLID_SLOT,
+        color: theme.glass.a(PICKER_SCRIM * open),
+        ..Quad::default()
+    });
+
+    let [panel_x, panel_y, panel_w, panel_h] = picker_panel_rect(width, height);
+    if panel_w <= 0.0 || panel_h <= 0.0 {
+        return scene;
+    }
+
+    let mut panel = Scene::default();
+    panel.quads.extend(picker_surface(
+        [panel_x, panel_y, panel_w, panel_h],
+        scale,
+        view.behind,
+    ));
+
+    let mut inside = Scene::default();
+    let margin = GUIDE_MARGIN * scale;
+    let head = PICKER_HEAD * scale;
+    let foot = PICKER_FOOT * scale;
+
+    // The question, along the top. Left-aligned rather than centred, unlike a
+    // dialog's heading: what is under it is a list read down the left, and a
+    // title over the middle of three columns would belong to the middle one.
+    let heading = 26.0 * scale;
+    inside.texts.push(Text {
+        content: view.heading.to_string(),
+        x: panel_x + margin,
+        y: panel_y + (head - heading) * 0.5 - heading * 0.12,
+        size: heading,
+        color: theme.text.a(0.98),
+        bold: true,
+        max_width: (panel_w - margin * 2.0).max(0.0),
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+    });
+
+    // A rule under it and another over the foot, so the columns are plainly a
+    // thing between two others rather than text floating in a pane. The guide's
+    // own hairline, at the guide's own weight.
+    let rule = (1.0 * scale).max(1.0);
+    for y in [panel_y + head - rule, panel_y + panel_h - foot] {
+        inside.quads.push(Quad {
+            x: panel_x + margin,
+            y,
+            w: (panel_w - margin * 2.0).max(0.0),
+            h: rule,
+            slot: SOLID_SLOT,
+            color: theme.text_soft.a(0.16),
+            ..Quad::default()
+        });
+    }
+
+    picker_columns(&mut inside, &view, width, height, pulse);
+
+    // **Where the user is standing, written out in full**, in the band above the
+    // rule. The whole path and not the folder's name: a column headed
+    // `Downloads` is one of several folders on this disk called that, and an
+    // application is handed a file by its path rather than by the name of the
+    // column it was in.
+    //
+    // Above the rule rather than in the foot with the rest of the writing. The
+    // foot's right-hand end is the legend of what the buttons do, and a path
+    // sharing that line was a path cut short to leave room for pictures of
+    // buttons; up here it has the width of the whole panel and nothing to
+    // collide with.
+    let line = 20.0 * scale;
+    let place = 22.0 * scale;
+    let foot_top = panel_y + panel_h - foot;
+    let where_band = PICKER_WHERE * scale;
+    inside.texts.push(Text {
+        content: view.picker.location(),
+        x: panel_x + margin,
+        y: foot_top - where_band * 0.5 - place * 0.5 - place * 0.12,
+        size: place,
+        color: theme.text.a(0.82),
+        bold: false,
+        max_width: (panel_w - margin * 2.0).max(0.0),
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        // The one run in the shell cut from the front. A path too long for the
+        // panel keeps the end of itself — the folder the user is actually
+        // standing in — and gives up the beginning, which on this machine is
+        // the same handful of characters as every other path on it.
+        cut: Cut::Head,
+    });
+
+    // The legend, laid out from its right-hand end leftwards so the last pair
+    // lands exactly on the margin — see [`PICKER_HINT_ADVANCE`] for why that is
+    // the direction it has to be built in.
+    let hint_right = legend_row(
+        &mut inside.quads,
+        &mut inside.texts,
+        &picker_hints(view.picker.can_be_approved(), view.pad),
+        view.slots,
+        panel_x + panel_w - margin,
+        foot_top + foot * 0.5,
+        &LegendSize {
+            glyph: PICKER_HINT_GLYPH * scale,
+            label: PICKER_HINT_LABEL * scale,
+            gap: PICKER_HINT_GAP * scale,
+            step: PICKER_HINT_STEP * scale,
+        },
+        theme.text.a(0.92),
+        theme.text_soft.a(0.82),
+    );
+    // What is left of the foot for the one line of writing on the left of it.
+    let said = (hint_right - margin - (panel_x + margin)).max(0.0);
+    let foot_y = foot_top + foot * 0.5 - line * 0.5 - line * 0.12;
+    let showing = match view.name {
+        // Where a file is being saved, the name it will have is what the foot
+        // is for: it is the one part of the answer that is not on any row, and
+        // it has to be readable from wherever in the walk the user is standing.
+        Some((name, typing)) => {
+            let shown = match name.trim() {
+                "" => "Untitled".to_string(),
+                name => name.to_string(),
+            };
+            match typing {
+                // The caret, drawn as the bar's own fields draw one.
+                true => format!("Saving as  {shown}|"),
+                false => format!("Saving as  {shown}"),
+            }
+        }
+        None => format!("Showing  {}", view.showing),
+    };
+    inside.texts.push(Text {
+        content: showing,
+        x: panel_x + margin,
+        y: foot_y,
+        size: line,
+        color: theme.text_soft.a(0.78),
+        bold: false,
+        max_width: said,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+    });
+
+    // The contents ride out on the panel's own growth, so nothing inside moves
+    // relative to anything else on the way in — [`dialog_bounds`]' rule, and
+    // the reason the panel is built as a scene of its own.
+    panel.quads.extend(inside.quads);
+    panel.texts.extend(inside.texts);
+    let factor = lerp(PICKER_FROM, 1.0, open);
+    panel.scale_by(
+        factor,
+        [
+            (panel_x + panel_w * 0.5) * (1.0 - factor),
+            (panel_y + panel_h * 0.5) * (1.0 - factor),
+        ],
+    );
+    panel.fade(open);
+    scene.quads.extend(panel.quads);
+    scene.texts.extend(panel.texts);
+    scene
+}
+
+/// The trail of columns inside the panel, drawn as the bar draws its own.
+fn picker_columns(scene: &mut Scene, view: &PickerView, width: f32, height: f32, pulse: f32) {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let [body_x, body_y, body_w, body_h] = picker_body_rect(width, height);
+    let body = [body_x, body_y, body_w, body_h];
+    let depth = view.picker.depth();
+    let standing = view.picker.standing() as f32;
+    let columns = view.picker.columns();
+    // Every column's rows dissolve before the panel's own edges rather than
+    // being cut off at them. A mark has to be whole to be read, so it goes out
+    // over the same distance the bar's columns go out over at the display's
+    // edges, and no row is ever half a glyph.
+    let fade_range = 70.0 * scale;
+    let clearance = (ITEM_ICON / 2.0 + 12.0) * scale;
+
+    for column in &columns {
+        let level = column.level;
+        // How much this column is the one being stood in — the bar's own
+        // answer, so the light crosses from the row a subcategory was opened
+        // from to the row it opened on instead of appearing twice.
+        let active = 1.0 - (depth - level as f32).abs().min(1.0);
+        let (near, clarity) = receded(depth - level as f32);
+        let x = picker_column_x(level as f32, depth, width, height);
+        // And what is left of it once the panel's own edge has taken its share.
+        let clarity = clarity * picker_leaving(x, width, height);
+        if clarity <= 0.01 {
+            continue;
+        }
+        let text_x = x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near;
+        let text_max = picker_text_max(level as f32, standing, width, height);
+        // How far the column has receded once the trail has *landed*, for the
+        // same reason `text_max` is measured there: what a run of text may run
+        // into must not change under it while the trail slides.
+        let (settled_near, _) = receded(standing - level as f32);
+
+        // What the column is of, in the room above the cross that the bar gives
+        // its category row — small and quiet, because it is the folder's name
+        // rather than one of its rows.
+        //
+        // **Over the column's mark, not over its names.** A column begins at the
+        // mark: that is its left edge, the thing every row of it lines up on,
+        // and the heading belongs on that edge. Set in by the width of a glyph
+        // instead — where the names start — it read as a heading for the names
+        // alone, and on a column receded far enough that the offset had shrunk
+        // to nothing it sat squarely over the middle of the mark, which is a
+        // heading centred on nothing. The band it may run into is the same one
+        // the names have, plus the mark it now starts on.
+        let title_size = 15.0 * scale * near;
+        let title_x = x - ITEM_ICON_FOCUSED * ITEM_DISC * scale * near * 0.5;
+        let title_max = text_max + (ITEM_ICON_FOCUSED * ITEM_DISC + 12.0) * scale * settled_near;
+        let title_y = picker_row_y(-1.0, near, width, height) - ITEM_SPACING * scale * near * 0.55;
+        if title_y > body_y {
+            scene.texts.push(Text {
+                content: column.title.clone(),
+                x: title_x,
+                y: title_y,
+                size: title_size,
+                color: theme.text_soft.a(0.45 * clarity),
+                bold: false,
+                max_width: title_max,
+                align: TextAlign::Left,
+                clip: Some(body),
+                halo: 0.0,
+                lines: 1,
+                cut: Cut::Tail,
+            });
+        }
+
+        let pitch = ITEM_SPACING * scale * near;
+        for index in rows_in_view(column.position, column.rows, pitch, body_h) {
+            let Some(face) = view.picker.row_face(level, index) else {
+                continue;
+            };
+            let offset = index as f32 - column.position;
+            let y = picker_row_y(offset, near, width, height);
+
+            let distance = offset.abs();
+            let focus = (1.0 - distance.min(1.0)) * active;
+            let trail = index == column.selected;
+            // A column the path runs through keeps the row it was opened from
+            // and gives up the rest — which is what makes the trail a trail
+            // rather than three lists side by side.
+            let presence = if trail { 1.0 } else { active } * clarity;
+            let mut alpha = (1.0 - (distance / 6.0)).clamp(0.0, 1.0) * presence;
+            alpha *= ((y - body_y - clearance) / fade_range).clamp(0.0, 1.0);
+            alpha *= ((body_y + body_h - clearance - y) / fade_range).clamp(0.0, 1.0);
+            if alpha <= 0.01 {
+                continue;
+            }
+
+            let selected = distance < 0.5 && active > 0.5;
+            let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
+            // A row that cannot be taken from where the user is standing keeps
+            // less of everything, the light behind it included: a full lamp
+            // behind it would be the screen saying press this. The folder
+            // picker's own rule; see [`PICK_FILE_INK`].
+            let (ink, mark) = match face.quiet {
+                true => (PICK_FILE_INK, PICK_FILE_INK),
+                false => (1.0, 1.0),
+            };
+            let alpha = alpha * mark;
+
+            // The breathing bloom behind the chosen row.
+            if distance < 0.5 && active > 0.01 {
+                scene.quads.extend(pick_glow(
+                    [x, y],
+                    icon_size,
+                    theme.accent.a((0.34 + 0.26 * pulse) * alpha * active),
+                ));
+            }
+            pick_row(
+                scene,
+                PickRow {
+                    at: [x, y],
+                    near,
+                    title: &face.title,
+                    note: face.note.as_deref(),
+                    glyph: face.glyph,
+                    preview: face.preview.as_deref(),
+                    selected,
+                    alpha,
+                    ink,
+                    text_max,
+                    scale,
+                },
+                view.slots,
+            );
+
+            // The tick, out at the end of the row's own band — where a context
+            // menu's button sits, and the same distance in. Drawn for the ticked
+            // rows only: an empty box on every other row would be a column of
+            // controls where there is a column of files.
+            if face.ticked {
+                if let Some(slot) = view.slots.glyph(icons::CHOSEN) {
+                    let tick = ITEM_ICON * 0.5 * scale * near;
+                    scene.quads.push(shaded(
+                        Quad {
+                            x: text_x + text_max - tick,
+                            y: y - tick * 0.5,
+                            w: tick,
+                            h: tick,
+                            slot,
+                            color: theme.accent_soft.a(alpha),
+                            ..Quad::default()
+                        },
+                        Some(icons::CHOSEN),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9274,6 +10681,27 @@ mod tests {
     use crate::menu::Title;
     use crate::model::Action;
     use std::path::{Path, PathBuf};
+
+    /// The shell and the compositor round the same corner to the same radius.
+    ///
+    /// They draw two halves of one composition now: the shell's menus and the
+    /// mat the compositor paints round a floating picture-in-picture window.
+    /// The radius is shared — see [`PANEL_RADIUS`] — but the *scale* it is
+    /// taken at is written twice, once in each process, and two clamps that
+    /// drifted apart would show up as a video rounded a little differently
+    /// from the menu drawn beside it.
+    #[test]
+    fn the_two_halves_of_the_session_round_a_corner_the_same_way() {
+        // Every shape of display this is ever asked about: a nested window, a
+        // laptop panel, a television, and the two ends of the clamp.
+        for height in [240.0, 720.0, 1080.0, 1440.0, 2160.0, 4320.0] {
+            assert_eq!(
+                guide_scale(height),
+                lxb_protocol::pip::scale(height as f64) as f32,
+                "a display {height} tall"
+            );
+        }
+    }
 
     /// A round hole shows the middle of a picture, and the middle of a square
     /// one is all of it. What must never happen is the crop reaching outside
@@ -9419,6 +10847,12 @@ mod tests {
                 icons::BATTERY_HIGH => 35,
                 icons::BATTERY_FULL => 36,
                 icons::BATTERY_CHARGING => 37,
+                // Two applications' own icons, which one test has to tell
+                // apart: one has asked for the shell's material and the other
+                // has not, and a fixture that gave them one slot would find
+                // whichever quad came first and pass for the wrong reason.
+                "asked-for-the-material" => 38,
+                "an-ordinary-icon" => 39,
                 _ => 13,
             }
         }
@@ -9437,6 +10871,15 @@ mod tests {
         }
     }
 
+    /// An application's row wearing a particular icon out of the theme.
+    fn with_icon(name: &str, icon: &str) -> Entry {
+        let Entry::App(mut program) = app(name) else {
+            unreachable!("app makes an application's row")
+        };
+        program.icon = Some(icon.to_string());
+        Entry::App(program)
+    }
+
     /// A row that launches something — the ordinary contents of a column.
     fn app(name: &str) -> Entry {
         Entry::App(App {
@@ -9446,6 +10889,7 @@ mod tests {
             exec: "true".into(),
             terminal: false,
             categories: Vec::new(),
+            keywords: Vec::new(),
             mime_types: Vec::new(),
             path: PathBuf::from("/tmp/x.desktop"),
             wm_class: None,
@@ -9552,6 +10996,43 @@ mod tests {
         Some(BarSpot::Item { row, level: None })
     }
 
+    /// The same, once libretro's cover for it has been fetched onto the disk.
+    fn pictured_rom(name: &str) -> Entry {
+        let Entry::Rom(mut game) = rom(name) else {
+            unreachable!("it is a game");
+        };
+        game.boxart = Some(PathBuf::from(format!("/cache/{name}.png")));
+        Entry::Rom(game)
+    }
+
+    /// The same, on a shelf whose covers have been measured — a console whose
+    /// boxes are `shape` wide for every one they are tall.
+    fn shaped_rom(name: &str, shape: f32) -> Entry {
+        let Entry::Rom(mut game) = pictured_rom(name) else {
+            unreachable!("it is a game");
+        };
+        game.shape = Some(shape);
+        Entry::Rom(game)
+    }
+
+    /// One of the user's own games, out of their ROM folder.
+    fn rom(name: &str) -> Entry {
+        Entry::Rom(crate::apps::Rom {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/home/x/ROMs/psp/{name}.iso")),
+            console: "PlayStation Portable".to_string(),
+            note: "PlayStation Portable".to_string(),
+            wanted: vec!["ppsspp".to_string()],
+            start: None,
+            boxart: None,
+            snap: None,
+            own_cover: false,
+            own_background: false,
+            shape: None,
+            glyph: "lxb:console-psp".to_string(),
+        })
+    }
+
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
         Entry::Folder(Folder {
@@ -9562,6 +11043,8 @@ mod tests {
             place: None,
             chosen: false,
             over_the_list: false,
+            person: None,
+            portrait: None,
         })
     }
 
@@ -9596,9 +11079,33 @@ mod tests {
             comment: None,
             icon: Some(icons::SWATCH.into()),
             swatch: Some(crate::theme::Color(0x8B5CF6)),
+            material: None,
             chosen,
             acts: false,
             setting: None,
+            over_the_list: false,
+        })
+    }
+
+    /// A row that is one of a set of *materials*, drawn in the one it applies.
+    ///
+    /// Both rows of such a list carry the same drawing on purpose: that is what
+    /// the material on the quad is for. See [`crate::apps::Choice::material`].
+    fn material_choice(
+        title: &str,
+        material: lxb_protocol::wallpaper::Style,
+        chosen: bool,
+    ) -> Entry {
+        Entry::Choice(Choice {
+            title: title.into(),
+            comment: None,
+            icon: Some(icons::SETTING_ICONS.into()),
+            swatch: None,
+            material: Some(material),
+            chosen,
+            acts: false,
+            setting: None,
+            over_the_list: false,
         })
     }
 
@@ -9626,6 +11133,8 @@ mod tests {
             0.0,
             slots,
             Typing::Nothing,
+            None,
+            None,
         )
     }
 
@@ -9880,6 +11389,8 @@ mod tests {
             0.0,
             &NoColon,
             Typing::Nothing,
+            None,
+            None,
         );
         assert!(
             letter_quads(&scene).is_empty(),
@@ -10259,7 +11770,150 @@ mod tests {
             0.0,
             &Named,
             Typing::Nothing,
+            None,
+            None,
         )
+    }
+
+    /// The start screen's legend names whichever control is in hand, and the
+    /// words do not move between the two — it is the same three acts.
+    ///
+    /// The file panel's own test, asked of the bar; see
+    /// [`the_legend_names_whichever_control_is_in_hand`].
+    #[test]
+    fn the_start_legend_names_whichever_control_is_in_hand() {
+        let glyphs = |pad, options| -> Vec<&'static str> {
+            start_hints(pad, options)
+                .iter()
+                .map(|hint| hint.glyph)
+                .collect()
+        };
+        assert_eq!(
+            glyphs(true, true),
+            [icons::PAD_SOUTH, icons::PAD_NORTH, icons::PAD_GUIDE],
+            "Accept, the menu button and the one in the middle, by where they sit"
+        );
+        assert_eq!(
+            glyphs(false, true),
+            [
+                icons::KEY_ENTER,
+                // The one place this legend leaves the keyboard, exactly as the
+                // file panel's does: a menu is raised with the right button by
+                // anybody holding a pointer.
+                icons::MOUSE_RIGHT,
+                icons::KEY_SUPER
+            ]
+        );
+        let words = |options| -> Vec<&'static str> {
+            start_hints(true, options)
+                .iter()
+                .map(|hint| hint.label)
+                .collect()
+        };
+        assert_eq!(words(true), ["Select", "Options", "Guide"]);
+        assert_eq!(
+            start_hints(false, true)
+                .iter()
+                .map(|hint| hint.label)
+                .collect::<Vec<_>>(),
+            words(true),
+            "the same acts, whichever control they are pressed on"
+        );
+
+        // A row with nothing to raise does not offer the button. The file
+        // panel's own rule: a legend naming one that does nothing is worse than
+        // naming none.
+        assert_eq!(words(false), ["Select", "Guide"]);
+        // And the way out is on it whatever the row is. It is the one press
+        // that works from everywhere in this session, and a legend that dropped
+        // it on some rows would be hiding the way back.
+        for options in [true, false] {
+            assert!(
+                start_hints(true, options)
+                    .iter()
+                    .any(|hint| hint.label == "Guide"),
+                "the guide is always offered"
+            );
+        }
+    }
+
+    /// It is drawn in the corner opposite the clock — against the same edge
+    /// inset, and as far up from the bottom as the clock is down from the top —
+    /// and only when the shell asks for it.
+    #[test]
+    fn the_start_legend_stands_in_the_corner_opposite_the_clock() {
+        let (width, height) = (1920.0, 1080.0);
+        let drawn = |legend| {
+            let lattice = corner_lattice();
+            let cursor = Cursor::new(lattice.categories.len());
+            build(
+                &lattice,
+                &cursor,
+                width,
+                height,
+                true,
+                Corner {
+                    clock: Some("8/19 10:02"),
+                    ..Corner::default()
+                },
+                0.0,
+                &Named,
+                Typing::Nothing,
+                None,
+                legend,
+            )
+        };
+
+        let scene = drawn(Some(StartLegend {
+            options: true,
+            pad: true,
+        }));
+        let word = |content: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == content)
+                .unwrap_or_else(|| panic!("the legend says {content}"))
+        };
+        let (select, options, guide) = (word("Select"), word("Options"), word("Guide"));
+        // Read left to right in the order they were asked for, which is what
+        // laying the row out from its right-hand end has to come back to.
+        assert!(select.x < options.x && options.x < guide.x);
+        // On one line, in the bottom half of the display.
+        assert_eq!(select.y, guide.y);
+        assert!(select.y > height * 0.5, "at the foot, not beside the clock");
+
+        // The mirror of the clock's own line: this far up from the bottom is
+        // that far down from the top. Measured against the corner's own
+        // numbers rather than against a number of the legend's, because that
+        // is the whole claim — see [`CORNER_INSET`].
+        let scale = (height / REFERENCE_HEIGHT).clamp(0.6, 2.5);
+        let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * MARK_LINE;
+        let glyph = START_HINT_GLYPH * scale;
+        let last = scene
+            .quads
+            .iter()
+            .filter(|quad| (quad.h - glyph).abs() < 0.01)
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("the last button in the row");
+        assert!(
+            ((last.x + last.w) - (width - CORNER_INSET * scale)).abs() < 0.01,
+            "the row ends on the edge the clock hugs"
+        );
+        assert!(
+            ((last.y + last.h * 0.5) - (height - middle)).abs() < 0.01,
+            "and its middle is the clock's line, mirrored"
+        );
+
+        // And nothing at all when the shell does not ask — which is the switch
+        // under Settings > System, and every panel that takes the buttons.
+        let bare = drawn(None);
+        for content in ["Select", "Options", "Guide"] {
+            assert!(
+                !bare.texts.iter().any(|text| text.content == content),
+                "{content} was drawn with no legend asked for"
+            );
+        }
     }
 
     /// The selected category's name goes under its button, and under means
@@ -11877,6 +13531,72 @@ mod tests {
         );
     }
 
+    /// And a press that is being *held* goes on setting it, wherever the hand
+    /// has travelled since — which is the whole of what makes a bar a bar under
+    /// a mouse rather than a button that answers where it was clicked.
+    ///
+    /// The regression this is here for is a button held down on a groove and
+    /// dragged along it, which set the value once and then watched the handle
+    /// stay where it was. A hand that has taken hold of a handle is not
+    /// pointing at anything any more: it is carrying the handle, and where it
+    /// has carried it to is the answer even where a *press* would have none —
+    /// off the track's ends, and clean off the column.
+    #[test]
+    fn a_bar_held_down_is_set_by_where_the_hand_has_dragged_to() {
+        let lattice = Lattice::new(vec![Category {
+            id: "settings",
+            title: "Settings",
+            icon: "settings",
+            entries: vec![app("plain"), folder("Color temperature", vec![bar(0.4)])],
+        }]);
+        let cursor = stepped(&lattice);
+        let (width, height) = (1920.0, 1080.0);
+        let scene = build_with(&lattice, &cursor, width, height, true, &Named);
+
+        let groove = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == SOLID_SLOT && quad.h > quad.w * 3.0)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("the groove");
+        let middle = groove.x + groove.w / 2.0;
+
+        // The groove a drag is measured against is the groove that was drawn.
+        // Found again on every motion rather than remembered from the press,
+        // because the column it stands in can still be gliding.
+        let track = column_bar_track(&lattice, &cursor, 0, width, height).expect("the groove");
+        for (found, drawn) in track.iter().zip([groove.x, groove.y, groove.w, groove.h]) {
+            assert!((found - drawn).abs() < 0.01, "{found} for {drawn}");
+        }
+
+        // Along the track the two agree exactly: a press and a drag to the same
+        // point are the same gesture arriving two ways.
+        let mut y = groove.y + 1.0;
+        while y < groove.y + groove.h {
+            let pressed = match bar_hit(&lattice, &cursor, middle, y, width, height) {
+                Some(BarSpot::Item { row: 0, level }) => level.expect("a point on the track"),
+                other => panic!("{other:?} at {y}"),
+            };
+            let dragged = column_bar_level_along(track, y).expect("a groove with room in it");
+            assert!((pressed - dragged).abs() < 1e-6, "{pressed} and {dragged}");
+            y += 1.0;
+        }
+
+        // Past either end it is that end, however far past. A press there asks
+        // for nothing at all, which is what a hand crossing the screen should
+        // do — but a hand that is already holding the handle has run off the
+        // end of the track, and that means all the way.
+        for (at, wanted) in [
+            (groove.y - 400.0, 1.0),
+            (groove.y + groove.h + 400.0, 0.0),
+            (-height, 1.0),
+            (height * 2.0, 0.0),
+        ] {
+            assert_eq!(bar_hit(&lattice, &cursor, middle, at, width, height), None);
+            assert_eq!(column_bar_level_along(track, at), Some(wanted), "at {at}");
+        }
+    }
+
     /// The value a setting is set to is marked, and a colour is drawn in
     /// itself: the swatch is the answer, and the word beside it is its name.
     #[test]
@@ -11917,6 +13637,80 @@ mod tests {
                 .filter(|quad| quad.slot == Named::slot_of(icons::CHOSEN))
                 .count(),
             1
+        );
+    }
+
+    /// A row that stands for a material is drawn in that material, whatever
+    /// the shell itself is set to — the argument the swatch above makes about
+    /// a colour, made about the other thing a row can stand for that no word
+    /// describes.
+    ///
+    /// The point of it is the first assertion: the two rows carry the *same*
+    /// drawing. Nothing else tells them apart, so a quad that came through
+    /// without its material would leave the column showing one mark twice.
+    #[test]
+    fn a_row_that_stands_for_a_material_is_drawn_in_it() {
+        let lattice = Lattice::new(vec![Category {
+            id: "settings",
+            title: "Settings",
+            icon: "settings",
+            entries: vec![
+                app("plain"),
+                folder(
+                    "Appearance",
+                    vec![folder(
+                        "Icons",
+                        vec![
+                            material_choice(
+                                "Default",
+                                lxb_protocol::wallpaper::Style::Default,
+                                true,
+                            ),
+                            material_choice(
+                                "Simple",
+                                lxb_protocol::wallpaper::Style::Simple,
+                                false,
+                            ),
+                        ],
+                    )],
+                ),
+            ],
+        }]);
+        let cursor = walked(&lattice);
+        let scene = build_with(&lattice, &cursor, 1920.0, 1080.0, true, &Named);
+
+        // Every quad that brought a material of its own, in the order the
+        // column lists the rows: down the screen.
+        let mut marks: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| is_icon(quad) && quad.mark >= 0.0)
+            .collect();
+        marks.sort_by(|a, b| a.y.total_cmp(&b.y));
+        assert_eq!(marks.len(), 2, "one per material row and nowhere else");
+        assert_eq!(
+            marks[0].slot, marks[1].slot,
+            "the two rows carry the same drawing"
+        );
+        assert_eq!(
+            [marks[0].mark, marks[1].mark],
+            [
+                crate::theme::flag(lxb_protocol::wallpaper::Style::Default),
+                crate::theme::flag(lxb_protocol::wallpaper::Style::Simple)
+            ],
+            "and each is drawn in the material it applies"
+        );
+
+        // And nothing else in the frame is: every other mark in the shell is
+        // whatever the user set the marks to, which is what the quad's default
+        // says and what the shader falls back to.
+        assert!(
+            scene
+                .quads
+                .iter()
+                .filter(|quad| !std::ptr::eq(*quad, marks[0]) && !std::ptr::eq(*quad, marks[1]))
+                .all(|quad| quad.mark == crate::gpu::MARK_FROM_THEME),
+            "no other quad in the frame overrides the theme"
         );
     }
 
@@ -12015,6 +13809,8 @@ mod tests {
                 0.0,
                 &AllSlots,
                 typing,
+                None,
+                None,
             )
             .texts
             .into_iter()
@@ -12065,6 +13861,8 @@ mod tests {
             0.0,
             &AllSlots,
             Typing::Search,
+            None,
+            None,
         )
         .texts
         .into_iter()
@@ -12168,6 +13966,142 @@ mod tests {
             "at its own shape: {}x{}",
             cover.w,
             cover.h
+        );
+    }
+
+    /// One of somebody's own games wears libretro's cover in exactly the same
+    /// way, and the RetroArch mark that stood in for it goes.
+    ///
+    /// The whole point of fetching them: a column of forty identical marks says
+    /// only how many files are in a folder. Asked of the same layout the Steam
+    /// column is, because a cover is a cover — what differs is only that this
+    /// one is found by path, off this shell's own cache, rather than by an id.
+    #[test]
+    fn one_of_your_own_games_wears_its_cover_too() {
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![folder(
+                "PlayStation Portable",
+                vec![pictured_rom("Tekken 6"), pictured_rom("Chrono Trigger")],
+            )],
+        }]);
+        let marks = |scene: &Scene| scene.quads.iter().filter(|q| q.slot == 7).count();
+
+        let waiting = opened(&lattice, 1920.0, 1080.0, &AllSlots);
+        let arrived = opened(&lattice, 1920.0, 1080.0, &Pictures(COVER_ASPECT));
+        assert!(
+            marks(&waiting) > 0,
+            "the RetroArch mark stands in until there is a cover"
+        );
+        let drawn = arrived
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .count();
+        assert_eq!(drawn, 2, "every row of it, not only the chosen one");
+        assert_eq!(
+            marks(&arrived),
+            marks(&waiting) - 2,
+            "and steps aside once each has one"
+        );
+    }
+
+    /// And it is drawn on a card the shape of that console's boxes.
+    ///
+    /// The bug this is here for was on screen: a Nintendo DS shelf, whose cases
+    /// are wider than they are tall, drawn on the tall card a Steam capsule
+    /// wants — so every cover stood in the middle of a button with a band of
+    /// empty glass above and below it, and the Wii shelf beside it was wrong
+    /// the other way. The card is the shape of the picture it carries, so the
+    /// mount is even the whole way round on every console.
+    #[test]
+    fn a_shelf_is_drawn_on_the_card_its_own_console_needs() {
+        // What libretro's Nintendo DS covers actually measure. Wider than
+        // tall, which is the case the single shape was worst for.
+        const DS: f32 = 1.11;
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![folder(
+                "Nintendo DS",
+                vec![
+                    shaped_rom("New Super Mario Bros.", DS),
+                    shaped_rom("Mario Kart DS", DS),
+                ],
+            )],
+        }]);
+
+        let shelf = match &lattice.categories[0].entries[0] {
+            Entry::Folder(folder) => folder.entries.clone(),
+            _ => panic!("a console opens a column"),
+        };
+        let cards = cards_in(&shelf).expect("a column of covers");
+        assert!(
+            (cards.aspect - DS).abs() < 0.001,
+            "the console's own shape, not Valve's: {}",
+            cards.aspect
+        );
+        assert!(
+            cards.reach() > Cards::of(COVER_ASPECT).reach(),
+            "a squarer cover makes a wider card"
+        );
+        assert!(
+            cards.focused < Cards::of(COVER_ASPECT).focused,
+            "and a shorter one, so the row weighs what every other row weighs"
+        );
+
+        // And the cover fills it, which is the whole of what was wrong.
+        let scene = opened(&lattice, 1920.0, 1080.0, &Pictures(DS));
+        let cover = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .max_by(|a, b| a.h.total_cmp(&b.h))
+            .expect("a shelf draws a cover on every row");
+        let height = cards.focused * guide_scale(1080.0);
+        let mount = cards.mount(height);
+        for (edge, drawn, want) in [
+            ("height", cover.h, height - mount * 2.0),
+            ("width", cover.w, cards.width(height) - mount * 2.0),
+        ] {
+            assert!(
+                (drawn - want).abs() < 0.5,
+                "the cover's {edge} is {drawn} of a card wanting {want}"
+            );
+        }
+    }
+
+    /// A game nothing has a picture of keeps its mark, and keeps the card it
+    /// was standing on.
+    ///
+    /// The card is the half worth holding shut: what decides a column's shape
+    /// is what the column *is*, so a shelf of games whose covers are still
+    /// coming down must not be a different shape from the same shelf a second
+    /// later.
+    #[test]
+    fn a_game_with_no_cover_keeps_its_mark_and_its_card() {
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![folder("PlayStation Portable", vec![rom("Homebrew Thing")])],
+        }]);
+        let scene = opened(&lattice, 1920.0, 1080.0, &Pictures(COVER_ASPECT));
+        assert_eq!(
+            scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == THUMB_SLOT)
+                .count(),
+            0,
+            "there is no picture to draw"
+        );
+        assert!(
+            scene.quads.iter().any(|quad| quad.slot == 7),
+            "so the mark is what stands on the card"
         );
     }
 
@@ -12528,6 +14462,66 @@ mod tests {
         }
     }
 
+    /// A name behind a column of covers stops where the covers begin — and has
+    /// stopped by the time they arrive, rather than while they are arriving.
+    ///
+    /// The trail is a name printed in the gap between two columns, and the gap
+    /// left by a column of cards is not the gap left by a column of icons: a
+    /// cover is half again as wide as a disc, so a clearance measured off a
+    /// disc puts the name of the console *on* the first cover of it. It did.
+    /// And it did it for the length of the step as well as at the end of it,
+    /// because the box the name is cut to was given up at exactly the pace the
+    /// cards took the room — the two crossing in the middle of the glide.
+    #[test]
+    fn a_name_behind_a_column_of_covers_stops_short_of_them() {
+        let lattice = Lattice::new(vec![Category {
+            id: "retroarch",
+            title: "RetroArch",
+            icon: "r",
+            entries: vec![folder(
+                "PlayStation Portable",
+                vec![rom("Ridge Racer 2"), rom("Wipeout Pure"), rom("Daxter")],
+            )],
+        }]);
+        let (width, height) = (1600.0, 900.0);
+        let scale = guide_scale(height);
+        let cards = Cards::of(COVER_ASPECT);
+
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "into the console's games");
+
+        // Every frame from a quarter of the way in — see [`COLUMN_CONCEDE`] —
+        // to the end of the glide, which is where the name would otherwise be
+        // drawn over the cards.
+        let mut frames = 0;
+        loop {
+            let depth = cursor.depth_position();
+            if depth >= 0.25 {
+                let scene = build_with(&lattice, &cursor, width, height, true, &NoSlots);
+                let label = scene
+                    .texts
+                    .iter()
+                    .find(|text| text.content == "PlayStation Portable")
+                    .expect("the console the games came out of");
+                // The leading edge of the widest card in the column, which is
+                // the chosen one: every other row is narrower and stands inside
+                // it.
+                let cards_begin =
+                    bar_column_x(1.0, depth, width, height) - cards.reach() / 2.0 * scale;
+                assert!(
+                    label.x + label.max_width <= cards_begin,
+                    "the name runs {} into the covers, {depth} of the way in",
+                    label.x + label.max_width - cards_begin
+                );
+            }
+            if !cursor.animate(1.0 / 60.0) {
+                break;
+            }
+            frames += 1;
+            assert!(frames < 600, "the step never settled");
+        }
+    }
+
     #[test]
     fn offscreen_rows_are_culled() {
         // A long list must not emit a quad per entry.
@@ -12818,6 +14812,8 @@ mod tests {
                 time,
                 &AllSlots,
                 Typing::Nothing,
+                None,
+                None,
             );
             scene
                 .quads
@@ -12876,7 +14872,25 @@ mod tests {
         cards: &[Card],
         highlight: Option<[f32; 4]>,
     ) -> Scene {
-        guide_scene_with(guide, app, screen, cards, highlight, &AllSlots)
+        guide_scene_with(guide, app, screen, cards, highlight, &AllSlots, 0.0)
+    }
+
+    /// The same scene with the directions handed to a video floating over it.
+    fn guide_scene_elsewhere(
+        guide: &Guide,
+        cards: &[Card],
+        highlight: Option<[f32; 4]>,
+        elsewhere: f32,
+    ) -> Scene {
+        guide_scene_with(
+            guide,
+            Some("Celeste"),
+            None,
+            cards,
+            highlight,
+            &AllSlots,
+            elsewhere,
+        )
     }
 
     /// The same scene with the atlas swapped out, for the one test that has to
@@ -12888,6 +14902,7 @@ mod tests {
         cards: &[Card],
         highlight: Option<[f32; 4]>,
         slots: &dyn SlotLookup,
+        elsewhere: f32,
     ) -> Scene {
         // A window is selected beside the column whenever there is one to
         // select, which is what the shell passes.
@@ -12928,6 +14943,7 @@ mod tests {
                 // Fully out of its button, as it is once it has opened.
                 power: if guide.power_open() { 1.0 } else { 0.0 },
                 time: 0.0,
+                elsewhere,
                 slots,
             },
             1920.0,
@@ -13119,6 +15135,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                elsewhere: 0.0,
                 slots: &Named,
             },
             1920.0,
@@ -13259,7 +15276,7 @@ mod tests {
         // The ring has to be *cut* rather than painted over: nothing here is
         // opaque, and a painted notch would show as a bar of the wrong colour
         // laid across whatever is behind the sidebar.
-        let bare = guide_scene_with(&guide, Some("Celeste"), None, &[], None, &NoSlots);
+        let bare = guide_scene_with(&guide, Some("Celeste"), None, &[], None, &NoSlots, 0.0);
         let notched = bare
             .quads
             .iter()
@@ -13324,6 +15341,7 @@ mod tests {
             card_age: guide.age(),
             power: 0.0,
             time: 0.0,
+            elsewhere: 0.0,
             slots: &AllSlots,
         };
         blind.clock = None;
@@ -13363,6 +15381,21 @@ mod tests {
             bar_level_at(chip, height, chip[0] + chip[2] * 2.0),
             Some(1.0)
         );
+
+        // Held down, the head *is* part of the value: the hand is carrying the
+        // handle rather than pointing at the speaker beside it, so dragging
+        // back over it — and off the panel altogether — asks for silence rather
+        // than for nothing. Everywhere along the groove the two agree.
+        assert_eq!(bar_level_along(chip, height, track_x - 1.0), Some(0.0));
+        assert_eq!(bar_level_along(chip, height, chip[0] - width), Some(0.0));
+        assert_eq!(bar_level_along(chip, height, width * 2.0), Some(1.0));
+        for step in 0..=20 {
+            let x = track_x + track_w * step as f32 / 20.0;
+            assert_eq!(
+                bar_level_at(chip, height, x),
+                bar_level_along(chip, height, x)
+            );
+        }
     }
 
     /// The mixer's rows are the same instrument: a groove to set, and a speaker
@@ -13385,6 +15418,12 @@ mod tests {
         assert_eq!(with_icons, None, "the icon and the speaker come first");
         let far = mixer_level_at(chip, &entry, level, height, &Named, chip[0] + chip[2]);
         assert_eq!(far, Some(1.0));
+
+        // And a press held on the groove goes on setting it wherever it is
+        // dragged, the speaker at the head included — see [`bar_level_along`],
+        // which is the same rule on the sidebar's own bars.
+        let held = mixer_level_along(chip, &entry, level, height, &Named, chip[0] + 1.0);
+        assert_eq!(held, Some(0.0), "a handle dragged back past the head");
 
         // With nothing in the atlas the groove starts further left, because
         // nothing is drawn in front of it — and the hit test has to know that
@@ -13734,6 +15773,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &Named,
                 },
                 1920.0,
@@ -13825,6 +15865,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &Named,
                 },
                 1920.0,
@@ -13919,6 +15960,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &Named,
                 },
                 1920.0,
@@ -14226,6 +16268,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &Named,
                 },
                 1920.0,
@@ -14432,6 +16475,7 @@ mod tests {
                     card_age: guide.age(),
                     power,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -14475,6 +16519,7 @@ mod tests {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         };
         let beside = Text {
             content: "Start screen".to_string(),
@@ -14488,6 +16533,7 @@ mod tests {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         };
 
         let mut scene = Scene {
@@ -14551,6 +16597,111 @@ mod tests {
                 "card {index} is missing its title below the card"
             );
         }
+    }
+
+    /// The frame around the selected card is what says *this card answers the
+    /// next press*. While the directions are on one of the videos floating over
+    /// the guide it does not, so the frame goes — and the menu behind it steps
+    /// back with it, far enough to be told apart from across a room and not so
+    /// far that it stops being readable.
+    ///
+    /// Both over a span rather than between two frames: half way through, both
+    /// are half way through.
+    #[test]
+    fn the_selected_card_loses_its_frame_while_a_video_has_the_directions() {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        let mut cards = [card("Celeste"), card("Files")];
+        lay_out(&mut cards, 0, 1920.0, 1080.0);
+        // Standing on the deck rather than on the column, which is the frame at
+        // full strength and so the case with the most to lose.
+        guide.select_window(0, cards.len());
+        let highlight = Some(cards[0].rect);
+
+        // The lit ring around the card, which is the one quad drawn in the
+        // accent at nearly full strength.
+        let ring = |elsewhere: f32| {
+            let [x, y, ..] = cards[0].rect;
+            guide_scene_elsewhere(&guide, &cards, highlight, elsewhere)
+                .quads
+                .iter()
+                .filter(|q| q.border > 0.0 && q.x < x && q.y < y && q.x > x - 40.0)
+                .map(|q| q.color[3] * q.fade)
+                .fold(0.0_f32, f32::max)
+        };
+        // And how brightly the menu itself is drawn, asked of the sidebar,
+        // which is the one part of it that is all this scene's own.
+        let lit = |elsewhere: f32| {
+            guide_scene_elsewhere(&guide, &cards, highlight, elsewhere)
+                .quads
+                .iter()
+                .filter(|q| q.x < 300.0)
+                .map(|q| q.fade)
+                .fold(0.0_f32, f32::max)
+        };
+        // And the window in the deck is *covered* rather than faded, since the
+        // compositor draws it and this scene does not: without that the
+        // brightest thing in the menu would be the one thing that did not step
+        // back.
+        let over_the_card = |elsewhere: f32| {
+            let [x, y, w, h] = cards[0].rect;
+            guide_scene_elsewhere(&guide, &cards, highlight, elsewhere)
+                .quads
+                .iter()
+                .filter(|q| {
+                    q.border == 0.0
+                        && (q.x - x).abs() < 0.5
+                        && (q.y - y).abs() < 0.5
+                        && (q.w - w).abs() < 0.5
+                        && (q.h - h).abs() < 0.5
+                })
+                .map(|q| q.color[3] * q.fade)
+                .fold(0.0_f32, f32::max)
+        };
+
+        let (here, away) = (ring(0.0), ring(1.0));
+        assert!(
+            here > 0.5,
+            "the card is framed while the guide has the directions: {here}"
+        );
+        assert!(away < 0.01, "and unframed while a video has them: {away}");
+        let half = ring(0.5);
+        assert!(
+            half > away && half < here,
+            "the frame fades rather than vanishing: {half} outside {away}..{here}"
+        );
+
+        assert_eq!(
+            over_the_card(0.0),
+            0.0,
+            "nothing covers it while the guide has the directions"
+        );
+        let covered = over_the_card(1.0);
+        assert!(
+            (covered - (1.0 - ELSEWHERE_DIM)).abs() < 0.01,
+            "and it is covered by the share the rest was faded by: {covered}"
+        );
+        let covering = over_the_card(0.5);
+        assert!(
+            covering > 0.0 && covering < covered,
+            "over the same span: {covering}"
+        );
+
+        assert!(
+            (lit(0.0) - 1.0).abs() < 0.001,
+            "the menu is at full strength"
+        );
+        let dimmed = lit(1.0);
+        assert!(
+            (0.4..0.85).contains(&dimmed),
+            "it steps back without going dark: {dimmed}"
+        );
+        let stepping = lit(0.5);
+        assert!(
+            stepping > dimmed && stepping < 1.0,
+            "and does it over a span: {stepping}"
+        );
     }
 
     /// A card fully past the screen edge is skipped outright — no frame, no
@@ -14644,6 +16795,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                elsewhere: 0.0,
                 slots: &AllSlots,
             },
             1920.0,
@@ -14738,6 +16890,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                elsewhere: 0.0,
                 slots: &AllSlots,
             },
             1920.0,
@@ -15154,6 +17307,44 @@ mod tests {
         .expect("the program's own picture");
         assert!(!app.glyph_material(), "a theme's icon became glass");
 
+        // And an application's icon that *did* ask for the material, beside one
+        // that did not. This is the one case where two rows of the same kind
+        // are drawn differently, and it is the desktop entry that decides —
+        // see `apps::App::wears_shell_material`.
+        icons::remember_shaped_icon("asked-for-the-material");
+        let rows = focused(
+            &Lattice::new(vec![Category {
+                id: "software",
+                title: "Software",
+                icon: icons::CATEGORY_SOFTWARE,
+                entries: vec![
+                    with_icon("A Hub", "asked-for-the-material"),
+                    with_icon("A Program", "an-ordinary-icon"),
+                ],
+            }]),
+            width,
+            height,
+            &Named,
+        )
+        .quads;
+        let asked = rows
+            .iter()
+            .find(|q| q.slot == Named::slot_of("asked-for-the-material"))
+            .expect("the row of the application that asked");
+        assert!(
+            asked.glyph_material(),
+            "an application that asked for the material is drawn as a picture \
+             of its own distance field"
+        );
+        let ordinary = rows
+            .iter()
+            .find(|q| q.slot == Named::slot_of("an-ordinary-icon"))
+            .expect("the row of the application beside it");
+        assert!(
+            !ordinary.glyph_material(),
+            "and one that did not ask became glass"
+        );
+
         // A row in the panel behind the bell, wearing a mark of the shell's
         // own. This is what an announcement the shell made itself looks like —
         // a finished pairing — and what any announcement from a program that
@@ -15391,6 +17582,7 @@ mod tests {
                     card_age: guide.age(),
                     power: 0.0,
                     time,
+                    elsewhere: 0.0,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -15484,6 +17676,7 @@ mod tests {
                     card_age,
                     power: 0.0,
                     time: 0.0,
+                    elsewhere: 0.0,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -15577,6 +17770,8 @@ mod tests {
             0.0,
             &AllSlots,
             Typing::Nothing,
+            None,
+            None,
         );
         // A card a quarter of the display's width, at its aspect ratio.
         let card = [1200.0, 300.0, 480.0, 270.0];
@@ -16204,6 +18399,7 @@ mod tests {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 },
                 Text {
                     content: "clear of it".into(),
@@ -16217,6 +18413,7 @@ mod tests {
                     clip: None,
                     halo: 0.0,
                     lines: 1,
+                    cut: Cut::Tail,
                 },
             ],
         };
@@ -16690,8 +18887,12 @@ mod tests {
         let rect = context_menu_rect(1920.0, 1080.0, &menu);
         let expected = sidebar_surface(rect, guide_scale(1080.0), 0.6, 1.0);
 
-        // The scrim is drawn first and is not part of the surface.
-        let surface = &scene.quads[1..5];
+        // The panel is the whole of this scene now. The wash it lays over the
+        // screen behind it is [`context_menu_scrim`], on the surface it dims —
+        // this one has a surface to itself so a compositor can put it in front
+        // of a floating window, and a display of dark laid on that surface would
+        // fall over the very video the menu is about.
+        let surface = &scene.quads[..4];
         for (drawn, want) in surface.iter().zip(&expected) {
             assert_eq!(drawn.slot, want.slot);
             assert_eq!(drawn.color, want.color);
@@ -16794,6 +18995,7 @@ mod tests {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         });
         covered.hide_text_behind(panel);
         assert!(covered.texts.is_empty());
@@ -19267,6 +21469,7 @@ mod tests {
             clip: None,
             halo: 0.0,
             lines: 1,
+            cut: Cut::Tail,
         };
         let behind = || Scene {
             quads: Vec::new(),
@@ -19487,6 +21690,7 @@ mod tests {
                 card_age: guide.age(),
                 power: 0.0,
                 time: 0.0,
+                elsewhere: 0.0,
                 slots: &Named,
             },
             1920.0,
@@ -19624,7 +21828,8 @@ mod tests {
             glyph: icons::FILE_PAGE,
             folder: false,
         };
-        let picker = crate::transfer::Transfer::begin(crate::transfer::Kind::Copy, source, &dir)?;
+        let picker =
+            crate::transfer::Transfer::begin(crate::transfer::Kind::Copy, vec![source], &dir)?;
         Some((dir, picker))
     }
 
@@ -19710,6 +21915,185 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A pane of glass keeps its glass under its own menu.
+    ///
+    /// The file panel is a scrim, a ground and a frosted pane; the treatment
+    /// that steps the *start screen* back behind a menu fades a scene, and
+    /// fading this one took all three away together — what came through was the
+    /// application behind the panel at full strength, with the panel's writing
+    /// unreadable over it. The text is the only half this scene may be given.
+    #[test]
+    fn a_pane_of_glass_keeps_its_glass_under_its_own_menu() {
+        let pane = Quad {
+            x: 100.0,
+            y: 100.0,
+            w: 400.0,
+            h: 300.0,
+            slot: SOLID_SLOT,
+            frost: FROST_PANEL,
+            fade: 1.0,
+            ..Quad::default()
+        };
+        let mut menu = Menu::default();
+        menu.open_at(
+            [200.0, 200.0, 120.0, 40.0],
+            None,
+            vec![crate::menu::Entry::new(
+                crate::menu::Command::Dismiss,
+                "Cancel",
+            )],
+            8,
+        );
+        // A run that really does pass under the panel, so the second assertion
+        // is about the clipping rather than about where the menu happened to be.
+        let [mx, my, mw, mh] = context_menu_bounds(1600.0, 900.0, &menu, 1.0);
+        let writing = Text {
+            content: "/home/somebody/Downloads".to_string(),
+            x: mx - 200.0,
+            y: my + mh * 0.5,
+            size: 22.0,
+            max_width: mw + 400.0,
+            ..Text::default()
+        };
+
+        let mut kept = Scene {
+            quads: vec![pane],
+            texts: vec![writing.clone()],
+        };
+        hide_text_under_context_menu(&mut kept, 1600.0, 900.0, &menu, 1.0);
+        assert_eq!(
+            kept.quads[0].fade, 1.0,
+            "the pane is still a pane: nothing of the glass may be faded here"
+        );
+        assert!(
+            kept.texts.iter().all(|run| run.clip.is_some()),
+            "and the writing under the menu is cut to either side of it"
+        );
+
+        // The other half is unchanged, because the start screen still wants it.
+        let mut receded = Scene {
+            quads: vec![pane],
+            texts: vec![writing],
+        };
+        recede_behind_context_menu(&mut receded, 1600.0, 900.0, &menu, 1.0);
+        assert!(receded.quads[0].fade < 1.0);
+    }
+
+    /// A press past the panel is the way out of the question. The user asked
+    /// for this on seeing the panel ignore one: clicking past a thing to
+    /// dismiss it is what every panel on every desktop does, and one that did
+    /// nothing read as one that had stopped responding.
+    #[test]
+    fn a_press_past_the_file_panel_is_the_way_out() {
+        let asked = crate::picker::Asked {
+            id: 1,
+            app_id: "org.example.Thing".to_string(),
+            purpose: crate::picker::For::OneFile,
+            title: String::new(),
+            accept: String::new(),
+            name: String::new(),
+            at: None,
+            kinds: Vec::new(),
+        };
+        let Some(picker) = crate::picker::Picker::open(asked, crate::files::How::plain()) else {
+            return;
+        };
+        let (width, height) = (1600.0, 900.0);
+        let [px, py, pw, ph] = picker_panel_rect(width, height);
+        for (x, y) in [
+            (px - 4.0, py + ph * 0.5),
+            (px + pw + 4.0, py + ph * 0.5),
+            (px + pw * 0.5, py - 4.0),
+            (px + pw * 0.5, py + ph + 4.0),
+        ] {
+            assert_eq!(
+                picker_hit(&picker, x, y, width, height),
+                PickerSpot::Outside,
+                "{x},{y} is past the panel"
+            );
+        }
+        // And a press on the panel itself never is, whatever it lands on: the
+        // glass between two columns is the panel's and is spent there.
+        assert_ne!(
+            picker_hit(&picker, px + pw * 0.5, py + ph * 0.5, width, height),
+            PickerSpot::Outside
+        );
+    }
+
+    /// The legend at the foot names the control the user's hands are on, and
+    /// nothing about the panel changes but which pictures it draws.
+    #[test]
+    fn the_legend_names_whichever_control_is_in_hand() {
+        let pad: Vec<&str> = picker_hints(true, true)
+            .iter()
+            .map(|hint| hint.glyph)
+            .collect();
+        assert_eq!(
+            pad,
+            [
+                icons::PAD_SOUTH,
+                icons::PAD_START,
+                icons::PAD_NORTH,
+                icons::PAD_EAST
+            ],
+            "Accept, Start, the menu button and Back, by where they sit"
+        );
+        let keys: Vec<&str> = picker_hints(true, false)
+            .iter()
+            .map(|hint| hint.glyph)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                icons::KEY_SPACE,
+                icons::KEY_ENTER,
+                // The one place the legend leaves the keyboard: a menu is
+                // raised with the right button by anybody holding a pointer.
+                icons::MOUSE_RIGHT,
+                icons::KEY_ESCAPE
+            ]
+        );
+        // The words do not move between the two: it is the same three acts.
+        let words = |pad| -> Vec<&'static str> {
+            picker_hints(true, pad)
+                .iter()
+                .map(|hint| hint.label)
+                .collect()
+        };
+        assert_eq!(words(true), ["Select", "Approve", "Options", "Cancel"]);
+        assert_eq!(words(false), words(true));
+
+        // And a question with nothing to approve does not offer the button. A
+        // legend naming one that does nothing is worse than naming none.
+        let one: Vec<&str> = picker_hints(false, true)
+            .iter()
+            .map(|hint| hint.label)
+            .collect();
+        assert_eq!(one, ["Select", "Options", "Cancel"]);
+    }
+
+    /// A name on the file panel is given its room before it is drawn, not
+    /// after. Budgeting it against the *eased* depth gave every name on the
+    /// column being stepped back into the room of a column it had already left:
+    /// they were drawn with the ellipsis of a name too long to fit, and then
+    /// sprang out whole when the slide finished. There is no eased depth left
+    /// to pass, which is the fix; this holds the difference it was hiding.
+    #[test]
+    fn a_column_stepped_back_into_has_its_whole_room_at_once() {
+        let (width, height) = (1600.0, 900.0);
+        let standing = picker_text_max(1.0, 1.0, width, height);
+        let behind = picker_text_max(0.0, 1.0, width, height);
+        assert!(
+            standing > behind * 1.5,
+            "the column being stood in has the rest of the panel: \
+             {standing} against {behind}"
+        );
+        // And it has exactly that much however deep the walk is, which is what
+        // makes the room a name is given the same before a step and after one.
+        assert_eq!(picker_text_max(3.0, 3.0, width, height), standing);
+        assert_eq!(picker_text_max(2.0, 3.0, width, height), behind);
+    }
+
     /// The start screen goes behind the picker rather than being dimmed behind
     /// it — and the corner does not, because the clock is not a control.
     #[test]
@@ -19747,6 +22131,7 @@ mod tests {
                 clip: None,
                 halo: 0.0,
                 lines: 1,
+                cut: Cut::Tail,
             }],
         };
         recede_behind_transfer(&mut scene, 1600.0, 900.0, 1.0);
@@ -19792,6 +22177,8 @@ mod tests {
                 0.0,
                 &AllSlots,
                 typing,
+                None,
+                None,
             )
             .texts
             .into_iter()

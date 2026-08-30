@@ -66,6 +66,18 @@ impl WinitBackend {
     ) -> anyhow::Result<crate::capture::Shot> {
         crate::capture::output(self.backend.renderer(), lxb, output)
     }
+
+    /// Draw, small, what is on one side of the shell's own surfaces. See
+    /// [`crate::capture::behind`].
+    pub fn picture_behind(
+        &mut self,
+        lxb: &crate::state::Lxb,
+        output: &smithay::output::Output,
+        side: crate::capture::Side,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> anyhow::Result<crate::capture::Shot> {
+        crate::capture::behind(self.backend.renderer(), lxb, output, side, size)
+    }
 }
 
 /// Bring up the compositor on a nested winit window.
@@ -264,7 +276,7 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
 
     let output = backend.output.clone();
     let draw_cursor = state.lxb.config.general.draw_cursor;
-    backend.cursor.status = state.lxb.cursor_status.clone();
+    backend.cursor.status = state.lxb.cursor_now();
 
     // Which is also the moment this frame's curtain was decided: read before
     // the elements are built, so a frame counted as black had the black over

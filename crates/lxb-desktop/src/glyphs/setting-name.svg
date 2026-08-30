@@ -1,0 +1,41 @@
+<!--
+  A name card, on the row that asks what somebody is called.
+
+  A card with a face on the left and two lines of writing beside it: the one
+  object in daily life that *is* a person's name written down. Deliberately not
+  a pencil — the shell already has one for renaming a file, and what this row
+  asks for is not an edit, it is who this is.
+
+  The face and the two lines are openings cut through the card rather than
+  bodies laid on it. A bead of water in this set shows what is on it by what has
+  been taken out of it; three small bodies standing on a fourth read as a pile.
+  See category-games.svg, which is where that is argued.
+
+  The lines are 2.6 units thick, which is above the bevel's depth. Thinner and
+  the two walls of each opening meet in the middle before either has a face, and
+  a row of writing comes out as a smear.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="card" x="2.6" y="6.4" width="26.8" height="19.2" rx="3"/>
+    <g id="holes">
+      <circle cx="10.6" cy="13.4" r="2.9"/>
+      <path d="M5.4 21.6A5.6 4.4 0 0 1 15.8 21.6Z"/>
+      <rect x="18.6" y="11.6" width="8.4" height="2.6" rx="1.3"/>
+      <rect x="18.6" y="17.2" width="8.4" height="2.6" rx="1.3"/>
+    </g>
+    <g id="bead"><use href="#card"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

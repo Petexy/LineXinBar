@@ -1,0 +1,56 @@
+<!--
+  The PlayStation 2 on end: the narrow front standing the full height, the wider
+  flank stepped down beside it, and the four ports at the foot.
+
+  It is not a rectangle, and that is the correction.  A fat PS2 is two blocks —
+  the front is a slim face 78 mm across and the flank behind it is more than
+  twice that deep, and the two do not end level: stood upright there is a
+  visible step where the shallower half stops short of the top.  Drawn as one
+  plain box, with or without the right openings in it, it was a remote control
+  and stayed one.
+
+  On the front: the long seam of the tray door.  On the flank: the ventilation
+  grille, which runs most of its length and is the most of what anybody sees of
+  one standing up.  At the foot, four openings in a square — memory cards over
+  controller ports, and nothing else in this column carries anything in a
+  square.
+
+  Two faces at once, where the rest of this shelf is drawn flat on.  This
+  machine has no view that is both flat and itself.  Its stand is left off: the
+  Wii is the console here that is drawn on a foot, and a second one would cost
+  more than the stand is worth.
+
+  See console-nes.svg for the set's rules, which this one is the exception to.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="front" x="8.6" y="2.6" width="7" height="26.4" rx="0.9"/>
+    <rect id="flank" x="13.6" y="5.8" width="9.6" height="23.2" rx="0.9"/>
+    <rect id="seam" x="10.6" y="5.4" width="3" height="13.2" rx="0.4"/>
+    <g id="vents">
+      <rect x="16.6" y="8.6" width="4.8" height="2" rx="0.3"/>
+      <rect x="16.6" y="12.6" width="4.8" height="2" rx="0.3"/>
+      <rect x="16.6" y="16.6" width="4.8" height="2" rx="0.3"/>
+    </g>
+    <g id="ports">
+      <rect x="10.6" y="21.4" width="3" height="2.4" rx="0.4"/>
+      <rect x="16.6" y="21.4" width="4.8" height="2.4" rx="0.4"/>
+      <rect x="10.6" y="24.8" width="3" height="2.4" rx="0.4"/>
+      <rect x="16.6" y="24.8" width="4.8" height="2.4" rx="0.4"/>
+    </g>
+    <g id="bead"><use href="#front"/><use href="#flank"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#seam" fill="#000000"/>
+      <use href="#vents" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

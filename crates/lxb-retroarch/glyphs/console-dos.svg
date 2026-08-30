@@ -1,0 +1,38 @@
+<!--
+  MS-DOS: the system unit, its two drive bays stacked at one end and the power
+  lamp at the other.
+
+  It was drawn as a floppy disk, which is a medium and not a machine — and with
+  the Famicom's disk card in this same set also a card with a shutter, two
+  drawings were doing one job.  What everybody actually had was this: a beige
+  box lying flat under a monitor, blank across most of its face, with a
+  five-and-a-quarter bay and a narrower three-and-a-half bay stacked in one
+  corner and a lamp at the other end.
+
+  Two bays of different widths, because that is what those two drives are; a
+  matched pair would have been a pair of vents.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="unit" x="2.8" y="10" width="26.4" height="12" rx="1"/>
+    <g id="bays">
+      <rect x="14.6" y="12.6" width="11.8" height="2.6" rx="0.4"/>
+      <rect x="18" y="17.4" width="8.4" height="2.2" rx="0.4"/>
+    </g>
+    <circle id="lamp" cx="6.6" cy="18.6" r="1"/>
+    <mask id="pierced">
+      <use href="#unit" fill="#ffffff"/>
+      <use href="#bays" fill="#000000"/>
+      <use href="#lamp" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#unit" fill="#ffffff"/>
+  </g>
+</svg>

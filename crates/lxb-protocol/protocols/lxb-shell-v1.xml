@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="28">
+  <interface name="lxb_shell_v1" version="36">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -904,6 +904,286 @@
       <arg name="awake" type="uint" summary="1 to keep it running unseen, 0 to let it be stopped again"/>
     </request>
 
+    <enum name="pip_size" since="29">
+      <description summary="how large a picture-in-picture window is drawn">
+        Three sizes rather than a number of pixels, for the reason the shell
+        offers three: what the user is choosing is how much of the screen they
+        are willing to give up, and a display's own size is the compositor's to
+        read. Each is a share of the display's width, so the same choice is the
+        same fraction of a laptop panel and of a television across the room.
+
+        How *tall* the window is at that width is the window's own business.
+        The compositor asks it what shape it wants to be — a configure carrying
+        no size, which is xdg-shell for "choose one" — and follows the answer,
+        so a video that is four to three is drawn four to three and one stood on
+        its end is drawn standing on its end. It goes on following it, so a
+        video swapped for one of another shape in the same window is drawn in
+        the new one.
+      </description>
+      <entry name="small" value="0" summary="a sixth of the display's width"/>
+      <entry name="medium" value="1" summary="a quarter of it"/>
+      <entry name="large" value="2" summary="a third of it"/>
+    </enum>
+
+    <enum name="pip_place" since="29">
+      <description summary="which corner a picture-in-picture window sits in">
+        The four corners, and only the four corners. A floating window on a
+        console is not dragged anywhere — there is no pointer in the user's
+        hand to drag it with — so what a page can honestly offer is the corner
+        it starts in, and every corner is the same distance from the edges.
+
+        A second such window, opened while the first is still up, stands below
+        it in a column from that corner rather than on top of it: two of them in
+        one place is one window with something wrong with it.
+      </description>
+      <entry name="top_left" value="0" summary="the upper left corner"/>
+      <entry name="top_right" value="1" summary="the upper right corner"/>
+      <entry name="bottom_left" value="2" summary="the lower left corner"/>
+      <entry name="bottom_right" value="3" summary="the lower right corner"/>
+    </enum>
+
+    <enum name="pip_command" since="30">
+      <description summary="what was chosen from a floating window's menu">
+        The rows of the menu a compositor raises with pip_menu that only a
+        compositor can carry out. The two that move the window to another
+        display are move_window_to_output, which already exists and means
+        exactly this for every other window; the row that puts the window back
+        to filling its display is set_window_floating, which is the same
+        sentence said in both directions; and the row that dismisses the menu
+        never leaves the shell at all.
+      </description>
+      <entry name="move" value="0"
+             summary="carry the window with the pointer until a button is clicked"/>
+      <entry name="resize" value="1"
+             summary="resize it from a corner until a button is clicked"/>
+      <entry name="close" value="2" summary="ask the window to close"/>
+      <entry name="realign" value="3" since="34"
+             summary="put it back in the column, at the size the settings ask for"/>
+    </enum>
+
+    <enum name="pip_handle" since="31">
+      <description summary="what a controller has hold of a floating window by">
+        A pointer takes hold of a floating window by whatever is under it — an
+        edge to pull, the middle to carry. A controller has nothing under it,
+        so it has to be told which of the two it is doing.
+
+        resize does not name a corner. Which corner a window grows from is not
+        something the user chose, and not something a shell can answer better
+        than the compositor can: it is the corner with the most room between the
+        window and the edge of the display, which is a fact about a layout the
+        compositor owns.
+      </description>
+      <entry name="move" value="0" summary="carry the whole window"/>
+      <entry name="resize" value="1"
+             summary="pull it larger and smaller from the corner with the most room"/>
+    </enum>
+
+    <request name="set_picture_in_picture" since="29">
+      <description summary="whether a video floats over everything, and where">
+        Sets what the compositor does with a window a browser has put into
+        picture-in-picture: the small always-on-top player somebody keeps a
+        match or a lecture in while they use the machine for something else.
+
+        Such a window says what it is in its title, and says it in the one
+        string every browser that has the feature agrees on —
+        "Picture-in-Picture". That is what the compositor matches, and it is
+        the whole of the test. It cannot be an app_id: the window belongs to
+        the browser and calls itself by the browser's name, which is also what
+        the window the video came out of calls itself.
+
+        A window that answers to it is taken out of the layout every other
+        window is under. It is not maximized, it is not given the keyboard, it
+        is not listed to the shell as something to switch to or to close, and
+        it is drawn in front of everything the session has — over a fullscreen
+        game, over the shell's own start screen, and over the guide, which is
+        the one surface nothing else in this protocol is allowed in front of.
+        That is what the feature is: a window that is still there while the
+        user does something else. It is drawn with a hairline surround and its
+        own corners rounded, held off the edges of the screen by the radius the
+        shell gives its menus, so that what floats over the session is spaced
+        the way the session is — and it is drawn *only* there, and *all* of
+        there: a client that puts its own drop shadow outside its window, or
+        that will not take the size it is given, is clipped to that shape rather
+        than allowed to spill past it, and whatever it leaves uncovered inside
+        that shape is filled rather than left to show the session through.
+
+        enabled turns the whole of that off again. A compositor told zero
+        treats such a window as the application window it otherwise is —
+        maximized, listed, focusable — which is the layout this shell had
+        before it could be asked, and is the honest answer for somebody who
+        does not want a video following them around.
+
+        The three arguments arrive together because they are one rectangle. A
+        size sent without its corner, or a corner without its size, would move
+        the window twice for one press.
+
+        size and place describe where such a window *starts*. A compositor may
+        let the user move and resize one by hand — this one does, with a mouse —
+        and a window that has been moved keeps where it was put rather than
+        following these: it is out of the corner and out of the column below it,
+        and the place it stood in is free for the next window that floats. What
+        puts it back is this request arriving with a different size or corner,
+        which is the user saying on the page where they want their videos.
+
+        Not remembered by the compositor. The shell says what this is as soon
+        as it connects, before any application exists to put a video in — the
+        same bargain set_application_scale is under, and for the same reason:
+        the preference belongs to the page it was set on.
+      </description>
+      <arg name="enabled" type="uint"
+           summary="1 to float such a window, 0 to treat it as an ordinary one"/>
+      <arg name="size" type="uint" enum="pip_size" summary="how large to draw it"/>
+      <arg name="place" type="uint" enum="pip_place" summary="which corner to put it in"/>
+    </request>
+
+    <request name="pip_menu_command" since="30">
+      <description summary="carry out a row of the floating window's menu">
+        Sent when the user chooses one of the rows of the menu a pip_menu event
+        asked for. Only the rows a client cannot carry out itself arrive here —
+        see the pip_command enum, which is the whole list.
+
+        move and resize hand the pointer to the compositor: it is put on the
+        window (in the middle of it, or on the corner being pulled), the window
+        follows it, and the next click leaves the window where it is. Nothing is
+        held down throughout, because nothing was held down to begin with — the
+        user let go of the button that chose the row. A click of any other
+        button puts the window back where it was.
+
+        close asks the window to close, exactly as close_foreground does, and is
+        deliberately not close_window: that one ends the *application*, and the
+        application here is a browser with the rest of somebody's session in it.
+        What this ends is one video in one corner, which the browser answers by
+        putting it back in the page it came from.
+
+        Silently ignored when the window is gone, when it is not floating any
+        more, or when the number is not a command this compositor knows.
+      </description>
+      <arg name="id" type="uint" summary="the window, from pip_menu"/>
+      <arg name="command" type="uint" enum="pip_command" summary="the row that was chosen"/>
+    </request>
+
+    <request name="pip_select" since="31">
+      <description summary="which floating window the shell's own controls are on">
+        Names the floating window the user has the directions on, so the
+        compositor can mark it. A console has no pointer: the only way to say
+        which of two videos in a corner a button is about is to select one and
+        show which one is selected, and only the compositor can show it — the
+        window is drawn in front of every surface this shell owns, so a mark
+        drawn by the shell would be behind the thing it is marking.
+
+        An id of zero selects nothing, which is the resting state and the one to
+        go back to whenever the shell stops offering the controls: the overlay
+        closing, the display being handed to another screen, the window going
+        away.
+
+        accent is the colour to mark it in, as 0xRRGGBB. It travels with the
+        selection because it is the shell's, not the compositor's: it is the
+        accent the user chose, it changes while they choose it, and a compositor
+        that read it out of the shell's settings for itself would be a second
+        copy of that answer, drifting.
+
+        Silently ignored for a window that is gone or is not floating.
+      </description>
+      <arg name="id" type="uint" summary="the window, from pip_window, or 0 for none"/>
+      <arg name="accent" type="uint" summary="the colour to mark it in, 0xRRGGBB"/>
+    </request>
+
+    <request name="pip_grab" since="31">
+      <description summary="take hold of a floating window without a pointer">
+        Starts moving or resizing a floating window on a controller's behalf.
+        The window follows the deltas of pip_drag from here until pip_drop ends
+        it, exactly as it follows a pointer that has hold of it — same
+        arithmetic, same limits, same detaching from the corner it started in.
+
+        Nothing is warped and nothing is pressed: no pointer is involved at any
+        point, and whatever the pointer is over goes on hearing about it. That
+        is the whole difference between this and the move and resize rows of
+        pip_menu_command, which are the same two acts done with a mouse.
+
+        A second grab while one is already under way is ignored, as is one on a
+        window that is gone or not floating. There is one hand on one window at
+        a time on this session, whichever control it belongs to.
+      </description>
+      <arg name="id" type="uint" summary="the window, from pip_window"/>
+      <arg name="handle" type="uint" enum="pip_handle" summary="carry it or resize it"/>
+    </request>
+
+    <request name="pip_drag" since="31">
+      <description summary="move the window a controller has hold of">
+        Moves or resizes the window pip_grab took hold of by a relative amount,
+        in logical pixels. Deltas accumulate; sending one every controller poll
+        is the intended shape, as it is for move_pointer.
+
+        Each step is measured from where the window is *now* rather than from
+        where the grab started, so a stick held into the edge of the display
+        does not build up travel the user has to push back out of before the
+        window moves again.
+
+        For a resize the delta is read as the pull on the corner the compositor
+        chose, and the window keeps the shape its own client asked to be: one of
+        the two numbers is what the stick said and the other is what that shape
+        makes of it.
+
+        Ignored while nothing is held.
+      </description>
+      <arg name="dx" type="fixed" summary="horizontal movement, logical pixels"/>
+      <arg name="dy" type="fixed" summary="vertical movement, logical pixels"/>
+    </request>
+
+    <request name="pip_drop" since="31">
+      <description summary="let go of the window a controller had hold of">
+        Ends the grab. keep of 1 leaves the window where the drags left it; 0
+        puts it back where it was when the grab started — which is a state and
+        not only a rectangle, so a window that was standing in the corner the
+        settings put it in goes back to standing there.
+
+        Ignored while nothing is held.
+      </description>
+      <arg name="keep" type="uint" summary="1 to leave it where it is, 0 to put it back"/>
+    </request>
+
+    <request name="set_menu_surface" since="32">
+      <description summary="which surface of the shell's is its context menu">
+        Names a surface the shell draws its context menu on, and nothing else.
+        A compositor draws that surface **in front of** the windows
+        set_picture_in_picture floats, where it draws every other surface the
+        shell owns behind them, and lets a press inside its input region be the
+        shell's rather than the window's.
+
+        A floating window is drawn over everything, which is what the feature
+        is — and a window the user has made large enough covers the very menu
+        that offers to make it small again. On a console that is a dead end:
+        there is no pointer to find an unseen row with, so a menu that cannot be
+        seen cannot be answered. So one surface is allowed over such a window,
+        and it is the one the menu is on.
+
+        A surface of its own rather than a rectangle of the shell's main one,
+        because a menu's panel is **rounded** and a rectangle is not: a
+        compositor lifting the panel's bounding box would put four square
+        corners of the start screen over the video, where the video is what
+        should be showing. Given its own surface the panel is exactly its own
+        shape, whatever that shape is, and everything around it is transparent.
+
+        The shell is expected to make this a subsurface of the surface it would
+        otherwise have drawn the menu on, so that the two commit together and no
+        frame can show one without the other. A compositor draws it wherever the
+        surface's own geometry puts it, which for a subsurface is where its
+        parent and its offset put it; nothing here moves it.
+
+        Sent for as long as a menu is up and not a moment longer: before the
+        frame that draws the first panel, and null again after the last one.
+        Everything a compositor does about this is per-frame and per-press work,
+        and none of it is owed on a session where nobody has opened a menu.
+
+        One at a time. A shell that draws menus on several surfaces names
+        whichever is carrying the menu now; naming a second forgets the first.
+        A null surface forgets whatever was named, and a surface that is
+        destroyed is forgotten with it.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface" allow-null="true"
+           summary="the shell's menu surface, or null to forget the last one"/>
+    </request>
+
     <event name="guide">
       <description summary="the guide binding was activated">
         Sent when the user pressed the compositor's guide binding. The shell is
@@ -1445,28 +1725,29 @@
       </description>
     </event>
 
-    <event name="output_game" since="27">
-      <description summary="a game is being played on this display">
-        Whether what is in front of this display is a game — an application a
-        supervisor started for the user, rather than the supervisor's own
-        interface or anything the shell launched itself. Today that means an
-        application under Valve's client: the client draws its own storefront
-        and it starts games, and only the second of those is somebody playing.
+    <event name="output_in_use" since="27">
+      <description summary="an application is in front of this display">
+        Whether what is in front of this display is an application — anything
+        the user opened, whatever started it — rather than the shell being the
+        whole of what is on the screen. A display showing nothing but the start
+        screen is 0. A game, a film, a browser, an emulator and Valve's own
+        storefront are all 1: the shell has no business ranking what somebody
+        chose to open, and every one of them is a picture somebody is looking
+        at.
 
-        Worked out from the process behind the window rather than from what the
-        window calls itself. A game reaches the screen under any name it likes
-        — its Steam class, its own app_id, or nothing at all — and the one
-        thing every one of them has in common is which client is running it.
-        That is the same walk of the tree Close makes to decide what an
-        application is.
+        Whether there is such a window there at all is a question only this
+        side can answer. The shell is told what the window in front of each
+        display calls itself, and that is exactly what cannot be relied on: an
+        application reaches the screen as steam_app_..., as its own name, or as
+        nothing at all, and an empty name is both "no window" and "a window
+        that never said".
 
         Sent when the answer changes, per display, and on binding. A shell that
         never asks about it can ignore it entirely; what it is for is the rule
-        that rests the *other* screens while somebody is playing, which is a
-        rule about a game and not about any application being on screen.
+        that rests the *other* screens while somebody is using one of them.
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
-      <arg name="playing" type="uint" summary="1 while a game is in front of this display"/>
+      <arg name="in_use" type="uint" summary="1 while an application is in front of this display"/>
     </event>
 
     <event name="output_drawing" since="27">
@@ -1512,6 +1793,439 @@
         left alone, and it is a long way short of a motion event.
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display the pointer is over"/>
+    </event>
+
+    <event name="pip_menu" since="30">
+      <description summary="the user asked for the floating window's menu">
+        Sent when the user presses the right button on the floating window a
+        set_picture_in_picture is about. The shell is expected to raise its
+        context menu over that rectangle and to send back whatever is chosen —
+        pip_menu_command for the rows only a compositor can carry out, and
+        move_window_to_output for the two that move the window between
+        displays, which is what that request already means for every other
+        window.
+
+        The compositor routes this itself for the same reason it routes the
+        guide binding: the shell has no pointer focus over an application, and
+        this window is drawn in front of one. It is not offered a press it
+        cannot see.
+
+        The rectangle is the whole window as the user sees it — the surround
+        included, since that is what the pointer is over — in the display's own
+        logical coordinates, so a shell can hand it straight to whatever it
+        grows a menu out of.
+
+        A shell that answers nothing has answered "cancel", which is what the
+        row of that name does: nothing is held open on this side while the menu
+        is up, and the press has already been withheld from the window's own
+        client.
+      </description>
+      <arg name="id" type="uint" summary="the window, named as output_window names one"/>
+      <arg name="output" type="object" interface="wl_output" summary="the display it is on"/>
+      <arg name="x" type="int" summary="where it is on that display"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int" summary="how large it is drawn, surround included"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <event name="pip_window" since="31">
+      <description summary="one floating window on a display">
+        Describes one window a set_picture_in_picture is floating, so that a
+        shell with no pointer can offer the user something to do to it. Windows
+        are listed topmost first, and the batch ends with pip_windows_done.
+
+        This is the one thing set_picture_in_picture says such a window is *not*
+        listed as: it is still not something to switch to or to close, and it is
+        still absent from output_window and from the cards drawn out of it. What
+        this is for is the window itself — where it is, so a menu can be grown
+        out of it and the user can be shown which of two videos they are about
+        to move.
+
+        The rectangle is the whole window as the user sees it, surround
+        included, in the display's own logical coordinates: the same rectangle
+        pip_menu carries, and for the same reason.
+
+        Sent once per display when a version 31 object is bound, and again
+        whenever a window starts or stops floating or one of them moves — which,
+        while somebody is dragging one, is every frame.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="id" type="uint" summary="stable handle, named as output_window names one"/>
+      <arg name="x" type="int" summary="where it is on that display"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int" summary="how large it is drawn, surround included"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <request name="ask_for_the_picture_behind" since="33">
+      <description summary="hand over a buffer for what is drawn behind the shell">
+        Asks the compositor to draw, into `buffer`, what it is compositing on
+        this display behind the shell's own surfaces — and to say when it has.
+
+        The shell draws glass, and glass shows what is behind it. Everything the
+        shell itself draws it can read back from its own frame, and the
+        wallpaper it can evaluate, because it is the same function that paints
+        it. What it can neither read nor evaluate is another client: a game, or
+        the video in a floating window. Without this a pane standing over one of
+        those reproduces the wallpaper instead — a picture that is not there.
+
+        `layer` says which side of the shell's own surfaces to draw. `below` is
+        everything between the wallpaper and the surface the shell draws its
+        session on: the application windows. `above` is everything the
+        compositor draws in *front* of that surface and behind the context menu:
+        the windows set_picture_in_picture floats. The two are separate because
+        the shell has to put its own frame between them, and it draws that at
+        full resolution.
+
+        The picture is the compositor's own elements, scaled down to the size of
+        the buffer, on transparent: a pane composites it over the wallpaper it
+        evaluates itself, so what nothing covers must arrive covering nothing.
+        Small is expected and is the point — a pane frosts what it transmits, so
+        what it wants is a blurred picture, and a small one read back per frame
+        is cheaper than a large one. The compositor scales to whatever size the
+        buffer is.
+
+        One buffer is one picture. The compositor fills it, sends
+        the_picture_behind, and then leaves it alone until it is handed another
+        — so a shell that stops asking stops being charged for the readback, and
+        a shell that wants one per frame asks once per frame. Nothing is drawn
+        for a display no buffer is pending on.
+
+        The buffer must be wl_shm, ABGR8888 or XBGR8888 — the order a renderer
+        reads a picture back in, so that a copy is all there is between the two.
+        A buffer of a size the
+        compositor cannot use is answered with the_picture_behind carrying a
+        width and height of zero rather than an error: a picture is an
+        improvement to a pane, never a reason to end a session over.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="layer" type="uint" enum="behind_layer" summary="which side of the shell's own surfaces"/>
+      <arg name="buffer" type="object" interface="wl_buffer" summary="where to draw it"/>
+    </request>
+
+    <enum name="behind_layer" since="33">
+      <description summary="which side of the shell's own surfaces a picture is of"/>
+      <entry name="below" value="0" summary="the application windows, between the wallpaper and the shell"/>
+      <entry name="above" value="1" summary="the floating windows, in front of the shell"/>
+    </enum>
+
+    <event name="pip_windows_done" since="31">
+      <description summary="the floating window list for a display is complete">
+        Ends a batch of pip_window events. The batch is the whole truth for that
+        display: a done event with no windows before it means nothing is
+        floating there.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+    </event>
+
+    <event name="the_picture_behind" since="33">
+      <description summary="the buffer holds what is drawn behind the shell">
+        The buffer handed over by ask_for_the_picture_behind now holds the
+        picture, and the compositor has finished with it. The shell may read it,
+        and must ask again for the next one.
+
+        A width and height of zero means there was nothing to draw, or nothing
+        that could be: the display has no application on it, or the buffer was
+        not one the compositor could use. The shell should treat that as an
+        empty picture rather than as a stale one, or a pane goes on refracting a
+        game that has closed.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="layer" type="uint" enum="behind_layer" summary="which picture this is"/>
+      <arg name="width" type="int" summary="how much of the buffer was drawn into"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <request name="set_window_floating" since="34">
+      <description summary="make a window float in a corner, or stop it floating">
+        Says of one window what set_picture_in_picture says of the session: that
+        it floats. It is the same answer the window's title gives by itself —
+        see set_picture_in_picture, which is where what floating *is* is written
+        down — taken out of the compositor's hands for this one window and given
+        to the user.
+
+        Both directions, because they are one sentence. A video in a corner that
+        the user wants to watch properly is told zero: it stops floating, and is
+        laid out, listed, focused and closed exactly as every other window on
+        the session is — which on this shell means filling the display it is on.
+        An application the user wants out of the way while they do something
+        else is told one: it is taken out of that layout and given the corner,
+        the size and the surround a browser's picture-in-picture window gets,
+        whatever it calls itself. A second request naming only one of the two
+        would be one place for the other to be got wrong.
+
+        What is said here outranks the title from then on, and outlasts the
+        window ceasing to be called Picture-in-Picture: the user has said what
+        they want this window to be, and a browser retitling it is not them
+        changing their mind. It is remembered against the window and dies with
+        it.
+
+        Refused, with nothing done, while set_picture_in_picture has the feature
+        switched off: a session that does not want floating windows must not be
+        given one from a menu, and one put in a corner there would be a window
+        with no corner to be got out of.
+
+        Also refused for a window whose geometry is its client's own business —
+        an X11 menu, notification, splash or override-redirect window — which is
+        the one kind that can never be given a corner. Silently, as a request
+        naming a window that is gone is: a menu row is a thing the user pressed,
+        not a protocol error.
+
+        How the change is drawn is the compositor's. This one grows the window
+        out of its corner to fill the display, the same flight a window makes
+        when it is restored from a tile, and lets one arriving in a corner
+        arrive the way any floating window does.
+      </description>
+      <arg name="id" type="uint" summary="the window, from output_window or pip_window"/>
+      <arg name="floating" type="uint" summary="1 to float it in a corner, 0 to lay it out like every other window"/>
+    </request>
+
+    <enum name="picking" since="35">
+      <description summary="what an application is asking the user to choose"/>
+      <entry name="one_file" value="0" summary="one file that is already there"/>
+      <entry name="many_files" value="1" summary="any number of files that are already there"/>
+      <entry name="a_folder" value="2" summary="a folder, whatever is in it"/>
+      <entry name="a_new_file" value="3" summary="a folder and a name to write into it"/>
+    </enum>
+
+    <enum name="matching" since="35">
+      <description summary="how a pattern offered with offer_kind is read"/>
+      <entry name="glob" value="0" summary="a shell pattern matched against the file name"/>
+      <entry name="mime" value="1" summary="a media type matched against what the file is"/>
+    </enum>
+
+    <request name="offer_kind" since="35">
+      <description summary="one kind of file the question coming next will accept">
+        Names one pattern of one kind, for the ask_to_pick_files that follows it.
+        Sent as many times as there are patterns, which is how an application
+        that accepts "Images" made of *.png, *.jpg and *.webp says so.
+
+        Patterns sharing a name are one kind. The order is the order the
+        application gave, and the first kind named is the one the question opens
+        on, exactly as it is in every other desktop's chooser — an application
+        that put "Images" first meant the user to see images.
+
+        It carries the same id as the ask_to_pick_files it belongs to, and it
+        must come before it: a kind offered afterwards has arrived after the
+        question was put on screen and is ignored. Nothing accumulates in the
+        compositor — each of these is carried straight to the shell as a
+        pick_kind event, in the order it was sent, and it is the shell that
+        gathers them against the question they name.
+
+        Offering no kind at all is an application that will take any file, which
+        is the common case and is not a mistake.
+      </description>
+      <arg name="id" type="uint" summary="the question this kind belongs to"/>
+      <arg name="name" type="string" summary="what the kind is called, as the application spelled it"/>
+      <arg name="pattern" type="string" summary="the pattern itself, read as matching says"/>
+      <arg name="matching" type="uint" enum="matching" summary="how the pattern is read"/>
+    </request>
+
+    <request name="ask_to_pick_files" since="35">
+      <description summary="ask the user to choose a file, some files, or a folder">
+        Puts a file question to the session shell: this application wants a file
+        chosen, and here is what it will take. The answer comes back as
+        pick_answered, always, so a portal waiting on it is never left waiting.
+
+        Sent by the session's desktop portal for the same reason ask_to_share is
+        and along the same road, and it is worth reading that request first: the
+        portal cannot draw, only the shell can, and only the compositor can
+        reach the shell while a fullscreen application holds the screen.
+
+        id is the asking client's own number for this question, unique among the
+        questions it currently has outstanding, and is quoted back in the answer.
+        app_id is what the application asking calls itself, for the shell to name
+        in the question; it may be empty, and a shell should then say so rather
+        than showing an empty name.
+
+        title is what the application called the question — "Open Image", "Select
+        a folder" — and may be empty, in which case the shell says what the
+        purpose is in its own words. accept is the word the application wants on
+        the row that answers, and may likewise be empty. Neither is trusted for
+        anything but its own line of text.
+
+        name is what a new file is called to begin with, and means nothing for
+        any purpose but a_new_file. at is an absolute path the question should
+        open in, and may be empty; a shell may ignore it, and must ignore one
+        that is not a directory it can list — an application does not get to
+        decide what the user is looking at.
+
+        The question goes to every other client bound to this interface, and
+        never back to the one that asked, on exactly the terms ask_to_share's
+        does. Refused outright when nobody can be asked, for the same reason:
+        a file handed over without anybody being asked is the thing this request
+        exists to prevent.
+      </description>
+      <arg name="id" type="uint" summary="the asking client's number for this question"/>
+      <arg name="app_id" type="string" summary="what the application asking calls itself"/>
+      <arg name="purpose" type="uint" enum="picking" summary="what is being chosen"/>
+      <arg name="title" type="string" summary="what the application called the question, possibly empty"/>
+      <arg name="accept" type="string" summary="the word the application wants on the answering row, possibly empty"/>
+      <arg name="name" type="string" summary="what a new file is called to begin with, possibly empty"/>
+      <arg name="at" type="string" summary="an absolute directory to open in, possibly empty"/>
+    </request>
+
+    <request name="chose_file" since="35">
+      <description summary="one of the files the user chose">
+        Names one file the user picked, for the answer_pick that follows it.
+        Sent as many times as the user chose things, which for every purpose but
+        many_files is once.
+
+        The path is absolute. For a_new_file it is a file that need not exist
+        yet, and its parent directory is a folder the user walked to; for every
+        other purpose it is something that was on the disk when it was pressed.
+
+        It carries the same id as the answer_pick it belongs to and must come
+        before it, on the same terms offer_kind must come before the question.
+        A file named for a question nobody asked, or for one already answered,
+        is ignored.
+      </description>
+      <arg name="id" type="uint" summary="the question being answered"/>
+      <arg name="path" type="string" summary="absolute path of the file the user chose"/>
+    </request>
+
+    <request name="answer_pick" since="35">
+      <description summary="answer a pick_request">
+        The end of one file question, whether or not the user chose anything.
+        Whatever chose_file named for this id is the answer; an answer_pick with
+        nothing before it is the user saying no, which is what closing the
+        question without picking means and what a shell that cannot show the
+        question sends straight back.
+
+        kind is which of the offered kinds was in force when the user answered,
+        numbered from zero in the order they were offered, so that an application
+        that asked for "Images or Films" is told which of the two it is being
+        given. It is 0xffffffff when no kind was offered, or when the user was
+        looking at everything on the disk rather than at one of them.
+
+        Answering a question nobody asked, or one that has already been
+        answered, is ignored — a client that has gone away takes its question
+        with it.
+      </description>
+      <arg name="id" type="uint" summary="the question, from pick_request"/>
+      <arg name="kind" type="uint" summary="which offered kind was in force, or 0xffffffff for none"/>
+    </request>
+
+    <event name="pick_kind" since="35">
+      <description summary="one kind of file the question coming next will accept">
+        Carries one offer_kind through to the shell, unchanged and in the order
+        it was sent. Every one of these that names a question arrives before the
+        pick_request for it, so a shell gathers them against the id and takes
+        them when the question itself lands.
+
+        A shell that is holding kinds for an id that never asks should let them
+        go: the client that offered them has gone away, or changed its mind.
+      </description>
+      <arg name="id" type="uint" summary="the question this kind belongs to"/>
+      <arg name="name" type="string" summary="what the kind is called"/>
+      <arg name="pattern" type="string" summary="the pattern itself, read as matching says"/>
+      <arg name="matching" type="uint" enum="matching" summary="how the pattern is read"/>
+    </event>
+
+    <event name="pick_request" since="35">
+      <description summary="an application is asking for a file to be chosen">
+        Sent to every client bound to this interface except the one that asked,
+        which in a running session means the shell. It is expected to put the
+        question to the user and answer with answer_pick.
+
+        The arguments are ask_to_pick_files's own, and everything said there
+        about what they may and may not be trusted for holds here. A shell that
+        does not answer leaves the application waiting, which the portal treats
+        as a refusal after a while — the safe way round, exactly as it is for a
+        share_request.
+      </description>
+      <arg name="id" type="uint" summary="the question, to be quoted back"/>
+      <arg name="app_id" type="string" summary="what the application asking calls itself, possibly empty"/>
+      <arg name="purpose" type="uint" enum="picking" summary="what is being chosen"/>
+      <arg name="title" type="string" summary="what the application called the question, possibly empty"/>
+      <arg name="accept" type="string" summary="the word the application wants on the answering row, possibly empty"/>
+      <arg name="name" type="string" summary="what a new file is called to begin with, possibly empty"/>
+      <arg name="at" type="string" summary="an absolute directory to open in, possibly empty"/>
+    </event>
+
+    <event name="pick_chosen" since="35">
+      <description summary="one of the files the user chose">
+        Carries one chose_file through to whoever asked, unchanged and in the
+        order the shell sent it. Every one of these arrives before the
+        pick_answered that ends the question.
+
+        The path is on the machine the compositor is running on, and is the
+        shell's word for what the user pressed. Nothing here opens it or checks
+        that it is there: a file can be deleted between the press and the
+        answer, and the application is the one that has to cope with that
+        anyway.
+      </description>
+      <arg name="id" type="uint" summary="the question being answered"/>
+      <arg name="path" type="string" summary="absolute path of the file the user chose"/>
+    </event>
+
+    <event name="pick_answered" since="35">
+      <description summary="what came of an ask_to_pick_files request">
+        Answers exactly one ask_to_pick_files, whether the user chose something
+        or nothing.
+
+        Whatever pick_chosen named for this id is the answer. None at all is the
+        user saying no, and so is this event arriving because there was nobody to
+        ask, because the shell went away mid-question, or because the question
+        stood unanswered — all of which a client must treat the same way, since
+        they all mean it has been given no file.
+
+        kind is which of the offered kinds was in force, numbered from zero in
+        the order they were offered, or 0xffffffff for none.
+      </description>
+      <arg name="id" type="uint" summary="the question that was asked"/>
+      <arg name="kind" type="uint" summary="which offered kind was in force, or 0xffffffff for none"/>
+    </event>
+
+    <enum name="switch_direction" since="36">
+      <description summary="which way along the session's applications">
+        A display's windows are listed to the shell in the order they are
+        stacked, the one in front first, so forward is towards the window
+        behind the one on screen — which is what a hand that presses this once
+        is asking for, and what every desktop has meant by it for thirty years.
+      </description>
+      <entry name="forward" value="0" summary="the next application along"/>
+      <entry name="back" value="1" summary="the one before it"/>
+    </enum>
+
+    <event name="switch_window" since="36">
+      <description summary="the user is walking the session's applications">
+        Sent when the user pressed the compositor's switch binding — Alt+Tab,
+        and Alt+Shift+Tab the other way — with the modifier still held down.
+        The shell is expected to show its overlay with the window deck in
+        front, and to step the highlight one card in the direction given.
+
+        Routed by the compositor for the reason the guide, keyboard and volume
+        events are, and here it is not merely that the application holds the
+        keyboard: the application holding it is the one being switched away
+        from. A switcher that only worked while the shell had focus would be a
+        switcher for a session with nothing to switch between.
+
+        One event per press. The compositor does not repeat a held binding, so
+        a thumb left on Tab steps one card rather than thirty.
+
+        Nothing is switched by this. It says where the user has got to; what
+        they land on is taken when switch_done arrives.
+      </description>
+      <arg name="direction" type="uint" enum="switch_direction" summary="which way to step"/>
+    </event>
+
+    <event name="switch_done" since="36">
+      <description summary="the modifier the walk was held under came up">
+        Sent when the user let go of the modifier. The shell is expected to
+        take whatever its highlight is on — that application coming back to the
+        front and taking the keyboard with it — and to put its overlay away.
+
+        Never sent without a switch_window before it: a modifier let go of by
+        somebody who never asked for the deck is not an answer to anything.
+
+        Nor is it sent where the walk was interrupted rather than finished —
+        the session losing the keyboard to another virtual terminal. Those keys
+        came up on the compositor's word rather than under the user's hand, and
+        a shell that took a card on them would be switching applications behind
+        somebody's back. The overlay is left standing instead, where every
+        other way of driving it still reaches it.
+      </description>
     </event>
   </interface>
 </protocol>

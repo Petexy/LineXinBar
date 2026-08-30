@@ -1,0 +1,13 @@
+# What this desktop opens a folder with, and only while this desktop is the one
+# running: the file that names it is read by anything following the mime-apps
+# specification, and only when `XDG_CURRENT_DESKTOP` lowercases to the name in
+# front of `-mimeapps.list`. LineXinBar's session sets it (see
+# packaging/files/lxb-session), so a LineXinBar session gets Files and a KDE
+# session on the same machine keeps Dolphin — without either of them writing to
+# the user's own `mimeapps.list`.
+#
+# Only `[Default Applications]` belongs here. A desktop-specific list may not
+# add or remove associations, and GLib says so out loud when one tries; what
+# Files can open is on the entry itself.
+[Default Applications]
+inode/directory=linexinbar-files.desktop

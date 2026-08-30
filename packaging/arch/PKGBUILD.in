@@ -7,7 +7,12 @@ pkgbase=linexinbar
 # Experience Desktop Manager is the one that does; anybody wanting the desktop
 # installs `lxb-desktop`, which depends on the compositor and cannot run without
 # it.
-pkgname=('lxb-compositor' 'lxb-desktop')
+#
+# The third is optional in the other direction: `lxb-retroarch` is an
+# integration for one program, and the shell finds it on PATH or never mentions
+# RetroArch at all. It is version-locked to the shell because what the two agree
+# about is a protocol rather than a library.
+pkgname=('lxb-compositor' 'lxb-desktop' 'lxb-retroarch')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Multi-display Wayland desktop with a console-style shell'
@@ -160,7 +165,7 @@ package_lxb-desktop() {
     )
     optdepends=(
         'networkmanager: the Network pages in Settings'
-        'xdg-desktop-portal: screen sharing, through lxb-portal'
+        'xdg-desktop-portal: screen sharing and file choosing, through lxb-portal'
         'pipewire: the frames a shared screen is carried on'
         'wireplumber: volume control through wpctl'
         'libpulse: volume control through pactl'
@@ -168,6 +173,7 @@ package_lxb-desktop() {
         'ddcutil: external-monitor brightness control'
         'hicolor-icon-theme: fallback application icons'
         'sudo: application removal from the shell'
+        'lxb-retroarch: play your own console games from the bar'
     )
 
     cd "$pkgbase-$pkgver"
@@ -179,4 +185,30 @@ package_lxb-desktop() {
 
     _linexinbar_licenses "$pkgname"
     install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
+
+package_lxb-retroarch() {
+    pkgdesc='RetroArch integration for the LineXinBar shell: your own console games on the bar'
+    # Version-locked to the shell, as the shell is to the compositor and for a
+    # sharper reason: what these two agree about is a protocol carried on a pipe,
+    # and a helper a version ahead of the shell beside it is refused outright
+    # rather than half understood. See `lxb-desktop`'s `src/retroarch.rs`.
+    depends=(
+        "lxb-desktop=$pkgver-$pkgrel"
+        'glibc'
+        'libgcc'
+    )
+    optdepends=(
+        'flatpak: installing RetroArch from the shell, and running the flatpak build'
+        'retroarch: the distribution package, which is preferred over the flatpak'
+    )
+
+    cd "$pkgbase-$pkgver"
+    ./packaging/install.sh \
+        --destdir "$pkgdir" \
+        --prefix /usr \
+        --target-dir target \
+        --component retroarch
+
+    _linexinbar_licenses "$pkgname"
 }

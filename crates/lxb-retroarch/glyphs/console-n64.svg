@@ -1,0 +1,33 @@
+<!--
+  The Nintendo 64, from above: the cartridge bay across the back and four
+  controller ports curved along the front.
+
+  Four ports is what it shares with the GameCube; the curve is what it does not.
+  Nintendo bowed the front of this machine outward and set the ports along it,
+  so the middle two stand proud of the outer two — which at the size a row is
+  drawn is the difference between this and any other deck with holes in a line.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="3" y="6.6" width="26" height="18.4" rx="3.2"/>
+    <rect id="bay" x="8.6" y="9.2" width="14.8" height="6.8" rx="0.8"/>
+    <g id="ports">
+      <circle cx="8" cy="19.6" r="1.45"/><circle cx="13.3" cy="20.8" r="1.45"/>
+      <circle cx="18.7" cy="20.8" r="1.45"/><circle cx="24" cy="19.6" r="1.45"/>
+    </g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#bay" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

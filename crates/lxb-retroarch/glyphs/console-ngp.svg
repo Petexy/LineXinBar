@@ -1,0 +1,32 @@
+<!--
+  The Neo Geo Pocket: a nearly square screen with the controls underneath it,
+  the stick on the left and A and B in a row on the right.
+
+  The one handheld here whose controls are below the screen rather than beside
+  it — 122 by 74 mm is too short to put them anywhere else — and the only one
+  with a stick where every other machine on this shelf has a cross.  Both are
+  facts about the machine and both survive at the size a row is drawn.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="body" x="3.5" y="8.4" width="25" height="15.3" rx="3"/>
+    <rect id="screen" x="11.2" y="9.7" width="9.6" height="8.8" rx="0.6"/>
+    <circle id="stick" cx="7.6" cy="19.9" r="1.85"/>
+    <g id="pips"><circle cx="22.2" cy="19.9" r="1.25"/><circle cx="25.3" cy="19.9" r="1.25"/></g>
+    <mask id="pierced">
+      <use href="#body" fill="#ffffff"/>
+      <use href="#screen" fill="#000000"/>
+      <use href="#stick" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#body" fill="#ffffff"/>
+  </g>
+</svg>

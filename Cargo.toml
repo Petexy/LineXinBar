@@ -6,6 +6,7 @@ members = [
     "crates/lxb-desktop",
     "crates/lxb-portal",
     "crates/lxb-steam",
+    "crates/lxb-retroarch",
 ]
 exclude = ["third_party/steam-cm-protocol"]
 
@@ -38,7 +39,7 @@ steam-cm-protocol = { path = "third_party/steam-cm-protocol" }
 smithay = { path = "third_party/smithay" }
 
 [workspace.package]
-version = "0.1.0"
+version = "0.9.0"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-only"

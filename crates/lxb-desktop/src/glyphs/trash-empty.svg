@@ -1,0 +1,60 @@
+<!--
+  The bin with its lid lifted off, on the row at the head of the Trash column
+  that empties it.
+
+  uninstall.svg's bin exactly — the same handle, lid bar, body and two slots —
+  with the cap taken off it and set down at an angle. Deliberately not
+  uninstall.svg itself: that mark is worn by the Trash row this column hangs
+  from, and the two are on the screen at once, because the column a step opens
+  stands beside the one it was opened from with the row still lit. A head row
+  wearing the same mark as the row above it would be saying "this is the trash"
+  where it has to say "this empties it".
+
+  So the whole of the difference is the gap, and the gap is the whole of the
+  statement: a bin whose lid is on is a bin, and a bin whose lid is off is a
+  bin being turned out. The tilt is only seven degrees. It has to read at 27 px
+  at the head of a column, and at that size what carries is the band of ground
+  between the lid and the body — a steeper angle made the bar read as a plank
+  lying across a bucket rather than as a lid that came off this bin.
+
+  The handle goes with the lid rather than staying behind, which is the other
+  half of it. A bar on its own is a bar; a bar with a handle on top is a lid,
+  and it is what says the shape above the body is the thing that was covering
+  it. The slots stay on the body for the reason uninstall.svg gives for having
+  them: they are the one thing that says which way up this is.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="handle" d="M13 2.85h6a1.7 1.7 0 0 1 1.7 1.7V7.75h-2.6V5.45h-4.2V7.75H11.3V4.55
+                         A1.7 1.7 0 0 1 13 2.85z"/>
+    <rect id="lid" x="5.6" y="7.25" width="20.8" height="3.5" rx="1.75"/>
+    <!-- The lid and its handle come off together, so they turn together. -->
+    <g id="cap" transform="rotate(-7 16 9.0)"><use href="#handle"/><use href="#lid"/></g>
+    <!-- The bar alone, in the same place, for the crevice under the handle. -->
+    <g id="bar" transform="rotate(-7 16 9.0)"><use href="#lid"/></g>
+    <path id="bin" d="M8.1 13.2h15.8l-1.42 12.65a2.3 2.3 0 0 1-2.29 2.05h-8.38
+                      a2.3 2.3 0 0 1-2.29-2.05z"/>
+    <g id="slots">
+      <rect x="12.5" y="16.0" width="1.5" height="8.6" rx="0.75"/>
+      <rect x="18" y="16.0" width="1.5" height="8.6" rx="0.75"/>
+    </g>
+    <g id="bead"><use href="#cap"/><use href="#bin"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <!-- The handle stands behind the bar and takes a crevice against it, as
+           it does on the upright bin. Nothing is needed between the lid and
+           the body: there is real ground between them, which is the point. -->
+      <use href="#bar" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#bar" fill="#ffffff"/>
+      <use href="#slots" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

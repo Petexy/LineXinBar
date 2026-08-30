@@ -1,0 +1,50 @@
+<!--
+  The Nintendo 3DS, opened: two halves of one width, a 5:3 screen above and a
+  4:3 below.
+
+  The halves match.  An earlier drawing stepped the lid in from the base, and at
+  the size a row is drawn that made the thing a small television on a stand and
+  the top screen look larger than it is.
+
+  The screens are the rest of it, and the two things they say are said together:
+  they are the *same height* — 240 pixels each, 46 mm each — and only the upper
+  one is *wide*, 400 across against 320.  That is the machine in one line.
+
+  Circle pad above the cross on the left, which no other handheld here has, and
+  the four face buttons high on the right.  No speaker grilles, unlike the DS
+  above it in this column — it has them, but the DS's are the clearest thing
+  about that drawing and two machines cannot both be told by the same mark.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="lid" x="4.25" y="3" width="23.5" height="12.4" rx="1.6"/>
+    <rect id="base" x="4.25" y="16.6" width="23.5" height="12.4" rx="1.6"/>
+    <rect id="hinge" x="9.4" y="14.2" width="13.2" height="3" rx="0.6"/>
+    <rect id="upper" x="9.92" y="5.1" width="13.67" height="8.2" rx="0.6"/>
+    <rect id="lower" x="10.53" y="18.7" width="10.93" height="8.2" rx="0.6"/>
+    <circle id="pad" cx="7.4" cy="20.5" r="1.7"/>
+    <path id="cross" d="M6.75 23.8h1.3v0.95h0.95v1.3H8.05v0.95h-1.3v-0.95H5.8v-1.3h0.95z"/>
+    <g id="pips">
+      <circle cx="24.5" cy="19.95" r="0.75"/><circle cx="26.05" cy="21.5" r="0.75"/>
+      <circle cx="24.5" cy="23.05" r="0.75"/><circle cx="22.95" cy="21.5" r="0.75"/>
+    </g>
+    <g id="bead"><use href="#lid"/><use href="#base"/><use href="#hinge"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#upper" fill="#000000"/>
+      <use href="#lower" fill="#000000"/>
+      <use href="#pad" fill="#000000"/>
+      <use href="#cross" fill="#000000"/>
+      <use href="#pips" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

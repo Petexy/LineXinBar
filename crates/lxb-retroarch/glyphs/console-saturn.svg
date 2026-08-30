@@ -1,0 +1,32 @@
+<!--
+  The Sega Saturn: the deck nearly as deep as it is wide, its rectangular disc
+  door in the middle and two controller ports along the front.
+
+  The door was drawn as an ellipse, which no Saturn has.  Sega's is a flat
+  rectangular lid and Sony's is a circle, and with two grey decks of about the
+  same size that one difference is carrying both of them.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="4" y="6.5" width="24" height="19" rx="2.2"/>
+    <rect id="door" x="8" y="9.6" width="16" height="8" rx="1"/>
+    <g id="ports">
+      <rect x="8.4" y="20.8" width="4" height="2.6" rx="0.8"/>
+      <rect x="19.6" y="20.8" width="4" height="2.6" rx="0.8"/>
+    </g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#door" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

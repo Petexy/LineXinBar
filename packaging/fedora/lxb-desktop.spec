@@ -1,5 +1,5 @@
 Name:           lxb-desktop
-Version:        0.1.0
+Version:        0.9.0
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
@@ -110,6 +110,26 @@ Recommends:     seatd
 Recommends:     xorg-x11-server-Xwayland
 Recommends:     mesa-vulkan-drivers
 
+%package -n     lxb-retroarch
+Summary:        RetroArch integration for the LineXinBar shell
+# Version-locked to the shell for a sharper reason than the compositor's: what
+# these two agree about is a protocol carried on a pipe, and a helper out of
+# step with the shell beside it is refused outright rather than half understood.
+Requires:       lxb-desktop%{?_isa} = %{version}-%{release}
+Recommends:     flatpak
+Suggests:       retroarch
+
+%description -n lxb-retroarch
+Adds RetroArch to the LineXinBar shell: a row under Steam in the Games column,
+a column of the consoles found in a ROM folder of the user's own, and the games
+in each of them.
+
+The shell looks for this subpackage on PATH and mentions RetroArch only when it
+is installed. Where RetroArch itself is missing, the shell offers to install the
+Flathub build into the user's own flatpak installation, which needs no
+administrative rights; a distribution package of RetroArch is preferred over it
+when both are present.
+
 %description -n lxb-compositor
 A small DRM/KMS Wayland compositor that manages every connected display as an
 independent output, with per-output colour management, HDR and a night light.
@@ -160,6 +180,8 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 %{_datadir}/xdg-desktop-portal/portals/lxb.portal
 %{_datadir}/xdg-desktop-portal/linexinbar-portals.conf
 %{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
+%{_datadir}/applications/linexinbar-files.desktop
+%{_datadir}/applications/linexinbar-mimeapps.list
 
 # Both packages carry the licences: they are installed and used independently,
 # and a compositor on a machine with no shell still ships the terms it is
@@ -171,6 +193,42 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 %{_bindir}/lxb
 %{_datadir}/icons/Bibata-Modern-Classic/
 
+# The integration's two marks travel with its binary: they are read out of the
+# data directory when the shell starts, which is how a package brings its own
+# drawings to a shell that was built without them.
+%files -n       lxb-retroarch
+%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
+%{_bindir}/lxb-retroarch
+%{_datadir}/lxb/glyphs/retroarch.svg
+%{_datadir}/lxb/glyphs/category-retroarch.svg
+
 %changelog
+* Sun Aug 30 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.0-1
+- Three hundred and forty-one commits on from the first package, and the shape
+  of the shell has settled. What is new since 0.1.0, in the large:
+- A file chooser of the session's own, drawn as Files in a pane over the
+  application that asked for it, answering the xdg-desktop-portal FileChooser
+  protocol — with the trash, making folders, marking several rows at once, and
+  carrying a file somewhere else.
+- Picture-in-Picture: a window that floats above everything the shell draws,
+  moved and resized by hand or by a controller out of the guide, with a menu
+  of its own drawn on a surface of its own.
+- RetroArch as an optional package the shell finds rather than requires: your
+  own games as a column, a shelf drawn at the shape of its console's boxes,
+  and the BIOS asked for instead of a game that exits.
+- A driver for the Steam Controller 2, which the kernel does not drive.
+- The machine's accounts as a page of people, network and Bluetooth pages that
+  ask the worker rather than the press, and a polkit agent in the shell so a
+  password never crosses the compositor.
+- A wallpaper that can be a picture or a film of your own, twelve accent
+  palettes across the whole shell, and a Theme setting in two halves.
+- Screen capture and sharing over the four protocols that need it, HDR asked
+  and answered, frame completion reported to clients, and a display handed back
+  to the application rather than only its pixels.
+- OLED protection that rests a screen behind any application rather than only a
+  game, and a media exception for a player that is audibly playing.
+- Seventy-five marks redrawn as beads of water, one VERSION file read by both
+  halves and every package, and the compositor packaged apart from the desktop.
+
 * Sat Aug 08 2026 Piotr Lewandowski <piotr.petexiness@gmail.com> - 0.1.0-1
 - Initial early-development package

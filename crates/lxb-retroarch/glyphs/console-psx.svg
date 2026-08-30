@@ -1,0 +1,34 @@
+<!--
+  The PlayStation, from above: the round lid off to the left, and OPEN, RESET
+  and POWER in a column to the right of it.
+
+  Round is the machine — the disc lid on this one is a circle where the Saturn's
+  is a rectangle, and that is the whole of what separates two grey decks with a
+  door in the middle.  The three buttons beside it are the other half of the top
+  face and they go in a line, which nothing else here does.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="2.6" y="6.6" width="26.8" height="18.7" rx="2.4"/>
+    <circle id="lid" cx="13.4" cy="15.4" r="6.4"/>
+    <g id="buttons">
+      <circle cx="25" cy="11.6" r="1.15"/>
+      <circle cx="25" cy="15.4" r="1.15"/>
+      <circle cx="25" cy="19.2" r="1.15"/>
+    </g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#lid" fill="#000000"/>
+      <use href="#buttons" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

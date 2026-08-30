@@ -1,6 +1,6 @@
 # LineXinBar packaging
 
-These definitions build two early-development packages from one source tree:
+These definitions build three early-development packages from one source tree:
 
 * **`lxb-compositor`** — the compositor and the cursor theme it draws the
   pointer from. A Wayland session on DRM/KMS, with nothing in it that assumes
@@ -11,13 +11,20 @@ These definitions build two early-development packages from one source tree:
   depends on the exact `lxb-compositor` built beside it, version and release
   both: two halves of one build that drift apart are a shell talking to a
   compositor it was never tested against.
+* **`lxb-retroarch`** — the optional RetroArch integration: one helper program
+  and the two marks the shell draws its rows with. Optional in the other
+  direction from the compositor: the shell looks for `lxb-retroarch` on `PATH`
+  and mentions RetroArch only when it is there, so a machine that will never
+  emulate a console carries none of it. Version-locked to the exact
+  `lxb-desktop` beside it, because what the two agree about is a protocol
+  carried on a pipe rather than a library — see `crates/lxb-retroarch`.
 
 The split is a partition, and `packaging/build.sh check` enforces that — a file
-installed by neither package is one that has quietly stopped shipping, and a
-file installed by both is one two packages will fight over at install time.
+installed by no package is one that has quietly stopped shipping, and a file
+installed by two is one two packages will fight over at install time.
 
-Between them the two packages install the compositor and shell, a complete
-bundled cursor theme, and a native Wayland session:
+Between them the three packages install the compositor and shell, a complete
+bundled cursor theme, a native Wayland session, and the optional integration:
 
 ```text
 lxb-compositor   bin/lxb
@@ -29,6 +36,10 @@ lxb-desktop      bin/lxb-desktop
                  share/wayland-sessions/lxb.desktop
                  share/xdg-desktop-portal/**
                  share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
+
+lxb-retroarch    bin/lxb-retroarch
+                 share/lxb/glyphs/retroarch.svg
+                 share/lxb/glyphs/console-*.svg   (one per console it knows)
 ```
 
 `lxb-session` clears display variables inherited from a greeter, creates a
@@ -41,13 +52,16 @@ are not modified; packages stage the production session files from
 ## One version, in one file
 
 The version this project releases under is the single line in `VERSION` at the
-root of the checkout — **0.1.0** — and what a package claims and what
+root of the checkout — **0.9.0** — and what a package claims and what
 `lxb --version` reports are the same number because both come from there.
 
 Almost everything reads that file where it stands: the Arch, Debian and Nix
 definitions, the source archive's name, and the build scripts in
-`crates/lxb-compositor` and `crates/lxb-desktop`, which refuse to build a
-binary whose manifest has drifted away from it. Two places cannot read a file
+`crates/lxb-compositor`, `crates/lxb-desktop` and `crates/lxb-retroarch`, which
+refuse to build a binary whose manifest has drifted away from it. The last of
+those needs the check most: it is the one binary here that can be installed
+without the other two, so it is the one that can most easily be a version out of
+step with what it is talking to. Two places cannot read a file
 and carry the number as a literal instead — `[workspace.package]` in
 `Cargo.toml`, which is where `--version` gets it, and `Version:` in the Fedora
 spec, which has to be a literal for the spec to be one anyone could submit — so
@@ -103,7 +117,7 @@ over the environment, so a machine that sets `BUILDDIR` builds there whatever
 ```
 
 This checks shell/package syntax, confirms every package definition still
-takes its version from `VERSION`, builds both release binaries,
+takes its version from `VERSION`, builds the release binaries,
 stages the common payload, validates the standard desktop-entry fields, and
 verifies that all cursor-theme symlinks survive. Use `--no-build` only when
 current release binaries already exist in `target/release` (or in
@@ -206,7 +220,13 @@ adds it to `services.displayManager.sessionPackages`:
 
 A hardware session needs systemd-logind or seatd and a working EGL/GLES GPU
 driver. Xwayland, a Vulkan driver, `wpctl`/`pactl`/`amixer`, and `ddcutil` are
-optional integrations. Package scripts do not create users, change group
+optional integrations. `lxb-retroarch` wants `flatpak` to be able to offer to
+install RetroArch, and prefers a distribution package of RetroArch over the
+flatpak where both are present; it needs neither to be installed to be
+packaged. It reaches the network for two things and only when asked: the flatpak
+install, and fetching a core from `buildbot.libretro.com` — the same server
+RetroArch's own Online Updater uses. Both are HTTPS with a TLS stack of its own,
+so neither needs a system library. Package scripts do not create users, change group
 membership, install a system-wide configuration, or alter device permissions.
 
 These recipes are intended for local and CI packages during early development.

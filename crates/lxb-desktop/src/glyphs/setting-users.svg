@@ -1,0 +1,47 @@
+<!--
+  Two people, at the head of the Users rows: the accounts this machine is for.
+
+  A set rather than a person, and that is the whole of the mark. The page it
+  opens is a list of accounts and every row on that list wears either a
+  photograph of somebody or the single figure in setting-person.svg, so this one
+  has to be legible as *more than one* at the size a settings row is drawn —
+  which is why the figure behind is offset up and to the left rather than merely
+  scaled: two bodies on one axis read as one body with a shadow.
+
+  The two busts overlap, and that is the one thing a distance field cannot see:
+  a seam where two bodies touch is not an edge, so the pair would come out as a
+  single lump of water with a bulge on the left. The crevice below is what makes
+  it two — the front figure swollen in black and then laid back in white, so a
+  real gap is left round it for the shader to bevel from both sides. See
+  copy.svg, which is where that recipe is written down, and uninstall.svg, which
+  uses it twice.
+
+  Only the busts overlap. The front figure's head clears the back one's
+  shoulders by a comfortable margin rather than grazing them — two bodies a
+  third of a unit apart are worse than two that overlap honestly, because the
+  gap comes out as a hairline crack instead of a seam.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="behind-head" cx="10.2" cy="10.2" r="3.9"/>
+    <path id="behind-shoulders" d="M3 27A7.2 9.8 0 0 1 17.4 27Z"/>
+    <circle id="front-head" cx="19.4" cy="12.6" r="4.7"/>
+    <path id="front-shoulders" d="M10.2 27A9.2 7.4 0 0 1 28.6 27Z"/>
+    <g id="behind"><use href="#behind-head"/><use href="#behind-shoulders"/></g>
+    <g id="front"><use href="#front-head"/><use href="#front-shoulders"/></g>
+    <g id="bead"><use href="#behind"/><use href="#front"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

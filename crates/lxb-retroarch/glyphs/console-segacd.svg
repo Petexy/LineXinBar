@@ -1,0 +1,32 @@
+<!--
+  The Mega-CD: the drive underneath and the Mega Drive sitting on top of it.
+
+  The first model was a base, not a box beside one — the console clipped on to
+  its side and the pair stood as one object a foot wide, which is the shape
+  everybody remembers.  The cartridge slot belongs to the machine on top and the
+  disc tray to the one underneath, and having both is what says this is the two
+  of them.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="upper" x="6.4" y="7.2" width="19.2" height="9.2" rx="1.6"/>
+    <rect id="lower" x="3" y="16.2" width="26" height="9.2" rx="2"/>
+    <rect id="slot" x="9.4" y="9.4" width="13.2" height="3" rx="0.9"/>
+    <rect id="tray" x="6.6" y="19" width="18.8" height="3.4" rx="1"/>
+    <g id="bead"><use href="#upper"/><use href="#lower"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#tray" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

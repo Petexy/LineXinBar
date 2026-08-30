@@ -58,6 +58,16 @@ pub const PRESS_TIME: f32 = 0.34;
 /// motion is there to say *where the dialog came from*, not to be watched.
 const POWER_FLIGHT: f32 = 0.22;
 
+/// How long the menu takes to step back when the videos floating over it are
+/// handed its directions, and to come forward again when it gets them back, in
+/// seconds.
+///
+/// Shorter still. It is not a transition between two screens — it is one screen
+/// saying which of two things the thumb is on, and an answer to that has to be
+/// there before the next press is. Long enough to read as a movement, which is
+/// the whole of what a hard cut would not be.
+const ELSEWHERE_FLIGHT: f32 = 0.18;
+
 /// One frame of a highlight's glide towards `target`, on the same critically
 /// damped spring the cards ride: it leans into a move rather than leaving at
 /// full speed, and a second press part-way carries the first one's momentum
@@ -506,6 +516,19 @@ pub struct Guide {
     /// is still falling into the button, so the drawing needs an answer for a
     /// dialog that, as far as everything else is concerned, has already gone.
     power_linear: f32,
+    /// How far the menu has stepped back while the videos floating over it have
+    /// its directions: 0 with the menu in charge, 1 with a video in charge.
+    ///
+    /// A position rather than a start time, for the reason [`Guide::power_linear`]
+    /// is one: a user who presses the stick twice in quick succession is
+    /// watching the menu come back from wherever it had got to, not from where a
+    /// restarted curve would put it.
+    ///
+    /// Whose the directions are is not the menu's own business to know — the
+    /// shell holds that, and hands it in. What is the menu's business is how
+    /// far it has got, which is a fact about the picture and belongs with the
+    /// rest of them. See [`Guide::animate_elsewhere`].
+    elsewhere_linear: f32,
     /// When the menu was last opened; drives the slide-in animation.
     opened_at: Option<Instant>,
     /// Eased position of the selected menu entry's chip, which slides down the
@@ -949,6 +972,31 @@ impl Guide {
         true
     }
 
+    /// Step the deck's highlight one card along, for a walk through the
+    /// running applications rather than a direction pressed inside the menu.
+    ///
+    /// Wraps, alone among the ways of moving in the deck: [`Self::move_focus`]
+    /// stops at both ends so that a held direction settles somewhere, and a
+    /// walk is not a held direction. Somebody pressing the key a fourth time
+    /// on three applications is asking to come back round to the first, not to
+    /// be told they have run out.
+    ///
+    /// It also crosses into the deck from the entry column, which no direction
+    /// but Right does — the walk is about the cards and nothing else, wherever
+    /// the highlight happened to be standing when it began.
+    /// A deck of one card is not walked at all: the step would land back on
+    /// the card the highlight is already on, and the crossing into the deck
+    /// would be the only thing that had happened.
+    pub fn walk(&mut self, back: bool, count: usize) -> bool {
+        if count < 2 {
+            return false;
+        }
+        let current = self.selected_window(count) as i64;
+        let step = if back { -1 } else { 1 };
+        let next = (current + step).rem_euclid(count as i64) as usize;
+        self.select_window(next, count)
+    }
+
     /// And for the power dialog, which only answers while it is open.
     pub fn select_power(&mut self, index: usize) -> bool {
         if self.power.is_none() || index >= POWER_ITEMS.len() || self.power_index() == index {
@@ -1206,6 +1254,26 @@ impl Guide {
         self.power_linear
     }
 
+    /// Advance the menu's step back by `dt` and return where it is now.
+    ///
+    /// `away` is whether the directions are on one of the videos floating over
+    /// the menu rather than on the menu — the shell's answer, since the shell is
+    /// what holds them; see `Shell::floating_focus`.
+    ///
+    /// One number in both directions, like the dialog's, so a menu that gets
+    /// its directions back before it has finished stepping away comes forward
+    /// from where it is instead of snapping the rest of the way out first.
+    pub fn animate_elsewhere(&mut self, away: bool, dt: f32) -> f32 {
+        let target = if away { 1.0 } else { 0.0 };
+        let step = dt / ELSEWHERE_FLIGHT;
+        self.elsewhere_linear = if self.elsewhere_linear < target {
+            (self.elsewhere_linear + step).min(target)
+        } else {
+            (self.elsewhere_linear - step).max(target)
+        };
+        self.elsewhere_linear
+    }
+
     pub fn power_index(&self) -> usize {
         self.power.unwrap_or(0).min(POWER_ITEMS.len() - 1)
     }
@@ -1249,6 +1317,9 @@ impl Guide {
         // Shut, not falling shut: a menu dismissed with the dialog up and
         // reopened straight away must not play the collapse it never showed.
         self.power_linear = 0.0;
+        // And forward, not coming forward, for exactly the same reason: a menu
+        // put away while a video had its directions opens with them back.
+        self.elsewhere_linear = 0.0;
         self.opened_at = Some(Instant::now());
         self.menu_highlight = None;
     }
@@ -1700,6 +1771,55 @@ mod tests {
         assert_eq!(guide.animate_power(0.0), 0.0);
     }
 
+    /// The menu steps back while the videos over it have its directions, and
+    /// comes forward when it gets them back — both over a span rather than
+    /// between two frames, and both from wherever the other one had got to.
+    #[test]
+    fn the_menu_steps_back_while_a_video_has_its_directions() {
+        let frame = 1.0 / 60.0;
+        let settle = |guide: &mut Guide, away: bool| {
+            for _ in 0..60 {
+                guide.animate_elsewhere(away, frame);
+            }
+        };
+
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(
+            guide.animate_elsewhere(false, frame),
+            0.0,
+            "the menu has its own directions when it opens"
+        );
+
+        let first = guide.animate_elsewhere(true, frame);
+        assert!(
+            first > 0.0 && first < 1.0,
+            "it steps back rather than cutting: {first}"
+        );
+        settle(&mut guide, true);
+        assert_eq!(guide.animate_elsewhere(true, 0.0), 1.0);
+
+        let coming_back = guide.animate_elsewhere(false, frame);
+        assert!(
+            coming_back > 0.0 && coming_back < 1.0,
+            "and comes forward rather than cutting: {coming_back}"
+        );
+        settle(&mut guide, false);
+        assert_eq!(guide.animate_elsewhere(false, 0.0), 0.0);
+
+        // Turned round part-way, it carries on from where it is rather than
+        // finishing the movement it was making first.
+        guide.animate_elsewhere(true, frame * 3.0);
+        let reversed_from = guide.animate_elsewhere(true, 0.0);
+        assert!(guide.animate_elsewhere(false, frame) < reversed_from);
+
+        // And a menu put away while a video had the directions opens with them
+        // back, rather than opening dim and brightening.
+        settle(&mut guide, true);
+        guide.open();
+        assert_eq!(guide.animate_elsewhere(false, 0.0), 0.0);
+    }
+
     #[test]
     fn dismissing_the_menu_takes_the_power_dialog_with_it() {
         let mut guide = Guide::default();
@@ -1711,6 +1831,54 @@ mod tests {
         // And it is never still open the next time the menu is summoned.
         guide.open();
         assert!(!guide.power_open());
+    }
+
+    /// Alt+Tab's step: it leaves the entry column for the deck without being
+    /// asked to, and it comes round rather than stopping at the last card.
+    ///
+    /// Three cards here, which on this shell is two applications and the start
+    /// screen — and the start screen is a card the walk lands on like any
+    /// other, because it is where an application is started from.
+    #[test]
+    fn a_walk_through_the_applications_wraps_round_the_deck() {
+        const CARDS: usize = 3;
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(guide.pane(), Pane::Menu);
+
+        // The first step is off the menu and onto the *second* card: card one
+        // is the application already in front, and somebody pressing this once
+        // is asking for the one behind it.
+        assert!(guide.walk(false, CARDS));
+        assert_eq!(guide.pane(), Pane::Windows);
+        assert_eq!(guide.selected_window(CARDS), 1);
+
+        assert!(guide.walk(false, CARDS));
+        assert_eq!(guide.selected_window(CARDS), 2);
+
+        // And round, rather than sitting on the last card. This is where the
+        // walk and the directions part company: Down stops here on purpose.
+        assert!(guide.walk(false, CARDS));
+        assert_eq!(guide.selected_window(CARDS), 0);
+        assert!(!guide.move_focus(Move::Up, CARDS));
+
+        // The other way is the same walk backwards, off the end of the deck.
+        assert!(guide.walk(true, CARDS));
+        assert_eq!(guide.selected_window(CARDS), 2);
+    }
+
+    /// A deck of one card is the start screen alone, and there is nothing to
+    /// walk to. The shell refuses the press before this — see
+    /// `Shell::walk_the_applications` — and the model agrees rather than
+    /// reselecting the card the highlight is already on.
+    #[test]
+    fn a_walk_with_nowhere_to_go_moves_nothing() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert!(!guide.walk(false, 1));
+        assert!(!guide.walk(true, 1));
+        assert!(!guide.walk(false, 0));
+        assert_eq!(guide.pane(), Pane::Menu);
     }
 
     #[test]

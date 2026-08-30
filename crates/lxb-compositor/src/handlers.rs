@@ -60,7 +60,7 @@ use smithay::{
 };
 
 use crate::focus::KeyboardFocusTarget;
-use crate::input::{window_accepts_keyboard_focus, window_is_x11_chrome};
+use crate::input::window_is_x11_chrome;
 use crate::outputs::{assign_output, remap_window_preserving_stack, set_maximized_states};
 use crate::state::{client_compositor_state, LxbState};
 use crate::xwayland::remember_x11_client_geometry;
@@ -177,6 +177,14 @@ impl CompositorHandler for LxbState {
                 window.on_commit();
                 self.announce_window(&window, &root);
                 crate::render::drew(&window);
+                // And, for a floating window that has just said what shape it
+                // wants to be, the layout that acts on the answer — see
+                // [`crate::pip::Floating`]. Free for every other window.
+                self.settle_a_floating_window(&window);
+                // And for one that has just left a corner to fill the display,
+                // the frame it has actually become large on, which is the frame
+                // the flight out of that corner can start from.
+                self.fly_out_of_the_corner(&window);
             }
         }
 
@@ -614,8 +622,7 @@ impl LxbState {
         // A window nobody can see must not be given the keyboard, or the user
         // is typing into something that is not on their screen. It is still
         // mapped and still configured — it is simply never looked at.
-        let accepts_focus =
-            window_accepts_keyboard_focus(&window) && !self.lxb.out_of_sight(&window);
+        let accepts_focus = self.lxb.takes_the_keyboard(&window);
         if let Some(surface) = window.x11_surface() {
             remember_x11_client_geometry(&window, surface.geometry());
         }
@@ -1002,7 +1009,7 @@ impl FractionalScaleHandler for LxbState {
             output,
             window
                 .as_ref()
-                .map(|window| crate::scale::window_scale(self.lxb.outputs.app_scale(), window))
+                .map(|window| self.lxb.outputs.window_scale(window))
                 .unwrap_or(1.0),
         );
 
@@ -1030,7 +1037,7 @@ impl XdgActivationHandler for LxbState {
             // for the screen back. Valve's client asks — every time it starts
             // a game — and granting it would raise the storefront over the
             // game that was starting.
-            if window_accepts_keyboard_focus(&window) && !self.lxb.out_of_sight(&window) {
+            if self.lxb.takes_the_keyboard(&window) {
                 self.raise_window(&window, true);
                 self.set_window_keyboard_focus(&window);
             }

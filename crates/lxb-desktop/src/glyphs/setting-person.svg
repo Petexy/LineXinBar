@@ -1,0 +1,34 @@
+<!--
+  One person: the mark a user account wears when there is no picture of them.
+
+  Deliberately not the Users mark with one figure taken out of it. The row this
+  stands on is one *person*, and the row that leads to the page is a *set* of
+  them — so the two are told apart by how many bodies there are, which is the
+  one difference the eye reads before it reads anything else. A column of
+  accounts headed by the same drawing its rows wore would be a column that says
+  nothing about which row is which.
+
+  Head and shoulders, with air between them. The gap is 2.8 units, which is
+  wider than the bevel is deep — a narrower one would be bridged by the two
+  walls meeting in the middle and the neck would fill in. It is the same
+  argument copy.svg makes about its two sheets, arrived at from the other side:
+  there the bodies had to be told apart across an overlap, and here they have
+  only to stay apart.
+
+  The shoulders are a half ellipse rather than a dome, and wide: a bust as tall
+  as it is broad reads as a bottle. Cut off flat at the foot, because a bust is
+  a thing that ends rather than a body that tapers away.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="head" cx="16" cy="10" r="4.8"/>
+    <path id="shoulders" d="M5.6 27.4A10.4 9.6 0 0 1 26.4 27.4Z"/>
+    <g id="bead"><use href="#head"/><use href="#shoulders"/></g>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

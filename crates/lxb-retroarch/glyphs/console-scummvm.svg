@@ -1,0 +1,29 @@
+<!--
+  ScummVM: a speech balloon, because what it runs is games made of talking.
+
+  The one row in this column that is not hardware at all — there is no machine
+  to draw, and a box would be a lie. Every adventure it plays put words in a
+  bubble at the top of the screen, and the three dots are what one looks like
+  before anybody has said anything. See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="balloon" d="M6.4 5.4h19.2a2.8 2.8 0 0 1 2.8 2.8v9.6a2.8 2.8 0 0 1-2.8 2.8H15.2l-6 6.2V20.6H6.4a2.8 2.8 0 0 1-2.8-2.8V8.2a2.8 2.8 0 0 1 2.8-2.8z"/>
+    <g id="dots">
+      <circle cx="10.6" cy="13" r="1.5"/>
+      <circle cx="16" cy="13" r="1.5"/>
+      <circle cx="21.4" cy="13" r="1.5"/>
+    </g>
+    <mask id="pierced">
+      <use href="#balloon" fill="#ffffff"/>
+      <use href="#dots" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#balloon" fill="#ffffff"/>
+  </g>
+</svg>

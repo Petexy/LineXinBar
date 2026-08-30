@@ -1,0 +1,29 @@
+<!--
+  The ColecoVision: the cartridge slot on the left and the bay the controllers
+  lived in on the right.
+
+  The bay is a tall opening where every other deck in this column has wide ones,
+  and that difference in *shape* carries further down than the difference in
+  position does. See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="3" y="8.6" width="26" height="14.8" rx="2.2"/>
+    <rect id="slot" x="6" y="10.8" width="9.6" height="3" rx="0.9"/>
+    <rect id="bay" x="18.2" y="10.8" width="7.8" height="10.4" rx="1.2"/>
+    <g id="ports"><circle cx="8" cy="18.4" r="1.5"/><circle cx="13.4" cy="18.4" r="1.5"/></g>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#slot" fill="#000000"/>
+      <use href="#bay" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

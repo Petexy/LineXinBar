@@ -66,6 +66,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -79,6 +80,49 @@ use crate::secret::Secret;
 /// choose, it is handed to `polkitd` at registration, and a path in somebody
 /// else's namespace is a claim on a name we do not own.
 const AGENT_PATH: &str = "/org/linexinbar/PolicyKit1/AuthenticationAgent";
+
+/// How many questions `polkitd` has put to this session, ever.
+///
+/// A count rather than a flag, and free of the [`Agent`] rather than on it,
+/// because what reads it is somewhere else entirely: a page whose change was
+/// refused for want of a password wants to know whether this session was ever
+/// *asked* for one. Those are two different failures with the same message on
+/// them — "Authentication is required" is what `accounts-daemon` says both when
+/// the user declined and when nobody was ever asked — and only one of them is
+/// the user's doing.
+///
+/// It cost a morning to tell those apart by hand. See [`asked_so_far`].
+static ASKED: AtomicU64 = AtomicU64::new(0);
+
+/// Whether this session's own agent slot is the one this shell holds.
+///
+/// The difference between the two ways of having registered, and they are not
+/// alike: `polkitd` looks an agent up by the session the caller is in, so the
+/// session's slot is the whole job and a process subject is a receipt for
+/// nothing. Kept here rather than on the [`Agent`] because what wants it is a
+/// settings page, which has no agent to hand and would have to be given one
+/// through three layers that are about accounts.
+static HOLDS_SESSION: AtomicBool = AtomicBool::new(false);
+
+/// Whether this shell is the agent `polkitd` will ask for this session.
+///
+/// `false` means every password this session ever needs is refused without a
+/// panel: something else got the slot first, or nothing could take it. It is
+/// not a guess about what will happen — it is what was registered.
+pub fn holds_the_session() -> bool {
+    HOLDS_SESSION.load(Ordering::Relaxed)
+}
+
+/// How many times `polkitd` has asked this session to prove something.
+///
+/// Read either side of a call that might need proving: a refusal with this
+/// unmoved is a refusal nobody in this session was given the chance to answer,
+/// whatever the registration at startup appeared to say. Registration is not
+/// the thing to trust here — `polkitd` will take an agent for a subject it then
+/// never looks up, and this shell has watched it do exactly that.
+pub fn asked_so_far() -> u64 {
+    ASKED.load(Ordering::Relaxed)
+}
 
 const AUTHORITY_NAME: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
@@ -198,6 +242,9 @@ impl Agent {
         // `polkitd` allows one agent per session and that desktop's own got
         // there first.
         let mut registered = None;
+        // The session's own slot, where that is what was refused: the one thing
+        // worth asking for again.
+        let mut wanted = None;
         for subject in subjects(&connection) {
             match register(&connection, &subject) {
                 Ok(()) => {
@@ -205,23 +252,69 @@ impl Agent {
                     break;
                 }
                 Err(err) => {
-                    tracing::info!(%err, ?subject, "polkitd would not take an agent for this")
+                    tracing::warn!(%err, ?subject, "polkitd would not take this polkit agent");
+                    if matches!(subject, Subject::Session(_)) {
+                        wanted = Some(subject);
+                    }
                 }
             }
         }
-        let Some(subject) = registered else {
-            tracing::info!("no polkit agent: this session cannot register one");
+        let Some(registered) = registered else {
+            tracing::warn!("no polkit agent: this session cannot register one");
             return None;
         };
-        tracing::info!(?subject, "registered as this session's polkit agent");
+        let subject = &registered;
+        match subject {
+            Subject::Session(_) => {
+                HOLDS_SESSION.store(true, Ordering::Relaxed);
+                tracing::info!(?subject, "registered as this session's polkit agent")
+            }
+            // Worth a warning, because it is a half-registration and reads like
+            // a whole one. `polkitd` looks an agent up by the *session* the
+            // caller is in; it takes this one and files it under a process, and
+            // a shell that gets only this far can be refused every password it
+            // ever needs without a panel appearing once. Which is what it does.
+            Subject::Process { .. } => tracing::warn!(
+                ?subject,
+                "this polkit agent holds no session — registered for this process \
+                 alone, which polkitd may never ask"
+            ),
+        }
+
+        // What could not be had at startup, in case it can be had later.
+        //
+        // One session, one agent, and whoever asked first has it — which on a
+        // machine where a greeter, a setup screen or a previous shell is still
+        // holding the slot is somebody who is on their way out. A shell that
+        // gave up at startup would spend the rest of the session unable to ask
+        // for a single password, and never try again for a slot that came free
+        // seconds later. So it keeps asking, slower each time: five seconds,
+        // then ten, twenty, forty, and once a minute after that.
+        let again = match registered {
+            Subject::Session(_) => None,
+            Subject::Process { .. } => wanted,
+        };
 
         // The connection has to outlive this call and there is nothing else to
         // hold it: its own executor answers `polkitd` on a thread of its own,
-        // and this one exists only so that the connection is not dropped.
+        // and this one exists only to keep the connection and to ask again.
         std::thread::Builder::new()
             .name("lxb-polkit".to_string())
             .spawn(move || {
-                let _connection = connection;
+                let connection = connection;
+                if let Some(session) = again {
+                    let mut wait = std::time::Duration::from_secs(5);
+                    while register(&connection, &session).is_err() {
+                        std::thread::sleep(wait);
+                        wait = (wait * 2).min(std::time::Duration::from_secs(60));
+                    }
+                    HOLDS_SESSION.store(true, Ordering::Relaxed);
+                    tracing::info!(
+                        ?session,
+                        "took over as this session's polkit agent, which was held by \
+                         something else at startup"
+                    );
+                }
                 loop {
                     std::thread::park();
                 }
@@ -305,12 +398,28 @@ impl Listener {
         // a panel that asks for a password — and the details are keys for
         // programs, next to a message polkitd has already written for people.
         let _ = (icon_name, details);
+        // Before anything can go wrong with it: what this counts is that the
+        // question *arrived*, which is the fact [`asked_so_far`] exists to
+        // establish, and it is no less true of a question this agent then fails
+        // to put to anybody.
+        ASKED.fetch_add(1, Ordering::Relaxed);
 
+        let offered: Vec<&str> = identities.iter().map(|(kind, _)| kind.as_str()).collect();
         let Some((user, yourself)) = whose_password(&identities) else {
-            tracing::warn!(action_id, "polkitd asked for a password from nobody");
+            tracing::warn!(
+                action_id,
+                ?offered,
+                "polkitd asked for a password from nobody"
+            );
             return Err(Refused::Failed("no identity to authenticate".to_string()));
         };
-        tracing::info!(action_id, user, "polkitd is asking for authentication");
+        tracing::info!(
+            action_id,
+            user,
+            yourself,
+            ?offered,
+            "polkitd is asking for authentication"
+        );
 
         let (sender, receiver) = async_channel::bounded(1);
         {
@@ -422,10 +531,28 @@ impl Subject {
 /// agent for everything the shell asks on its own behalf.
 fn subjects(connection: &zbus::blocking::Connection) -> Vec<Subject> {
     let mut subjects = Vec::new();
-    let session = std::env::var("XDG_SESSION_ID")
-        .ok()
-        .filter(|id| !id.trim().is_empty())
-        .or_else(|| session_from_logind(connection));
+    // `logind` first and the environment second, which is the opposite of the
+    // order this had. They answer two different questions: `XDG_SESSION_ID` is
+    // what the *login* was, inherited by everything downstream of it and true
+    // of a process that has since been moved out of that session's scope;
+    // `GetSessionByPID` is what *this process* is in, which is the only thing
+    // `polkitd` looks at. It resolves the caller with the same call and refuses
+    // a registration that does not match — "Passed session and the session the
+    // caller is in differs" — so a shell that registers for the environment's
+    // session either matches anyway or is refused, and the environment was
+    // never the better answer.
+    let session = session_from_logind(connection).or_else(|| {
+        let inherited = std::env::var("XDG_SESSION_ID")
+            .ok()
+            .filter(|id| !id.trim().is_empty());
+        if inherited.is_some() {
+            tracing::warn!(
+                "logind puts this process in no session; falling back to the polkit agent \
+                 session the environment names"
+            );
+        }
+        inherited
+    });
     if let Some(id) = session {
         subjects.push(Subject::Session(id));
     }
@@ -739,6 +866,7 @@ fn open_helper(user: &str, keep: &Mutex<Option<Stop>>) -> Result<Helper, String>
                 if let Ok(mut keep) = keep.lock() {
                     *keep = Some(Stop::Socket(socket));
                 }
+                tracing::info!(user, "the polkit helper answered on its socket");
                 return Ok((Box::new(BufReader::new(reading)), Box::new(writing)));
             }
             Err(err) => {
@@ -766,6 +894,7 @@ fn open_helper(user: &str, keep: &Mutex<Option<Stop>>) -> Result<Helper, String>
     if let Ok(mut keep) = keep.lock() {
         *keep = Some(Stop::Program(child));
     }
+    tracing::info!(user, program, "started the polkit helper");
     Ok((Box::new(BufReader::new(reading)), Box::new(writing)))
 }
 

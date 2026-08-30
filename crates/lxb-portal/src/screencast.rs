@@ -380,17 +380,60 @@ fn warn_if_unregistered() {
         .iter()
         .map(|dir| dir.join("xdg-desktop-portal/portals/lxb.portal"))
         .find(|path| path.is_file());
-    match found {
-        Some(path) => {
-            tracing::debug!(registration = %path.display(), "registered with xdg-desktop-portal")
-        }
-        None => tracing::warn!(
+    let Some(path) = found else {
+        tracing::warn!(
             "no lxb.portal in any data directory: xdg-desktop-portal cannot know this \
-             backend exists, so screen sharing will not be offered to anything. Install \
+             backend exists, so nothing will be offered to any application. Install \
              the package, or run scripts/install-portal.sh from the checkout"
-        ),
+        );
+        return;
+    };
+    tracing::debug!(registration = %path.display(), "registered with xdg-desktop-portal");
+
+    // And that the registration found is *this* build's. It is a separate file
+    // on disk from the binary, installed at a different time, and
+    // xdg-desktop-portal reads it once at startup — so a backend that has grown
+    // an interface since the last install answers a front desk that has never
+    // heard of it. Nothing says so: the application is quietly handed whichever
+    // other backend the machine has, which is exactly what a session with no
+    // portal of its own looks like.
+    //
+    // This is not hypothetical. The file chooser shipped against a registration
+    // naming ScreenCast alone, and every Save dialog in the session opened
+    // GTK's instead.
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let listed = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Interfaces="))
+        .unwrap_or_default();
+    let missing: Vec<&str> = ANSWERED
+        .iter()
+        .copied()
+        .filter(|interface| !listed.split(';').any(|named| named.trim() == *interface))
+        .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            registration = %path.display(),
+            ?missing,
+            "this registration does not name every interface this build answers, so \
+             xdg-desktop-portal will hand those questions to another backend. \
+             Reinstall the package, or run scripts/install-portal.sh from the checkout, \
+             and restart xdg-desktop-portal"
+        );
     }
 }
+
+/// What this backend answers, as `xdg-desktop-portal` spells it.
+///
+/// Here rather than only in the `.portal` file so the two can be compared: a
+/// build and its registration are installed separately and drift apart
+/// silently. See [`warn_if_unregistered`].
+const ANSWERED: [&str; 2] = [
+    "org.freedesktop.impl.portal.ScreenCast",
+    "org.freedesktop.impl.portal.FileChooser",
+];
 
 /// The path every desktop portal backend answers on.
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -418,7 +461,11 @@ pub async fn serve() -> anyhow::Result<()> {
             ScreenCast {
                 shares: shares.clone(),
             },
-        )?
+        )?;
+    // The second interface on the same object, because a portal backend is one
+    // bus name and one path however many questions it answers. See
+    // [`crate::filechooser`].
+    let connection = crate::filechooser::serve_at(connection, &path)?
         .build()
         .await?;
     tracing::info!(name = PORTAL_NAME, "the portal is listening");

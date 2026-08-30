@@ -666,6 +666,28 @@ pub fn wake(
         })
     });
 
+    // While there is still an interface to say it through: the guide button is
+    // this shell's, and Valve's client answers it too unless it is asked not
+    // to. See [`crate::webui::leave_the_guide_button_alone`], which explains
+    // why this is the only pad on the machine that needs asking rather than
+    // taking.
+    //
+    // Best effort, and never the reason a press fails. Somebody who wanted to
+    // start a game has started one; a Big Picture opening behind it is worth a
+    // line in the log and nothing more. It is said on every wake rather than
+    // once, because the client keeps this setting in memory and a client that
+    // was restarted — or reinstalled, or is somebody's second machine — starts
+    // out answering the button again.
+    if woken.is_ok() {
+        if let Err(why) = crate::webui::leave_the_guide_button_alone() {
+            tracing::warn!(
+                %why,
+                "could not ask Valve's client to leave the guide button alone; \
+                 it may open Big Picture when the guide is pressed"
+            );
+        }
+    }
+
     // Whatever happened, the marker is spent: it is read as the client starts
     // and never again, so by now it has either done its work or is not going
     // to. Only what this call created is taken back — a marker somebody else
