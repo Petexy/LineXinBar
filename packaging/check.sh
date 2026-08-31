@@ -255,4 +255,59 @@ if [[ -n "$(find -L "$staged_theme" -type l -print -quit)" ]]; then
     package_die "staged cursor theme contains a broken symlink"
 fi
 
+# And the Fedora file lists have to describe that payload, which until now
+# nothing here asked. Everything above compares the components against each
+# other; the spec that ships them was checked only for the lines this file
+# greps by hand. So a %files entry naming a drawing that had left the tree
+# survived a release, and forty-five console marks were installed and packaged
+# by nobody — neither visible until rpmbuild reached the very end of a build it
+# had already paid for in full.
+#
+# Both directions, because RPM fails on both: an entry with nothing behind it
+# is "File not found", and a staged file no entry covers is "Installed (but
+# unpackaged) file(s) found".
+package_note "checking the Fedora file lists against the staged payload"
+spec_entries() {
+    awk '
+        /^%files/ { inside = 1; next }
+        /^%(changelog|prep|build|check|install|package|description)/ { inside = 0 }
+        !inside { next }
+        # Comments, blank lines, and the two directives RPM satisfies from the
+        # source tree rather than from the buildroot.
+        /^[[:space:]]*(#|$)/ { next }
+        /^%(license|doc)[[:space:]]/ { next }
+        { sub(/^%dir[[:space:]]+/, ""); print }
+    ' "$PACKAGING_DIR/fedora/lxb-desktop.spec"
+}
+
+: > "$work/spec.list"
+while IFS= read -r entry; do
+    entry="$(printf '%s\n' "$entry" | sed \
+        -e 's|%{_bindir}|/usr/bin|g' \
+        -e 's|%{_datadir}|/usr/share|g' \
+        -e 's|%{_prefix}|/usr|g')"
+    # Refused rather than skipped: an entry this cannot read is an entry that
+    # would go unchecked, which is the state that let the above through.
+    if [[ "$entry" == *'%{'* ]]; then
+        package_die "check.sh cannot expand the %files entry $entry.
+Teach spec_entries the macro rather than leaving the entry unchecked."
+    fi
+    entry="${entry%/}"
+    if [[ -d "$stage$entry" ]]; then
+        (cd "$stage" && find ".$entry" \( -type f -o -type l \) -printf '%p\n') \
+            | sed 's|^\./||' >> "$work/spec.list"
+    elif [[ -f "$stage$entry" || -L "$stage$entry" ]]; then
+        printf '%s\n' "${entry#/}" >> "$work/spec.list"
+    else
+        package_die "fedora/lxb-desktop.spec packages $entry, which no component installs"
+    fi
+done < <(spec_entries)
+
+sort -u "$work/spec.list" -o "$work/spec.list"
+comm -23 "$work/all.list" "$work/spec.list" > "$work/unpackaged.list"
+if [[ -s "$work/unpackaged.list" ]]; then
+    package_die "installed by a component and packaged by no %files section: $(
+        tr '\n' ' ' < "$work/unpackaged.list")"
+fi
+
 package_note "package definitions and staged payload are valid (version $PACKAGE_VERSION)"

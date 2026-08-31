@@ -13,11 +13,12 @@ ExclusiveArch:  x86_64 aarch64
 
 # Cargo's release profile emits no DWARF, so find-debuginfo would produce an
 # empty debugsourcefiles.list and rpmbuild would fail on it after the whole
-# build. An archive submission wants real debuginfo instead: drop this and
-# build with `-Cdebuginfo=2 -Cstrip=none` under Fedora's own remapping.
+# build. An archive submission wants real debuginfo instead: drop this, and
+# with it the -Cdebuginfo=0 in %%build that holds Fedora's own -Cdebuginfo=2
+# off, so that the DWARF is built and packaged rather than built and binned.
 %global debug_package %{nil}
 
-# Fedora appends %{_lto_cflags} to CFLAGS, and the `cc` crate reads CFLAGS when
+# Fedora appends %%{_lto_cflags} to CFLAGS, and the `cc` crate reads CFLAGS when
 # it compiles the C and assembly that ring and libspa-sys build in their build
 # scripts. Fedora's flags include -ffat-lto-objects, which keeps machine code
 # beside the bitcode and is the only reason this links: with plain -flto those
@@ -144,8 +145,40 @@ installing a desktop.
 
 %build
 export CARGO_TARGET_DIR=target
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=%{_builddir}=/usr/src/debug/linexinbar-%{version}"
-cargo build --frozen --release --workspace --bins
+# -Cdebuginfo=0 comes last, and it is not saying again what the release
+# profile already says. RUSTFLAGS is appended after the profile's own flags
+# and wins, and Fedora's %%{build_rustflags} — already exported into RUSTFLAGS
+# by the time this line runs — carries -Cdebuginfo=2 -Cstrip=none. With
+# %%global debug_package %%{nil} above there is no debuginfo package for that
+# DWARF to be delivered in, so every crate was paying for it and then throwing
+# it away: about 1.3 GiB of extra resident memory on the largest binary, which
+# on a small machine is the whole difference between a build and a SIGKILL.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=%{_builddir}=/usr/src/debug/linexinbar-%{version} -Cdebuginfo=0"
+
+# Cargo runs one rustc per binary at the end of the build and starts them
+# together, and each one holds a whole crate graph at once: the release
+# profile asks for thin LTO with a single codegen unit, which is what makes a
+# shell of this size fast and what makes the compiler that builds it large.
+# Measured peak resident size of the heaviest, lxb-desktop, on x86_64:
+#
+#     as this package now builds it   2072 MiB
+#     with the DWARF dropped above    3348 MiB
+#
+# So the job count has to answer to the machine's memory and not only to its
+# cores, which is all Cargo consults. Eight of these at once is what an 8 GiB
+# Apple M1 died of, twice, with the kernel naming rustc and 2448 MB both times.
+#
+# Arithmetic here rather than %%limit_build, which is the macro for exactly
+# this and cannot be used: on Fedora Asahi it swallowed the remainder of this
+# script, and the build ran as the bare word `-j3`. A job count is not worth a
+# macro that can do that, and this can be read by anyone holding the spec.
+lxb_jobs="%{_smp_build_ncpus}"
+lxb_room="$(awk '/^MemTotal:/ { n = int($2 / 1024 / 2048); print (n < 1 ? 1 : n) }' /proc/meminfo 2>/dev/null || true)"
+if [ -n "$lxb_room" ] && [ "$lxb_room" -lt "$lxb_jobs" ]; then
+    lxb_jobs="$lxb_room"
+fi
+echo "building with $lxb_jobs of %{_smp_build_ncpus} jobs, for the memory this machine has"
+cargo build --frozen --release --workspace --bins -j"$lxb_jobs"
 
 %check
 export CARGO_TARGET_DIR=target
@@ -153,9 +186,22 @@ export CARGO_TARGET_DIR=target
 # optimisation level: RUSTFLAGS is appended after the profile's own flags and
 # wins, so a level named here would silently override the workspace's
 # `profile.dev.package."*"` and compile every dependency unoptimised.
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=%{_builddir}=/usr/src/debug/linexinbar-%{version}"
-cargo test --frozen --workspace --lib --bins
+#
+# -Cdebuginfo=0 overrides a profile setting deliberately, which is that same
+# hazard turned around: the dev profile asks for full DWARF, this phase builds
+# the whole graph a second time to get it, and no package is ever made of it.
+# A failing test still names the file and line it failed on, because a panic
+# carries its own location rather than reading DWARF.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=%{_builddir}=/usr/src/debug/linexinbar-%{version} -Cdebuginfo=0"
 
+# The same cap as %%build, for a phase that is lighter per process and heavier
+# in total: no LTO here, but a test binary for every crate in the workspace.
+lxb_jobs="%{_smp_build_ncpus}"
+lxb_room="$(awk '/^MemTotal:/ { n = int($2 / 1024 / 2048); print (n < 1 ? 1 : n) }' /proc/meminfo 2>/dev/null || true)"
+if [ -n "$lxb_room" ] && [ "$lxb_room" -lt "$lxb_jobs" ]; then
+    lxb_jobs="$lxb_room"
+fi
+cargo test --frozen --workspace --lib --bins -j"$lxb_jobs"
 %install
 export CARGO_TARGET_DIR=target
 ./packaging/install.sh \
@@ -193,14 +239,20 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 %{_bindir}/lxb
 %{_datadir}/icons/Bibata-Modern-Classic/
 
-# The integration's two marks travel with its binary: they are read out of the
-# data directory when the shell starts, which is how a package brings its own
+# The integration's marks travel with its binary: they are read out of the data
+# directory when the shell starts, which is how a package brings its own
 # drawings to a shell that was built without them.
+#
+# The directory, and not a list of names. There is one mark per console and
+# consoles.rs gains machines; a list here would be a second place to write that
+# down, and the one nobody remembers — which is how this package came to name
+# category-retroarch.svg for a release after that drawing left the tree, and to
+# leave forty-five console marks installed and unpackaged. Nothing else stages
+# anything under that directory, so this package owns it outright.
 %files -n       lxb-retroarch
 %license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
 %{_bindir}/lxb-retroarch
-%{_datadir}/lxb/glyphs/retroarch.svg
-%{_datadir}/lxb/glyphs/category-retroarch.svg
+%{_datadir}/lxb/
 
 %changelog
 * Sun Aug 30 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.0-1

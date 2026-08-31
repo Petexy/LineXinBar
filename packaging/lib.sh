@@ -189,6 +189,21 @@ snapshot_source() {
     local destination="$1"
 
     [[ "$destination" == /* ]] || package_die "snapshot destination must be absolute"
+
+    # The file list below comes from Git, so a tree Git cannot read is not one
+    # this can package — and it has to be refused here, because nothing
+    # downstream will refuse it. An empty file list makes `tar -T -` write an
+    # empty archive and report success, and the empty source directory that
+    # unpacks from it sits *below* the checkout it was meant to be a copy of.
+    # So Cargo walks up out of it, finds the very workspace it should have been
+    # handed, and vendors and builds that instead. Every phase that asks Cargo a
+    # question passes. The first one to name a path of its own — %install
+    # reaching for packaging/install.sh — is where it comes apart, several
+    # gigabytes and one whole compile later.
+    git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || package_die "$PROJECT_ROOT is not a Git checkout, and the source archive is built from what Git lists.
+Clone the repository instead of unpacking a source download, or make this tree
+one with: git init && git add -A && git commit -m 'local tree'"
     mkdir -p "$destination"
     if [[ -n "$(find "$destination" -mindepth 1 -print -quit)" ]]; then
         package_die "snapshot destination is not empty: $destination"
@@ -208,6 +223,14 @@ snapshot_source() {
     done < <(git -C "$PROJECT_ROOT" ls-files -z --cached --others --exclude-standard) \
         | tar --null --no-recursion -C "$PROJECT_ROOT" -T - -cf - \
         | tar -C "$destination" -xf -
+
+    # And say so if it did not arrive. The pipeline above reports success for an
+    # empty archive, and an empty snapshot is the one failure that goes on to
+    # look like a working build.
+    for required in Cargo.toml packaging/install.sh; do
+        [[ -f "$destination/$required" ]] \
+            || package_die "the source snapshot is missing $required: $destination"
+    done
 }
 
 archive_snapshot() {

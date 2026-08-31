@@ -152,8 +152,8 @@ stage_desktop() {
 
 # The optional half: an integration for one program, in a package of its own so
 # that a machine which will never emulate a console does not carry it. The shell
-# finds `lxb-retroarch` on PATH and grows a RetroArch row when it is there; the
-# two marks are read out of share/lxb/glyphs at startup, which is how a package
+# finds `lxb-retroarch` on PATH and grows a RetroArch row when it is there; its
+# marks are read out of share/lxb/glyphs at startup, which is how a package
 # brings its own drawings to a shell that was built without them. See
 # `crates/lxb-retroarch` and `lxb-desktop`'s `src/retroarch.rs`.
 stage_retroarch() {

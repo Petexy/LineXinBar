@@ -177,7 +177,7 @@ rustPlatform.buildRustPackage {
 
     install -Dm0644 README.md "$out/share/doc/$pname/README.md"
 
-    # The RetroArch integration's two marks. Its binary is installed by
+    # The RetroArch integration's marks. Its binary is installed by
     # cargoInstallHook with the rest of the workspace's; these are what the
     # shell reads out of the data directory to draw that column's rows, and
     # without them every one of them falls back to the shell's own pad.
@@ -187,10 +187,12 @@ rustPlatform.buildRustPackage {
     # explains: the distro packages split to keep a dependency graph and a file
     # list apart on an installed system, and Nix has neither problem. The shell
     # finds the helper the way it finds an installed one, on PATH.
-    install -Dm0644 crates/lxb-retroarch/glyphs/retroarch.svg \
-      "$out/share/lxb/glyphs/retroarch.svg"
-    install -Dm0644 crates/lxb-retroarch/glyphs/category-retroarch.svg \
-      "$out/share/lxb/glyphs/category-retroarch.svg"
+    #
+    # The whole directory rather than named files: there is a mark per console
+    # and consoles.rs gains machines. Naming them here left this derivation
+    # installing two of forty-six, one of which had already left the tree.
+    install -Dm0644 crates/lxb-retroarch/glyphs/*.svg \
+      -t "$out/share/lxb/glyphs"
 
     patchShebangs "$out/bin/lxb-session"
     substituteInPlace "$out/share/wayland-sessions/lxb.desktop" \

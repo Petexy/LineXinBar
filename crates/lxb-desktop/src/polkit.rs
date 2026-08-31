@@ -653,7 +653,13 @@ fn whose_password(identities: &[(String, HashMap<String, OwnedValue>)]) -> Optio
 /// account can come from anywhere the machine's name service is pointed at, and
 /// the helper is going to look it up the same way.
 fn user_name(uid: u32) -> Option<String> {
-    let mut buffer = vec![0i8; 4096];
+    // `libc::c_char` rather than `i8`. They are the same type on x86_64 and a
+    // different one on aarch64, where a plain `char` is unsigned, so a buffer
+    // spelled `i8` compiles on this machine and on no ARM one — which this is
+    // packaged for. Named on the binding rather than cast on the literal:
+    // `0 as libc::c_char` is a cast clippy would be right to call redundant
+    // half the time, and undoing it puts the bug back.
+    let mut buffer: Vec<libc::c_char> = vec![0; 4096];
     let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut found: *mut libc::passwd = std::ptr::null_mut();
     // SAFETY: `passwd` and `buffer` outlive the call, and `found` is only read
