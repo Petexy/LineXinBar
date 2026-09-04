@@ -231,6 +231,18 @@ pub enum Made {
         app_id: u32,
         picture: Picture,
     },
+    /// A game's own square icon, filed the way a cover is: by the file it came
+    /// out of, in the atlas's thumbnail band.
+    ///
+    /// Like a cover and unlike a logo, because it is the same kind of thing as
+    /// a cover — a small picture of a game, at the size a row's picture is kept
+    /// at — and putting it in a band of its own would be a third arithmetic in
+    /// the atlas's layout for a picture that fits exactly in the one that is
+    /// already there.
+    Icon {
+        path: PathBuf,
+        picture: Picture,
+    },
 }
 
 /// One picture to make: which game's, which piece, and where Steam says it is.
@@ -277,6 +289,13 @@ pub struct Art {
     /// under: without it the shell could neither find a resident cover nor say
     /// that it still wants it.
     covers: HashMap<u32, PathBuf>,
+    /// And where each game's own icon turned out to be, on exactly the terms
+    /// above: it is the atlas's key, so it is both how the card behind the
+    /// guide finds the picture and how the shell says it still wants it.
+    ///
+    /// Beside the covers rather than in with them, because they are two
+    /// pictures of one game and a single map could hold only one of them.
+    icons: HashMap<u32, PathBuf>,
     /// Whether this session's library is a real one.
     ///
     /// False for `--debug-steam-library`, whose games are invented and whose
@@ -300,6 +319,7 @@ enum Answer {
     Cover { path: PathBuf, picture: Picture },
     Hero(Scenery),
     Logo(Picture),
+    Icon { path: PathBuf, picture: Picture },
 }
 
 impl Art {
@@ -324,6 +344,7 @@ impl Art {
             barren: HashMap::new(),
             later: HashMap::new(),
             covers: HashMap::new(),
+            icons: HashMap::new(),
             real,
         }
     }
@@ -406,6 +427,10 @@ impl Art {
                 }
                 Ok(Answer::Hero(scenery)) => out.push(Made::Hero { app_id, scenery }),
                 Ok(Answer::Logo(picture)) => out.push(Made::Logo { app_id, picture }),
+                Ok(Answer::Icon { path, picture }) => {
+                    self.icons.insert(app_id, path.clone());
+                    out.push(Made::Icon { path, picture });
+                }
                 Err(why) => {
                     if why.worth_retrying() {
                         tracing::debug!(
@@ -451,6 +476,39 @@ impl Art {
     pub fn cover(&self, app_id: u32) -> Option<&Path> {
         self.covers.get(&app_id).map(PathBuf::as_path)
     }
+
+    /// The file a game's own icon is in, once one has been found. The atlas's
+    /// key for it, exactly as [`Self::cover`] is for the cover.
+    pub fn icon(&self, app_id: u32) -> Option<&Path> {
+        self.icons.get(&app_id).map(PathBuf::as_path)
+    }
+}
+
+/// The two directories Valve's own client keeps pictures in.
+///
+/// Two, because the icon is not in with the store artwork: the capsules, heroes
+/// and logos are under `appcache/librarycache` and the icons are flat in
+/// `steam/games`. Resolved together and held together so the worker asks which
+/// Steam is being driven once rather than once per picture — see
+/// [`lxb_steam::backend::Backend::chosen`], which is a `PATH` walk.
+struct Caches {
+    pictures: PathBuf,
+    icons: PathBuf,
+}
+
+impl Caches {
+    /// Where the client has already put this job's picture, if it has.
+    fn holding(&self, job: &Job) -> Option<PathBuf> {
+        match job.piece {
+            Piece::Icon => lxb_steam::art::in_the_icon_cache(&self.icons, job.published.as_deref()),
+            piece => lxb_steam::art::in_the_client_cache(
+                &self.pictures,
+                job.app_id,
+                piece,
+                job.published.as_deref(),
+            ),
+        }
+    }
 }
 
 /// One worker: take the most recently wanted picture and make it.
@@ -459,6 +517,35 @@ impl Art {
 /// being scrolled reuses one TLS session instead of opening one per cover.
 fn work(queue: &Queue, send: &Sender<(u32, Piece, Result<Answer, Missing>)>) {
     let cdn = Cdn::new();
+    // Which Steam's cache to read, resolved once with the agent and for the
+    // same reason: it is a `PATH` walk and a handful of directory checks, and
+    // asking it again per picture would be asking it a thousand times while a
+    // library is scrolled. `None` is a machine with no Steam of any kind, where
+    // every picture comes from the network.
+    //
+    // Once, not never: a Steam installed halfway through a session is not
+    // noticed until the shell restarts, and the cost of that is a fetch rather
+    // than a blank row. Reading the *wrong* Steam's cache is the failure that
+    // matters, and that is what resolving it at all fixes — this used to go
+    // looking on its own and prefer a native directory an uninstall had left
+    // behind, while the Flatpak beside it was the one being driven.
+    let cache = lxb_steam::backend::Backend::chosen().map(|steam| Caches {
+        pictures: steam.client_art_cache(),
+        icons: steam.client_icon_cache(),
+    });
+    if let Some(cache) = cache.as_ref() {
+        tracing::info!(
+            pictures = %cache.pictures.display(),
+            icons = %cache.icons.display(),
+            "reading Steam's own picture cache"
+        );
+    }
+    // And this shell's own, weighed rather than read. On the worker's thread
+    // because it is the thread that fills it, and here at the top because a
+    // session that starts over the cap should not have to be scrolled before
+    // anything is done about it. See [`tidy_the_cache`].
+    tidy_the_cache();
+    let mut tidied = Instant::now();
     loop {
         let job = {
             let Ok(mut jobs) = queue.jobs.lock() else {
@@ -475,66 +562,133 @@ fn work(queue: &Queue, send: &Sender<(u32, Piece, Result<Answer, Missing>)>) {
             }
         };
 
-        let made = produce(&job, &cdn);
+        let made = produce(&job, &cdn, cache.as_ref());
         if send.send((job.app_id, job.piece, made)).is_err() {
             return;
+        }
+        // After the answer has gone, never before it: this is a directory walk
+        // and the shell is waiting on the picture, not on the tidying.
+        if tidied.elapsed() >= TIDY_EVERY {
+            tidied = Instant::now();
+            tidy_the_cache();
         }
     }
 }
 
 /// Find one picture and turn it into what the GPU takes.
-fn produce(job: &Job, cdn: &Cdn) -> Result<Answer, Missing> {
-    let piece = job.piece;
-    let (path, bytes) = source(job, cdn)?;
-    match piece {
-        Piece::Cover => {
-            let picture = cover(&bytes).ok_or_else(|| {
-                Missing::Unreachable(format!("{} could not be decoded", path.display()))
-            })?;
-            Ok(Answer::Cover { path, picture })
+///
+/// Every source in turn, rather than the first one that has bytes in it. A file
+/// that is present and will not decode used to end the whole search: it was
+/// returned as *the* source, decoding failed, and the failure was retryable —
+/// so the next attempt read the same broken file, and so did every attempt
+/// after that. One truncated write left a game without a cover for the life of
+/// the machine, and nothing on screen or in the log said why.
+fn produce(job: &Job, cdn: &Cdn, steam_cache: Option<&Caches>) -> Result<Answer, Missing> {
+    let ours = ours(job.app_id, job.piece, job.published.as_deref())
+        .ok_or_else(|| Missing::Unreachable("there is nowhere to cache pictures".to_string()))?;
+
+    // The cached copies, nearest first: Valve's own, then this shell's.
+    let cached: Vec<PathBuf> = steam_cache
+        .and_then(|cache| cache.holding(job))
+        .into_iter()
+        .chain(std::iter::once(ours.clone()))
+        .collect();
+    if let Some(answer) = off_the_disk(job.piece, &cached, &ours) {
+        return Ok(answer);
+    }
+
+    // Nothing on the disk, or nothing on the disk that decoded. Either way the
+    // network is what is left, and this is the attempt a broken file used to
+    // stand in front of.
+    let bytes = cdn.fetch(job.app_id, job.piece, job.published.as_deref())?;
+    let answer = turn_into_a_picture(job.piece, ours.clone(), &bytes)?;
+    // Written down only once it is known to be a picture. A response that
+    // decodes nowhere is not worth caching, and caching one is how the
+    // unreadable file gets there in the first place.
+    store(&ours, &bytes);
+    Ok(answer)
+}
+
+/// The first cached copy that is really a picture, throwing away any of this
+/// shell's own that are not.
+///
+/// The throwing away is the point. A cached file that will not decode is not a
+/// game without artwork, it is a game whose artwork this shell cannot see and
+/// will never look for again: the file was returned as the source, decoding
+/// failed as something worth retrying, and the retry read the same file. One
+/// truncated write was permanent.
+///
+/// Only files of ours are deleted. The client's cache belongs to Valve and this
+/// shell does not delete out of it — it steps over the file instead, which
+/// costs one fetch and leaves somebody else's directory alone.
+fn off_the_disk(piece: Piece, cached: &[PathBuf], ours: &Path) -> Option<Answer> {
+    for path in cached {
+        // A copy that is not there is the ordinary case and not a reason to
+        // stop looking: most games have no cached artwork at all until this has
+        // fetched some.
+        let Some(bytes) = readable(path) else {
+            continue;
+        };
+        match turn_into_a_picture(piece, path.clone(), &bytes) {
+            Ok(answer) => {
+                // Only ours: touching a file in Valve's cache would be writing
+                // into somebody else's directory, and it is not the one this
+                // shell's cap is about.
+                if path == ours {
+                    still_wanted(path);
+                }
+                return Some(answer);
+            }
+            Err(_) if path == ours => {
+                tracing::info!(
+                    file = %path.display(),
+                    "throwing away a cached picture that will not decode"
+                );
+                let _ = std::fs::remove_file(path);
+            }
+            Err(_) => tracing::debug!(
+                file = %path.display(),
+                "stepping over a cached picture that will not decode"
+            ),
         }
-        Piece::Hero => {
-            let scenery = hero(&bytes).ok_or_else(|| {
-                Missing::Unreachable(format!("{} could not be decoded", path.display()))
-            })?;
-            Ok(Answer::Hero(scenery))
+    }
+    None
+}
+
+/// One file's bytes, or nothing, with a line for the failures worth one.
+fn readable(path: &Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) if !bytes.is_empty() => Some(bytes),
+        // A file that is there and unreadable is worth a line; one that is
+        // simply not there is the ordinary case and is not.
+        Ok(_) => {
+            tracing::debug!(file = %path.display(), "an empty picture on the disk");
+            None
         }
-        Piece::Logo => {
-            let picture = logo(&bytes).ok_or_else(|| {
-                Missing::Unreachable(format!("{} could not be decoded", path.display()))
-            })?;
-            Ok(Answer::Logo(picture))
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(file = %path.display(), ?err, "cannot read that picture");
+            }
+            None
         }
     }
 }
 
-/// The bytes of one picture, and the file they belong to.
-///
-/// Both caches are read before anything is asked of Steam, and what is fetched
-/// is written into this shell's own so the next session does not ask again.
-fn source(job: &Job, cdn: &Cdn) -> Result<(PathBuf, Vec<u8>), Missing> {
-    let (app_id, piece, published) = (job.app_id, job.piece, job.published.as_deref());
-    let ours = ours(app_id, piece, published)
-        .ok_or_else(|| Missing::Unreachable("there is nowhere to cache pictures".to_string()))?;
-    let already = lxb_steam::art::in_the_client_cache(app_id, piece, published)
-        .into_iter()
-        .chain(std::iter::once(ours.clone()));
-    for path in already {
-        match std::fs::read(&path) {
-            Ok(bytes) if !bytes.is_empty() => return Ok((path, bytes)),
-            // A file that is there and unreadable is worth a line; one that is
-            // simply not there is the ordinary case and is not.
-            Ok(_) => tracing::debug!(file = %path.display(), "an empty picture on the disk"),
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-                tracing::debug!(file = %path.display(), ?err, "cannot read that picture");
-            }
-            Err(_) => {}
+/// Decode one file into whatever the piece it is asks for.
+fn turn_into_a_picture(piece: Piece, path: PathBuf, bytes: &[u8]) -> Result<Answer, Missing> {
+    let undecodable = || Missing::Unreachable(format!("{} could not be decoded", path.display()));
+    match piece {
+        Piece::Cover => {
+            let picture = cover(bytes).ok_or_else(undecodable)?;
+            Ok(Answer::Cover { path, picture })
+        }
+        Piece::Hero => Ok(Answer::Hero(hero(bytes).ok_or_else(undecodable)?)),
+        Piece::Logo => Ok(Answer::Logo(logo(bytes).ok_or_else(undecodable)?)),
+        Piece::Icon => {
+            let picture = icon(bytes).ok_or_else(undecodable)?;
+            Ok(Answer::Icon { path, picture })
         }
     }
-
-    let bytes = cdn.fetch(app_id, piece, published)?;
-    store(&ours, &bytes);
-    Ok((ours, bytes))
 }
 
 /// Where this shell keeps what it had to fetch.
@@ -546,6 +700,18 @@ fn source(job: &Job, cdn: &Cdn) -> Result<(PathBuf, Vec<u8>), Missing> {
 /// cover for the rest of the machine's life. A game with no published path
 /// keeps the plain name, which is where the last session left it.
 fn ours(app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
+    Some(
+        our_cache()?
+            .join(app_id.to_string())
+            .join(published.unwrap_or_else(|| piece.file_name())),
+    )
+}
+
+/// `$XDG_CACHE_HOME/linexinbar/steam-art`, the whole of what this shell keeps.
+///
+/// Its own function because three things want the directory rather than a file
+/// in it: writing one, measuring the lot, and throwing the lot away.
+pub fn our_cache() -> Option<PathBuf> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -555,13 +721,174 @@ fn ours(app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".cache"))
         })?;
-    Some(
-        cache
-            .join("linexinbar")
-            .join("steam-art")
-            .join(app_id.to_string())
-            .join(published.unwrap_or_else(|| piece.file_name())),
-    )
+    Some(cache.join("linexinbar").join("steam-art"))
+}
+
+/// How much of the disk this shell's picture cache may take.
+///
+/// A quarter of a gigabyte, which on a library of a few hundred games is
+/// several times more than the pictures for all of them — so on an ordinary
+/// machine nothing is ever thrown away, and this is the ceiling rather than the
+/// working size.
+///
+/// What it actually guards against is not a large library but a long-lived
+/// machine. A picture is filed under the path Steam publishes it at, and that
+/// path is named after the picture's contents: a publisher who replaces a
+/// game's cover leaves the old file behind under a name nothing will ask for
+/// again. Nothing ever deleted those, so the only cache that grew without end
+/// was the one belonging to somebody who had kept the same machine for years —
+/// which is exactly whose disk this shell has no business filling.
+const CACHE_CAP: u64 = 256 * 1024 * 1024;
+
+/// How far under the cap a tidy-up goes.
+///
+/// Not to the cap, or a cache sitting on it would be tidied on every pass and
+/// throw away one picture each time — which is a walk of the whole directory
+/// for the sake of a file that is about to be fetched again. Four fifths leaves
+/// room to fill before it matters again.
+const TIDY_TO: u64 = CACHE_CAP / 5 * 4;
+
+/// How often the cache is looked at.
+///
+/// It is a directory walk of a few hundred entries, which is milliseconds — but
+/// it is milliseconds on the worker's thread, and the worker's thread is what a
+/// library being scrolled is waiting on. Once when the session starts and every
+/// ten minutes after is far more often than a cache can go from empty to a
+/// quarter of a gigabyte.
+const TIDY_EVERY: Duration = Duration::from_secs(600);
+
+/// One cached file, as the tidying weighs it.
+struct Kept {
+    path: PathBuf,
+    bytes: u64,
+    /// When it was last written or last *used* — see [`still_wanted`], which is
+    /// what makes this a record of what somebody looks at rather than of what
+    /// happened to be fetched first.
+    when: std::time::SystemTime,
+}
+
+/// Everything in this shell's picture cache, with what each takes.
+fn kept_in(cache: &Path) -> Vec<Kept> {
+    let mut kept = Vec::new();
+    // Two levels and no deeper: a game's directory, and the pictures in it.
+    let Ok(games) = std::fs::read_dir(cache) else {
+        return kept;
+    };
+    for game in games.flatten() {
+        let Ok(pictures) = std::fs::read_dir(game.path()) else {
+            continue;
+        };
+        for picture in pictures.flatten() {
+            let Ok(about) = picture.metadata() else {
+                continue;
+            };
+            if !about.is_file() {
+                continue;
+            }
+            kept.push(Kept {
+                path: picture.path(),
+                bytes: about.len(),
+                when: about.modified().unwrap_or(std::time::UNIX_EPOCH),
+            });
+        }
+    }
+    kept
+}
+
+/// What the cache takes, and how many files it is in.
+///
+/// For the diagnostics panel, which is the one place a number about somebody's
+/// disk is worth printing. `None` where there is nowhere to cache pictures at
+/// all, which is a session with no home.
+pub fn cache_room() -> Option<(u64, usize)> {
+    let cache = our_cache()?;
+    let kept = kept_in(&cache);
+    Some((kept.iter().map(|one| one.bytes).sum(), kept.len()))
+}
+
+/// Throw the whole of it away, and say how much that was.
+///
+/// Only this shell's own directory. Valve's cache is not ours to delete out of
+/// — see [`off_the_disk`], which steps over a broken file in it rather than
+/// removing one — and nothing here goes near it.
+///
+/// Nothing is lost that cannot be fetched again, which is the whole of why this
+/// is a button somebody may press: what it costs is one download per picture
+/// the bar asks for next.
+pub fn forget_the_cache() -> u64 {
+    let Some(cache) = our_cache() else {
+        return 0;
+    };
+    let freed: u64 = kept_in(&cache).iter().map(|one| one.bytes).sum();
+    match std::fs::remove_dir_all(&cache) {
+        Ok(()) => tracing::info!(freed, cache = %cache.display(), "threw the picture cache away"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(err) => {
+            tracing::warn!(?err, cache = %cache.display(), "could not throw the picture cache away");
+            return 0;
+        }
+    }
+    freed
+}
+
+/// Drop the oldest pictures until the cache is back under its cap.
+///
+/// Oldest by when it was last *used* rather than by when it was fetched: a
+/// picture the bar draws every session is touched every session — see
+/// [`still_wanted`] — and one belonging to a game whose artwork was replaced
+/// two years ago is not touched at all. So what goes is what nothing has asked
+/// for, which is the only ordering that means anything here.
+///
+/// Silent when there is nothing to do, which is every machine that has not been
+/// running for years: the walk finds a cache well under the cap and returns.
+fn tidy_the_cache() {
+    let Some(cache) = our_cache() else {
+        return;
+    };
+    let mut kept = kept_in(&cache);
+    let mut total: u64 = kept.iter().map(|one| one.bytes).sum();
+    if total <= CACHE_CAP {
+        return;
+    }
+    kept.sort_by_key(|one| one.when);
+    let was = total;
+    let mut dropped = 0usize;
+    for one in &kept {
+        if total <= TIDY_TO {
+            break;
+        }
+        if std::fs::remove_file(&one.path).is_ok() {
+            total -= one.bytes.min(total);
+            dropped += 1;
+        }
+    }
+    tracing::info!(
+        was,
+        now = total,
+        dropped,
+        "the picture cache was over its cap"
+    );
+}
+
+/// Say that a cached picture of ours was used just now.
+///
+/// The whole of what makes [`tidy_the_cache`] a least-recently-*used* rule
+/// rather than a least-recently-fetched one. Without it the pictures thrown
+/// away on a full cache would be the ones fetched longest ago, which on a
+/// library somebody has had for years is their favourite games.
+///
+/// Best effort and quiet: a cache on a read-only filesystem, or a file that
+/// went between being read and being touched, is not worth a line — the picture
+/// was already handed over, which is what the caller asked for.
+fn still_wanted(path: &Path) {
+    let now = std::time::SystemTime::now();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(now)
+        .set_modified(now);
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_times(times));
 }
 
 /// Write a fetched picture where the next session will find it.
@@ -629,6 +956,39 @@ fn logo(bytes: &[u8]) -> Option<Picture> {
     let image = decode(bytes)?;
     let scaled = if image.width() > LOGO_SIZE || image.height() > LOGO_SIZE {
         image.resize(LOGO_SIZE, LOGO_SIZE, image::imageops::FilterType::Lanczos3)
+    } else {
+        image
+    };
+    let rgba = scaled.to_rgba8();
+    Some(Picture {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
+/// A game's own icon, square, in the band a cover lives in.
+///
+/// Two things separate this from [`cover`] above, and both are about what a
+/// `.ico` is.
+///
+/// It is **a directory of sizes rather than a picture**: one file holds 16, 32,
+/// 48, 128 and 256-pixel drawings of the same mark, and `image`'s decoder
+/// resolves that to the largest of them. That is the one this wants — the card
+/// draws the icon at a fifth of the guide's height, which on a 4K display is
+/// well past 128.
+///
+/// And **it is often smaller than the cell**. Measured on the machine this was
+/// written against: of 33 client icons in Valve's own cache, 20 reach 256 px,
+/// two reach 128, two 48 and eight stop at 32. So the scale is a reduction and
+/// never an enlargement, exactly as a cover's is — a 32-pixel icon stretched
+/// into a 256-pixel block would be four times the atlas for the same detail,
+/// softened, and the card would rather draw the small picture small.
+fn icon(bytes: &[u8]) -> Option<Picture> {
+    let image = crate::icons::largest_in_an_ico(bytes).or_else(|| decode(bytes))?;
+    let edge = crate::thumbs::SIZE;
+    let scaled = if image.width() > edge || image.height() > edge {
+        image.resize(edge, edge, image::imageops::FilterType::Lanczos3)
     } else {
         image
     };
@@ -749,6 +1109,132 @@ fn decode(bytes: &[u8]) -> Option<image::DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cache laid out the way this shell lays one out.
+    fn a_cache(name: &str, files: &[(&str, &str, usize)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lxb-art-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (app_id, picture, bytes) in files {
+            let dir = root.join(app_id);
+            std::fs::create_dir_all(&dir).expect("a scratch cache");
+            std::fs::write(dir.join(picture), vec![0u8; *bytes]).unwrap();
+        }
+        root
+    }
+
+    /// What the cache weighs, which is what the diagnostics panel prints and
+    /// what the cap is measured against.
+    #[test]
+    fn the_cache_says_what_it_takes() {
+        let cache = a_cache(
+            "room",
+            &[
+                ("504230", "cover.jpg", 1000),
+                ("504230", "hero.jpg", 2000),
+                ("220200", "cover.jpg", 500),
+            ],
+        );
+        let kept = kept_in(&cache);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept.iter().map(|one| one.bytes).sum::<u64>(), 3500);
+
+        // A directory that is not there is an empty cache and not a failure:
+        // it is every machine that has not fetched a picture yet.
+        let _ = std::fs::remove_dir_all(&cache);
+        assert!(kept_in(&cache).is_empty());
+    }
+
+    /// What a full cache throws away is what nothing has asked for, and what it
+    /// keeps is what somebody looks at.
+    ///
+    /// The ordering is the whole of it. Oldest-fetched would take the pictures
+    /// for the games somebody has had longest, which on a library kept for
+    /// years is their favourite ones; what should go is the file left behind
+    /// when a publisher replaced a game's cover, which nothing has asked for
+    /// since and nothing ever will.
+    #[test]
+    fn a_full_cache_drops_what_nothing_has_asked_for() {
+        let cache = a_cache(
+            "tidy",
+            &[
+                ("1", "old.jpg", 10),
+                ("2", "older.jpg", 10),
+                ("3", "used.jpg", 10),
+            ],
+        );
+        let old = cache.join("1").join("old.jpg");
+        let older = cache.join("2").join("older.jpg");
+        let used = cache.join("3").join("used.jpg");
+
+        // Two of them written long ago, and one used a moment ago — which is
+        // what `still_wanted` does to a file the bar has just drawn.
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(60 * 60 * 24 * 400);
+        for (path, when) in [
+            (&old, long_ago),
+            (&older, long_ago - Duration::from_secs(60)),
+        ] {
+            let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(when))
+                .unwrap();
+        }
+        still_wanted(&used);
+
+        let mut kept = kept_in(&cache);
+        kept.sort_by_key(|one| one.when);
+        assert_eq!(
+            kept.iter().map(|one| one.path.clone()).collect::<Vec<_>>(),
+            vec![older.clone(), old.clone(), used.clone()],
+            "the order a tidy-up deletes in is wrong"
+        );
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// A cached picture that will not decode is thrown away rather than read
+    /// again for ever.
+    ///
+    /// This is what made one truncated write permanent. The file was there and
+    /// not empty, so it was returned as the source; decoding it failed as
+    /// something worth retrying; and the retry read the same file. Every
+    /// attempt after that, for the life of the machine, went the same way — and
+    /// the CDN, which had the picture all along, was never reached, because a
+    /// broken file was standing in front of it.
+    #[test]
+    fn a_cached_picture_that_will_not_decode_is_thrown_away() {
+        let scratch = std::env::temp_dir().join(format!("lxb-art-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("a scratch directory");
+
+        let theirs = scratch.join("valve.jpg");
+        let ours = scratch.join("ours.jpg");
+        std::fs::write(&theirs, b"not a picture either").unwrap();
+        std::fs::write(&ours, b"nor is this").unwrap();
+
+        assert!(off_the_disk(Piece::Cover, &[theirs.clone(), ours.clone()], &ours).is_none());
+        assert!(
+            !ours.exists(),
+            "the broken file this shell wrote is still there to be read again"
+        );
+        // And not out of Valve's, which is not this shell's to delete out of.
+        assert!(
+            theirs.exists(),
+            "a file in the client's own cache was deleted"
+        );
+
+        // A real picture is still found, and is not thrown away with them.
+        let mut real = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .write_to(
+                &mut std::io::Cursor::new(&mut real),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&ours, &real).unwrap();
+        assert!(off_the_disk(Piece::Cover, &[theirs.clone(), ours.clone()], &ours).is_some());
+        assert!(ours.exists());
+
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 
     /// A screenshot of a console comes out the size every other picture behind
     /// the bar is, and comes out *soft*.
@@ -923,11 +1409,14 @@ mod tests {
     /// go looking for a file name Valve stopped publishing.
     #[test]
     fn a_request_carries_the_path_of_the_piece_it_is_for() {
-        let published = Published::from(lxb_steam::art::LibraryArt {
-            capsule: Some("28dbb244/library_600x900.jpg".to_string()),
-            hero: Some("67a1c596/library_hero.jpg".to_string()),
-            logo: None,
-        });
+        let published = Published::from_pics(
+            lxb_steam::art::LibraryArt {
+                capsule: Some("28dbb244/library_600x900.jpg".to_string()),
+                hero: Some("67a1c596/library_hero.jpg".to_string()),
+                logo: None,
+            },
+            None,
+        );
         let mut art = Art::start(false);
         // Started with no workers, so nothing here reaches Steam; the queue is
         // the thing under test and it is filled the same way either way.
@@ -1001,11 +1490,14 @@ mod tests {
     #[test]
     fn a_game_is_asked_again_once_the_shell_knows_where_to_look() {
         let key = (3812600, Piece::Cover);
-        let published = Published::from(lxb_steam::art::LibraryArt {
-            capsule: Some("e5b5c644/library_capsule.jpg".to_string()),
-            hero: None,
-            logo: None,
-        });
+        let published = Published::from_pics(
+            lxb_steam::art::LibraryArt {
+                capsule: Some("e5b5c644/library_capsule.jpg".to_string()),
+                hero: None,
+                logo: None,
+            },
+            None,
+        );
         let mut art = Art::start(false);
         art.real = true;
 
@@ -1045,5 +1537,30 @@ mod tests {
         art.barren
             .insert(key, Some("e5b5c644/library_capsule.jpg".to_string()));
         assert!(!art.worth_asking(key, Some("e5b5c644/library_capsule.jpg")));
+    }
+
+    use crate::icons::tests::{ico, png};
+    use crate::icons::{largest_in_an_ico, ICO_MAGIC};
+
+    /// A small icon is left small. The atlas cell is a ceiling, not a size:
+    /// eight of the thirty-three on this machine stop at 32 pixels, and
+    /// stretching one into a 256-pixel block would be four times the atlas for
+    /// the same detail, softened.
+    #[test]
+    fn a_small_icon_is_not_stretched_to_fill_its_block() {
+        let picture = icon(&ico(&[(32, png(32, false))])).expect("the icon");
+        assert_eq!((picture.width, picture.height), (32, 32));
+    }
+
+    /// Anything that is not an icon file is left to the crate that decodes
+    /// pictures, so a hash that turned out to name a `.jpg` still draws.
+    #[test]
+    fn what_is_not_an_icon_file_is_decoded_as_what_it_is() {
+        let plain = png(48, false);
+        assert!(largest_in_an_ico(&plain).is_none());
+        let picture = icon(&plain).expect("the picture");
+        assert_eq!((picture.width, picture.height), (48, 48));
+        assert!(icon(&[]).is_none());
+        assert!(icon(&ICO_MAGIC).is_none());
     }
 }

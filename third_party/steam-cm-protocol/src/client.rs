@@ -38,6 +38,8 @@ const LICENSE_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const CHAT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound the chat history fetch (runs in a spawned task; emits empty on timeout so the UI clears).
 const CHAT_HISTORY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How many messages back a conversation is opened with.
+const RECENT_MESSAGES: u32 = 50;
 
 #[derive(Debug)]
 pub enum RunCommand {
@@ -238,7 +240,12 @@ impl SteamClient {
                             if let Some(event) = friends::decode(&pkt) {
                                 // When the friends list arrives, immediately request persona data.
                                 if let friends::FriendsEvent::FriendsList(ref friend_list) = event {
-                                    let ids: Vec<u64> = friend_list.iter().map(|f| f.steamid).collect();
+                                    let ids: Vec<u64> = friend_list
+                                        .friends
+                                        .iter()
+                                        .filter(|friend| friend.is_friend())
+                                        .map(|friend| friend.steamid)
+                                        .collect();
                                     if !ids.is_empty() {
                                         let conn = connection.lock().await;
                                         let state = conn.state_snapshot().await;
@@ -363,7 +370,7 @@ impl SteamClient {
                                     let state = conn.state_snapshot().await;
                                     match timeout(
                                         CHAT_HISTORY_TIMEOUT,
-                                        chat::get_recent_messages(&conn, &state, steamid),
+                                        chat::get_recent_messages(&conn, &state, steamid, RECENT_MESSAGES),
                                     )
                                     .await
                                     {

@@ -14,18 +14,46 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="36">
+  <interface name="lxb_shell_v1" version="41">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
       shell even while a fullscreen application owns the keyboard, and a way
       for the shell to end that application or the session.
 
-      This interface supplies exactly those. It is a session-private protocol
-      on the same trust footing as wlr-layer-shell: any client of this
-      compositor may bind it, and the compositor only ever runs clients the
-      user's own session started.
+      This interface supplies exactly those. It is a privileged protocol: the
+      compositor offers it only to the programs its own session is made of —
+      the session shell it started, and the desktop portal that draws its
+      questions through the shell — and refuses it to every other client.
+
+      That is deliberately narrower than wlr-layer-shell's footing, which this
+      interface used to claim. A LineXinBar session runs a great deal that the
+      user did not write and the compositor cannot vet: Valve's client and every
+      game it starts, whatever the software hub installed, a browser. The
+      requests here hide any application from the screen while leaving it
+      running, close anybody's window, inject key and pointer events, and end
+      the session — none of which is a thing an ordinary client of a session
+      should be able to do to the rest of it.
+
+      The compositor decides from the credentials the kernel puts on the
+      connection, never from anything a client says about itself. A client that
+      may not bind it is not shown the global at all, and an attempt to bind it
+      regardless is a protocol error.
+
+      The two programs it does offer it to do not get the same interface. The
+      session shell may use all of it. The desktop portal — which exists to put
+      questions from applications outside the session to the user — may use
+      offer_kind, ask_to_pick_files and ask_to_share, and receives the answers
+      to those; every other request is a not_permitted error on its object.
     </description>
+
+    <enum name="error">
+      <description summary="what a client got wrong">
+        Sent as a fatal protocol error on the object it happened to.
+      </description>
+      <entry name="not_permitted" value="0"
+             summary="this request is not one this client may make"/>
+    </enum>
 
     <request name="destroy" type="destructor">
       <description summary="stop receiving session events">
@@ -86,6 +114,77 @@
       </description>
       <arg name="output" type="object" interface="wl_output"
            summary="display to open applications on"/>
+    </request>
+
+    <request name="set_driven_output" since="41">
+      <description summary="which display the user is at">
+        Names the display the user is driving, for every question that is about
+        where the person is rather than about where a window belongs: which
+        display's topmost window gets the keyboard back when something closes,
+        which display's game is the X screen's active window, and which display
+        a screenshot binding photographs.
+
+        It is not set_launch_output, and the two came apart because they had
+        been one field answering both. A shell holds the launch answer on the
+        display a game was started from for as long as that game is on its way,
+        which is right — an application belongs to the screen it was launched
+        from, however far the user wanders while it loads. Read as "where the
+        user is", that same held value walks the keyboard and _NET_ACTIVE_WINDOW
+        off to a screen nobody is looking at, for as long as a game takes to
+        open. So the shell says both, and says them separately.
+
+        The choice persists until it is changed, and it is a preference rather
+        than a constraint: the compositor falls back to its own reading — the
+        display holding keyboard focus, then the one under the pointer — when
+        the named output is gone or was never named.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display being driven"/>
+    </request>
+
+    <request name="place_launch" since="41">
+      <description summary="where one launch's window belongs">
+        Files one launch under the display it was started from, so that the
+        window it turns into opens there whatever else has been started since.
+
+        set_launch_output is one value for the session, and a session can be
+        loading two things on two displays at once. Whichever launch that one
+        value happens to name is where *every* window that maps goes — so two
+        games started on two screens, whose windows arrive in the other order,
+        open on each other's displays. This is the same answer per launch: the
+        compositor keeps a record for each and places a window it can match
+        against the record's own output, and falls back to set_launch_output
+        for a window it cannot match.
+
+        The record is matched two ways, and either is enough. pid is the
+        process the shell started, and a window is that launch's if the process
+        behind it is that pid or anything descended from it — a wrapper script,
+        a launcher, a game re-executed under a runtime. app_id is what the
+        window will call itself where the shell knows it and there is no
+        process to name: a game handed to a store client is started by the
+        client rather than by the shell, and arrives under a class the shell
+        can predict. Pass 0 for pid or an empty app_id where the shell has
+        neither, which files a record that only its output is read from.
+
+        launch is the shell's own number for this press. It means nothing to
+        the compositor beyond telling one record from another, and a number
+        used again replaces the record it named. A record is dropped by
+        forget_launch, by the display it names going away, and when nothing has
+        matched it for long enough that no window is coming.
+      </description>
+      <arg name="launch" type="uint" summary="the shell's own number for this press"/>
+      <arg name="output" type="object" interface="wl_output" summary="the display it was started from"/>
+      <arg name="pid" type="uint" summary="the process started, or 0 for none"/>
+      <arg name="app_id" type="string" summary="what its window will call itself, or empty"/>
+    </request>
+
+    <request name="forget_launch" since="41">
+      <description summary="that launch is over">
+        Drops the record place_launch filed. Sent when the loading screen for
+        it ends, however it ended: the window arrived, the process died, the
+        wait ran out, the display was unplugged. Naming a launch that was never
+        filed, or one already dropped, does nothing.
+      </description>
+      <arg name="launch" type="uint" summary="the number place_launch was given"/>
     </request>
 
     <request name="set_output_overview" since="4">
@@ -639,6 +738,35 @@
       <arg name="hidden" type="uint" summary="1 to keep its windows off the screen, 0 to show them again"/>
     </request>
 
+    <request name="let_this_window_be_seen" since="40">
+      <description summary="one exception to keep_out_of_sight">
+        Lets a single window of a hidden application through, without giving
+        the application itself back. It is drawn, listed, focusable and
+        clickable exactly as any other window; everything else the application
+        owns stays where keep_out_of_sight put it.
+
+        This exists because a program the shell drives rather than presents
+        still stops and asks things. Valve's client is the one that needs it:
+        it signs itself in, fetches games and reads a library with nobody
+        watching, and then puts up a window that nothing will get past until
+        somebody answers it — a sign-in, an agreement, a licence key, a
+        parental code, a conflict between two saves. Hidden, that window is a
+        session where Steam has silently stopped and the screen says nothing.
+
+        The compositor takes no view of which window that is. It says what it
+        is hiding, through unseen_window, and the shell — which knows what it
+        asked the application for and what it is still waiting on — decides.
+
+        The exception is on the window, not on the application, and it lasts
+        as long as the window does: a compositor that has forgotten a window
+        has forgotten this about it too, and an id reused for another window
+        starts hidden like everything else. Naming a window that does not
+        exist, or one whose application is not hidden at all, does nothing.
+      </description>
+      <arg name="id" type="uint" summary="the window, from unseen_window"/>
+      <arg name="seen" type="uint" summary="1 to let this one window through, 0 to put it back"/>
+    </request>
+
     <request name="set_output_night_light" since="20">
       <description summary="warm one display's picture, or stop">
         Puts a night light — a blue light filter — on one display: everything
@@ -1142,6 +1270,112 @@
       <arg name="keep" type="uint" summary="1 to leave it where it is, 0 to put it back"/>
     </request>
 
+    <request name="set_pointer" since="37">
+      <description summary="how the pointing devices behave">
+        Sets the four things a session decides about a mouse: how fast the
+        pointer travels for a given movement of the hand, how large the
+        compositor draws it, how far one notch of a wheel carries the content
+        under it, and which way that content goes.
+
+        The compositor's because every one of them is: three are libinput
+        settings on a device the shell never opens — only the compositor holds
+        the seat — and the fourth is the size of a picture the compositor is
+        the one drawing. A shell could not carry any of them out.
+
+        **Every pointing device the seat has**, and not only the ones that are
+        mice: a trackball, a touchpad and a controller's trackpad all move the
+        same pointer, and a session where the speed applied to one of them and
+        not the other would be a setting that works on some desks and not
+        others. A device libinput says cannot do one of these keeps whatever it
+        does — a mouse has no tap-to-click and a trackball may have no
+        acceleration curve — and that is not an error.
+
+        Applied at once, and to the devices already plugged in as well as to
+        the next one: this arrives while somebody is looking at the page they
+        set it on, and a speed that waited for a replug would read as a press
+        that did nothing.
+
+        speed is libinput's own acceleration setting in hundredths, -100 to
+        100, where 0 is the flat default every desktop starts at. It is not a
+        multiplier and the scale is not linear — what libinput does with it
+        depends on the device's own resolution — which is exactly why it is
+        passed through rather than translated: the number the user chose on a
+        bar means what libinput means by it, and the two cannot drift apart.
+        Out of range is clamped rather than refused.
+
+        size is the cursor's nominal size in logical pixels, as XCURSOR_SIZE
+        counts it. An XCursor theme carries a handful of drawn sizes and the
+        nearest is used, so this is what the compositor asks for rather than
+        what it necessarily gets. It changes the cursor this compositor draws —
+        for the desktop itself and for every client that names a shape through
+        cursor-shape-v1 — and it cannot change one an application draws for
+        itself out of its own theme: a client reads XCURSOR_SIZE when it starts
+        and this cannot reach back into one that is already running. A later
+        client gets the new size, because the compositor exports it.
+
+        scroll is in per cent, 100 being one to one — the movement libinput
+        reports, unchanged. libinput has no scroll speed of its own, so this is
+        the compositor's own multiplication over the deltas it forwards, and it
+        is applied to the discrete notch count as well as to the continuous
+        value: a client that counts wheel detents must see the same setting a
+        client that reads pixels sees, or the two disagree about how far one
+        notch went.
+
+        natural is 1 for content that follows the fingers — the direction a
+        touchscreen moves, and the direction a page moves under a hand on a
+        touchpad — and 0 for the wheel's traditional direction. libinput's
+        natural-scroll, passed through.
+
+        The four arrive together because they are one page, and because three
+        of them are applied by walking the same device list: sending them
+        separately would walk it four times for one press.
+
+        Not remembered by the compositor. The shell says what these are as soon
+        as it connects — the same bargain set_application_scale is under, and
+        for the same reason: the preference belongs to the page it was set on.
+      </description>
+      <arg name="speed" type="int"
+           summary="libinput acceleration in hundredths, -100 to 100; 0 is the default"/>
+      <arg name="size" type="uint" summary="cursor size in logical pixels"/>
+      <arg name="scroll" type="uint"
+           summary="per cent of the movement reported; 100 is one to one"/>
+      <arg name="natural" type="uint"
+           summary="1 for content that follows the fingers, 0 for the wheel's direction"/>
+    </request>
+
+    <request name="set_keyboard_layout" since="38">
+      <description summary="which arrangement every keyboard is set to">
+        Sets the xkb layout and variant the seat's keyboards use. The two names
+        xkbcommon takes, unchanged: "pl" and "" for the Polish layout, "us" and
+        "dvorak" for that arrangement of the American one.
+
+        The compositor's because the seat is. A shell has never held a keyboard
+        — the one it draws types through zwp_virtual_keyboard_v1 with a keymap
+        of its own — so nothing but the compositor can change what the keys on
+        the desk produce.
+
+        Applied to the seat rather than per device, which is what xkb is: a
+        keymap belongs to the seat's keyboard and every physical board on it
+        types through the same one. It takes effect at once, including for
+        clients already running: a Wayland client is sent the new keymap and
+        the modifier state that goes with it.
+
+        A layout xkbcommon cannot compile is refused and the seat is left as it
+        was. This is the one setting where falling back to something else would
+        be worse than doing nothing: a machine whose keyboard silently became
+        American is a machine somebody may not be able to type their password
+        into. The compositor is expected to say so in its log and go on.
+
+        Not remembered by the compositor, on the same terms as
+        set_application_scale and set_pointer: the preference belongs to the
+        page it was set on. What the compositor's own configuration says is
+        what it starts at, and this replaces it for the session.
+      </description>
+      <arg name="layout" type="string" summary="xkb layout name, e.g. pl"/>
+      <arg name="variant" type="string"
+           summary="xkb variant name, empty for the layout's own arrangement"/>
+    </request>
+
     <request name="set_menu_surface" since="32">
       <description summary="which surface of the shell's is its context menu">
         Names a surface the shell draws its context menu on, and nothing else.
@@ -1397,6 +1631,34 @@
       <arg name="app_id" type="string" summary="the application's own name for itself"/>
     </event>
 
+    <event name="output_window_pid" since="39">
+      <description summary="which process drew one listed window">
+        Names the process behind one window of the batch: the pid of the client
+        that created it, or for an X11 window the pid the window itself
+        advertises. Sent immediately after the output_window it describes, and
+        only when the compositor knows one — a client that connected over a
+        socket carrying no credentials, or an X11 window whose owner set no
+        _NET_WM_PID, leaves its window without this rather than with a zero.
+
+        It exists because a window says nothing about who started it. The class
+        an application announces is a name somebody chose for a program, and a
+        great many programs are started by something other than the user: a
+        game is started by a store client, a document by a file manager, a
+        window by whatever was already running. A shell that has to answer
+        "which of the things I started did this window turn out to be" can
+        otherwise only answer it by timing — the window that appeared while I
+        was waiting — which is right until two things appear at once.
+
+        The pid is a handle onto the process table and nothing more. What can
+        be read from it is the same thing anything else on the session could
+        read: this compositor grants no access with it and makes no claim about
+        what the process is.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="id" type="uint" summary="the window, from the preceding output_window"/>
+      <arg name="pid" type="uint" summary="the process behind it"/>
+    </event>
+
     <event name="output_windows_done" since="4">
       <description summary="the window list for a display is complete">
         Ends a batch of output_window events. The batch is the whole truth for
@@ -1404,6 +1666,43 @@
         with none in between means the display has no windows at all.
       </description>
       <arg name="output" type="object" interface="wl_output" summary="the display"/>
+    </event>
+
+    <event name="unseen_window" since="40">
+      <description summary="one window that is being kept off the screen">
+        Describes one window the compositor is hiding on the shell's own
+        instructions — see keep_out_of_sight. A batch of these followed by
+        unseen_windows_done replaces everything previously known about them.
+
+        The counterpart of output_window, and deliberately not part of it: a
+        hidden window is not on a display as far as anything else is
+        concerned, so it is not listed with one, is not drawn a card, and is
+        not something to switch to. It is listed at all so that the shell can
+        see what its own instruction is covering, and let one window through
+        where the application has stopped to ask something. See
+        let_this_window_be_seen.
+
+        A window let through leaves this list, because it is no longer being
+        kept off the screen: it appears in the display's ordinary window list
+        instead. So the two lists together are still the whole truth, and a
+        window that has gone from both has gone.
+
+        Sent once when a version 40 object is bound, and again whenever the
+        hidden windows, their names or their titles change. A session with
+        nothing hidden — which is nearly all of them — sends one empty batch
+        and never speaks of it again.
+      </description>
+      <arg name="id" type="uint" summary="stable handle, named as output_window names one"/>
+      <arg name="app_id" type="string" summary="the application's own name for itself"/>
+      <arg name="title" type="string" summary="window title"/>
+    </event>
+
+    <event name="unseen_windows_done" since="40">
+      <description summary="the hidden window list is complete">
+        Ends a batch of unseen_window events. The batch is the whole truth: a
+        done event with no windows before it means nothing is being kept off
+        the screen.
+      </description>
     </event>
 
     <event name="output_app_id" since="7">
@@ -2208,6 +2507,27 @@
         they land on is taken when switch_done arrives.
       </description>
       <arg name="direction" type="uint" enum="switch_direction" summary="which way to step"/>
+    </event>
+
+    <event name="keyboard_layout" since="38">
+      <description summary="what the keyboard is set to">
+        Sent once when the shell binds, and again whenever the seat's keymap is
+        changed by anything — including by the shell's own
+        set_keyboard_layout, so that a request the compositor refused is not
+        left showing as though it had been carried out.
+
+        This exists because the shell cannot find the answer out. What a
+        session starts at is the compositor's own configuration file, which no
+        other process in the session has opened, and a settings page that could
+        not say what was in force would have nothing to mark on the first
+        machine it was ever opened on.
+
+        The two names are xkbcommon's, as set_keyboard_layout takes them.
+        variant is empty for a layout's own arrangement.
+      </description>
+      <arg name="layout" type="string" summary="xkb layout name, e.g. pl"/>
+      <arg name="variant" type="string"
+           summary="xkb variant name, empty for the layout's own arrangement"/>
     </event>
 
     <event name="switch_done" since="36">

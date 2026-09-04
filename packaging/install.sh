@@ -120,6 +120,14 @@ stage_desktop() {
     install -Dm0644 "$PACKAGING_DIR/files/lxb.desktop" \
         "$install_root/share/wayland-sessions/lxb.desktop"
 
+    # The two device nodes the shell opens itself, neither of which is granted
+    # to anybody by default. Without them the controller handling half works
+    # and says nothing about why — see the file's own notes, and
+    # `crates/lxb-desktop/src/pad_guard.rs`. In the desktop package because the
+    # shell is what opens them: a compositor on its own has no use for either.
+    install -Dm0644 "$PACKAGING_DIR/files/70-linexinbar-input.rules" \
+        "$install_root/lib/udev/rules.d/70-linexinbar-input.rules"
+
     # Being the machine's file manager, which is two files and no daemon. The
     # shell takes `org.freedesktop.FileManager1` on the session bus while it
     # runs, which is what a browser's Show in folder calls; these cover the

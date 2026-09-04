@@ -11,7 +11,9 @@
 //! ```
 //!
 //! It reports what it saw. A game that never starts is reported as one, not
-//! explained away.
+//! explained away — and where the client is exposing its interface, it says
+//! what the client thinks it is doing, including the case that looks exactly
+//! like slowness and is not: a launch stopped on a question nobody can see.
 
 use std::time::{Duration, Instant};
 
@@ -62,6 +64,14 @@ fn main() {
     // The game is the client's child and this process never sees it, so what
     // is watched for is any new process holding the app id in its environment
     // — which is how Steam tells a game which game it is.
+    //
+    // And beside it, what the client says it is doing. A launch that never
+    // arrives is otherwise a wait with no account of itself, and the commonest
+    // reason for one is not slowness at all: the client has stopped to ask
+    // something, in a window the shell is holding off the screen. This is the
+    // one run that says so.
+    let wanted: u32 = app_id.parse().unwrap_or_default();
+    let mut said = String::new();
     let deadline = began + Duration::from_secs(240);
     while Instant::now() < deadline {
         if let Some((pid, name)) = running_game(&app_id) {
@@ -70,6 +80,39 @@ fn main() {
                 began.elapsed().as_secs_f32()
             );
             return;
+        }
+        if let Ok(launches) = lxb_steam::webui::launching() {
+            let stopped = launches.iter().find(|one| one.app_id == wanted);
+            let now = match stopped {
+                Some(one) if one.waiting_for_a_person => {
+                    format!("{} — WAITING FOR A PERSON ({})", one.task, one.details)
+                }
+                Some(one) => one.task.clone(),
+                None => "nothing on the client's launch list".to_string(),
+            };
+            if now != said {
+                println!("  {:>4.0}s  {now}", began.elapsed().as_secs_f32());
+                said = now;
+                // And, where the shell has a panel for it, the panel — every
+                // word of it in the language the client is running in. This is
+                // what a person holding a controller would be reading.
+                if let Some(one) = stopped.filter(|one| one.waiting_for_a_person) {
+                    match lxb_steam::webui::the_question(one) {
+                        Ok(Some(question)) => {
+                            println!("\n  the shell would ask:");
+                            for line in &question.body {
+                                println!("    {line}");
+                            }
+                            for answer in &question.answers {
+                                println!("    [ {} ] -> {:?}", answer.label, answer.carry);
+                            }
+                            println!();
+                        }
+                        Ok(None) => println!("  (no panel for this one; Steam is shown instead)"),
+                        Err(problem) => println!("  (could not be asked: {problem})"),
+                    }
+                }
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }

@@ -410,11 +410,20 @@ pub struct Service {
 }
 
 impl Service {
-    fn new(account: Option<String>) -> Service {
+    /// `standing` is what to say instead of the account name while Steam is not
+    /// simply answering — connecting, or offline with a library from earlier.
+    ///
+    /// Instead of, rather than as well as: the row has one line under the name
+    /// and it clips rather than wraps. Which of the two is worth the line is
+    /// not close — somebody who is signed in already knows who they are, and
+    /// what they cannot see anywhere else is that the column in front of them
+    /// is from this morning.
+    fn new(account: Option<String>, standing: Option<String>) -> Service {
         Service {
-            comment: match account.as_deref() {
-                Some(account) => format!("Signed in as {account}"),
-                None => "Sign in to play your Steam library here".to_string(),
+            comment: match (account.as_deref(), standing) {
+                (Some(_), Some(standing)) => standing,
+                (Some(account), None) => format!("Signed in as {account}"),
+                (None, _) => "Sign in to play your Steam library here".to_string(),
             },
             account,
         }
@@ -422,7 +431,10 @@ impl Service {
 }
 
 /// One title in the Steam column.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Compared but not equatable, like [`Rom`] and for the same kind of reason: a
+/// row now carries how far a download has got, and that is a measurement.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Game {
     pub app_id: u32,
     pub name: String,
@@ -430,6 +442,11 @@ pub struct Game {
     /// it has been played. Built where the library is, because that is where
     /// the numbers are.
     pub note: String,
+    /// The same fact as a bar, while the game is coming down and the size is
+    /// known. `None` for everything else, which is nearly every row: a groove
+    /// standing empty under a game nobody is downloading would be a control
+    /// that does nothing.
+    pub progress: Option<Arriving>,
     /// Whether it is on the disk and can be started right now.
     pub installed: bool,
     /// Whether Steam is fetching it at this moment.
@@ -438,25 +455,119 @@ pub struct Game {
     /// Without one, nothing in the Steam column can be played or fetched, and
     /// the row says so rather than doing nothing.
     pub steam_client: bool,
+    /// What is actually happening to it, which decides what the menu over it
+    /// may offer. `installed` and `updating` above are two questions about this
+    /// one answer, kept because the column's order and the cover's colour are
+    /// drawn from them. See [`lxb_steam::library::Standing`].
+    pub standing: lxb_steam::library::Standing,
+    /// Whether a download that says it is running has written nothing for an
+    /// hour.
+    ///
+    /// Beside the standing rather than in it, because it is not a fact about
+    /// the manifest — see [`lxb_steam::Event::InstallStuck`]. What it decides
+    /// here is one row of the menu: a download nothing is arriving for should
+    /// offer the place it can be looked at, exactly as a paused one does.
+    pub stuck: bool,
+    /// Whether the work its manifest describes is work nothing is doing.
+    ///
+    /// Beside the standing for the reason `stuck` is, and it is a fact about
+    /// the *machine* rather than about this game: the manifest says Valve's
+    /// client was in the middle of an update, and there is no client running to
+    /// be in the middle of anything. Nothing will move it until one is started,
+    /// which is what the row says and what the press offers to do. See
+    /// `steam::Steam::waiting_for_steam`.
+    pub waiting_for_steam: bool,
+}
+
+impl Game {
+    /// Whether a press on this row is one Valve's client can answer, even
+    /// though the row is not lit.
+    ///
+    /// **A broken copy is the one of those, and it used to be a dead end.**
+    /// Reported from use on 2026-09-04: a press on Counter-Strike 2 answered
+    /// with a panel saying its files were missing and a button reading *Repair
+    /// with Steam*, which opens Valve's own window — a mouse, on a session
+    /// driven with a controller, to press a button the shell could have
+    /// pressed itself.
+    ///
+    /// It never needed to be. Steam repairs a copy as part of starting it: a
+    /// press puts the app in its scheduler at `Priority First`, it runs
+    /// `App update changed : Running Update,Verifying Installed,`, fetches
+    /// what is missing and starts the game. Measured on this machine one
+    /// second after such a press. So the press is handed to the client like
+    /// any other, and what the user sees is the shell's own loading screen
+    /// saying what the client is doing — see `launch::words_for`.
+    ///
+    /// [`Self::installed`] is deliberately left alone. The row is right to be
+    /// grey and right to read "Needs repairing": the copy on the disk will not
+    /// start, and this is about what a press *does*, not about what the row
+    /// claims.
+    ///
+    /// A statement about the standing and nothing else. Whether there is a
+    /// client to do it with, whether anybody is signed in, and whether this
+    /// machine has a connection to fetch the missing files over are all asked
+    /// on the way in, by the same three guards every other Steam press goes
+    /// through — and each of them says something more useful than this could.
+    pub fn the_client_can_put_it_right(&self) -> bool {
+        self.standing == lxb_steam::library::Standing::Broken
+    }
+}
+
+/// How far something the shell is waiting on has got, drawn as a bar.
+///
+/// A reading rather than a value: nothing about it is settable, which is why it
+/// carries no notion of a handle and is not drawn like the sliders are.
+///
+/// Named for what it describes rather than "progress", which in this crate's
+/// neighbour already means one line of a helper's own output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Arriving {
+    /// How far along, as a share of one. Already clamped where it was made.
+    pub share: f32,
+    /// Whether what the bar is counting says it is running and has written
+    /// nothing for an hour.
+    ///
+    /// The bar goes quiet rather than disappearing. A download that has stopped
+    /// moving has still got as far as it has got, and taking the bar away would
+    /// lose that — but leaving it lit beside a line reading "not moving" would
+    /// be the picture and the words disagreeing on one row.
+    pub stuck: bool,
 }
 
 /// The RetroArch row, as the second row of the Games column.
 ///
 /// It carries what it says and nothing else, unlike [`Service`], which carries
-/// the account. What pressing it does is decided by asking
+/// the account. Compared but not equatable, like [`Game`]: what it says is now
+/// also a measurement. What pressing it does is decided by asking
 /// [`crate::retroarch::RetroArch`] on the press — install, choose a folder, or
 /// step across — because every one of those answers is a fact about a helper
 /// process and a disk rather than about a row, and a row that carried a copy of
 /// it would be a second opinion going stale between rebuilds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Emulation {
     /// The line under the name: what is there, or what pressing it would do.
     comment: String,
+    /// And that line as a bar, on the two states where it carries a
+    /// percentage. See [`crate::retroarch::RetroArch::arriving`].
+    ///
+    /// The row is the neighbour of the Steam rows in the same column, and a
+    /// download that drew a bar on one of them and not on the other would be
+    /// two different pictures of one kind of waiting.
+    arriving: Option<Arriving>,
 }
 
 impl Emulation {
-    pub fn new(comment: String) -> Emulation {
-        Emulation { comment }
+    pub fn new(comment: String, arriving: Option<f32>) -> Emulation {
+        Emulation {
+            comment,
+            // Nothing here has a clock on it: the helper says what it is doing
+            // line by line, and a helper that stops talking is a panel rather
+            // than a quiet bar.
+            arriving: arriving.map(|share| Arriving {
+                share,
+                stuck: false,
+            }),
+        }
     }
 }
 
@@ -689,6 +800,19 @@ pub enum Searched {
     /// Somebody's Steam library, which is a column of games the shell owns the
     /// whole of. See [`crate::steam::Steam::rows`].
     Library,
+    /// The keyboard arrangements this machine can be set to, which is a list of
+    /// six hundred the shell read off the disk when it started. Narrowing one
+    /// is a `contains` per arrangement, on the frame the letter was typed.
+    ///
+    /// The one field in this shell that does **not** narrow the column it
+    /// stands at the head of. Every column of that page carries one — over the
+    /// continents, over a continent's countries, over a country's arrangements
+    /// — and all of them search the same six hundred, because a field that
+    /// narrowed six continent names would be a row that did nothing. So while
+    /// there is something in it, whichever of those columns is open shows what
+    /// was found rather than what it is a list of. See
+    /// [`crate::layouts::Registry::search`].
+    Layouts,
 }
 
 impl Searched {
@@ -697,7 +821,7 @@ impl Searched {
     pub fn shelf(self) -> Option<crate::media::Kind> {
         match self {
             Searched::Shelf(kind) => Some(kind),
-            Searched::Folder | Searched::Library => None,
+            Searched::Folder | Searched::Library | Searched::Layouts => None,
         }
     }
 
@@ -714,6 +838,10 @@ impl Searched {
             // of six hundred games says "4 of 600 games match" whether or not
             // any of them is on this machine's disk.
             Searched::Library => "games",
+            // What the machine has, which is what the count is of: a page
+            // saying "3 of 598 layouts match" is counting every arrangement
+            // xkeyboard-config on this machine describes.
+            Searched::Layouts => "layouts",
         }
     }
 }
@@ -741,6 +869,11 @@ impl Search {
                     Searched::Shelf(kind) => format!("Search {} by name", kind.plural()),
                     Searched::Folder => "Search this folder by name".to_string(),
                     Searched::Library => "Search this library by name".to_string(),
+                    // Not "this list": the field searches every arrangement on
+                    // the machine from wherever it is typed into, and one that
+                    // said "this list" over the continents would be promising
+                    // to narrow six words.
+                    Searched::Layouts => "Search every keyboard layout".to_string(),
                 }
             } else {
                 crate::media::search_note(of.plural(), matched, found)
@@ -1152,6 +1285,70 @@ const SHELVES: &[(&str, &str, crate::media::Kind)] = &[
     (MULTIMEDIA, "Video", crate::media::Kind::Video),
     (GRAPHICS, "Images", crate::media::Kind::Image),
 ];
+
+/// The photo viewer's stable name: its executable, its `StartupWMClass` and
+/// the id its desktop entry is filed under.
+///
+/// It is called **Pictures** to a person and `imagonsole` to the machine, the
+/// same split the software hub has. This is the machine's half, which is what
+/// matching a window or a catalogue entry is done on — see
+/// [`take_off_the_bar`], which is where it is used.
+pub const PICTURES: &str = "imagonsole";
+
+/// The film player's stable name, on the same terms: **Videos** to a person
+/// and `videonsole` to the machine.
+pub const VIDEOS: &str = "videonsole";
+
+/// The applications this shell takes off its own bar.
+///
+/// One list, walked by [`take_off_the_bar`]'s caller, so that adding a third is
+/// a line here rather than a call somewhere else that somebody has to remember
+/// to write. What is on it is exactly what [`app_for_shelf`] answers with:
+/// an application is taken off the bar *because* it is reached from a shelf,
+/// and one taken off with no shelf to reach it from would be installed and
+/// unreachable.
+pub const ASIDE: &[&str] = &[PICTURES, VIDEOS];
+
+/// The application set aside for one kind of the user's own files, if there is
+/// one.
+///
+/// The other half of [`ASIDE`], and the reason both live here rather than
+/// beside the code that uses them: the shell takes an application off the bar
+/// and then has to be able to start it again from the shelf, and those two
+/// facts going out of step is an application nothing can reach.
+///
+/// Music has none. When it gets one this is where it is said.
+pub fn app_for_shelf(kind: crate::media::Kind) -> Option<&'static str> {
+    match kind {
+        crate::media::Kind::Image => Some(PICTURES),
+        crate::media::Kind::Video => Some(VIDEOS),
+        crate::media::Kind::Audio => None,
+    }
+}
+
+/// Which shelf a row on the bar stands for, if it is one.
+///
+/// Read off [`SHELVES`] by name rather than by anything on the row, because
+/// the row *is* that table's entry and nothing else about it says which kind
+/// it holds: its own contents are empty until the walk reaches it, so asking
+/// them would answer `None` on the first frame of every session and `Some` a
+/// moment later.
+///
+/// A shelf row carries no [`crate::files::Place`], which is what separates it
+/// from Files and from a directory inside one — a folder that stands for a
+/// *kind* of file rather than for somewhere on the disk.
+pub fn shelf_of(entry: &Entry) -> Option<crate::media::Kind> {
+    let Entry::Folder(folder) = entry else {
+        return None;
+    };
+    if folder.place.is_some() {
+        return None;
+    }
+    SHELVES
+        .iter()
+        .find(|(_, title, _)| *title == folder.title)
+        .map(|(_, _, kind)| *kind)
+}
 
 /// What the row a kind of file hangs on is called.
 ///
@@ -1610,21 +1807,6 @@ pub fn steam_title() -> &'static str {
     STEAM.1
 }
 
-/// Whether the shell's own Steam row is on this bar.
-///
-/// Which is the same question as whether this session does Steam at all: the
-/// row goes up as the shell starts and stays up signed in or out, and only a
-/// session started with `--no-steam` is without one. Asked before a bar is
-/// rebuilt from a fresh scan, so that what Steam put on it can be put back.
-pub fn steam_offered(categories: &[Category]) -> bool {
-    categories.iter().any(|column| {
-        column
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, Entry::Steam(_)))
-    })
-}
-
 /// Take Valve's client's own `.desktop` entry off the bar, wherever the scan
 /// filed it.
 ///
@@ -1676,7 +1858,11 @@ pub fn hide_steam_client(categories: &mut Vec<Category>) {
 /// the account and there is nothing else on it. The client's own entry is not
 /// this function's business — it is taken off the bar wherever it landed, by
 /// [`hide_steam_client`], as each catalogue is built.
-pub fn offer_steam(categories: &mut Vec<Category>, account: Option<String>) -> Shifted {
+pub fn offer_steam(
+    categories: &mut Vec<Category>,
+    account: Option<String>,
+    standing: Option<String>,
+) -> Shifted {
     let mut shifted = Shifted::default();
 
     let at = match categories.iter().position(|column| column.id == GAMES) {
@@ -1710,7 +1896,7 @@ pub fn offer_steam(categories: &mut Vec<Category>, account: Option<String>) -> S
     // a whole other column, and a way in belongs where the eye lands.
     column
         .entries
-        .insert(0, Entry::Steam(Service::new(account)));
+        .insert(0, Entry::Steam(Service::new(account, standing)));
     shifted
 }
 
@@ -1796,6 +1982,61 @@ pub fn hide_retroarch_client(categories: &mut Vec<Category>) -> bool {
     taken
 }
 
+/// Take one application's entry off the bar, and hand it back.
+///
+/// The same act as [`hide_retroarch_client`] and [`hide_steam_client`] with
+/// one difference that is the whole point of it: those two throw the entry
+/// away, because the shell puts a row of its own where it stood and that row
+/// carries its own command line. This one **keeps** it, because the
+/// application it is used for has no row of its own — it is reached from the
+/// menu over the shelf of files it opens — and because the catalogue is also
+/// what answers "what opens a `.png`".
+///
+/// That second half is the reason this exists at all. Dropping the entry, or
+/// writing `NotShowIn=LineXinBar` on it, takes it out of *both* answers at
+/// once: it would go from the bar, which is what was wanted, and from the Open
+/// with list and the handler lookup, which was not. What comes back here goes
+/// on the side, where [`crate::media::apps_in`] still finds it and no column
+/// ever draws it.
+///
+/// **A column emptied by this is not removed**, which is the other difference
+/// from those two and the one that is easy to get wrong — it was written that
+/// way first. They take an entry off and put a row of their own in its place,
+/// so a column left with nothing is a column with nothing to show. This one
+/// puts no row anywhere: what reaches the application is the *shelf* already
+/// standing in that column, and a shelf holds nothing launchable until the
+/// walk finds the user's files. On a machine with no photographs and no other
+/// graphics program, removing the emptied column took away the one row the
+/// viewer could be reached from and left it installed and unreachable.
+///
+/// A column that was going to be dropped for being empty was dropped before
+/// this ran — see the `retain` at the end of [`scan`] — so what is left here
+/// is a column that had something in it, and the shelf is what that something
+/// is now for.
+///
+/// It takes a slice where the other two take a `Vec` for exactly that reason:
+/// they can shorten the bar and this cannot.
+///
+/// Matched on the window name rather than the file name, as the other two are,
+/// so a flatpak and a distribution package of the same application are both
+/// taken.
+pub fn take_off_the_bar(categories: &mut [Category], app_id: &str) -> Vec<App> {
+    let mut taken = Vec::new();
+    for column in categories.iter_mut() {
+        column.entries.retain(|entry| {
+            let Some(app) = entry.app() else {
+                return true;
+            };
+            if !app.owns_window(app_id) {
+                return true;
+            }
+            taken.push(app.clone());
+            false
+        });
+    }
+    taken
+}
+
 /// Put the RetroArch row under the Steam row in the Games column, or take it
 /// away.
 ///
@@ -1807,7 +2048,11 @@ pub fn hide_retroarch_client(categories: &mut Vec<Category>) -> bool {
 /// one is a package, and a row that arrived with an install must not push the
 /// one that was always there down a place. The row is rebuilt rather than
 /// edited, exactly as the Steam row above it is.
-pub fn offer_retroarch(categories: &mut Vec<Category>, comment: Option<String>) -> Shifted {
+pub fn offer_retroarch(
+    categories: &mut Vec<Category>,
+    comment: Option<String>,
+    arriving: Option<f32>,
+) -> Shifted {
     let mut shifted = Shifted::default();
 
     let standing = categories.iter().position(|column| column.id == GAMES);
@@ -1854,7 +2099,7 @@ pub fn offer_retroarch(categories: &mut Vec<Category>, comment: Option<String>) 
         );
         column
             .entries
-            .insert(under, Entry::RetroArch(Emulation::new(comment)));
+            .insert(under, Entry::RetroArch(Emulation::new(comment, arriving)));
     }
     shifted
 }
@@ -2324,6 +2569,19 @@ impl Entry {
             Entry::Trashed(item) => Some(item.note.as_str()).filter(|note| !note.is_empty()),
             Entry::Facts(facts) => Some(&facts.comment),
             Entry::Typed(typed) => Some(&typed.comment),
+        }
+    }
+
+    /// The bar under the second line, for the rows that are counting up.
+    ///
+    /// A game being fetched, and RetroArch fetching itself or the cores a
+    /// folder of games needs — the two things in this shell somebody stands
+    /// and waits for. Every other row is a thing that already is.
+    pub fn progress(&self) -> Option<Arriving> {
+        match self {
+            Entry::Game(game) => game.progress,
+            Entry::RetroArch(emulation) => emulation.arriving,
+            _ => None,
         }
     }
 
@@ -2985,6 +3243,7 @@ mod tests {
     /// One made-up title, as the shell holds it.
     fn game(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(Game {
+            progress: None,
             app_id,
             name: name.to_string(),
             note: if installed {
@@ -2996,6 +3255,9 @@ mod tests {
             installed,
             updating: false,
             steam_client: true,
+            standing: lxb_steam::library::Standing::Ready,
+            stuck: false,
+            waiting_for_steam: false,
         })
     }
 
@@ -3127,6 +3389,190 @@ mod tests {
         .is_none());
     }
 
+    /// The photo viewer comes off the bar and is handed back, rather than
+    /// being thrown away like Steam's client and RetroArch's.
+    ///
+    /// The handing back is the whole point: the catalogue is also what answers
+    /// "what opens a `.png`", so an entry dropped to hide it would be hidden
+    /// from the Open with list and the handler lookup at the same time. See
+    /// The invariant the two halves of the table exist to keep.
+    ///
+    /// An application is taken off the bar *because* a shelf reaches it. One
+    /// taken off with no shelf to reach it from is installed and unreachable —
+    /// there is no row anywhere that starts it — and a shelf naming an
+    /// application nothing ever took off the bar would draw a menu row that
+    /// starts nothing, because `launch_aside` only looks in the list this
+    /// fills.
+    #[test]
+    fn everything_taken_off_the_bar_is_reachable_from_a_shelf() {
+        let from_shelves: Vec<&str> = [
+            crate::media::Kind::Image,
+            crate::media::Kind::Video,
+            crate::media::Kind::Audio,
+        ]
+        .into_iter()
+        .filter_map(app_for_shelf)
+        .collect();
+
+        for app_id in ASIDE {
+            assert!(
+                from_shelves.contains(app_id),
+                "{app_id} is taken off the bar and no shelf reaches it"
+            );
+        }
+        for app_id in from_shelves {
+            assert!(
+                ASIDE.contains(&app_id),
+                "a shelf reaches {app_id}, which nothing takes off the bar"
+            );
+        }
+    }
+
+    /// Both of them come off, and each stays what its own kind of file opens
+    /// in.
+    #[test]
+    fn the_film_player_comes_off_the_bar_beside_the_photo_viewer() {
+        let mut categories = assemble(vec![
+            entry(
+                "imagonsole.desktop",
+                "Name=Pictures\nExec=imagonsole %f\nStartupWMClass=imagonsole\n\
+                 Categories=Graphics;Viewer;\nMimeType=image/png;\n",
+            ),
+            entry(
+                "videonsole.desktop",
+                "Name=Videos\nExec=videonsole %f\nStartupWMClass=videonsole\n\
+                 Categories=AudioVideo;Video;Player;\nMimeType=video/x-matroska;\n",
+            ),
+            entry(
+                "vlc.desktop",
+                "Name=VLC\nExec=vlc\nCategories=AudioVideo;\n",
+            ),
+        ]);
+
+        let mut aside = Vec::new();
+        for app_id in ASIDE {
+            aside.extend(take_off_the_bar(&mut categories, app_id));
+        }
+        let names: Vec<&str> = aside.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["Pictures", "Videos"]);
+        assert!(
+            aside[1]
+                .mime_types
+                .iter()
+                .any(|mime| mime == "video/x-matroska"),
+            "and the player still knows what it opens"
+        );
+
+        // Neither is on the bar any more, and what was never taken still is.
+        let left: Vec<&str> = categories
+            .iter()
+            .flat_map(|column| column.entries.iter())
+            .filter_map(|entry| entry.app().map(|app| app.name.as_str()))
+            .collect();
+        assert_eq!(left, ["VLC"]);
+    }
+
+    /// [`take_off_the_bar`].
+    #[test]
+    fn the_photo_viewer_comes_off_the_bar_and_is_kept() {
+        let mut categories = assemble(vec![
+            entry(
+                "imagonsole.desktop",
+                "Name=Pictures\nExec=imagonsole %f\nStartupWMClass=imagonsole\n\
+                 Categories=Graphics;Viewer;\nMimeType=image/png;\n",
+            ),
+            entry(
+                "gimp.desktop",
+                "Name=GIMP\nExec=gimp\nCategories=Graphics;\n",
+            ),
+        ]);
+        let taken = take_off_the_bar(&mut categories, PICTURES);
+
+        assert_eq!(taken.len(), 1, "one entry came off");
+        assert_eq!(taken[0].name, "Pictures");
+        assert!(
+            taken[0].mime_types.iter().any(|mime| mime == "image/png"),
+            "and it still knows what it opens"
+        );
+
+        let graphics = categories
+            .iter()
+            .find(|column| column.id == GRAPHICS)
+            .expect("Graphics is still there, because GIMP is still in it");
+        let names: Vec<&str> = graphics
+            .entries
+            .iter()
+            .filter_map(|entry| entry.app().map(|app| app.name.as_str()))
+            .collect();
+        assert_eq!(names, ["GIMP"], "the bar no longer carries the viewer");
+    }
+
+    /// The column stays even when taking the entry out leaves nothing in it
+    /// that starts.
+    ///
+    /// This is the one that was wrong first. Steam's client and RetroArch's
+    /// are replaced by a row of the shell's own, so a column left empty by
+    /// them has nothing to show; this application is replaced by nothing and
+    /// is reached from the *shelf* standing in that column — which holds
+    /// nothing launchable until the walk finds some photographs. Dropping the
+    /// column took away the only row the viewer could be reached from and left
+    /// it installed and unreachable.
+    #[test]
+    fn the_column_stays_because_the_shelf_is_the_way_to_what_was_taken() {
+        let mut categories = assemble(vec![entry(
+            "imagonsole.desktop",
+            "Name=Pictures\nExec=imagonsole\nCategories=Graphics;\n",
+        )]);
+        take_off_the_bar(&mut categories, PICTURES);
+
+        let graphics = categories
+            .iter()
+            .find(|column| column.id == GRAPHICS)
+            .expect("Graphics stays, because its Images row is the way in");
+        assert!(
+            !graphics.has_launchable(),
+            "with nothing in it that starts, on a machine with no photographs"
+        );
+        assert_eq!(
+            graphics.entries.iter().filter_map(shelf_of).count(),
+            1,
+            "and the shelf is still standing in it"
+        );
+    }
+
+    /// Nothing else is touched by a name that matches nothing.
+    #[test]
+    fn taking_off_an_application_that_is_not_there_takes_nothing() {
+        let mut categories = assemble(vec![entry(
+            "gimp.desktop",
+            "Name=GIMP\nExec=gimp\nCategories=Graphics;\n",
+        )]);
+        let before = categories.len();
+        assert!(take_off_the_bar(&mut categories, PICTURES).is_empty());
+        assert_eq!(categories.len(), before);
+    }
+
+    /// The shelf row is the one folder on the bar that stands for a kind of
+    /// file rather than for somewhere on the disk.
+    #[test]
+    fn the_images_row_is_a_shelf_and_the_files_row_is_not() {
+        let graphics = subcategories(GRAPHICS);
+        let images = graphics.first().expect("Graphics carries its one shelf");
+        assert_eq!(shelf_of(images), Some(crate::media::Kind::Image));
+
+        // Files carries a place, so it is somewhere to go rather than a kind
+        // of thing the user has.
+        assert_eq!(shelf_of(&files_row()), None);
+
+        let multimedia = subcategories(MULTIMEDIA);
+        let kinds: Vec<_> = multimedia.iter().filter_map(shelf_of).collect();
+        assert_eq!(
+            kinds,
+            [crate::media::Kind::Audio, crate::media::Kind::Video],
+            "and the other two shelves are shelves as well"
+        );
+    }
+
     /// The two new columns stand where they were asked to stand: Software after
     /// the libraries of games, and Waydroid at the end in front of Other.
     ///
@@ -3196,7 +3642,7 @@ mod tests {
     #[test]
     fn the_steam_row_stands_at_the_head_of_games() {
         let mut categories = catalogue();
-        assert_eq!(offer_steam(&mut categories, None), Shifted::default());
+        assert_eq!(offer_steam(&mut categories, None, None), Shifted::default());
 
         let games = column(&categories, GAMES).expect("the Games column");
         assert!(matches!(games.entries.first(), Some(Entry::Steam(_))));
@@ -3213,7 +3659,7 @@ mod tests {
 
         // Signed in, the same row says whose library it leads to — and there
         // is still only one of it.
-        offer_steam(&mut categories, Some("someone".to_string()));
+        offer_steam(&mut categories, Some("someone".to_string()), None);
         let games = column(&categories, GAMES).expect("the Games column");
         assert_eq!(games.entries[0].comment(), Some("Signed in as someone"));
         assert_eq!(
@@ -3238,7 +3684,7 @@ mod tests {
         .expect("a well-formed entry")]);
         assert!(column(&categories, GAMES).is_none(), "nothing to put in it");
 
-        let shifted = offer_steam(&mut categories, None);
+        let shifted = offer_steam(&mut categories, None, None);
         let at = shifted.added.expect("a column was made");
         assert_eq!(categories[at].id, GAMES);
         assert!(
@@ -3268,7 +3714,7 @@ mod tests {
             .expect("a well-formed entry"),
         ]);
         hide_steam_client(&mut categories);
-        offer_steam(&mut categories, None);
+        offer_steam(&mut categories, None, None);
 
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
@@ -3314,7 +3760,7 @@ mod tests {
         );
 
         hide_steam_client(&mut categories);
-        offer_steam(&mut categories, Some("someone".to_string()));
+        offer_steam(&mut categories, Some("someone".to_string()), None);
 
         let internet = column(&categories, "internet").expect("the Internet column");
         let rows: Vec<&str> = internet.entries.iter().map(Entry::title).collect();
@@ -3387,7 +3833,7 @@ mod tests {
     #[test]
     fn a_deleted_game_leaves_the_bar_with_its_file() {
         let mut categories = catalogue();
-        offer_retroarch(&mut categories, Some("2 games".to_string()));
+        offer_retroarch(&mut categories, Some("2 games".to_string()), None);
         shelve_retroarch(&mut categories, vec![rom("t8", true), rom("smb", true)]);
         let gone = std::path::PathBuf::from("/roms/psp/t8.iso");
         assert!(forget_file(&mut categories, &gone));
@@ -3408,9 +3854,13 @@ mod tests {
     #[test]
     fn the_retroarch_row_stands_under_the_steam_row() {
         let mut categories = catalogue();
-        offer_steam(&mut categories, None);
+        offer_steam(&mut categories, None, None);
         assert_eq!(
-            offer_retroarch(&mut categories, Some("Looking for RetroArch".to_string())),
+            offer_retroarch(
+                &mut categories,
+                Some("Looking for RetroArch".to_string()),
+                None
+            ),
             Shifted::default(),
             "the Games column was already there"
         );
@@ -3426,14 +3876,14 @@ mod tests {
 
         // Rebuilt rather than added to, so a session that hears twice from its
         // helper has one row and not two.
-        offer_retroarch(&mut categories, Some("Not installed".to_string()));
+        offer_retroarch(&mut categories, Some("Not installed".to_string()), None);
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
         assert_eq!(rows, vec!["Steam", "RetroArch", "A Puzzle"]);
 
         // And nothing to say takes it off again, which is what a session whose
         // package has gone does.
-        offer_retroarch(&mut categories, None);
+        offer_retroarch(&mut categories, None, None);
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
         assert_eq!(rows, vec!["Steam", "A Puzzle"]);
@@ -3444,7 +3894,11 @@ mod tests {
     #[test]
     fn without_a_steam_row_it_stands_at_the_head() {
         let mut categories = catalogue();
-        offer_retroarch(&mut categories, Some("Looking for RetroArch".to_string()));
+        offer_retroarch(
+            &mut categories,
+            Some("Looking for RetroArch".to_string()),
+            None,
+        );
 
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
@@ -3456,7 +3910,7 @@ mod tests {
     #[test]
     fn the_column_lands_after_steam() {
         let mut categories = catalogue();
-        offer_steam(&mut categories, Some("someone".to_string()));
+        offer_steam(&mut categories, Some("someone".to_string()), None);
         shelve_steam(&mut categories, vec![game(1, "A Game", true)]);
         let shifted = shelve_retroarch(&mut categories, vec![rom("t8", true)]);
 
@@ -3633,24 +4087,13 @@ mod tests {
         );
     }
 
-    /// The row is what says a session does Steam at all — the question asked
-    /// before a bar rebuilt from a fresh scan is given back what Steam put on
-    /// it. A session started with `--no-steam` has no row and gets none.
-    #[test]
-    fn the_row_is_what_says_this_session_does_steam() {
-        let mut categories = catalogue();
-        assert!(!steam_offered(&categories));
-        offer_steam(&mut categories, None);
-        assert!(steam_offered(&categories));
-    }
-
     /// The library becomes a column of its own, immediately after Games —
     /// which is where somebody who has just looked at what is installed will
     /// step next.
     #[test]
     fn the_library_becomes_the_column_after_games() {
         let mut categories = catalogue();
-        offer_steam(&mut categories, Some("someone".to_string()));
+        offer_steam(&mut categories, Some("someone".to_string()), None);
 
         let shifted = shelve_steam(
             &mut categories,
@@ -3675,7 +4118,7 @@ mod tests {
     #[test]
     fn an_empty_library_has_no_column() {
         let mut categories = catalogue();
-        offer_steam(&mut categories, Some("someone".to_string()));
+        offer_steam(&mut categories, Some("someone".to_string()), None);
         let at = shelve_steam(&mut categories, vec![game(1, "Installed", true)])
             .added
             .expect("a column was made");
@@ -3696,7 +4139,7 @@ mod tests {
     #[test]
     fn every_steam_row_wears_a_built_in_glyph() {
         let mut categories = catalogue();
-        offer_steam(&mut categories, None);
+        offer_steam(&mut categories, None, None);
         shelve_steam(&mut categories, vec![game(1, "Installed", true)]);
 
         let steam = column(&categories, steam_column()).expect("the Steam column");
@@ -3719,8 +4162,8 @@ mod tests {
     fn a_title_starts_something_and_the_service_row_does_not() {
         assert!(game(1, "Here", true).starts_something());
         assert!(game(2, "Not here", false).starts_something());
-        assert!(!Entry::Steam(Service::new(None)).starts_something());
-        assert!(!Entry::Steam(Service::new(Some("someone".to_string()))).starts_something());
+        assert!(!Entry::Steam(Service::new(None, None)).starts_something());
+        assert!(!Entry::Steam(Service::new(Some("someone".to_string()), None)).starts_something());
     }
 
     #[test]

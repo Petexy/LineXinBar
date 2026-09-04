@@ -2100,18 +2100,29 @@ impl LxbState {
         // is doing that is not tapping the Windows key.
         self.lxb.home_tap.interrupt();
 
+        // How far one movement of a wheel or a finger carries the content
+        // under it. libinput has no scroll speed of its own — Settings > Input
+        // > Mouse > Scrolling speed is this multiplication and nothing else —
+        // and it is applied to both halves of what goes over, for a reason
+        // worth saying: a client that reads the continuous value and one that
+        // counts v120 notches would otherwise disagree about how far one notch
+        // went, and a page that scrolled twice as far in one browser as in the
+        // next is worse than no setting.
+        let speed = scroll_speed(self.lxb.config.input.scroll_speed);
         let horizontal = event
             .amount(Axis::Horizontal)
-            .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) / 120.0 * 15.0);
+            .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) / 120.0 * 15.0)
+            * speed;
         let vertical = event
             .amount(Axis::Vertical)
-            .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 15.0);
+            .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 15.0)
+            * speed;
 
         let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
         if horizontal != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal);
             if let Some(v120) = event.amount_v120(Axis::Horizontal) {
-                frame = frame.v120(Axis::Horizontal, v120 as i32);
+                frame = frame.v120(Axis::Horizontal, notches(v120, speed));
             }
         } else if event.source() == AxisSource::Finger {
             frame = frame.stop(Axis::Horizontal);
@@ -2119,7 +2130,7 @@ impl LxbState {
         if vertical != 0.0 {
             frame = frame.value(Axis::Vertical, vertical);
             if let Some(v120) = event.amount_v120(Axis::Vertical) {
-                frame = frame.v120(Axis::Vertical, v120 as i32);
+                frame = frame.v120(Axis::Vertical, notches(v120, speed));
             }
         } else if event.source() == AxisSource::Finger {
             frame = frame.stop(Axis::Vertical);
@@ -2678,12 +2689,8 @@ impl LxbState {
     pub(crate) fn refresh_window_activation(&mut self) {
         // One answer per display: the application in front of it, and nothing
         // at all where the shell is painting over the whole thing.
-        let fronts: Vec<Option<Window>> = self
-            .lxb
-            .space
-            .outputs()
-            .cloned()
-            .collect::<Vec<_>>()
+        let outputs: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        let fronts: Vec<Option<Window>> = outputs
             .iter()
             .map(|output| crate::render::front_application_on_screen(&self.lxb, output))
             .collect();
@@ -2703,7 +2710,7 @@ impl LxbState {
         // And the one property an X client reads to answer the same question
         // for itself — see [`LxbState::name_the_active_x11_window`], which is
         // where the whole of why it matters is written down.
-        self.name_the_active_x11_window(&fronts);
+        self.name_the_active_x11_window(&outputs, &fronts);
     }
 
     /// Tell the X server which window this session considers active.
@@ -2726,18 +2733,51 @@ impl LxbState {
     /// Wayland window, no X11 window is active and the property says so.
     ///
     /// One display's answer for a property the X screen has only one of. Two
-    /// games on two screens cannot both be the active window, so the first
-    /// found wins, which is the display nearest the front of the layout.
+    /// games on two screens cannot both be the active window, so one display
+    /// decides — and it is the display the shell says the user is driving.
+    ///
+    /// The *driven* display and not the launch one, which used to be the same
+    /// field. A game loading on the second screen holds the launch answer for
+    /// as long as it takes to open — that is what puts its window on the right
+    /// display — and read as "where the user is" it handed the X screen's
+    /// active window to a screen nobody was looking at, for the whole of a
+    /// loading time. See `lxb_shell_v1.set_driven_output`.
+    ///
+    /// It used to be the first display in the layout with anything on it, which
+    /// on one screen is the same answer and on two is a coin toss the user has
+    /// no part in: a game on the second screen, being played, told by the root
+    /// window that the game on the first screen was the active one. Wine reads
+    /// this — every Proton title does — so what that costs is the game the user
+    /// is actually playing deciding it is in the background and throwing away
+    /// the pointer motion arriving at it.
+    ///
+    /// So the driven display is asked first and its answer is final, empty
+    /// included: a Wayland application in front of the user is a session where
+    /// no X11 window is the active one, whatever is running on the screen
+    /// beside it. The whole-layout search is the fallback, and it is what
+    /// answers on a session with no shell to name a display, or one that named
+    /// a display which has since been unplugged.
     ///
     /// Written only when it changes: this is asked wherever activation is, and
     /// that is several times a second on a session that is merely animating.
-    fn name_the_active_x11_window(&mut self, fronts: &[Option<Window>]) {
-        let active = fronts
-            .iter()
-            .flatten()
-            .find_map(|window| window.x11_surface())
-            .map(|surface| surface.window_id())
-            .unwrap_or(x11rb::NONE);
+    fn name_the_active_x11_window(&mut self, outputs: &[Output], fronts: &[Option<Window>]) {
+        let driven = self
+            .shell_driven_output()
+            .and_then(|output| outputs.iter().position(|candidate| *candidate == output));
+        let active = match driven {
+            Some(index) => fronts
+                .get(index)
+                .and_then(|front| front.as_ref())
+                .and_then(|window| window.x11_surface())
+                .map(|surface| surface.window_id())
+                .unwrap_or(x11rb::NONE),
+            None => fronts
+                .iter()
+                .flatten()
+                .find_map(|window| window.x11_surface())
+                .map(|surface| surface.window_id())
+                .unwrap_or(x11rb::NONE),
+        };
         if self.lxb.x11_active_window == Some(active) {
             return;
         }
@@ -2850,7 +2890,32 @@ impl LxbState {
             }),
         };
         if window_is_mapped {
-            return false;
+            // Mapped, and it may still have become something nobody may see
+            // since it took the keyboard. A window announces its name when it
+            // likes — an X11 client sets `WM_CLASS` after mapping as often as
+            // before — so a Steam window can take focus as a nameless window
+            // and *then* say what it is, at which point it is being drawn
+            // nowhere and is still where the keys are going.
+            //
+            // Free on a session with nothing hidden: `out_of_sight` answers on
+            // an empty set before it looks at anything.
+            let hidden = match &focus {
+                KeyboardFocusTarget::Wayland(surface) => self
+                    .lxb
+                    .window_for_surface(surface)
+                    .is_some_and(|window| self.lxb.out_of_sight(&window)),
+                KeyboardFocusTarget::X11(surface) => self
+                    .lxb
+                    .space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .x11_surface()
+                            .is_some_and(|candidate| x11_surface_matches(candidate, surface))
+                    })
+                    .is_some_and(|window| self.lxb.out_of_sight(window)),
+            };
+            return hidden;
         }
 
         let Some(focus_surface) = focus.wl_surface() else {
@@ -2957,13 +3022,44 @@ impl LxbState {
             return;
         }
 
-        let topmost = self
-            .lxb
-            .space
-            .elements()
-            .rev()
-            .find(|window| self.lxb.takes_the_keyboard(window))
-            .cloned();
+        // The display the shell says the user is on, asked before the session
+        // as a whole.
+        //
+        // This is a restoration path — something closed, and the keyboard has
+        // to land somewhere — and the stack it used to read is one stack for
+        // the whole session. On two screens that made the answer "whichever
+        // window was raised last, anywhere", so quitting a game on the screen
+        // the user was playing on handed their keys to a window on the other
+        // one: still on screen, still activated, and now eating every key
+        // pressed at a display it is not on. There is nothing on the screen
+        // the user is looking at to say where the keys went.
+        //
+        // The shell names the display it is driving for exactly this kind of
+        // question — see `lxb_shell_v1.set_driven_output` — and it is the only
+        // thing in the session that knows: the compositor has no pointer to
+        // follow on a session driven by a controller, and the window stack
+        // cannot tell it apart from any other. So it is asked first, and the
+        // whole-session search is what answers when that display has nothing
+        // on it or when there is no shell to ask.
+        let driven = self.shell_driven_output();
+        let topmost = driven
+            .as_ref()
+            .and_then(|output| {
+                self.lxb
+                    .space
+                    .elements_for_output(output)
+                    .rev()
+                    .find(|window| self.lxb.takes_the_keyboard(window))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.lxb
+                    .space
+                    .elements()
+                    .rev()
+                    .find(|window| self.lxb.takes_the_keyboard(window))
+                    .cloned()
+            });
         if let Some(window) = topmost {
             self.raise_window(&window, true);
             self.set_window_keyboard_focus(&window);
@@ -3568,6 +3664,50 @@ impl LxbState {
 /// deactivate the very field it was about to type into. The board would put
 /// itself away at the first letter, and the letter would arrive at the shell
 /// instead of at the application.
+/// The scroll multiplier, as a number that can safely be multiplied by.
+///
+/// A hand-edited `scroll_speed` is a file the user is entitled to open, and two
+/// of the values they can write in it are not scroll speeds at all: zero is a
+/// wheel that does nothing, and a negative one is `natural_scroll` said a
+/// second time and disagreeing with the first. Both come back as one to one
+/// rather than being obeyed. NaN is caught by the same test, because every
+/// comparison against NaN is false.
+///
+/// The ceiling is a clamp for the same reason the application scale's is: a
+/// number far outside the range the page can ask for is answered with the
+/// nearest one that means something rather than with a page that scrolls to the
+/// end of a document on one notch.
+fn scroll_speed(configured: f64) -> f64 {
+    // `is_sign_positive` would take NaN and zero with it, and `> 0.0` written
+    // the other way round is what clippy objects to; matching on the ordering
+    // says what is meant, which is that anything that is not a positive number
+    // — nought, a negative, or no number at all — is not a scroll speed.
+    match configured.partial_cmp(&0.0) {
+        Some(std::cmp::Ordering::Greater) => configured.min(MAX_SCROLL_SPEED),
+        _ => 1.0,
+    }
+}
+
+/// The most one movement may be multiplied by. Ten screens for one notch is
+/// already past any use; past it, a wheel is a way of losing your place.
+const MAX_SCROLL_SPEED: f64 = 10.0;
+
+/// One notch count, scaled — and never scaled *to nothing*.
+///
+/// v120 is a count of 120ths of a wheel detent, and a client accumulates them
+/// until it has a whole one. Rounding a slow setting's result to zero would
+/// hand over a frame whose continuous value says the content moved and whose
+/// notch count says it did not, so a movement that happened keeps at least one
+/// 120th and keeps the direction it had.
+fn notches(v120: f64, speed: f64) -> i32 {
+    let scaled = (v120 * speed).round() as i32;
+    match scaled {
+        0 if v120 > 0.0 => 1,
+        0 if v120 < 0.0 => -1,
+        scaled => scaled,
+    }
+}
+
 fn click_takes_keyboard_focus(layer: Option<bool>) -> bool {
     layer.unwrap_or(true)
 }
@@ -4309,5 +4449,53 @@ mod tests {
         // the matching source extent for each axis.
         assert_eq!(map_window_coordinate(480.0, 960, 1920), 960.0);
         assert_eq!(map_window_coordinate(300.0, 600, 1200), 600.0);
+    }
+
+    /// The scroll multiplier takes only a positive number, and everything else
+    /// is one to one.
+    ///
+    /// `scroll_speed` is a key in a file the user is entitled to open, and the
+    /// two ways of writing a wheel that is broken rather than slow — nought and
+    /// a negative — must not be obeyed. A negative is the second half of it: it
+    /// is `natural_scroll` said again, and a session where the two disagreed
+    /// would have no way to say which won.
+    #[test]
+    fn a_scroll_speed_that_is_not_a_speed_is_one_to_one() {
+        assert_eq!(scroll_speed(1.0), 1.0);
+        assert_eq!(scroll_speed(2.5), 2.5);
+        assert_eq!(scroll_speed(0.4), 0.4);
+
+        assert_eq!(scroll_speed(0.0), 1.0, "a wheel that goes nowhere");
+        assert_eq!(scroll_speed(-2.0), 1.0, "natural scrolling said twice");
+        assert_eq!(scroll_speed(f64::NAN), 1.0, "not a number at all");
+        assert_eq!(
+            scroll_speed(f64::INFINITY),
+            MAX_SCROLL_SPEED,
+            "clamped to the nearest speed that means something"
+        );
+        assert_eq!(scroll_speed(1000.0), MAX_SCROLL_SPEED);
+    }
+
+    /// A notch count is scaled with the value beside it, and a movement that
+    /// happened never scales to nothing.
+    ///
+    /// The two halves of an axis frame have to agree: a client that counts
+    /// v120 notches and one that reads the continuous value must not come to
+    /// different conclusions about how far one turn of the wheel went. A slow
+    /// setting rounding the count to zero is where they would part — the value
+    /// says the content moved and the count says it did not — so the smallest
+    /// movement keeps one 120th, and keeps its direction.
+    #[test]
+    fn a_notch_is_scaled_but_never_rounded_away() {
+        assert_eq!(notches(120.0, 1.0), 120);
+        assert_eq!(notches(120.0, 2.0), 240);
+        assert_eq!(notches(-120.0, 2.0), -240);
+        assert_eq!(notches(120.0, 0.5), 60);
+
+        // Slow enough to round to nothing, in both directions.
+        assert_eq!(notches(1.0, 0.1), 1);
+        assert_eq!(notches(-1.0, 0.1), -1);
+        // And a frame that really carried no notch keeps none.
+        assert_eq!(notches(0.0, 2.0), 0);
     }
 }

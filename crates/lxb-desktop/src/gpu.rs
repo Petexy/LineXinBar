@@ -2441,6 +2441,38 @@ impl Gpu {
         buffer.layout_runs().count().clamp(1, cap)
     }
 
+    /// How wide `content` actually comes out, laid out in a box `width` wide.
+    ///
+    /// The companion to [`Self::lines_needed`], and wanted for the one thing a
+    /// line count cannot answer: how wide to draw a box *around* the words. A
+    /// message of one short word and one of a full line take one line each, and
+    /// a bubble sized from the line count alone is as wide as the column for
+    /// both — which on a chat panel takes away the one thing that says which
+    /// side of the conversation a message is on.
+    ///
+    /// The widest of the laid-out lines, never more than `width`. Asked when a
+    /// conversation changes rather than every frame, exactly as the line count
+    /// is: neither moves between frames.
+    pub fn width_needed(&mut self, content: &str, size: f32, bold: bool, width: f32) -> f32 {
+        if content.is_empty() || width <= 0.0 || size <= 0.0 {
+            return 0.0;
+        }
+        let mut buffer = TextBuffer::new(&mut self.font_system, Metrics::new(size, size * 1.25));
+        buffer.set_size(Some(width), None);
+        let attrs = Attrs::new().family(Family::Name(UI_FONT)).weight(if bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        });
+        buffer.set_text(content, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0_f32, f32::max)
+            .min(width)
+    }
+
     /// The thumbnail resident in the atlas for a file, if there is one.
     pub fn thumbnail(&self, path: &Path) -> Option<Thumb> {
         self.thumbs.get(path).copied()

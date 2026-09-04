@@ -133,7 +133,84 @@ impl Stored {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(path.with_extension("writing"));
         }
+        // Including the status it was owed. Signing out and in as somebody else
+        // must not hand the next account a status this one chose.
+        Owed::forget();
     }
+}
+
+/// A status chosen at this shell that no client on this machine has worn yet.
+///
+/// **Kept apart from [`Stored`] on purpose, in its own file.** That one is a
+/// credential and is rewritten whenever Steam hands this session a new token;
+/// a status folded into it would be a status silently dropped by the next
+/// refresh, which is the sort of loss that only shows up on somebody else's
+/// machine a week later.
+///
+/// It is written down at all because the gap it covers outlives the shell. A
+/// status chosen with Valve's client shut down has nowhere to go at the time —
+/// see [`crate::client::recorded_status`], which is where a delivered one is
+/// read back from — and if the shell is restarted before the client is ever
+/// started, an unwritten choice is simply gone, and the client comes up wearing
+/// what it last remembered. The account it belongs to is kept beside it so that
+/// signing in as somebody else does not inherit a stranger's status.
+///
+/// It lasts exactly as long as it is undelivered. The moment a client's own
+/// record agrees with it, this file is removed and the client's record is the
+/// status from then on — which is what keeps the shell from arguing with
+/// somebody who changes their status in Valve's window.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct Owed {
+    pub steam_id: u64,
+    /// Steam's own number for the state, rather than this crate's enum: a file
+    /// on the disk outlives the shape of a Rust type, and the number is the
+    /// thing Steam and Valve's client both already speak.
+    pub status: u32,
+}
+
+impl Owed {
+    /// What is owed to a client, if it is owed to *this* account.
+    pub fn load(steam_id: u64) -> Option<Owed> {
+        let raw = std::fs::read_to_string(owed_path()?).ok()?;
+        serde_json::from_str::<Owed>(&raw)
+            .ok()
+            .filter(|owed| owed.steam_id == steam_id)
+    }
+
+    /// Write it down. A status that cannot be written is still the status this
+    /// session announces and still the one a running client is handed, so a
+    /// failure here loses a restart's worth of memory and nothing else.
+    pub fn save(&self) {
+        let Some(path) = owed_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+        match serde_json::to_vec_pretty(self) {
+            Ok(raw) => {
+                if let Err(error) = std::fs::write(&path, raw) {
+                    tracing::warn!(%error, path = %path.display(), "the chosen Steam status could not be written down");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the chosen Steam status could not be written down")
+            }
+        }
+    }
+
+    /// Nothing is owed any more: it landed, or the account changed.
+    pub fn forget() {
+        if let Some(path) = owed_path() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// `$XDG_DATA_HOME/lxb/steam-status.json`, beside the session it belongs to.
+fn owed_path() -> Option<PathBuf> {
+    Some(path()?.with_file_name("steam-status.json"))
 }
 
 /// `$XDG_DATA_HOME/lxb/steam.json`, beside the rest of what this session keeps.
@@ -221,9 +298,30 @@ mod tests {
         std::fs::write(&path, b"not json").expect("writable");
         assert!(Stored::load().is_none());
 
+        // And what is owed to Valve's client, which lives beside it in its own
+        // file so that a token refresh rewriting the one above cannot drop it.
+        stored.save().expect("writable");
+        assert!(
+            Owed::load(stored.steam_id).is_none(),
+            "nothing has been chosen yet"
+        );
+        Owed {
+            steam_id: stored.steam_id,
+            status: 7,
+        }
+        .save();
+        assert_eq!(Owed::load(stored.steam_id).map(|owed| owed.status), Some(7));
+        // Not this account's, so not this account's status. Signing in as
+        // somebody else must not inherit what the last person chose.
+        assert!(Owed::load(stored.steam_id + 1).is_none());
+
         Stored::forget();
         assert!(!path.exists());
         assert!(Stored::load().is_none());
+        assert!(
+            Owed::load(stored.steam_id).is_none(),
+            "signing out left a status behind"
+        );
 
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
         let _ = std::fs::remove_dir_all(&root);

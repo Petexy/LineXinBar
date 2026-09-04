@@ -81,6 +81,24 @@ struct Cli {
     #[arg(long, default_value = "1280x800")]
     window_size: String,
 
+    /// Also let a program of this name drive the session, by name alone.
+    ///
+    /// For working on LineXinBar, and named for what it is. `lxb_shell_v1` —
+    /// the protocol that hides windows, closes them, injects key and pointer
+    /// events, captures the screen and ends the session — is normally offered
+    /// only to the shell and the portal this compositor started itself, which
+    /// it knows by the pid the kernel puts on their connections. A name is not
+    /// a credential: every process of this user can copy an executable to a
+    /// file called `lxb-desktop`, and in this session that includes Valve's
+    /// client, every game, every Flatpak and every browser. Naming one here
+    /// hands the protocol to all of them.
+    ///
+    /// What it is for is a shell or a portal run by hand beside the compositor,
+    /// which has no pid the compositor could have learned:
+    /// `lxb-portal --debug-pick` is how the file chooser is looked at.
+    #[arg(long, value_name = "NAME")]
+    insecure_trust_program: Vec<String>,
+
     /// Command to run once the compositor is up. Overrides `general.autostart`.
     #[arg(trailing_var_arg = true)]
     command: Vec<String>,
@@ -95,6 +113,9 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    // Before a socket exists for anything to connect to.
+    shell_control::trust_these_programs(&cli.insecure_trust_program);
 
     let config_path = cli
         .config
@@ -116,6 +137,16 @@ fn main() -> anyhow::Result<()> {
     cursor::export_cursor_environment(
         config.general.cursor_theme.as_deref(),
         config.general.cursor_size,
+    );
+    // And, in the same breath and for the same reason, which keyboard the
+    // session is being typed on: a program that draws its own picture of one —
+    // the login screen's board, a toolkit application's search keyboard — reads
+    // these when it starts and has no other way to find out. See
+    // [`shell_control::export_keyboard_environment`], which is where the shell
+    // changing the layout mid-session goes through.
+    shell_control::export_keyboard_environment(
+        &config.input.keyboard_layout,
+        &config.input.keyboard_variant,
     );
 
     let backend = resolve_backend(cli.backend);

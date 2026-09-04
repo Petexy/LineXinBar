@@ -16,7 +16,7 @@
 //! the columns behind stay on screen showing only the row each was opened
 //! from — the trail that reads, left to right, as the path taken.
 
-use crate::apps::{Entry, Role, Searched};
+use crate::apps::{Arriving, Entry, Role, Searched};
 use crate::dialog::{Dialog, Line};
 use crate::gpu::{Cut, Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
 use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
@@ -549,6 +549,14 @@ const LAUNCH_NAME_HALO: f32 = 0.5;
 /// is actually about.
 const LAUNCH_DOING: f32 = 25.0;
 const LAUNCH_DOING_GAP: f32 = 18.0;
+/// How far apart two hints stand in the loading screen's corner, as a multiple
+/// of the gap between a button and the word that names it.
+///
+/// Wider than that gap, and it has to be: the pairs are read as pairs, and a
+/// word sitting the same distance from the next button as from its own would
+/// read as naming that one.
+const LAUNCH_HINT_STEP: f32 = 2.5;
+
 const LAUNCH_DOING_WIDTH: f32 = 0.34;
 
 /// How far past the ring the shade under it reaches, as a multiple of the
@@ -1312,6 +1320,52 @@ impl Scene {
         self.cut_text_behind(rect, 1.0);
     }
 
+    /// Cut this whole scene — quads and text alike — to `rect`.
+    ///
+    /// What makes a scrolling list a *viewport* rather than a page: the rows
+    /// are laid out in the column's own coordinates, which run past both ends
+    /// of the room there is for them, and this is the room. A row half out of
+    /// the top is drawn half.
+    ///
+    /// Both halves cut rather than drop, so a row leaving is a row leaving
+    /// rather than a row that stopped being there.
+    pub fn clip_to(&mut self, rect: [f32; 4]) {
+        self.cut_quads_to(rect);
+        for text in &mut self.texts {
+            text.clip = Some(match text.clip {
+                Some(already) => intersection(already, rect),
+                None => rect,
+            });
+        }
+    }
+
+    /// Cut every quad in this scene to `rect`, so that nothing of it is drawn
+    /// outside.
+    ///
+    /// The quads' half of [`Self::hide_text_behind`], and it exists for a
+    /// reason that half does not cover: what a pane of glass shows is *what the
+    /// shell has already drawn into this frame*, wallpaper only where it drew
+    /// nothing — see `behind_at` in shaders.wgsl. So a panel laid over the bar
+    /// does not merely sit on the bar's icons, it refracts them, and a bright
+    /// square tile comes through a column of names as a blob nobody can read
+    /// past.
+    ///
+    /// Cutting rather than dropping, exactly as the text half does: a category
+    /// icon the path has carried half under the panel is half an icon there and
+    /// must stay half of one. The seam lands under the panel's own edge, where
+    /// the panel is drawn over it.
+    ///
+    /// Quads already carrying a clip keep the smaller of the two — a pane cut
+    /// by the display's edge and then by a panel is cut by both.
+    pub fn cut_quads_to(&mut self, rect: [f32; 4]) {
+        for quad in &mut self.quads {
+            quad.clip = Some(match quad.clip {
+                Some(already) => intersection(already, rect),
+                None => rect,
+            });
+        }
+    }
+
     /// The same, for a panel that is not opaque yet: the part of a run it
     /// covers is faded by `amount` rather than taken away, and only gone at 1.
     ///
@@ -1456,6 +1510,22 @@ pub trait SlotLookup {
         None
     }
 
+    /// One person's picture on Steam, if it has been fetched and is still in the
+    /// atlas.
+    ///
+    /// By the hash Steam files it under and the size it is wanted at, rather
+    /// than by a path: an avatar is not a file on this disk any more than a
+    /// game's cover is, and the two sizes of one face are two pictures. See
+    /// [`crate::avatars`], which is what holds them.
+    ///
+    /// `None` far more often than not, and that is the ordinary case rather
+    /// than a failure: a row drawn before its face arrives shows the figure the
+    /// panel marks a person with, and nothing about the row's size depends on
+    /// the answer.
+    fn avatar(&self, _hash: &str, _size: lxb_steam::AvatarSize) -> Option<crate::gpu::Thumb> {
+        None
+    }
+
     /// Steam's cover for one game, if it has been fetched and is still in the
     /// atlas.
     ///
@@ -1470,6 +1540,18 @@ pub trait SlotLookup {
     /// the same place either way, so a cover fades into a card that was
     /// already there.
     fn cover(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
+        None
+    }
+
+    /// And Steam's square icon for one game, on exactly those terms.
+    ///
+    /// A second question about the same game rather than a variant of the one
+    /// above, because they are two different pictures kept under two different
+    /// keys — the cover is a portrait capsule and this is the mark the client
+    /// wears on a shortcut. Whoever asks for this falls back to the cover: the
+    /// icon is fetched only for the game in the corner of the guide, and a
+    /// library's worth of covers is already on hand.
+    fn game_icon(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
         None
     }
 
@@ -1617,6 +1699,8 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 // reach, because a search narrowed to nothing must not change
                 // the shape of the column it narrowed.
                 Searched::Library => return Some(Cards::of(COVER_ASPECT)),
+                // A settings column is rows, searched or not.
+                Searched::Layouts => return None,
             },
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
             // A console's games are covers on the same terms, and on the same
@@ -1694,6 +1778,25 @@ pub struct Corner<'a> {
     /// 68, and a console that put a number on the wallpaper by default would be
     /// asking everybody to read one.
     pub percent: bool,
+    /// How far the corners have given themselves up to something standing over
+    /// them: 0 with the screen to themselves, 1 wholly out of the way.
+    ///
+    /// Both corners at once, because it is one answer to one question — the
+    /// friends panel is a column down the right of the display, and the right
+    /// of the display is exactly where the hour, the wireless fan and the
+    /// battery are at the top and the button legend is at the foot. Every one
+    /// of them ends up *under* the panel, and a pane of glass shows what is
+    /// under it: the hour came through the header as a second, blurred hour
+    /// beside the account's name, and the legend's pad buttons came through the
+    /// foot as bruises under the panel's own legend.
+    ///
+    /// A distance rather than a switch so it can be watched going. It runs on
+    /// the panel's own arrival, which is what makes the two read as one
+    /// movement — the corner leaves as the column comes in, rather than
+    /// blinking out on the frame a button was pressed. See
+    /// [`crate::friends`], and the standing rule that nothing disappears
+    /// before its transition has finished.
+    pub aside: f32,
 }
 
 /// Draw one run of the corner's own letters, and answer with how wide it came
@@ -1873,7 +1976,10 @@ pub fn build(
     let clock_size = CORNER_CLOCK * scale;
     let clock_top = CORNER_TOP * scale;
     let mark = CORNER_MARK * scale;
-    let ink = theme.text_soft.a(CORNER_INK * attention);
+    // What the corner is worth having on screen at all, which is `attention`
+    // less whatever is standing over it. See [`Corner::aside`].
+    let corner_ink = CORNER_INK * attention * (1.0 - corner.aside.clamp(0.0, 1.0));
+    let ink = theme.text_soft.a(corner_ink);
     // The middle of the line every mark in the corner is centred on. Not the
     // middle of the line *box*, which hangs below the digits; see
     // [`MARK_LINE`].
@@ -1990,7 +2096,7 @@ pub fn build(
     // a question about panels, splashes and the guide that a scene builder
     // cannot see. See `Shell::start_legend`.
     if let Some(legend) = legend {
-        let hints = start_hints(legend.pad, legend.options);
+        let hints = start_hints(legend.pad, legend.options, legend.friends);
         legend_row(
             &mut quads,
             &mut texts,
@@ -2008,8 +2114,8 @@ pub fn build(
             // this is writing on the wallpaper rather than on something that
             // could hold it up, and two weights of it in two corners would read
             // as one of them having been left brighter by accident.
-            theme.text.a(CORNER_INK * attention),
-            theme.text_soft.a(CORNER_INK * attention),
+            theme.text.a(corner_ink),
+            theme.text_soft.a(corner_ink),
         );
     }
 
@@ -2612,6 +2718,25 @@ pub fn build(
                         lines: 1,
                         cut: Cut::Tail,
                     });
+                }
+                // And the same thing the second line just said, as a picture.
+                // Under the words rather than instead of them: a percentage
+                // says how far, a bar says how far *of what is left*, and a
+                // download is the one thing in this shell somebody stands and
+                // watches. Only on the row the selection is on, because that is
+                // the only row with a second line at all.
+                if let Some(progress) = entry.progress() {
+                    quads.extend(row_progress(
+                        [
+                            text_x,
+                            y + ROW_PROGRESS_DROP * scale * near,
+                            (ROW_PROGRESS_WIDTH * scale * near).min(text_max),
+                            0.0,
+                        ],
+                        progress,
+                        scale * near,
+                        alpha,
+                    ));
                 }
             } else {
                 let text_size = 22.0 * scale * near;
@@ -4595,6 +4720,10 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     }
 
     let mut scene = Scene { quads, texts };
+    // What is coming down, in the far corner from the column. After the cards,
+    // because it is drawn over one; before the power dialog, because that is
+    // drawn over everything.
+    push_download_card(&mut scene, &view, width, height, scale);
     // Drawn on the eased position, not on whether it is open: a dismissed
     // dialog still has to fall back into the button it came out of.
     if view.power > 0.0 {
@@ -4638,6 +4767,2257 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         }
     }
     scene
+}
+
+// ---------------------------------------------------------------------------
+// The friends panel
+// ---------------------------------------------------------------------------
+
+/// The friends panel's own measurements, against the same 1080p reference as
+/// everything else here.
+///
+/// The head is the account itself — its picture, its nickname and where Steam
+/// says it is — and everything under the rule is other people. The two sizes of
+/// picture are what make that read at a glance: one object at the top of the
+/// column that is plainly *you*, and a list of smaller ones under it.
+const FRIENDS_HEAD_FACE: f32 = 96.0;
+const FRIENDS_ROW_FACE: f32 = 52.0;
+/// How round a face is, as a fraction of its own edge.
+///
+/// Rounded rather than circular, and rounded to the same share the shell's own
+/// controls are: a picture in a circle is a photograph with its corners cut
+/// off, and this shell's family of shapes is the rounded square. A quarter of
+/// the edge on a squircle corner is the same bend the tiles and chips carry —
+/// see [`SQUIRCLE_CORNER`], which is what spreads it along the edges instead of
+/// ending it where an arc would.
+const FRIENDS_FACE_CORNER: f32 = 0.26;
+/// One person's line, and one band's rule.
+///
+/// A row holds a picture with two lines of type beside it, and the first cut of
+/// these was too tight for that on every count: the chip filled its line, the
+/// face filled the chip, and the two lines sat almost on top of one another
+/// inside what was left. The user's word for it was cramped. What follows is
+/// the same row with air put back at each of the three joints — between one
+/// chip and the next, between the chip and the face inside it, and between the
+/// two lines.
+const FRIENDS_ROW: f32 = 84.0;
+const FRIENDS_HEADING: f32 = 44.0;
+/// Air above and below a row's chip inside the line allotted to it, so twice
+/// this is what stands between one chip and the next.
+const FRIENDS_ROW_PADDING: f32 = 7.0;
+/// And inside the chip, at either end of it, before the face and after the
+/// writing.
+const FRIENDS_CHIP_PADDING: f32 = 12.0;
+/// The type: the account's own name and status, then a row's name and what it
+/// is doing, then the rule over a band.
+const FRIENDS_NAME: f32 = 30.0;
+const FRIENDS_STATUS: f32 = 19.0;
+const FRIENDS_ROW_NAME: f32 = 23.0;
+const FRIENDS_ROW_DOING: f32 = 18.0;
+const FRIENDS_HEADING_SIZE: f32 = 15.0;
+/// Where the two lines of a row sit inside its chip, as fractions of its
+/// height: the middle of the name, and the middle of what they are doing.
+///
+/// Set apart rather than stacked. They are two different kinds of statement —
+/// who this is, and where they are — and a pair that touches reads as one block
+/// of text with a size change in it.
+const FRIENDS_ROW_NAME_AT: f32 = 0.34;
+const FRIENDS_ROW_DOING_AT: f32 = 0.68;
+/// And the same two in the head, as fractions of the account's own picture:
+/// the nickname, and the status under it.
+///
+/// Named rather than written into the drawing, because the status is a button
+/// now and its capsule is measured from the second of these — see
+/// [`friends_status_rect`]. A rectangle and the writing inside it worked out
+/// separately are a control whose light sits a little off its own label.
+const FRIENDS_HEAD_NAME_AT: f32 = 0.28;
+const FRIENDS_STATUS_AT: f32 = 0.60;
+/// Between a face and the writing beside it.
+const FRIENDS_FACE_GAP: f32 = 18.0;
+/// How much colour is taken out of somebody who is not there.
+///
+/// All of it. It is the same word the bar says about a game that is not on this
+/// disk — see [`Quad::drain`] — and it is the same statement: the part of the
+/// list that is *now* is the part in colour. Saying it with the picture rather
+/// than with the writing is what lets it be read from across a room, before any
+/// of the names have been.
+const FRIENDS_OFFLINE_DRAIN: f32 = 1.0;
+/// And how much of the light. Not much: a row that has been drained of colour
+/// has already said it, and taking the ink down as well would be saying it
+/// twice at the cost of a name nobody can read.
+const FRIENDS_OFFLINE_INK: f32 = 0.72;
+/// The room kept at the foot of the panel for the legend.
+const FRIENDS_LEGEND: f32 = 52.0;
+/// Over how much of a row it is taken down as it leaves the body, as a share
+/// of the row's own height. See [`friends_edge_fade`].
+///
+/// A share rather than a distance, because what is leaving is a row: a fixed
+/// number of pixels would take a band's short rule away over most of its height
+/// and a person's tall one over a corner of it.
+const FRIENDS_EDGE_FEATHER: f32 = 0.6;
+/// How wide the bar beside the list is drawn.
+///
+/// The toolkit's own number, because it is the same control seen in a different
+/// application and somebody who has learnt to catch one has learnt to catch
+/// them all — see `Ui::scroll_bar_width` there. What a *hand* is given is the
+/// whole margin it stands in, which is three times this: a bar is drawn as
+/// narrow as it can be read and hit as wide as it can be reached.
+const FRIENDS_SCROLL_BAR: f32 = 8.0;
+/// The shortest the thumb is drawn, as a multiple of the bar's own width.
+///
+/// A list of two hundred in a window of eight is a thumb of a few pixels, which
+/// is a control nobody could take hold of and which would say "hardly any of
+/// this is showing" by disappearing.
+const FRIENDS_SCROLL_LEAST: f32 = 3.0;
+/// How solid the two halves of it are: the trough barely there, and the thumb
+/// ink until a hand is on it, at which point it is the accent like every other
+/// control in use.
+const FRIENDS_SCROLL_TROUGH: f32 = 0.12;
+const FRIENDS_SCROLL_THUMB: f32 = 0.42;
+/// How tall the capsule under the head's status is, and how much air stands
+/// either side of the writing in it.
+///
+/// A button that is only a line of type, which is what the user asked for: no
+/// chip, no glyph and no outline until the light arrives on it. What it has
+/// instead is a place in the walk — see [`crate::friends::Friends::on_status`]
+/// — and the same lit capsule every row of the list wears, so the one thing
+/// that says it can be pressed is the thing that says so about everything else
+/// on the panel.
+const FRIENDS_STATUS_ROW: f32 = 30.0;
+const FRIENDS_STATUS_PADDING: f32 = 10.0;
+/// The bead at the end of a row that counts unread messages, and the figure
+/// inside it.
+const FRIENDS_UNREAD: f32 = 24.0;
+const FRIENDS_UNREAD_TEXT: f32 = 15.0;
+
+// --- a conversation, which is the panel's other face -----------------------
+//
+// The same column, the same glass and the same head. What changes is the body:
+// a list of people becomes a column of what was said, with a field to say
+// something at the foot of it. Nothing here is a second panel — the entrance,
+// the material, the corner fade and the wallpaper-only backing are the ones the
+// list already has, and a conversation drawn on a panel of its own would be a
+// second kind of object for one kind of thing.
+
+/// The type a message is written in, and the line it takes.
+///
+/// Bigger than a row's second line and smaller than a name: what is being read
+/// here is sentences rather than scanned labels, and the row sizes are chosen
+/// for scanning. `LINE` is the leading the renderer lays these out at — 1.25 of
+/// the size, which is `Metrics::new(size, size * 1.25)` in `Gpu::lines_needed`
+/// — and the two must agree or a bubble is the wrong height for its words.
+const FRIENDS_MESSAGE: f32 = 21.0;
+const FRIENDS_MESSAGE_LINE: f32 = FRIENDS_MESSAGE * 1.25;
+/// Air inside a bubble, above and below the words and at either end.
+const FRIENDS_BUBBLE_PADDING: f32 = 10.0;
+const FRIENDS_BUBBLE_SIDE: f32 = 14.0;
+/// And between one bubble and the next.
+const FRIENDS_BUBBLE_GAP: f32 = 8.0;
+/// How much of the body's width a bubble may take.
+///
+/// Not all of it, and that is the whole of how a conversation reads at a
+/// glance: a message that stops short of one edge is a message from that side.
+/// Eight tenths, which leaves a fifth of the column showing on the other side —
+/// enough to be read as a margin rather than as a bubble that happens not to
+/// have filled its line.
+const FRIENDS_BUBBLE_WIDEST: f32 = 0.80;
+/// How round a bubble is.
+const FRIENDS_BUBBLE_CORNER: f32 = 16.0;
+/// The line under a message that did not go, and the one over a conversation
+/// whose history did not come.
+const FRIENDS_NOTE: f32 = 17.0;
+const FRIENDS_NOTE_LINE: f32 = 24.0;
+/// The field a message is typed into: how tall it is, and the air around it.
+const FRIENDS_COMPOSE: f32 = 52.0;
+const FRIENDS_COMPOSE_TEXT: f32 = 21.0;
+const FRIENDS_COMPOSE_PADDING: f32 = 14.0;
+/// The most lines the field grows to as somebody keeps typing.
+///
+/// Three, then it scrolls inside itself: a field that grew without limit would
+/// eat the conversation it is about, and the whole of what a compose field owes
+/// the writer is the end of what they are writing.
+pub const FRIENDS_COMPOSE_LINES: u8 = 3;
+/// And the most a message is drawn to.
+///
+/// Effectively no cap: a message is what the panel was opened to read, and the
+/// only thing entitled to cut one short is how long the conversation is. Steam
+/// itself will not take more than [`lxb_steam::chat::LONGEST_MESSAGE`]
+/// characters, so nothing this measures can want more lines than that.
+pub const FRIENDS_MESSAGE_LINES: usize = 512;
+/// The line that says somebody is typing, under the last message.
+const FRIENDS_TYPING: f32 = 17.0;
+const FRIENDS_TYPING_ROW: f32 = 26.0;
+
+/// Where the messages are drawn: the panel's body, less the compose field and
+/// the air above it.
+pub fn friends_chat_body_rect(width: f32, height: f32, compose_lines: u8) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [x, y, w, h] = friends_body_rect(width, height);
+    let taken = friends_compose_height(compose_lines) * scale + GUIDE_MARGIN * scale;
+    [x, y, w, (h - taken).max(0.0)]
+}
+
+/// How tall the compose field is, in reference pixels, for a draft that wraps to
+/// `lines`.
+fn friends_compose_height(lines: u8) -> f32 {
+    let lines = lines.clamp(1, FRIENDS_COMPOSE_LINES);
+    FRIENDS_COMPOSE + (lines - 1) as f32 * FRIENDS_COMPOSE_TEXT * 1.25
+}
+
+/// Where the field a message is typed into stands: across the foot of the body,
+/// above the legend.
+pub fn friends_compose_rect(width: f32, height: f32, compose_lines: u8) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [x, y, w, h] = friends_body_rect(width, height);
+    let field = friends_compose_height(compose_lines) * scale;
+    [x, y + h - field, w, field]
+}
+
+/// How wide the words inside the field are laid out.
+pub fn friends_compose_text_width(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [_, _, w, _] = friends_body_rect(width, height);
+    (w - FRIENDS_COMPOSE_PADDING * 2.0 * scale).max(1.0)
+}
+
+/// The size the field's words are drawn at.
+pub fn friends_compose_size(height: f32) -> f32 {
+    FRIENDS_COMPOSE_TEXT * guide_scale(height)
+}
+
+/// And how wide a message's words are, which is what the renderer measures
+/// against.
+pub fn friends_message_text_width(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [_, _, w, _] = friends_body_rect(width, height);
+    (w * FRIENDS_BUBBLE_WIDEST - FRIENDS_BUBBLE_SIDE * 2.0 * scale).max(1.0)
+}
+
+/// The size a message is drawn at on this display, for whoever measures it.
+pub fn friends_message_size(height: f32) -> f32 {
+    FRIENDS_MESSAGE * guide_scale(height)
+}
+
+/// One line of a message, and the air a bubble carries — what the scroll does
+/// its arithmetic in. See [`crate::friends::Friends::measured`].
+pub fn friends_message_metrics(height: f32) -> (f32, f32) {
+    let scale = guide_scale(height);
+    (
+        FRIENDS_MESSAGE_LINE * scale,
+        (FRIENDS_BUBBLE_PADDING * 2.0 + FRIENDS_BUBBLE_GAP) * scale,
+    )
+}
+
+/// How tall one message is drawn, given how many lines its words take.
+fn friends_bubble_height(lines: u8, scale: f32) -> f32 {
+    FRIENDS_MESSAGE_LINE * lines.max(1) as f32 * scale + FRIENDS_BUBBLE_PADDING * 2.0 * scale
+}
+
+/// And how much of the column one takes altogether: the bubble, the gap under
+/// it, and — for a message that did not go — the line that says so.
+///
+/// The note's room is *reserved* rather than borrowed from the gap, which is
+/// the defect this replaced: eight points of air is not a line of type, and the
+/// reason a send failed printed straight through the message under it.
+fn friends_message_height(laid: &crate::friends::Laid, scale: f32) -> f32 {
+    friends_bubble_height(laid.lines, scale)
+        + FRIENDS_BUBBLE_GAP * scale
+        + if laid.failed {
+            FRIENDS_NOTE_LINE * scale
+        } else {
+            0.0
+        }
+}
+
+/// Where every message in the column sits, in display coordinates with the
+/// column's top at `top`: `(what it is, its rectangle)`, oldest first, before
+/// the scroll is taken off.
+///
+/// Arithmetic on measured line counts and nothing else, which is what keeps it
+/// out of the renderer — see [`crate::friends::Laid`], the one thing here that
+/// had to be measured.
+pub fn friends_message_rects(
+    laid_out: &[crate::friends::Laid],
+    width: f32,
+    height: f32,
+    top: f32,
+) -> Vec<(crate::friends::Laid, [f32; 4])> {
+    let scale = guide_scale(height);
+    let [body_x, _, body_w, _] = friends_body_rect(width, height);
+    let widest = body_w * FRIENDS_BUBBLE_WIDEST;
+    let mut y = top;
+    let mut rects = Vec::with_capacity(laid_out.len());
+    for laid in laid_out {
+        let step = friends_message_height(laid, scale);
+        // As wide as its words and no wider, up to the limit. A bubble that
+        // filled the column whatever was in it would say nothing about which
+        // side of the conversation the message came from — see
+        // [`crate::friends::Laid::width`], which is the measurement this needs
+        // and the one a line count cannot give.
+        let w = (laid.width + FRIENDS_BUBBLE_SIDE * 2.0 * scale)
+            // Never so narrow that its own corners meet: a two-letter reply is
+            // still a bubble.
+            .clamp(FRIENDS_BUBBLE_CORNER * 2.5 * scale, widest);
+        // Ours to the right, theirs to the left, which is the one thing about a
+        // conversation that needs no label at all.
+        let x = match laid.from_me {
+            true => body_x + body_w - w,
+            false => body_x,
+        };
+        rects.push((*laid, [x, y, w, friends_bubble_height(laid.lines, scale)]));
+        y += step;
+    }
+    rects
+}
+
+/// How tall the whole message column is.
+pub fn friends_chat_column_height(laid_out: &[crate::friends::Laid], height: f32) -> f32 {
+    let scale = guide_scale(height);
+    laid_out
+        .iter()
+        .map(|laid| friends_message_height(laid, scale))
+        .sum()
+}
+
+/// Where the line that says a history could not be fetched stands: across the
+/// top of the message body, over everything in it.
+pub fn friends_again_rect(width: f32, height: f32, compose_lines: u8) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [x, y, w, _] = friends_chat_body_rect(width, height, compose_lines);
+    // Two lines of type and air around them. Measured rather than guessed at,
+    // because the two lines are the whole control — what went wrong, and what
+    // to press — and a box cut to the type alone had them printing through each
+    // other.
+    [
+        x,
+        y,
+        w,
+        (FRIENDS_NOTE_LINE * 2.0 + FRIENDS_CHIP_PADDING * 2.0) * scale,
+    ]
+}
+
+/// The panel itself: the guide's sidebar, mirrored into the other edge.
+///
+/// The same width and the same float clear of the screen, because they are the
+/// same object seen from the other side — one is this session and one is
+/// everybody else, and a panel of some other width would read as a different
+/// kind of thing rather than as the counterpart it is. See
+/// [`sidebar_panel_rect`], which this is the reflection of.
+pub fn friends_panel_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let inset = PANEL_INSET * scale;
+    let sidebar_w = overview::sidebar_width(width as f64) as f32;
+    [
+        width - sidebar_w + inset,
+        inset,
+        sidebar_w - inset * 2.0,
+        height - inset * 2.0,
+    ]
+}
+
+/// How far right of where it settles the panel still is, `open` of the way in.
+///
+/// Every rectangle in the panel is measured from its settled edge — that is
+/// what lets the highlight glide between rows while the panel is still arriving
+/// — so this is what the drawing adds, and what anything asking where a row is
+/// on the screen has to add with it.
+///
+/// `open` is already eased. It is passed in rather than taken from the panel's
+/// own clock because the shell holds the eased position for every panel it
+/// draws, and a second easing here would be the same movement applied twice.
+pub fn friends_slide_x(open: f32, width: f32) -> f32 {
+    (1.0 - open.clamp(0.0, 1.0)) * overview::sidebar_width(width as f64) as f32
+}
+
+/// Where the head ends and the list begins: the column of rows, inside the
+/// panel and above the legend.
+pub fn friends_body_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [panel_x, panel_y, panel_w, panel_h] = friends_panel_rect(width, height);
+    let margin = GUIDE_MARGIN * scale;
+    let top = panel_y + margin * 2.0 + FRIENDS_HEAD_FACE * scale;
+    let bottom = panel_y + panel_h - margin - FRIENDS_LEGEND * scale;
+    [
+        panel_x + margin,
+        top,
+        (panel_w - margin * 2.0).max(0.0),
+        (bottom - top).max(0.0),
+    ]
+}
+
+/// How many lines the panel has room for.
+///
+/// Measured in *person* rows, which are the taller of the two kinds of line, so
+/// this is the fewest lines that can ever fit rather than the most. That is the
+/// answer the scroll wants: a window that counted a band's shorter rules as
+/// full rows would promise room for a line that is then drawn past the foot of
+/// the panel, and the row the user is standing on is the one it would be.
+pub fn friends_rows_that_fit(height: f32) -> usize {
+    let scale = guide_scale(height);
+    let [_, _, _, body_h] = friends_body_rect(0.0, height);
+    rows_that_fit(body_h, FRIENDS_ROW * scale)
+}
+
+/// How tall one line is: a person's row, or a band's rule.
+fn friends_line_height(line: crate::friends::Line, scale: f32) -> f32 {
+    match line {
+        crate::friends::Line::Heading(..) => FRIENDS_HEADING * scale,
+        crate::friends::Line::Person(_) => FRIENDS_ROW * scale,
+    }
+}
+
+/// How far down the list the `index`th line starts, from the top of the whole
+/// column rather than from the top of the body.
+///
+/// The two kinds of line are different heights, so this is a walk rather than a
+/// multiplication. The list is a few dozen lines and this is called once per
+/// drawn row, which is a few hundred additions a frame.
+fn friends_line_top(lines: &[crate::friends::Line], index: usize, scale: f32) -> f32 {
+    lines
+        .iter()
+        .take(index)
+        .map(|line| friends_line_height(*line, scale))
+        .sum()
+}
+
+/// How far the column has been slid up, for a scroll of `scroll` lines.
+///
+/// The whole point of the scroll being fractional: half way between two lines
+/// is half of the *upper* line's height, so the column moves at the speed of
+/// the thing actually leaving the top of the body rather than at some average.
+fn friends_scrolled_by(lines: &[crate::friends::Line], scroll: f32, scale: f32) -> f32 {
+    let whole = scroll.max(0.0) as usize;
+    let part = (scroll.max(0.0) - whole as f32).clamp(0.0, 1.0);
+    let leaving = lines
+        .get(whole)
+        .map(|line| friends_line_height(*line, scale))
+        .unwrap_or_default();
+    friends_line_top(lines, whole.min(lines.len()), scale) + part * leaving
+}
+
+/// The whole line allotted to the `index`th thing in the list.
+///
+/// In settled coordinates: the slide is added by whoever draws. Answers for
+/// every line, including the ones above and below the body — the caller draws
+/// what is near enough to be seen and the viewport cuts the rest, which is what
+/// lets a row be half in.
+pub fn friends_line_rect(
+    width: f32,
+    height: f32,
+    lines: &[crate::friends::Line],
+    scroll: f32,
+    index: usize,
+) -> Option<[f32; 4]> {
+    let scale = guide_scale(height);
+    let [body_x, body_y, body_w, _] = friends_body_rect(width, height);
+    let h = friends_line_height(*lines.get(index)?, scale);
+    let y =
+        body_y + friends_line_top(lines, index, scale) - friends_scrolled_by(lines, scroll, scale);
+    Some([body_x, y, body_w, h])
+}
+
+/// Which lines are near enough to the body to be worth drawing.
+///
+/// A line either side of what fits, so a row sliding in at an edge is already
+/// there to be cut rather than appearing once it is wholly inside. The whole
+/// list would be correct and is a few dozen faces asked of the atlas for
+/// nothing.
+fn friends_lines_in_view(
+    lines: &[crate::friends::Line],
+    scroll: f32,
+    height: f32,
+) -> std::ops::Range<usize> {
+    let scale = guide_scale(height);
+    let [_, _, _, body_h] = friends_body_rect(0.0, height);
+    let from = (scroll.max(0.0) as usize).saturating_sub(1);
+    let top = friends_scrolled_by(lines, scroll, scale);
+    let mut to = from;
+    while to < lines.len() && friends_line_top(lines, to, scale) - top <= body_h {
+        to += 1;
+    }
+    from..(to + 1).min(lines.len()).max(from)
+}
+
+/// How much of a row at `y` is drawn, as it passes the ends of the body.
+///
+/// A viewport that only cut would show a row losing its lower half to a
+/// straight edge, which reads as a drawing fault rather than as a list moving.
+/// So the last half-row at either end is taken down as well as cut, and what
+/// the eye follows is the row going rather than the edge it went past.
+fn friends_edge_fade([_, y, _, h]: [f32; 4], [_, body_y, _, body_h]: [f32; 4], scale: f32) -> f32 {
+    let feather = FRIENDS_ROW * scale * FRIENDS_EDGE_FEATHER;
+    if feather <= 0.0 {
+        return 1.0;
+    }
+    let above = (y + h - body_y) / feather;
+    let below = (body_y + body_h - y) / feather;
+    above.min(below).clamp(0.0, 1.0)
+}
+
+/// How tall the whole column of lines is, laid end to end.
+fn friends_column_height(lines: &[crate::friends::Line], scale: f32) -> f32 {
+    friends_line_top(lines, lines.len(), scale)
+}
+
+/// The strip beside the list a hand reaching for the bar is reaching into.
+///
+/// The panel's own right-hand margin, which until the bar arrived held nothing.
+/// Beside the body rather than inside it, and that is the whole reason it is
+/// there: a list that took a lane out of its own rows on growing past the
+/// window would be a panel whose names reflow as friends sign in and out.
+///
+/// Wider than the bar it holds on purpose. A bar is drawn as narrow as it can
+/// be read and reached for as wide as a hand can be expected to aim.
+pub fn friends_scroll_lane(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [body_x, body_y, body_w, body_h] = friends_body_rect(width, height);
+    [body_x + body_w, body_y, GUIDE_MARGIN * scale, body_h]
+}
+
+/// And the bar itself, drawn down the middle of that lane.
+pub fn friends_scroll_track(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let bar = FRIENDS_SCROLL_BAR * scale;
+    let [x, y, w, h] = friends_scroll_lane(width, height);
+    [x + (w - bar) * 0.5, y, bar, h]
+}
+
+/// How far down the list the body has reached and how much of it is showing,
+/// both nought to one — or `None` where it all fits and there is no bar.
+///
+/// In pixels rather than in lines, because the two kinds of line are different
+/// heights: a bar that counted lines would say a body full of band rules was
+/// showing more of the list than a body full of people.
+pub fn friends_scroll_place(
+    lines: &[crate::friends::Line],
+    scroll: f32,
+    height: f32,
+) -> Option<(f32, f32)> {
+    let scale = guide_scale(height);
+    let [_, _, _, body_h] = friends_body_rect(0.0, height);
+    let column = friends_column_height(lines, scale);
+    let over = column - body_h;
+    if body_h <= 0.0 || over <= 1.0 {
+        return None;
+    }
+    Some((
+        (friends_scrolled_by(lines, scroll, scale) / over).clamp(0.0, 1.0),
+        (body_h / column).clamp(0.0, 1.0),
+    ))
+}
+
+/// Where the thumb comes out on its track.
+///
+/// Kept apart from the drawing, so what a hit test believes about where it is
+/// and what the screen shows can never drift — the same rule every other
+/// rectangle in this file is shared under.
+fn friends_scroll_thumb([x, y, w, h]: [f32; 4], at: f32, run: f32) -> [f32; 4] {
+    let least = (w * FRIENDS_SCROLL_LEAST).min(h);
+    let long = (h * run.clamp(0.0, 1.0)).clamp(least, h);
+    [x, y + (h - long) * at.clamp(0.0, 1.0), w, long]
+}
+
+/// What a hand at `y` on the track is asking for, nought to one.
+///
+/// The thumb is centred on the hand rather than carried at the offset it was
+/// caught at. One rule for both gestures and nothing about the press to
+/// remember: a click on the empty track goes there, and a drag begun on the
+/// thumb barely moves it before it is following.
+pub fn friends_scroll_asked([_, track_y, track_w, track_h]: [f32; 4], run: f32, y: f32) -> f32 {
+    let least = (track_w * FRIENDS_SCROLL_LEAST).min(track_h);
+    let long = (track_h * run.clamp(0.0, 1.0)).clamp(least, track_h);
+    let room = track_h - long;
+    if room <= 0.0 {
+        return 0.0;
+    }
+    ((y - track_y - long * 0.5) / room).clamp(0.0, 1.0)
+}
+
+/// The chip inside that line — the glass a person's row stands on, which is
+/// also what the highlight lands on.
+pub fn friends_chip_rect(
+    width: f32,
+    height: f32,
+    lines: &[crate::friends::Line],
+    scroll: f32,
+    index: usize,
+) -> Option<[f32; 4]> {
+    let scale = guide_scale(height);
+    let [x, y, w, h] = friends_line_rect(width, height, lines, scroll, index)?;
+    let padding = (FRIENDS_ROW_PADDING * scale).min(h * 0.5);
+    Some([x, y + padding, w, (h - padding * 2.0).max(0.0)])
+}
+
+/// Where the lit capsule belongs: the head's status button, the chip of the row
+/// the user is standing on, or nothing at all when there is neither.
+///
+/// One function for the two, so the light glides between the head and the list
+/// as one object rather than being handed from one control to another — see
+/// [`crate::menu::Glide`], which is fed whatever this answers.
+pub fn friends_highlight_rect(
+    width: f32,
+    height: f32,
+    roster: &lxb_steam::Roster,
+    head: bool,
+    friends: &crate::friends::Friends,
+) -> Option<[f32; 4]> {
+    // A conversation has a walk of its own, and the light glides between its
+    // stops on the same spring it glides down the list on — which is what makes
+    // the two read as one control rather than as two panels that both happen to
+    // light things up.
+    if friends.talking_to().is_some() {
+        let compose_lines = friends.compose_lines();
+        return match friends.talking() {
+            crate::friends::Talking::Compose => {
+                Some(friends_compose_rect(width, height, compose_lines))
+            }
+            crate::friends::Talking::Again => {
+                Some(friends_again_rect(width, height, compose_lines))
+            }
+            // Drawn as an outline round the bubble rather than as a capsule
+            // behind it — see [`friends_conversation_leaf`] — so the glide has
+            // nothing to carry here. Answering `None` also keeps the light off
+            // a message that has scrolled out of the body.
+            crate::friends::Talking::Message(_) => None,
+        };
+    }
+    if friends.on_status(head) {
+        return Some(friends_status_rect(width, height));
+    }
+    let lines = crate::friends::lines(roster);
+    let selected = friends.selected(roster.friends.len());
+    let at = lines
+        .iter()
+        .position(|line| line.person() == Some(selected))?;
+    friends_chip_rect(width, height, &lines, friends.scroll(), at)
+}
+
+/// The capsule under the nickname: the account's status, as a button.
+///
+/// In the panel's settled coordinates, like every other rectangle here — the
+/// slide is added by whoever is drawing or asking. Measured from the head's own
+/// picture rather than from the body, because that is what it is beside: the
+/// writing starts where the nickname's does and the capsule takes the rest of
+/// the head's width.
+pub fn friends_status_rect(width: f32, height: f32) -> [f32; 4] {
+    let scale = guide_scale(height);
+    let [panel_x, panel_y, panel_w, _] = friends_panel_rect(width, height);
+    let margin = GUIDE_MARGIN * scale;
+    let face = FRIENDS_HEAD_FACE * scale;
+    let padding = FRIENDS_STATUS_PADDING * scale;
+    let text_x = panel_x + margin + face + FRIENDS_FACE_GAP * scale;
+    let row = FRIENDS_STATUS_ROW * scale;
+    [
+        text_x - padding,
+        panel_y + margin + face * FRIENDS_STATUS_AT - row * 0.5,
+        (panel_x + panel_w - margin + padding - text_x).max(0.0),
+        row,
+    ]
+}
+
+/// Everything of the screen the panel stands over, at the position it has
+/// reached.
+pub fn friends_bounds(width: f32, height: f32, open: f32) -> [f32; 4] {
+    let [x, y, w, h] = friends_panel_rect(width, height);
+    [x + friends_slide_x(open, width), y, w, h]
+}
+
+/// What the friends panel has under a point.
+///
+/// Named after the thing on screen rather than after what a press there does,
+/// the way every other spot in this shell is: what a click means is the
+/// selection's business, and this is only where the hand is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FriendsSpot {
+    /// Somebody's row, by their place in [`lxb_steam::Roster::friends`].
+    Row(usize),
+    /// The account's own status, at the head of the panel.
+    Status,
+    /// The bar beside the list, and how far down it the hand is asking to go.
+    Track(f32),
+    /// One message in an open conversation, by Steam's own key for it or by
+    /// the request it is going out under — never by its place in the column.
+    /// See [`crate::friends::Talking`].
+    Message(lxb_steam::chat::Mark),
+    /// The field a message is typed into.
+    Compose,
+    /// The "Try again" a conversation whose history failed offers.
+    Again,
+    /// The bar beside a conversation, and how far down it the hand is asking to
+    /// go. Its own arm rather than [`FriendsSpot::Track`] because the two carry
+    /// the same number about different columns, and one drag must not scroll
+    /// the other.
+    ChatTrack(f32),
+    /// Inside the panel and on none of its rows: the head, a band's rule, the
+    /// legend, the air between two chips. Taken and spent, so it does not reach
+    /// whatever the panel is standing over.
+    Panel,
+    /// Past the panel altogether, which is a way out of it.
+    Outside,
+}
+
+/// Whether `(at_x, at_y)` is inside a rectangle.
+fn covers([x, y, w, h]: [f32; 4], at_x: f32, at_y: f32) -> bool {
+    at_x >= x && at_x < x + w && at_y >= y && at_y < y + h
+}
+
+/// What the friends panel is showing, for a pass that has to agree with the
+/// drawing about it.
+///
+/// The same four facts [`FriendsView`] opens with, and that is the point: what
+/// a point on the screen has under it is decided by where the panel has got to,
+/// which rows are in it and whether it is showing a list at all, and a hit test
+/// given fewer than all four would be answering about a panel that is not the
+/// one drawn.
+#[derive(Clone, Copy)]
+pub struct FriendsPanel<'a> {
+    pub friends: &'a crate::friends::Friends,
+    pub roster: &'a lxb_steam::Roster,
+    /// Whether the head carries a status button — see [`FriendsView::head`].
+    pub head: bool,
+    /// How far in it is, already eased, exactly as [`FriendsView::open`] is.
+    pub open: f32,
+    /// The conversation the panel has turned to, if it has turned to one.
+    ///
+    /// `None` is the list, and it is asked of the *settled* state rather than
+    /// of the turn: a panel halfway between the two answers about the one it is
+    /// going to, because that is the one a press is meant for. A hand that
+    /// clicked during the turn asked for what it saw arriving.
+    pub conversation: Option<&'a lxb_steam::chat::Conversation>,
+    /// How many lines the draft wraps to, which is what the compose field is
+    /// as tall as.
+    pub compose_lines: u8,
+}
+
+/// What display-sized `(x, y)` has under it while the friends panel is up.
+///
+/// Measured from where the panel *is* rather than from where it settles, so a
+/// click that lands while the column is still arriving lands on the row the
+/// user can see — the same thing [`sidebar_slide_x`] does for the guide's own
+/// column, and for the same reason.
+pub fn friends_hit(panel: FriendsPanel, x: f32, y: f32, width: f32, height: f32) -> FriendsSpot {
+    let FriendsPanel {
+        friends,
+        roster,
+        head,
+        open,
+        ..
+    } = panel;
+    let slide = friends_slide_x(open, width);
+    let mut bounds = friends_panel_rect(width, height);
+    bounds[0] += slide;
+    if !covers(bounds, x, y) {
+        return FriendsSpot::Outside;
+    }
+    // A conversation answers for the whole panel below the head. Its half is
+    // asked first and entirely: while one is open there are no rows to hit, and
+    // a point falling through to the list underneath would be a click on
+    // somebody the user cannot see.
+    if friends.talking_to().is_some() {
+        return friends_chat_hit(panel, x, y, width, height, slide);
+    }
+    let lines = crate::friends::lines(roster);
+    let scroll = friends.scroll();
+
+    // The head's button, which is above the body and outside every rectangle
+    // below. Asked first because it is the first thing on the panel, and
+    // because it is only there at all where it is drawn.
+    if head {
+        let mut status = friends_status_rect(width, height);
+        status[0] += slide;
+        if covers(status, x, y) {
+            return FriendsSpot::Status;
+        }
+    }
+
+    // The bar first. It stands in the margin beside the body rather than in it,
+    // so nothing it answers for is a row — but it is asked about first all the
+    // same, because a lane wider than the bar drawn in it is the one thing here
+    // that reaches past what it looks like.
+    if let Some((_, run)) = friends_scroll_place(&lines, scroll, height) {
+        let mut lane = friends_scroll_lane(width, height);
+        lane[0] += slide;
+        if covers(lane, x, y) {
+            let mut track = friends_scroll_track(width, height);
+            track[0] += slide;
+            return FriendsSpot::Track(friends_scroll_asked(track, run, y));
+        }
+    }
+
+    // And then the rows, of which only the ones the body has room for count: a
+    // row is laid out in the column's own coordinates and the viewport cuts it,
+    // so half a chip past the foot of the panel is drawn as half a chip and
+    // must answer as half a chip. See [`Scene::clip_to`].
+    let mut body = friends_body_rect(width, height);
+    body[0] += slide;
+    if covers(body, x, y) {
+        for index in friends_lines_in_view(&lines, scroll, height) {
+            let Some(person) = lines.get(index).and_then(|line| line.person()) else {
+                continue;
+            };
+            let Some(mut chip) = friends_chip_rect(width, height, &lines, scroll, index) else {
+                continue;
+            };
+            chip[0] += slide;
+            if covers(chip, x, y) {
+                return FriendsSpot::Row(person);
+            }
+        }
+    }
+    FriendsSpot::Panel
+}
+
+/// What a point on an open conversation has under it.
+///
+/// Split out of [`friends_hit`] rather than written as a branch inside it,
+/// because the two halves of the panel share nothing below the head: one has
+/// rows and a band's rules, the other has bubbles and a field, and a single
+/// function walking both would be two functions with an `if` through them.
+///
+/// The order is front to back, exactly as the drawing is: the field and the
+/// retry line stand over the message column, and the bar beside it reaches into
+/// a lane wider than it is drawn.
+fn friends_chat_hit(
+    panel: FriendsPanel,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    slide: f32,
+) -> FriendsSpot {
+    let FriendsPanel {
+        friends,
+        conversation,
+        compose_lines,
+        ..
+    } = panel;
+    let mut compose = friends_compose_rect(width, height, compose_lines);
+    compose[0] += slide;
+    if covers(compose, x, y) {
+        return FriendsSpot::Compose;
+    }
+    if conversation.is_some_and(|it| it.history().failure().is_some()) {
+        let mut again = friends_again_rect(width, height, compose_lines);
+        again[0] += slide;
+        if covers(again, x, y) {
+            return FriendsSpot::Again;
+        }
+    }
+    let body = friends_chat_body_rect(width, height, compose_lines);
+    let column = friends_chat_column_height(friends.laid_out(), height);
+    if let Some((_, run)) = friends_chat_scroll_place(column, body[3], friends.chat_scroll()) {
+        let mut lane = friends_scroll_lane(width, height);
+        lane[1] = body[1];
+        lane[3] = body[3];
+        lane[0] += slide;
+        if covers(lane, x, y) {
+            let mut track = friends_scroll_track(width, height);
+            track[1] = body[1];
+            track[3] = body[3];
+            track[0] += slide;
+            return FriendsSpot::ChatTrack(friends_scroll_asked(track, run, y));
+        }
+    }
+    let mut viewport = body;
+    viewport[0] += slide;
+    if covers(viewport, x, y) {
+        for (laid, rect) in friends_message_rects(
+            friends.laid_out(),
+            width,
+            height,
+            body[1] - friends.chat_scroll(),
+        ) {
+            let mut rect = rect;
+            rect[0] += slide;
+            // Cut to the viewport, on the terms a row is: a bubble half out of
+            // the top is drawn half and must answer as half.
+            if covers(rect, x, y) && covers(viewport, x, y) {
+                return FriendsSpot::Message(laid.mark);
+            }
+        }
+    }
+    FriendsSpot::Panel
+}
+
+/// Where the thumb stands on the bar beside a conversation, and how long it is
+/// — the same pair [`friends_scroll_place`] answers, in pixels rather than in
+/// lines because a message column is measured in them.
+///
+/// `None` where the whole column fits, which is a conversation with no bar.
+fn friends_chat_scroll_place(column: f32, body: f32, scroll: f32) -> Option<(f32, f32)> {
+    if body <= 0.0 || column <= body {
+        return None;
+    }
+    let over = column - body;
+    Some((
+        (scroll / over).clamp(0.0, 1.0),
+        (body / column).clamp(0.0, 1.0),
+    ))
+}
+
+/// Leave nothing but the wallpaper under the friends panel.
+///
+/// Two halves, and the second is the one that matters. The text under the panel
+/// is dimmed away, because every quad in a scene is drawn before every text run
+/// and a panel laid over the bar does not hide the bar's labels unless they are
+/// taken away. Dimmed rather than dropped while it is still arriving, for the
+/// reason [`Scene::dim_text_behind`] gives: this panel travels as one whole
+/// rectangle rather than growing into one.
+///
+/// And then everything the shell has drawn to the right of the panel's leading
+/// edge is *cut*. That is not tidiness. A pane of glass shows what the shell
+/// has already drawn into the frame and shows the wallpaper only where it drew
+/// nothing — see `behind_at` in shaders.wgsl — so without this the bar's tiles
+/// are not merely behind the panel, they are refracted through it, and a bright
+/// square icon comes through a column of names as a blob. The user asked for
+/// wallpaper behind this panel and nothing else, and this is the whole of how
+/// that is arranged: draw nothing there, and the wallpaper is what is left.
+///
+/// Cut at the panel's *current* edge rather than at where it settles, so the
+/// bar is uncovered progressively as the column comes in and the seam is always
+/// under the glass that is about to be drawn over it.
+pub fn nothing_but_wallpaper_under_friends(scene: &mut Scene, width: f32, height: f32, open: f32) {
+    let open = open.clamp(0.0, 1.0);
+    if open <= 0.0 {
+        return;
+    }
+    let bounds = friends_bounds(width, height, open);
+    scene.dim_text_behind(bounds, open);
+    // The panel floats clear of the screen's edges, so its own rectangle is not
+    // where the cut belongs: a strip of bar left showing above and below it
+    // would be two hairlines of icon beside a column of glass. The cut runs the
+    // whole height of the display from the panel's leading edge.
+    scene.cut_quads_to([0.0, 0.0, bounds[0], height]);
+}
+
+/// Everything `build_friends` draws from.
+pub struct FriendsView<'a> {
+    pub friends: &'a crate::friends::Friends,
+    /// Who the account knows, as Steam last said. Empty is an ordinary state
+    /// and not a failure: a session that has just signed in has one for a
+    /// second or two.
+    pub roster: &'a lxb_steam::Roster,
+    /// What to write across the body instead of a list.
+    ///
+    /// For the three states that are not "here are your friends" — nobody
+    /// signed in, Steam switched off in Settings, and the account standing
+    /// offline by its own choice. The panel still comes in and still takes the
+    /// keys: a button that did nothing at all would be indistinguishable from a
+    /// broken one, and the whole of what the user needs to know is one sentence
+    /// long.
+    pub instead: Option<&'a str>,
+    /// Whether the head carries a status button.
+    ///
+    /// Deliberately *not* worked out from [`Self::instead`], which is what it
+    /// used to be. The offline sentence is one this button is the only way out
+    /// of — nothing else on the panel can bring the list back — so a rule that
+    /// took the button away whenever the body said something would have shut
+    /// the door behind whoever chose it. It needs an account, and Steam
+    /// switched on, and nothing else.
+    pub head: bool,
+    /// How far in it is, already eased. 1 is settled.
+    pub open: f32,
+    /// The glided position of the lit capsule, or `None` on the first frame,
+    /// where it snaps to wherever the row is rather than flying in.
+    pub highlight: Option<[f32; 4]>,
+    /// What the panel's glass is laid over, drawn as softly as this.
+    pub behind: f32,
+    /// The global clock, for the selection's breath.
+    pub time: f32,
+    /// Whether the legend names a controller's buttons or a keyboard's keys.
+    pub pad: bool,
+    /// Whether a hand is on the scroll bar right now, which is what lights it.
+    pub dragging: bool,
+    /// How many messages are waiting in each conversation.
+    ///
+    /// A lookup rather than the store itself, so the layout can be exercised
+    /// without one — and so this pass cannot reach anything about a
+    /// conversation except the one number a row draws.
+    pub unread: &'a dyn UnreadCount,
+    /// The conversation the panel has turned to, where it has turned to one.
+    ///
+    /// `None` while the panel is showing the list — and also for the length of
+    /// the turn *out* of a conversation, which is why the leaf reads every one
+    /// of its states out of it defensively rather than unwrapping: a
+    /// conversation left behind goes on being drawn for a fifth of a second
+    /// after its content has gone.
+    pub conversation: Option<&'a lxb_steam::chat::Conversation>,
+    /// Who it is with, as a person Steam has described. `None` for a friend who
+    /// has left the list while their conversation is open — which is a state
+    /// with a name: see `Shell::on_friends_action`.
+    pub talking_to: Option<&'a lxb_steam::Person>,
+    /// And what they are called, for the line that says they are typing.
+    pub talking_to_name: &'a str,
+    /// Whether they are typing right now.
+    pub typing: bool,
+    /// Why a message cannot be sent, where one cannot.
+    ///
+    /// Worked out by the shell rather than here, because it is a fact about
+    /// Steam and the roster rather than about the panel — see
+    /// [`lxb_steam::chat::Refused`].
+    pub cannot_send: Option<&'a str>,
+    pub slots: &'a dyn SlotLookup,
+}
+
+/// How many of somebody's messages have not been read.
+///
+/// A trait for the reason [`SlotLookup`] is one: `ui` is arithmetic on
+/// rectangles, and a pass that reached into the conversation store for this
+/// would be a layout that could not be built without one.
+pub trait UnreadCount {
+    fn unread(&self, steam_id: u64) -> usize;
+}
+
+/// Nobody has anything waiting, for a panel drawn without a Steam behind it.
+#[cfg(test)]
+pub struct NothingUnread;
+
+#[cfg(test)]
+impl UnreadCount for NothingUnread {
+    fn unread(&self, _steam_id: u64) -> usize {
+        0
+    }
+}
+
+/// What the buttons do here, read left to right.
+///
+/// Two acts, because there are two: take the row, and get out.
+///
+/// Deliberately **not** the button that raised the panel. A legend is what to
+/// press to get somewhere, and the panel is somewhere the reader already is —
+/// naming Friends on the friends list is telling somebody how to reach the
+/// screen they are looking at. It belongs on the start screen's legend, which
+/// is where it now is; see [`start_hints`].
+///
+/// Nothing about moving either — the list is a column, and a legend explaining
+/// that down goes down explains the one thing already on screen.
+fn friends_hints(view: &FriendsView) -> Vec<Hint> {
+    let pad = view.pad;
+    let one = |label, on_a_pad, otherwise| Hint {
+        label,
+        glyph: if pad { on_a_pad } else { otherwise },
+    };
+    // The list: take a row, or get out. Two acts because there are two.
+    if view.friends.talking_to().is_none() {
+        return vec![
+            one("Select", icons::PAD_SOUTH, icons::KEY_ENTER),
+            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+        ];
+    }
+    // A conversation names what the light is standing on, because there are
+    // four things it can be standing on and they do four different things —
+    // which is exactly the case a legend is for.
+    let composing = view.friends.composing();
+    let mut hints = match (composing, view.friends.talking()) {
+        (true, _) => vec![
+            one("Send", icons::PAD_SOUTH, icons::KEY_ENTER),
+            one("Done", icons::PAD_EAST, icons::KEY_ESCAPE),
+        ],
+        (false, crate::friends::Talking::Compose) => vec![
+            one("Write", icons::PAD_SOUTH, icons::KEY_ENTER),
+            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+        ],
+        (false, crate::friends::Talking::Again) => vec![
+            one("Try again", icons::PAD_SOUTH, icons::KEY_ENTER),
+            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+        ],
+        (false, crate::friends::Talking::Message(mark)) => {
+            // Only a message that did not go can be acted on. Everything else
+            // in the column has already happened, and a legend offering to
+            // send it again would be offering something that does nothing.
+            let failed = matches!(mark, lxb_steam::chat::Mark::Pending(_));
+            match failed {
+                true => vec![
+                    one("Send again", icons::PAD_SOUTH, icons::KEY_ENTER),
+                    one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+                ],
+                false => vec![one("Back", icons::PAD_EAST, icons::KEY_ESCAPE)],
+            }
+        }
+    };
+    if matches!(
+        view.friends.talking(),
+        crate::friends::Talking::Message(lxb_steam::chat::Mark::Pending(_))
+    ) && !composing
+    {
+        hints.push(one("Delete", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+    }
+    hints
+}
+
+/// Whose picture is being drawn, and what it is being drawn on.
+///
+/// One argument rather than six, because the head of the panel and every row
+/// under it pass the same six and the two are one drawing at two sizes.
+struct Face<'a> {
+    /// `None` for a panel with nobody signed in, which draws the plate and the
+    /// figure and no picture at all.
+    person: Option<&'a lxb_steam::Person>,
+    /// Whether to draw the plate of glass under the picture.
+    ///
+    /// False for the head of the panel, where the two pictures cross-fade over
+    /// one plate — see [`build_friends`]. True everywhere else, which is every
+    /// row of the list.
+    plate: bool,
+    size: lxb_steam::AvatarSize,
+    scale: f32,
+    /// How far the picture has faded up, which is 1 everywhere today: the panel
+    /// slides in whole rather than filling in behind itself.
+    alpha: f32,
+    behind: f32,
+    slots: &'a dyn SlotLookup,
+}
+
+/// The plate of glass a picture is drawn on.
+///
+/// Its own function because the head of the panel draws it once and fades two
+/// pictures over it — see [`build_friends`] — while every row of the list draws
+/// it with the picture. Drawn whether or not there is a picture, so a row whose
+/// face is still being fetched is a row of the same shape rather than a hole
+/// that fills in.
+fn friends_face_plate(quads: &mut Vec<Quad>, rect: [f32; 4], scale: f32, behind: f32) {
+    let theme = theme();
+    let [x, y, w, h] = rect;
+    quads.push(Quad {
+        x,
+        y,
+        w,
+        h,
+        slot: SOLID_SLOT,
+        color: theme.glass_raised.a(0.12),
+        radius: w * FRIENDS_FACE_CORNER,
+        corner: SQUIRCLE_CORNER,
+        thickness: DEPTH_CONTROL * scale,
+        behind,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_QUIET,
+        ..Quad::default()
+    });
+}
+
+/// One person's picture, in the square at `rect`.
+///
+/// Three things in one, and the order between them is the substance: a plate of
+/// glass, whatever picture has arrived, and — when none has — the figure that
+/// stands for somebody with no picture of their own. The plate is drawn whether
+/// or not there is a picture, so a row whose face is still being fetched is a
+/// row of the same shape rather than a hole that fills in.
+fn friends_face(quads: &mut Vec<Quad>, rect: [f32; 4], face: Face<'_>) {
+    let Face {
+        person,
+        plate,
+        size,
+        scale,
+        alpha,
+        behind,
+        slots,
+    } = face;
+    let theme = theme();
+    let [x, y, w, h] = rect;
+    let radius = w * FRIENDS_FACE_CORNER;
+    if plate {
+        friends_face_plate(quads, rect, scale, behind);
+    }
+
+    let picture = person
+        .and_then(|person| person.avatar.as_deref())
+        .and_then(|hash| slots.avatar(hash, size))
+        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+    if let Some(thumb) = picture {
+        // Somebody who is not there is drawn colourless. The picture is the
+        // same picture — this is a fact about now, not about them — which is
+        // why it is the quad's own drain rather than a second copy of the file.
+        let colourless = person
+            .filter(|person| !person.presence.is_around())
+            .map_or(0.0, |_| FRIENDS_OFFLINE_DRAIN);
+        quads.push(Quad {
+            x,
+            y,
+            w,
+            h,
+            slot: thumb.slot,
+            color: [1.0, 1.0, 1.0, alpha],
+            radius,
+            corner: SQUIRCLE_CORNER,
+            drain: colourless,
+            crop: round_crop(thumb.aspect),
+            ..Quad::default()
+        });
+        return;
+    }
+
+    // No picture: the one figure an account with no picture of its own wears,
+    // which is the mark the shell's own accounts already use. Drawn rather than
+    // left blank, because a plate of glass with nothing on it reads as a row
+    // whose face is still coming.
+    if let Some(slot) = slots.glyph(icons::SETTING_PERSON) {
+        let mark = w * 0.52;
+        quads.push(shaded(
+            Quad {
+                x: x + (w - mark) * 0.5,
+                y: y + (h - mark) * 0.5,
+                w: mark,
+                h: mark,
+                slot,
+                color: theme.text_soft.a(0.55 * alpha),
+                ..Quad::default()
+            },
+            Some(icons::SETTING_PERSON),
+        ));
+    }
+}
+
+/// Lay out the friends panel: the account at the head of a column, and
+/// everybody it knows under it.
+pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let open = view.open.clamp(0.0, 1.0);
+    let mut scene = Scene::default();
+    let [panel_x, panel_y, panel_w, panel_h] = friends_panel_rect(width, height);
+    if panel_w <= 0.0 || panel_h <= 0.0 || open <= 0.0 {
+        return scene;
+    }
+    let slide = friends_slide_x(open, width);
+    let panel_x = panel_x + slide;
+    let margin = GUIDE_MARGIN * scale;
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+
+    // The same four layers the guide's own sidebar is cut from, so the two
+    // edges of the screen are plainly one material. See [`sidebar_surface`].
+    scene.quads.extend(sidebar_surface(
+        [panel_x, panel_y, panel_w, panel_h],
+        scale,
+        view.behind,
+        1.0,
+    ));
+
+    // --- the head: the account, or the person being talked to --------------
+    //
+    // One object, cross-faded in place. The panel's two faces share a head
+    // rather than each carrying one, because what the head *is* does not
+    // change — a picture, a name and a line under it — and a second head
+    // arriving from the side would say the panel had been replaced when it has
+    // only turned. The plate of glass is drawn once at full strength for the
+    // same reason: two plates cross-fading over one another read as a picture
+    // that dims in the middle of the change.
+    let turn_head = ease(view.friends.turned());
+    let face = FRIENDS_HEAD_FACE * scale;
+    let face_rect = [panel_x + margin, panel_y + margin, face, face];
+    friends_face_plate(&mut scene.quads, face_rect, scale, view.behind);
+    if turn_head < 1.0 {
+        friends_face(
+            &mut scene.quads,
+            face_rect,
+            Face {
+                person: view.roster.me.as_ref(),
+                plate: false,
+                size: lxb_steam::AvatarSize::Full,
+                scale,
+                alpha: 1.0 - turn_head,
+                behind: view.behind,
+                slots: view.slots,
+            },
+        );
+    }
+    if turn_head > 0.0 {
+        friends_face(
+            &mut scene.quads,
+            face_rect,
+            Face {
+                person: view.talking_to,
+                plate: false,
+                size: lxb_steam::AvatarSize::Full,
+                scale,
+                alpha: turn_head,
+                behind: view.behind,
+                slots: view.slots,
+            },
+        );
+    }
+    let text_x = panel_x + margin + face + FRIENDS_FACE_GAP * scale;
+    let text_w = (panel_x + panel_w - margin - text_x).max(0.0);
+    let name_size = FRIENDS_NAME * scale;
+    let status_size = FRIENDS_STATUS * scale;
+    // The nickname, which is what somebody is called on Steam — never the
+    // account name they signed in with. A shell that greeted people by their
+    // login would be greeting them by the one name their friends never see.
+    let (name, status) = match view.roster.me.as_ref() {
+        Some(me) => (me.name.clone(), me.doing().to_string()),
+        // Signed out, or signed in and waiting on Steam's first answer. Both
+        // are the same thing to read: the panel is about Steam and says so.
+        None => ("Steam".to_string(), String::new()),
+    };
+    // And who is being talked to, which the same two lines say while the panel
+    // has turned. A friend the roster no longer describes — unfriended with
+    // their conversation open — keeps the name the panel was opened under,
+    // which is `talking_to_name`: taking it away would leave the head of an
+    // open conversation with nobody's name on it.
+    let (their_name, their_doing) = match view.talking_to {
+        Some(friend) => (friend.name.clone(), friend.doing().to_string()),
+        None => (view.talking_to_name.to_string(), String::new()),
+    };
+    let name_y = panel_y + margin + face * FRIENDS_HEAD_NAME_AT - name_size * 0.5;
+    if turn_head < 1.0 {
+        scene.texts.push(Text {
+            content: name,
+            x: text_x,
+            y: name_y,
+            size: name_size,
+            color: theme.text.a(0.95 * (1.0 - turn_head)),
+            bold: true,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+    if turn_head > 0.0 {
+        scene.texts.push(Text {
+            content: their_name,
+            x: text_x,
+            y: name_y,
+            size: name_size,
+            color: theme.text.a(0.95 * turn_head),
+            bold: true,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+    // --- the status, which is a button ------------------------------------
+    //
+    // Only a line of type until the light is on it, which is what the user
+    // asked for and is also the honest drawing: it is one word about the
+    // account, and a chip around it at all times would make the head of the
+    // panel read as a form.
+    //
+    // The capsule is pushed straight into the panel's own scene rather than
+    // into the body's viewport below, because it is above the body and the
+    // clip that keeps a half-scrolled row inside the list would take it away.
+    // It is still under every word on the panel: a scene draws all of its
+    // quads and then all of its text, so where a quad is added says nothing
+    // about what it covers.
+    // Never while the panel has turned: the head is somebody else then, and a
+    // capsule under their name would be offering to change *their* status.
+    let on_status = view.friends.on_status(view.head) && view.friends.talking_to().is_none();
+    if on_status {
+        let [sx, sy, sw, sh] = view
+            .highlight
+            .map(|[x, y, w, h]| [x + slide, y, w, h])
+            .unwrap_or_else(|| {
+                let [x, y, w, h] = friends_status_rect(width, height);
+                [x + slide, y, w, h]
+            });
+        scene.quads.push(Quad {
+            x: sx + sw * 0.5 - panel_w * 0.62,
+            y: sy + sh * 0.5 - (sh + FRIENDS_ROW * scale * 0.5) * 0.5,
+            w: panel_w * 1.24,
+            h: sh + FRIENDS_ROW * scale * 0.5,
+            slot: GLOW_SLOT,
+            color: theme.accent.a(0.13 + 0.05 * pulse),
+            ..Quad::default()
+        });
+        scene.quads.push(Quad {
+            x: sx,
+            y: sy,
+            w: sw,
+            h: sh,
+            slot: SOLID_SLOT,
+            color: theme.accent.a(0.46 + 0.05 * pulse),
+            radius: PANEL_RADIUS * 0.5 * scale,
+            corner: SQUIRCLE_CORNER,
+            thickness: DEPTH_CONTROL * scale,
+            behind: view.behind,
+            frost: FROST_CONTROL,
+            gloss: GLOSS_FULL,
+            ..Quad::default()
+        });
+    }
+    let status_y = panel_y + margin + face * FRIENDS_STATUS_AT - status_size * 0.5;
+    if !status.is_empty() && turn_head < 1.0 {
+        scene.texts.push(Text {
+            content: status,
+            x: text_x,
+            y: status_y,
+            size: status_size,
+            // Under the light it is read as a label rather than as a quiet note
+            // about the account, so it comes up to the same white every lit row
+            // of the list writes its name in.
+            color: match on_status {
+                true => theme.text.a(0.95 * (1.0 - turn_head)),
+                false => theme.text_soft.a(0.78 * (1.0 - turn_head)),
+            },
+            bold: false,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+    // What the person being talked to is doing, which is the same line about
+    // somebody else — never a button, because it is not this account's status.
+    if !their_doing.is_empty() && turn_head > 0.0 {
+        scene.texts.push(Text {
+            content: their_doing,
+            x: text_x,
+            y: status_y,
+            size: status_size,
+            color: theme.text_soft.a(0.78 * turn_head),
+            bold: false,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+    // The rule under the head, on the header's own horizontal measure — the
+    // same barely-there hairline the guide rules its bands with.
+    let [body_x, body_y, body_w, _] = friends_body_rect(width, height);
+    let body_x = body_x + slide;
+    scene.quads.push(Quad {
+        x: body_x,
+        y: body_y - GUIDE_MARGIN * scale * 0.5,
+        w: body_w,
+        h: (1.0 * scale).max(1.0),
+        slot: SOLID_SLOT,
+        color: theme.accent_soft.a(0.16),
+        ..Quad::default()
+    });
+
+    // --- the two halves, and the turn between them -------------------------
+    //
+    // The list and a conversation are one panel showing one of two faces. Both
+    // are drawn while the turn is under way — the standing rule is that nothing
+    // in this shell disappears mid-transition — and each travels a little way
+    // as it goes, so what the eye follows is the leaf leaving rather than a
+    // panel whose contents changed between two frames.
+    let turn = ease(view.friends.turned());
+    let travel = panel_w * FRIENDS_TURN_TRAVEL;
+    // Cut to the panel only while the turn is under way. A leaf that has
+    // arrived is inside the panel by construction and needs no cutting — and
+    // clipping it anyway would put a clip rectangle on every quad and every run
+    // of a panel that is standing still, which is what the bar beside the list
+    // is checked for: nothing of it may be cut by anything.
+    let turning = (turn > 0.0 && turn < 1.0).then_some([
+        panel_x,
+        body_y,
+        panel_w,
+        panel_h - (body_y - panel_y),
+    ]);
+    if turn < 1.0 {
+        let mut list = friends_list_leaf(&view, width, height, slide, on_status);
+        if let Some(cut) = turning {
+            list.scale_by(1.0, [-turn * travel, 0.0]);
+            list.fade(1.0 - turn);
+            list.clip_to(cut);
+        }
+        scene.quads.append(&mut list.quads);
+        scene.texts.append(&mut list.texts);
+    }
+    if turn > 0.0 {
+        let mut talk = friends_conversation_leaf(&view, width, height, slide);
+        if let Some(cut) = turning {
+            talk.scale_by(1.0, [(1.0 - turn) * travel, 0.0]);
+            talk.fade(turn);
+            talk.clip_to(cut);
+        }
+        scene.quads.append(&mut talk.quads);
+        scene.texts.append(&mut talk.texts);
+    }
+
+    push_friends_legend(&mut scene, &view, width, height, slide);
+    scene
+}
+
+/// How far each leaf travels as the panel turns between the list and a
+/// conversation, as a share of the panel's own width.
+///
+/// A short move rather than a full slide. The panel is not going anywhere —
+/// it is showing a different face — and a leaf that swept the whole width
+/// would read as a second panel arriving over the first, which is exactly the
+/// thing this is not.
+const FRIENDS_TURN_TRAVEL: f32 = 0.28;
+
+/// The conversation half of the panel: what has been said, and the field to say
+/// something in.
+///
+/// Everything below the head, in its own scene for the reason
+/// [`friends_list_leaf`] is. The head itself is not here: it is one object that
+/// cross-fades from the account to the friend in place, which is drawn by
+/// [`build_friends`] because it belongs to neither leaf.
+fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide: f32) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let mut leaf = Scene::default();
+    let [panel_x, _, panel_w, _] = friends_panel_rect(width, height);
+    let panel_x = panel_x + slide;
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+    let compose_lines = view.friends.compose_lines();
+    let [body_x, body_y, body_w, body_h] = friends_chat_body_rect(width, height, compose_lines);
+    let body_x = body_x + slide;
+    let talking = view.friends.talking();
+
+    // --- the message column, which is a viewport ---------------------------
+    let laid_out = view.friends.laid_out();
+    let scroll = view.friends.chat_scroll();
+    let mut column = Scene::default();
+    let body_rect = [body_x, body_y, body_w, body_h];
+    for (laid, rect) in friends_message_rects(laid_out, width, height, body_y - scroll) {
+        let [mut mx, my, mw, mh] = rect;
+        mx += slide;
+        // Cut to the viewport at the end, so a bubble half out of the top is
+        // drawn half — the same rule the list's rows are under.
+        if my + mh < body_y - mh || my > body_y + body_h + mh {
+            continue;
+        }
+        // And taken down as it leaves, on the same feather the list's rows use
+        // — see [`friends_edge_fade`]. A straight cut across half a message
+        // reads as a drawing fault; what the eye should follow is the message
+        // going.
+        let edge = friends_edge_fade([mx, my, mw, mh], body_rect, scale);
+        if edge <= 0.01 {
+            continue;
+        }
+        let Some(said) = view
+            .conversation
+            .map(|it| it.lines())
+            .and_then(|lines| lines.iter().find(|line| line.mark() == laid.mark).copied())
+        else {
+            continue;
+        };
+        let lit = talking == crate::friends::Talking::Message(laid.mark);
+        let failed = said.failure().is_some();
+        let sending = said.sending();
+        // Ours in the accent, theirs in the shell's own raised glass. Colour is
+        // the second thing that says which side a message is on and the side of
+        // the column is the first, so neither has to be read to be understood.
+        let tint = match (laid.from_me, failed) {
+            // A message that did not go wears the shell's own warning, which is
+            // the same one a failed download does. It is not decoration: a
+            // failed send is the one line in a conversation that has to be told
+            // from an ordinary one at a glance.
+            (_, true) => theme.danger.a(0.30),
+            (true, false) => theme.accent.a(if sending { 0.26 } else { 0.44 }),
+            (false, false) => theme.glass_raised.a(0.11),
+        };
+        column.quads.push(Quad {
+            x: mx,
+            y: my,
+            w: mw,
+            h: mh,
+            slot: SOLID_SLOT,
+            color: tint,
+            radius: FRIENDS_BUBBLE_CORNER * scale,
+            corner: SQUIRCLE_CORNER,
+            thickness: DEPTH_CONTROL * scale,
+            behind: view.behind,
+            frost: FROST_CONTROL,
+            gloss: if laid.from_me {
+                GLOSS_FULL
+            } else {
+                GLOSS_QUIET
+            },
+            fade: edge,
+            ..Quad::default()
+        });
+        if lit {
+            column.quads.push(Quad {
+                x: mx,
+                y: my,
+                w: mw,
+                h: mh,
+                slot: SOLID_SLOT,
+                color: theme.accent.a(0.16 + 0.05 * pulse),
+                radius: FRIENDS_BUBBLE_CORNER * scale,
+                corner: SQUIRCLE_CORNER,
+                border: (1.5 * scale).max(1.0),
+                fade: edge,
+                ..Quad::default()
+            });
+        }
+        column.texts.push(Text {
+            content: said.body().to_string(),
+            x: mx + FRIENDS_BUBBLE_SIDE * scale,
+            y: my + FRIENDS_BUBBLE_PADDING * scale,
+            size: FRIENDS_MESSAGE * scale,
+            // A message on its way out is written more quietly than one that
+            // has arrived, which is the whole of how "sending" is said: no
+            // spinner, no second line, and it comes up to full the instant
+            // Steam stamps it.
+            color: theme.text.a((if sending { 0.62 } else { 0.95 }) * edge),
+            bold: false,
+            max_width: mw - FRIENDS_BUBBLE_SIDE * 2.0 * scale,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: laid.lines.max(1),
+            cut: Cut::Tail,
+        });
+        // Why it did not go, on the line the column reserved for it under the
+        // bubble — see [`friends_message_height`]. Across the *body* rather
+        // than across the bubble, because a two-word message has a bubble too
+        // narrow to hold a sentence and this one has to be readable.
+        if let Some(why) = said.failure() {
+            column.texts.push(Text {
+                content: why.to_string(),
+                x: body_x,
+                y: my + mh + FRIENDS_BUBBLE_GAP * scale * 0.5,
+                size: FRIENDS_NOTE * scale,
+                color: theme.danger.a(0.92 * edge),
+                bold: false,
+                max_width: body_w,
+                align: match laid.from_me {
+                    true => TextAlign::Right,
+                    false => TextAlign::Left,
+                },
+                clip: None,
+                halo: 0.0,
+                lines: 1,
+                cut: Cut::Tail,
+            });
+        }
+    }
+    column.clip_to([body_x, body_y, body_w, body_h]);
+    leaf.quads.append(&mut column.quads);
+    leaf.texts.append(&mut column.texts);
+
+    // --- what the column says when it has nothing in it --------------------
+    if laid_out.is_empty() {
+        let said = match view.conversation.map(|it| it.history()) {
+            Some(lxb_steam::chat::History::Asking(_)) | None => "Reading the conversation…",
+            Some(lxb_steam::chat::History::Failed(_)) => "",
+            // Read, and there was nothing in it. Said out loud rather than left
+            // blank, because a blank column and a column that has not arrived
+            // look exactly alike and only one of them is finished.
+            Some(_) => "Nothing has been said yet. Say something.",
+        };
+        if !said.is_empty() {
+            leaf.texts.push(Text {
+                content: said.to_string(),
+                x: body_x,
+                y: body_y + body_h * 0.35,
+                size: FRIENDS_ROW_NAME * scale,
+                color: theme.text_soft.a(0.7),
+                bold: false,
+                max_width: body_w,
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                lines: 2,
+                cut: Cut::Tail,
+            });
+        }
+    }
+
+    // --- a history that did not come, and the way to ask again -------------
+    if let Some(why) = view.conversation.and_then(|it| it.history().failure()) {
+        let [ax, ay, aw, ah] = friends_again_rect(width, height, compose_lines);
+        let ax = ax + slide;
+        let lit = talking == crate::friends::Talking::Again;
+        leaf.quads.push(Quad {
+            x: ax,
+            y: ay,
+            w: aw,
+            h: ah,
+            slot: SOLID_SLOT,
+            color: match lit {
+                true => theme.accent.a(0.42 + 0.05 * pulse),
+                false => theme.danger.a(0.20),
+            },
+            radius: PANEL_RADIUS * 0.5 * scale,
+            corner: SQUIRCLE_CORNER,
+            thickness: DEPTH_CONTROL * scale,
+            behind: view.behind,
+            frost: FROST_CONTROL,
+            gloss: GLOSS_QUIET,
+            ..Quad::default()
+        });
+        leaf.texts.push(Text {
+            content: why.to_string(),
+            x: ax + FRIENDS_CHIP_PADDING * scale,
+            // On the lines the rectangle was measured for, rather than at
+            // fractions of it: the two are one control and a share of a height
+            // is not a line of type.
+            y: ay + FRIENDS_CHIP_PADDING * scale + (FRIENDS_NOTE_LINE - FRIENDS_NOTE) * scale * 0.5,
+            size: FRIENDS_NOTE * scale,
+            color: theme.text.a(0.9),
+            bold: false,
+            max_width: aw - FRIENDS_CHIP_PADDING * 2.0 * scale,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+        leaf.texts.push(Text {
+            content: "Try again".to_string(),
+            x: ax + FRIENDS_CHIP_PADDING * scale,
+            y: ay
+                + FRIENDS_CHIP_PADDING * scale
+                + FRIENDS_NOTE_LINE * scale
+                + (FRIENDS_NOTE_LINE - FRIENDS_NOTE) * scale * 0.5,
+            size: FRIENDS_NOTE * scale,
+            color: theme.text.a(0.95),
+            bold: true,
+            max_width: aw - FRIENDS_CHIP_PADDING * 2.0 * scale,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+
+    // --- somebody typing, on the line above the field ----------------------
+    //
+    // Above the field rather than in the column, because it is not a message
+    // and never becomes one: putting it in the column would make the last
+    // message jump every time it came and went.
+    if view.typing {
+        leaf.texts.push(Text {
+            content: format!("{} is typing…", view.talking_to_name),
+            x: body_x,
+            y: body_y + body_h + (GUIDE_MARGIN * scale - FRIENDS_TYPING_ROW * scale) * 0.5,
+            size: FRIENDS_TYPING * scale,
+            color: theme.text_soft.a(0.75),
+            bold: false,
+            max_width: body_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
+
+    // --- the field ---------------------------------------------------------
+    let [fx, fy, fw, fh] = friends_compose_rect(width, height, compose_lines);
+    let fx = fx + slide;
+    let composing = view.friends.composing();
+    let lit = talking == crate::friends::Talking::Compose;
+    leaf.quads.push(Quad {
+        x: fx,
+        y: fy,
+        w: fw,
+        h: fh,
+        slot: SOLID_SLOT,
+        // Three states, and they are the three the rest of the shell's fields
+        // wear: quiet glass, the lit capsule under the light, and the accent
+        // outline of a field being typed into.
+        color: match (lit, composing) {
+            (_, true) => theme.accent.a(0.20),
+            (true, false) => theme.accent.a(0.42 + 0.05 * pulse),
+            (false, false) => theme.glass_raised.a(0.09),
+        },
+        radius: PANEL_RADIUS * 0.5 * scale,
+        corner: SQUIRCLE_CORNER,
+        border: if composing {
+            (2.0 * scale).max(1.0)
+        } else {
+            0.0
+        },
+        thickness: DEPTH_CONTROL * scale,
+        behind: view.behind,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_FULL,
+        ..Quad::default()
+    });
+    let draft = view.friends.draft();
+    // The caret is a character rather than a quad, so it sits exactly where the
+    // shaper put the last letter — a rectangle would have to be measured, which
+    // is the one thing the layout cannot do.
+    let written = match (draft.is_empty(), composing) {
+        (true, false) => "Write a message".to_string(),
+        (true, true) => "|".to_string(),
+        (false, true) => format!("{draft}|"),
+        (false, false) => draft.to_string(),
+    };
+    leaf.texts.push(Text {
+        content: written,
+        x: fx + FRIENDS_COMPOSE_PADDING * scale,
+        y: fy + FRIENDS_COMPOSE_PADDING * scale * 0.75,
+        size: FRIENDS_COMPOSE_TEXT * scale,
+        color: match draft.is_empty() && !composing {
+            true => theme.text_soft.a(0.55),
+            false => theme.text.a(0.95),
+        },
+        bold: false,
+        max_width: fw - FRIENDS_COMPOSE_PADDING * 2.0 * scale,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: FRIENDS_COMPOSE_LINES,
+        // The *head* of a draft is given up rather than its tail, which is the
+        // one place in this shell that is true besides a path. Somebody typing
+        // is looking at the end of what they are writing; a field that kept its
+        // beginning would hide the word being typed.
+        cut: Cut::Head,
+    });
+
+    // --- and why a message cannot be sent, where it cannot ------------------
+    if let Some(why) = view.cannot_send {
+        leaf.texts.push(Text {
+            content: why.to_string(),
+            x: body_x,
+            y: fy + fh + 2.0 * scale,
+            size: FRIENDS_NOTE * scale,
+            color: theme.danger.a(0.9),
+            bold: false,
+            max_width: body_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 2,
+            cut: Cut::Tail,
+        });
+    }
+
+    // --- the bar beside the column, on the list's own terms ----------------
+    let column_height = friends_chat_column_height(laid_out, height);
+    if let Some((at, run)) = friends_chat_scroll_place(column_height, body_h, scroll) {
+        let mut track = friends_scroll_track(width, height);
+        track[0] += slide;
+        track[1] = body_y;
+        track[3] = body_h;
+        let thumb = friends_scroll_thumb(track, at, run);
+        leaf.quads.push(Quad {
+            x: track[0],
+            y: track[1],
+            w: track[2],
+            h: track[3],
+            slot: SOLID_SLOT,
+            color: theme.text_soft.a(FRIENDS_SCROLL_TROUGH),
+            radius: track[2] * 0.5,
+            ..Quad::default()
+        });
+        leaf.quads.push(Quad {
+            x: thumb[0],
+            y: thumb[1],
+            w: thumb[2],
+            h: thumb[3],
+            slot: SOLID_SLOT,
+            color: match view.dragging {
+                true => theme.accent.a(0.95),
+                false => theme.text_soft.a(FRIENDS_SCROLL_THUMB),
+            },
+            radius: thumb[2] * 0.5,
+            ..Quad::default()
+        });
+    }
+    let _ = panel_x;
+    let _ = panel_w;
+    leaf
+}
+
+/// The list half of the panel: everybody the account knows, or the one sentence
+/// that stands where a list would.
+///
+/// Its own scene rather than drawn straight on to the panel, because the panel
+/// has two halves now and one of them steps aside for the other: a leaf that
+/// could not be moved or faded as a whole would have to be turned quad by quad.
+/// See [`build_friends`], where the two are put together.
+fn friends_list_leaf(
+    view: &FriendsView,
+    width: f32,
+    height: f32,
+    slide: f32,
+    on_status: bool,
+) -> Scene {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let mut leaf = Scene::default();
+    let [panel_x, _, panel_w, _] = friends_panel_rect(width, height);
+    let _ = panel_x;
+    let [body_x, body_y, body_w, body_h] = friends_body_rect(width, height);
+    let body_x = body_x + slide;
+    let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
+    // --- one sentence, where there is no list to draw ----------------------
+    if let Some(said) = view.instead {
+        leaf.texts.push(Text {
+            content: said.to_string(),
+            x: body_x,
+            y: body_y + body_h * 0.30,
+            size: FRIENDS_ROW_NAME * scale,
+            color: theme.text_soft.a(0.8),
+            bold: false,
+            max_width: body_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            // Four, because the body this is written across is empty and the
+            // room is there. Three cut the offline sentence a word short of
+            // saying which button brings the list back, which is the one thing
+            // that sentence is for.
+            lines: 4,
+            cut: Cut::Tail,
+        });
+        return leaf;
+    }
+
+    let lines = crate::friends::lines(view.roster);
+    if lines.is_empty() {
+        leaf.texts.push(Text {
+            // Two states with one sentence, because they read the same and
+            // neither is a failure: an account whose friends Steam has not sent
+            // yet, and an account with none.
+            content: "No friends to show yet.".to_string(),
+            x: body_x,
+            y: body_y + body_h * 0.30,
+            size: FRIENDS_ROW_NAME * scale,
+            color: theme.text_soft.a(0.7),
+            bold: false,
+            max_width: body_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 2,
+            cut: Cut::Tail,
+        });
+        return leaf;
+    }
+
+    // --- the body, which is a viewport -------------------------------------
+    //
+    // Everything from here to the legend goes into a scene of its own and is
+    // cut to the body at the end. That is what lets the list be *scrolled*
+    // rather than paged: a row half out of the top is drawn half, and the one
+    // arriving at the foot is drawn as far as there is room for it. Drawn
+    // straight into the panel's scene they would print over the head's rule and
+    // under the legend.
+    let mut body = Scene::default();
+    let scroll = view.friends.scroll();
+    let body_rect = [body_x, body_y, body_w, body_h];
+
+    // --- the selection, before the rows it lands on ------------------------
+    let selected = view.friends.selected(view.roster.friends.len());
+    let highlight = match on_status {
+        // Up in the head, where it has already been drawn. Kept out of the body
+        // altogether rather than merely not drawn twice, because `handed_over`
+        // below asks how near the light is to a row's chip, and a row would
+        // give its own chip up to a capsule that is nowhere near it.
+        true => None,
+        false => view.highlight.or_else(|| {
+            friends_highlight_rect(width, height, view.roster, view.head, view.friends)
+        }),
+    };
+    if let Some([hx, hy, hw, hh]) = highlight {
+        let hx = hx + slide;
+        body.quads.push(Quad {
+            x: hx + hw * 0.5 - panel_w * 0.62,
+            y: hy + hh * 0.5 - (hh + FRIENDS_ROW * scale * 0.5) * 0.5,
+            w: panel_w * 1.24,
+            h: hh + FRIENDS_ROW * scale * 0.5,
+            slot: GLOW_SLOT,
+            color: theme.accent.a(0.13 + 0.05 * pulse),
+            ..Quad::default()
+        });
+        body.quads.push(Quad {
+            x: hx,
+            y: hy,
+            w: hw,
+            h: hh,
+            slot: SOLID_SLOT,
+            color: theme.accent.a(0.46 + 0.05 * pulse),
+            radius: PANEL_RADIUS * 0.5 * scale,
+            corner: SQUIRCLE_CORNER,
+            thickness: DEPTH_CONTROL * scale,
+            behind: view.behind,
+            frost: FROST_CONTROL,
+            gloss: GLOSS_FULL,
+            ..Quad::default()
+        });
+    }
+
+    // --- the rows ----------------------------------------------------------
+    for index in friends_lines_in_view(&lines, scroll, height) {
+        let Some(rect) = friends_line_rect(width, height, &lines, scroll, index) else {
+            continue;
+        };
+        // How much of this line the body has room for, which is 1 for every row
+        // but the two at the ends. See [`friends_edge_fade`].
+        let edge = friends_edge_fade(rect, body_rect, scale);
+        if edge <= 0.01 {
+            continue;
+        }
+        let [lx, ly, lw, lh] = [rect[0] + slide, rect[1], rect[2], rect[3]];
+        match lines[index] {
+            crate::friends::Line::Heading(band, count) => {
+                body.texts.push(Text {
+                    content: format!("{}  —  {count}", band.said().to_uppercase()),
+                    x: lx,
+                    y: ly + lh * 0.5 - FRIENDS_HEADING_SIZE * scale * 0.62,
+                    size: FRIENDS_HEADING_SIZE * scale,
+                    color: theme.text_soft.a(0.55 * edge),
+                    bold: true,
+                    max_width: lw,
+                    align: TextAlign::Left,
+                    clip: None,
+                    halo: 0.0,
+                    lines: 1,
+                    cut: Cut::Tail,
+                });
+            }
+            crate::friends::Line::Person(person) => {
+                let Some(friend) = view.roster.friends.get(person) else {
+                    continue;
+                };
+                let Some(chip) = friends_chip_rect(width, height, &lines, scroll, index) else {
+                    continue;
+                };
+                let chip = [chip[0] + slide, chip[1], chip[2], chip[3]];
+                let focused = person == selected;
+                // The row gives its own chip up only once the lit capsule has
+                // arrived over it. Handing it over the instant the selection
+                // changed leaves a hole in the column for the length of the
+                // glide, with the light still crossing the gap to fill it.
+                let handed_over = match (focused, highlight) {
+                    (true, Some(at)) => {
+                        highlight_arrival([at[0] + slide, at[1], at[2], at[3]], chip)
+                    }
+                    _ => 0.0,
+                };
+                body.quads.push(Quad {
+                    x: chip[0],
+                    y: chip[1],
+                    w: chip[2],
+                    h: chip[3],
+                    slot: SOLID_SLOT,
+                    color: theme.glass_raised.a(0.08),
+                    radius: PANEL_RADIUS * 0.5 * scale,
+                    corner: SQUIRCLE_CORNER,
+                    thickness: DEPTH_CONTROL * scale,
+                    behind: view.behind,
+                    frost: FROST_CONTROL,
+                    gloss: GLOSS_QUIET,
+                    fade: (1.0 - handed_over) * edge,
+                    ..Quad::default()
+                });
+
+                let face = FRIENDS_ROW_FACE * scale;
+                let face_x = chip[0] + FRIENDS_CHIP_PADDING * scale;
+                friends_face(
+                    &mut body.quads,
+                    [face_x, chip[1] + (chip[3] - face) * 0.5, face, face],
+                    Face {
+                        person: Some(friend),
+                        plate: true,
+                        size: lxb_steam::AvatarSize::Medium,
+                        scale,
+                        alpha: edge,
+                        behind: view.behind,
+                        slots: view.slots,
+                    },
+                );
+
+                let ink = edge
+                    * if friend.presence.is_around() {
+                        1.0
+                    } else {
+                        FRIENDS_OFFLINE_INK
+                    };
+                let name_x = face_x + face + FRIENDS_FACE_GAP * scale;
+                let mut name_w =
+                    (chip[0] + chip[2] - FRIENDS_CHIP_PADDING * scale - name_x).max(0.0);
+                // How many of their messages have not been read, as a bead at
+                // the end of the row.
+                //
+                // A count rather than a dot, because the two say different
+                // things — one message and eleven are different amounts of
+                // somebody waiting — and at the end of the row rather than
+                // beside the face, because the beginning of a row is the one
+                // part of it a reader scanning a column actually reads. It
+                // takes its room out of the name's, which is what stops a long
+                // nickname printing through it.
+                let unread = view.unread.unread(friend.steam_id);
+                if unread > 0 {
+                    let said = match unread {
+                        // A count nobody needs to read exactly. Steam's own
+                        // client stops here too, and a row three digits wide
+                        // would be a row whose name has nowhere left to go.
+                        100.. => "99+".to_string(),
+                        count => count.to_string(),
+                    };
+                    let bead_h = FRIENDS_UNREAD * scale;
+                    let bead_w = bead_h * (0.72 + 0.34 * said.chars().count() as f32);
+                    let bead_x = chip[0] + chip[2] - FRIENDS_CHIP_PADDING * scale - bead_w;
+                    let bead_y = chip[1] + (chip[3] - bead_h) * 0.5;
+                    body.quads.push(Quad {
+                        x: bead_x,
+                        y: bead_y,
+                        w: bead_w,
+                        h: bead_h,
+                        slot: SOLID_SLOT,
+                        color: theme.accent.a(0.92 * edge),
+                        radius: bead_h * 0.5,
+                        ..Quad::default()
+                    });
+                    body.texts.push(Text {
+                        content: said,
+                        x: bead_x,
+                        y: bead_y + bead_h * 0.5 - FRIENDS_UNREAD_TEXT * scale * 0.62,
+                        size: FRIENDS_UNREAD_TEXT * scale,
+                        color: theme.text.a(0.98 * edge),
+                        bold: true,
+                        max_width: bead_w,
+                        align: TextAlign::Center,
+                        clip: None,
+                        halo: 0.0,
+                        lines: 1,
+                        cut: Cut::Tail,
+                    });
+                    name_w = (bead_x - FRIENDS_CHIP_PADDING * scale - name_x).max(0.0);
+                }
+                let name_size = FRIENDS_ROW_NAME * scale;
+                let doing_size = FRIENDS_ROW_DOING * scale;
+                body.texts.push(Text {
+                    // A friend Steam has named in the list and not yet
+                    // described is a row with no name on it. Drawn as a row all
+                    // the same — the list arrives whole and the names fill in
+                    // over the second after, and rows that appeared one at a
+                    // time would be a list that reshuffles while it is read.
+                    content: if friend.name.is_empty() {
+                        "…".to_string()
+                    } else {
+                        friend.name.clone()
+                    },
+                    x: name_x,
+                    y: chip[1] + chip[3] * FRIENDS_ROW_NAME_AT - name_size * 0.5,
+                    size: name_size,
+                    color: theme.text.a(0.95 * ink),
+                    bold: true,
+                    max_width: name_w,
+                    align: TextAlign::Left,
+                    clip: None,
+                    halo: 0.0,
+                    lines: 1,
+                    cut: Cut::Tail,
+                });
+                // What they are doing, in the ink that can be read where the
+                // row actually is.
+                //
+                // A game's name is written in the accent, which is the one
+                // thing that separates "playing something" from "here" without
+                // a second mark to explain — and the selected row is lit *with*
+                // that accent, so on that one row the two are very nearly the
+                // same colour and the title all but disappeared. Under the
+                // light it is written in the panel's own ink instead.
+                //
+                // Mixed by how far the light has arrived rather than switched
+                // on the frame the selection changed: the capsule glides
+                // between rows over a tenth of a second, and a title that
+                // changed colour before it got there would be the one thing on
+                // the panel that cuts.
+                let settled = if friend.band() == lxb_steam::Band::Playing {
+                    theme.accent_soft.a(0.95)
+                } else {
+                    theme.text_soft.a(0.78 * ink)
+                };
+                body.texts.push(Text {
+                    content: friend.doing().to_string(),
+                    x: name_x,
+                    y: chip[1] + chip[3] * FRIENDS_ROW_DOING_AT - doing_size * 0.5,
+                    size: doing_size,
+                    color: lerp_rect(settled, theme.text.a(0.92 * edge), handed_over),
+                    bold: false,
+                    max_width: name_w,
+                    align: TextAlign::Left,
+                    clip: None,
+                    halo: 0.0,
+                    lines: 1,
+                    cut: Cut::Tail,
+                });
+            }
+        }
+    }
+
+    // The viewport, cut to the body and laid on the panel. Everything above
+    // this line was drawn in the column's own coordinates, which run past both
+    // ends of the room there is for them.
+    body.clip_to([body_x, body_y, body_w, body_h]);
+    leaf.quads.append(&mut body.quads);
+    leaf.texts.append(&mut body.texts);
+
+    // The bar beside it, where there is more list than there is body.
+    //
+    // Drawn whatever is in the user's hands, and that is where this parts
+    // company with the toolkit's own rule — see `Ui::scroll_bar` there, which
+    // draws nothing for a pad on the grounds that the light already says where
+    // in the list the user is and a bar is a control nothing on a pad can
+    // reach. Both halves of that are true here and it is drawn anyway, because
+    // this panel has no other way of saying *how much more there is*: a list of
+    // six and a list of fifty-two look the same from a couch until one of them
+    // has been scrolled to the end. It is a mark as much as a control.
+    //
+    // Outside the viewport, because it is beside the list rather than in it —
+    // a bar cut by the clip that cuts the rows would be a bar that scrolls.
+    if let Some((at, run)) = friends_scroll_place(&lines, scroll, height) {
+        let mut track = friends_scroll_track(width, height);
+        track[0] += slide;
+        let thumb = friends_scroll_thumb(track, at, run);
+        leaf.quads.push(Quad {
+            x: track[0],
+            y: track[1],
+            w: track[2],
+            h: track[3],
+            slot: SOLID_SLOT,
+            color: theme.text_soft.a(FRIENDS_SCROLL_TROUGH),
+            radius: track[2] * 0.5,
+            ..Quad::default()
+        });
+        leaf.quads.push(Quad {
+            x: thumb[0],
+            y: thumb[1],
+            w: thumb[2],
+            h: thumb[3],
+            slot: SOLID_SLOT,
+            // The accent while a hand is on it, like every other control in
+            // this shell that is being used rather than merely looked at.
+            color: match view.dragging {
+                true => theme.accent.a(0.95),
+                false => theme.text_soft.a(FRIENDS_SCROLL_THUMB),
+            },
+            radius: thumb[2] * 0.5,
+            ..Quad::default()
+        });
+    }
+
+    leaf
+}
+
+/// The legend at the foot of the panel, in the same voice as the start
+/// screen's and the file panel's.
+fn push_friends_legend(scene: &mut Scene, view: &FriendsView, width: f32, height: f32, slide: f32) {
+    let theme = theme();
+    let scale = guide_scale(height);
+    let [panel_x, panel_y, panel_w, panel_h] = friends_panel_rect(width, height);
+    let margin = GUIDE_MARGIN * scale;
+    let hints = friends_hints(view);
+    legend_row(
+        &mut scene.quads,
+        &mut scene.texts,
+        &hints,
+        view.slots,
+        panel_x + slide + panel_w - margin,
+        panel_y + panel_h - margin - FRIENDS_LEGEND * scale * 0.5,
+        &LegendSize {
+            glyph: START_HINT_GLYPH * scale,
+            label: START_HINT_LABEL * scale,
+            gap: START_HINT_GAP * scale,
+            step: START_HINT_STEP * scale,
+        },
+        theme.text.a(0.82),
+        theme.text_soft.a(0.82),
+    );
 }
 
 /// Where the power dialog's panel sits: centred on the display.
@@ -7482,11 +9862,38 @@ fn keys_height() -> f32 {
 }
 
 /// Where the board's panel sits: centred, along the foot of the display.
+///
+/// Where it *settles*, that is. For where it is part-way through its travel —
+/// which is what anything reading the board as an obstacle wants — see
+/// [`keyboard_panel_rect_at`].
 pub fn keyboard_panel_rect(width: f32, height: f32) -> [f32; 4] {
     let scale = board_scale(width, height);
     let w = (KEY_UNIT * keyboard::COLUMNS + BOARD_PADDING * 2.0) * scale;
     let h = (keys_height() + BOARD_PADDING * 2.0) * scale;
     [(width - w) * 0.5, height - BOARD_MARGIN * scale - h, w, h]
+}
+
+/// How far below its mark the board is drawn at `arrived`: the whole panel
+/// plus its margin at 0, nothing at 1.
+fn keyboard_lift(width: f32, height: f32, arrived: f32) -> f32 {
+    let [_, _, _, h] = keyboard_panel_rect(width, height);
+    (1.0 - arrived).clamp(0.0, 1.0) * (h + BOARD_MARGIN * board_scale(width, height))
+}
+
+/// Where the board's panel is *now*: the settled rectangle pushed back down
+/// through the display's edge by however much of its rise is left.
+///
+/// This, and not [`keyboard_panel_rect`], is what the text under the board has
+/// to be cut at — see [`Scene::hide_text_behind`]. The board is not a panel
+/// that fades in over everything it will ever cover; it travels, so cutting at
+/// its mark takes the words away the moment it is summoned and leaves them
+/// gone for the whole quarter-second it spends climbing towards them, which
+/// reads as the board having wiped them out from a distance. Cutting at where
+/// it actually is hands each line back the instant the glass leaves it on the
+/// way down, too.
+pub fn keyboard_panel_rect_at(width: f32, height: f32, arrived: f32) -> [f32; 4] {
+    let [x, y, w, h] = keyboard_panel_rect(width, height);
+    [x, y + keyboard_lift(width, height, arrived), w, h]
 }
 
 /// Where one key sits, in display coordinates.
@@ -7570,7 +9977,7 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
     // it, so the same travel carries it back off the bottom.
     let arrived = view.arrived;
     let [panel_x, panel_y, panel_w, panel_h] = keyboard_panel_rect(width, height);
-    let lift = (1.0 - arrived) * (panel_h + BOARD_MARGIN * scale);
+    let lift = keyboard_lift(width, height, arrived);
 
     quads.push(Quad {
         x: panel_x,
@@ -7588,10 +9995,16 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
     });
 
     let (selected_row, selected_column) = view.board.selected();
-    let shifted = view.board.shifted();
+    let level = view.board.level();
 
-    // The selection first, so that the caps — text, and every text run in a
-    // scene is drawn after every quad anyway — are never fighting it.
+    // The selection's halo first, so that the caps — text, and every text run
+    // in a scene is drawn after every quad anyway — are never fighting it.
+    //
+    // Only the halo. The selected key's own *fill* is decided down in the loop
+    // with every other key's, because it is one of the things that colour has
+    // to say and no longer the only one: a key holding the board down is drawn
+    // differently, and it must be drawn that way whether or not the cursor
+    // happens to be standing on it. See [`key_fill`].
     let [hx, hy, hw, hh] = keyboard_key_rect(selected_row, selected_column, width, height);
     let glow = hh * 2.2;
     quads.push(Quad {
@@ -7603,59 +10016,63 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
         color: theme.accent.a(0.30 + 0.08 * pulse),
         ..Quad::default()
     });
-    quads.push(Quad {
-        x: hx,
-        y: hy + lift,
-        w: hw,
-        h: hh,
-        slot: SOLID_SLOT,
-        color: theme.accent.a(0.52 + 0.05 * pulse),
-        radius: KEY_RADIUS * scale,
-        corner: SQUIRCLE_CORNER,
-        thickness: DEPTH_CONTROL * scale,
-        behind: view.behind,
-        frost: FROST_CONTROL,
-        gloss: GLOSS_FULL,
-        ..Quad::default()
-    });
 
     for row in 0..keyboard::ROW_COUNT {
         for (column, key) in keyboard::row_keys(row).into_iter().enumerate() {
             let [x, y, w, h] = keyboard_key_rect(row, column, width, height);
             let y = y + lift;
             let focused = (row, column) == (selected_row, selected_column);
-            // Shift, Caps, Ctrl and Alt stay lit after they are left: they
-            // have changed what the next press will do, and the board has to
-            // say so.
-            let held = view.board.latched(key).is_on();
-            let locked = view.board.locked(key);
+            // Shift, Caps, Ctrl, Alt and AltGr stay drawn down after they are
+            // left: they have changed what the next press will do, and the
+            // board has to say so.
+            let latch = view.board.latched(key);
+            let held = latch.is_on();
 
-            if !focused {
+            // One fill per key, the selected one included. It used to be two —
+            // a selection drawn above this loop and a latch fill drawn only
+            // when `!focused` — and that is the shape the bug had: the key
+            // somebody has *just pressed* is the key the cursor is standing on,
+            // so a modifier armed or locked from the board showed nothing at
+            // all until the cursor was walked off it. Which reads as a key that
+            // has to be pressed twice to come back off.
+            quads.push(Quad {
+                x,
+                y,
+                w,
+                h,
+                slot: SOLID_SLOT,
+                color: key_fill(&theme, key, latch, focused, pulse),
+                radius: KEY_RADIUS * scale,
+                corner: SQUIRCLE_CORNER,
+                thickness: DEPTH_CONTROL * scale,
+                behind: view.behind,
+                frost: FROST_CONTROL,
+                // A key that is holding the board down is a key pressed *into*
+                // the panel, and a pressed key does not catch the light the way
+                // a raised one does.
+                gloss: if focused && !held {
+                    GLOSS_FULL
+                } else {
+                    GLOSS_QUIET
+                },
+                ..Quad::default()
+            });
+
+            // The cursor's own rim, and only on a key whose fill has been
+            // taken over by a latch. Everywhere else the fill *is* the
+            // selection, and a second mark round it would be saying twice
+            // what is already said once.
+            if focused && held {
                 quads.push(Quad {
                     x,
                     y,
                     w,
                     h,
                     slot: SOLID_SLOT,
-                    color: if held {
-                        // Held down brighter than armed for one letter: the
-                        // two states change the whole board's caps, and mean
-                        // different things about the next press.
-                        theme.accent.a(if locked { 0.50 } else { 0.32 })
-                    } else if matches!(key, keyboard::Key::Char(..)) {
-                        theme.glass_raised.a(0.10)
-                    } else {
-                        // Everything that is not a letter — the modifiers, the
-                        // function row, the arrows — sits a shade darker, so
-                        // the block a word is typed from reads as one thing.
-                        theme.glass_raised.a(0.17)
-                    },
+                    color: theme.accent_soft.a(0.62 + 0.10 * pulse),
                     radius: KEY_RADIUS * scale,
                     corner: SQUIRCLE_CORNER,
-                    thickness: DEPTH_CONTROL * scale,
-                    behind: view.behind,
-                    frost: FROST_CONTROL,
-                    gloss: GLOSS_QUIET,
+                    border: 2.0 * scale,
                     ..Quad::default()
                 });
             }
@@ -7707,7 +10124,7 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
             // "g" would be a smear. The function row is smaller again, being
             // half the height of the rest and none of the reason the board is
             // on screen.
-            let label = key.cap(shifted);
+            let label = key.cap(level);
             let size = if row == 0 {
                 KEY_CAP_FUNCTION * scale
             } else if matches!(key, keyboard::Key::Char(..)) {
@@ -7737,6 +10154,47 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
     // and until it has cleared the edge there is nothing of it on screen to
     // see.
     Scene { quads, texts }
+}
+
+/// What one key of the on-screen keyboard is filled with.
+///
+/// Three things decide it, in this order: whether the key is holding the board
+/// down, whether the cursor is on it, and whether it is a letter.
+///
+/// **A held key is drawn darker, not brighter.** It used to be a brighter cast
+/// of the accent — the same colour the cursor is drawn in, one step along — so
+/// the two readings competed, and on the selected key the latch was not drawn
+/// at all. What a key that is holding the board down looks like is a key
+/// *pressed into* the panel, so that is what it is: the panel's own near-black
+/// glass, and more of it the further down the key is held.
+///
+/// Locked is twice as dark as armed for one press, which is the distinction
+/// that was missing. They are not degrees of the same thing to the user —
+/// armed is spent by the next letter and locked is not — but they are degrees
+/// of the same thing to the hand, and a key that has to be pressed again to
+/// come back up should look like one.
+fn key_fill(
+    theme: &crate::theme::RenderedTheme,
+    key: keyboard::Key,
+    latch: keyboard::Latch,
+    focused: bool,
+    pulse: f32,
+) -> [f32; 4] {
+    match latch {
+        // Pressed in, and the cursor standing on it presses it no further —
+        // what says the cursor is there is the halo round it and the rim over
+        // it, both of which survive a dark fill.
+        keyboard::Latch::Locked => theme.glass.a(0.72),
+        keyboard::Latch::Once => theme.glass.a(0.40),
+        keyboard::Latch::Off if focused => theme.accent.a(0.52 + 0.05 * pulse),
+        keyboard::Latch::Off if matches!(key, keyboard::Key::Char(..)) => {
+            theme.glass_raised.a(0.10)
+        }
+        // Everything that is not a letter — the modifiers, the function row,
+        // the arrows — sits a shade darker, so the block a word is typed from
+        // reads as one thing.
+        keyboard::Latch::Off => theme.glass_raised.a(0.17),
+    }
 }
 
 /// The keyboard hint's glyphs and label, and the air around them.
@@ -8012,7 +10470,7 @@ const START_HINT_STEP: f32 = PICKER_HINT_STEP;
 /// **Guide never does.** It is the one press that works from everywhere in this
 /// session, including out of an application that has taken the whole screen,
 /// and a legend that dropped it on some rows would be hiding the way out.
-fn start_hints(pad: bool, options: bool) -> Vec<Hint> {
+fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
     let one = |label, on_a_pad, otherwise| Hint {
         label,
         glyph: if pad { on_a_pad } else { otherwise },
@@ -8024,6 +10482,17 @@ fn start_hints(pad: bool, options: bool) -> Vec<Hint> {
         // reason is written down: no key printed on a keyboard says "menu" to
         // as many people as the right button does.
         hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+    }
+    // Who is on Steam. Between the acts and the way out, which is where it
+    // belongs: it is another screen of the shell's rather than something done
+    // to the row under the cursor, and it is not the way out.
+    //
+    // Only where there is an account for it to be about — see
+    // [`StartLegend::friends`]. Without this line the one button on the pad
+    // that had just been given a job of its own was the one button on the
+    // screen nothing named.
+    if friends {
+        hints.push(one("Friends", icons::PAD_WEST, icons::KEY_SHIFT));
     }
     // The button in the middle of the pad, and on a keyboard the one this shell
     // is reached by — see `action_for_keysym`, and the compositor's own
@@ -8043,6 +10512,14 @@ fn start_hints(pad: bool, options: bool) -> Vec<Hint> {
 pub struct StartLegend {
     /// Whether the row under the cursor has a context menu.
     pub options: bool,
+    /// Whether there is a Steam account signed in for the friends list to be
+    /// about.
+    ///
+    /// Comes and goes the way `options` does, and for the same reason: a legend
+    /// naming a button that raises a panel saying "sign in to Steam" would be
+    /// offering something there is nothing behind. With Steam switched off in
+    /// Settings, or nobody signed in, the word is simply not there.
+    pub friends: bool,
     /// Whether the user's hands are on a pad rather than on a keyboard.
     pub pad: bool,
 }
@@ -8509,6 +10986,104 @@ pub fn bar_level_at(chip: [f32; 4], height: f32, x: f32) -> Option<f32> {
 pub fn bar_level_along(chip: [f32; 4], height: f32, x: f32) -> Option<f32> {
     let [track_x, _, track_w, _] = bar_track_line(chip, guide_scale(height));
     (track_w > 0.0).then(|| ((x - track_x) / track_w).clamp(0.0, 1.0))
+}
+
+/// How far below a row's middle the bar under its second line runs, and how
+/// wide and thick it is drawn — all against 1080p, like every other number
+/// here.
+///
+/// Below the comment and not beside it. The line is a sentence that can run to
+/// the end of the room the row has, and a bar sharing that room would be a bar
+/// whose length depended on how long the game's name was. Clear of it by more
+/// than the gap between the two lines of writing, so it reads as a thing of its
+/// own rather than as the second line underlined.
+const ROW_PROGRESS_DROP: f32 = 46.0;
+/// See [`ROW_PROGRESS_DROP`]. Short of the text's own width on purpose: a
+/// groove running the whole way across reads as part of the furniture rather
+/// than as a reading of something.
+const ROW_PROGRESS_WIDTH: f32 = 240.0;
+/// And thinner than [`BAR_TRACK`], which is what a control is drawn at. This
+/// is not one.
+const ROW_PROGRESS_TRACK: f32 = 5.0;
+/// What the fill keeps of its colour once the download it counts has stopped
+/// moving.
+const ROW_PROGRESS_QUIET: f32 = 0.30;
+
+/// The bar under a row that is counting up: a groove, and the part of it that
+/// has arrived.
+///
+/// Deliberately **not** [`track`], which is the picture a value somebody *sets*
+/// gets. That one carries a handle, and a handle says the end of the fill is a
+/// place a thumb can move it to; there is nothing here anybody can move. It is
+/// a reading, and it is drawn as one — thinner, and with nothing on the end.
+///
+/// It does not glide towards its value either, though nearly everything else in
+/// this shell does. The number beside it is the truth about a file on a disk,
+/// and a bar easing towards that number would be showing a percentage the
+/// download has not reached — on the same row as the words saying what it
+/// really is. Two answers to one question is worse than a bar that steps.
+///
+/// `band` is `[x, middle, width, _]`, the line it is centred on, as [`track`]
+/// takes it.
+fn row_progress(
+    [x, middle, w, _]: [f32; 4],
+    progress: Arriving,
+    scale: f32,
+    alpha: f32,
+) -> Vec<Quad> {
+    let theme = theme();
+    if w <= 0.0 {
+        return Vec::new();
+    }
+    let track_h = ROW_PROGRESS_TRACK * scale;
+    let track_y = middle - track_h * 0.5;
+    let mut quads = Vec::with_capacity(2);
+    quads.push(Quad {
+        x,
+        y: track_y,
+        w,
+        h: track_h,
+        slot: SOLID_SLOT,
+        color: theme.rim.a(0.20 * alpha),
+        radius: track_h * 0.5,
+        ..Quad::default()
+    });
+
+    // Nothing in the groove where nothing has arrived. Not the same case as
+    // the one below: a row never asks for this, because a row's reading comes
+    // from [`lxb_steam::library::fraction`] and nought is not one — but the
+    // card in the corner of the guide goes up the moment a download starts and
+    // stands there for a second or two before Valve's client has said how far
+    // it has got. An empty groove is the honest picture of that.
+    if progress.share <= 0.0 {
+        return quads;
+    }
+
+    // Never nothing at all where there is something. A download three
+    // thousandths of the way in has a groove with an invisible sliver in it,
+    // which reads as a bar that has not started — so the fill is at least as
+    // wide as it is thick, which is the smallest mark that still looks like
+    // one. It is the same rounded end either way.
+    let filled = (w * progress.share.clamp(0.0, 1.0)).max(track_h).min(w);
+    quads.push(Quad {
+        x,
+        y: track_y,
+        w: filled,
+        h: track_h,
+        slot: SOLID_SLOT,
+        // The same white the volume and brightness tracks fill with, and not
+        // the accent: a bar is read at a glance from across a room, the accent
+        // is what the wallpaper behind it is made of, and the two came out as
+        // one shade of purple on another. What tells this apart from a control
+        // is the missing handle, not a colour of its own.
+        color: theme.rim.a(match progress.stuck {
+            true => ROW_PROGRESS_QUIET * alpha,
+            false => 0.95 * alpha,
+        }),
+        radius: track_h * 0.5,
+        ..Quad::default()
+    });
+    quads
 }
 
 /// A level drawn as a track: the groove, the part of it that is filled, and the
@@ -9120,6 +11695,37 @@ pub struct LaunchView<'a> {
     pub logo: Option<crate::gpu::Thumb>,
     /// Which step of starting it the line beside the indicator says it is on.
     pub doing: Option<crate::launch::Doing>,
+    /// And that line in full, where the shell has more to say than the name of
+    /// the step: a download it can watch arriving, in the words the row on the
+    /// bar uses. See [`crate::launch::Launch::said`].
+    pub said: Option<&'a str>,
+    /// The button that leaves this screen, already resolved to a texture slot,
+    /// for the one wait long enough to be worth leaving.
+    ///
+    /// Resolved by the caller like [`Self::icon`] is, and for one reason more:
+    /// which picture stands for "back" depends on what is in the user's hands,
+    /// which is a session-wide answer the shell keeps and a scene has no
+    /// business asking. `None` on every other launch, and there is nothing to
+    /// draw — every other wait a splash makes is seconds long and may not be
+    /// given up on.
+    ///
+    /// The slot **and the name it was looked up by**, because the name is what
+    /// says whether the drawing is a picture or a shape to compute the material
+    /// out of — see [`shaded`]. Without it the shell drew Escape's three
+    /// letters as a flat picture of a coverage field, which is a pale slab with
+    /// the letters punched dark out of it, and that is what was on the screen
+    /// under every download.
+    pub back: Option<(u32, &'a str)>,
+    /// And the button that lets the game start now, for the one wait that has
+    /// something to press: Valve's client compiling the game's shaders, which
+    /// it will stop doing if it is told to. Resolved by the caller like
+    /// [`Self::back`], and for the same two reasons.
+    ///
+    /// The two never stand together — a game whose shaders are being compiled
+    /// is not a download being fetched — and where they somehow did, the way
+    /// out is drawn and this is not: a screen with two hints in one corner is
+    /// a screen that has to be read rather than glanced at.
+    pub skip: Option<(u32, &'a str)>,
     /// How black the display is on its way to the game — see
     /// [`crate::launch::Launch::blackout`]. Unshaped.
     pub blackout: f32,
@@ -9180,6 +11786,54 @@ const TOAST_PAD: f32 = GUIDE_MARGIN;
 /// standing on.
 const TOAST_HEIGHT: f32 = 104.0;
 
+/// How wide the download card is, against 1080p.
+///
+/// The panel width plus the hundred the announcement panels take — see
+/// [`NOTIFICATION_EXTRA_WIDTH`] — and for their reason rather than a new one.
+/// [`CONTEXT_WIDTH`] is what a panel is when every row on it is a command this
+/// shell named to fit; the exception is a panel carrying **somebody else's
+/// words**, and a game's name is exactly that. Measured at the narrower width:
+/// `Downloading Street Fighter™ 6` came out `Downloading Street Fighter…`,
+/// which loses the one word the card is about.
+///
+/// It is still a corner and not a column. The card is the second thing in this
+/// shell drawn over an application that nobody asked for, and the first —
+/// [`TOAST_WIDTH`] — took a corner deliberately.
+const ARRIVING_WIDTH: f32 = CONTEXT_WIDTH + NOTIFICATION_EXTRA_WIDTH;
+
+/// How far the download card stands off the bottom-right corner of the guide.
+///
+/// The bubbles' own standoff, because the two are the same piece of furniture
+/// at opposite ends of one screen: what is arriving is written in the bottom
+/// corner while it arrives, and what has arrived is announced in the top one.
+/// Two insets would read as two unrelated things that happened to be near
+/// corners.
+const ARRIVING_INSET: f32 = TOAST_INSET;
+
+/// The game's picture on that card, as a share of its height.
+///
+/// Larger than the [`TOAST_ICON`] a bubble gives the picture beside it, and the
+/// reason is what is under the writing. A bubble's mark shares its height with
+/// *two lines of type*, and at a row's proportion it would grow taller than the
+/// words it is labelling and start reading as the subject rather than the mark.
+/// The second line here is a bar, which is a fifth the weight of a line of
+/// writing — so the same mark at the same size reads as small and the card
+/// reads as mostly air. Taken from the concept this was drawn from, where the
+/// picture is a good half the card.
+const ARRIVING_ICON: f32 = 0.58;
+
+/// The room kept on the right of the card for the percentage, against 1080p.
+///
+/// Kept whether or not there is a number to put in it. The reading arrives a
+/// second or two after the card does — nought per cent is not a reading, so
+/// there is nothing to say until Valve's client has said something — and a
+/// groove that shortened itself when the first number landed would be the one
+/// moving part of a card whose whole job is to hold still while a bar fills.
+const ARRIVING_READING: f32 = 62.0;
+
+/// The air between the end of the groove and that reading.
+const ARRIVING_GAP: f32 = 12.0;
+
 /// Where the two lines sit inside a bubble, as shares of its height: the
 /// middle of the summary's line, and the middle of the one under it.
 ///
@@ -9189,6 +11843,25 @@ const TOAST_HEIGHT: f32 = 104.0;
 /// equal, which is what stops a short bubble reading as top-heavy.
 const TOAST_TITLE_LINE: f32 = 0.36;
 const TOAST_BODY_LINE: f32 = 0.68;
+/// How far down a second line of body sits under the first, and the most
+/// lines a bubble will grow to.
+///
+/// Two, and the card grows by exactly one line for the second — see
+/// [`toast_height`]. A body of one line is the one it always was, to the pixel.
+///
+/// A body was one line flat, on the reasoning that a notification body can be a
+/// paragraph and a bubble that grew to fit would be a program deciding how much
+/// of the screen it may have. That reasoning survives; the *number* did not. A
+/// single line of this card is about five words, which cuts an ordinary
+/// sentence in half — "hey are you playing tonight?" came out
+/// "hey are you playing…" — and the surface this is drawn for now is somebody
+/// else's message, where the first five words are rarely the whole of it. Two
+/// lines is a sentence; a paragraph is still cut, and is still on the row
+/// behind the bell for anybody who wants the rest.
+const TOAST_TITLE_SIZE: f32 = 23.0;
+const TOAST_BODY_SIZE: f32 = 20.0;
+const TOAST_BODY_LEADING: f32 = TOAST_BODY_SIZE * 1.25;
+pub const TOAST_BODY_LINES: u8 = 2;
 
 /// The picture at the head of a bubble, as a share of the pane's height.
 ///
@@ -9238,6 +11911,14 @@ const TOAST_BODY_HALO: f32 = 1.75;
 pub struct ToastCard<'a> {
     pub title: &'a str,
     pub body: &'a str,
+    /// How many lines the body wraps to at this card's width, up to
+    /// [`TOAST_BODY_LINES`].
+    ///
+    /// Measured by the renderer and carried in, because how wide a word is is
+    /// the one thing this layout cannot work out for itself — the same route
+    /// an announcement row's own lines take. One for a card whose body fits, or
+    /// for a caller that has not measured, which is the card this always was.
+    pub body_lines: u8,
     pub icon: Option<u32>,
     /// The name `icon` was looked up by, when it is one of the shell's own
     /// marks rather than a program's picture.
@@ -9312,7 +11993,13 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
             .quads
             .extend(sidebar_surface(rect, scale, behind, alpha));
 
-        let icon = rect[3] * TOAST_ICON;
+        // Beside the words at one size, whatever was said. Measured off the
+        // height a one-line bubble has rather than off this card's, because a
+        // picture that grew with the sentence beside it would be a bubble whose
+        // icon says how much somebody wrote — and because the room left for the
+        // words is what they were *measured* against. See [`toast_body_width`].
+        let settled = TOAST_HEIGHT * scale;
+        let icon = settled * TOAST_ICON;
         let icon_x = rect[0] + pad;
         scene.quads.push(icon_quad(
             card.icon,
@@ -9332,11 +12019,15 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
         // line under its sentence is a sentence sitting above the middle of
         // the chip for no reason, so it is centred instead when it stands
         // alone.
-        let title_size = 23.0 * scale;
-        let body_size = 20.0 * scale;
+        let title_size = TOAST_TITLE_SIZE * scale;
+        let body_size = TOAST_BODY_SIZE * scale;
         let has_body = !card.body.trim().is_empty();
+        // The two lines sit on fractions of the height a one-line bubble has,
+        // not of this card's: the card grows downwards for a second line of
+        // body, and reading the fractions off the grown height would move the
+        // title down with it.
         let title_y = if has_body {
-            rect[1] + rect[3] * TOAST_TITLE_LINE - title_size * 0.5
+            rect[1] + settled * TOAST_TITLE_LINE - title_size * 0.5
         } else {
             rect[1] + rect[3] * 0.5 - title_size * 0.62
         };
@@ -9359,15 +12050,19 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
             cut: Cut::Tail,
         });
         if has_body {
-            // One line of it. A notification body can be a paragraph — some
-            // programs put a whole email in one — and a bubble that grew to
-            // fit would be a program deciding how much of the screen it may
-            // have. The rest is on the row behind the bell, which is a list
-            // somebody chose to open.
+            // Up to two lines of it, and the card has grown for the second —
+            // see [`TOAST_BODY_LEADING`], where the reason it is two and not
+            // one or all of them is argued. A paragraph is still cut, and the
+            // rest is on the row behind the bell, which is a list somebody
+            // chose to open.
+            //
+            // The whole body rather than its first line: a message with a
+            // newline in it wraps into the second line here rather than losing
+            // everything after the break.
             scene.texts.push(Text {
-                content: card.body.lines().next().unwrap_or_default().to_string(),
+                content: card.body.trim().to_string(),
                 x: text_x,
-                y: rect[1] + rect[3] * TOAST_BODY_LINE - body_size * 0.5,
+                y: rect[1] + settled * TOAST_BODY_LINE - body_size * 0.5,
                 size: body_size,
                 color: theme.text_soft.a(0.72 * alpha),
                 bold: false,
@@ -9375,7 +12070,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
                 align: TextAlign::Left,
                 clip: None,
                 halo: TOAST_BODY_HALO * alpha,
-                lines: 1,
+                lines: card.body_lines.clamp(1, TOAST_BODY_LINES),
                 cut: Cut::Tail,
             });
         }
@@ -9393,7 +12088,6 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
 fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], f32)> {
     let scale = guide_scale(height);
     let card_w = TOAST_WIDTH * scale;
-    let card_h = TOAST_HEIGHT * scale;
     let inset = TOAST_INSET * scale;
     let gap = TOAST_GAP * scale;
     let rest_x = width - inset - card_w;
@@ -9404,6 +12098,9 @@ fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], 
     let mut placed = Vec::with_capacity(cards.len());
     let mut y = inset;
     for card in cards {
+        // Each card is as tall as what is written on it, so a stack of them is
+        // summed rather than multiplied out.
+        let card_h = toast_height(card.body_lines) * scale;
         let (offset, alpha, slot) = toast_flight(card.stage, card.progress, travel);
         placed.push(([rest_x + offset, y, card_w, card_h], alpha));
         // Its own top is taken before its slot shrinks, so a bubble on its way
@@ -9412,6 +12109,215 @@ fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], 
         y += (card_h + gap) * slot;
     }
     placed
+}
+
+/// How tall a bubble whose body takes `lines` is, in reference pixels.
+///
+/// [`TOAST_HEIGHT`] for the one-line body every bubble had, and one leading
+/// more for the second — so the title and the first line of body stay exactly
+/// where they were and the card grows downwards into the room the second needs.
+///
+/// Grown rather than laid out from the top, which is what keeps a one-line
+/// bubble identical to the pixel: the two lines sit on fractions of the card's
+/// own height, and a card that changed height would move them both.
+/// How wide the words on a bubble are laid out, which is what a measurement of
+/// them has to be made against.
+///
+/// The card, less the picture beside the words and the margins either side —
+/// exactly the `text_w` [`build_toasts`] lays them out in, because a
+/// measurement made against any other width is a measurement of a different
+/// card.
+pub fn toast_body_width(height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let card_w = TOAST_WIDTH * scale;
+    let pad = TOAST_PAD * scale;
+    let icon = TOAST_HEIGHT * scale * TOAST_ICON;
+    (card_w - pad * 2.0 - icon - GUIDE_LABEL_PADDING * scale).max(1.0)
+}
+
+/// And the size they are drawn at.
+pub fn toast_body_size(height: f32) -> f32 {
+    TOAST_BODY_SIZE * guide_scale(height)
+}
+
+pub fn toast_height(lines: u8) -> f32 {
+    TOAST_HEIGHT + (lines.clamp(1, TOAST_BODY_LINES) - 1) as f32 * TOAST_BODY_LEADING
+}
+
+/// Where the download card stands, and how far it has come in.
+///
+/// `open` is the guide's own linear position for it — see
+/// [`crate::guide::Guide::animate_download`] — and the card rides in from off
+/// the right edge on the same flight a bubble arrives on, so it is never seen
+/// cut in half by the edge it came through. One function for both directions:
+/// a download that finishes while its card is still arriving retraces the way
+/// it came from wherever it had got to.
+///
+/// The rectangle is where the card *is*, not where it will end up. That matters
+/// to the caller cutting text out from under it — unlike the panels that grow
+/// in place, this one is only ever over what it is actually standing on, so the
+/// cut is a cut rather than a fade. See [`Scene::dim_text_behind`], which is
+/// what those panels need instead.
+pub fn guide_download_rect(width: f32, height: f32, open: f32) -> ([f32; 4], f32) {
+    let scale = guide_scale(height);
+    let card_w = ARRIVING_WIDTH * scale;
+    let card_h = TOAST_HEIGHT * scale;
+    let inset = ARRIVING_INSET * scale;
+    let travel = card_w + inset * 2.0;
+    let (offset, alpha, _) = toast_flight(crate::notify::Stage::In, open.clamp(0.0, 1.0), travel);
+    (
+        [
+            width - inset - card_w + offset,
+            height - inset - card_h,
+            card_w,
+            card_h,
+        ],
+        alpha,
+    )
+}
+
+/// Take away the words the download card is standing on.
+///
+/// Called on every scene drawn before it — the guide's own, and the bar the
+/// start-screen card is a miniature of, whose labels are assembled separately
+/// and would otherwise print straight through the glass. The same arrangement
+/// [`recede_behind_power_dialog`] is in, and for the same reason: a scene is
+/// all of its quads and then all of its text.
+pub fn hide_text_under_guide_download(scene: &mut Scene, width: f32, height: f32, open: f32) {
+    if open <= 0.0 {
+        return;
+    }
+    scene.hide_text_behind(guide_download_rect(width, height, open).0);
+}
+
+/// The card in the corner of the open menu that says what is coming down.
+///
+/// Notification-shaped rather than menu-shaped, and that is the whole of what
+/// it is: it takes no selection, answers no press, and has nothing on it to
+/// aim at. What a person does about a download is on the game's own row and in
+/// its menu; this is the corner of the screen saying that something is
+/// happening while they are somewhere else in the menu doing something else.
+///
+/// Drawn last, over the window cards, because it is the only thing in the guide
+/// that is allowed to stand on one — see the concept it was drawn from. It
+/// never reaches the sidebar: the panel is [`ARRIVING_WIDTH`] against a display,
+/// pinned to the far corner, and the column is on the other side.
+fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f32, scale: f32) {
+    let open = view.guide.download().clamp(0.0, 1.0);
+    let Some(coming) = view.guide.downloading().filter(|_| open > 0.0) else {
+        return;
+    };
+    let theme = theme();
+    let (rect, alpha) = guide_download_rect(width, height, open);
+    if alpha <= 0.0 {
+        return;
+    }
+    // The words underneath go before the glass does, so the card's own do not
+    // go with them.
+    scene.hide_text_behind(rect);
+
+    let pad = TOAST_PAD * scale;
+    scene
+        .quads
+        .extend(sidebar_surface(rect, scale, view.behind, alpha));
+
+    // The game's own icon, in the place a bubble puts the sender's. Steam's
+    // client icon where one has been fetched, the cover behind it, and the
+    // Steam mark behind that — a card with an empty square where a picture
+    // should be reads as a card that failed rather than as one whose picture
+    // has not landed yet.
+    let icon = rect[3] * ARRIVING_ICON;
+    let icon_x = rect[0] + pad;
+    let icon_y = rect[1] + (rect[3] - icon) * 0.5;
+    let picture = view
+        .slots
+        .game_icon(coming.app_id)
+        .or_else(|| view.slots.cover(coming.app_id))
+        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+    match picture {
+        Some(thumb) => scene.quads.push(Quad {
+            x: icon_x,
+            y: icon_y,
+            w: icon,
+            h: icon,
+            slot: thumb.slot,
+            color: [1.0, 1.0, 1.0, alpha],
+            // The corner every small picture in this shell wears, and the crop
+            // that makes a square of whatever shape arrived: an icon is already
+            // square and passes through untouched, while a cover standing in
+            // for one is taken from its middle rather than squashed.
+            radius: icon * CARD_CORNER,
+            crop: round_crop(thumb.aspect),
+            ..Quad::default()
+        }),
+        None => scene.quads.push(icon_quad(
+            view.slots.glyph(icons::STEAM),
+            Some(icons::STEAM),
+            icon_x,
+            icon_y,
+            icon,
+            alpha,
+            theme.glass_raised.a(0.5 * alpha),
+        )),
+    }
+
+    let label_padding = GUIDE_LABEL_PADDING * scale;
+    let text_x = icon_x + icon + label_padding;
+    let text_w = (rect[0] + rect[2] - text_x - pad).max(0.0);
+    let title_size = 23.0 * scale;
+    scene.texts.push(Text {
+        content: coming.said(),
+        x: text_x,
+        y: rect[1] + rect[3] * TOAST_TITLE_LINE - title_size * 0.5,
+        size: title_size,
+        color: theme.text.a(0.97 * alpha),
+        bold: true,
+        max_width: text_w,
+        align: TextAlign::Left,
+        clip: None,
+        // A bubble's ring, for a bubble's reason: this card stands wherever the
+        // corner of the guide happens to be, which is over a live window as
+        // often as not.
+        halo: TOAST_HALO * alpha,
+        lines: 1,
+        cut: Cut::Tail,
+    });
+
+    // The bar, and the reading on the end of it. Room is kept for the number
+    // whether or not there is one yet — see [`ARRIVING_READING`].
+    let reading_w = ARRIVING_READING * scale;
+    let groove_w = (text_w - reading_w - ARRIVING_GAP * scale).max(0.0);
+    let line = rect[1] + rect[3] * TOAST_BODY_LINE;
+    scene.quads.extend(row_progress(
+        [text_x, line, groove_w, 0.0],
+        Arriving {
+            // Nothing yet is an empty groove and no number: the groove says
+            // there is a download, and the fill says how far — so a card with
+            // nothing in it is the honest picture of a client that has not said
+            // anything yet, and nought per cent is not a reading.
+            share: coming.share.unwrap_or(0.0),
+            stuck: coming.stuck,
+        },
+        scale,
+        alpha,
+    ));
+    if let Some(share) = coming.share {
+        let reading_size = 20.0 * scale;
+        scene.texts.push(Text {
+            content: format!("{:.0}%", share * 100.0),
+            x: rect[0] + rect[2] - pad - reading_w,
+            y: line - reading_size * 0.5,
+            size: reading_size,
+            color: theme.text.a(0.9 * alpha),
+            bold: false,
+            max_width: reading_w,
+            align: TextAlign::Right,
+            clip: None,
+            halo: TOAST_HALO * alpha,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+    }
 }
 
 /// The rectangles alone, for whatever the bubbles have landed on top of.
@@ -9761,7 +12667,15 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         let room = width * LAUNCH_DOING_WIDTH;
         let right = ring[0] - orbit - 9.0 * scale - LAUNCH_DOING_GAP * scale;
         scene.texts.push(Text {
-            content: launch_caption(doing).to_string(),
+            // What Steam is doing where the shell knows it in more than one
+            // word — a download it can watch arriving — and the name of the
+            // step otherwise. The words are the shell's own, taken from the
+            // row this was pressed on, so the loading screen and the bar
+            // cannot describe the same download differently.
+            content: view
+                .said
+                .unwrap_or_else(|| launch_caption(doing))
+                .to_string(),
             x: right - room,
             // Centred on the ring rather than sharing its baseline: what it is
             // beside is a circle, and a circle has no baseline to share.
@@ -9779,6 +12693,90 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
             lines: 1,
             cut: Cut::Tail,
         });
+    }
+
+    // And the way off this screen, in the other corner.
+    //
+    // Only ever drawn for a wait somebody may leave — see [`LaunchView::back`]
+    // — which today is exactly one: Valve's client downloading the game before
+    // it will start it, which is as long as somebody's connection takes over
+    // however large the update is. The guide does not open over a loading
+    // screen, so without a way out said out loud this would be a screen with
+    // no way off it and nothing on it saying otherwise.
+    //
+    // Opposite the ring rather than beside it, on the ring's own line: the two
+    // corners are what the display already has, and a hint tucked in beside
+    // the words about the download would read as part of them.
+    // What this screen offers, in the corner opposite the ring, laid out from
+    // the margin rightwards.
+    //
+    // **Two of them where there are two**, which is the whole of what Valve's
+    // own dialog offers while a game's shaders are being compiled: `Skip` and
+    // `Cancel`. They are both real here — the confirm button lets the game
+    // start with what is already compiled, and Back stops the launch, which is
+    // the same `CancelGameAction` that dialog's second button sends — so a
+    // corner that drew one of them was a screen that had taken a button away.
+    //
+    // The way on first and the way out last, which is the order the start
+    // screen's own legend is in.
+    let hints: Vec<(u32, &str, &str)> = view
+        .skip
+        // "Skip", Valve's own word for it on the client's own gamepad launch
+        // screen, and it is what the press honestly does: the game starts now,
+        // with the shaders that are already compiled, and Steam goes on
+        // compiling the rest while it runs.
+        .map(|(slot, named)| (slot, named, "Skip"))
+        .into_iter()
+        // "Back", not "Not now". The user's correction, and it is about what
+        // the press honestly does: an update carries on either way — Steam's
+        // queue is Steam's own — and "not now" says it has been put off. All
+        // this leaves is the screen.
+        .chain(view.back.map(|(slot, named)| (slot, named, "Back")))
+        .collect();
+    let size = LAUNCH_DOING * scale;
+    let glyph = PICKER_HINT_GLYPH * scale;
+    let gap = PICKER_HINT_GAP * scale;
+    let mut at = inset - glyph * 0.5;
+    for (slot, named, word) in hints {
+        scene.quads.push(shaded(
+            Quad {
+                x: at,
+                y: ring[1] - glyph * 0.5,
+                w: glyph,
+                h: glyph,
+                slot,
+                color: theme.text.a(0.75 * arrived),
+                ..Quad::default()
+            },
+            // Named, so a glyph drawn as a shape is shaded out of its shape
+            // rather than painted flat. Every other glyph in the shell is
+            // drawn through this and every other caller says which — this one
+            // did not, and the key it draws is one of the shapes.
+            Some(named),
+        ));
+        // Estimated rather than measured, exactly as [`legend_row`] estimates
+        // it and for the same reason: the shell cannot measure a run before the
+        // GPU shapes it, and what the estimate is *for* is where the next pair
+        // begins. It is an over-estimate for these two words, so the pairs part
+        // rather than touch.
+        let room = word.chars().count() as f32 * size * LEGEND_ADVANCE;
+        scene.texts.push(Text {
+            content: word.to_string(),
+            x: at + glyph + gap,
+            y: ring[1] - size * 0.62,
+            size,
+            color: theme.text.a(0.75 * arrived),
+            bold: false,
+            max_width: room,
+            align: TextAlign::Left,
+            clip: None,
+            // The same shade the words in the other corner carry, for the same
+            // reason: what is behind this is whatever Valve painted there.
+            halo: LAUNCH_NAME_HALO * arrived * view.fade,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+        at += glyph + gap + room + gap * LAUNCH_HINT_STEP;
     }
 
     scene.fade(view.fade);
@@ -9827,6 +12825,11 @@ fn launch_caption(doing: crate::launch::Doing) -> &'static str {
     match doing {
         crate::launch::Doing::Steam => "Launching Steam",
         crate::launch::Doing::Game => "Starting the game",
+        // Only where the download has not said how far it has got — the
+        // client writes the manifest when it takes the request and before it
+        // knows the size. See [`LaunchView::said`], which is what this stands
+        // in for.
+        crate::launch::Doing::Fetching => "Updating the game",
     }
 }
 
@@ -10676,11 +13679,191 @@ fn picker_columns(scene: &mut Scene, view: &PickerView, width: f32, height: f32,
 
 #[cfg(test)]
 mod tests {
+    /// A download is drawn as a reading: a groove, the part of it that has
+    /// arrived, and nothing on the end.
+    ///
+    /// The handle is the part worth pinning down. Every other track in this
+    /// shell has one, and it is what says the end of the fill is a place a
+    /// thumb can move it to. There is nothing here anybody can set, so a dot
+    /// there would be a control that ignored every press.
+    #[test]
+    fn a_download_is_drawn_as_a_reading_rather_than_as_a_control() {
+        use super::*;
+        let band = [100.0, 500.0, 240.0, 0.0];
+        let quads = row_progress(
+            band,
+            Arriving {
+                share: 0.25,
+                stuck: false,
+            },
+            1.0,
+            1.0,
+        );
+        assert_eq!(quads.len(), 2, "a groove and a fill, and nothing else");
+        let (groove, fill) = (&quads[0], &quads[1]);
+        assert_eq!(groove.w, 240.0);
+        assert_eq!(fill.w, 60.0, "a quarter of the way along");
+        assert_eq!(fill.x, groove.x, "the fill starts where the groove does");
+        assert_eq!(fill.h, groove.h);
+        assert!(groove.h < BAR_TRACK, "thinner than a control");
+
+        // The same picture asked for as a value somebody sets is three quads,
+        // the third of them the handle.
+        assert_eq!(
+            track(
+                band,
+                crate::system::Level {
+                    value: 0.25,
+                    muted: false
+                },
+                1.0,
+                1.0
+            )
+            .len(),
+            3
+        );
+    }
+
+    /// A download barely begun still shows something, one that is finished
+    /// does not overrun its groove, and one that has stopped moving stops
+    /// looking as though it has not.
+    #[test]
+    fn a_bar_never_lies_about_either_end_or_about_standing_still() {
+        use super::*;
+        let band = [0.0, 0.0, 200.0, 0.0];
+        let bar = |share: f32| {
+            row_progress(
+                band,
+                Arriving {
+                    share,
+                    stuck: false,
+                },
+                1.0,
+                1.0,
+            )
+        };
+        let width = |share: f32| bar(share)[1].w;
+
+        // Nothing arrived is a groove with nothing in it, and that is a
+        // picture rather than an omission: the card in the corner of the guide
+        // goes up the moment a download starts and stands there for a second or
+        // two before Valve's client has said how far it has got. A sliver of
+        // fill there would be the shell inventing a reading. (A *row* never
+        // asks this — `library::fraction` answers nothing for a download with
+        // nothing on the disk — but the card does.)
+        assert_eq!(bar(0.0).len(), 1);
+        assert_eq!(bar(-1.0).len(), 1);
+
+        // Three thousandths of a very large download is half a pixel of fill,
+        // which reads as a bar that has not started. The smallest mark that
+        // still looks like one is as wide as the bar is thick.
+        assert_eq!(width(0.003), ROW_PROGRESS_TRACK);
+        assert_eq!(width(0.5), 100.0);
+        // And neither end runs past the groove, whatever a manifest caught
+        // mid-write says.
+        assert_eq!(width(1.0), 200.0);
+        assert_eq!(width(2.5), 200.0);
+
+        // Stopped moving: the same reading, drawn quiet. Not taken away — a
+        // download that has stopped has still got as far as it has got — and
+        // not left lit either, which would be the picture disagreeing with the
+        // line above it saying "not moving".
+        let moving = row_progress(
+            band,
+            Arriving {
+                share: 0.4,
+                stuck: false,
+            },
+            1.0,
+            1.0,
+        );
+        let stopped = row_progress(
+            band,
+            Arriving {
+                share: 0.4,
+                stuck: true,
+            },
+            1.0,
+            1.0,
+        );
+        assert_eq!(stopped[1].w, moving[1].w);
+        assert_ne!(stopped[1].color, moving[1].color);
+        assert!(
+            stopped[1].color[3] < moving[1].color[3],
+            "a stopped download is quieter, not louder"
+        );
+    }
+
     use super::*;
     use crate::apps::{App, Category, Choice, Folder};
+    use crate::keyboard::{Key, Latch};
+
     use crate::menu::Title;
     use crate::model::Action;
     use std::path::{Path, PathBuf};
+
+    /// A key that is holding the board down says so wherever the cursor is.
+    ///
+    /// The bug this is about: the selected key's fill used to be decided above
+    /// the loop and the latch fill drawn only when the key was *not* selected —
+    /// so the key somebody had just pressed, which is by definition the one
+    /// under the cursor, showed nothing. Pressing Shift and seeing no change
+    /// reads as a key that has to be pressed twice to come back off.
+    #[test]
+    fn a_latched_key_is_drawn_latched_whether_or_not_the_cursor_is_on_it() {
+        let theme = theme();
+        for latch in [Latch::Once, Latch::Locked] {
+            assert_eq!(
+                key_fill(&theme, Key::Shift, latch, true, 0.0),
+                key_fill(&theme, Key::Shift, latch, false, 0.0),
+                "{latch:?} is drawn the same under the cursor as beside it"
+            );
+        }
+        // And an unlatched key still shows the cursor, which is the reading
+        // the fill carries the rest of the time.
+        assert_ne!(
+            key_fill(&theme, Key::Shift, Latch::Off, true, 0.0),
+            key_fill(&theme, Key::Shift, Latch::Off, false, 0.0)
+        );
+    }
+
+    /// Held down is drawn *darker* than resting, and locked darker than armed.
+    ///
+    /// The direction is the point. It used to be a brighter cast of the accent
+    /// — the colour the cursor is drawn in — so a held key and a selected key
+    /// were competing to mean two things with one reading. A key that is
+    /// holding the board down is a key pressed into the panel.
+    #[test]
+    fn a_held_key_is_darker_than_a_resting_one_and_locked_is_darkest() {
+        let theme = theme();
+        // The panel's own near-black glass, at more of it the further down the
+        // key is held.
+        let fill = |latch| key_fill(&theme, Key::Shift, latch, false, 0.0);
+        let (off, once, locked) = (fill(Latch::Off), fill(Latch::Once), fill(Latch::Locked));
+        assert_eq!(once[..3], locked[..3], "both are the panel's glass");
+        assert!(
+            locked[3] > once[3],
+            "locked {locked:?} is not deeper than armed {once:?}"
+        );
+
+        // Composited, because that is what "darker" means for a translucent
+        // fill: more of a near-black colour over whatever is behind it. The
+        // alphas alone say the opposite — a higher alpha of a dark colour is a
+        // darker key — which is exactly the way round this reads on screen.
+        let over = |[r, g, b, a]: [f32; 4]| {
+            let behind = 0.5;
+            let mixed = |c: f32| c * a + behind * (1.0 - a);
+            mixed(r) * 0.2126 + mixed(g) * 0.7152 + mixed(b) * 0.0722
+        };
+        assert!(
+            over(once) < over(off),
+            "armed {once:?} is not darker than resting {off:?}"
+        );
+        assert!(
+            over(locked) < over(once),
+            "locked {locked:?} is not darker than armed {once:?}"
+        );
+    }
 
     /// The shell and the compositor round the same corner to the same radius.
     ///
@@ -10951,6 +14134,7 @@ mod tests {
     /// The same, saying whether it is on this disk.
     fn owned(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(crate::apps::Game {
+            progress: None,
             app_id,
             name: name.to_string(),
             note: if installed {
@@ -10962,6 +14146,9 @@ mod tests {
             installed,
             updating: false,
             steam_client: true,
+            standing: lxb_steam::library::Standing::Ready,
+            stuck: false,
+            waiting_for_steam: false,
         })
     }
 
@@ -11599,6 +14786,7 @@ mod tests {
                         charging: false,
                     }),
                     percent,
+                    aside: 0.0,
                 },
                 width,
                 height,
@@ -11775,65 +14963,1252 @@ mod tests {
         )
     }
 
+    // --- the friends panel -------------------------------------------------
+
+    /// Slots for everything, and a face for every account — so a test can tell
+    /// a row that drew a picture from one that drew the figure instead.
+    struct Faces;
+    impl SlotLookup for Faces {
+        fn slot_for(&self, _icon: Option<&str>) -> Option<u32> {
+            Some(7)
+        }
+        fn avatar(&self, _hash: &str, _size: lxb_steam::AvatarSize) -> Option<crate::gpu::Thumb> {
+            Some(crate::gpu::Thumb {
+                slot: THUMB_SLOT,
+                aspect: 1.0,
+                covers: [1.0, 1.0],
+            })
+        }
+    }
+
+    fn someone(name: &str, presence: lxb_steam::Presence, game: Option<&str>) -> lxb_steam::Person {
+        lxb_steam::Person {
+            steam_id: name.len() as u64,
+            name: name.to_string(),
+            presence,
+            game: game.map(str::to_string),
+            app_id: game.map(|_| 220),
+            avatar: Some("abc".to_string()),
+        }
+    }
+
+    /// A roster in the order Steam's half of this hands one over.
+    fn roster(friends: Vec<lxb_steam::Person>) -> lxb_steam::Roster {
+        let mut friends = friends;
+        friends.sort_by_key(|friend| friend.band());
+        lxb_steam::Roster {
+            me: Some(someone("Me", lxb_steam::Presence::Online, None)),
+            friends,
+        }
+    }
+
+    fn friends_scene(
+        roster: &lxb_steam::Roster,
+        panel: &crate::friends::Friends,
+        width: f32,
+        height: f32,
+    ) -> Scene {
+        build_friends(
+            FriendsView {
+                conversation: None,
+                talking_to: None,
+                talking_to_name: "",
+                typing: false,
+                cannot_send: None,
+                unread: &NothingUnread,
+                friends: panel,
+                roster,
+                instead: None,
+                head: true,
+                open: 1.0,
+                highlight: None,
+                behind: 0.0,
+                time: 0.0,
+                pad: true,
+                dragging: false,
+                slots: &Faces,
+            },
+            width,
+            height,
+        )
+    }
+
+    /// The panel is the guide's own sidebar seen from the other side: the same
+    /// width, the same float clear of the screen, against the other edge.
+    #[test]
+    fn the_friends_panel_is_the_guides_sidebar_mirrored() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let [gx, gy, gw, gh] = sidebar_panel_rect(width, height);
+            let [fx, fy, fw, fh] = friends_panel_rect(width, height);
+            assert_eq!((gw, gh), (fw, fh), "{width}x{height}");
+            assert_eq!(gy, fy, "{width}x{height}");
+            // The left panel's clearance from its edge is the right panel's
+            // from the other one.
+            assert!(
+                (gx - (width - fx - fw)).abs() < 0.01,
+                "{width}x{height}: {gx} against {}",
+                width - fx - fw
+            );
+        }
+    }
+
+    /// It comes in from the right edge, and it never comes in linearly: the
+    /// slide is the eased position the shell hands over, and a panel that has
+    /// not started is a whole sidebar's width off the screen.
+    #[test]
+    fn it_slides_in_from_the_right_edge() {
+        let width = 1280.0;
+        let sidebar = overview::sidebar_width(width as f64) as f32;
+        assert_eq!(friends_slide_x(0.0, width), sidebar);
+        assert_eq!(friends_slide_x(1.0, width), 0.0);
+        assert!(friends_slide_x(0.5, width) > 0.0);
+        // The shell eases it before it gets here, so this is a straight line
+        // through an already-curved position. What must not happen is a second
+        // easing, which would flatten the start of the movement to nothing.
+        assert!((friends_slide_x(0.5, width) - sidebar * 0.5).abs() < 0.01);
+    }
+
+    /// Every band that has anybody in it gets a rule with its name and count,
+    /// and the rows come in the order the user asked for.
+    #[test]
+    fn the_bands_are_ruled_off_in_the_order_asked_for() {
+        let roster = roster(vec![
+            someone("Ann", lxb_steam::Presence::Offline, None),
+            someone("Bea", lxb_steam::Presence::Online, None),
+            someone("Cal", lxb_steam::Presence::Online, Some("Portal 2")),
+        ]);
+        let scene = friends_scene(&roster, &crate::friends::Friends::default(), 1280.0, 800.0);
+        let written: Vec<&str> = scene
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        let heading = |band: &str| {
+            written
+                .iter()
+                .position(|line| line.starts_with(band))
+                .unwrap_or_else(|| panic!("no {band} rule in {written:?}"))
+        };
+        assert!(heading("IN GAME") < heading("ONLINE"));
+        assert!(heading("ONLINE") < heading("OFFLINE"));
+        assert!(written.contains(&"IN GAME  —  1"));
+        // The row under each is that band's, and says what the person is doing
+        // rather than repeating the band.
+        assert!(written.contains(&"Portal 2"));
+        assert!(written.contains(&"Cal"));
+    }
+
+    /// Somebody who is not there is drawn colourless. The picture is the same
+    /// picture — it is a fact about now, not about them — so it is the quad's
+    /// own drain and never a second copy of the file.
+    #[test]
+    fn a_face_that_is_not_there_is_drawn_colourless() {
+        let roster = roster(vec![
+            someone("Ann", lxb_steam::Presence::Offline, None),
+            someone("Bea", lxb_steam::Presence::Online, None),
+        ]);
+        let scene = friends_scene(&roster, &crate::friends::Friends::default(), 1280.0, 800.0);
+        let drains: Vec<f32> = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .map(|quad| quad.drain)
+            .collect();
+        // The account's own face at the head, then the two rows in band order:
+        // Bea is around and Ann is not.
+        assert_eq!(drains, [0.0, 0.0, FRIENDS_OFFLINE_DRAIN]);
+    }
+
+    /// Every face is drawn rounded, and to the same share of its own edge at
+    /// both sizes — so the head and a row are one shape at two scales rather
+    /// than two shapes.
+    #[test]
+    fn every_face_is_rounded_to_the_same_share_of_itself() {
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let scene = friends_scene(&roster, &crate::friends::Friends::default(), 1280.0, 800.0);
+        let faces: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.slot == THUMB_SLOT)
+            .collect();
+        assert_eq!(faces.len(), 2, "the account's own, and the one row");
+        for face in faces {
+            assert!((face.radius - face.w * FRIENDS_FACE_CORNER).abs() < 0.01);
+            assert_eq!(face.corner, SQUIRCLE_CORNER);
+            assert!(face.w > 0.0 && (face.w - face.h).abs() < 0.01);
+        }
+    }
+
+    /// Nothing of the list is drawn outside the body. Not by refusing to draw
+    /// a row that does not fit — that is what made the scroll step a whole row
+    /// at a time — but by cutting it: the column runs past both ends of the
+    /// room there is for it, and the room is the room.
+    #[test]
+    fn the_list_is_cut_to_the_body_rather_than_paged() {
+        let (width, height) = (1280.0, 800.0);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        let roster = roster(
+            (0..80)
+                .map(|index| {
+                    someone(
+                        &format!("friend {index}"),
+                        lxb_steam::Presence::Online,
+                        None,
+                    )
+                })
+                .collect(),
+        );
+        let [body_x, body_y, body_w, body_h] = friends_body_rect(width, height);
+        let scene = friends_scene(&roster, &panel, width, height);
+        // Every row of the list carries the body as its scissor. The head, the
+        // rule and the legend do not — they are the panel's, not the list's.
+        let cut = [body_x, body_y, body_w, body_h];
+        let inside = |clip: Option<[f32; 4]>| {
+            clip.is_some_and(|[x, y, w, h]| {
+                x >= cut[0] - 0.01
+                    && y >= cut[1] - 0.01
+                    && x + w <= cut[0] + cut[2] + 0.01
+                    && y + h <= cut[1] + cut[3] + 0.01
+            })
+        };
+        let names: Vec<&Text> = scene
+            .texts
+            .iter()
+            .filter(|text| text.content.starts_with("friend "))
+            .collect();
+        assert!(names.len() > 4, "a screenful of rows: {}", names.len());
+        for name in &names {
+            assert!(
+                inside(name.clip),
+                "{:?} is not cut to the body",
+                name.content
+            );
+        }
+        // And the list is longer than the panel, so this is a real viewport
+        // rather than a list that happens to fit.
+        assert!(names.len() < roster.friends.len());
+        // The legend is drawn on the panel and is not cut by the list's room.
+        let legend = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Select")
+            .expect("the legend");
+        assert!(!inside(legend.clip));
+    }
+
+    /// A row is taken down as it passes the end of the body, not simply cut
+    /// there: a straight edge across half a face reads as a drawing fault, and
+    /// what the eye should be following is the row leaving.
+    #[test]
+    fn a_row_leaving_the_body_fades_as_it_goes() {
+        let (width, height) = (1280.0, 800.0);
+        let scale = guide_scale(height);
+        let [_, body_y, _, body_h] = friends_body_rect(width, height);
+        let body = [0.0, body_y, 0.0, body_h];
+        let row = FRIENDS_ROW * scale;
+        // Wholly inside, and drawn whole.
+        assert_eq!(
+            friends_edge_fade([0.0, body_y + body_h * 0.5, 0.0, row], body, scale),
+            1.0
+        );
+        // Half out of the top, and part drawn.
+        let leaving = friends_edge_fade([0.0, body_y - row * 0.5, 0.0, row], body, scale);
+        assert!(leaving > 0.0 && leaving < 1.0, "{leaving}");
+        // Wholly out, and not drawn at all.
+        assert_eq!(
+            friends_edge_fade([0.0, body_y - row * 2.0, 0.0, row], body, scale),
+            0.0
+        );
+        assert_eq!(
+            friends_edge_fade([0.0, body_y + body_h + row, 0.0, row], body, scale),
+            0.0
+        );
+    }
+
+    /// The bar stands in the panel's margin, beside the rows rather than over
+    /// them — and only where there is more list than body. A column of four
+    /// draws none: a bar that never moves is a control that says nothing.
+    #[test]
+    fn the_scroll_bar_stands_beside_the_list_and_only_where_it_scrolls() {
+        for [width, height] in SCREENS {
+            let few = roster(
+                (0..3)
+                    .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                    .collect(),
+            );
+            let many = roster(
+                (0..60)
+                    .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                    .collect(),
+            );
+            assert!(
+                friends_scroll_place(&crate::friends::lines(&few), 0.0, height).is_none(),
+                "{width}x{height}: a list that fits has a bar"
+            );
+            let (at, run) = friends_scroll_place(&crate::friends::lines(&many), 0.0, height)
+                .expect("a list longer than the body");
+            assert_eq!(at, 0.0);
+            assert!(run > 0.0 && run < 1.0, "{run} of the list is showing");
+
+            // Beside the body, inside the panel, and as tall as the list's own
+            // room: a bar that ran the height of the panel would be measuring
+            // the head and the legend as well.
+            let [bx, by, bw, bh] = friends_body_rect(width, height);
+            let [px, _, pw, _] = friends_panel_rect(width, height);
+            let [tx, ty, tw, th] = friends_scroll_track(width, height);
+            assert!(tx >= bx + bw, "the bar is over the rows");
+            assert!(tx + tw <= px + pw, "the bar is off the panel");
+            assert_eq!((ty, th), (by, bh));
+        }
+    }
+
+    /// Where the thumb comes out says where in the list the body is, and it is
+    /// never shorter than a hand can catch.
+    #[test]
+    fn the_thumb_says_where_in_the_list_the_body_is() {
+        let (width, height) = (1280.0, 800.0);
+        let scale = guide_scale(height);
+        let track = friends_scroll_track(width, height);
+        let roster = roster(
+            (0..200)
+                .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                .collect(),
+        );
+        let lines = crate::friends::lines(&roster);
+        let (_, run) = friends_scroll_place(&lines, 0.0, height).expect("a long list");
+
+        let top = friends_scroll_thumb(track, 0.0, run);
+        let middle = friends_scroll_thumb(track, 0.5, run);
+        let end = friends_scroll_thumb(track, 1.0, run);
+        assert_eq!(top[1], track[1]);
+        assert!(top[1] < middle[1] && middle[1] < end[1]);
+        assert!((end[1] + end[3] - (track[1] + track[3])).abs() < 0.01);
+        // Two hundred rows in a window of eight is a few pixels of thumb, which
+        // is a control nobody could take hold of.
+        assert!(
+            top[3] >= FRIENDS_SCROLL_BAR * FRIENDS_SCROLL_LEAST * scale - 0.01,
+            "a thumb of {}",
+            top[3]
+        );
+
+        // And a hand put on the track asks to go where it was put, whichever
+        // end of it that is.
+        assert_eq!(friends_scroll_asked(track, run, track[1]), 0.0);
+        assert_eq!(friends_scroll_asked(track, run, track[1] + track[3]), 1.0);
+        let half = friends_scroll_asked(track, run, track[1] + track[3] * 0.5);
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+    }
+
+    /// A point on the panel finds the row it is drawn on, the bar beside it,
+    /// or neither — and everything past the panel is a way out of it.
+    // --- a conversation ---
+    fn a_conversation(with: u64, marks: &[(crate::friends::Laid, ())]) -> crate::friends::Friends {
+        let mut panel = crate::friends::Friends::default();
+        panel.open();
+        panel.talk_to(with);
+        let laid: Vec<crate::friends::Laid> = marks.iter().map(|(laid, _)| *laid).collect();
+        panel.measured(
+            with,
+            laid.iter().map(|laid| laid.mark).collect(),
+            laid,
+            10.0,
+            4.0,
+            800.0,
+        );
+        // What the shell tells it once a frame, before anything is drawn: how
+        // tall the column is and how much of it shows. Without it the view is
+        // still parked at the end of a column of no height — see
+        // [`crate::friends::Friends::talk_to`], which opens a conversation at
+        // its foot by asking for more scroll than there can be.
+        let [_, _, _, body_h] = friends_chat_body_rect(0.0, 800.0, 1);
+        panel.the_column_is(friends_chat_column_height(panel.laid_out(), 800.0), body_h);
+        panel
+    }
+
+    fn one(mark: lxb_steam::chat::Mark, from_me: bool) -> (crate::friends::Laid, ()) {
+        (
+            crate::friends::Laid {
+                mark,
+                lines: 1,
+                width: 40.0,
+                from_me,
+                failed: false,
+            },
+            (),
+        )
+    }
+
+    fn said_at(at: u32) -> lxb_steam::chat::Mark {
+        lxb_steam::chat::Mark::Said(lxb_steam::chat::Key::new(at, 0))
+    }
+
+    /// The one thing about a conversation that needs no label: what this
+    /// account said is on the right, what they said is on the left, and neither
+    /// fills the column.
+    #[test]
+    fn a_message_is_drawn_on_the_side_it_came_from() {
+        let (width, height) = (1280.0, 800.0);
+        let laid = [
+            crate::friends::Laid {
+                mark: said_at(100),
+                lines: 1,
+                width: 40.0,
+                from_me: false,
+                failed: false,
+            },
+            crate::friends::Laid {
+                mark: said_at(200),
+                // Two lines, so it has filled the width it was given: that is
+                // what more than one line means.
+                lines: 2,
+                width: friends_message_text_width(1280.0, 800.0),
+                from_me: true,
+                failed: false,
+            },
+        ];
+        let rects = friends_message_rects(&laid, width, height, 0.0);
+        let [body_x, _, body_w, _] = friends_body_rect(width, height);
+        let [theirs_x, theirs_y, theirs_w, theirs_h] = rects[0].1;
+        let [mine_x, mine_y, mine_w, mine_h] = rects[1].1;
+        assert_eq!(theirs_x, body_x, "theirs did not start at the left edge");
+        assert!(
+            mine_x > body_x,
+            "ours was drawn from the left edge like theirs"
+        );
+        assert!(
+            (mine_x + mine_w - (body_x + body_w)).abs() < 0.01,
+            "ours did not end at the right edge"
+        );
+        assert!(
+            mine_w < body_w,
+            "a bubble filled the column, so which side it is on cannot be read"
+        );
+        // And a short message is a short bubble. This is the one thing a line
+        // count cannot say and the reason the width is measured too.
+        assert!(
+            theirs_w < mine_w * 0.5,
+            "a forty-pixel message was drawn as wide as one that fills the column"
+        );
+        // Stacked in order, oldest first, with air between them.
+        assert_eq!(theirs_y, 0.0);
+        assert!(mine_y > theirs_y + theirs_h);
+        assert!(
+            mine_h > theirs_h,
+            "two lines of words did not make a taller bubble than one"
+        );
+    }
+
+    /// A message leaving the top of the body is taken down as it goes, on the
+    /// same feather the list's rows use — so the column ends in a message
+    /// fading rather than in a straight edge through the middle of a sentence.
+    #[test]
+    fn a_message_leaving_the_body_is_taken_down_as_it_goes() {
+        let (width, height) = (1280.0, 800.0);
+        let scale = guide_scale(height);
+        let [_, body_y, _, body_h] = friends_chat_body_rect(width, height, 1);
+        let body = friends_chat_body_rect(width, height, 1);
+        let tall = [0.0, 0.0, 100.0, 200.0 * scale];
+        // Well inside: drawn whole.
+        let inside = [tall[0], body_y + body_h * 0.5, tall[2], tall[3]];
+        assert_eq!(friends_edge_fade(inside, body, scale), 1.0);
+        // A sliver left at the top: taken down.
+        let leaving = [
+            tall[0],
+            body_y - tall[3] + FRIENDS_ROW * scale * FRIENDS_EDGE_FEATHER * 0.4,
+            tall[2],
+            tall[3],
+        ];
+        let fade = friends_edge_fade(leaving, body, scale);
+        assert!(
+            fade > 0.0 && fade < 0.5,
+            "a message almost gone was drawn at {fade}"
+        );
+        // And gone altogether.
+        let gone = [tall[0], body_y - tall[3] - 1.0, tall[2], tall[3]];
+        assert_eq!(friends_edge_fade(gone, body, scale), 0.0);
+    }
+
+    /// The column is as tall as the sum of its messages, which is what the
+    /// scroll moves over.
+    #[test]
+    fn the_column_is_as_tall_as_what_is_in_it() {
+        let height = 800.0;
+        let laid: Vec<crate::friends::Laid> = (0..6)
+            .map(|n| crate::friends::Laid {
+                mark: said_at(n),
+                lines: 1,
+                width: 40.0,
+                from_me: false,
+                failed: false,
+            })
+            .collect();
+        let one = friends_chat_column_height(&laid[..1], height);
+        let six = friends_chat_column_height(&laid, height);
+        assert!(one > 0.0);
+        assert!((six - one * 6.0).abs() < 0.01);
+        assert_eq!(friends_chat_column_height(&[], height), 0.0);
+    }
+
+    /// A point on an open conversation finds what is drawn under it — and
+    /// never a row of the list behind, which is the whole of "clicks do not
+    /// pass through the chat panel".
+    #[test]
+    fn a_point_on_a_conversation_finds_what_is_drawn_under_it() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(
+            (0..40)
+                .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                .collect(),
+        );
+        let panel = a_conversation(7, &[one(said_at(100), false), one(said_at(200), true)]);
+        let showing = FriendsPanel {
+            conversation: None,
+            compose_lines: 1,
+            friends: &panel,
+            roster: &roster,
+            head: true,
+            open: 1.0,
+        };
+        let hit = |x, y| friends_hit(showing, x, y, width, height);
+
+        // The field.
+        let [fx, fy, fw, fh] = friends_compose_rect(width, height, 1);
+        assert_eq!(hit(fx + fw * 0.5, fy + fh * 0.5), FriendsSpot::Compose);
+
+        // And every message, where it is drawn.
+        let [_, body_y, _, _] = friends_chat_body_rect(width, height, 1);
+        for (laid, [x, y, w, h]) in friends_message_rects(panel.laid_out(), width, height, body_y) {
+            assert_eq!(
+                hit(x + w * 0.5, y + h * 0.5),
+                FriendsSpot::Message(laid.mark)
+            );
+        }
+
+        // The head is the panel's, and is spent rather than passed through.
+        let [panel_x, panel_y, panel_w, _] = friends_panel_rect(width, height);
+        assert_eq!(
+            hit(panel_x + panel_w * 0.5, panel_y + 8.0),
+            FriendsSpot::Panel
+        );
+        // Not one row of the list behind it answers anywhere on the panel.
+        for step in 0..80 {
+            let y = panel_y + step as f32 * 10.0;
+            assert!(
+                !matches!(hit(panel_x + panel_w * 0.5, y), FriendsSpot::Row(_)),
+                "a click on an open conversation reached the list behind it"
+            );
+        }
+        // And past the panel is still the way out.
+        assert_eq!(hit(4.0, height * 0.5), FriendsSpot::Outside);
+    }
+
+    /// The retry's two lines each get a line's worth of room inside it, so the
+    /// reason and the press do not print through one another.
+    #[test]
+    fn the_retry_is_as_tall_as_the_two_lines_in_it() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = guide_scale(height);
+            let [_, _, _, h] = friends_again_rect(width, height, 1);
+            assert!(
+                h >= FRIENDS_NOTE_LINE * 2.0 * scale,
+                "the retry is shorter than the two lines in it"
+            );
+            assert!(
+                h >= (FRIENDS_NOTE * 2.0 + FRIENDS_CHIP_PADDING) * scale,
+                "the two lines have no air between them"
+            );
+        }
+    }
+
+    /// The retry line is only there while there is a failure to retry.
+    #[test]
+    fn the_retry_answers_only_while_the_history_failed() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let panel = a_conversation(7, &[]);
+        let [ax, ay, aw, ah] = friends_again_rect(width, height, 1);
+        let at = |conversation| {
+            friends_hit(
+                FriendsPanel {
+                    conversation,
+                    compose_lines: 1,
+                    friends: &panel,
+                    roster: &roster,
+                    head: true,
+                    open: 1.0,
+                },
+                ax + aw * 0.5,
+                ay + ah * 0.5,
+                width,
+                height,
+            )
+        };
+        assert_eq!(at(None), FriendsSpot::Panel);
+
+        let mut conversations = lxb_steam::chat::Conversations::default();
+        conversations.signed_in_as(7);
+        conversations.heard(
+            lxb_steam::chat::Heard {
+                generation: 1,
+                account: 7,
+                word: lxb_steam::chat::Word::Listening,
+            },
+            std::time::Instant::now(),
+        );
+        let Some(lxb_steam::chat::Wanted::History { request, .. }) = conversations.open(11) else {
+            panic!("a history request");
+        };
+        conversations.heard(
+            lxb_steam::chat::Heard {
+                generation: 1,
+                account: 7,
+                word: lxb_steam::chat::Word::History {
+                    with: 11,
+                    request,
+                    said: Err("no".to_string()),
+                },
+            },
+            std::time::Instant::now(),
+        );
+        assert_eq!(at(conversations.with(11)), FriendsSpot::Again);
+    }
+
+    /// The field grows with the draft, and the message column gives up the room
+    /// — so a growing field never prints over the last thing that was said.
+    #[test]
+    fn the_field_grows_and_the_column_gives_up_the_room() {
+        let (width, height) = (1280.0, 800.0);
+        let [_, one_y, _, one_h] = friends_chat_body_rect(width, height, 1);
+        let [_, three_y, _, three_h] = friends_chat_body_rect(width, height, 3);
+        assert_eq!(one_y, three_y, "the column moved rather than shortening");
+        assert!(three_h < one_h);
+        let [_, tall_y, _, tall_h] = friends_compose_rect(width, height, 3);
+        let [_, short_y, _, short_h] = friends_compose_rect(width, height, 1);
+        assert!(tall_h > short_h);
+        assert!(tall_y < short_y, "the field grew downwards, off the panel");
+        // Both end at the same place, which is the foot of the body.
+        assert!(((tall_y + tall_h) - (short_y + short_h)).abs() < 0.01);
+        // And more than three lines is still three: the field must not eat the
+        // conversation it is about.
+        assert_eq!(
+            friends_compose_rect(width, height, 9),
+            friends_compose_rect(width, height, FRIENDS_COMPOSE_LINES)
+        );
+    }
+
+    /// The legend names what the light is standing on, because in a
+    /// conversation there are four things it can be standing on.
+    #[test]
+    fn the_legend_names_what_a_press_would_do() {
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let words = |panel: &crate::friends::Friends| {
+            friends_hints(&FriendsView {
+                friends: panel,
+                roster: &roster,
+                instead: None,
+                head: true,
+                open: 1.0,
+                highlight: None,
+                behind: 0.0,
+                time: 0.0,
+                pad: true,
+                dragging: false,
+                conversation: None,
+                talking_to: None,
+                talking_to_name: "",
+                typing: false,
+                cannot_send: None,
+                unread: &NothingUnread,
+                slots: &NoSlots,
+            })
+            .into_iter()
+            .map(|hint| hint.label)
+            .collect::<Vec<_>>()
+        };
+
+        let mut panel = crate::friends::Friends::default();
+        panel.open();
+        assert_eq!(words(&panel), ["Select", "Back"]);
+
+        panel.talk_to(11);
+        assert_eq!(words(&panel), ["Write", "Back"]);
+        panel.compose(true);
+        assert_eq!(words(&panel), ["Send", "Done"]);
+        panel.compose(false);
+
+        // A message that did not go can be sent again, or given up on.
+        panel.measured(
+            11,
+            vec![lxb_steam::chat::Mark::Pending(1)],
+            vec![crate::friends::Laid {
+                mark: lxb_steam::chat::Mark::Pending(1),
+                lines: 1,
+                width: 40.0,
+                from_me: true,
+                failed: true,
+            }],
+            10.0,
+            4.0,
+            800.0,
+        );
+        panel.move_in_conversation(-1, None);
+        assert_eq!(words(&panel), ["Send again", "Back", "Delete"]);
+
+        // One that did is only something to read.
+        panel.measured(
+            11,
+            vec![said_at(100)],
+            vec![crate::friends::Laid {
+                mark: said_at(100),
+                lines: 1,
+                width: 40.0,
+                from_me: false,
+                failed: false,
+            }],
+            10.0,
+            4.0,
+            800.0,
+        );
+        panel.move_in_conversation(-1, None);
+        assert_eq!(words(&panel), ["Back"]);
+    }
+
+    #[test]
+    fn a_point_on_the_panel_finds_what_is_drawn_under_it() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(
+            (0..40)
+                .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                .collect(),
+        );
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        panel.open();
+        let lines = crate::friends::lines(&roster);
+        let showing = |open| FriendsPanel {
+            conversation: None,
+            compose_lines: 1,
+            friends: &panel,
+            roster: &roster,
+            head: true,
+            open,
+        };
+        let hit = |x, y| friends_hit(showing(1.0), x, y, width, height);
+
+        // Every row the body has room for answers where it is drawn.
+        let mut found = 0;
+        for index in friends_lines_in_view(&lines, panel.scroll(), height) {
+            let Some(person) = lines[index].person() else {
+                continue;
+            };
+            let [x, y, w, h] =
+                friends_chip_rect(width, height, &lines, panel.scroll(), index).unwrap();
+            let [_, body_y, _, body_h] = friends_body_rect(width, height);
+            if y < body_y || y + h > body_y + body_h {
+                continue;
+            }
+            assert_eq!(hit(x + w * 0.5, y + h * 0.5), FriendsSpot::Row(person));
+            found += 1;
+        }
+        assert!(found > 3, "only {found} rows answered");
+
+        // The bar, over the whole lane rather than only over the eight points
+        // of it that are drawn.
+        let [lx, ly, lw, lh] = friends_scroll_lane(width, height);
+        assert!(matches!(
+            hit(lx + 1.0, ly + lh * 0.5),
+            FriendsSpot::Track(_)
+        ));
+        assert!(matches!(
+            hit(lx + lw - 1.0, ly + lh * 0.5),
+            FriendsSpot::Track(_)
+        ));
+
+        // The head, which is the panel and not a row.
+        let [px, py, pw, ph] = friends_panel_rect(width, height);
+        assert_eq!(hit(px + pw * 0.5, py + 4.0), FriendsSpot::Panel);
+        // And everything past it, which is the way out.
+        assert_eq!(hit(px - 4.0, py + ph * 0.5), FriendsSpot::Outside);
+        assert_eq!(hit(width * 0.25, height * 0.5), FriendsSpot::Outside);
+    }
+
+    /// A panel still sliding in is hit where it *is*, not where it settles: a
+    /// click that lands mid-flight lands on the row the user can see.
+    #[test]
+    fn a_click_mid_flight_lands_on_what_is_on_the_screen() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![
+            someone("Ann", lxb_steam::Presence::Online, None),
+            someone("Bea", lxb_steam::Presence::Online, None),
+        ]);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        panel.open();
+        let lines = crate::friends::lines(&roster);
+        let [x, y, w, h] = friends_chip_rect(width, height, &lines, 0.0, 1).unwrap();
+        let (at_x, at_y) = (x + w * 0.5, y + h * 0.5);
+        // Settled, that point is Ann's row. Half way in, the whole panel is a
+        // sidebar's width to the right of it and the point is past the screen
+        // the panel has reached.
+        let showing = |open| FriendsPanel {
+            conversation: None,
+            compose_lines: 1,
+            friends: &panel,
+            roster: &roster,
+            head: true,
+            open,
+        };
+        assert_eq!(
+            friends_hit(showing(1.0), at_x, at_y, width, height),
+            FriendsSpot::Row(0)
+        );
+        assert_eq!(
+            friends_hit(showing(0.5), at_x, at_y, width, height),
+            FriendsSpot::Outside
+        );
+        let slide = friends_slide_x(0.5, width);
+        assert_eq!(
+            friends_hit(showing(0.5), at_x + slide, at_y, width, height),
+            FriendsSpot::Row(0)
+        );
+    }
+
+    /// The bar is drawn where the hit test says it is — one rectangle, read
+    /// twice, which is the rule every other shape on this panel is shared
+    /// under.
+    #[test]
+    fn the_bar_is_drawn_where_it_answers() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(
+            (0..60)
+                .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                .collect(),
+        );
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        let track = friends_scroll_track(width, height);
+        let scene = friends_scene(&roster, &panel, width, height);
+        let lane: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(|quad| {
+                quad.x >= track[0] - 0.01 && quad.x + quad.w <= track[0] + track[2] + 0.01
+            })
+            .collect();
+        assert_eq!(lane.len(), 2, "a trough and a thumb");
+        let (trough, thumb) = (lane[0], lane[1]);
+        assert_eq!(
+            (trough.x, trough.y, trough.w, trough.h),
+            (track[0], track[1], track[2], track[3])
+        );
+        assert_eq!(
+            thumb.y, track[1],
+            "at the top of a list nobody has scrolled"
+        );
+        assert!(thumb.h < trough.h, "the thumb fills its own track");
+        // And nothing of the bar is cut by the viewport the rows are cut to: it
+        // stands beside the list rather than in it.
+        assert_eq!(trough.clip, None);
+        assert_eq!(thumb.clip, None);
+    }
+
+    /// The head's status is a button where the status is written: the capsule
+    /// covers the line of type, sits clear of the nickname above it, and does
+    /// not run under the account's own picture.
+    #[test]
+    fn the_status_button_is_where_the_status_is_written() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = guide_scale(height);
+            let [px, py, pw, _] = friends_panel_rect(width, height);
+            let margin = GUIDE_MARGIN * scale;
+            let face = FRIENDS_HEAD_FACE * scale;
+            let [x, y, w, h] = friends_status_rect(width, height);
+
+            let writing = py + margin + face * FRIENDS_STATUS_AT;
+            assert!(y < writing && y + h > writing, "the line is not inside it");
+            assert!(x > px + margin + face, "it runs under the picture");
+            assert!(x + w <= px + pw - margin + 0.01, "it runs off the panel");
+            let name = py + margin + face * FRIENDS_HEAD_NAME_AT + FRIENDS_NAME * scale * 0.5;
+            assert!(y >= name, "it covers the nickname");
+        }
+    }
+
+    /// A point on the status answers the status, and one on the head beside it
+    /// does not. The button is only where it is drawn.
+    #[test]
+    fn a_point_on_the_status_finds_the_button() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        panel.open();
+        let showing = |head| FriendsPanel {
+            conversation: None,
+            compose_lines: 1,
+            friends: &panel,
+            roster: &roster,
+            head,
+            open: 1.0,
+        };
+        let [x, y, w, h] = friends_status_rect(width, height);
+        let (at_x, at_y) = (x + w * 0.5, y + h * 0.5);
+        assert_eq!(
+            friends_hit(showing(true), at_x, at_y, width, height),
+            FriendsSpot::Status
+        );
+        // The account's own picture, which is beside it and is not a button.
+        let [px, py, _, _] = friends_panel_rect(width, height);
+        let scale = guide_scale(height);
+        let margin = GUIDE_MARGIN * scale;
+        assert_eq!(
+            friends_hit(
+                showing(true),
+                px + margin + FRIENDS_HEAD_FACE * scale * 0.5,
+                py + margin + FRIENDS_HEAD_FACE * scale * 0.5,
+                width,
+                height
+            ),
+            FriendsSpot::Panel
+        );
+
+        // And a panel with no account behind it has no status to set, whatever
+        // is written across its body.
+        assert_eq!(
+            friends_hit(showing(false), at_x, at_y, width, height),
+            FriendsSpot::Panel
+        );
+        let nobody = lxb_steam::Roster::default();
+        assert_eq!(
+            friends_hit(
+                FriendsPanel {
+                    conversation: None,
+                    compose_lines: 1,
+                    friends: &panel,
+                    roster: &nobody,
+                    head: false,
+                    open: 1.0,
+                },
+                at_x,
+                at_y,
+                width,
+                height
+            ),
+            FriendsSpot::Panel
+        );
+    }
+
+    /// The light on the head is drawn outside the list's viewport, and there is
+    /// only ever one of it. A capsule cut to the body would be a button in the
+    /// head with its top sliced off; two capsules would be a panel with the
+    /// user standing in two places.
+    #[test]
+    fn the_light_on_the_head_is_one_capsule_and_is_not_cut() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(
+            (0..20)
+                .map(|n| someone(&format!("friend {n}"), lxb_steam::Presence::Online, None))
+                .collect(),
+        );
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        panel.open();
+        let status = friends_status_rect(width, height);
+
+        // On a row, the capsule is in the body and is cut to it.
+        let lit = |scene: &Scene| -> Vec<Quad> {
+            scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == SOLID_SLOT && quad.color[3] > 0.4)
+                .filter(|quad| quad.w > width * 0.05 && quad.h > 10.0)
+                .copied()
+                .collect()
+        };
+        let on_a_row = lit(&friends_scene(&roster, &panel, width, height));
+        assert_eq!(on_a_row.len(), 1, "one lit capsule: {on_a_row:?}");
+        assert!(
+            on_a_row[0].clip.is_some(),
+            "a row's light is cut to the list"
+        );
+
+        assert!(panel.move_selection(-1, &roster, true));
+        assert!(panel.on_status(true));
+        let on_the_head = lit(&friends_scene(&roster, &panel, width, height));
+        assert_eq!(on_the_head.len(), 1, "one lit capsule: {on_the_head:?}");
+        assert_eq!(on_the_head[0].clip, None, "the head is not in the viewport");
+        assert_eq!(
+            (on_the_head[0].x, on_the_head[0].y),
+            (status[0], status[1]),
+            "the light is not on the button"
+        );
+    }
+
+    /// And the writing under it comes up to the white every lit row's name is
+    /// written in — under the accent it is a label, not a quiet note.
+    #[test]
+    fn the_status_is_read_as_a_label_under_its_own_light() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        panel.open();
+        let said = |panel: &crate::friends::Friends| {
+            friends_scene(&roster, panel, width, height)
+                .texts
+                .iter()
+                .find(|text| {
+                    text.content == "Online" && text.size == FRIENDS_STATUS * guide_scale(height)
+                })
+                .map(|text| text.color[3])
+        };
+        let quiet = said(&panel).expect("the status is written");
+        assert!(panel.move_selection(-1, &roster, true));
+        let lit = said(&panel).expect("the status is written");
+        assert!(lit > quiet, "{lit} is no brighter than {quiet}");
+    }
+
+    /// The lit capsule stands on the selected row's chip, wherever the scroll
+    /// has put it — and on nothing at all when there is nobody to stand on.
+    #[test]
+    fn the_highlight_stands_on_the_row_it_is_on() {
+        let (width, height) = (1280.0, 800.0);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        let roster = roster(vec![
+            someone("Ann", lxb_steam::Presence::Online, None),
+            someone("Bea", lxb_steam::Presence::Online, None),
+        ]);
+        let first = friends_highlight_rect(width, height, &roster, true, &panel).unwrap();
+        assert!(panel.move_selection(1, &roster, false));
+        let second = friends_highlight_rect(width, height, &roster, true, &panel).unwrap();
+        assert!(second[1] > first[1], "{second:?} below {first:?}");
+        assert_eq!(first[0], second[0]);
+        assert!(friends_highlight_rect(
+            width,
+            height,
+            &lxb_steam::Roster::default(),
+            false,
+            &panel
+        )
+        .is_none());
+    }
+
+    /// What a row is doing has to be readable where the row actually is. A
+    /// game's name is written in the accent, and the selected row is lit with
+    /// that same accent — so under the light it is written in the panel's own
+    /// ink instead, mixed in as the light arrives rather than switched.
+    #[test]
+    fn a_lit_rows_writing_is_not_the_colour_of_the_light_on_it() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![
+            someone("Ann", lxb_steam::Presence::Online, Some("Portal 2")),
+            someone("Bea", lxb_steam::Presence::Online, Some("Portal 2")),
+        ]);
+        let mut panel = crate::friends::Friends::default();
+        panel.fits(friends_rows_that_fit(height));
+        let scene = friends_scene(&roster, &panel, width, height);
+        let ink = |line: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == line)
+                .map(|text| text.color)
+                .unwrap_or_else(|| panic!("no {line:?} in the panel"))
+        };
+        // Both rows say the same thing, and the lit one says it in a different
+        // colour from the one beside it.
+        let lit = scene
+            .texts
+            .iter()
+            .filter(|text| text.content == "Portal 2")
+            .map(|text| text.color)
+            .collect::<Vec<_>>();
+        assert_eq!(lit.len(), 2);
+        assert_ne!(lit[0], lit[1], "the lit row is not written like the rest");
+        // And the lit one is the panel's own ink rather than the accent it is
+        // lit with.
+        assert_eq!(lit[0], theme().text.a(0.92));
+        assert_eq!(lit[1], theme().accent_soft.a(0.95));
+        // The name above it is one white on every row: it is legible on both
+        // grounds already, and two weights of it would read as an accident.
+        assert_eq!(ink("Ann"), ink("Bea"));
+    }
+
+    /// A panel with no list still says why, and still draws its legend: a
+    /// button that raised an empty column would be indistinguishable from one
+    /// that raised nothing.
+    #[test]
+    fn a_panel_with_no_list_says_why() {
+        let scene = build_friends(
+            FriendsView {
+                conversation: None,
+                talking_to: None,
+                talking_to_name: "",
+                typing: false,
+                cannot_send: None,
+                unread: &NothingUnread,
+                friends: &crate::friends::Friends::default(),
+                roster: &lxb_steam::Roster::default(),
+                instead: Some("Sign in to Steam to see who is online."),
+                head: false,
+                open: 1.0,
+                highlight: None,
+                behind: 0.0,
+                time: 0.0,
+                pad: true,
+                dragging: false,
+                slots: &Faces,
+            },
+            1280.0,
+            800.0,
+        );
+        let written: Vec<&str> = scene
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(written.contains(&"Sign in to Steam to see who is online."));
+        assert!(written.contains(&"Steam"), "{written:?}");
+        assert!(written.contains(&"Select"), "the legend: {written:?}");
+        // And never the button that raised it: a legend is what to press to get
+        // somewhere, and this is somewhere the reader already is. See
+        // [`friends_hints`].
+        assert!(!written.contains(&"Friends"), "{written:?}");
+    }
+
+    /// And one that is signed in with nobody in it yet says something else,
+    /// because it is a different thing: a list on its way rather than no
+    /// account to have one.
+    #[test]
+    fn an_empty_list_is_not_the_same_as_no_account() {
+        let scene = friends_scene(
+            &lxb_steam::Roster {
+                me: Some(someone("Me", lxb_steam::Presence::Online, None)),
+                friends: Vec::new(),
+            },
+            &crate::friends::Friends::default(),
+            1280.0,
+            800.0,
+        );
+        let written: Vec<&str> = scene
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(written.contains(&"No friends to show yet."), "{written:?}");
+        // The head is the account's own nickname, never the name it signed in
+        // with.
+        assert!(written.contains(&"Me"));
+    }
+
+    /// The corner gives itself up to the panel standing over it. Both of them:
+    /// the hour and the marks at the top of the screen, and the button legend
+    /// at the foot — the panel covers the right of the display, which is where
+    /// they both are.
+    #[test]
+    fn the_corners_give_way_to_the_panel() {
+        let (width, height) = (1280.0, 800.0);
+        let ink = |aside| {
+            let scene = corner_scene(
+                Corner {
+                    clock: Some("9/3 2:07"),
+                    signal: Some(Signal::Strong),
+                    battery: None,
+                    percent: false,
+                    aside,
+                },
+                width,
+                height,
+            );
+            // The corner's own cluster and nothing else: the top-right of the
+            // display, where the hour and the marks are.
+            scene
+                .quads
+                .iter()
+                .filter(|quad| quad.x > width * 0.8 && quad.y < height * 0.1)
+                // Its `fade` rather than its colour's alpha: every mark up
+                // there is a shape, and [`shaded_shape`] moves the ink's alpha
+                // on to the quad so the shader models the same bead of water
+                // whatever it is being drawn at.
+                .map(|quad| quad.fade)
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(ink(0.0) > 0.0);
+        assert!(ink(0.5) < ink(0.0));
+        assert_eq!(ink(1.0), 0.0);
+    }
+
     /// The start screen's legend names whichever control is in hand, and the
-    /// words do not move between the two — it is the same three acts.
+    /// words do not move between the two — it is the same acts.
     ///
     /// The file panel's own test, asked of the bar; see
     /// [`the_legend_names_whichever_control_is_in_hand`].
     #[test]
     fn the_start_legend_names_whichever_control_is_in_hand() {
-        let glyphs = |pad, options| -> Vec<&'static str> {
-            start_hints(pad, options)
+        let glyphs = |pad, options, friends| -> Vec<&'static str> {
+            start_hints(pad, options, friends)
                 .iter()
                 .map(|hint| hint.glyph)
                 .collect()
         };
         assert_eq!(
-            glyphs(true, true),
-            [icons::PAD_SOUTH, icons::PAD_NORTH, icons::PAD_GUIDE],
-            "Accept, the menu button and the one in the middle, by where they sit"
+            glyphs(true, true, true),
+            [
+                icons::PAD_SOUTH,
+                icons::PAD_NORTH,
+                icons::PAD_WEST,
+                icons::PAD_GUIDE
+            ],
+            "Accept, the menu button, the friends button and the one in the middle"
         );
         assert_eq!(
-            glyphs(false, true),
+            glyphs(false, true, true),
             [
                 icons::KEY_ENTER,
                 // The one place this legend leaves the keyboard, exactly as the
                 // file panel's does: a menu is raised with the right button by
                 // anybody holding a pointer.
                 icons::MOUSE_RIGHT,
+                icons::KEY_SHIFT,
                 icons::KEY_SUPER
             ]
         );
-        let words = |options| -> Vec<&'static str> {
-            start_hints(true, options)
+        let words = |options, friends| -> Vec<&'static str> {
+            start_hints(true, options, friends)
                 .iter()
                 .map(|hint| hint.label)
                 .collect()
         };
-        assert_eq!(words(true), ["Select", "Options", "Guide"]);
+        assert_eq!(words(true, true), ["Select", "Options", "Friends", "Guide"]);
         assert_eq!(
-            start_hints(false, true)
+            start_hints(false, true, true)
                 .iter()
                 .map(|hint| hint.label)
                 .collect::<Vec<_>>(),
-            words(true),
+            words(true, true),
             "the same acts, whichever control they are pressed on"
         );
-
         // A row with nothing to raise does not offer the button. The file
         // panel's own rule: a legend naming one that does nothing is worse than
         // naming none.
-        assert_eq!(words(false), ["Select", "Guide"]);
+        assert_eq!(words(false, true), ["Select", "Friends", "Guide"]);
+        // The same rule about Steam: with nobody signed in there is no friends
+        // list for the button to raise, so the word is not there.
+        assert_eq!(words(true, false), ["Select", "Options", "Guide"]);
+        assert_eq!(words(false, false), ["Select", "Guide"]);
         // And the way out is on it whatever the row is. It is the one press
         // that works from everywhere in this session, and a legend that dropped
         // it on some rows would be hiding the way back.
         for options in [true, false] {
-            assert!(
-                start_hints(true, options)
-                    .iter()
-                    .any(|hint| hint.label == "Guide"),
-                "the guide is always offered"
-            );
+            for friends in [true, false] {
+                assert!(
+                    start_hints(true, options, friends)
+                        .iter()
+                        .any(|hint| hint.label == "Guide"),
+                    "the guide is always offered"
+                );
+            }
         }
     }
 
@@ -11866,6 +16241,7 @@ mod tests {
 
         let scene = drawn(Some(StartLegend {
             options: true,
+            friends: true,
             pad: true,
         }));
         let word = |content: &str| {
@@ -12114,6 +16490,9 @@ mod tests {
                     game: false,
                     logo: None,
                     doing: None,
+                    said: None,
+                    back: None,
+                    skip: None,
                     blackout: 0.0,
                     from: tile,
                     open,
@@ -12176,6 +16555,9 @@ mod tests {
                     game: true,
                     logo,
                     doing: Some(crate::launch::Doing::Steam),
+                    said: None,
+                    back: None,
+                    skip: None,
                     blackout: 0.0,
                     from: tile,
                     open,
@@ -12291,7 +16673,7 @@ mod tests {
     #[test]
     fn the_line_beside_the_indicator_says_which_step_this_is() {
         let (width, height) = (1920.0, 1080.0);
-        let said = |doing| {
+        let line = |doing, note: Option<&str>| {
             build_launch(
                 LaunchView {
                     name: "Hollow Knight",
@@ -12304,6 +16686,9 @@ mod tests {
                         covers: [1.0, 1.0],
                     }),
                     doing,
+                    said: note,
+                    back: None,
+                    skip: None,
                     blackout: 0.0,
                     from: launch_origin(width, height),
                     open: 1.0,
@@ -12318,6 +16703,7 @@ mod tests {
             .first()
             .map(|text| text.content.clone())
         };
+        let said = |doing| line(doing, None);
 
         assert_eq!(
             said(Some(crate::launch::Doing::Steam)).as_deref(),
@@ -12333,6 +16719,201 @@ mod tests {
             assert!(!said(Some(doing)).expect("a line").contains("Hollow Knight"));
         }
         assert_eq!(said(None), None, "nothing to say, so nothing written");
+
+        // And where Steam is fetching the game rather than starting it, the
+        // line is the row's own words about that download — not a step name,
+        // because "Updating the game" for ten minutes says no more than the
+        // spinner does. The step name is what is left when the client has not
+        // said how far it has got.
+        assert_eq!(
+            line(
+                Some(crate::launch::Doing::Fetching),
+                Some("Updating · 33% of 1.3 GB")
+            )
+            .as_deref(),
+            Some("Updating · 33% of 1.3 GB")
+        );
+        assert_eq!(
+            said(Some(crate::launch::Doing::Fetching)).as_deref(),
+            Some("Updating the game")
+        );
+    }
+
+    /// A wait somebody may leave says so, in the corner opposite the ring.
+    ///
+    /// The guide does not open over a loading screen, so a splash that waits
+    /// out a ten-minute update with nothing on it about Back would be a screen
+    /// with no way off it. And it is drawn for that wait and no other: every
+    /// other one a splash makes is seconds long and may not be given up on.
+    ///
+    /// It says **Back** rather than "Not now", which is what it said first.
+    /// The update does not stop when this is pressed — Steam's queue is
+    /// Steam's own, and the row on the bar goes on counting — so a word that
+    /// meant "later" was describing something the shell had not done.
+    #[test]
+    fn the_one_wait_that_can_be_left_says_so() {
+        let (width, height) = (1920.0, 1080.0);
+        let scene = |back| {
+            build_launch(
+                LaunchView {
+                    name: "Hollow Knight",
+                    glyph: None,
+                    icon: Some(7),
+                    game: true,
+                    logo: None,
+                    doing: Some(crate::launch::Doing::Fetching),
+                    said: Some("Updating · 33% of 1.3 GB"),
+                    back,
+                    skip: None,
+                    blackout: 0.0,
+                    from: launch_origin(width, height),
+                    open: 1.0,
+                    fade: 1.0,
+                    waiting: true,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+        };
+
+        let offered = scene(Some((11, crate::icons::KEY_ESCAPE)));
+        let words: Vec<&str> = offered
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(words.contains(&"Back"), "{words:?}");
+        let button = offered
+            .quads
+            .iter()
+            .find(|quad| quad.slot == 11)
+            .expect("the button it is done with is drawn beside the words");
+
+        // And drawn as the shell draws that key everywhere else. Reported from
+        // a real update: the hint carried a pale slab with the letters punched
+        // dark out of it, because this was the one caller that did not tell
+        // [`shaded`] which glyph it was drawing — so a key stored as a shape
+        // was painted as though the shape were a picture. See
+        // [`LaunchView::back`], which is why the name travels with the slot.
+        assert!(
+            crate::icons::shaped(crate::icons::KEY_ESCAPE),
+            "the key is one of the glyphs that is a shape, which is what makes this a trap"
+        );
+        assert!(
+            button.thickness > 0.0,
+            "the key is drawn flat rather than shaded out of its own shape"
+        );
+        // In the corner the ring is not in, so the two do not read as one
+        // thing. The ring sits at the right-hand inset; this sits at the left.
+        let hint = offered
+            .texts
+            .iter()
+            .find(|text| text.content == "Back")
+            .expect("the hint");
+        assert!(hint.x < width * 0.5, "at {}", hint.x);
+
+        // And nothing at all where there is no way out to offer.
+        let plain = scene(None);
+        assert!(!plain.texts.iter().any(|text| text.content == "Back"));
+    }
+
+    /// The other press that corner carries: the game starting now, with the
+    /// shaders Steam has compiled so far.
+    ///
+    /// Reported from use on 2026-09-04. Valve's own dialog offers Skip and
+    /// Cancel with a mouse, behind this shell's loading screen, on a session
+    /// driven with a controller — so the word goes where the way out goes, in
+    /// the corner opposite the ring, drawn as whichever button is in hand.
+    #[test]
+    fn the_shader_wait_offers_the_press_that_gets_past_it() {
+        let (width, height) = (1920.0, 1080.0);
+        let scene = |back, skip| {
+            build_launch(
+                LaunchView {
+                    name: "Counter-Strike 2",
+                    glyph: None,
+                    icon: Some(7),
+                    game: true,
+                    logo: None,
+                    doing: Some(crate::launch::Doing::Fetching),
+                    said: Some("Processing shaders · 34%"),
+                    back,
+                    skip,
+                    blackout: 0.0,
+                    from: launch_origin(width, height),
+                    open: 1.0,
+                    fade: 1.0,
+                    waiting: true,
+                    time: 0.0,
+                },
+                width,
+                height,
+            )
+        };
+
+        let offered = scene(None, Some((12, crate::icons::PAD_SOUTH)));
+        let words: Vec<&str> = offered
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(words.contains(&"Skip"), "{words:?}");
+        assert!(
+            words.contains(&"Processing shaders · 34%"),
+            "and what it would be skipping: {words:?}"
+        );
+        assert!(
+            offered.quads.iter().any(|quad| quad.slot == 12),
+            "the button it is done with is drawn beside the word"
+        );
+
+        // **Both of them, and this is the ordinary case rather than a corner
+        // one.** A launch stopped on its shaders is a wait the splash is
+        // fetching through, so the way out is offered at the same moment — and
+        // the two together are exactly what Valve's own dialog offers: Skip,
+        // and a Cancel which is this shell's Back. Drawing one of them took a
+        // button off the screen, which is what was reported.
+        let both = scene(
+            Some((11, crate::icons::KEY_ESCAPE)),
+            Some((12, crate::icons::PAD_SOUTH)),
+        );
+        let words: Vec<&str> = both
+            .texts
+            .iter()
+            .map(|text| text.content.as_str())
+            .collect();
+        assert!(words.contains(&"Skip"), "{words:?}");
+        assert!(words.contains(&"Back"), "{words:?}");
+        let at = |word: &str| {
+            both.texts
+                .iter()
+                .find(|text| text.content == word)
+                .map(|text| text.x)
+                .expect("the hint")
+        };
+        let button = |slot: u32| {
+            both.quads
+                .iter()
+                .find(|quad| quad.slot == slot)
+                .map(|quad| quad.x)
+                .expect("the button")
+        };
+        // The way on before the way out, which is the order the start screen's
+        // legend is in — and each button beside its own word rather than the
+        // next one's.
+        assert!(button(12) < at("Skip"), "the skip button is beside Skip");
+        assert!(
+            at("Skip") < button(11),
+            "and Back's button is past that word"
+        );
+        assert!(button(11) < at("Back"));
+
+        // And nothing where the client exposes no interface: it can be watched
+        // compiling shaders and cannot be told to stop, so the screen offers
+        // nothing rather than a press that would do nothing.
+        let watching = scene(None, None);
+        assert!(!watching.texts.iter().any(|text| text.content == "Skip"));
     }
 
     /// The screen dips through black on its way to the game, and the dip is a
@@ -12355,6 +16936,9 @@ mod tests {
                     game: true,
                     logo: None,
                     doing: Some(crate::launch::Doing::Game),
+                    said: None,
+                    back: None,
+                    skip: None,
                     blackout,
                     from: launch_origin(width, height),
                     open: 1.0,
@@ -12416,6 +17000,9 @@ mod tests {
                     game: true,
                     logo: None,
                     doing: Some(crate::launch::Doing::Game),
+                    said: None,
+                    back: None,
+                    skip: None,
                     blackout: 0.0,
                     from: launch_origin(width, height),
                     open,
@@ -12472,6 +17059,9 @@ mod tests {
                 game: true,
                 logo: None,
                 doing: Some(crate::launch::Doing::Game),
+                said: None,
+                back: None,
+                skip: None,
                 blackout: 0.0,
                 from: launch_origin(width, height),
                 open: 1.0,
@@ -17269,6 +21859,7 @@ mod tests {
         // The bubble a program with no icon of its own gets.
         let bell = build_toasts(
             &[ToastCard {
+                body_lines: 1,
                 title: "Something happened",
                 body: "and here is what",
                 icon: Named.glyph(icons::NOTIFICATIONS),
@@ -17290,6 +21881,7 @@ mod tests {
         // wherever it is drawn — the same call, answering the other way.
         let app = build_toasts(
             &[ToastCard {
+                body_lines: 1,
                 title: "Something happened",
                 body: "and here is what",
                 icon: Named.slot_for(Some("an-application")),
@@ -18735,6 +23327,79 @@ mod tests {
             half > settled && half < away,
             "a half-drawn board should be between its two ends: {half}"
         );
+
+        // And the rectangle everything else reads the board's position out of
+        // is the glass itself, at every step of the travel. They are one
+        // number: the text cut under the board is only honest while the two
+        // cannot drift apart.
+        for step in 0..=10 {
+            let arrived = step as f32 / 10.0;
+            let [_, top, _, _] = keyboard_panel_rect_at(1920.0, 1080.0, arrived);
+            assert!(
+                (at(arrived) - top).abs() < 0.01,
+                "at {arrived} the board is drawn at {} and reported at {top}",
+                at(arrived)
+            );
+        }
+    }
+
+    /// The words under the board go when the board is over them, and not one
+    /// frame sooner. Cutting at the settled rectangle emptied every line the
+    /// board was *going* to cover the instant it was summoned, so a chat
+    /// column lost its messages while the keyboard was still off the bottom of
+    /// the display.
+    #[test]
+    fn a_line_keeps_its_words_until_the_board_reaches_it() {
+        let (width, height) = (1920.0, 1080.0);
+        let [px, settled, pw, _] = keyboard_panel_rect(width, height);
+        // A run across the middle of where the board will land, and one well
+        // above it that the board never reaches at all.
+        let line = |y: f32, content: &str| Text {
+            content: content.to_string(),
+            x: px + pw * 0.25,
+            y,
+            size: 20.0,
+            color: [1.0; 4],
+            bold: false,
+            max_width: pw * 0.5,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        };
+        let survives = |arrived: f32, y: f32| {
+            let mut scene = Scene::default();
+            scene.texts.push(line(y, "Invited you to play a game!"));
+            scene.hide_text_behind(keyboard_panel_rect_at(width, height, arrived));
+            scene
+                .texts
+                .iter()
+                .any(|text| text.clip.is_none_or(|[_, _, w, _]| w > 0.0))
+        };
+
+        let under = settled + 20.0;
+        assert!(
+            survives(0.0, under),
+            "the words went while the board was still off the display"
+        );
+        assert!(
+            survives(0.5, under),
+            "the words went while the board was still climbing towards them"
+        );
+        assert!(
+            !survives(1.0, under),
+            "the words print straight through the settled board"
+        );
+
+        // And a line the board stops short of keeps its words at every step of
+        // the rise, including the last.
+        for step in 0..=10 {
+            assert!(
+                survives(step as f32 / 10.0, settled - 40.0),
+                "a line above the board was cut at {step}/10"
+            );
+        }
     }
 
     #[test]
@@ -19212,6 +23877,7 @@ mod tests {
 
     fn bubble(stage: crate::notify::Stage, progress: f32) -> ToastCard<'static> {
         ToastCard {
+            body_lines: 1,
             title: "Download finished",
             glyph: None,
             body: "linux-6.9.tar.xz",
@@ -19357,14 +24023,55 @@ mod tests {
             "the lone line sits on the pane's middle"
         );
 
-        // A body of several lines is cut to one. A bubble that grew to fit
-        // would be a program deciding how much of the screen it may have.
+        // A body is laid out whole rather than cut at its first newline — a
+        // message with a break in it would otherwise lose everything after it
+        // — and the *renderer* is what stops at two lines, on the room the card
+        // was measured for. See [`TOAST_BODY_LEADING`].
         let wordy = ToastCard {
             body: "first line\nsecond line\nthird",
+            body_lines: 2,
             ..bubble(Stage::Sitting, 0.0)
         };
-        let scene = build_toasts(&[wordy], 1920.0, 1080.0, 0.0);
-        assert_eq!(scene.texts[1].content, "first line");
+        let scene = build_toasts(std::slice::from_ref(&wordy), 1920.0, 1080.0, 0.0);
+        assert_eq!(scene.texts[1].content, "first line\nsecond line\nthird");
+        assert_eq!(scene.texts[1].lines, 2, "a body may not take a third line");
+
+        // And the card has grown by exactly one line for the second, so the
+        // words it was given room for are inside it.
+        let [_, one_y, _, one_h] = toast_rects(std::slice::from_ref(&bare), 1920.0, 1080.0)[0];
+        let [_, two_y, _, two_h] = toast_rects(std::slice::from_ref(&wordy), 1920.0, 1080.0)[0];
+        assert_eq!(one_y, two_y, "the bubble grew upwards, off the corner");
+        assert!(two_h > one_h, "a second line was given no room");
+        // The title stays exactly where a one-line bubble puts it: the card
+        // grows downwards, and reading the fractions off the grown height
+        // would have carried the title with it.
+        let one_line = ToastCard {
+            body: "one line",
+            body_lines: 1,
+            ..bubble(Stage::Sitting, 0.0)
+        };
+        let settled = build_toasts(std::slice::from_ref(&one_line), 1920.0, 1080.0, 0.0);
+        let title = &scene.texts[0];
+        let body = &scene.texts[1];
+        assert_eq!(
+            title.y, settled.texts[0].y,
+            "the title moved when the card grew"
+        );
+        assert_eq!(body.y, settled.texts[1].y, "the first line of body moved");
+        assert!(
+            body.y + body.size * 2.5 <= two_y + two_h,
+            "the second line is drawn past the foot of the card"
+        );
+
+        // A body that fits on one line leaves the card exactly the size it has
+        // always been.
+        let short = ToastCard {
+            body: "hi",
+            body_lines: 1,
+            ..bubble(Stage::Sitting, 0.0)
+        };
+        let [_, _, _, short_h] = toast_rects(std::slice::from_ref(&short), 1920.0, 1080.0)[0];
+        assert_eq!(short_h, one_h);
     }
 
     /// Both lines are ringed in shade, and the glass behind them is left
@@ -22239,5 +26946,250 @@ mod tests {
             "the file is as loud as the folder above it"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An atlas that can tell a game's own icon from its cover, so a test can
+    /// say which of the two the card actually drew.
+    struct GamePictures {
+        icon: Option<u32>,
+        cover: Option<u32>,
+    }
+
+    impl SlotLookup for GamePictures {
+        fn slot_for(&self, icon: Option<&str>) -> Option<u32> {
+            Some(Named::slot_of(icon.unwrap_or_default()))
+        }
+        fn glyph(&self, name: &str) -> Option<u32> {
+            Some(Named::slot_of(name))
+        }
+        fn cover(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
+            self.cover.map(|slot| crate::gpu::Thumb {
+                slot,
+                aspect: 600.0 / 900.0,
+                covers: [1.0, 1.0],
+            })
+        }
+        fn game_icon(&self, _app_id: u32) -> Option<crate::gpu::Thumb> {
+            self.icon.map(|slot| crate::gpu::Thumb {
+                slot,
+                aspect: 1.0,
+                covers: [1.0, 1.0],
+            })
+        }
+    }
+
+    /// A menu with a download in the corner of it, fully arrived.
+    fn menu_with_a_download(share: Option<f32>, stuck: bool) -> Guide {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        guide.set_downloading(Some(crate::steam::Coming {
+            app_id: 945360,
+            name: "Among Us".to_string(),
+            verb: "Downloading",
+            share,
+            stuck,
+            a_download: true,
+        }));
+        while guide.animate_download(0.05) < 1.0 {}
+        guide
+    }
+
+    /// The card stands in the far corner from the sidebar and inside the
+    /// display, and it never touches the column.
+    ///
+    /// It is allowed to stand on a window card — that is what the concept it
+    /// was drawn from shows — and it is not allowed to stand on the menu: the
+    /// column is what the user is driving, and a panel over the entry they are
+    /// about to press would be the shell covering its own controls.
+    #[test]
+    fn the_download_card_stands_in_the_far_corner_from_the_column() {
+        for (width, height) in [(1920.0, 1080.0), (1280.0, 800.0), (3840.0, 2160.0)] {
+            let ([x, y, w, h], alpha) = guide_download_rect(width, height, 1.0);
+            assert_eq!(alpha, 1.0);
+            assert!(x > 0.0 && y > 0.0, "inside the display at {width}x{height}");
+            assert!(
+                x + w < width && y + h < height,
+                "and off both far edges at {width}x{height}"
+            );
+            let sidebar = lxb_protocol::overview::sidebar_width(width as f64) as f32;
+            assert!(
+                x > sidebar,
+                "the card must not reach the column at {width}x{height}"
+            );
+            // Hard against the bottom-right, by the standoff the bubbles use in
+            // the opposite corner.
+            let inset = ARRIVING_INSET * guide_scale(height);
+            assert!((width - (x + w) - inset).abs() < 0.01);
+            assert!((height - (y + h) - inset).abs() < 0.01);
+        }
+    }
+
+    /// It comes in from off the edge it will leave by, so it is never seen cut
+    /// in half by the side of the display.
+    #[test]
+    fn the_download_card_comes_in_from_off_the_edge() {
+        let (gone, invisible) = guide_download_rect(1920.0, 1080.0, 0.0);
+        assert_eq!(invisible, 0.0);
+        assert!(gone[0] >= 1920.0, "fully off the display before it arrives");
+
+        let (part, faint) = guide_download_rect(1920.0, 1080.0, 0.5);
+        let (settled, _) = guide_download_rect(1920.0, 1080.0, 1.0);
+        assert!(faint > 0.0 && faint < 1.0);
+        assert!(part[0] > settled[0] && part[0] < gone[0]);
+        // Only sideways: a card that also rose or fell would be two movements
+        // for one arrival.
+        assert_eq!(part[1], settled[1]);
+    }
+
+    /// The card wears Steam's own icon for the game, the cover where that has
+    /// not arrived, and the Steam mark where there is neither — never a hole.
+    #[test]
+    fn the_download_card_wears_the_game_s_own_picture() {
+        let guide = menu_with_a_download(Some(0.33), false);
+        let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
+        let drawn = |slots: &dyn SlotLookup| -> Vec<u32> {
+            guide_scene_with(&guide, None, None, &[], None, slots, 0.0)
+                .quads
+                .into_iter()
+                .filter(|quad| quad.x >= x && quad.y >= y && quad.x < x + w && quad.y < y + h)
+                .map(|quad| quad.slot)
+                .collect()
+        };
+
+        let icon = drawn(&GamePictures {
+            icon: Some(71),
+            cover: Some(72),
+        });
+        assert!(icon.contains(&71), "the game's own icon comes first");
+        assert!(!icon.contains(&72), "and the cover is not drawn as well");
+
+        let cover = drawn(&GamePictures {
+            icon: None,
+            cover: Some(72),
+        });
+        assert!(cover.contains(&72), "the cover stands in until it arrives");
+
+        let neither = drawn(&GamePictures {
+            icon: None,
+            cover: None,
+        });
+        assert!(
+            neither.contains(&Named::slot_of(icons::STEAM)),
+            "and the Steam mark stands in for that: never an empty square"
+        );
+    }
+
+    /// What the card says, and the reading on the end of its bar.
+    #[test]
+    fn the_download_card_says_what_is_coming_and_how_far() {
+        let slots = GamePictures {
+            icon: Some(71),
+            cover: None,
+        };
+        let said = |share: Option<f32>| -> Vec<String> {
+            let guide = menu_with_a_download(share, false);
+            let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
+            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0)
+                .texts
+                .into_iter()
+                .filter(|text| text.x >= x && text.y >= y && text.x < x + w && text.y < y + h)
+                .map(|text| text.content)
+                .collect()
+        };
+
+        assert_eq!(
+            said(Some(0.33)),
+            vec!["Downloading Among Us".to_string(), "33%".to_string()]
+        );
+        // Nought per cent is not a reading — see `library::fraction`. The card
+        // still goes up, and says the half it has: something is coming down and
+        // Valve's client has not yet said how far.
+        assert_eq!(said(None), vec!["Downloading Among Us".to_string()]);
+    }
+
+    /// A card with nothing to report draws the groove and nothing in it, and
+    /// one whose download has stopped keeps its reading and goes quiet — the
+    /// same two rules the bar on the game's own row is under.
+    #[test]
+    fn the_card_s_bar_says_only_what_is_known() {
+        let slots = GamePictures {
+            icon: Some(71),
+            cover: None,
+        };
+        let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
+        let bars = |share: Option<f32>, stuck: bool| -> Vec<f32> {
+            let guide = menu_with_a_download(share, stuck);
+            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0)
+                .quads
+                .into_iter()
+                .filter(|quad| {
+                    quad.x >= x
+                        && quad.y >= y
+                        && quad.x < x + w
+                        && quad.y < y + h
+                        && quad.slot == SOLID_SLOT
+                        && (quad.h - ROW_PROGRESS_TRACK * guide_scale(1080.0)).abs() < 0.01
+                })
+                .map(|quad| quad.color[3])
+                .collect()
+        };
+
+        let waiting = bars(None, false);
+        assert_eq!(waiting.len(), 1, "the groove alone, with nothing in it");
+        let going = bars(Some(0.33), false);
+        assert_eq!(going.len(), 2);
+        let stalled = bars(Some(0.33), true);
+        assert_eq!(stalled.len(), 2);
+        assert!(
+            stalled[1] < going[1],
+            "a download that has stopped stops looking as though it has not"
+        );
+    }
+
+    /// The card takes away the words it is standing on.
+    ///
+    /// A scene is all of its quads and then all of its text, so a panel that
+    /// did not do this would have the window card's title printed straight
+    /// through its glass. See `Scene::hide_text_behind`.
+    #[test]
+    fn the_download_card_cuts_the_words_it_stands_on() {
+        let ([x, y, w, _], _) = guide_download_rect(1920.0, 1080.0, 1.0);
+        let mut scene = Scene::default();
+        scene.texts.push(Text {
+            content: "a window's title".to_string(),
+            x: x + w * 0.25,
+            y: y + 10.0,
+            size: 18.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            bold: false,
+            max_width: w * 0.5,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+        hide_text_under_guide_download(&mut scene, 1920.0, 1080.0, 1.0);
+        assert!(scene.texts.is_empty(), "wholly behind it, so wholly gone");
+
+        // And a card that is not on screen takes nothing away.
+        let mut none = Scene::default();
+        none.texts.push(Text {
+            content: "a window's title".to_string(),
+            x: x + w * 0.25,
+            y: y + 10.0,
+            size: 18.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            bold: false,
+            max_width: w * 0.5,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+        });
+        hide_text_under_guide_download(&mut none, 1920.0, 1080.0, 0.0);
+        assert_eq!(none.texts.len(), 1);
     }
 }

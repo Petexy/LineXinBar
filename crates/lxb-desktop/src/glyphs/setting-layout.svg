@@ -1,0 +1,34 @@
+<!--
+  Settings > Input > Keyboard > Keyboard layout: a flag.
+
+  What the row asks is which country's keyboard this is, and the tree behind it
+  is continents and then countries. A flag is the mark for that in every set
+  there has ever been, and the two marks it might otherwise have worn are both
+  spoken for: a globe is category-internet.svg, and a keyboard is
+  setting-input.svg two columns above this one.
+
+  Waved rather than rectangular, and the wave is not decoration: a plain
+  rectangle on a staff is a bookmark, a label and a bar chart before it is a
+  flag. Both edges carry the same wave, so the cloth is the same thickness
+  everywhere and no part of it thins under the bevel.
+
+  The staff runs past the cloth at both ends. A flag whose pole stopped at the
+  cloth would be a shape with one corner, and the overhang is what says which
+  end is held.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <rect x="6.4" y="4.4" width="2.4" height="23.2" rx="1.2"/>
+    <path d="M8.8 6.2
+             C 13.2 4.0, 17.4 8.4, 21.8 6.2
+             C 23.0 5.6, 24.2 5.6, 25.0 6.0
+             L 25.0 15.4
+             C 24.2 15.0, 23.0 15.0, 21.8 15.6
+             C 17.4 17.8, 13.2 13.4, 8.8 15.6
+             Z"/>
+  </g>
+</svg>

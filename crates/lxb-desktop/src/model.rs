@@ -141,6 +141,19 @@ pub enum Action {
     /// the shell is showing, and while an application owns the screen there is
     /// nothing of the shell's for it to be about.
     Menu,
+    /// Raise or dismiss the Steam friends list: who the account knows, and
+    /// where each of them is, on a column down the right of the screen.
+    ///
+    /// The left-hand face button, and Shift on a keyboard. Deliberately *not*
+    /// honoured from outside, for the reason [`Action::Menu`] is not: it is one
+    /// of the shell's own screens, and a game holding the display is a game
+    /// whose own left-hand face button this would be taking.
+    ///
+    /// It takes every direction while it is up. That is the whole of what makes
+    /// it a panel rather than a second thing on the same screen: the list is a
+    /// column of names on the right and the bar is a column of rows on the
+    /// left, and a press that could have meant either would mean neither.
+    Friends,
     /// Hand control to the previous / next display.
     PrevScreen,
     NextScreen,
@@ -152,6 +165,30 @@ pub enum Action {
     /// worked on the shell's own screens would work everywhere except where it
     /// is wanted.
     Screenshot,
+    /// Announce a message from whoever is selected on the friends panel, as
+    /// though one had arrived.
+    ///
+    /// **`--debug-actions message` only, and nothing sends it.** A chat toast
+    /// cannot be photographed on demand any other way: it needs somebody else
+    /// to write, and the one thing this shell cannot arrange is another person.
+    /// So this raises the announcement — the sender's name, their face, and a
+    /// body — through the one function that raises a real one, and reaches
+    /// Steam not at all.
+    PretendAMessage,
+    /// Ask Valve's own overlay to come up over the game in front.
+    ///
+    /// Honoured from outside for the plainest reason of the four: there is
+    /// nowhere else it can be asked from. A game holding the screen is the
+    /// only state this means anything in.
+    ///
+    /// It exists because the shell takes the guide button, which is the button
+    /// Steam's overlay is opened with on every other console-shaped machine.
+    /// Taking a control away and putting nothing in its place would be this
+    /// shell deciding that nobody may reach Steam's friends list, its browser
+    /// or its guides while playing — which is not a decision a shell gets to
+    /// make about somebody else's application. So the button is still the
+    /// shell's, and the overlay is a chord on it.
+    SteamOverlay,
     /// Hand the guide's own directions to the videos floating over it, and take
     /// them back.
     ///
@@ -183,6 +220,17 @@ pub enum Action {
 /// [`Cursor`], but there is only one catalogue and one set of running children.
 pub struct Lattice {
     pub categories: Vec<Category>,
+
+    /// The applications taken off the bar, which no column draws and the rest
+    /// of the shell still knows about.
+    ///
+    /// One of them at the time of writing: *Pictures*, which has no tile
+    /// because it is reached from the menu over the shelf of photographs it is
+    /// for. It is still what a photograph opens in, still on the Open with
+    /// list, and still the answer to "what handles `image/png`" — which is why
+    /// it is set aside rather than dropped. See
+    /// [`crate::apps::take_off_the_bar`].
+    pub aside: Vec<crate::apps::App>,
 
     /// Socket selected before connecting the shell. Child applications are
     /// pinned to the same socket instead of inheriting a nested host display.
@@ -446,6 +494,7 @@ impl Lattice {
     ) -> Self {
         Self {
             categories,
+            aside: Vec::new(),
             wayland_display,
             xwayland_display,
             launched_apps: Vec::new(),
@@ -495,11 +544,69 @@ impl Lattice {
         let entry = app.path.clone();
         let command = app.exec.clone();
         let terminal = app.terminal;
+        // The one entry on this bar that is not simply a reader of controllers.
+        // It is only ever here on a session whose Steam integration is off —
+        // with it on, the shell's own row replaces this one and the client is
+        // started by the integration, which asks the same question its own way.
+        // Asked by the same test that takes the entry off the bar in the other
+        // case, so the two cannot come to different conclusions about which
+        // row is Valve's. See [`crate::apps::hide_steam_client`].
+        let pads = match app.owns_window("steam") {
+            true => Pads::ForValvesClient,
+            false => Pads::ForAnApplication,
+        };
         tracing::info!(app = %name, entry = %entry.display(), "launching");
 
         match launch(
             &command,
             terminal,
+            pads,
+            &self.wayland_display,
+            self.xwayland_display.as_deref(),
+        ) {
+            Ok(child) => {
+                let pid = child.id();
+                tracing::info!(app = %name, command, pid, "application process started");
+                self.launched_apps.push(LaunchedApp {
+                    name,
+                    command,
+                    child,
+                    started_at: Instant::now(),
+                    wait_error_reported: false,
+                    played: None,
+                });
+                Some(pid)
+            }
+            Err(err) => {
+                tracing::warn!(app = %name, command, ?err, "failed to start application");
+                None
+            }
+        }
+    }
+
+    /// Start one of the applications the bar does not carry.
+    ///
+    /// Launched on exactly the terms a tile's press launches one: the same
+    /// command line, the same environment, and filed in `launched_apps` under
+    /// its own name so the guide can close it like anything else. The only
+    /// difference is where the press came from — a row on the menu over a
+    /// shelf, rather than a tile — and that is not a difference the launch
+    /// should be able to tell.
+    ///
+    /// No file is handed to it. The application this is for opens the user's
+    /// pictures folder when it is given nothing, which is the whole of what
+    /// the row means.
+    pub fn launch_aside(&mut self, app_id: &str) -> Option<u32> {
+        let app = self.aside.iter().find(|app| app.owns_window(app_id))?;
+        let name = app.name.clone();
+        let command = app.exec.clone();
+        let terminal = app.terminal;
+        tracing::info!(app = %name, command, "launching an application that is not on the bar");
+
+        match launch(
+            &command,
+            terminal,
+            Pads::ForAnApplication,
             &self.wayland_display,
             self.xwayland_display.as_deref(),
         ) {
@@ -565,7 +672,7 @@ impl Lattice {
     /// what Close should offer to end. The program behind it is in the log,
     /// which is where the question "why did that open in VLC" is answered.
     fn open_media(&mut self, file: &crate::media::File) -> Option<u32> {
-        let opening = crate::media::opening(&file.path, file.mime, &self.categories)?;
+        let opening = crate::media::opening(&file.path, file.mime, &self.categories, &self.aside)?;
         self.open_media_with(file, opening)
     }
 
@@ -595,8 +702,10 @@ impl Lattice {
         };
         // The borrow of the catalogue ends with this line: what comes out is
         // an owned command line, and starting it needs the catalogue mutably.
-        let opening =
-            crate::media::opening_with(&path, crate::media::entry_named(entry, &self.categories)?);
+        let opening = crate::media::opening_with(
+            &path,
+            crate::media::entry_named(entry, &self.categories, &self.aside)?,
+        );
         tracing::info!(
             file = %path.display(),
             with = %opening.name,
@@ -612,7 +721,7 @@ impl Lattice {
     /// sees: a shelved song is titled without its extension and this is titled
     /// with it, which is what the column it was pressed in is *for*.
     fn open_file(&mut self, file: &crate::files::Item) -> Option<u32> {
-        let opening = crate::media::opening(&file.path, file.mime, &self.categories)?;
+        let opening = crate::media::opening(&file.path, file.mime, &self.categories, &self.aside)?;
         self.open_path_with(&file.path, &file.name, opening, None)
     }
 
@@ -649,6 +758,7 @@ impl Lattice {
         match launch(
             &opening.command,
             false,
+            Pads::ForAnApplication,
             &self.wayland_display,
             self.xwayland_display.as_deref(),
         ) {
@@ -689,6 +799,7 @@ impl Lattice {
         match launch(
             &opening.command,
             false,
+            Pads::ForAnApplication,
             &self.wayland_display,
             self.xwayland_display.as_deref(),
         ) {
@@ -733,6 +844,15 @@ impl Lattice {
     /// Matching is [`App::owns_window`]'s, the same question the bar asks
     /// before starting anything, so a window can never be one application's
     /// when it is being brought back and another's when it is being closed.
+    ///
+    /// The applications held [`aside`] are searched after the tree. They are
+    /// installed and can be running like any other — they simply have no tile —
+    /// and a window nobody claims is named by the machine's spelling of its
+    /// `app_id`, so leaving them out is how the guide comes to offer "Close
+    /// Imagonsole" over a window every other part of the session calls
+    /// Pictures.
+    ///
+    /// [`aside`]: Self::aside
     pub fn app_for_window(&self, app_id: &str) -> Option<&App> {
         fn search<'a>(entries: &'a [Entry], app_id: &str) -> Option<&'a App> {
             entries.iter().find_map(|entry| match entry {
@@ -746,6 +866,7 @@ impl Lattice {
         self.categories
             .iter()
             .find_map(|category| search(&category.entries, app_id))
+            .or_else(|| self.aside.iter().find(|app| app.owns_window(app_id)))
     }
 
     /// Whether the process behind `pid` is one of ours and still running.
@@ -1736,6 +1857,80 @@ impl Cursor {
         }
     }
 
+    /// The whole bar has been read off the disk again. Keep this cursor where
+    /// it was standing, by the name of the column rather than by its number.
+    ///
+    /// `before` is what the columns were called, in the order they were in,
+    /// taken before the rebuild. Everything a cursor holds about the bar is an
+    /// index into that list — which column it is in, and which row it left
+    /// behind in each of the others — so a rebuild that moved a column would
+    /// otherwise leave every one of those numbers pointing at somebody else's.
+    ///
+    /// Its own method rather than a call to [`Self::category_removed`] and
+    /// [`Self::category_added`], because those answer *one* column coming or
+    /// going and this is a list that may have changed in several places at
+    /// once: turning the Steam integration off takes a column away and puts a
+    /// row back in another one, which can bring a third column back from empty.
+    ///
+    /// The path *inside* the current column is left exactly as it is. A user
+    /// who presses a row three levels down Settings is standing on that row
+    /// when the bar is rebuilt under them, and a cursor thrown back to the top
+    /// of the column would look like the press had gone wrong. What keeps that
+    /// honest is [`Self::keep_in_bounds`], which the caller runs after this.
+    ///
+    /// Placed rather than travelled, like [`Self::category_removed`]: the bar
+    /// was rebuilt, the user did not go anywhere.
+    pub fn recolumned(&mut self, before: &[&str], lattice: &Lattice) {
+        // A bar with nothing on it is not something this shell can be built
+        // from — every scan puts the Settings column up — and it is still what
+        // every index below would be reaching into. Said as an early return
+        // rather than left to `min`, which would clamp to row zero of a column
+        // that is not there.
+        if lattice.categories.is_empty() {
+            return;
+        }
+        let standing = before.get(self.selected_category).copied();
+        // What each column had been left on, under the name it goes by. A
+        // column that was not there before this rebuild has been stood in by
+        // nobody, which is what `None` means here and is not row zero of it —
+        // see [`Self::selected_items`].
+        let remembered: Vec<(&str, Option<usize>)> = before
+            .iter()
+            .copied()
+            .zip(self.selected_items.iter().copied())
+            .collect();
+        self.selected_items = lattice
+            .categories
+            .iter()
+            .map(|column| {
+                remembered
+                    .iter()
+                    .find(|(name, _)| *name == column.id)
+                    .and_then(|(_, row)| *row)
+            })
+            .collect();
+
+        let last = lattice.categories.len().saturating_sub(1);
+        self.selected_category = standing
+            .and_then(|id| lattice.categories.iter().position(|column| column.id == id))
+            // The column it was in has gone with the rebuild, which is what
+            // happens to whoever is standing in the Steam library when the
+            // integration is turned off. The column that closed the gap is
+            // where a struck-out line leaves a finger, and it is the same
+            // answer [`Self::category_removed`] gives.
+            .unwrap_or_else(|| self.selected_category.min(last));
+        self.selected_category = self.selected_category.min(last);
+        self.category_position = self.selected_category as f32;
+        self.category_speed = 0.0;
+        // And if the column really did go, the path into it went with it: a
+        // stack of rows belonging to a library that is no longer on the bar is
+        // a path to nowhere.
+        if standing.is_none_or(|id| id != lattice.categories[self.selected_category].id) {
+            self.leave_subcolumns();
+            self.rest_on_first_row(lattice);
+        }
+    }
+
     /// Go to one column by name, from wherever the cursor is.
     ///
     /// Travelled rather than placed, unlike everything above: this is a move
@@ -2139,6 +2334,29 @@ impl Cursor {
     }
 }
 
+/// Which of the two controller lists a program is started with.
+///
+/// One program on this machine is not simply a reader of pads, and it is
+/// exactly the one a shell with its Steam integration turned off starts like
+/// anything else: Valve's client is the *other driver* of the pad this shell
+/// reads from `hidraw`, and the only road a Steam game has to it. Handing it
+/// the ordinary list takes that pad off the client altogether, and every game
+/// it launches with it — which is a controller that quietly stops working, in a
+/// session where nothing looks wrong.
+///
+/// So the two lists are named here rather than assumed, and the choice is made
+/// where the program is known. See
+/// [`crate::pad_guard::hidapi_ignore_list_for_valves_client`], where the
+/// difference between them is argued and measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pads {
+    /// Everything this shell starts, which reads controllers and nothing more.
+    ForAnApplication,
+    /// Valve's client, whichever way it was started: from its own `.desktop`
+    /// entry on a bar with no Steam integration, or by the integration itself.
+    ForValvesClient,
+}
+
 /// Start an application in an independent process session.
 ///
 /// LineXinBar retains the returned handle only to collect its exit status. A
@@ -2147,6 +2365,7 @@ impl Cursor {
 pub fn launch(
     command: &str,
     terminal: bool,
+    pads: Pads,
     wayland_display: &OsStr,
     xwayland_display: Option<&OsStr>,
 ) -> io::Result<Child> {
@@ -2172,7 +2391,7 @@ pub fn launch(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    confine_to_session(&mut cmd, wayland_display, xwayland_display);
+    confine_to_session(&mut cmd, pads, wayland_display, xwayland_display);
 
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -2370,6 +2589,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// is accepted only through LineXinBar's explicit private-XWayland marker.
 fn confine_to_session(
     command: &mut Command,
+    pads: Pads,
     wayland_display: &OsStr,
     xwayland_display: Option<&OsStr>,
 ) {
@@ -2387,7 +2607,10 @@ fn confine_to_session(
             .env_remove("LXB_XWAYLAND_DISPLAY");
     }
 
-    hide_guarded_pads_from_hidapi(command);
+    match pads {
+        Pads::ForAnApplication => hide_guarded_pads_from_hidapi(command),
+        Pads::ForValvesClient => hide_guarded_pads_from_valves_client(command),
+    }
 }
 
 /// Tell SDL to read the pads this shell is guarding through `/dev/input`,
@@ -3101,6 +3324,29 @@ mod tests {
         assert!(lattice.app_for_window("   ").is_none());
     }
 
+    /// An application with no tile is still an installed application, and the
+    /// guide has to be able to name the window it puts on the screen. Without
+    /// this the photo viewer's own window was traced back to nothing, and the
+    /// entry that closes it read "Close Imagonsole" over a window the loading
+    /// screen, the bar's menu and the desktop entry all call Pictures.
+    #[test]
+    fn and_so_is_a_window_of_an_application_that_was_taken_off_the_bar() {
+        let mut lattice = installed();
+        let mut viewer = app("Pictures");
+        viewer.wm_class = Some("imagonsole".into());
+        lattice.aside = vec![viewer];
+
+        assert_eq!(
+            lattice
+                .app_for_window("imagonsole")
+                .map(|app| app.name.as_str()),
+            Some("Pictures")
+        );
+        // And it is still only that window: holding one aside does not make it
+        // the answer for everything the tree has never heard of.
+        assert!(lattice.app_for_window("some-game").is_none());
+    }
+
     fn settle(cursor: &mut Cursor) {
         while cursor.animate(1.0 / 60.0) {}
     }
@@ -3395,12 +3641,16 @@ mod tests {
     /// A row in somebody's Steam library.
     fn game(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(crate::apps::Game {
+            progress: None,
             app_id,
             name: name.into(),
             note: String::new(),
             installed,
             updating: false,
             steam_client: true,
+            standing: lxb_steam::library::Standing::Ready,
+            stuck: false,
+            waiting_for_steam: false,
         })
     }
 
@@ -3973,6 +4223,79 @@ mod tests {
         cursor.category_added(3);
         assert_eq!(cursor.selected_category, 2);
         assert_eq!(cursor.category_position, settled + 1.0);
+    }
+
+    /// The whole bar can be read off the disk again under a user who is
+    /// standing in it — turning the Steam integration off takes one column away
+    /// and puts a row back in another — and the cursor keeps its place by name.
+    #[test]
+    fn a_bar_rebuilt_underneath_a_cursor_keeps_its_place_by_name() {
+        let before: Vec<&str> = vec!["settings", "steam", "games"];
+        let bar = |ids: &[&'static str]| {
+            Lattice::with_wayland_display(
+                ids.iter()
+                    .map(|id| Category {
+                        id,
+                        title: "column",
+                        icon: "column",
+                        entries: vec![entry("one"), entry("two"), entry("three")],
+                    })
+                    .collect(),
+                OsString::from("lxb-test"),
+            )
+        };
+
+        // Standing on the third row of Games, with a row remembered in Steam.
+        let held = bar(&before);
+        let mut cursor = cursor(&held);
+        cursor.selected_category = 1;
+        assert!(cursor.point_at_row(2, &held));
+        cursor.selected_category = 2;
+        assert!(cursor.point_at_row(1, &held));
+
+        // Steam goes. Games is where it was, under a smaller number.
+        let now = bar(&["settings", "games"]);
+        cursor.recolumned(&before, &now);
+        assert_eq!(cursor.selected_category, 1, "the same column by name");
+        assert_eq!(cursor.category_position, 1.0, "placed, not travelled");
+        assert_eq!(cursor.selected_item(), 1, "and the same row of it");
+        assert_eq!(cursor.selected_items.len(), now.categories.len());
+
+        // And what Steam had been left on is not inherited by whoever took its
+        // number, which is the whole reason this is done by name.
+        cursor.selected_category = 0;
+        assert_eq!(cursor.selected_item(), 0, "Settings was never stood in");
+    }
+
+    /// The column somebody was standing in can be the one that goes. They land
+    /// on the one that closed the gap, at the top of it, which is what a paper
+    /// list does when a line is struck out.
+    #[test]
+    fn a_cursor_in_the_column_that_went_lands_on_the_one_that_replaced_it() {
+        let before: Vec<&str> = vec!["settings", "steam", "games"];
+        let bar = |ids: &[&'static str]| {
+            Lattice::with_wayland_display(
+                ids.iter()
+                    .map(|id| Category {
+                        id,
+                        title: "column",
+                        icon: "column",
+                        entries: vec![entry("one"), entry("two"), entry("three")],
+                    })
+                    .collect(),
+                OsString::from("lxb-test"),
+            )
+        };
+        let held = bar(&before);
+        let mut cursor = cursor(&held);
+        cursor.selected_category = 1;
+        assert!(cursor.point_at_row(2, &held));
+
+        let now = bar(&["settings", "games"]);
+        cursor.recolumned(&before, &now);
+        assert_eq!(cursor.selected_category, 1, "Games closed the gap");
+        assert_eq!(cursor.selected_item(), 0, "at the top of it");
+        assert_eq!(cursor.depth(), 0, "and out of any path into the old one");
     }
 
     /// The trap this avoids: the shell's own Settings column is subcategories
@@ -4986,8 +5309,14 @@ mod tests {
 
     #[test]
     fn launch_exposes_the_real_command_exit_status() {
-        let mut child = launch("exit 23", false, OsStr::new("lxb-test"), None)
-            .expect("the shell command should spawn");
+        let mut child = launch(
+            "exit 23",
+            false,
+            Pads::ForAnApplication,
+            OsStr::new("lxb-test"),
+            None,
+        )
+        .expect("the shell command should spawn");
 
         let status = child.wait().expect("the command should be waitable");
         assert_eq!(status.code(), Some(23));
@@ -5087,7 +5416,12 @@ mod tests {
             .env("WAYLAND_SOCKET", "23")
             .env("DISPLAY", ":1");
 
-        confine_to_session(&mut command, OsStr::new("lxb-test"), None);
+        confine_to_session(
+            &mut command,
+            Pads::ForAnApplication,
+            OsStr::new("lxb-test"),
+            None,
+        );
 
         let get = |key: &str| {
             command
@@ -5110,6 +5444,7 @@ mod tests {
 
         confine_to_session(
             &mut command,
+            Pads::ForAnApplication,
             OsStr::new("lxb-test"),
             Some(OsStr::new(":62")),
         );

@@ -53,6 +53,11 @@ pub struct X11Backend {
 }
 
 impl X11Backend {
+    /// Draw the compositor's own cursor at this many logical pixels.
+    pub fn set_cursor_size(&mut self, size: u32) {
+        self.cursor.set_size(size);
+    }
+
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> Result<(), ImportError> {
         self.renderer
             .import_dmabuf(dmabuf, None)

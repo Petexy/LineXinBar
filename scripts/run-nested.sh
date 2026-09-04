@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Start LineXinBar nested inside the current session with the desktop shell, for
+# Start LineXinBar nested inside the current session with the XMB shell, for
 # development. Both processes are killed when this script exits.
 #
 # Usage:

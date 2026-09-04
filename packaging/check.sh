@@ -113,6 +113,16 @@ if [[ "$build" == true ]]; then
     package_note "building the release binaries"
     cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" \
         --release --locked --workspace --bins
+
+    # And what the controller tests could actually reach here, which is a fact
+    # about the machine a release is being built on rather than about the
+    # package. It is validated with the package because that is where it is
+    # read: `cargo test` counts a skipped test as a pass, so a release built
+    # without a controller reported full coverage of the controller work and
+    # had none of it. See packaging/device-report.sh.
+    "$PACKAGING_DIR/device-report.sh"
+else
+    package_note "skipping the device report, which needs a build"
 fi
 
 work="$(package_work_dir linexinbar-check)"
@@ -245,6 +255,33 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$handler"
 fi
 
+# The two device nodes the shell opens itself. Neither is granted to anybody by
+# default, and a package that forgets the rule is not a package that fails: it
+# is a shell whose controller handling half works, on a machine where nothing
+# says why. The Steam Controller's pad is simply unreadable, and without
+# /dev/uinput the guard gives up and leaves every other pad's Guide button
+# reaching games as well as the shell.
+#
+# Checked by what it grants rather than by existing, because a rules file that
+# matches nothing is the same as no rules file and looks nothing like it.
+rules="$stage/usr/lib/udev/rules.d/70-linexinbar-input.rules"
+[[ -f "$rules" ]] || package_die "the input device rules were not staged"
+[[ -f "$work/desktop/usr/lib/udev/rules.d/70-linexinbar-input.rules" ]] \
+    || package_die "the input device rules are not in the desktop component, which opens them"
+grep -q 'KERNEL=="uinput".*TAG+="uaccess"' "$rules" \
+    || package_die "the rules no longer grant /dev/uinput to the seat"
+grep -q 'OPTIONS+="static_node=uinput"' "$rules" \
+    || package_die "the uinput rule would not apply before the module is loaded"
+grep -q '28de.*1304.*TAG+="uaccess"' "$rules" \
+    || package_die "the rules no longer grant the Steam Controller's hidraw to the seat"
+if command -v udevadm >/dev/null 2>&1; then
+    # Syntax only. `verify` reads the file and says what it could not parse,
+    # which is the one kind of mistake in here that is otherwise invisible
+    # until somebody plugs a controller in.
+    udevadm verify --resolve-names=never "$rules" >/dev/null \
+        || package_die "udev will not accept $rules"
+fi
+
 source_theme="$PROJECT_ROOT/share/icons/Bibata-Modern-Classic"
 staged_theme="$stage/usr/share/icons/Bibata-Modern-Classic"
 source_links="$(find "$source_theme" -type l | wc -l | tr -d ' ')"
@@ -270,18 +307,25 @@ package_note "checking the Fedora file lists against the staged payload"
 spec_entries() {
     awk '
         /^%files/ { inside = 1; next }
-        /^%(changelog|prep|build|check|install|package|description)/ { inside = 0 }
+        /^%(changelog|prep|build|check|install|package|description|pre|post|preun|postun)/ { inside = 0 }
         !inside { next }
         # Comments, blank lines, and the two directives RPM satisfies from the
         # source tree rather than from the buildroot.
         /^[[:space:]]*(#|$)/ { next }
         /^%(license|doc)[[:space:]]/ { next }
-        { sub(/^%dir[[:space:]]+/, ""); print }
+        {
+            entry = $0
+            kind = "path"
+            if (entry ~ /^%dir[[:space:]]/) { kind = "dir"; sub(/^%dir[[:space:]]+/, "", entry) }
+            sub(/^%config\([^)]*\)[[:space:]]+/, "", entry)
+            sub(/^%config[[:space:]]+/, "", entry)
+            print kind "\t" entry
+        }
     ' "$PACKAGING_DIR/fedora/lxb-desktop.spec"
 }
 
 : > "$work/spec.list"
-while IFS= read -r entry; do
+while IFS=$'\t' read -r kind entry; do
     entry="$(printf '%s\n' "$entry" | sed \
         -e 's|%{_bindir}|/usr/bin|g' \
         -e 's|%{_datadir}|/usr/share|g' \
@@ -293,6 +337,13 @@ while IFS= read -r entry; do
 Teach spec_entries the macro rather than leaving the entry unchecked."
     fi
     entry="${entry%/}"
+    if [[ "$kind" == dir ]]; then
+        # %dir packages the directory itself and none of its contents, so it
+        # covers nothing: a file under it still needs an entry of its own.
+        [[ -d "$stage$entry" ]] \
+            || package_die "fedora/lxb-desktop.spec packages the directory $entry, which nothing creates"
+        continue
+    fi
     if [[ -d "$stage$entry" ]]; then
         (cd "$stage" && find ".$entry" \( -type f -o -type l \) -printf '%p\n') \
             | sed 's|^\./||' >> "$work/spec.list"

@@ -682,7 +682,7 @@ mod tests {
         #[test]
         fn a_press_goes_in_and_comes_out_of_dev_input_without_the_guide_button() {
             if !uinput_works() {
-                eprintln!("skipped: /dev/uinput cannot be opened here");
+                crate::skipped("/dev/uinput cannot be opened here");
                 return;
             }
 
@@ -749,7 +749,7 @@ mod tests {
         #[test]
         fn the_kernel_agrees_it_is_a_controller_of_xboxs_shape() {
             if !uinput_works() {
-                eprintln!("skipped: /dev/uinput cannot be opened here");
+                crate::skipped("/dev/uinput cannot be opened here");
                 return;
             }
 

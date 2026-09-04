@@ -1,0 +1,28 @@
+<!--
+  How far one turn of a wheel carries the page: an arrow going down it, with the
+  air going past.
+
+  The same two runs setting-cursor-speed.svg carries, and for the same reason —
+  they are what a speed looks like on this page. What differs is the thing being
+  moved: a plain arrow, because what scrolls is the page and not the pointer.
+
+  Downwards, which is the direction a page is read in and the one a wheel is
+  rolled in most. Which way it goes is the row below this one and is
+  deliberately not said here: an arrow that argued about its own direction would
+  be answering the next question on the page.
+
+  Shaft and head are one body with no gap between them, which is right — they
+  are one arrow, and the field is meant to read them as one.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <rect x="18.6" y="5.4" width="2.9" height="14.2" rx="1.0"/>
+    <path d="M15.6 18.6 H24.4 L20.05 26.2 Z"/>
+    <rect x="2.8" y="10.0" width="9.4" height="2.1" rx="1.05"/>
+    <rect x="5.6" y="15.6" width="6.6" height="2.1" rx="1.05"/>
+  </g>
+</svg>

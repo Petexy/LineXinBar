@@ -26,6 +26,19 @@ out="${1:?usage: nested-shot.sh OUT_DIR ACTIONS [COMMAND]}"
 actions="${2:?usage: nested-shot.sh OUT_DIR ACTIONS [COMMAND]}"
 inside="${3:-}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A scratch HOME is built here and then deleted from, so the path it is built
+# under must never be empty or a system directory. `set -u` alone is not
+# enough: this file has been rewritten by tooling before, and the rewrite
+# dropped the assignment above, leaving "$out" empty and "$out/home" as
+# "/home". Everything below therefore re-checks at the point of use.
+out="$(realpath -m -- "${out:?OUT_DIR is empty}")"
+case "$out" in
+    /|/home|/root|/usr|/etc|/var|/boot|/bin|/lib*|/opt|/srv|/sys|/proc|/dev)
+        echo "refusing to use $out as OUT_DIR" >&2; exit 1 ;;
+esac
+if [[ "$out" == "$HOME" ]]; then
+    echo "refusing to use \$HOME as OUT_DIR" >&2; exit 1
+fi
 
 # How long the whole run lasts, which has to outlast the last action in the
 # script. Taken from the script itself rather than guessed at: a run that ends
@@ -33,9 +46,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 last=$(printf '%s\n' "$actions" | tr ',' '\n' | cut -d: -f1 | sort -g | tail -1)
 lifetime=$(printf '%.0f' "$(echo "$last + 4" | bc)")
 
-home="$out/home"
-mkdir -p "$home/.config/lxb"
-rm -rf "$home/Pictures"
+scratch_home="$out/home"
+mkdir -p "$scratch_home/.config/lxb"
+rm -rf -- "${scratch_home:?scratch home unset}/Pictures"
 
 # **Nothing in here may be heard.** This session has a shell in it that plays
 # interface sounds, and a run of this script is somebody watching a picture,
@@ -51,14 +64,14 @@ rm -rf "$home/Pictures"
 #
 # None of it touches the real session: no sink is moved and no stream is
 # rerouted. This session simply has nowhere to play.
-cat > "$home/.asoundrc" <<'ASOUND'
+cat > "$scratch_home/.asoundrc" <<'ASOUND'
 pcm.!default { type null }
 ctl.!default { type null }
 ASOUND
 # Anything else the shell should be started with — a `--debug-*` flag, or the
 # `--retroarch-helper` that stands in for an installed integration package.
 # One string, appended to the command line as written.
-cat > "$home/.config/lxb/config.toml" <<EOF
+cat > "$scratch_home/.config/lxb/config.toml" <<EOF
 [general]
 shell = "$root/target/release/lxb-desktop --debug-actions $actions ${LXB_SHOT_ARGS:-}"
 EOF
@@ -71,7 +84,7 @@ env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
     PULSE_SERVER=/nonexistent-lxb-harness \
     PIPEWIRE_REMOTE=nonexistent-lxb-harness \
     SDL_AUDIODRIVER=dummy \
-    HOME="$home" XDG_CONFIG_HOME="$home/.config" DISPLAY="${LXB_SHOT_DISPLAY:-:1}" \
+    HOME="$scratch_home" XDG_CONFIG_HOME="$scratch_home/.config" DISPLAY="${LXB_SHOT_DISPLAY:-:1}" \
     dbus-run-session -- bash -c '
         root=$1; socket=$2; lifetime=$3; inside=$4
         "$root/target/release/lxb" --backend x11 --outputs 1 \
@@ -86,7 +99,7 @@ env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
         wait $lxb 2>/dev/null || true
     ' bash "$root" "$socket" "$lifetime" "$inside" > "$out/nested.log" 2>&1
 
-shots=("$home"/Pictures/Screenshots/*.png)
+shots=("$scratch_home"/Pictures/Screenshots/*.png)
 if [[ ! -e "${shots[0]}" ]]; then
     echo "the shell took no picture; see $out/nested.log" >&2
     exit 1

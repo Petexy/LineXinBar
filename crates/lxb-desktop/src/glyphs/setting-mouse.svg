@@ -1,0 +1,38 @@
+<!--
+  A mouse, at the head of the Input column's Mouse page.
+
+  A capsule rounder at the top than at the foot, with two openings in it: the
+  wheel between the buttons, and the seam that separates them. Both are holes
+  rather than lines drawn on the body, which is what they are on a real one —
+  and a hole's edge beads exactly as the body's does, so nothing has to be
+  painted for either.
+
+  Deliberately not mouse-right.svg, which is this shell's mark for a *right
+  click* and carries a filled button to say so. That one is an instruction and
+  this is a device; a page about the pointer wearing the right-click mark would
+  be a page that looks like it is about a button.
+
+  The seam is a unit and a half across, which is as thin as an opening may be
+  here: at eighty-four pixels that is four, and a slot narrower than that closes
+  over under the bevel and leaves a body with a smudge in it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="body" d="M16 3.2c-4.6 0-7.6 3.4-7.6 8.2v9.4c0 4.8 3 8 7.6 8s7.6-3.2 7.6-8V11.4c0-4.8-3-8.2-7.6-8.2z"/>
+    <rect id="seam" x="8.4" y="14.0" width="15.2" height="1.5"/>
+    <rect id="wheel" x="14.85" y="6.4" width="2.3" height="4.6" rx="1.15"/>
+    <g id="bead"><use href="#body"/></g>
+    <g id="holes"><use href="#seam"/><use href="#wheel"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

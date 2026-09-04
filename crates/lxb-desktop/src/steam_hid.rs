@@ -1276,7 +1276,7 @@ mod tests {
         /// is a panic rather than a shrug.
         fn driving() -> Option<(SteamPad, crate::pads::Pad)> {
             if !a_pad_is_plugged_in() {
-                eprintln!("skipped: no Steam Controller here, or no /dev/uinput");
+                crate::skipped("no Steam Controller here, or no /dev/uinput");
                 return None;
             }
 
@@ -1291,9 +1291,9 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
             if !heard {
-                eprintln!(
-                    "skipped: the Steam Controller is asleep — its hidraw nodes are here \
-                     but it is sending nothing. Press a button on it and run again."
+                crate::skipped(
+                    "the Steam Controller is asleep — its hidraw nodes are here \
+                     but it is sending nothing. Press a button on it and run again.",
                 );
                 stop(pad);
                 return None;

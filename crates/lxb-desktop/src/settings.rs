@@ -53,6 +53,7 @@ use std::time::{Duration, Instant};
 
 use crate::apps::{Category, Choice, Entry, Folder};
 use crate::icons;
+use crate::layouts;
 use crate::system::{Devices, Direction, Level};
 use crate::theme::{self, Color};
 use lxb_protocol::pip;
@@ -88,6 +89,14 @@ pub enum Setting {
     /// daemon being asked, and `settings` records what the shell *remembers*,
     /// which is neither of those.
     User(UserValue),
+    /// One press on Settings > Games > Steam — see [`SteamValue`], which is
+    /// where each of the three is argued.
+    ///
+    /// Recorded here and carried out by the shell, on the terms
+    /// [`Setting::Network`] is: what has to happen is a worker being started or
+    /// stopped, a bar being built again and Valve's client being asked to shut
+    /// down, and none of those is a thing this module does.
+    Steam(SteamValue),
     /// Set one of an emulator core's own settings — PPSSPP's rendering
     /// resolution, Mesen's overclock.
     ///
@@ -248,12 +257,129 @@ pub enum Setting {
     /// and the setting is about what such a window *is* rather than about any
     /// one screen — the same argument the application scale is under.
     PictureInPicture(PipValue),
+    /// Change what a mouse does: how fast the pointer travels, how large it is
+    /// drawn, and how far and which way a wheel carries the content under it.
+    ///
+    /// Recorded here and carried out by the compositor, which is the bargain
+    /// [`Setting::AppScale`] is under and for the same two reasons twice over:
+    /// three of the four are libinput settings on a device only the compositor
+    /// opens — the shell never holds the seat — and the fourth is the size of a
+    /// picture the compositor is the one drawing. `main` sends whatever
+    /// [`pointer`] then returns.
+    ///
+    /// Carries no display, like the application scale: how fast a hand has to
+    /// move to cross the desk is a fact about the desk and the person at it,
+    /// not about either of the screens on it.
+    Pointer(PointerValue),
+    /// Which display the on-screen keyboard comes up on: a connector by name,
+    /// or `None` for whichever screen is being driven.
+    ///
+    /// The one setting in this tree whose *value* is a display while the
+    /// setting itself is not about one. Everything under
+    /// [`Setting::Display`] is a property of a screen and is filed under that
+    /// screen; this is a property of the *board* — there is one of it in the
+    /// session, and it is on one screen at a time — which happens to be
+    /// answered by naming a screen. So it is session-wide, and it carries the
+    /// connector as its value rather than beside it.
+    ///
+    /// Nothing outside the shell is told. Which display draws the board is
+    /// decided every frame by whatever is about to draw one — see
+    /// `Shell::keyboard_panel` — so the press moves the mark, this writes it
+    /// down, and the next board comes up where it was asked for.
+    ///
+    /// Interned, like every connector name in this module. See [`intern`].
+    KeyboardDisplay(Option<&'static str>),
+    /// Which arrangement every keyboard on this machine is set to, as
+    /// `layout (variant)` — the form `setxkbmap -query` prints. See
+    /// [`crate::layouts::Layout::key`].
+    ///
+    /// Recorded here and carried out by the compositor, which is the bargain
+    /// [`Setting::Pointer`] is under and for its first reason: the seat belongs
+    /// to the half of the session that opens input devices, and the shell has
+    /// never held a keyboard. `main` sends whatever [`keyboard_layout`] then
+    /// returns.
+    ///
+    /// Session-wide, and there is one of it. xkb can hold several layouts at
+    /// once with a key to walk between them; this page asks one question and
+    /// that is a second question, with a shortcut of its own to settle before
+    /// it could be asked.
+    ///
+    /// Interned, like every value in this module that is a name. See
+    /// [`intern`].
+    KeyboardLayout(&'static str),
     /// Change one display's picture. Carries the connector the change belongs
     /// to, because every one of these is a property of one screen.
     Display {
         display: &'static str,
         value: DisplayValue,
     },
+}
+
+/// One thing that can be changed about Steam.
+///
+/// Three questions about one program, and they are three rather than one
+/// because they are answered at three different moments: whether this shell
+/// has anything to do with Steam at all, what it does as the session comes up,
+/// and what it does when a game is over. Only the first changes what is on the
+/// bar; the other two change how long somebody waits for a game to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteamValue {
+    /// Whether this shell drives Valve's client at all.
+    ///
+    /// **On.** A console that plays Steam games is what most of this shell's
+    /// Games half is for, and the integration is the whole of it: the row at
+    /// the head of Games that signs an account in, the column of that
+    /// account's library, the artwork behind it, the download card in the
+    /// guide, and a game that starts from a tile rather than out of a
+    /// storefront.
+    ///
+    /// Off, none of that exists and Steam is an application like any other:
+    /// its own `.desktop` entry stands on the bar where the scan filed it,
+    /// wearing the icon its package ships, and starting it puts Valve's own
+    /// window on the screen. Which is the right answer for a machine where
+    /// somebody else's account is signed in, for one where Steam is used from
+    /// a desk with a mouse, and for one where the whole of this integration is
+    /// simply not wanted.
+    ///
+    /// It is the same session-wide switch `--no-steam` throws, and the flag
+    /// still outranks it: a session started with Steam left out has no page
+    /// here to press. See [`steam_in_this_session`].
+    Integration(bool),
+    /// Whether Valve's client is started in the background as the shell comes
+    /// up, rather than when the first game is pressed.
+    ///
+    /// **Off.** The client is a few hundred megabytes of resident memory and a
+    /// long cold start, and a machine whose owner spent the evening watching a
+    /// film should not have paid for either. On, the wait is paid once while
+    /// nobody is looking rather than in front of the first loading screen of
+    /// the day.
+    AtStartup(bool),
+    /// Whether Valve's client is left running once a game has ended.
+    ///
+    /// **On**, which is what this shell has always done: a client started for
+    /// one game is still up for the next, and the second game of an evening
+    /// starts in a second or two rather than in twenty. Off, it is asked to
+    /// shut down when the last Steam game's window has gone — the memory comes
+    /// back, and the next game pays the cold start again.
+    ///
+    /// Never while it is in the middle of something. See
+    /// [`crate::steam::Steam::nothing_is_under_way`].
+    AfterAGame(bool),
+    /// Which Steam Play compatibility tool runs the games Valve has not
+    /// verified — Steam's own default for "all other titles" — by the name
+    /// Steam files it under, or nothing at all.
+    ///
+    /// **Nothing**, which is Steam's own default and this shell's: a machine
+    /// where nobody has chosen runs verified games under whatever Valve says
+    /// and refuses to run the rest, which is what Steam does out of the box.
+    ///
+    /// The one value in this tree that is not this shell's to keep. It is
+    /// written into Valve's own configuration, it is the same setting the
+    /// client's own Compatibility page sets, and it applies to Steam whether
+    /// this shell is running or not — so it is never written to the settings
+    /// file, and what the row draws is always what Steam last said rather than
+    /// what this session remembers. See [`note_compatibility_tools`].
+    OtherTitles(Option<&'static str>),
 }
 
 /// One thing that can be changed about the floating window.
@@ -317,6 +443,39 @@ pub enum DisplayValue {
     /// whether a screen does that is a fact about the screen. A television and
     /// an OLED handheld beside it are not the same question.
     OledProtection(bool),
+}
+
+/// One thing that can be changed about the session's pointing devices.
+///
+/// Every one of them is about all of them: a mouse, a touchpad and a
+/// controller's trackpad move the same pointer, and a setting that applied to
+/// one of them would be a page that works on some desks and not others. So
+/// none of these names a device, unlike a [`NetworkValue`], which names the
+/// interface it belongs to — there is one pointer, and this is what it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerValue {
+    /// libinput's acceleration, in hundredths: -100 to 100, 0 being the flat
+    /// default every desktop starts at.
+    ///
+    /// Passed through rather than translated into something friendlier. What
+    /// libinput does with the number depends on the device's own resolution, so
+    /// a shell that turned it into "pixels per inch" would be inventing a
+    /// second scale that agrees with the first on one mouse and no other.
+    Speed(i8),
+    /// The cursor's nominal size in logical pixels, as `XCURSOR_SIZE` counts
+    /// it.
+    Size(u16),
+    /// How far one movement of a wheel carries the content under it, in per
+    /// cent of what the device reported. 100 is one to one.
+    ///
+    /// Not libinput's — it has none — so this one is arithmetic the compositor
+    /// does over the movements it forwards. Named a speed rather than a
+    /// distance because that is what it is called everywhere else, and because
+    /// what a user is changing is how fast a page goes by.
+    Scroll(u16),
+    /// Whether the content follows the fingers — the direction a touchscreen
+    /// moves — or the wheel's traditional direction.
+    Natural(bool),
 }
 
 /// One thing that can be changed about what this machine is on.
@@ -1283,6 +1442,328 @@ pub fn button_hints() -> bool {
     *BUTTON_HINTS.lock().unwrap()
 }
 
+/// Whether this shell drives Valve's client, or leaves Steam to be an
+/// application like any other. See [`SteamValue::Integration`], where the
+/// default is argued.
+static STEAM_INTEGRATION: Mutex<bool> = Mutex::new(true);
+
+/// Whether the client is started in the background as the session comes up.
+/// See [`SteamValue::AtStartup`].
+static STEAM_AT_STARTUP: Mutex<bool> = Mutex::new(false);
+
+/// Whether the client is left running once a game has ended. See
+/// [`SteamValue::AfterAGame`].
+static STEAM_AFTER_A_GAME: Mutex<bool> = Mutex::new(true);
+
+/// Whether this session does Steam at all, before the setting is even asked.
+///
+/// `--no-steam` is a session-wide refusal made on the command line, and it
+/// outranks the file: a machine started that way must not be talked into a
+/// worker by a settings file it happens to be carrying. Said once, by `main`,
+/// before the first page is built — see [`note_steam_in_this_session`].
+///
+/// Its own answer rather than folded into [`STEAM_INTEGRATION`], because the
+/// two say different things and the page has to be able to tell them apart: a
+/// setting somebody turned off is a row to press again, and a flag on the
+/// command line is a sentence explaining why there is no row.
+static STEAM_IN_THIS_SESSION: Mutex<bool> = Mutex::new(true);
+
+/// Whether Steam is this session's business at all.
+///
+/// Both halves at once, which is what every reader of this wants: the flag and
+/// the setting are two ways of saying the same no, and nothing outside this
+/// module has a reason to care which one was said.
+pub fn steam_integration() -> bool {
+    *STEAM_IN_THIS_SESSION.lock().unwrap() && *STEAM_INTEGRATION.lock().unwrap()
+}
+
+/// Whether Valve's client is started in the background as the shell comes up.
+///
+/// False in a session with no Steam in it, whichever of the two reasons it has
+/// for that: there is no client to start on behalf of an integration that is
+/// not running.
+pub fn steam_at_startup() -> bool {
+    steam_integration() && *STEAM_AT_STARTUP.lock().unwrap()
+}
+
+/// Whether Valve's client is left running once a game has ended.
+///
+/// True in a session with no Steam in it, and that is not the same answer worn
+/// twice: a shell that is not driving the client has no business shutting one
+/// down, so "leave it alone" is what an integration that is off must say.
+pub fn steam_left_after_a_game() -> bool {
+    !steam_integration() || *STEAM_AFTER_A_GAME.lock().unwrap()
+}
+
+/// Say whether this session was started with Steam left out.
+///
+/// Called once by `main`, from the command line, before the first settings
+/// column is built.
+pub fn note_steam_in_this_session(offered: bool) {
+    *STEAM_IN_THIS_SESSION.lock().unwrap() = offered;
+}
+
+/// What the session's pointing devices do — see [`PointerValue`], which is
+/// where each of the four is argued.
+///
+/// One answer for every mouse, touchpad and trackball at once. Held together
+/// rather than as four statics because they are sent together: the compositor
+/// applies three of them by walking the same device list, and four requests
+/// would walk it four times for one press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pointer {
+    /// libinput's acceleration in hundredths, -100 to 100.
+    pub speed: i8,
+    /// The cursor's size in logical pixels.
+    pub size: u16,
+    /// How far a wheel carries the content, in per cent.
+    pub scroll: u16,
+    /// Whether the content follows the fingers.
+    pub natural: bool,
+}
+
+impl Pointer {
+    /// What a session nobody has asked comes up with.
+    ///
+    /// Every one of these is somebody else's default rather than a number
+    /// chosen here, and deliberately: a console that started with its own idea
+    /// of how fast a mouse should be would be a machine that felt wrong to
+    /// anybody who had ever used another one.
+    ///
+    /// `speed` is libinput's flat 0 — the middle of its range and what every
+    /// desktop starts at. `size` is 24, which is XCursor's own default and what
+    /// this compositor already used. `scroll` is one to one, the movement the
+    /// device reported. `natural` is off, which is the wheel's traditional
+    /// direction and what a mouse has always done.
+    pub const DEFAULT: Self = Self {
+        speed: 0,
+        size: NATURAL_CURSOR,
+        scroll: NATURAL_SCROLL,
+        natural: false,
+    };
+}
+
+impl Default for Pointer {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The cursor size a session nobody has asked comes up at, and the middle row
+/// of [`CURSOR_SIZES`]. XCursor's own default, and every desktop's.
+pub const NATURAL_CURSOR: u16 = 24;
+
+/// One to one: a wheel carrying exactly what the device said it did.
+pub const NATURAL_SCROLL: u16 = 100;
+
+/// The sizes the cursor is offered at, smallest first, in logical pixels.
+///
+/// Four, not a bar, and the reason is what an XCursor theme *is*: it carries a
+/// handful of drawn sizes and the nearest is used, so the values in between buy
+/// a number that changes and a pointer that does not. These are the four sizes
+/// every theme draws — and a size is chosen once, by looking at it, rather than
+/// tuned.
+pub const CURSOR_SIZES: [(u16, &str); 4] = [
+    (16, "Small"),
+    (NATURAL_CURSOR, "Normal"),
+    (32, "Large"),
+    (48, "Larger"),
+];
+
+/// The ends of the pointer speed bar, and how far one press moves it.
+///
+/// libinput's own range, in the hundredths the protocol carries. Ten steps
+/// either side of the middle: fine enough that the right speed can be found and
+/// coarse enough that finding it is a few presses rather than a walk.
+pub const SLOWEST_POINTER: i8 = -100;
+pub const FASTEST_POINTER: i8 = 100;
+pub const POINTER_STEP: i8 = 10;
+
+/// The same for the scrolling speed, in per cent of what the device reported.
+///
+/// A quarter of the movement at the foot and four times it at the head, in
+/// steps of a quarter of natural. The foot is not nought — a wheel that goes
+/// nowhere is a broken wheel, not a slow one — and the head is where one turn
+/// is already most of a page.
+pub const SLOWEST_SCROLL: u16 = 25;
+pub const FASTEST_SCROLL: u16 = 400;
+pub const SCROLL_STEP: u16 = 25;
+
+/// The offered size nearest the one asked for.
+///
+/// A hand-edited file may name any number of pixels, and so may a shell from a
+/// later version that offers a size this one does not. Neither is refused: the
+/// nearest of [`CURSOR_SIZES`] is used, which is also what an XCursor theme
+/// does with a size it has not drawn — so the answer the page shows and the
+/// pointer on the screen agree, and the row is marked rather than the page
+/// coming up with nothing chosen on it.
+fn nearest_cursor_size(size: u16) -> u16 {
+    CURSOR_SIZES
+        .iter()
+        .min_by_key(|(offered, _)| offered.abs_diff(size))
+        .map(|(offered, _)| *offered)
+        .unwrap_or(NATURAL_CURSOR)
+}
+
+/// What the pointing devices are set to.
+static POINTER: Mutex<Pointer> = Mutex::new(Pointer::DEFAULT);
+
+/// What every mouse on this machine does. Read by `main`, which sends it to the
+/// compositor — this module records it and carries out none of it.
+pub fn pointer() -> Pointer {
+    *POINTER.lock().unwrap()
+}
+
+/// Which display the on-screen keyboard comes up on, by connector name, or
+/// `None` for whichever screen the user is driving.
+///
+/// **`None`.** A board follows the hands: it is summoned from the pad or by a
+/// text field taking the cursor, and both of those happen on the screen
+/// somebody is looking at. Pinning it to a screen is the setting, and it is
+/// there for the desk where one of the two displays is within reach — a
+/// handheld panel beside a television, a touchscreen beside a monitor — and
+/// where a keyboard on the other one is a keyboard nobody can type on.
+///
+/// **A name this session has no display for is left alone, not cleared.** The
+/// board falls back to the driven screen for as long as that display is away
+/// and goes back to it the moment it is plugged in again, which is what every
+/// per-display setting in this shell does with a screen that comes and goes —
+/// see [`StoredDisplay`]. A user who unplugs a monitor for the afternoon has
+/// not changed their mind about where the keyboard belongs.
+///
+/// Held as a `String` rather than a `&'static str` for the reason
+/// [`STARTUP_CATEGORY`] is: what is written down goes on being written down,
+/// including a connector this session cannot see.
+static KEYBOARD_DISPLAY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Which arrangement every keyboard on this machine is set to, as
+/// `layout (variant)`, or `None` for a session nobody has asked.
+///
+/// **`None` is not "US".** It means the shell has no opinion, and what is in
+/// force is then whatever the compositor's own `config.toml` says — which on a
+/// machine whose owner set `keyboard_layout` there by hand is their answer, and
+/// a shell that sent `us` at startup because it had never been asked would take
+/// it away from them the first time this page shipped. The compositor reports
+/// what it is using when the shell binds, and that is what the page marks until
+/// somebody picks a row. See [`COMPOSITOR_LAYOUT`].
+///
+/// Held as a `String` for the reason [`KEYBOARD_DISPLAY`] is: what is written
+/// down goes on being written down, including an arrangement this machine's
+/// xkeyboard-config has no entry for.
+static KEYBOARD_LAYOUT: Mutex<Option<String>> = Mutex::new(None);
+
+/// The arrangement the compositor says it is using, which is the answer until
+/// the shell has one of its own.
+///
+/// Reported over `lxb_shell_v1`, because the shell cannot read it: it is the
+/// compositor's config file, and the compositor is the only process in the
+/// session that has opened it. Without this the page could tick nothing on a
+/// machine nobody had ever set a layout on, which is every machine the first
+/// time it is opened.
+static COMPOSITOR_LAYOUT: Mutex<Option<String>> = Mutex::new(None);
+
+/// What is being typed into the field at the head of every column of the
+/// keyboard layout tree.
+///
+/// One query for the whole tree and not one per column, which is what makes
+/// the field mean the same thing wherever it is reached: it searches every
+/// arrangement on the machine, so while there is something in it, whichever of
+/// those columns is open shows what was found instead of what it is a list of.
+/// A field that narrowed six continent names would be a row that did nothing.
+/// See [`crate::apps::Searched::Layouts`].
+///
+/// Not written to the settings file. It is what somebody is typing, not
+/// something they have set.
+static LAYOUT_QUERY: Mutex<String> = Mutex::new(String::new());
+
+/// Whether the compositor on the other end can be told a keyboard layout at
+/// all.
+///
+/// A fact about the protocol version, like [`SCREEN_REST`], and answered once
+/// for the session. Below it the page says so rather than offering six hundred
+/// rows that change nothing — and the on-screen keyboard keeps its own ANSI
+/// arrangement, because nothing will ever say what the keyboard is set to.
+static KEYBOARD_LAYOUT_AVAILABLE: Mutex<bool> = Mutex::new(false);
+
+/// Record whether the layout can be set. `true` when the column has to be
+/// rebuilt to say so, as [`note_screen_rest`].
+pub fn note_keyboard_layout_available(available: bool) -> bool {
+    let mut held = KEYBOARD_LAYOUT_AVAILABLE.lock().unwrap();
+    if *held == available {
+        return false;
+    }
+    *held = available;
+    true
+}
+
+/// Whether the page has anything behind it.
+pub fn keyboard_layout_available() -> bool {
+    *KEYBOARD_LAYOUT_AVAILABLE.lock().unwrap()
+}
+
+/// Let go of a layout the compositor would not compile.
+///
+/// The one path that un-sets this without the user asking, and it is not the
+/// shell changing its mind: the compositor has said the arrangement does not
+/// exist, so what is written down is a setting that can never come into force.
+/// Left there it would be re-sent and refused at the start of every session.
+pub fn forget_keyboard_layout() {
+    *KEYBOARD_LAYOUT.lock().unwrap() = None;
+    save(&stored());
+}
+
+/// The arrangement the shell has been told to use, if it has been told one.
+pub fn keyboard_layout() -> Option<String> {
+    KEYBOARD_LAYOUT.lock().unwrap().clone()
+}
+
+/// The arrangement actually in force: the shell's, or the compositor's own
+/// where the shell has never been asked.
+///
+/// What the page ticks and what the row above it says. `None` only where the
+/// shell has no setting *and* the compositor is too old to have reported one,
+/// which is the one case where nothing in the session knows the answer.
+pub fn keyboard_layout_in_force() -> Option<String> {
+    keyboard_layout().or_else(|| COMPOSITOR_LAYOUT.lock().unwrap().clone())
+}
+
+/// Record what the compositor says its keyboard is set to. `true` when the
+/// column has to be rebuilt to say so, as [`note_screen_rest`].
+pub fn note_compositor_layout(key: String) -> bool {
+    let mut held = COMPOSITOR_LAYOUT.lock().unwrap();
+    if held.as_deref() == Some(key.as_str()) {
+        return false;
+    }
+    *held = Some(key);
+    // Only where the shell has none of its own: the page is showing the
+    // shell's answer, and a compositor that reported the layout it was just
+    // *told* to use would not have changed anything on screen.
+    KEYBOARD_LAYOUT.lock().unwrap().is_none()
+}
+
+/// What is in the layout field at the moment.
+pub fn layout_query() -> String {
+    LAYOUT_QUERY.lock().unwrap().clone()
+}
+
+/// Put something in that field, or empty it. `true` when the column has to be
+/// rebuilt, which is whenever it changed.
+pub fn set_layout_query(query: &str) -> bool {
+    let mut held = LAYOUT_QUERY.lock().unwrap();
+    if *held == query {
+        return false;
+    }
+    *held = query.to_string();
+    true
+}
+
+/// The display the on-screen keyboard has been pinned to, if it has been
+/// pinned to one. Not checked against the screens this session has — that is
+/// the caller's, because only the caller knows which screens it is drawing on.
+pub fn keyboard_display() -> Option<String> {
+    KEYBOARD_DISPLAY.lock().unwrap().clone()
+}
+
 /// The column the start screen opens on.
 ///
 /// **Games.** A console is a machine for playing things, and the column a
@@ -1842,6 +2323,28 @@ pub fn note_devices(reported: Devices) -> bool {
 /// goes into the settings file. See [`Setting::Network`].
 static NETWORK: Mutex<crate::network::Listing> = Mutex::new(crate::network::Listing::none());
 
+/// What Steam last said about which compatibility tool runs everything it has
+/// not verified.
+///
+/// Reported rather than remembered, on exactly the terms [`DEVICES`] and
+/// [`NETWORK`] are, and for one reason more than they have: this setting is
+/// not this shell's. It lives in Valve's own configuration, the client's own
+/// settings page sets the same thing, and a copy kept in the settings file
+/// would be a second opinion that goes stale the first time somebody changes
+/// it in Steam. See [`SteamValue::OtherTitles`].
+static COMPATIBILITY: Mutex<Option<crate::steam::Compat>> = Mutex::new(None);
+
+/// Record what Steam said about it. `true` when it is a change, and so when the
+/// column has to be rebuilt to say so — as [`note_devices`].
+pub fn note_compatibility_tools(said: Option<&crate::steam::Compat>) -> bool {
+    let mut held = COMPATIBILITY.lock().unwrap();
+    if held.as_ref() == said {
+        return false;
+    }
+    *held = said.cloned();
+    true
+}
+
 /// Record what the network manager said. `true` when it is a change, and so
 /// when the column has to be rebuilt to say so — as [`note_devices`].
 pub fn note_network(reported: crate::network::Listing) -> bool {
@@ -2173,7 +2676,7 @@ fn offered_by(display: &str) -> Vec<Offered> {
 /// be a few hundred. It is bounded by somebody standing at the Networks page
 /// watching them arrive, which is a few kilobytes at the outside — and it buys
 /// a `Copy` setting, which is what every other row in the tree is.
-fn intern(name: &str) -> &'static str {
+pub(crate) fn intern(name: &str) -> &'static str {
     static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap();
     if let Some(known) = names.iter().find(|known| **known == name) {
@@ -2324,7 +2827,13 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// Network is fourth: a console can be used without it, and it cannot be used
 /// without a picture.
 ///
-/// Games follows the pair because it is about neither the machine nor the
+/// Input follows the pair for the same reason it follows them on the desk: the
+/// two above it are what the machine is talking *to*, and this is what the
+/// person in front of it is talking to the machine *with*. It is behind
+/// Bluetooth in particular because the control most of these settings are
+/// about is the one that arrives over it.
+///
+/// Games follows Input because it is about neither the machine nor the
 /// shell but the programs the console is for — and it is in front of System
 /// because a setting about the games is one somebody came looking for.
 ///
@@ -2345,6 +2854,7 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         sounds(),
         network(),
         bluetooth(),
+        input(),
         games(),
         users(),
         system(bar),
@@ -5614,6 +6124,501 @@ fn startup_row() -> Entry {
     )
 }
 
+/// Input: how the person in front of the machine talks to it.
+///
+/// One page under it today and a category anyway, for the reason Games is one:
+/// what is here belongs to neither the picture, the sound, the network nor the
+/// machine's own behaviour, and the alternative to a category of its own is
+/// System — which is the page about how the *machine* behaves, and would then
+/// hold a setting about a keyboard between the size applications are drawn at
+/// and the version of the kernel.
+fn input() -> Entry {
+    folder(
+        "Input",
+        "The keyboard, and the controls in your hands",
+        icons::SETTING_INPUT,
+        vec![keyboard(), mouse()],
+    )
+}
+
+/// Everything about typing on this machine: what the keys say, and the board
+/// the shell draws when there are no keys.
+///
+/// **The on-screen keyboard is inside here rather than beside it.** The two
+/// pages were siblings under Input for one release and that was wrong: they are
+/// not two subjects, they are one subject and a thing about it. The board is a
+/// keyboard — it is what a console has instead of the one on the desk — and it
+/// already *takes its caps from the layout set on this page*, so a column
+/// listing them side by side put the cause and the effect at the same depth and
+/// left nothing saying which was which.
+///
+/// The layout first, then the board, on the same argument one level down: the
+/// page that decides comes before the page that follows it, and somebody
+/// reading the column downwards meets the question before its consequence.
+fn keyboard() -> Entry {
+    folder(
+        "Keyboard",
+        "What the keys say, and the board this shell draws",
+        icons::SETTING_KEYS,
+        vec![keyboard_layout_page(), on_screen_keyboard()],
+    )
+}
+
+/// The on-screen keyboard's own page.
+///
+/// One row today, and a page anyway rather than that row standing directly
+/// under Keyboard, on the terms [`retroarch`] makes the same argument on: what
+/// is under here belongs to the *board* rather than to keyboards in general,
+/// and a setting about how it is summoned arriving beside the layout would
+/// leave a column where two rows are about different things and nothing says
+/// which.
+///
+/// **The comment says what the page is, not what one setting on it is set to.**
+/// It said "Focused screen" while Default display was the only row under it,
+/// which read as the answer to a question this row does not ask — and would
+/// have gone on naming one setting out of several the moment a second arrived.
+/// A row that opens a page describes the page; the row that carries a value is
+/// the one that says what the value is.
+fn on_screen_keyboard() -> Entry {
+    folder(
+        "On-screen keyboard",
+        "The board this shell types with",
+        icons::SETTING_KEYBOARD,
+        vec![keyboard_display_page()],
+    )
+}
+
+/// The mouse's own page: what the pointer does, and what a wheel does.
+///
+/// Under Input rather than under Display, which is the one thing about its
+/// place worth arguing over. Three of the four rows change what the *screen*
+/// shows — the cursor moves, the cursor grows, the page goes by — and none of
+/// them is about a screen. What they are about is the thing in somebody's hand
+/// and how far it has to travel, which is the same subject the board above them
+/// is: a person telling the machine what to do.
+///
+/// The cursor's two rows first and the wheel's two after, each pair with its
+/// speed in front of the other thing about it. A pointer that is too slow to
+/// cross the desk is what somebody comes to this page for; a cursor too small
+/// to find is the second thing, and both are noticed before anybody thinks
+/// about a wheel.
+///
+/// **Every pointing device, not only the ones that are mice.** A trackball and
+/// a touchpad move the same pointer, and the compositor's own config file
+/// already has one `[input]` section for all of them — so the page and the file
+/// say the same thing about the same devices. The page is called Mouse because
+/// that is what somebody is looking for, and a console has one.
+fn mouse() -> Entry {
+    folder(
+        "Mouse",
+        "The pointer, and what a wheel does",
+        icons::SETTING_MOUSE,
+        vec![
+            cursor_speed(),
+            cursor_size(),
+            scrolling_speed(),
+            scrolling_direction(),
+        ],
+    )
+}
+
+/// How fast the pointer travels for a given movement of the hand.
+///
+/// A bar, like the application scale and the night light's temperature, because
+/// what is being set is a continuous quantity and the right answer is found by
+/// moving until it feels right rather than by reading a name off a list.
+///
+/// The number on it is **not** libinput's own -100 to 100, which is the one
+/// place this page deliberately does not pass the underlying value through. A
+/// negative speed is not slower than nothing and 0 is not the slowest — 0 is
+/// libinput's *flat default*, in the middle — so a bar labelled with it would
+/// have its handle at the middle reading nought and its foot reading minus a
+/// hundred. What the row says is where the handle stands on its own track, in
+/// per cent, and what goes over the wire is the number libinput means.
+fn cursor_speed() -> Entry {
+    let speed = pointer().speed;
+    let step = |to: i8| {
+        (SLOWEST_POINTER..=FASTEST_POINTER)
+            .contains(&to)
+            .then_some(Setting::Pointer(PointerValue::Speed(to)))
+    };
+    let span = f32::from(FASTEST_POINTER as i16 - SLOWEST_POINTER as i16);
+    folder(
+        "Cursor speed",
+        &pointer_speed_note(speed),
+        icons::SETTING_CURSOR_SPEED,
+        vec![Entry::Bar(crate::apps::Bar {
+            title: pointer_speed_note(speed),
+            comment: Some("How far the pointer travels for a movement of the hand".to_string()),
+            fill: f32::from(speed as i16 - SLOWEST_POINTER as i16) / span,
+            swatch: None,
+            up: step(speed.saturating_add(POINTER_STEP)),
+            down: step(speed.saturating_sub(POINTER_STEP)),
+            steps: (SLOWEST_POINTER..=FASTEST_POINTER)
+                .step_by(POINTER_STEP as usize)
+                .map(|speed| Setting::Pointer(PointerValue::Speed(speed)))
+                .collect(),
+        })],
+    )
+}
+
+/// Where the pointer's handle stands, as a person reads it.
+///
+/// Per cent of the track, and the middle says so in words as well: **Default**
+/// is the answer somebody wants to be able to get back to, and "50%" is not
+/// recognisable as it. See [`cursor_speed`] for why the number is not
+/// libinput's.
+fn pointer_speed_note(speed: i8) -> String {
+    if speed == 0 {
+        return "Default".to_string();
+    }
+    let span = f32::from(FASTEST_POINTER as i16 - SLOWEST_POINTER as i16);
+    let along = f32::from(speed as i16 - SLOWEST_POINTER as i16) / span * 100.0;
+    format!("{}%", along.round() as i32)
+}
+
+/// How large the pointer is drawn.
+///
+/// A list rather than a bar, unlike the speed above it and the wheel below —
+/// see [`CURSOR_SIZES`], where that is argued: a theme draws a handful of sizes
+/// and the nearest is used, so the values in between would move the number and
+/// not the pointer.
+fn cursor_size() -> Entry {
+    let size = pointer().size;
+    folder(
+        "Cursor size",
+        cursor_size_note(size),
+        icons::SETTING_CURSOR_SIZE,
+        CURSOR_SIZES
+            .iter()
+            .map(|(offered, name)| {
+                value(
+                    name,
+                    Some(&format!("{offered} pixels")),
+                    *offered == size,
+                    Setting::Pointer(PointerValue::Size(*offered)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// What one of those sizes is called, for the row above the list.
+fn cursor_size_note(size: u16) -> &'static str {
+    CURSOR_SIZES
+        .iter()
+        .find(|(offered, _)| *offered == size)
+        .map(|(_, name)| *name)
+        // A size out of a file this shell does not offer. It cannot reach the
+        // page — [`nearest_cursor_size`] brings it to one of the four on the
+        // way in — but the row says something honest if it ever does.
+        .unwrap_or("Its own size")
+}
+
+/// How far one movement of a wheel carries the content under it.
+///
+/// A bar, on the terms [`cursor_speed`] is one, and this one reads as what it
+/// is: per cent of the movement the device reported, with 100% the wheel
+/// untouched. Unlike the pointer's, the number here *is* the value — a scroll
+/// speed is a multiple, and a multiple written as a percentage is the same fact
+/// twice rather than a second scale.
+fn scrolling_speed() -> Entry {
+    let scroll = pointer().scroll;
+    let step = |to: u16| {
+        (SLOWEST_SCROLL..=FASTEST_SCROLL)
+            .contains(&to)
+            .then_some(Setting::Pointer(PointerValue::Scroll(to)))
+    };
+    let span = f32::from(FASTEST_SCROLL - SLOWEST_SCROLL);
+    folder(
+        "Scrolling speed",
+        &format!("{scroll}%"),
+        icons::SETTING_SCROLL_SPEED,
+        vec![Entry::Bar(crate::apps::Bar {
+            title: format!("{scroll}%"),
+            comment: Some("How far one turn of a wheel carries the page".to_string()),
+            fill: f32::from(scroll.saturating_sub(SLOWEST_SCROLL)) / span,
+            swatch: None,
+            up: step(scroll.saturating_add(SCROLL_STEP)),
+            down: step(scroll.saturating_sub(SCROLL_STEP)),
+            steps: (SLOWEST_SCROLL..=FASTEST_SCROLL)
+                .step_by(SCROLL_STEP as usize)
+                .map(|scroll| Setting::Pointer(PointerValue::Scroll(scroll)))
+                .collect(),
+        })],
+    )
+}
+
+/// Which way the content goes.
+///
+/// Two rows, and they are named after **what moves** rather than after the
+/// setting. "Natural" is the word the protocol and every other desktop uses and
+/// it is the one word that says nothing: both directions feel natural to
+/// whoever is used to them. What tells them apart is which thing follows the
+/// hand — the page, or the view of it — so that is what the rows say.
+///
+/// The traditional direction first, because it is the one a mouse has always
+/// had and the one this session comes up in.
+fn scrolling_direction() -> Entry {
+    let natural = pointer().natural;
+    folder(
+        "Scrolling direction",
+        match natural {
+            true => "The page follows your fingers",
+            false => "The view follows your fingers",
+        },
+        icons::SETTING_SCROLL_DIRECTION,
+        vec![
+            value(
+                "Standard",
+                Some("Rolling the wheel away moves the view down the page"),
+                !natural,
+                Setting::Pointer(PointerValue::Natural(false)),
+            ),
+            value(
+                "Natural",
+                Some("Rolling the wheel away moves the page itself away"),
+                natural,
+                Setting::Pointer(PointerValue::Natural(true)),
+            ),
+        ],
+    )
+}
+
+/// Which screen the board comes up on: the one being driven, or one named.
+///
+/// The rows are the screens this session has, taken from what the compositor
+/// reports — the same list every page under Display is built from, and there is
+/// no other honest one: which screens exist is a fact about what is plugged in,
+/// and a fixed list would offer a monitor that is not there.
+///
+/// **The screen the setting names is offered even when it is not plugged in**,
+/// at the end and marked, saying so. It is the same answer
+/// [`startup_category_page`] gives a column that is not on the bar, and for the
+/// same reason: the setting is still in force — the board comes back to that
+/// screen the moment it returns — so a page with nothing ticked on it would be
+/// the shell denying a choice it is still keeping. See [`KEYBOARD_DISPLAY`].
+///
+/// Every row but the first says `Only`, which is doing real work. "DP-1" as a
+/// row under "Focused screen" reads as *where the board is now*; "Only DP-1"
+/// reads as the rule it actually is, and the difference matters most to the
+/// person choosing it with two screens in front of them.
+fn keyboard_display_page() -> Entry {
+    let chosen = keyboard_display();
+    let here: Vec<String> = support().into_iter().map(|(name, _)| name).collect();
+    let mut screens = here.clone();
+    // The screen the setting names, where it is not one of them. Last, so the
+    // rows that lead anywhere come first.
+    if let Some(pinned) = chosen.as_deref() {
+        if !screens.iter().any(|name| name == pinned) {
+            screens.push(pinned.to_string());
+        }
+    }
+
+    let mut rows = vec![value(
+        FOCUSED_SCREEN,
+        Some("Wherever the bar is being driven from"),
+        chosen.is_none(),
+        Setting::KeyboardDisplay(None),
+    )];
+    rows.extend(screens.iter().map(|name| {
+        drawn_value(
+            &format!("Only {name}"),
+            // A screen that is not plugged in says so, and nothing else says
+            // anything: the row is a connector's name, which is what the
+            // Display pages call the same screen, and a sentence under each one
+            // explaining what DP-1 is would be the cable described back to
+            // somebody who plugged it in.
+            (!here.contains(name)).then_some("Not plugged in just now"),
+            icons::SETTING_DISPLAY,
+            chosen.as_deref() == Some(name.as_str()),
+            Setting::KeyboardDisplay(Some(intern(name))),
+        )
+    }));
+
+    folder(
+        "Default display",
+        &keyboard_display_note(),
+        icons::SETTING_DISPLAY,
+        rows,
+    )
+}
+
+/// Which arrangement every keyboard on this machine is set to.
+///
+/// Three levels — continent, then country, then every arrangement that country
+/// has — because as one list it is six hundred rows. The tree is not a
+/// classification anybody needs to agree with; it is a way of getting to a
+/// hundred rows in three presses, and the field at the head of every column of
+/// it is the way for somebody who would rather type the name.
+///
+/// The arrangements are read off the machine and not written down here, so what
+/// is offered is exactly what the compositor beside this shell can compile. See
+/// [`crate::layouts`].
+fn keyboard_layout_page() -> Entry {
+    folder(
+        "Keyboard layout",
+        &keyboard_layout_note(),
+        icons::SETTING_LAYOUT,
+        layout_column(|| {
+            layouts::registry()
+                .continents()
+                .into_iter()
+                .map(continent_page)
+                .collect()
+        }),
+    )
+}
+
+/// One column of the layout tree: the field, and then either what was found or
+/// what the column is a list of.
+///
+/// Every column of the tree is built through here, which is the whole of how
+/// one field can be at the head of three different lists and mean the same
+/// thing in all of them. `browsing` is only called when there is nothing in the
+/// field — building a continent's forty-five countries to then not show them
+/// would be work done to be thrown away.
+fn layout_column(browsing: impl FnOnce() -> Vec<Entry>) -> Vec<Entry> {
+    // A compositor too old to be told is the first thing asked, because it makes
+    // every row below it a row that would change nothing. See
+    // [`KEYBOARD_LAYOUT_AVAILABLE`].
+    if !keyboard_layout_available() {
+        return vec![reading(
+            "Not offered by this session",
+            "The compositor this shell is running on cannot be told a keyboard layout",
+        )];
+    }
+    let registry = layouts::registry();
+    let query = layout_query();
+    // A machine with no xkb registry has nothing to offer and says so. A column
+    // with no rows cannot be stepped into, so the alternative to this row is a
+    // row that does not answer when it is pressed.
+    if registry.is_empty() {
+        return vec![reading(
+            "No layouts on this machine",
+            "xkeyboard-config is not installed, so there is nothing to choose from",
+        )];
+    }
+    let found = registry.search(&query);
+    let mut rows = Vec::new();
+    crate::apps::head(
+        &mut rows,
+        crate::apps::Searched::Layouts,
+        &query,
+        found.len(),
+        registry.len(),
+    );
+    match query.trim().is_empty() {
+        true => rows.extend(browsing()),
+        false => rows.extend(found.into_iter().map(found_layout)),
+    }
+    rows
+}
+
+/// One continent, and the countries in it.
+fn continent_page(continent: layouts::Continent) -> Entry {
+    let countries = layouts::registry().countries_in(continent);
+    folder(
+        continent.title(),
+        &plural(countries.len(), "country", "countries"),
+        icons::SETTING_REGION,
+        layout_column(|| countries.iter().map(country_page).collect()),
+    )
+}
+
+/// One country, and every arrangement it claims.
+fn country_page(country: &layouts::Country) -> Entry {
+    let held = layouts::registry().layouts_in(&country.code);
+    folder(
+        &country.name,
+        &plural(held.len(), "layout", "layouts"),
+        icons::SETTING_REGION,
+        layout_column(|| {
+            held.iter()
+                .map(|layout| layout_value(layout, None))
+                .collect()
+        }),
+    )
+}
+
+/// One arrangement, as a row somebody standing in a country's column reads.
+///
+/// The comment is the xkb name, which is the fact that row carries and nowhere
+/// else says: it is what goes over the wire, what the settings file is written
+/// with, and what somebody who has looked their layout up anywhere else knows
+/// it by. A sentence explaining what a keyboard layout is would be the column's
+/// own heading read back to somebody standing in it.
+fn layout_value(layout: &layouts::Layout, whereabouts: Option<String>) -> Entry {
+    let key = layout.key();
+    value(
+        &layout.name,
+        Some(&whereabouts.unwrap_or_else(|| key.clone())),
+        keyboard_layout_in_force().as_deref() == Some(key.as_str()),
+        Setting::KeyboardLayout(intern(&key)),
+    )
+}
+
+/// The same row, found by the field rather than walked to.
+///
+/// It says where it lives instead of what xkb calls it. A found row is out of
+/// the tree it belongs to — that is what finding it means — so the fact it is
+/// missing is the path somebody would otherwise have walked, and the fact it no
+/// longer needs is the name of a column they are not standing in.
+fn found_layout(layout: &layouts::Layout) -> Entry {
+    let whereabouts = layouts::registry().whereabouts(layout);
+    layout_value(layout, Some(whereabouts))
+}
+
+/// "1 layout", "9 layouts" — the count a row that opens a column says under
+/// its title.
+fn plural(count: usize, one: &str, many: &str) -> String {
+    match count {
+        1 => format!("1 {one}"),
+        count => format!("{count} {many}"),
+    }
+}
+
+/// What the Keyboard layout row says under its title: the arrangement in force,
+/// by the name somebody chose it under.
+///
+/// The registry's own description where this machine has the layout, because
+/// that is the row that was pressed. The bare xkb name where it has not — a
+/// file naming an arrangement xkeyboard-config does not describe is still the
+/// setting, and saying so is better than saying nothing.
+fn keyboard_layout_note() -> String {
+    if !keyboard_layout_available() {
+        return "Not offered by this session".to_string();
+    }
+    let Some(key) = keyboard_layout_in_force() else {
+        return "As this machine is configured".to_string();
+    };
+    let (layout, variant) = layouts::from_key(&key);
+    match layouts::registry().find(&layout, &variant) {
+        Some(found) => found.name.clone(),
+        None => format!("{key} — not a layout this machine has"),
+    }
+}
+
+/// What the row above that page says under its title: the screen the board
+/// comes up on, in the few words a comment has.
+fn keyboard_display_note() -> String {
+    match keyboard_display() {
+        None => FOCUSED_SCREEN.to_string(),
+        Some(name) if screen_is_here(&name) => format!("Only {name}"),
+        Some(name) => format!("Only {name} — not plugged in just now"),
+    }
+}
+
+/// Whether the compositor is reporting a screen of this name at the moment.
+fn screen_is_here(display: &str) -> bool {
+    support().iter().any(|(name, _)| name == display)
+}
+
+/// The first row of that page, and the setting's own default. Named once
+/// because it is written in three places — the row, both comments above it —
+/// and three copies of it is three chances for them to disagree.
+const FOCUSED_SCREEN: &str = "Focused screen";
+
 /// Games: the settings belonging to the games on this machine, as opposed to
 /// the machine itself.
 ///
@@ -5635,6 +6640,13 @@ fn startup_row() -> Entry {
 /// no screens in it.
 fn games() -> Entry {
     let mut rows = Vec::new();
+    // Steam first, and on every machine — including one that has never had
+    // Valve's client installed. Unlike the page under it this is not a setting
+    // *belonging to* a program: what it decides is whether this shell has a
+    // Steam half at all, which is a question about the shell, and somebody who
+    // is about to install the client is exactly the person who wants to answer
+    // it beforehand.
+    rows.push(steam());
     // Only where the package is installed. A page listing a setting belonging
     // to a program this machine has not got would be a page about somebody
     // else's machine — and the row under it opens a picker for a folder
@@ -5650,6 +6662,233 @@ fn games() -> Entry {
         "Steam, and the games on this machine",
         icons::CATEGORY_GAMES,
         rows,
+    )
+}
+
+/// The page belonging to the Steam integration, which every machine has.
+///
+/// Under Games rather than under System for the reason the page above it is
+/// under Games: what is decided here belongs to the games on this machine, not
+/// to the machine. And a page of its own rather than three rows standing
+/// directly under Games, for the reason RetroArch has one — what is in here
+/// belongs to *Steam*, and the emulator's settings arriving beside them would
+/// be two programs' settings in one list with nothing saying which was whose.
+///
+/// The row above it says what the page is *about* and never what it is set to
+/// — see [`steam_note`].
+///
+/// Two rows or four, and the shape is the argument. The integration's own
+/// switch is always here; the two below it are settings *about the client this
+/// shell drives*, and a shell that is not driving one has no answer for them —
+/// so they are not offered, exactly as a screen list with no screens in it is
+/// not. See [`resolution`].
+fn steam() -> Entry {
+    let mut rows = vec![steam_integration_switch()];
+    if steam_integration() {
+        rows.push(steam_at_startup_switch());
+        rows.push(steam_after_a_game_switch());
+        rows.push(steam_other_titles_page());
+    }
+    // And the one shape that is neither: a session that was told on the command
+    // line to leave Steam alone. There is nothing to press — the flag outranks
+    // the file, and a switch that said On over a session doing nothing would be
+    // the page lying — so the page says why instead of being empty.
+    if !*STEAM_IN_THIS_SESSION.lock().unwrap() {
+        rows = vec![reading(
+            "Steam is not in this session",
+            "It was started with --no-steam, so nothing here talks to Steam",
+        )];
+    }
+    folder("Steam", steam_note(), icons::STEAM, rows)
+}
+
+/// What the row above that page says under its title: what is in there, and
+/// never what it is set to.
+///
+/// It used to read the three switches back — "On, started with the shell and
+/// left running" — and that is a comment doing the wrong job. A row of this
+/// tree that opens onto a page is a door, and what a door's label is for is
+/// telling somebody whether what they are looking for is behind it. The
+/// settings themselves are one press away and each says its own value there;
+/// spelling all three out here says nothing to the person who has not been in
+/// yet, which is the only person reading it. Every other page in this tree is
+/// labelled that way — Games above it says "Steam, and the games on this
+/// machine", RetroArch beside it says "Your own games, and how they are
+/// played" — and this was the odd one out.
+///
+/// The one session that gets a different line is the one that cannot press any
+/// of it: `--no-steam` is not a setting anybody chose, it is a fact about this
+/// session, and it belongs on the door because it is the reason there is
+/// nothing behind it.
+fn steam_note() -> &'static str {
+    match *STEAM_IN_THIS_SESSION.lock().unwrap() {
+        true => "How Steam works with the shell",
+        false => "Left out of this session",
+    }
+}
+
+/// Whether this shell drives Valve's client at all — see
+/// [`SteamValue::Integration`], which is where the whole of it is argued.
+///
+/// It wears the mark of the Steam *column*, because the column is the visible
+/// half of what it decides: on, the library is a column of the bar; off, there
+/// is no column and Steam is a row in Internet like the browser beside it.
+fn steam_integration_switch() -> Entry {
+    let on = steam_integration();
+    folder(
+        "Integration",
+        match on {
+            true => "On — the library is a column of the bar",
+            false => "Off — Steam is an application like any other",
+        },
+        icons::CATEGORY_STEAM,
+        vec![
+            value(
+                "Off",
+                Some("Steam is an application like any other, with its own icon"),
+                !on,
+                Setting::Steam(SteamValue::Integration(false)),
+            ),
+            value(
+                "On",
+                Some("Sign in, and play your library from the bar"),
+                on,
+                Setting::Steam(SteamValue::Integration(true)),
+            ),
+        ],
+    )
+}
+
+/// The title of the row that names the tool everything unverified runs under.
+///
+/// A constant because two things need it and neither may guess at the other's
+/// spelling: the row is built here, and the shell asks Steam for the list only
+/// while somebody is standing in the column *under* it — see
+/// `Shell::standing_in_the_compatibility_tools`. Asking any earlier would wake
+/// Valve's client because a cursor walked past a row.
+pub const COMPATIBILITY_PAGE: &str = "Compatibility tool";
+
+/// Which Steam Play tool runs the games Valve has not verified — see
+/// [`SteamValue::OtherTitles`].
+///
+/// The list is Valve's client's own and there is no other source for it: what
+/// the client offers is what this *account* may use, which on a machine with
+/// three Protons installed is eleven names. So the column has the three shapes
+/// a fetched list has — coming, arrived, and the reason there is none — and the
+/// first of them is what somebody sees for a second or two while the client is
+/// asked.
+fn steam_other_titles_page() -> Entry {
+    let held = COMPATIBILITY.lock().unwrap().clone();
+    let rows = match &held {
+        None | Some(crate::steam::Compat::Asking) => vec![reading(
+            "Asking Steam",
+            "Valve's client is being asked which tools this account may use",
+        )],
+        Some(crate::steam::Compat::Unavailable(why)) => vec![reading("Not now", why)],
+        Some(crate::steam::Compat::Said(said)) if said.tools.is_empty() => vec![reading(
+            "Steam offers none",
+            "This client lists no compatibility tools for this account",
+        )],
+        Some(crate::steam::Compat::Said(said)) => {
+            let mut rows = vec![value(
+                "None",
+                Some("Games Valve has not verified are not offered a tool"),
+                said.forced.is_none(),
+                Setting::Steam(SteamValue::OtherTitles(None)),
+            )];
+            rows.extend(said.tools.iter().map(|tool| {
+                value(
+                    &tool.display,
+                    // The name Steam files it under, which is the fact this row
+                    // carries and nowhere else says — the same thing the
+                    // keyboard layouts put under theirs.
+                    Some(&tool.name),
+                    said.forced.as_deref() == Some(tool.name.as_str()),
+                    Setting::Steam(SteamValue::OtherTitles(Some(intern(&tool.name)))),
+                )
+            }));
+            rows
+        }
+    };
+    folder(
+        COMPATIBILITY_PAGE,
+        &steam_other_titles_note(&held),
+        icons::SETTING_COMPATIBILITY,
+        rows,
+    )
+}
+
+/// What that row says under its title: what is set, and the one thing about it
+/// that would otherwise be a surprise.
+///
+/// Steam reads this as it comes up and never looks again, which is why its own
+/// page offers to restart the client when it is changed. This shell does not
+/// restart anything — a client that is up may be fetching somebody's game —
+/// so the row says when it takes effect instead of pretending it is immediate.
+fn steam_other_titles_note(held: &Option<crate::steam::Compat>) -> String {
+    match held {
+        Some(crate::steam::Compat::Said(said)) => match said.forced_display() {
+            Some(tool) => format!("{tool}, from the next time Steam starts"),
+            None => "Games Valve has not verified are not offered a tool".to_string(),
+        },
+        Some(crate::steam::Compat::Unavailable(why)) => why.clone(),
+        _ => "What runs the games Valve has not verified".to_string(),
+    }
+}
+
+/// Whether the client is started as the session comes up — see
+/// [`SteamValue::AtStartup`].
+fn steam_at_startup_switch() -> Entry {
+    let on = steam_at_startup();
+    folder(
+        "Start with the shell",
+        match on {
+            true => "Steam is started in the background as the session comes up",
+            false => "Steam is started when the first game is pressed",
+        },
+        icons::LAUNCH,
+        vec![
+            value(
+                "Off",
+                Some("Steam starts when the first game is pressed"),
+                !on,
+                Setting::Steam(SteamValue::AtStartup(false)),
+            ),
+            value(
+                "On",
+                Some("The first game of the day starts as quickly as the second"),
+                on,
+                Setting::Steam(SteamValue::AtStartup(true)),
+            ),
+        ],
+    )
+}
+
+/// Whether the client is left up once a game has ended — see
+/// [`SteamValue::AfterAGame`].
+fn steam_after_a_game_switch() -> Entry {
+    let on = steam_left_after_a_game();
+    folder(
+        "Leave Steam running",
+        match on {
+            true => "Steam stays up after a game, so the next one starts sooner",
+            false => "Steam is closed with the game, and the memory comes back",
+        },
+        icons::SHUTDOWN,
+        vec![
+            value(
+                "Off",
+                Some("Steam is asked to close when the game, or the press, is over"),
+                !on,
+                Setting::Steam(SteamValue::AfterAGame(false)),
+            ),
+            value(
+                "On",
+                Some("The next game starts in a second or two rather than twenty"),
+                on,
+                Setting::Steam(SteamValue::AfterAGame(true)),
+            ),
+        ],
     )
 }
 
@@ -6005,12 +7244,13 @@ fn game_art() -> Entry {
     )
 }
 
-/// The row that stands in for the Games page until there is something on it.
+/// The row that stands in for the Games page when there is nothing on it.
 ///
-/// It says what the page is *going* to hold rather than only that it is empty:
-/// a user who opens this page has a question, and "nothing here" alone would
-/// leave them wondering whether they had come to the wrong place or whether
-/// this machine had nothing to offer.
+/// Unreachable on an ordinary machine and kept all the same: the Steam page
+/// above is built on every machine, so the only way here is a build with that
+/// row taken out. It says what the page is *for* rather than only that it is
+/// empty — a user who opens this page has a question, and "nothing here" alone
+/// would leave them wondering whether they had come to the wrong place.
 fn nothing_to_set_about_games() -> Entry {
     reading(
         "Nothing to set here yet",
@@ -7184,6 +8424,13 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::StartMusic(_)
             | Setting::BatteryPercent(_)
             | Setting::ButtonHints(_)
+            // Nor a Steam row, and the two below it could not preview if they
+            // wanted to: what they change is what happens the next time the
+            // session starts and the next time a game ends. The integration
+            // switch *could* be shown — it rebuilds the bar — and must not be:
+            // a cursor walking past Off would take the user's library off the
+            // screen and put it back, twice, on the way down a list of two.
+            | Setting::Steam(_)
             | Setting::SoundDevice { .. }
             | Setting::Network(_)
             | Setting::Bluetooth(_)
@@ -7210,7 +8457,27 @@ pub fn preview(setting: Option<Setting>) {
             // changes is where the next cursor is built, and a preview of that
             // would be the bar walking off under the hand of somebody reading
             // the list.
-            | Setting::StartupCategory(_),
+            | Setting::StartupCategory(_)
+            // Nor does the screen the on-screen keyboard comes up on, and it is
+            // the one row here where previewing would be *visible* and still
+            // wrong: a cursor walked down a list of two screens would throw the
+            // board from one to the other and back, and the board is what the
+            // user is reading the list through.
+            | Setting::KeyboardDisplay(_)
+            // Nor the keyboard layout, and it is the one row on this page where
+            // previewing would be actively dangerous: what a highlighted row
+            // would change is what every key on the machine types, under the
+            // hands of somebody walking a list — and on a board they may be
+            // walking it *with*. The mark moves when the row is pressed.
+            | Setting::KeyboardLayout(_)
+            // Nor do the mouse rows, and three of them are the same case as the
+            // display settings: they reconfigure a device the compositor holds.
+            // The fourth is the reason the whole list refuses — the pointer is
+            // what the user is *reading this list with*, and a cursor walked
+            // down a speed bar would change how fast the walk itself moves,
+            // under the hand doing the walking. Two of the three are set on a
+            // bar besides, which is not a row a cursor highlights.
+            | Setting::Pointer(_),
         )
         | None => {
             theme::restore_accent();
@@ -7359,6 +8626,39 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             *BUTTON_HINTS.lock().unwrap() = shown;
             tracing::info!(shown, "the start screen's button hints");
         }
+        // Three switches about one program, and this module's whole part in
+        // them is remembering which way each is thrown. What has to *happen* —
+        // a worker started or stopped, a bar built again, a client asked to
+        // shut down — is the shell's, on the terms the network and the sound
+        // device are under. See `Shell::carry_out_steam`.
+        //
+        // The flag is deliberately not consulted here. A session started with
+        // `--no-steam` offers no row to press, so nothing can arrive; and if
+        // one ever did, the file should still record the answer the user gave
+        // rather than the one this session was able to act on.
+        Setting::Steam(SteamValue::Integration(on)) => {
+            *STEAM_INTEGRATION.lock().unwrap() = on;
+            tracing::info!(on, "the Steam integration");
+        }
+        Setting::Steam(SteamValue::AtStartup(on)) => {
+            *STEAM_AT_STARTUP.lock().unwrap() = on;
+            tracing::info!(on, "Steam is started with the shell");
+        }
+        Setting::Steam(SteamValue::AfterAGame(on)) => {
+            *STEAM_AFTER_A_GAME.lock().unwrap() = on;
+            tracing::info!(on, "Steam is left running after a game");
+        }
+        // Nothing is written down here, and that is the whole of this arm.
+        // The value lives in Valve's own configuration rather than in this
+        // shell's file — see [`SteamValue::OtherTitles`] — so the press is
+        // carried out by telling Steam, and what the row draws afterwards is
+        // what Steam says back. `Shell::carry_out_steam` is where it is told.
+        Setting::Steam(SteamValue::OtherTitles(tool)) => {
+            tracing::info!(
+                tool = tool.unwrap_or("none"),
+                "what runs the games Valve has not verified"
+            );
+        }
         // Nothing to tell anybody, and nothing to carry out. What this changes
         // is where the *next* cursor is built standing — see
         // [`crate::model::Cursor::for_model`] — so the press moves the mark,
@@ -7367,6 +8667,63 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::StartupCategory(id) => {
             *STARTUP_CATEGORY.lock().unwrap() = Some(id.to_string());
             tracing::info!(column = id, "the column the start screen opens on");
+        }
+        // Nothing to tell anybody either, and for the plainest reason: whichever
+        // display is about to draw a frame asks this of itself as it draws —
+        // see `Shell::keyboard_panel` — so the board is on the chosen screen the
+        // next time it comes up, and a board already on screen walks across on
+        // the frame the row was pressed.
+        //
+        // Not checked against the screens this session has. A connector that is
+        // not plugged in is not a mistake in the press any more than it is a
+        // mistake in the file: the page offers exactly one such row, it offers
+        // it because the setting already named it, and choosing it again has to
+        // go on meaning what it meant. See [`KEYBOARD_DISPLAY`].
+        // Recorded here and carried out by the compositor, on the terms the
+        // application scale is under: only the compositor holds the seat, so
+        // only it can tell libinput anything — and only it draws the cursor.
+        // One field of the four at a time, because the page asks four questions
+        // and the request carries all four; see [`pointer`], which is what the
+        // caller sends.
+        Setting::Pointer(value) => {
+            let mut held = POINTER.lock().unwrap();
+            match value {
+                PointerValue::Speed(speed) => {
+                    held.speed = speed.clamp(SLOWEST_POINTER, FASTEST_POINTER)
+                }
+                PointerValue::Size(size) => held.size = size,
+                PointerValue::Scroll(scroll) => {
+                    held.scroll = scroll.clamp(SLOWEST_SCROLL, FASTEST_SCROLL)
+                }
+                PointerValue::Natural(natural) => held.natural = natural,
+            }
+            tracing::info!(
+                speed = held.speed,
+                size = held.size,
+                scroll = held.scroll,
+                natural = held.natural,
+                "the pointing devices"
+            );
+        }
+        // Recorded here and carried out by the compositor, which the caller
+        // tells: the seat is the compositor's, and a shell that held a keyboard
+        // would be taking the keys from the application being typed into.
+        //
+        // Written down as it was given, not as this machine's registry
+        // describes it. A layout is a pair of xkb names and the registry is a
+        // file that changes with a package; a setting rewritten into whatever
+        // the current xkeyboard-config calls it would be a setting that moved
+        // when nobody asked.
+        Setting::KeyboardLayout(key) => {
+            *KEYBOARD_LAYOUT.lock().unwrap() = Some(key.to_string());
+            tracing::info!(layout = key, "the keyboard layout");
+        }
+        Setting::KeyboardDisplay(screen) => {
+            *KEYBOARD_DISPLAY.lock().unwrap() = screen.map(str::to_string);
+            tracing::info!(
+                screen = screen.unwrap_or("the one being driven"),
+                "the screen the on-screen keyboard comes up on"
+            );
         }
         // Recorded here and carried out by the compositor, which the caller
         // tells — the same division the Display settings are under, and for the
@@ -7797,6 +9154,20 @@ fn adopt(stored: Stored) {
     if let Some(shown) = stored.button_hints {
         *BUTTON_HINTS.lock().unwrap() = shown;
     }
+    // And a file that says nothing about Steam leaves the integration on, the
+    // client unstarted until a game is pressed, and a client that has been
+    // started running afterwards — which is where a session that has never been
+    // asked has all three, and is what every file written before this page
+    // existed says. See [`SteamValue`], where each default is argued.
+    if let Some(on) = stored.steam_integration {
+        *STEAM_INTEGRATION.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.steam_at_startup {
+        *STEAM_AT_STARTUP.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.steam_after_a_game {
+        *STEAM_AFTER_A_GAME.lock().unwrap() = on;
+    }
     // And one that says nothing about the startup column leaves it on Games,
     // which is where a session that has never been asked has it — including
     // every session written by a shell from before this setting existed. The
@@ -7805,6 +9176,41 @@ fn adopt(stored: Stored) {
     // in the file. See [`STARTUP_CATEGORY`].
     if let Some(column) = stored.startup_category.clone() {
         *STARTUP_CATEGORY.lock().unwrap() = Some(column);
+    }
+    // And one that says nothing about the on-screen keyboard's display leaves
+    // it following the screen being driven, which is where a session that has
+    // never been asked has it. The name is not checked against the screens this
+    // session has, for the reason the column is not checked against the bar:
+    // the displays have not been announced yet, and a monitor that is not
+    // plugged in this morning is not a mistake in the file. See
+    // [`KEYBOARD_DISPLAY`].
+    *KEYBOARD_DISPLAY.lock().unwrap() = stored.keyboard_display.clone();
+    // And one that says nothing about the keyboard layout leaves the
+    // compositor's own config in force, which is the whole reason this is an
+    // `Option` and not a layout name with a default. Not checked against this
+    // machine's registry, for the reason the connector above is not checked
+    // against its screens: xkeyboard-config is a package, and a layout it
+    // stopped describing is not a mistake in the file.
+    *KEYBOARD_LAYOUT.lock().unwrap() = stored.keyboard_layout.clone();
+    // What every mouse on this machine does. Each half read on its own, so a
+    // file that says three of the four leaves the fourth where a session that
+    // has never been asked has it — including every file written by a shell
+    // from before this page existed. Clamped rather than refused, as the sound
+    // level is.
+    {
+        let mut held = POINTER.lock().unwrap();
+        if let Some(speed) = stored.pointer_speed {
+            held.speed = speed.clamp(SLOWEST_POINTER, FASTEST_POINTER);
+        }
+        if let Some(size) = stored.cursor_size {
+            held.size = nearest_cursor_size(size);
+        }
+        if let Some(scroll) = stored.scroll_speed {
+            held.scroll = scroll.clamp(SLOWEST_SCROLL, FASTEST_SCROLL);
+        }
+        if let Some(natural) = stored.natural_scroll {
+            held.natural = natural;
+        }
     }
     // Which radio the machine's Bluetooth is, what to do with it at startup,
     // and what it was doing last time. A hand-edited word this shell does not
@@ -8202,6 +9608,56 @@ struct Stored {
     /// something — it is what stops a keyboard being offered to somebody
     /// already sitting at one.
     controller_in_hand: Option<bool>,
+    /// What every pointing device on this machine does: libinput's acceleration
+    /// in hundredths, the cursor's size in logical pixels, how far a wheel
+    /// carries the content in per cent, and whether that content follows the
+    /// fingers. Settings > Input > Mouse.
+    ///
+    /// Session-wide, beside the application scale and for its reason: what is
+    /// being said is how a hand moves and how well somebody sees, which is true
+    /// of the person and not of a screen.
+    ///
+    /// Written by this shell and read by the next one. The compositor's own
+    /// config file has three of these keys and is what a session with no shell
+    /// uses; this file wins where there is one, because the shell says what
+    /// they are as soon as it connects. A number outside the range the page can
+    /// ask for is brought to the nearest end rather than refused, as a mistyped
+    /// sound level is: the file is one the user is entitled to open.
+    pointer_speed: Option<i8>,
+    cursor_size: Option<u16>,
+    scroll_speed: Option<u16>,
+    natural_scroll: Option<bool>,
+    /// Which display the on-screen keyboard comes up on, by connector name.
+    /// Absent — which is what every file written before this setting existed
+    /// says — is the board following whichever screen is being driven.
+    ///
+    /// Session-wide, and deliberately *not* in that display's own section
+    /// although its value is a connector: what is being said is where the one
+    /// board in the session belongs, not something about a screen. A key in
+    /// `[display.DP-1]` would be the same fact filed under one of the two
+    /// screens it is a choice between.
+    ///
+    /// A name this session has no display for is read, kept and written back
+    /// unchanged, for the reason [`Stored::startup_category`] is: a monitor
+    /// that is not plugged in this morning is not a setting the user has
+    /// withdrawn, and a shell that quietly rewrote it would lose the answer the
+    /// first time anything else on this page was changed.
+    keyboard_display: Option<String>,
+    /// Which arrangement every keyboard on this machine is set to, as
+    /// `layout (variant)` — the form `setxkbmap -query` prints.
+    ///
+    /// Absent — which is what every file written before this setting existed
+    /// says — leaves the compositor's own `keyboard_layout` in force. It is not
+    /// the same as `"us"`: a machine whose owner set their layout in the
+    /// compositor's config file has answered this question already, and a shell
+    /// that wrote `us` here because nobody had opened the page would take that
+    /// answer away.
+    ///
+    /// A layout this machine's xkeyboard-config does not describe is read, kept
+    /// and written back unchanged, for the reason [`Stored::keyboard_display`]
+    /// is: the registry is a file that changes with a package, and a layout
+    /// that went away when one was removed is not a setting the user withdrew.
+    keyboard_layout: Option<String>,
     /// What order the Steam column is listed in. One key rather than a table
     /// like `media-sort`, because there is one library.
     ///
@@ -8209,6 +9665,18 @@ struct Stored {
     /// header inside that table, so a bare key declared below them would be
     /// written into `[media-sort]` and read back as a shelf.
     steam_sort: Option<String>,
+    /// The three switches under Settings > Games > Steam: whether this shell
+    /// drives Valve's client at all, whether it starts one as the session comes
+    /// up, and whether it leaves one running once a game has ended.
+    ///
+    /// Written on every machine, including one with no Steam installed. What
+    /// they answer is what *this shell* does, and a file carried to a machine
+    /// where the client has since been installed should not have lost the
+    /// answers on the way. Above the two maps for [`Stored::steam_sort`]'s
+    /// reason.
+    steam_integration: Option<bool>,
+    steam_at_startup: Option<bool>,
+    steam_after_a_game: Option<bool>,
     /// Where this machine is, for the night light's sunset-to-sunrise
     /// schedule. Both or neither; degrees, north and east positive.
     ///
@@ -8419,7 +9887,27 @@ fn stored() -> Stored {
         battery_percent: Some(battery_percent()),
         show_hidden: Some(show_hidden()),
         button_hints: Some(button_hints()),
+        // The settings themselves and never what this session is *doing*: a
+        // session started with `--no-steam` drives no client and has still not
+        // been told to stop wanting one, so writing `false` here would be the
+        // flag quietly turning the user's setting off. See
+        // [`STEAM_IN_THIS_SESSION`], which is why these read the statics rather
+        // than the three readers above them.
+        steam_integration: Some(*STEAM_INTEGRATION.lock().unwrap()),
+        steam_at_startup: Some(*STEAM_AT_STARTUP.lock().unwrap()),
+        steam_after_a_game: Some(*STEAM_AFTER_A_GAME.lock().unwrap()),
         startup_category: Some(startup_category()),
+        pointer_speed: Some(pointer().speed),
+        cursor_size: Some(pointer().size),
+        scroll_speed: Some(pointer().scroll),
+        natural_scroll: Some(pointer().natural),
+        keyboard_display: keyboard_display(),
+        // The shell's own answer and never the compositor's. What
+        // [`keyboard_layout_in_force`] returns is partly a fact about the
+        // machine's other config file, and writing that here would turn a
+        // setting the user never made into one they did — after which changing
+        // the compositor's file would stop working.
+        keyboard_layout: keyboard_layout(),
         controller_in_hand: Some(controller_in_hand()),
         application_scale: Some(app_scale()),
         picture_in_picture: Some(picture_in_picture().floating),
@@ -8746,6 +10234,43 @@ const PREAMBLE: &str = "\
 # nothing installed, playtimes an account did not deliver — is greyed out in
 # the menu and ignored here.
 #
+# steam-integration: whether this shell drives Valve's client at all, which is
+# Settings > Games > Steam > Integration. On unless this says false, including
+# for a file written before the key existed. Off, there is no Steam row at the
+# head of Games and no library column: Steam is an application like any other,
+# its own .desktop entry stands wherever the scan filed it wearing the icon its
+# package ships, and nothing in this session signs an account in, hides one of
+# the client's windows or starts a game for it. A session started with
+# --no-steam does none of that either, and this key is left alone by it: the
+# flag is what that session was told to do, and the setting is what the machine
+# is set to.
+#
+# steam-at-startup: whether Valve's client is started in the background as the
+# session comes up rather than when the first game is pressed — Settings >
+# Games > Steam > Start with the shell. Off unless this says true. On, the
+# client's cold start is paid once while nobody is looking, at the cost of its
+# memory for the whole session on a machine where nobody plays anything.
+#
+# steam-after-a-game: whether Valve's client is left running once a game has
+# ended — Settings > Games > Steam > Leave Steam running. It is left running
+# unless this says false, which is what this shell has always done. False, the
+# client is asked to shut down five seconds after the last Steam game's window
+# has gone — but not while it is fetching, verifying or removing anything, not
+# while another game is starting, not while a window of Steam's own is being
+# looked at, and never when it is a client this session did not start. Those
+# hold the shutdown off for as long as they last rather than for the session:
+# quitting a game is what lets the client pick up the update it has been
+# holding, and dropping the moment there left a client running all evening with
+# this set to false. And equally when a press started the client and no game
+# ever came of it: Start Steam on a game with an update waiting, or a loading
+# screen left to its download. Those end with the client doing the work and
+# then sitting there, so it is closed when that work is done — including the
+# first stretch of an update, where the manifest says nothing at all about what
+# Steam is doing. A client that declines to shut down is asked once more and
+# then left alone, with a line in the log saying so — and one belonging to
+# another session on this machine is not asked at all, which the log says
+# instead of pretending it refused.
+#
 # start-music: whether the Start screen plays its background music, which is
 # Settings > Sounds > Start music. It plays unless this says false. Turning it
 # off leaves every other sound the shell makes exactly as loud as it was; how
@@ -8793,6 +10318,76 @@ const PREAMBLE: &str = "\
 # is a picture of the keys already under their hands. Any button on the pad
 # brings both back. Set it by hand if you like; the next thing you touch has
 # the last word.
+#
+# keyboard-display: which screen the on-screen keyboard comes up on, by the
+# connector's name — the ones lxb logs at startup, and the ones the [display]
+# sections below are filed under. Settings > Input > Keyboard > On-screen
+# keyboard > Default display. Without it the board follows whichever screen is being
+# driven, which is where it belongs on a machine with one screen and on most
+# with two: the board is summoned by a hand, and the hand is at the screen
+# being looked at. Name one for the desk where it is not — a handheld panel
+# beside a television, a touchscreen beside a monitor — and the board comes up
+# there whatever is being driven.
+#
+# A name this session has no display for is not an error and is not rewritten.
+# The board falls back to the screen being driven for as long as that display
+# is unplugged and goes back to it the moment it returns, which is what every
+# [display] section does with a screen that comes and goes: a monitor
+# unplugged for an afternoon is not somebody changing their mind about where
+# their keyboard belongs.
+#
+# keyboard-layout: which arrangement every keyboard on this machine is set to,
+# written the way setxkbmap -query prints it — the xkb layout, and the variant
+# in brackets after it where there is one: pl, us (dvorak), fr (azerty).
+# Settings > Input > Keyboard > Keyboard layout, where the list is read off
+# this machine's own xkeyboard-config and filed by continent and by country.
+#
+# Absent is not the same as us. It means this shell has no opinion, and what
+# the keyboard does is then whatever the compositor's own config.toml says
+# under [input] — so a machine whose owner set keyboard_layout there by hand
+# keeps that answer until somebody picks a row on this page. Once one is
+# picked, this key wins.
+#
+# The shell's own on-screen keyboard follows it: the caps show what the chosen
+# arrangement types, with AltGr for the level most accented letters live on. A
+# layout this machine's xkeyboard-config does not describe is not an error and
+# is not rewritten — xkeyboard-config is a package, and a layout that went away
+# when one was removed is not somebody changing their mind about their
+# keyboard.
+#
+# pointer-speed, cursor-size, scroll-speed and natural-scroll: what every
+# pointing device on this machine does, which is Settings > Input > Mouse. All
+# four reach a mouse, a touchpad, a trackball and a controller's trackpad alike:
+# they all move the same pointer, and a setting that applied to one of them
+# would be a page that works on some desks and not others.
+#
+# pointer-speed is libinput's own acceleration in hundredths, -100 to 100, and 0
+# — the middle of its range, not the slow end — is the flat default every
+# desktop starts at. It is passed through rather than translated because what
+# libinput does with it depends on the device's own resolution; the page shows
+# where the handle stands on its track, in per cent, which is a different
+# number for the same thing.
+#
+# cursor-size is the pointer's size in logical pixels, as XCURSOR_SIZE counts
+# it: 16, 24, 32 or 48. Anything else is read as the nearest of those, because
+# a cursor theme carries a handful of drawn sizes and the nearest is what gets
+# used. It changes the pointer the compositor draws, and the size handed to
+# every application started afterwards; it cannot reach one already running,
+# which reads its own theme when it starts.
+#
+# scroll-speed is how far one turn of a wheel carries the content, in per cent
+# of what the device reported. 100 is one to one. libinput has no scroll speed,
+# so this is the compositor multiplying the movements it forwards — applied to
+# the notch count as well as to the distance, so that a program counting wheel
+# clicks and one reading pixels agree about how far one click went.
+#
+# natural-scroll true is content that follows the fingers, which is the
+# direction a touchscreen moves; false is the wheel's traditional direction, and
+# is what a session that has never been asked does.
+#
+# The compositor's own config file has three of these keys, under [input], and
+# they are what a session running without this shell uses. This file wins where
+# there is one: the shell says what these are as soon as it connects.
 #
 # application-scale: how large every application draws its own interface, in
 # per cent of the size it chose, which is Settings > System > Application
@@ -9061,7 +10656,17 @@ mod tests {
         battery_percent: bool,
         show_hidden: bool,
         button_hints: bool,
+        steam_integration: bool,
+        steam_at_startup: bool,
+        steam_after_a_game: bool,
+        steam_in_this_session: bool,
         startup_category: Option<String>,
+        keyboard_display: Option<String>,
+        keyboard_layout: Option<String>,
+        keyboard_layout_available: bool,
+        compositor_layout: Option<String>,
+        layout_query: String,
+        pointer: Pointer,
         battery: Option<crate::power::Charge>,
         controller_in_hand: bool,
         devices: Devices,
@@ -9091,7 +10696,19 @@ mod tests {
             battery_percent: battery_percent(),
             show_hidden: show_hidden(),
             button_hints: button_hints(),
+            // The statics rather than the readers, because the readers fold the
+            // flag in and this has to be able to put back exactly what it took.
+            steam_integration: *STEAM_INTEGRATION.lock().unwrap(),
+            steam_at_startup: *STEAM_AT_STARTUP.lock().unwrap(),
+            steam_after_a_game: *STEAM_AFTER_A_GAME.lock().unwrap(),
+            steam_in_this_session: *STEAM_IN_THIS_SESSION.lock().unwrap(),
             startup_category: STARTUP_CATEGORY.lock().unwrap().clone(),
+            keyboard_display: keyboard_display(),
+            keyboard_layout: keyboard_layout(),
+            keyboard_layout_available: keyboard_layout_available(),
+            compositor_layout: COMPOSITOR_LAYOUT.lock().unwrap().clone(),
+            layout_query: layout_query(),
+            pointer: pointer(),
             battery: *BATTERY.lock().unwrap(),
             controller_in_hand: controller_in_hand(),
             devices: DEVICES.lock().unwrap().clone(),
@@ -9117,6 +10734,15 @@ mod tests {
         note_bluetooth(crate::bluetooth::Listing::none());
         note_battery(None);
         note_startup_category(None);
+        // A session that does Steam, which is what the shell ships as. The page
+        // a `--no-steam` session gets is tested by asking for it — see
+        // [`a_session_told_to_leave_steam_alone_says_so`].
+        note_steam_in_this_session(true);
+        *STEAM_INTEGRATION.lock().unwrap() = true;
+        *STEAM_AT_STARTUP.lock().unwrap() = false;
+        *STEAM_AFTER_A_GAME.lock().unwrap() = true;
+        *KEYBOARD_DISPLAY.lock().unwrap() = None;
+        *POINTER.lock().unwrap() = Pointer::DEFAULT;
         *INHERITED.lock().unwrap() = Hdr::default();
         saved
     }
@@ -9138,7 +10764,17 @@ mod tests {
         *BATTERY_PERCENT.lock().unwrap() = saved.battery_percent;
         *SHOW_HIDDEN.lock().unwrap() = saved.show_hidden;
         *BUTTON_HINTS.lock().unwrap() = saved.button_hints;
+        *STEAM_INTEGRATION.lock().unwrap() = saved.steam_integration;
+        *STEAM_AT_STARTUP.lock().unwrap() = saved.steam_at_startup;
+        *STEAM_AFTER_A_GAME.lock().unwrap() = saved.steam_after_a_game;
+        *STEAM_IN_THIS_SESSION.lock().unwrap() = saved.steam_in_this_session;
         *STARTUP_CATEGORY.lock().unwrap() = saved.startup_category;
+        *KEYBOARD_DISPLAY.lock().unwrap() = saved.keyboard_display;
+        *KEYBOARD_LAYOUT.lock().unwrap() = saved.keyboard_layout;
+        *KEYBOARD_LAYOUT_AVAILABLE.lock().unwrap() = saved.keyboard_layout_available;
+        *COMPOSITOR_LAYOUT.lock().unwrap() = saved.compositor_layout;
+        *LAYOUT_QUERY.lock().unwrap() = saved.layout_query;
+        *POINTER.lock().unwrap() = saved.pointer;
         note_battery(saved.battery);
         *CONTROLLER_IN_HAND.lock().unwrap() = saved.controller_in_hand;
         note_support(saved.support);
@@ -13482,6 +15118,34 @@ hdr = true
     }
 
     /// The System page's rows, in the order it offers them.
+    /// The Games row of the Settings column, as the bar shows it.
+    fn games_row() -> Entry {
+        column()
+            .into_iter()
+            .find(|entry| entry.title() == "Games")
+            .expect("the Settings column has a Games row")
+    }
+
+    /// The Steam row of the Games page, which is what the page's own comment
+    /// hangs on.
+    fn steam_row() -> Entry {
+        games_row()
+            .entries()
+            .expect("Games opens onto its own page")
+            .iter()
+            .find(|entry| entry.title() == "Steam")
+            .expect("and Steam is on it")
+            .clone()
+    }
+
+    /// And what is under it.
+    fn steam_page() -> Vec<Entry> {
+        steam_row()
+            .entries()
+            .expect("Steam opens onto its own page")
+            .to_vec()
+    }
+
     fn system_page() -> Vec<Entry> {
         column()
             .into_iter()
@@ -14328,16 +15992,17 @@ hdr = true
         );
     }
 
-    /// Games is a page of its own, in front of System, and it is not a dead
-    /// end while it waits to be filled.
+    /// Games is a page of its own, in front of System, and Steam is what is on
+    /// it.
     ///
-    /// The emptiness is the whole of what this asserts. A subcategory the bar
-    /// will not step into is a row that does nothing when pressed — see
-    /// `Cursor::enter`, which refuses an empty column outright — so the page
-    /// carries the shell's read-only mark and says in words what is coming,
-    /// and nothing on it sets anything.
+    /// The place in the column is the half worth pinning down: Games is neither
+    /// about what the machine talks to nor about the machine, and it sits
+    /// between the two for that reason. The other half is that it is not a dead
+    /// end — a subcategory the bar will not step into is a row that does
+    /// nothing when pressed, see `Cursor::enter`, which refuses an empty column
+    /// outright.
     #[test]
-    fn the_games_page_says_it_is_empty_rather_than_being_empty() {
+    fn the_games_page_sits_between_bluetooth_and_the_machine() {
         with_displays(&[], || {
             let column = column();
             let titles: Vec<&str> = column.iter().map(Entry::title).collect();
@@ -14357,18 +16022,211 @@ hdr = true
             assert!(row.comment().is_some(), "and it says what is behind it");
 
             let page = row.entries().expect("Games opens a column");
-            assert_eq!(page.len(), 1, "one row, and it is the stand-in");
-            let waiting = &page[0];
-            assert_eq!(
-                waiting.icon(),
-                Some(icons::SETTING_INFO),
-                "the shell's read-only mark"
+            assert_eq!(page[0].title(), "Steam", "which every machine has");
+            assert_eq!(page[0].icon(), Some(icons::STEAM));
+            assert!(
+                page[0].entries().is_some_and(|rows| !rows.is_empty()),
+                "and it opens onto a column the bar can step into"
             );
-            assert!(waiting.comment().is_some(), "which says what is coming");
-            assert_eq!(waiting.setting(), None, "there is nothing here to set");
-            assert!(!waiting.chosen(), "and therefore no mark to carry");
-            assert!(!waiting.starts_something(), "nor anything to start");
-            assert!(waiting.entries().is_none(), "and no further column");
+        });
+    }
+
+    /// The row that stands in for an empty Games page still exists, and still
+    /// says what it says.
+    ///
+    /// Unreachable now that Steam is on the page unconditionally, and worth a
+    /// test all the same: what it guards is the rule, not the arrangement — a
+    /// page of this tree with nothing on it is a row that does nothing when
+    /// pressed, and the answer is words rather than emptiness.
+    #[test]
+    fn an_empty_games_page_says_so_rather_than_being_empty() {
+        let waiting = nothing_to_set_about_games();
+        assert_eq!(
+            waiting.icon(),
+            Some(icons::SETTING_INFO),
+            "the shell's read-only mark"
+        );
+        assert!(waiting.comment().is_some(), "which says what is coming");
+        assert_eq!(waiting.setting(), None, "there is nothing here to set");
+        assert!(!waiting.chosen(), "and therefore no mark to carry");
+        assert!(!waiting.starts_something(), "nor anything to start");
+        assert!(waiting.entries().is_none(), "and no further column");
+    }
+
+    /// The Steam page under Games, as a session that has never been asked has
+    /// it: the integration on, the client started for a game rather than with
+    /// the shell, left running once that game is over, and one row that is not
+    /// a switch at all.
+    #[test]
+    fn the_steam_page_offers_three_switches_and_says_what_they_are_set_to() {
+        with_displays(&[], || {
+            let rows = steam_page();
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                [
+                    "Integration",
+                    "Start with the shell",
+                    "Leave Steam running",
+                    COMPATIBILITY_PAGE
+                ],
+                "the thing, starting it, stopping it, and what it runs games with"
+            );
+            let chosen = |row: &Entry| {
+                row.entries()
+                    .expect("each switch opens onto its two values")
+                    .iter()
+                    .position(Entry::chosen)
+                    .expect("one of the two is in force")
+            };
+            assert_eq!(chosen(&rows[0]), 1, "the integration is on");
+            assert_eq!(chosen(&rows[1]), 0, "the client waits for a game");
+            assert_eq!(chosen(&rows[2]), 1, "and is left running after one");
+            for row in &rows[..3] {
+                let values = row.entries().expect("two values");
+                assert_eq!(
+                    values.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Off", "On"],
+                    "the switch every other switch in this tree is"
+                );
+            }
+
+            // And the fourth is not a switch: it is a list that has to be
+            // fetched from Valve's client, so a session nobody has asked it in
+            // shows the wait rather than an empty column somebody could step
+            // into and find nothing in.
+            let tools = rows[3].entries().expect("a column of tools");
+            assert_eq!(tools.len(), 1, "one row, and it is the wait");
+            assert_eq!(tools[0].setting(), None, "which cannot be pressed");
+            assert_eq!(rows[3].icon(), Some(icons::SETTING_COMPATIBILITY));
+
+            // The row above them says what is in here, not what it is set to:
+            // three values read back would be a door labelled with the room's
+            // furniture. See [`steam_note`].
+            assert_eq!(
+                steam_row().comment(),
+                Some("How Steam works with the shell")
+            );
+        });
+    }
+
+    /// The two client settings are not offered by a shell that is not driving a
+    /// client.
+    ///
+    /// A row that changes nothing is a row this tree does not offer — the same
+    /// rule a screen list with no screens in it is under — and what says why is
+    /// the one row that is left, which carries the answer under its own title.
+    #[test]
+    fn an_integration_that_is_off_offers_nothing_about_the_client() {
+        with_displays(&[], || {
+            assert!(apply_with(
+                Setting::Steam(SteamValue::Integration(false)),
+                |_| {},
+            ));
+            let rows = steam_page();
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Integration"],
+                "and nothing about a client this shell is not starting"
+            );
+            assert_eq!(
+                steam_row().comment(),
+                Some("How Steam works with the shell"),
+                "the door says what is behind it whichever way the switch is set"
+            );
+            // And the two readers say so whatever the file holds, which is what
+            // keeps every caller of them from having to ask twice.
+            *STEAM_AT_STARTUP.lock().unwrap() = true;
+            *STEAM_AFTER_A_GAME.lock().unwrap() = false;
+            assert!(!steam_at_startup(), "there is no client to start");
+            assert!(
+                steam_left_after_a_game(),
+                "and none of this shell's business to close"
+            );
+        });
+    }
+
+    /// A session started with `--no-steam` has no switch to press, because the
+    /// flag outranks the file: it says what *this session* was told to do, and
+    /// a row saying On over a session doing nothing would be the page lying.
+    ///
+    /// What is written down is still the setting and never the flag. A machine
+    /// booted once with `--no-steam` must not come back the next morning with
+    /// its Steam integration quietly turned off.
+    #[test]
+    fn a_session_told_to_leave_steam_alone_says_so() {
+        with_displays(&[], || {
+            note_steam_in_this_session(false);
+            assert!(!steam_integration(), "whatever the file says");
+
+            let rows = steam_page();
+            assert_eq!(rows.len(), 1, "one row, and it is not a switch");
+            assert_eq!(rows[0].icon(), Some(icons::SETTING_INFO));
+            assert_eq!(rows[0].setting(), None, "there is nothing here to set");
+            assert!(rows[0].comment().is_some(), "which says why");
+            assert_eq!(steam_row().comment(), Some("Left out of this session"));
+
+            assert_eq!(
+                stored().steam_integration,
+                Some(true),
+                "the flag is not an answer the user gave"
+            );
+        });
+    }
+
+    /// The three switches survive being written out and read back, which is the
+    /// whole point of writing them down.
+    ///
+    /// Never through [`apply`], for the reason the volume test gives: that one
+    /// writes to the config directory of whoever is running the tests.
+    #[test]
+    fn the_steam_switches_are_remembered() {
+        with_displays(&[], || {
+            let mut persisted = None;
+            assert!(apply_with(
+                Setting::Steam(SteamValue::AtStartup(true)),
+                |stored| persisted = stored.steam_at_startup,
+            ));
+            assert!(steam_at_startup());
+            assert_eq!(persisted, Some(true), "and it is written down");
+            assert!(apply_with(
+                Setting::Steam(SteamValue::AfterAGame(false)),
+                |_| {},
+            ));
+            assert!(!steam_left_after_a_game());
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("steam-at-startup"), "{body}");
+            assert!(body.contains("steam-after-a-game"), "{body}");
+            *STEAM_AT_STARTUP.lock().unwrap() = false;
+            *STEAM_AFTER_A_GAME.lock().unwrap() = true;
+            adopt(toml::from_str(&body).unwrap());
+            assert!(steam_at_startup(), "and they come back as they were");
+            assert!(!steam_left_after_a_game());
+
+            // A file that says nothing about them changes nothing, which is how
+            // every settings file written before this page existed keeps the
+            // Steam this shell has always had. See [`adopt`].
+            assert_eq!(Stored::default().steam_integration, None);
+            adopt(Stored::default());
+            assert!(steam_at_startup(), "a silent file answers nothing");
+            assert!(!steam_left_after_a_game());
+            assert!(steam_integration(), "and the default is on");
+        });
+    }
+
+    /// Highlighting a Steam row changes nothing.
+    ///
+    /// It matters most for the integration, which is the one setting in this
+    /// tree whose press rebuilds the bar: a cursor walking past Off would take
+    /// somebody's library off the screen and put it back, twice, on the way
+    /// down a list of two.
+    #[test]
+    fn a_highlighted_steam_row_is_not_a_chosen_one() {
+        with_displays(&[], || {
+            preview(Some(Setting::Steam(SteamValue::Integration(false))));
+            assert!(steam_integration(), "highlighting Off is not choosing it");
+            preview(Some(Setting::Steam(SteamValue::AtStartup(true))));
+            assert!(!steam_at_startup());
         });
     }
 
@@ -14586,12 +16444,605 @@ hdr = true
     }
 
     fn under<'a>(entries: &'a [Entry], title: &str) -> &'a [Entry] {
+        row(entries, title)
+            .entries()
+            .unwrap_or_else(|| panic!("{title} opens a column"))
+    }
+
+    /// One row of a column, by the name on it.
+    fn row<'a>(entries: &'a [Entry], title: &str) -> &'a Entry {
         entries
             .iter()
             .find(|entry| entry.title() == title)
             .unwrap_or_else(|| panic!("{title} is not on this page: {:?}", titles(entries)))
-            .entries()
-            .unwrap_or_else(|| panic!("{title} opens a column"))
+    }
+
+    // --- Settings > Input ---------------------------------------------------
+
+    // --- Settings > Input > Keyboard ----------------------------------------
+
+    /// The Keyboard layout page, with the session told it can set one.
+    ///
+    /// Both halves are needed: the page is gated on the protocol version — see
+    /// [`KEYBOARD_LAYOUT_AVAILABLE`] — and every test here is about what it
+    /// offers when it is offered at all.
+    fn layout_page() -> Vec<Entry> {
+        note_keyboard_layout_available(true);
+        under(
+            under(under(&column(), "Input"), "Keyboard"),
+            "Keyboard layout",
+        )
+        .to_vec()
+    }
+
+    /// Whether this machine has a layout registry to read, which a build
+    /// container may not. See [[tests-that-read-the-machine]].
+    fn has_layouts() -> bool {
+        !layouts::registry().is_empty()
+    }
+
+    /// Three levels, with the field at the head of every one of them.
+    ///
+    /// The field is `over_the_list`, which is what keeps the column opening on
+    /// the first continent rather than on a control nobody asked for — the
+    /// same rule the shelves and the explorer's folders are under.
+    #[test]
+    fn the_layout_tree_is_continents_then_countries_then_arrangements() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        if has_layouts() {
+            let page = layout_page();
+            assert!(page[0].over_the_list(), "the field stands over the list");
+            assert_eq!(page[0].title(), "Search");
+            assert!(
+                !page[1].over_the_list(),
+                "and nothing under it does, so the column opens on a continent"
+            );
+
+            // Every row below the field opens a column of countries, and every
+            // one of those opens a column of arrangements.
+            let continents = &page[1..];
+            assert!(!continents.is_empty());
+            for continent in continents {
+                let countries = continent.entries().expect("a continent opens a column");
+                assert_eq!(countries[0].title(), "Search", "{}", continent.title());
+                assert!(countries.len() > 1, "{} is empty", continent.title());
+                for country in &countries[1..] {
+                    let held = country.entries().expect("a country opens a column");
+                    assert_eq!(held[0].title(), "Search", "{}", country.title());
+                    assert!(held.len() > 1, "{} is empty", country.title());
+                    for arrangement in &held[1..] {
+                        assert!(
+                            arrangement.setting().is_some(),
+                            "{} sets nothing",
+                            arrangement.title()
+                        );
+                    }
+                }
+            }
+        }
+        put_back(saved);
+    }
+
+    /// A press writes the arrangement down as `layout (variant)`, and the row
+    /// above the page says what it is by name.
+    #[test]
+    fn choosing_an_arrangement_is_written_down_and_said_on_the_row_above_it() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        if has_layouts() {
+            note_keyboard_layout_available(true);
+            // Named exactly, not "the first thing that matches polish" — that
+            // is `gb (pl)`, Polish on a British keyboard, and a test that
+            // asserted on whichever row xkeyboard-config happened to list first
+            // would be a test about the package rather than about this page.
+            let wanted = layouts::registry()
+                .find("pl", "")
+                .map(|layout| (layout.key(), layout.name.clone()));
+            if let Some((wanted, called)) = wanted {
+                let mut persisted = None;
+                assert!(apply_with(
+                    Setting::KeyboardLayout(intern(&wanted)),
+                    |stored| persisted = stored.keyboard_layout.clone(),
+                ));
+                assert_eq!(persisted.as_deref(), Some(wanted.as_str()));
+                assert_eq!(keyboard_layout().as_deref(), Some(wanted.as_str()));
+
+                let opened = column();
+                let keyboard = under(under(&opened, "Input"), "Keyboard");
+                assert_eq!(
+                    row(keyboard, "Keyboard layout").comment(),
+                    Some(called.as_str()),
+                    "the row carrying the value says what the value is"
+                );
+                // And the mark is on that row and on no other.
+                let page = layout_page();
+                let ticked: Vec<&str> = walk(&page)
+                    .into_iter()
+                    .filter(|entry| entry.chosen())
+                    .map(|entry| entry.title())
+                    .collect();
+                assert_eq!(ticked, [called.as_str()]);
+            }
+        }
+        put_back(saved);
+    }
+
+    /// Every row of the tree, however deep, for counting what is marked.
+    fn walk(entries: &[Entry]) -> Vec<&Entry> {
+        let mut found = Vec::new();
+        for entry in entries {
+            found.push(entry);
+            if let Some(inside) = entry.entries() {
+                found.extend(walk(inside));
+            }
+        }
+        found
+    }
+
+    /// The field searches every arrangement from wherever it is typed into, so
+    /// the same query answers the same way at all three levels — and the rows
+    /// it finds say where they live instead of what xkb calls them.
+    #[test]
+    fn the_field_finds_arrangements_from_any_level_of_the_tree() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        if has_layouts() && !layouts::registry().search("polish").is_empty() {
+            note_keyboard_layout_available(true);
+            assert!(set_layout_query("polish"));
+            let page = layout_page();
+            assert_eq!(page[0].title(), "polish", "the field is the query");
+            assert_eq!(
+                page[1].title(),
+                "Clear search",
+                "and the row that empties it arrives with it"
+            );
+            let found: Vec<&str> = page[2..].iter().map(|entry| entry.title()).collect();
+            assert!(found.contains(&"Polish"), "{found:?}");
+            assert_eq!(
+                row(&page, "Polish").comment(),
+                Some("Europe · Poland"),
+                "a found row says where it lives, not what xkb calls it"
+            );
+
+            // Every found row is an arrangement to press rather than a way
+            // further in: a search has taken the user out of the tree.
+            for entry in &page[2..] {
+                assert!(entry.entries().is_none(), "{}", entry.title());
+                assert!(entry.setting().is_some(), "{}", entry.title());
+            }
+
+            // And emptying it puts the tree back.
+            assert!(set_layout_query(""));
+            let page = layout_page();
+            assert_eq!(page[0].title(), "Search");
+            assert!(page.iter().all(|entry| entry.title() != "Polish"));
+        }
+        put_back(saved);
+    }
+
+    /// What is in force is the shell's answer, or the compositor's where the
+    /// shell has never been asked — which is every machine the first time.
+    #[test]
+    fn the_compositor_s_own_layout_is_what_is_in_force_until_somebody_chooses() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        *KEYBOARD_LAYOUT.lock().unwrap() = None;
+        *COMPOSITOR_LAYOUT.lock().unwrap() = None;
+        assert_eq!(keyboard_layout_in_force(), None);
+
+        assert!(note_compositor_layout("de".to_string()));
+        assert_eq!(keyboard_layout_in_force().as_deref(), Some("de"));
+        // Said twice is not news.
+        assert!(!note_compositor_layout("de".to_string()));
+
+        // Once the shell has one of its own it wins, and the compositor
+        // reporting it back is not a change the column has to be rebuilt for.
+        *KEYBOARD_LAYOUT.lock().unwrap() = Some("pl (qwertz)".to_string());
+        assert_eq!(keyboard_layout_in_force().as_deref(), Some("pl (qwertz)"));
+        assert!(!note_compositor_layout("pl (qwertz)".to_string()));
+
+        // And what is written down is the shell's own and never the
+        // compositor's: writing that one down would turn a setting nobody made
+        // into one they did, after which changing config.toml would stop
+        // working.
+        *KEYBOARD_LAYOUT.lock().unwrap() = None;
+        assert_eq!(stored().keyboard_layout, None);
+        put_back(saved);
+    }
+
+    /// A compositor too old to be told says so rather than offering six hundred
+    /// rows that would change nothing.
+    #[test]
+    fn a_session_that_cannot_set_a_layout_says_so_instead_of_listing_them() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        note_keyboard_layout_available(false);
+
+        let opened = column();
+        let keyboard = under(under(&opened, "Input"), "Keyboard");
+        let row = row(keyboard, "Keyboard layout");
+        assert_eq!(row.comment(), Some("Not offered by this session"));
+        let page = row.entries().expect("it still opens a column");
+        assert_eq!(titles(page), ["Not offered by this session"]);
+        assert!(
+            page[0].setting().is_none(),
+            "and the one row on it cannot be pressed"
+        );
+        put_back(saved);
+    }
+
+    /// The board is *inside* the keyboard's page, and under the layout that
+    /// decides what it prints.
+    ///
+    /// The two were siblings under Input for one release. They are not two
+    /// subjects: the board is a keyboard — the one a console has instead of the
+    /// one on the desk — and it takes its caps from the layout set beside it,
+    /// so listing them at the same depth put a cause and its effect side by
+    /// side with nothing saying which was which.
+    #[test]
+    fn the_board_lives_under_the_keyboard_whose_letters_it_prints() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+        let opened = column();
+        assert_eq!(titles(under(&opened, "Input")), ["Keyboard", "Mouse"]);
+        assert_eq!(
+            titles(under(under(&opened, "Input"), "Keyboard")),
+            ["Keyboard layout", "On-screen keyboard"],
+            "the page that decides comes before the page that follows it"
+        );
+        put_back(saved);
+    }
+
+    /// The Input column, and the keyboard's page inside it.
+    fn keyboard_page() -> Vec<Entry> {
+        under(
+            under(under(&column(), "Input"), "Keyboard"),
+            "On-screen keyboard",
+        )
+        .to_vec()
+    }
+
+    /// The page lists the screens this session has, headed by the answer that
+    /// is not a screen at all.
+    ///
+    /// "Focused screen" is first because it is the setting's own default and
+    /// because it is the only row on the page that is a *rule* rather than a
+    /// place — everything under it names one screen, and a rule read after four
+    /// connector names would be read as a fifth one.
+    #[test]
+    fn the_board_can_be_pinned_to_any_screen_the_session_has() {
+        with_displays(
+            &[(FIRST, Support::default()), (SECOND, Support::default())],
+            || {
+                let page = keyboard_page();
+                assert_eq!(titles(&page), ["Default display"]);
+
+                let rows = under(&page, "Default display");
+                assert_eq!(
+                    titles(rows),
+                    [
+                        FOCUSED_SCREEN,
+                        &format!("Only {FIRST}"),
+                        &format!("Only {SECOND}")
+                    ]
+                );
+                assert!(
+                    rows[0].chosen(),
+                    "a shell nobody has asked follows the hands"
+                );
+                assert_eq!(rows[0].setting(), Some(Setting::KeyboardDisplay(None)));
+                assert_eq!(
+                    rows[2].setting(),
+                    Some(Setting::KeyboardDisplay(Some(intern(SECOND))))
+                );
+
+                // Every row a screen is drawn as one, which is what the Display
+                // pages draw the same screens as.
+                for row in &rows[1..] {
+                    assert_eq!(row.icon(), Some(icons::SETTING_DISPLAY));
+                }
+                // And nothing says anything: a connector name is what the rest
+                // of this tree calls the same screen, and a sentence under each
+                // explaining what it is would be the cable described back.
+                assert!(rows[1..].iter().all(|row| row.comment().is_none()));
+            },
+        );
+    }
+
+    /// A press moves the mark, writes the name down, and is said back by the
+    /// row above the list.
+    ///
+    /// That row and no other. The page above it describes the *page* — see
+    /// [`on_screen_keyboard`], where that is argued — so a comment naming one
+    /// screen must not climb any further than the setting it belongs to.
+    #[test]
+    fn pinning_the_board_is_written_down_and_said_on_the_row_above_it() {
+        with_displays(
+            &[(FIRST, Support::default()), (SECOND, Support::default())],
+            || {
+                let opened = column();
+                let keyboard = under(under(&opened, "Input"), "Keyboard");
+                let page = under(keyboard, "On-screen keyboard");
+                assert_eq!(
+                    row(keyboard, "On-screen keyboard").comment(),
+                    Some("The board this shell types with"),
+                    "the row that opens the page describes the page"
+                );
+                assert_eq!(page[0].comment(), Some(FOCUSED_SCREEN));
+
+                let rows = under(&keyboard_page(), "Default display").to_vec();
+                let mut persisted = None;
+                // Never through `apply`, which would write to the config
+                // directory of whoever is running the suite.
+                assert!(apply_with(
+                    rows[1].setting().expect("the row sets something"),
+                    |stored| persisted = stored.keyboard_display.clone(),
+                ));
+                assert_eq!(persisted.as_deref(), Some(FIRST));
+                assert_eq!(keyboard_display().as_deref(), Some(FIRST));
+
+                let opened = column();
+                let keyboard = under(under(&opened, "Input"), "Keyboard");
+                let page = under(keyboard, "On-screen keyboard");
+                let said = format!("Only {FIRST}");
+                assert_eq!(
+                    row(keyboard, "On-screen keyboard").comment(),
+                    Some("The board this shell types with"),
+                    "and it goes on describing the page, whatever is chosen inside it"
+                );
+                assert_eq!(page[0].comment(), Some(said.as_str()));
+                let rows = under(page, "Default display");
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row.chosen())
+                        .map(Entry::title)
+                        .collect::<Vec<_>>(),
+                    [said.as_str()]
+                );
+
+                // Highlighting one changes nothing. It is the row here where a
+                // preview would be visible and still wrong: the board is what
+                // the user is reading the list through, and walking the list
+                // would throw it from screen to screen under their hands.
+                preview(rows[0].setting());
+                assert_eq!(keyboard_display().as_deref(), Some(FIRST));
+            },
+        );
+    }
+
+    /// A screen the setting names and this session has not got is still
+    /// offered, still marked, and says why it is not there.
+    ///
+    /// The setting is still in force — the board goes back to that screen the
+    /// moment it is plugged in — so a page with nothing ticked on it would be
+    /// the shell denying a choice it is keeping. The same answer the startup
+    /// column gives for a column that is not on the bar.
+    #[test]
+    fn a_screen_that_is_not_plugged_in_is_still_the_setting() {
+        with_displays(&[(FIRST, Support::default())], || {
+            *KEYBOARD_DISPLAY.lock().unwrap() = Some(AWKWARD.to_string());
+
+            let page = keyboard_page();
+            let rows = under(&page, "Default display");
+            let absent = format!("Only {AWKWARD}");
+            assert_eq!(
+                titles(rows),
+                [FOCUSED_SCREEN, &format!("Only {FIRST}"), &absent],
+                "the screen it names is offered last, after the ones that are here"
+            );
+            assert!(rows[2].chosen(), "and it is still what is chosen");
+            assert_eq!(rows[2].comment(), Some("Not plugged in just now"));
+            assert!(
+                rows[1].comment().is_none(),
+                "a screen that is here says nothing"
+            );
+            assert_eq!(
+                page[0].comment(),
+                Some(format!("Only {AWKWARD} — not plugged in just now").as_str())
+            );
+
+            // And it is not written back to anything else, which is what brings
+            // the board home when the cable goes back in.
+            assert_eq!(stored().keyboard_display.as_deref(), Some(AWKWARD));
+        });
+    }
+
+    /// The Mouse page, wherever it has got to in the tree.
+    fn mouse_page() -> Vec<Entry> {
+        under(under(&column(), "Input"), "Mouse").to_vec()
+    }
+
+    /// The four rows, in the order the page keeps them, each carrying its own
+    /// kind of row: a bar for the two speeds and a list for the other two.
+    #[test]
+    fn the_mouse_page_sets_the_pointer_and_the_wheel() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+
+        let page = mouse_page();
+        assert_eq!(
+            titles(&page),
+            [
+                "Cursor speed",
+                "Cursor size",
+                "Scrolling speed",
+                "Scrolling direction"
+            ],
+            "each pair's speed in front of the other thing about it"
+        );
+
+        // The two speeds are bars: one row that is the number, walked either
+        // way along its own track.
+        for (row, foot, head) in [
+            (
+                "Cursor speed",
+                Setting::Pointer(PointerValue::Speed(SLOWEST_POINTER)),
+                Setting::Pointer(PointerValue::Speed(FASTEST_POINTER)),
+            ),
+            (
+                "Scrolling speed",
+                Setting::Pointer(PointerValue::Scroll(SLOWEST_SCROLL)),
+                Setting::Pointer(PointerValue::Scroll(FASTEST_SCROLL)),
+            ),
+        ] {
+            let rows = under(&page, row);
+            let [Entry::Bar(bar)] = rows else {
+                panic!("{row} is one bar and nothing else: {:?}", titles(rows));
+            };
+            assert_eq!(bar.steps.first(), Some(&foot));
+            assert_eq!(bar.steps.last(), Some(&head));
+            // The handle starts in the middle of the pointer's track — 0 is
+            // libinput's flat default, not its slow end — and at the foot of
+            // nothing: a scroll speed of one to one is a quarter of the way up.
+            assert!(
+                (0.0..=1.0).contains(&bar.fill),
+                "{row} puts its handle on its own track"
+            );
+        }
+
+        // The cursor's size is a list, because a theme draws a handful of sizes
+        // and the ones in between would move the number and not the pointer.
+        let sizes = under(&page, "Cursor size");
+        assert_eq!(titles(sizes), ["Small", "Normal", "Large", "Larger"]);
+        assert_eq!(
+            sizes
+                .iter()
+                .filter(|row| row.chosen())
+                .map(Entry::title)
+                .collect::<Vec<_>>(),
+            ["Normal"],
+            "a session nobody has asked draws the cursor at XCursor's own size"
+        );
+        assert_eq!(
+            sizes[0].setting(),
+            Some(Setting::Pointer(PointerValue::Size(16)))
+        );
+
+        // And the direction is two rows named after what moves, because
+        // "natural" is the one word that tells nobody anything.
+        let direction = under(&page, "Scrolling direction");
+        assert_eq!(titles(direction), ["Standard", "Natural"]);
+        assert!(direction[0].chosen(), "the wheel's own direction, to begin");
+        assert_eq!(
+            direction[1].setting(),
+            Some(Setting::Pointer(PointerValue::Natural(true)))
+        );
+
+        put_back(saved);
+    }
+
+    /// A press changes one of the four and leaves the other three alone, and
+    /// all four are written down.
+    ///
+    /// One at a time matters here more than on most pages: what goes over the
+    /// wire is all four together — see `Shell::sync_pointer` — so a press that
+    /// carried a stale copy of its neighbours would undo them.
+    #[test]
+    fn one_mouse_row_is_set_without_moving_the_others() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+
+        assert_eq!(pointer(), Pointer::DEFAULT);
+
+        let mut persisted = None;
+        // Never through `apply`, which would write to the config directory of
+        // whoever is running the suite.
+        assert!(apply_with(
+            Setting::Pointer(PointerValue::Scroll(200)),
+            |stored| persisted = Some(stored.scroll_speed),
+        ));
+        assert_eq!(persisted, Some(Some(200)));
+        assert_eq!(
+            pointer(),
+            Pointer {
+                scroll: 200,
+                ..Pointer::DEFAULT
+            },
+            "the wheel moved and the pointer did not"
+        );
+
+        assert!(apply_with(
+            Setting::Pointer(PointerValue::Natural(true)),
+            |_| {}
+        ));
+        assert!(apply_with(Setting::Pointer(PointerValue::Size(48)), |_| {}));
+        assert!(apply_with(
+            Setting::Pointer(PointerValue::Speed(-40)),
+            |_| {}
+        ));
+        assert_eq!(
+            pointer(),
+            Pointer {
+                speed: -40,
+                size: 48,
+                scroll: 200,
+                natural: true
+            }
+        );
+
+        // The whole of it is written, whichever row was pressed.
+        let written = stored();
+        assert_eq!(written.pointer_speed, Some(-40));
+        assert_eq!(written.cursor_size, Some(48));
+        assert_eq!(written.scroll_speed, Some(200));
+        assert_eq!(written.natural_scroll, Some(true));
+
+        // And the page says so on the rows above the values.
+        let page = mouse_page();
+        assert_eq!(
+            page.iter().map(Entry::comment).collect::<Vec<_>>(),
+            [
+                Some("30%"),
+                Some("Larger"),
+                Some("200%"),
+                Some("The page follows your fingers")
+            ]
+        );
+
+        // Highlighting one changes nothing. The pointer is what the user is
+        // reading the list *with*, so a preview would change how fast the walk
+        // itself moves under the hand doing the walking.
+        preview(under(&page, "Cursor size")[0].setting());
+        assert_eq!(pointer().size, 48);
+
+        put_back(saved);
+    }
+
+    /// A number the page cannot ask for is brought to the nearest one that
+    /// means something, on the way in and on the way out.
+    ///
+    /// The file is one the user is entitled to open, and so is a file written
+    /// by a later version of this shell offering sizes or speeds this one does
+    /// not. Neither is refused: refusing would leave the page with nothing
+    /// ticked on it and no explanation, which is the answer the startup column
+    /// and the keyboard's display both decline to give.
+    #[test]
+    fn a_mouse_setting_out_of_range_is_brought_to_the_nearest_one() {
+        // The cursor's sizes are a list, so "nearest" is one of the four.
+        assert_eq!(nearest_cursor_size(0), 16);
+        assert_eq!(nearest_cursor_size(20), 16, "a tie goes to the first");
+        assert_eq!(nearest_cursor_size(21), NATURAL_CURSOR);
+        assert_eq!(nearest_cursor_size(40), 32, "and so does the one above");
+        assert_eq!(nearest_cursor_size(41), 48);
+        assert_eq!(nearest_cursor_size(4096), 48);
+
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+
+        // The two ranges are clamped, which is what a hand-edited number gets.
+        assert!(apply_with(
+            Setting::Pointer(PointerValue::Speed(i8::MIN)),
+            |_| {}
+        ));
+        assert_eq!(pointer().speed, SLOWEST_POINTER);
+        assert!(apply_with(
+            Setting::Pointer(PointerValue::Scroll(u16::MAX)),
+            |_| {}
+        ));
+        assert_eq!(pointer().scroll, FASTEST_SCROLL);
+
+        put_back(saved);
     }
 
     // --- Settings > Users ---------------------------------------------------

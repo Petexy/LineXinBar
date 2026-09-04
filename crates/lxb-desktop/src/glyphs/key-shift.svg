@@ -1,0 +1,24 @@
+<!--
+  The Shift key, as the key it is.
+
+  key-enter.svg's plain cap with the hollow upward arrow every keyboard in the
+  world prints on this one key — the same argument that file makes about its
+  own mark, and the reason both keep the plain cap rather than key-escape.svg's
+  bare word: the arrow is unmistakable, so nothing has to be spelled, but it is
+  still only a shape until something says it is a key.
+
+  The stem is deliberately short and the head wide. Drawn at a hint's size the
+  outline is a few pixels of material either side of a counter, and a tall
+  narrow stem closes that counter up long before the head's does — which is the
+  same failure key-escape.svg's note records about lowercase letters.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect x="2.75" y="5.5" width="18.5" height="13" rx="3.2"
+        fill="none" stroke="#fff" stroke-width="1.5"/>
+  <path fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"
+        d="M12 8.1 16.1 12.2h-2.2v3.7h-3.8v-3.7H7.9z"/>
+</svg>

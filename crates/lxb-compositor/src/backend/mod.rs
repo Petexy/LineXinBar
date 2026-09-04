@@ -46,6 +46,32 @@ impl Backend {
         }
     }
 
+    /// Hand the pointing-device settings to the devices already open.
+    ///
+    /// Only the udev backend has any: a nested session's pointer belongs to the
+    /// compositor above it, which is where its speed and its scroll direction
+    /// are set, and there is nothing here to apply them to. Silent rather than
+    /// warned about — a nested run is a development session and would say this
+    /// on every press.
+    pub fn apply_input_settings(&mut self, config: &crate::config::Input) {
+        if let Backend::Udev(b) = self {
+            b.apply_input_settings(config);
+        }
+    }
+
+    /// Draw this backend's own cursor at this many logical pixels.
+    ///
+    /// Every backend draws one, unlike the settings above: the pointer is a
+    /// picture this compositor composites, whatever it is reaching a screen
+    /// through.
+    pub fn set_cursor_size(&mut self, size: u32) {
+        match self {
+            Backend::Winit(b) => b.set_cursor_size(size),
+            Backend::X11(b) => b.set_cursor_size(size),
+            Backend::Udev(b) => b.set_cursor_size(size),
+        }
+    }
+
     /// Validate a client dmabuf against the backend's renderer.
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> Result<(), ImportError> {
         match self {

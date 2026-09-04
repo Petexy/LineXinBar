@@ -146,6 +146,15 @@ pub struct UdevBackend {
     devices: HashMap<DrmNode, DeviceData>,
     cursor: CursorState,
     dmabuf_global: Option<DmabufGlobal>,
+    /// Every pointing device libinput has handed over, so the settings can be
+    /// re-applied to the ones already plugged in and not only to the next one.
+    ///
+    /// libinput has no way to enumerate what it has opened — a device only ever
+    /// arrives as an event — so the list has to be kept as those events go by.
+    /// Held rather than looked up because Settings > Input > Mouse changes
+    /// while somebody is watching the pointer they are changing: a speed that
+    /// waited for a replug would read as a press that did nothing.
+    pointing: Vec<LibinputDevice>,
 }
 
 impl UdevBackend {
@@ -157,6 +166,23 @@ impl UdevBackend {
         if let Err(err) = self.session.change_vt(vt) {
             tracing::warn!(vt, ?err, "failed to switch VT");
         }
+    }
+
+    /// Hand the pointing settings to every device that is already open.
+    ///
+    /// The same call [`configure_libinput_device`] makes for a device arriving,
+    /// over the list of the ones that arrived earlier — so what a mouse plugged
+    /// in this morning does and what one plugged in now does are decided in one
+    /// place and cannot drift apart.
+    pub fn apply_input_settings(&mut self, config: &InputConfig) {
+        for device in &self.pointing {
+            configure_libinput_device(device, config);
+        }
+    }
+
+    /// Draw the compositor's own cursor at this many logical pixels.
+    pub fn set_cursor_size(&mut self, size: u32) {
+        self.cursor.set_size(size);
     }
 
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> Result<(), ImportError> {
@@ -256,6 +282,7 @@ pub fn init(
         gpus,
         devices: HashMap::new(),
         cursor: CursorState::new(),
+        pointing: Vec::new(),
         dmabuf_global: None,
     }));
 
@@ -280,8 +307,25 @@ pub fn init(
         .insert_source(
             LibinputInputBackend::new(libinput.clone()),
             |event, _, state| {
-                if let InputEvent::DeviceAdded { device } = &event {
-                    configure_libinput_device(device, &state.lxb.config.input);
+                // Kept as they go by, because libinput will not be asked later:
+                // Settings > Input > Mouse re-applies these to the devices
+                // already open, and there is no other way to find out what
+                // those are. See [`UdevBackend::apply_input_settings`].
+                match &event {
+                    InputEvent::DeviceAdded { device } => {
+                        configure_libinput_device(device, &state.lxb.config.input);
+                        if device.has_capability(DeviceCapability::Pointer) {
+                            if let crate::backend::Backend::Udev(udev) = &mut state.backend {
+                                udev.pointing.push(device.clone());
+                            }
+                        }
+                    }
+                    InputEvent::DeviceRemoved { device } => {
+                        if let crate::backend::Backend::Udev(udev) = &mut state.backend {
+                            udev.pointing.retain(|had| had != device);
+                        }
+                    }
+                    _ => {}
                 }
                 if is_lizard_keyboard_event(&event) {
                     return;

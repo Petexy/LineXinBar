@@ -455,6 +455,15 @@ pub async fn serve() -> anyhow::Result<()> {
     let shares: Shares = Arc::new(Mutex::new(HashMap::new()));
     let path = ObjectPath::try_from(PORTAL_PATH)?;
     let connection = zbus::connection::Builder::session()?
+        // Take the name even if something already holds it, and let the next
+        // one take it from this. The compositor starts this process and knows
+        // its pid, which is what lets it ask the shell anything at all; the
+        // bus can start one too, from the activation file, and that one has no
+        // way to the shell. Whichever gets there first, the session's own copy
+        // is the one that ends up answering — and when the compositor starts a
+        // replacement, that one takes over in turn.
+        .replace_existing_names(true)
+        .allow_name_replacements(true)
         .name(PORTAL_NAME)?
         .serve_at(
             &path,

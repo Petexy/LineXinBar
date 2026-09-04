@@ -82,6 +82,10 @@ pub const KEY_ENTER: &str = "lxb:key-enter";
 /// diamond a Unix keyboard prints on it. The one mark for that key that is not
 /// somebody's logo; see key-super.svg.
 pub const KEY_SUPER: &str = "lxb:key-super";
+/// And the key the friends panel is raised with on a keyboard, drawn with the
+/// hollow arrow every keyboard prints on it. See key-shift.svg, and
+/// [`crate::friends`] for why this is the key.
+pub const KEY_SHIFT: &str = "lxb:key-shift";
 /// The four arrow keys of the on-screen keyboard.
 ///
 /// Drawn rather than lettered because Roboto — which the shell bundles so it
@@ -387,6 +391,88 @@ pub const SETTING_ROTATION_270: &str = "lxb:setting-rotation-270";
 /// applications rather than for the display.
 pub const SETTING_SYSTEM: &str = "lxb:setting-system";
 pub const SETTING_SCALE: &str = "lxb:setting-scale";
+/// A jigsaw piece, and the only one in this set: Settings > Games > Steam >
+/// Compatibility tool, which is the row that says what a game Valve has not
+/// verified is run with. A tab on one side and a socket on the other is what
+/// *this fits that* looks like, which is the whole of what a Steam Play tool
+/// is. See setting-compatibility.svg.
+pub const SETTING_COMPATIBILITY: &str = "lxb:setting-compatibility";
+
+/// Settings > Input, and the on-screen keyboard's page inside it.
+///
+/// Two keyboards, which is the one thing about this pair worth arguing over.
+/// The obvious mark for a column about how a machine is driven is a pad, and it
+/// is the one mark that column may not have: [`CATEGORY_GAMES`] is a pad, and
+/// the two rows stand four apart in the same column. Of the two subjects the
+/// pad belongs to the games, because that is the row somebody arrives looking
+/// for — so Input takes the other thing it is about, and today the other thing
+/// is the only thing under it.
+///
+/// [`SETTING_INPUT`] is therefore a keyboard, drawn as [`KEYBOARD_HIDE`] draws
+/// one — an outlined case with solid keys — minus the chevron that folds it
+/// away. [`SETTING_KEYBOARD`] is that same board standing inside a *screen*,
+/// because that is the whole of what makes the shell's keyboard the shell's:
+/// it is not on a desk.
+///
+/// They are told apart by their silhouette rather than by what is inside them,
+/// which is what survives eighty-four pixels: the keyboard is two units wide to
+/// one and full of keys, and the screen is nearly square with the keys in the
+/// bottom of it and nothing above them.
+pub const SETTING_INPUT: &str = "lxb:setting-input";
+pub const SETTING_KEYBOARD: &str = "lxb:setting-keyboard";
+
+/// Settings > Input > Mouse, and the four rows on it.
+///
+/// [`SETTING_MOUSE`] is the device: a capsule with the wheel and the seam
+/// between the buttons taken out of it as openings. Deliberately not
+/// [`MOUSE_RIGHT`], which is this shell's mark for a right *click* and carries
+/// a filled button to say so — that one is an instruction and this is a thing
+/// on a desk.
+///
+/// The four rows are two pairs, and the pairing is the whole of how they are
+/// read. What is being moved says which pair: a **pointer** on the two cursor
+/// rows, a plain **arrow** on the two scrolling ones. What is being asked says
+/// which of the pair: the two *speeds* carry a pair of horizontal runs behind
+/// the thing that is moving, which is this set's mark for going fast, and the
+/// other two carry a second copy of the thing instead — a small pointer beside
+/// a large one for a size, a second arrow pointing the other way for a
+/// direction.
+///
+/// So a row is identified twice over, and neither reading depends on counting
+/// anything small: at eighty-four pixels the four are a diagonal with lines, a
+/// diagonal with a diagonal, a vertical with lines, and two verticals.
+/// Settings > Input > Keyboard, the row it holds, and the two levels of the
+/// tree behind that row.
+///
+/// [`SETTING_KEYS`] is a single keycap with a letter on it, and it is a keycap
+/// because it may not be a keyboard. [`SETTING_INPUT`] is a keyboard already
+/// and [`SETTING_KEYBOARD`] is that board inside a screen, so a page under
+/// Input about the board on the desk would be the third rectangle full of keys
+/// in three columns the trail shows at once. One key drawn at the size the
+/// others draw a whole board says what is under the row — what the keys say —
+/// and its silhouette is a square where theirs are a wide slab and a screen.
+///
+/// [`SETTING_LAYOUT`] is a flag, because what that row asks is whose keyboard
+/// this is. The two marks it would otherwise have worn are both spoken for: a
+/// globe is [`CATEGORY_INTERNET`], and a keyboard is [`SETTING_INPUT`] two
+/// columns above it.
+///
+/// [`SETTING_REGION`] is a map pin, and it is on **both** the continent rows
+/// and the country rows inside them. Those are not two kinds of row — they are
+/// a place, and a place within it — so the trail showing one pin above another
+/// is the nesting drawn rather than two rows wearing one mark by accident.
+/// Settings > Display gives every screen [`SETTING_DISPLAY`] on the same
+/// argument. What is at the foot of that tree is a *value*, so it wears the
+/// bead like every other value in this column.
+pub const SETTING_KEYS: &str = "lxb:setting-keys";
+pub const SETTING_LAYOUT: &str = "lxb:setting-layout";
+pub const SETTING_REGION: &str = "lxb:setting-region";
+
+pub const SETTING_MOUSE: &str = "lxb:setting-mouse";
+pub const SETTING_CURSOR_SPEED: &str = "lxb:setting-cursor-speed";
+pub const SETTING_CURSOR_SIZE: &str = "lxb:setting-cursor-size";
+pub const SETTING_SCROLL_SPEED: &str = "lxb:setting-scroll-speed";
+pub const SETTING_SCROLL_DIRECTION: &str = "lxb:setting-scroll-direction";
 
 /// Settings > Users: the accounts this machine is for, and what makes another
 /// one.
@@ -733,7 +819,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 128] = [
+pub const BUILTIN: [(&str, &str); 140] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -758,6 +844,7 @@ pub const BUILTIN: [(&str, &str); 128] = [
     (KEY_SPACE, include_str!("glyphs/key-space.svg")),
     (KEY_ENTER, include_str!("glyphs/key-enter.svg")),
     (KEY_SUPER, include_str!("glyphs/key-super.svg")),
+    (KEY_SHIFT, include_str!("glyphs/key-shift.svg")),
     (ARROW_LEFT, include_str!("glyphs/arrow-left.svg")),
     (ARROW_DOWN, include_str!("glyphs/arrow-down.svg")),
     (ARROW_UP, include_str!("glyphs/arrow-up.svg")),
@@ -906,6 +993,35 @@ pub const BUILTIN: [(&str, &str); 128] = [
     ),
     (SETTING_SYSTEM, include_str!("glyphs/setting-system.svg")),
     (SETTING_SCALE, include_str!("glyphs/setting-scale.svg")),
+    (
+        SETTING_COMPATIBILITY,
+        include_str!("glyphs/setting-compatibility.svg"),
+    ),
+    (SETTING_INPUT, include_str!("glyphs/setting-input.svg")),
+    (SETTING_KEYS, include_str!("glyphs/setting-keys.svg")),
+    (SETTING_LAYOUT, include_str!("glyphs/setting-layout.svg")),
+    (SETTING_REGION, include_str!("glyphs/setting-region.svg")),
+    (
+        SETTING_KEYBOARD,
+        include_str!("glyphs/setting-keyboard.svg"),
+    ),
+    (SETTING_MOUSE, include_str!("glyphs/setting-mouse.svg")),
+    (
+        SETTING_CURSOR_SPEED,
+        include_str!("glyphs/setting-cursor-speed.svg"),
+    ),
+    (
+        SETTING_CURSOR_SIZE,
+        include_str!("glyphs/setting-cursor-size.svg"),
+    ),
+    (
+        SETTING_SCROLL_SPEED,
+        include_str!("glyphs/setting-scroll-speed.svg"),
+    ),
+    (
+        SETTING_SCROLL_DIRECTION,
+        include_str!("glyphs/setting-scroll-direction.svg"),
+    ),
     (SETTING_USERS, include_str!("glyphs/setting-users.svg")),
     (SETTING_PERSON, include_str!("glyphs/setting-person.svg")),
     (
@@ -1239,6 +1355,95 @@ impl Default for IconLoader {
     }
 }
 
+/// The `.ico` header: two zero bytes, then the type, which is 1 for an icon.
+///
+/// Checked before anything here walks the directory, because everything below
+/// this is an offset out of the file read from the file itself.
+pub const ICO_MAGIC: [u8; 4] = [0x00, 0x00, 0x01, 0x00];
+
+/// One entry of an `.ico` directory, in bytes.
+const ICO_ENTRY: usize = 16;
+
+/// A PNG's first eight bytes, and the two big-endian lengths at the head of the
+/// `IHDR` chunk that follows them.
+const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+const PNG_IHDR_WIDTH: usize = 16;
+
+/// The largest drawing inside an `.ico`, decoded past a gap in the crate that
+/// would otherwise decode it.
+///
+/// Two things are wrong with handing a Steam client icon straight to `image`,
+/// and both were measured against the thirty-three in Valve's cache on the
+/// machine this was written on.
+///
+/// **Its ICO decoder refuses a PNG entry that is not eight-bit RGBA** — three
+/// of the thirty-three are sixteen-bit, and the whole file fails with
+/// `The PNG is not in RGBA format!`. They are perfectly ordinary PNGs and the
+/// same crate decodes them without complaint when handed one on its own, which
+/// is what this does.
+///
+/// **And the directory lies about size.** The width and height of an entry are
+/// *one byte each*, with nought standing for 256 — so every entry of 256 pixels
+/// and every entry larger than that are written identically, and four of the
+/// thirty-three hold a 512-pixel drawing that the directory calls 256. The
+/// blob's own length is not a tiebreak either: one of those four stores its 512
+/// in 2 kB, less than the 256 beside it. So a PNG entry is measured by its own
+/// `IHDR`, which is the only field in the file that is not one byte wide.
+///
+/// Called from both places in the shell that can be handed one: [`load_path`],
+/// which is how an announcement's named picture is read, and
+/// [`crate::art::icon`], which is how the download card's is. They must agree —
+/// a game whose icon draws on the card and not in the bubble announcing it is
+/// one picture read two ways.
+///
+/// `None` for anything that is not an icon file, for one whose directory does
+/// not describe its own contents, and for one whose largest entry is not a PNG.
+/// All three fall back to `image`'s decoder, which is right for the ordinary
+/// case of a bitmap entry — half a BMP, with the palette and the mask that make
+/// sense of it in a header this deliberately does not parse.
+pub fn largest_in_an_ico(bytes: &[u8]) -> Option<image::DynamicImage> {
+    if bytes.get(..4)? != ICO_MAGIC {
+        return None;
+    }
+    let count = usize::from(u16::from_le_bytes([*bytes.get(4)?, *bytes.get(5)?]));
+    let number = |at: usize, big_endian: bool| -> Option<u32> {
+        let four: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(match big_endian {
+            true => u32::from_be_bytes(four),
+            false => u32::from_le_bytes(four),
+        })
+    };
+    // Where one entry's bytes are, and how big the drawing in them really is.
+    let drawing = |entry: usize| -> Option<(&[u8], u32)> {
+        let size = usize::try_from(number(entry + 8, false)?).ok()?;
+        let from = usize::try_from(number(entry + 12, false)?).ok()?;
+        let blob = bytes.get(from..from.checked_add(size)?)?;
+        // Nought in the directory means "256 or more"; a PNG says which.
+        let claimed = |at: usize| -> u32 {
+            match bytes.get(at) {
+                Some(0) | None => 256,
+                Some(side) => u32::from(*side),
+            }
+        };
+        let side = match blob.get(..8) == Some(&PNG_MAGIC) {
+            true => {
+                number(from + PNG_IHDR_WIDTH, true)?.min(number(from + PNG_IHDR_WIDTH + 4, true)?)
+            }
+            false => claimed(entry).min(claimed(entry + 1)),
+        };
+        Some((blob, side))
+    };
+
+    let largest = (0..count)
+        .map(|index| 6 + index * ICO_ENTRY)
+        .filter(|entry| entry + ICO_ENTRY <= bytes.len())
+        .filter_map(drawing)
+        .max_by_key(|(_, side)| *side)?;
+    (largest.0.get(..8) == Some(&PNG_MAGIC))
+        .then(|| image::load_from_memory(largest.0).ok())
+        .flatten()
+}
+
 fn load_path(path: &Path, size: u32) -> Option<Icon> {
     if size == 0 {
         return None;
@@ -1250,7 +1455,13 @@ fn load_path(path: &Path, size: u32) -> Option<Icon> {
     let rgba = if let Some(svg) = rasterise_svg(&data, path.parent(), size) {
         svg
     } else {
-        let image = image::load_from_memory(&data).ok()?;
+        // A `.ico` before anything else, because `image`'s own decoder for one
+        // refuses a PNG entry that is not eight-bit RGBA — see
+        // [`largest_in_an_ico`]. The one thing in this shell that names an icon
+        // file by path is a finished Steam download announcing itself with the
+        // game's own mark, and three of the thirty-three in Valve's cache on
+        // the machine this was written against are exactly that shape.
+        let image = largest_in_an_ico(&data).or_else(|| image::load_from_memory(&data).ok())?;
         fit_raster(image, size)
     };
     Some(Icon { size, rgba })
@@ -1923,7 +2134,7 @@ fn collect_theme_chain(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2446,13 +2657,14 @@ mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            128,
+            140,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
              moon, a \
              bell, seven \
-             controller buttons, a mouse, four keycaps, four arrows, a \
+             controller buttons, a mouse, five keycaps — the fifth being the \
+             Shift the friends panel is raised with — four arrows, a \
              keyboard folding away, a power \
              symbol, one per column of the category row — the open carton with \
              an arrow coming down into it that Software wears and the head of \
@@ -2460,12 +2672,21 @@ mod tests {
              Multimedia is divided into and the one under Graphics, the two \
              folders that stand for System's Files with the folder, page, drum \
              and house its own rows are drawn with, the \
-             forty-one marks the Settings column is drawn from — the brush at \
+             fifty-two marks the Settings column is drawn from — the brush at \
              the head of its Theme page, and under it the wave for the \
              wallpaper's own material and four of the shell's marks in one \
              cell for the material of the marks, the small window a video \
              floats in with the two sizes it is offered at and the four \
-             corners of a screen it can be put in, the two figures the \
+             corners of a screen it can be put in, the keyboard the Input \
+             column is headed by with that same board inside a screen for its \
+             on-screen keyboard, the single keycap its Keyboard page wears with \
+             the flag for the layout that board is set to and the map pin every \
+             continent and country of that layout's tree carries, the jigsaw \
+             piece under Games that says which compatibility tool a game runs \
+             under, the mouse its other page wears and the four \
+             marks on that page — a pointer and an arrow, each once with the \
+             air going past it for a speed and once with a second copy of \
+             itself for a size and for a direction — the two figures the \
              accounts on this machine are reached through with the one figure \
              an account with no picture of its own wears and that figure again \
              with a plus beside it for the account that does not exist yet, \
@@ -2565,6 +2786,7 @@ mod tests {
                 KEY_SPACE,
                 KEY_ENTER,
                 KEY_SUPER,
+                KEY_SHIFT,
                 ARROW_LEFT,
                 ARROW_DOWN,
                 ARROW_UP,
@@ -2631,6 +2853,17 @@ mod tests {
                 SETTING_BLUETOOTH,
                 SETTING_SYSTEM,
                 SETTING_SCALE,
+                SETTING_COMPATIBILITY,
+                SETTING_INPUT,
+                SETTING_KEYS,
+                SETTING_LAYOUT,
+                SETTING_REGION,
+                SETTING_KEYBOARD,
+                SETTING_MOUSE,
+                SETTING_CURSOR_SPEED,
+                SETTING_CURSOR_SIZE,
+                SETTING_SCROLL_SPEED,
+                SETTING_SCROLL_DIRECTION,
                 SETTING_USERS,
                 SETTING_PERSON,
                 SETTING_ADD_USER,
@@ -2684,5 +2917,132 @@ mod tests {
                 );
             }
         }
+    }
+    /// A PNG of `side` pixels, as bytes, at eight or sixteen bits a sample.
+    ///
+    /// Built rather than shipped: an `.ico` fixture on the disk would be a
+    /// Steam icon in the repository, and what these tests are about is the
+    /// container rather than any particular game's mark.
+    pub(crate) fn png(side: u32, deep: bool) -> Vec<u8> {
+        let image = match deep {
+            true => image::DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
+                side,
+                side,
+                image::Rgba([0xffffu16, 0x8000, 0x4000, 0xffff]),
+            )),
+            false => image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+                side,
+                side,
+                image::Rgba([0xffu8, 0x80, 0x40, 0xff]),
+            )),
+        };
+        let mut out = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("a png");
+        out.into_inner()
+    }
+
+    /// An `.ico` holding each of `entries` as `(what the directory claims, the
+    /// bytes)` — the claim separately from the picture, because the whole point
+    /// of the format's trouble is that the two disagree.
+    pub(crate) fn ico(entries: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let count = u16::try_from(entries.len()).expect("a small icon");
+        let mut out = Vec::new();
+        out.extend(ICO_MAGIC);
+        out.extend(count.to_le_bytes());
+        let mut at = 6 + entries.len() * ICO_ENTRY;
+        for (claimed, blob) in entries {
+            out.extend([*claimed, *claimed, 0, 0]);
+            out.extend(1u16.to_le_bytes());
+            out.extend(32u16.to_le_bytes());
+            out.extend(
+                u32::try_from(blob.len())
+                    .expect("a small entry")
+                    .to_le_bytes(),
+            );
+            out.extend(u32::try_from(at).expect("a small icon").to_le_bytes());
+            at += blob.len();
+        }
+        for (_, blob) in entries {
+            out.extend(blob);
+        }
+        out
+    }
+
+    /// The largest drawing in the file is the one taken, and the size the
+    /// directory claims is what says which — for everything that fits in the
+    /// one byte it has to say it in.
+    #[test]
+    fn a_client_icon_is_read_at_the_largest_size_it_holds() {
+        let file = ico(&[
+            (16, png(16, false)),
+            (64, png(64, false)),
+            (32, png(32, false)),
+        ]);
+        let chosen = largest_in_an_ico(&file).expect("the largest entry");
+        assert_eq!((chosen.width(), chosen.height()), (64, 64));
+    }
+
+    /// And where it does not fit, the drawing's own header is what says.
+    ///
+    /// The directory's width is one byte with nought standing for 256, so a 256
+    /// and a 512 are written identically — and the blob's length does not
+    /// separate them either: four of the icons in Valve's own cache on the
+    /// machine this was written against hold a 512 the directory calls 256, and
+    /// one of those stores it in less room than the 256 beside it. This is that
+    /// case, with the larger picture deliberately the smaller file.
+    #[test]
+    fn a_512_the_directory_calls_a_256_is_still_the_largest() {
+        // The 256 is noise and the 512 is one flat colour, so the larger
+        // picture really is the shorter blob. A fixture where the bigger
+        // drawing were also the bigger file would pass under the wrong rule as
+        // well as the right one, which is no test at all.
+        let mut noisy = image::ImageBuffer::new(256, 256);
+        for (x, y, pixel) in noisy.enumerate_pixels_mut() {
+            let value = (x * 7 + y * 13) as u8;
+            *pixel = image::Rgba([value, value.wrapping_mul(3), value ^ 0x5a, 0xff]);
+        }
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(noisy)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("a png");
+        let (small, large) = (out.into_inner(), png(512, false));
+        assert!(
+            large.len() < small.len(),
+            "the fixture is meant to have the bigger drawing in the shorter blob"
+        );
+
+        let file = ico(&[(0, small), (0, large)]);
+        let chosen = largest_in_an_ico(&file).expect("the largest entry");
+        assert_eq!((chosen.width(), chosen.height()), (512, 512));
+    }
+
+    /// A sixteen-bit PNG inside an `.ico` is a picture, and this shell reads it.
+    ///
+    /// `image`'s own ICO decoder does not: it insists a PNG entry be eight-bit
+    /// RGBA and fails the whole file otherwise, with
+    /// `The PNG is not in RGBA format!`. Three of the thirty-three client icons
+    /// in Valve's cache on this machine are exactly that, and before this they
+    /// were three games whose card drew no icon at all.
+    #[test]
+    fn a_sixteen_bit_entry_is_read_where_the_crate_will_not() {
+        let file = ico(&[(0, png(256, true))]);
+        assert!(
+            image::load_from_memory(&file).is_err(),
+            "the gap this works around has closed; the workaround can go"
+        );
+        let chosen = largest_in_an_ico(&file).expect("the entry the crate refused");
+        assert_eq!((chosen.width(), chosen.height()), (256, 256));
+
+        // And through the loader an announcement's picture goes through, which
+        // is the whole reason this lives here rather than beside the download
+        // card: a game whose icon draws on the card and not in the bubble
+        // announcing it would be one picture read two ways.
+        let at = std::env::temp_dir().join(format!("lxb-icon-{}.ico", std::process::id()));
+        std::fs::write(&at, &file).expect("a scratch icon");
+        let loaded = load_path(&at, 64);
+        let _ = std::fs::remove_file(&at);
+        assert!(loaded.is_some(), "the announcement's picture must read too");
     }
 }

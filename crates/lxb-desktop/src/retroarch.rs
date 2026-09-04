@@ -1651,6 +1651,38 @@ impl RetroArch {
         })
     }
 
+    /// How far the row's own line has got, as a share of one, for the bar
+    /// drawn under it.
+    ///
+    /// Exactly the two states that put a percentage into [`RetroArch::note`]
+    /// and no others: a row saying what is in a folder is not a row counting
+    /// up, and a groove under one would be furniture.
+    ///
+    /// Several games are a count rather than a percentage in the words — see
+    /// [`Fetching::sentence`] — and the bar follows the words rather than the
+    /// file, because "3 of 12" and a bar a quarter full are the same sentence
+    /// twice. The part-finished one is added in, so the bar moves between
+    /// games instead of standing still through each of them.
+    pub fn arriving(&self) -> Option<f32> {
+        let inner = self.inner.as_ref()?;
+        if let Some(installing) = &inner.installing {
+            return installing.progress;
+        }
+        let fetching = inner.fetching.as_ref()?;
+        if fetching.core.is_empty() {
+            return None;
+        }
+        match fetching.of {
+            0 => None,
+            1 => fetching.progress,
+            of => {
+                let whole = f32::from(fetching.at.clamp(1, of) as u16 - 1);
+                let part = fetching.progress.unwrap_or(0.0).clamp(0.0, 1.0);
+                Some(((whole + part) / of as f32).clamp(0.0, 1.0))
+            }
+        }
+    }
+
     /// What the row says once RetroArch is here, which is what is in the
     /// folder.
     fn library_note(&self, inner: &Inner) -> String {
@@ -5470,6 +5502,65 @@ input_player1_right_btn = \"14\"
         for said in [one.sentence(), several.sentence(), looking.sentence()] {
             assert!(!said.contains("core"), "{said}");
         }
+    }
+
+    /// The bar under the row follows the words above it, in both shapes.
+    ///
+    /// A row saying "2 of 5" beside a bar four tenths full is one sentence and
+    /// one picture agreeing; the same bar drawn from the *file* being fetched
+    /// would be the row saying two different things at once. The part-finished
+    /// game is added in so the bar moves through each of them rather than
+    /// standing still and then jumping.
+    #[test]
+    fn the_bar_under_the_row_counts_what_the_line_above_it_counts() {
+        let with = |fetching: Option<Fetching>, installing: Option<Installing>| {
+            let mut retroarch = found(Vec::new());
+            let inner = retroarch.inner.as_mut().expect("it was found");
+            inner.fetching = fetching;
+            inner.installing = installing;
+            retroarch.arriving()
+        };
+        let fetch = |at: u32, of: u32, progress: Option<f32>| Fetching {
+            core: "ppsspp".to_string(),
+            progress,
+            at,
+            of,
+            note: String::new(),
+            ended: None,
+        };
+
+        // One thing to get: the words are a percentage and so is the bar.
+        assert_eq!(with(Some(fetch(1, 1, Some(0.42))), None), Some(0.42));
+
+        // Several: the second of five, two fifths of the way into it.
+        assert_eq!(with(Some(fetch(2, 5, Some(0.5))), None), Some(0.3));
+        assert_eq!(with(Some(fetch(1, 5, None)), None), Some(0.0));
+        assert_eq!(with(Some(fetch(5, 5, Some(1.0))), None), Some(1.0));
+
+        // The lines before any core has started say their own words — see
+        // [`Fetching::sentence`] — and draw no bar: there is nothing yet to be
+        // a fraction of.
+        let mut looking = fetch(0, 3, None);
+        looking.core = String::new();
+        assert_eq!(with(Some(looking), None), None);
+
+        // An install of RetroArch itself, which is the other percentage the row
+        // carries — and a row that is only saying what is in a folder, which is
+        // not a row counting up at all.
+        assert_eq!(
+            with(
+                None,
+                Some(Installing {
+                    progress: Some(0.6),
+                    note: "Downloading".to_string(),
+                    removing: false,
+                    ended: None,
+                })
+            ),
+            Some(0.6)
+        );
+        assert_eq!(with(None, None), None);
+        assert_eq!(RetroArch::absent().arriving(), None);
     }
 
     /// The counts on the row read as English, which is one `if` and is wrong in

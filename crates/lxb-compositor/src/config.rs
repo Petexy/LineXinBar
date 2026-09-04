@@ -92,6 +92,17 @@ pub struct Input {
     pub disable_while_typing: bool,
     /// Pointer acceleration in -1.0..=1.0, libinput semantics.
     pub pointer_accel: f64,
+    /// How far one movement of a wheel or a finger carries the content under
+    /// it, as a multiple of what libinput reported. 1.0 is one to one.
+    ///
+    /// The compositor's own, not libinput's: libinput has no scroll speed, so
+    /// this is a multiplication over the deltas that are forwarded. It is
+    /// applied to the discrete notch count as well as to the continuous value,
+    /// because a client that counts wheel detents and one that reads pixels
+    /// must not disagree about how far one notch went. Zero and negatives are
+    /// refused when it is set — a scroll that goes nowhere reads as a broken
+    /// wheel, and a negative one is [`Input::natural_scroll`] said twice.
+    pub scroll_speed: f64,
 }
 
 impl Default for Input {
@@ -108,6 +119,7 @@ impl Default for Input {
             natural_scroll: false,
             disable_while_typing: true,
             pointer_accel: 0.0,
+            scroll_speed: 1.0,
         }
     }
 }

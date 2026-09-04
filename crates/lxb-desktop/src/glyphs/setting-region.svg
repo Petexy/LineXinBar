@@ -1,0 +1,36 @@
+<!--
+  A place on the map: the mark on every continent row of the layout tree, and
+  on every country row inside them.
+
+  One mark for both levels, deliberately. They are not two kinds of row — they
+  are a place, and a place inside it — and the trail showing one pin above
+  another is that nesting drawn rather than a collision. Settings > Display
+  gives every screen setting-display.svg on the same argument.
+
+  The eye is a hole rather than a smaller filled circle: a disc inside a disc is
+  two bodies a bead of water would run round twice, and what a pin has in the
+  middle of it is a gap. Six and three quarter units across, which is four times
+  the narrowest opening this set allows, so it stays a hole at the smallest size
+  a settings row is drawn at.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="pin" d="M16 3.6
+                      C 10.4 3.6, 6.2 7.9, 6.2 13.4
+                      C 6.2 19.6, 12.2 24.6, 16 28.6
+                      C 19.8 24.6, 25.8 19.6, 25.8 13.4
+                      C 25.8 7.9, 21.6 3.6, 16 3.6 Z"/>
+    <circle id="eye" cx="16" cy="13.2" r="3.4"/>
+    <mask id="pierced">
+      <use href="#pin" fill="#ffffff"/>
+      <use href="#eye" fill="#000000"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#pin" fill="#ffffff"/>
+  </g>
+</svg>

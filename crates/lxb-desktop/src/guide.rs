@@ -498,6 +498,15 @@ const MEDIA_FLIGHT: f32 = 0.34;
 /// press behind it.
 const TRANSPORT_FLIGHT: f32 = 0.12;
 
+/// How long the download card takes to come in from the edge, and to leave, in
+/// seconds.
+///
+/// The media card's own flight, because it is the same event: something that
+/// nobody pressed appearing inside a menu that is already up. A different
+/// number would be two things arriving at two speeds in one corner of one
+/// screen, which reads as a fault rather than as two answers.
+const ARRIVING_FLIGHT: f32 = MEDIA_FLIGHT;
+
 #[derive(Debug, Default)]
 pub struct Guide {
     mode: Option<Mode>,
@@ -549,6 +558,20 @@ pub struct Guide {
     /// Whether the shell still wants the card, as against whether it is still
     /// on screen. The target the openness below is easing towards.
     media_wanted: bool,
+    /// The download in the corner of the menu, or `None` for a session with
+    /// nothing coming down.
+    ///
+    /// Kept for the whole of the card's life *including* its way out, exactly
+    /// as [`Guide::showing`] is: the card slides off over a third of a second
+    /// and has to go on saying what it said until it has gone. Dropped in
+    /// [`Guide::animate_download`], which is the only place that may.
+    arriving: Option<crate::steam::Coming>,
+    /// Whether the shell still wants that card. The target below eases to it.
+    download_wanted: bool,
+    /// How far the download card is in: 0 gone, 1 fully arrived. A position and
+    /// not a start time, for the reason every other one here is — a card taken
+    /// away half way in leaves from where it got to.
+    download_linear: f32,
     /// How far the media rows are open: 0 gone, 1 fully there.
     ///
     /// A position rather than a start time, for the reason [`Guide::power_linear`]
@@ -1138,6 +1161,71 @@ impl Guide {
         self.media_linear
     }
 
+    /// How far the download card has arrived, 0 to 1.
+    pub fn download(&self) -> f32 {
+        self.download_linear
+    }
+
+    /// What that card is about, for as long as it is on screen.
+    ///
+    /// Still answering through the whole of the way out, which is what lets the
+    /// card keep its name and its bar while it slides off — see
+    /// [[motion-and-animation-rules]]: nothing here vanishes before its
+    /// transition has ended.
+    pub fn downloading(&self) -> Option<&crate::steam::Coming> {
+        self.arriving.as_ref()
+    }
+
+    /// Put a download in the corner, take it away, or bring what is written on
+    /// it up to date.
+    ///
+    /// Replacing what is on a card that is already up must not restart its way
+    /// in: a percentage arrives every couple of seconds while something is
+    /// downloading, and a card that flew in again at each of them would be a
+    /// card nobody could read.
+    pub fn set_downloading(&mut self, coming: Option<crate::steam::Coming>) {
+        match coming {
+            Some(coming) => {
+                if self.arriving.as_ref() != Some(&coming) {
+                    self.arriving = Some(coming);
+                }
+                self.download_wanted = true;
+            }
+            None => self.download_wanted = false,
+        }
+    }
+
+    /// Advance the download card by `dt` and say how far in it is.
+    ///
+    /// One number in both directions, like the media card's, so a download that
+    /// finishes while its card is still arriving leaves from where it is rather
+    /// than snapping open first. And what it is about is only forgotten at the
+    /// very end of the way out, which is what keeps the name and the bar on the
+    /// card for the whole of the fade.
+    pub fn animate_download(&mut self, dt: f32) -> f32 {
+        let target = if self.download_wanted { 1.0 } else { 0.0 };
+        let step = dt / ARRIVING_FLIGHT;
+        self.download_linear = if self.download_linear < target {
+            (self.download_linear + step).min(target)
+        } else {
+            (self.download_linear - step).max(target)
+        };
+        if !self.download_wanted && self.download_linear <= 0.0 {
+            self.arriving = None;
+        }
+        self.download_linear
+    }
+
+    /// Whether the download card is still moving.
+    ///
+    /// In the shell's `pressing` beside [`Guide::media_is_moving`] and for the
+    /// same reason: the card arrives because a download started, not because
+    /// anything was pressed, so nothing else in the session is asking for the
+    /// frames it needs to arrive in.
+    pub fn download_is_moving(&self) -> bool {
+        self.download_linear != if self.download_wanted { 1.0 } else { 0.0 }
+    }
+
     /// Whether the media rows are still moving.
     ///
     /// The frames have to keep coming until they have settled, exactly as they
@@ -1374,6 +1462,7 @@ impl Guide {
         keep_grabbed: bool,
         launching: bool,
         keyboard: bool,
+        board_here: bool,
         typing_here: bool,
         toasting: bool,
         volume: bool,
@@ -1391,8 +1480,18 @@ impl Guide {
 
         // A display nobody is driving stays put and keeps its hands off the
         // keyboard, whatever the guide is doing on the display that is.
+        //
+        // With one exception, and it is the only thing this shell draws over an
+        // application on a screen the user is not driving: the on-screen
+        // keyboard, where it has been pinned to a display of its own. The
+        // surface has to be lifted or the board is painted behind the
+        // application it was raised for. It still takes no keys — those are the
+        // seat's and are settled below, on the display being driven.
         if !focused {
-            return (base, KeyboardInteractivity::None);
+            return match keyboard && board_here {
+                true => (Layer::Overlay, KeyboardInteractivity::None),
+                false => (base, KeyboardInteractivity::None),
+            };
         }
 
         // Drawn over an application: above it, and holding the keyboard
@@ -1421,9 +1520,22 @@ impl Guide {
         // nowhere for a keystroke to land, and the letter typed in the gap is
         // simply lost — which on a field somebody is typing a name into is one
         // character missing out of the middle of the word.
+        //
+        // The *lift* belongs to the display the board is drawn on, and the keys
+        // do not. A board pinned to the second screen is over that screen's
+        // application; this one has nothing of the board's on it, and lifting
+        // it would put the whole bar over whatever is in front here — while the
+        // keys still have to be handed over, because there is one seat and the
+        // letters go wherever it points. The field the board types into is the
+        // one thing that keeps the lift on this display: what is being typed
+        // into is a panel this surface draws.
         if keyboard {
             return (
-                Layer::Overlay,
+                if board_here || typing_here {
+                    Layer::Overlay
+                } else {
+                    base
+                },
                 if typing_here {
                     KeyboardInteractivity::Exclusive
                 } else {
@@ -2415,6 +2527,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     Layer::Background
                 ),
                 (Layer::Overlay, KeyboardInteractivity::None),
@@ -2426,6 +2539,7 @@ mod tests {
             guide.surface_state(
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2453,6 +2567,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
@@ -2465,6 +2580,7 @@ mod tests {
                 guide.surface_state(
                     false,
                     true,
+                    false,
                     false,
                     false,
                     false,
@@ -2502,6 +2618,7 @@ mod tests {
                         false,
                         false,
                         false,
+                        false,
                         Layer::Background,
                     );
                     assert_eq!(
@@ -2529,6 +2646,7 @@ mod tests {
                 false,
                 false,
                 true,
+                true,
                 false,
                 false,
                 false,
@@ -2544,6 +2662,7 @@ mod tests {
                 true,
                 true,
                 false,
+                true,
                 true,
                 false,
                 false,
@@ -2563,6 +2682,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::None)
@@ -2578,12 +2698,102 @@ mod tests {
                 false,
                 false,
                 true,
+                true,
                 false,
                 false,
                 false,
                 Layer::Background
             ),
             (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+    }
+
+    /// A board pinned to a display of its own — Settings > Input > On-screen
+    /// keyboard > Default display — lifts *that* display and no other.
+    ///
+    /// The two halves come apart here, and each has to land on the right
+    /// screen. The **layer** belongs to the display the keys are drawn on: a
+    /// surface left behind its application there would paint the board under
+    /// the very window it was raised for, and one lifted on the driven display
+    /// instead would put the whole start screen over whatever is in front
+    /// *there*. The **keys** belong to neither display in particular — there is
+    /// one seat, and whatever it points at is what the board types into — so
+    /// they are given up on the driven screen exactly as they always were.
+    #[test]
+    fn a_board_pinned_to_a_screen_lifts_that_screen_and_leaves_the_others() {
+        let guide = Guide::default();
+
+        // The screen the board is on, which nobody is driving. Lifted over its
+        // application, and taking nothing from it.
+        assert_eq!(
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::None)
+        );
+        // The screen being driven, with the board somewhere else: it keeps its
+        // own layer — there is nothing of the board's to lift it for — and
+        // still hands the keys over, because a shell holding them would read
+        // every letter the board types as a direction on the bar.
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                Layer::Background
+            ),
+            (Layer::Background, KeyboardInteractivity::None)
+        );
+        // Unless the board is typing into a field of the shell's own, which is
+        // drawn by the driven display whatever screen the keys are on. That
+        // display keeps both the lift and the keys.
+        assert_eq!(
+            guide.surface_state(
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::Exclusive)
+        );
+        // And the screen the keys are on takes no keys even then: two surfaces
+        // claiming the seat is one of them losing, and the one that must not
+        // lose is the one holding the field.
+        assert_eq!(
+            guide.surface_state(
+                false,
+                true,
+                false,
+                false,
+                true,
+                true,
+                true,
+                false,
+                false,
+                Layer::Background
+            ),
+            (Layer::Overlay, KeyboardInteractivity::None)
         );
     }
 
@@ -2609,6 +2819,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 RAISED,
                 Layer::Background
             ),
@@ -2622,6 +2833,7 @@ mod tests {
         assert_eq!(
             guide.surface_state(
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2643,6 +2855,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 RAISED,
                 Layer::Background
             ),
@@ -2653,6 +2866,7 @@ mod tests {
             guide.surface_state(
                 false,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2690,6 +2904,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::OnDemand),
@@ -2699,6 +2914,7 @@ mod tests {
             guide.surface_state(
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2730,6 +2946,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 true,
                 false,
                 Layer::Background
@@ -2745,6 +2962,7 @@ mod tests {
                 true,
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2767,6 +2985,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 true,
                 false,
                 Layer::Background
@@ -2781,6 +3000,7 @@ mod tests {
             guide.surface_state(
                 false,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2812,6 +3032,7 @@ mod tests {
                     false,
                     true,
                     true,
+                    true,
                     false,
                     false,
                     Layer::Background
@@ -2830,6 +3051,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
                 true,
                 false,
                 false,
@@ -2842,6 +3064,7 @@ mod tests {
                 true,
                 true,
                 false,
+                true,
                 true,
                 true,
                 true,
@@ -2866,6 +3089,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Layer::Background
             ),
             (Layer::Background, KeyboardInteractivity::Exclusive)
@@ -2874,6 +3098,7 @@ mod tests {
             guide.surface_state(
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -2890,6 +3115,7 @@ mod tests {
                 true,
                 true,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -3153,5 +3379,89 @@ mod tests {
         let items = guide.items(false);
         assert!(items.contains(&Item::Media));
         assert!(!items.contains(&Item::MediaVolume));
+    }
+
+    /// A download, for the card in the corner.
+    fn coming(app_id: u32, name: &str, share: Option<f32>) -> crate::steam::Coming {
+        crate::steam::Coming {
+            app_id,
+            name: name.to_string(),
+            verb: "Downloading",
+            share,
+            stuck: false,
+            a_download: true,
+        }
+    }
+
+    /// The card comes and goes with the download, on its own flight, and goes
+    /// on saying what it said until it has finished leaving.
+    ///
+    /// The last part is the shell's motion rule and the whole reason what the
+    /// card is about is kept here rather than read from the library every
+    /// frame: a download that has finished is gone from the library at once,
+    /// and a card that lost its name a third of a second before it left the
+    /// screen would be an empty panel sliding off.
+    #[test]
+    fn the_download_card_keeps_its_words_until_it_has_finished_leaving() {
+        let mut guide = Guide::default();
+        assert_eq!(guide.download(), 0.0);
+        assert!(guide.downloading().is_none());
+
+        guide.set_downloading(Some(coming(945360, "Among Us", Some(0.33))));
+        assert!(guide.download_is_moving());
+        while guide.animate_download(0.05) < 1.0 {}
+        assert!(!guide.download_is_moving());
+        assert_eq!(
+            guide.downloading().map(|coming| coming.said()),
+            Some("Downloading Among Us".to_string())
+        );
+
+        guide.set_downloading(None);
+        while guide.download() > 0.0 {
+            assert!(
+                guide.downloading().is_some(),
+                "the card must keep its name for the whole of the way out"
+            );
+            guide.animate_download(0.05);
+        }
+        assert!(guide.downloading().is_none());
+        assert!(!guide.download_is_moving());
+    }
+
+    /// A percentage arriving does not restart the way in.
+    ///
+    /// Valve's client says how far it has got every couple of seconds, and a
+    /// card that flew in again at each of them would be a card nobody could
+    /// read. The same rule the media card is under when a track changes.
+    #[test]
+    fn a_new_percentage_does_not_send_the_card_back_out() {
+        let mut guide = Guide::default();
+        guide.set_downloading(Some(coming(945360, "Among Us", Some(0.10))));
+        guide.animate_download(ARRIVING_FLIGHT * 0.5);
+        let half = guide.download();
+        assert!(half > 0.0 && half < 1.0);
+
+        guide.set_downloading(Some(coming(945360, "Among Us", Some(0.20))));
+        assert_eq!(guide.download(), half, "it carries on from where it was");
+        assert_eq!(
+            guide.downloading().and_then(|coming| coming.share),
+            Some(0.20),
+            "and says the new number"
+        );
+    }
+
+    /// A download that finishes while its card is still arriving leaves from
+    /// where it got to rather than snapping open first — one linear position,
+    /// reversible wherever it is, like every other flight in this menu.
+    #[test]
+    fn a_card_turned_round_half_way_carries_on_from_where_it_is() {
+        let mut guide = Guide::default();
+        guide.set_downloading(Some(coming(504230, "Celeste", None)));
+        guide.animate_download(ARRIVING_FLIGHT * 0.4);
+        let reached = guide.download();
+        guide.set_downloading(None);
+        let next = guide.animate_download(ARRIVING_FLIGHT * 0.1);
+        assert!(next < reached, "it starts back from where it had got to");
+        assert!(next > 0.0, "and does not jump to the end");
     }
 }

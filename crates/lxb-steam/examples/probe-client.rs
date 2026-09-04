@@ -56,6 +56,17 @@ fn main() {
     if !lxb_steam::library::looks_like_a_root(&options.root) {
         println!("this client has never been run; the first press would start it");
     }
+    // What the client's debugging interface is doing on this machine, before
+    // anything here has touched it. Asked here rather than under `running()`
+    // because half of it is a file on the disk and answers with no client up at
+    // all — which is exactly the state the fortnight-old marker was found in.
+    let exposure = lxb_steam::webui::exposure(&options.root);
+    println!(
+        "interface exposure: {} (port open: {}, marker: {:?})",
+        exposure.said(),
+        exposure.open,
+        exposure.marker
+    );
     let state = client::state(found.as_ref(), &options);
     println!("state: {state:?}");
 
@@ -83,6 +94,28 @@ fn main() {
             }
             Ok(missing) => println!("interface: MISSING {}", missing.join(", ")),
             Err(problem) => println!("interface: could not be asked — {problem}"),
+        }
+        // And which client that was true of, because the answer above is only
+        // worth anything attached to one. A client updates itself in the
+        // background; a report saying a method went missing, with no build
+        // beside it, cannot be checked by anybody afterwards.
+        match lxb_steam::webui::build() {
+            Ok(build) => println!("client build: {build}"),
+            Err(problem) => println!("client build: could not be asked — {problem}"),
+        }
+        // What the shell's controller chord has to send. The overlay lives
+        // inside the game rather than in the client, so a keystroke is the only
+        // way to raise one, and this setting is kept in memory and written to no
+        // file — the interface being open is the one chance to read it.
+        match lxb_steam::webui::overlay_key() {
+            Ok(key) if key.is_shift_tab() && key.enabled => {
+                println!("overlay key: {key} — what the shell's Guide+Select chord sends")
+            }
+            Ok(key) => println!(
+                "overlay key: {key} — the shell's Guide+Select chord sends Shift+Tab \
+                 and will do nothing"
+            ),
+            Err(problem) => println!("overlay key: could not be asked — {problem}"),
         }
     }
 
@@ -167,13 +200,19 @@ fn main() {
     }
 
     println!("\nwaking the client — this is a cold start, so give it a minute");
-    steam.wake_client();
+    let asked = steam.wake_client();
     let began = Instant::now();
     let deadline = began + Duration::from_secs(180);
     let mut last = None;
     while Instant::now() < deadline {
         for event in steam.take() {
-            if let Event::Client(report) = event {
+            // Only this probe's own wake. Every answer names the request it
+            // belongs to, and one belonging to anything else is not this one's
+            // to report on. See `lxb_steam::Ticket`.
+            if let Event::Client { ticket, report } = event {
+                if ticket.request != asked {
+                    continue;
+                }
                 println!("  {:>4.0}s  {report:?}", began.elapsed().as_secs_f32());
                 match report {
                     lxb_steam::ClientReport::Ready => {
@@ -182,6 +221,13 @@ fn main() {
                     }
                     lxb_steam::ClientReport::Unavailable(why) => {
                         println!("\nit could not be: {why}");
+                        return;
+                    }
+                    // The refusal that is not a failure: there is a client
+                    // running and it is not this session's to move. The shell
+                    // asks; this probe only reports.
+                    lxb_steam::ClientReport::SomebodyElses(why) => {
+                        println!("\nit was left alone: {why}");
                         return;
                     }
                     lxb_steam::ClientReport::Waking => {}

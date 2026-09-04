@@ -4,19 +4,47 @@
 //! runs on LineXinBar as well as any other compositor implementing layer-shell.
 //! That also makes it debuggable on its own, without starting a compositor.
 
+/// Say that a test could not run on this machine, and why.
+///
+/// Ten of the tests in here need a device: `/dev/uinput`, a controller the
+/// kernel drives, or the second-generation Steam Controller. On a build machine
+/// none of that is present, and each of them ends by printing a line and
+/// passing — which is right, because a machine with no controller has nothing
+/// to say about controllers and a test suite that failed there would be a test
+/// suite nobody could run.
+///
+/// What was wrong was that the line went nowhere. `cargo test` counts a skipped
+/// test as a pass, so a release built on a machine with no pad reported full
+/// coverage of the controller work and had none of it. This says which test,
+/// and `packaging/check.sh` reads the lines back and prints what a release
+/// could and could not actually reach.
+///
+/// The name comes from the test's own thread, which is what the harness names
+/// after the test it is running. `?` where there is none, which is a suite run
+/// with `--test-threads=1` and is worth saying rather than pretending.
+#[cfg(test)]
+fn skipped(why: &str) {
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("?");
+    eprintln!("skipped: {name}: {why}");
+}
+
 mod appinfo;
 mod apps;
 mod art;
+mod avatars;
 mod bluetooth;
 mod controller;
 mod crypt;
 mod dialog;
 mod files;
+mod friends;
 mod gpu;
 mod guide;
 mod icons;
 mod keyboard;
 mod launch;
+mod layouts;
 mod machine;
 mod marks;
 mod media;
@@ -53,7 +81,7 @@ mod users;
 mod volume;
 mod wallpaper_clock;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -371,15 +399,62 @@ const WHICH_WINDOWS_FLOAT_SHELL_VERSION: u32 = 34;
 /// every session did before this. See [`picker`].
 const PICK_SHELL_VERSION: u32 = 35;
 
-/// First version that forwards the switch binding: one step of the walk the
-/// user makes along the session's applications with a modifier held down, and
-/// the modifier coming up at the end of it. The highest this shell asks for.
+/// First version that takes what the pointing devices are to do: how fast the
+/// pointer travels, how large the cursor is drawn, and how far and which way a
+/// wheel carries the content. The highest this shell asks for.
 ///
-/// Below it Alt+Tab never reaches this shell at all. The compositor rotates
-/// its own window stack on it instead — one window to the front, unseen — so
-/// the chord still switches applications; what it cannot do is show the user
-/// what they are switching to. See [`Shell::walk_the_applications`].
-const SWITCH_SHELL_VERSION: u32 = 36;
+/// Below it the page is still there and still remembers what was chosen — the
+/// setting is written down here, not by the compositor — and nothing of it
+/// reaches the mouse: the session's pointer is whatever the compositor's own
+/// config file says, which is where these lived before there was a page for
+/// them. See [`Shell::sync_pointer`].
+///
+/// Version 36 has no constant of its own, for the reason version 6 has none:
+/// nothing is gated on it. It forwards the switch binding — one step of the
+/// walk along the session's applications with a modifier held down — and an
+/// event arriving is all the proof a shell needs that it was sent. Below it
+/// Alt+Tab never reaches this shell at all and the compositor rotates its own
+/// window stack instead, so the chord still switches applications; what it
+/// cannot do is show the user what they are switching to. See
+/// [`Shell::walk_the_applications`].
+const MOUSE_SHELL_VERSION: u32 = 37;
+
+/// The version that carries the keyboard layout, which is what this shell asks
+/// for: the xkb layout and variant the seat is set to, and the event saying
+/// what they are.
+///
+/// Gated on in both directions, and the event is the half that matters most.
+/// Below this version the compositor never says what the keyboard is set to, so
+/// Settings > Input > Keyboard has nothing in force to mark and says so rather
+/// than showing a list where nothing is ticked. See
+/// [`Shell::sync_keyboard_layout`].
+const LAYOUT_SHELL_VERSION: u32 = 38;
+
+/// The version that says what is being kept out of sight, and lets one window
+/// back out of it.
+///
+/// Gated on where the request is sent, and the fallback is exactly what this
+/// shell did before it: an older compositor tells it nothing about the windows
+/// it is hiding, so [`Shell::sync_steam_questions`] looks at an empty list,
+/// decides nothing, and Valve's client goes on being hidden whole.
+///
+/// The version before it, 39, needs no constant of its own. What
+/// `output_window_pid` carries is evidence, and a shell that is never sent any
+/// falls back to the guess it made before there was any — see
+/// [`Shell::steam_windows`].
+const UNSEEN_WINDOWS_SHELL_VERSION: u32 = 40;
+
+/// The version that tells the display the user is driving from the display an
+/// application is opening on, and takes a record per launch: `set_driven_output`,
+/// `place_launch` and `forget_launch`. Being the newest this shell knows of, it
+/// is also the version it asks to bind.
+///
+/// Gated on where all three are sent, and the fallback is what this shell did
+/// before them: one `set_launch_output` answering both questions, and every
+/// window that maps going wherever it happened to point. That is right on one
+/// display and on a session where only one thing is starting, which is nearly
+/// every session — and wrong in exactly the case these exist for.
+const PER_LAUNCH_SHELL_VERSION: u32 = 41;
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -612,8 +687,12 @@ struct Cli {
     debug_display_modes: Vec<(String, Vec<settings::Offered>)>,
 
     /// Pretend this account was signed in to Steam and owned these games, as a
-    /// comma-separated list of `name[:installed]`
-    /// (`--debug-steam-library 'A Game:1,Another Game'`).
+    /// comma-separated list of `name[:installed[:percent]]`
+    /// (`--debug-steam-library 'A Game:1,Coming Down:0:40'`).
+    ///
+    /// The percentage puts a game part-way through a download, which is the
+    /// one row state that cannot be reached by inventing a library alone: it is
+    /// what the bar under the row is drawn from.
     ///
     /// Development aid, and needed for the reason the two above are: the Steam
     /// column is built out of somebody's library, so it cannot be looked at —
@@ -621,7 +700,24 @@ struct Cli {
     /// rows are invented and are marked as such in the log; nothing is asked
     /// of Steam for them and nothing they name can be started.
     #[arg(long, hide = true, value_delimiter = ',', value_parser = parse_debug_game)]
-    debug_steam_library: Vec<(String, std::primitive::bool)>,
+    debug_steam_library: Vec<(String, std::primitive::bool, Option<u8>)>,
+
+    /// Pretend this account knows these people and has conversations with each
+    /// of them, as a comma-separated list of names
+    /// (`--debug-steam-chat 'Ann,Bea,Cal,Dee,Eve'`).
+    ///
+    /// Development aid, and the one this shell most needed: a conversation
+    /// cannot be looked at without somebody on the other end of it, and half
+    /// the states the panel draws — a history that failed, a send that would
+    /// not go, somebody typing — cannot be produced on demand even with one.
+    /// Each name gets a different one of those states, so one flag puts every
+    /// state on the panel at once.
+    ///
+    /// **Nothing here reaches Steam.** A session with a fixture has no worker,
+    /// so no message composed while one is on screen can leave the machine, and
+    /// the log says as much. See [`steam::Steam::invent_conversations`].
+    #[arg(long, hide = true, value_delimiter = ',')]
+    debug_steam_chat: Vec<String>,
 
     /// Use this program as the RetroArch integration instead of looking for
     /// `lxb-retroarch` on `PATH`.
@@ -664,19 +760,32 @@ struct Cli {
     show_in_files: Option<String>,
 }
 
-/// `name[:installed]`, for `--debug-steam-library`.
-fn parse_debug_game(raw: &str) -> Result<(String, bool), String> {
-    let (name, installed) = match raw.rsplit_once(':') {
-        Some((name, flag)) if matches!(flag.trim(), "0" | "1") => (name, flag.trim() == "1"),
-        // A colon is part of a great many game names, so one that is not
-        // followed by a flag is part of the name.
-        _ => (raw, false),
+/// `name[:installed[:percent]]`, for `--debug-steam-library`.
+fn parse_debug_game(raw: &str) -> Result<(String, bool, Option<u8>), String> {
+    // `…:0` or `…:1` peeled off the end, or nothing at all: a colon is part of
+    // a great many game names, so one that is not followed by a flag is part of
+    // the name.
+    fn flagged(text: &str) -> Option<(&str, bool)> {
+        let (name, flag) = text.rsplit_once(':')?;
+        matches!(flag.trim(), "0" | "1").then(|| (name, flag.trim() == "1"))
+    }
+
+    // The percentage is peeled first, being the outermost field, and only where
+    // a flag is still under it — so a game genuinely called "Portal 2: 50"
+    // keeps its name.
+    let peeled = raw
+        .rsplit_once(':')
+        .and_then(|(head, share)| Some((flagged(head)?, share.trim().parse::<u8>().ok()?)))
+        .filter(|(_, share)| *share <= 100);
+    let ((name, installed), share) = match peeled {
+        Some((named, share)) => (named, Some(share)),
+        None => (flagged(raw).unwrap_or((raw, false)), None),
     };
     let name = name.trim();
     if name.is_empty() {
         return Err(format!("{raw:?} names no game"));
     }
-    Ok((name.to_string(), installed))
+    Ok((name.to_string(), installed, share))
 }
 
 /// `name:peak:gamut`, for `--debug-hdr-displays`.
@@ -812,10 +921,22 @@ fn main() -> anyhow::Result<()> {
     // so the shell has to know what it is set to before it builds the rows
     // that say so — and before the first frame is drawn in a colour.
     settings::load();
+    // And what the command line said about Steam, which outranks what the file
+    // says: `--no-steam` is a session told to leave Steam alone, and the page
+    // under Settings > Games has to be able to say so rather than offering a
+    // switch that would change nothing. Said before the first settings column
+    // is built, which is inside the scan below. See
+    // [`settings::steam_integration`].
+    settings::note_steam_in_this_session(!cli.no_steam);
     let wallpaper_handoff = wallpaper_clock::WallpaperClock::from_environment(theme::accent().name);
 
     let mut categories = apps::scan();
-    if !cli.no_steam {
+    // Both halves of the same answer: the flag, and the switch under Settings >
+    // Games > Steam. A session with either of them saying no leaves Valve's own
+    // `.desktop` entry exactly where the scan filed it and puts no row of its
+    // own up — which is the whole of what "Steam is an application like any
+    // other" means on the bar.
+    if settings::steam_integration() {
         // The client's own entry goes before the shell's row arrives to stand
         // in for it, so the bar is never drawn with both.
         apps::hide_steam_client(&mut categories);
@@ -823,7 +944,7 @@ fn main() -> anyhow::Result<()> {
         // with the rest rather than being asked for on the first frame that
         // draws it. Signed out at this point whatever the disk says: the
         // worker has not answered yet, and the row says what is known now.
-        apps::offer_steam(&mut categories, None);
+        apps::offer_steam(&mut categories, None, None);
     }
     // The optional integration's own package, which is a `PATH` lookup. Asked
     // here because the answer decides whether there is a RetroArch row on the
@@ -837,8 +958,25 @@ fn main() -> anyhow::Result<()> {
         // Knowing nothing at this point, exactly as the Steam row above knows
         // nothing: the worker has not answered, and the row says what is known
         // now.
-        apps::offer_retroarch(&mut categories, Some("Looking for RetroArch".to_string()));
+        apps::offer_retroarch(
+            &mut categories,
+            Some("Looking for RetroArch".to_string()),
+            None,
+        );
     }
+    // The photo viewer and the film player have no tiles. Each is reached from
+    // the menu over the shelf of files it is for — Graphics > Images and
+    // Multimedia > Video — because a console wants one row called Images
+    // rather than a row of pictures beside a row called Pictures, and one
+    // called Video rather than a row of films beside a row called Videos.
+    // What comes back is kept: they are still what a photograph and a film
+    // open in, and still on the Open with list. See
+    // [`apps::take_off_the_bar`].
+    let mut aside = Vec::new();
+    for app_id in apps::ASIDE {
+        aside.extend(apps::take_off_the_bar(&mut categories, app_id));
+    }
+    let aside = aside;
     let categories = categories;
 
     let total: usize = categories.iter().map(apps::Category::apps).sum();
@@ -866,15 +1004,27 @@ fn main() -> anyhow::Result<()> {
     let mut steam = if cli.no_steam {
         tracing::info!("--no-steam: this session will not talk to Steam");
         steam::Steam::settled()
-    } else if !cli.debug_steam_library.is_empty() {
-        // A fixture is a fixture: a session pretending to have a library does
-        // not also have a worker signing in behind it.
+    } else if !settings::steam_integration() {
+        // The same, said in the settings file rather than on the command line.
+        // No worker, so no stored session is read and nothing in this process
+        // talks to Steam — and the switch that says so is one press away, which
+        // is the difference between this and the flag above.
+        tracing::info!("the Steam integration is turned off");
+        steam::Steam::settled()
+    } else if !cli.debug_steam_library.is_empty() || !cli.debug_steam_chat.is_empty() {
+        // A fixture is a fixture: a session pretending to have a library or a
+        // conversation does not also have a worker signing in behind it. For
+        // the chat fixture that is not merely tidiness — it is what makes it
+        // impossible for anything on that panel to write to a real person.
         steam::Steam::settled()
     } else {
         steam::Steam::start()
     };
     if !cli.debug_steam_library.is_empty() {
         steam.invent(&cli.debug_steam_library);
+    }
+    if !cli.debug_steam_chat.is_empty() {
+        steam.invent_conversations(&cli.debug_steam_chat);
     }
     // The same shape again, and started here for the same reason: the probe
     // runs `flatpak info` twice and walks `PATH`, and the first frame is
@@ -886,7 +1036,16 @@ fn main() -> anyhow::Result<()> {
 
     // Whether the games on the bar are somebody's actual library, which is
     // what decides whether their artwork may be fetched. See `art::Art`.
-    let steam_is_real = steam.driving();
+    //
+    // Asked of the session rather than of `steam.driving()`, which is nearly
+    // the same question and is the wrong one: the integration can be turned on
+    // again from Settings > Games > Steam, and a session that had started its
+    // art workers only if Steam happened to be on at boot would come back with
+    // a library and no covers for it. What this rules out is the *fixture*
+    // library, whose invented app ids belong to real titles, and a session that
+    // was told to leave Steam alone for the whole of its life.
+    let steam_is_real =
+        !cli.no_steam && cli.debug_steam_library.is_empty() && cli.debug_steam_chat.is_empty();
 
     // The wallpaper is the first visible part of a handed-off session, and it
     // needs no icon at all. Build its provisional atlas from the two procedural
@@ -894,7 +1053,7 @@ fn main() -> anyhow::Result<()> {
     // catalogue on a worker while the GPU is already presenting that same
     // moving wallpaper. The bar's normal arrival waits for the worker, so the
     // empty atlas is never visible as an incomplete row.
-    let startup = StartupIcons::start(categories.clone());
+    let startup = StartupIcons::start(categories.clone(), aside.clone());
 
     let conn = Connection::connect_to_env()
         .map_err(|e| anyhow::anyhow!("could not connect to a Wayland compositor: {e}"))?;
@@ -919,7 +1078,11 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=SWITCH_SHELL_VERSION, ()) {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(
+        &qh,
+        1..=PER_LAUNCH_SHELL_VERSION,
+        (),
+    ) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -940,6 +1103,7 @@ fn main() -> anyhow::Result<()> {
         layer_shell,
         panels: Vec::new(),
         focused_panel: 0,
+        next_display: 0,
         base_layer: cli.layer.into(),
         debug_hdr_displays: (!cli.debug_hdr_displays.is_empty())
             .then(|| cli.debug_hdr_displays.clone()),
@@ -948,13 +1112,18 @@ fn main() -> anyhow::Result<()> {
         shell_control,
         foreground: None,
         applied_launch_output: None,
+        applied_driven_output: None,
+        placed_launches: HashSet::new(),
         applied_app_scale: None,
         applied_pip: None,
+        applied_pointer: None,
+        applied_keyboard_layout: None,
         applied_overview: None,
         applied_overview_selection: None,
         guide: Guide::default(),
         switching: false,
         context_menu: menu::Menu::default(),
+        friends: friends::Friends::default(),
         floating_window: None,
         floating_menu_drawn: false,
         picker_drawn: false,
@@ -969,6 +1138,7 @@ fn main() -> anyhow::Result<()> {
         notifier: notify::Service::start(),
         file_manager: reveal::Service::start(),
         notifications: notify::Center::new(settings::do_not_disturb()),
+        toast_lines: std::collections::BTreeMap::new(),
         icon_theme: IconLoader::new(),
         authenticating: None,
         sharing: None,
@@ -976,6 +1146,7 @@ fn main() -> anyhow::Result<()> {
         pending_capture: None,
         removal_plan: None,
         uninstalling: None,
+        compat_menu: None,
         open_with: Vec::new(),
         open_with_chosen: 0,
         open_with_others: Vec::new(),
@@ -1019,6 +1190,10 @@ fn main() -> anyhow::Result<()> {
         joining: None,
         volume: volume::Overlay::default(),
         steam,
+        download_on_the_card: None,
+        launch_question: None,
+        launch_questions_waiting: VecDeque::new(),
+        said_a_download_finished: None,
         retroarch,
         retroarch_setup: false,
         retroarch_offer: None,
@@ -1040,8 +1215,22 @@ fn main() -> anyhow::Result<()> {
         overview_started_at: None,
         launching: Vec::new(),
         steam_windows: HashMap::new(),
+        asked_which_game: HashMap::new(),
+        pending_unseen: Vec::new(),
+        unseen_windows: Vec::new(),
+        unseen_since: HashMap::new(),
+        letting_through: HashSet::new(),
         ended_by_the_shell: HashSet::new(),
-        awaiting_steam: None,
+        awaiting_steam: steam::Gate::default(),
+        steam_game_was_on_screen: false,
+        steam_game_gone_since: None,
+        steam_after_the_game: None,
+        steam_woken_for: None,
+        steam_unwanted_since: None,
+        steam_asked_to_close: None,
+        steam_times_asked: 0,
+        steam_becoming: None,
+        steam_sight: SteamSight::Background,
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
         keyboard: None,
@@ -1067,17 +1256,26 @@ fn main() -> anyhow::Result<()> {
         stick_keys: Vec::new(),
         gpu: None,
         startup,
-        lattice: Lattice::with_session_displays(
-            categories,
-            child_wayland_display,
-            child_xwayland_display,
-        ),
+        lattice: {
+            let mut lattice = Lattice::with_session_displays(
+                categories,
+                child_wayland_display,
+                child_xwayland_display,
+            );
+            // What was taken off the bar a moment ago, kept where the handler
+            // lookup and the Open with list can still see it.
+            lattice.aside = aside;
+            lattice
+        },
         media,
         // Only a real library has real artwork. An invented one — see
         // `--debug-steam-library` — numbers its games from one, and app 10 is
         // Counter-Strike: a fixture drawn with Valve's pictures would be a
         // screenshot of a library nobody owns.
         art: art::Art::start(steam_is_real),
+        // On the same terms and for the same reason: an invented library has
+        // no account behind it, so there is nobody whose face could be fetched.
+        avatars: avatars::Avatars::start(steam_is_real),
         thumbs: thumbs::Thumbs::start(),
         paper: paper::Paper::new(),
         paper_spare: None,
@@ -1129,10 +1327,12 @@ fn main() -> anyhow::Result<()> {
     }
     // A fixture library goes on the bar through exactly the path a real one
     // does — the row that names the account, then the column — so what is on
-    // screen is the same arrangement the worker would have produced.
-    if !cli.debug_steam_library.is_empty() {
+    // screen is the same arrangement the worker would have produced. Including
+    // not going on it at all: a session whose Steam integration is off has no
+    // row for a library to hang from, invented or otherwise.
+    if !cli.debug_steam_library.is_empty() && settings::steam_integration() {
         let account = shell.steam.account().map(str::to_string);
-        let shifted = apps::offer_steam(&mut shell.lattice.categories, account);
+        let shifted = apps::offer_steam(&mut shell.lattice.categories, account, None);
         shell.absorb(shifted);
         let rows = shell.steam.rows();
         shell.shelve_games(rows);
@@ -1150,6 +1350,18 @@ fn main() -> anyhow::Result<()> {
             .is_some_and(|control| control.version() >= RESTING_SHELL_VERSION),
     );
 
+    // And whether it can be told a keyboard layout, which is the same kind of
+    // fact and decides the same kind of thing: below that version Settings >
+    // Input > Keyboard says so rather than offering six hundred rows that
+    // change nothing, and the on-screen keyboard keeps its own ANSI
+    // arrangement because nothing will ever say what the keys are set to.
+    settings::note_keyboard_layout_available(
+        shell
+            .shell_control
+            .as_ref()
+            .is_some_and(|control| control.version() >= LAYOUT_SHELL_VERSION),
+    );
+
     // The screen lists under Settings > Display are built from what the
     // displays report. Seed them before the first frame so the pages are right
     // the first time they are opened rather than after the first change.
@@ -1159,6 +1371,10 @@ fn main() -> anyhow::Result<()> {
     // Before the client is woken, not when the first game is pressed: the
     // session signs it in on its own as it starts, and a window suppressed
     // only from the first press onwards is one the user has already seen.
+    // Said outright rather than through [`Shell::steam_may_be_seen`], which
+    // only speaks when the answer *changes*: nothing has been said to the
+    // compositor yet, and the first thing it has to hear is that the client is
+    // not to be seen.
     shell.keep_steam_out_of_sight(true);
 
     while !shell.exit {
@@ -1223,6 +1439,12 @@ fn main() -> anyhow::Result<()> {
         // network on a worker thread, arriving on whichever frame it is ready.
         if shell.startup.ready {
             shell.sync_steam();
+        }
+        // And what a loading screen says while Valve's client fetches the game
+        // instead of starting it. After the library, because that is where the
+        // answer comes from.
+        if shell.startup.ready {
+            shell.sync_the_launch_downloads(Instant::now());
         }
         // And the same for the RetroArch integration, which is the same shape
         // once more: a helper process on a worker thread, answering on
@@ -1296,6 +1518,8 @@ fn main() -> anyhow::Result<()> {
             );
         shell.sounds.sync_music(music_wanted, now);
         shell.sync_launch_output(shell.launch_display());
+        shell.sync_driven_output();
+        shell.place_the_launches();
         shell.sync_overview();
         // Last of the three, and unconditional: a display plugged in
         // mid-session has to be told what the session is set to, and the only
@@ -1316,6 +1540,12 @@ fn main() -> anyhow::Result<()> {
         // And its neighbour under System, which is about one window rather than
         // every window and is diffed for the whole session in the same way.
         shell.sync_picture_in_picture();
+        // And what the pointing devices do, on the same terms again: one answer
+        // for the session, and on the first pass it is how a compositor that
+        // has just come up at its own config's defaults is told what the last
+        // session was left set to.
+        shell.sync_pointer();
+        shell.sync_keyboard_layout();
         // And the one whose answer moves with nothing pressed at all, which is
         // why it is last and why it takes the clock this pass was started with:
         // a display rests because five seconds have gone by.
@@ -1323,6 +1553,24 @@ fn main() -> anyhow::Result<()> {
         // And its neighbour, which is the same shape of answer about
         // applications rather than screens, and moves on its own clock too.
         shell.sync_media_awake(now);
+        // And whether the window Steam was asked for is still wanted, which is
+        // the same shape of answer again: nothing announces it, so it is looked
+        // at once a pass against what the compositor has already said.
+        shell.sync_steam_sight(now);
+        // And whether anything Valve's client is being kept from showing has
+        // stopped being work and become a question. Same shape again: nothing
+        // announces it, and it is decided against a list the compositor has
+        // already sent.
+        shell.sync_steam_questions(now);
+        shell.sync_launch_questions();
+        // And whether the game somebody was playing has ended, which is the
+        // same shape again and moves on its own clock for the same reason as
+        // the screens above it. See [`Shell::close_steam_after_the_game`].
+        shell.close_steam_after_the_game(now);
+        // And whether a client this shell started for a press that never
+        // reached a game has run out of things to do. See
+        // [`Shell::close_steam_when_the_press_is_over`].
+        shell.close_steam_when_the_press_is_over(now);
         // And the wallpaper the user chose, if they chose one — which is here
         // rather than inside the drawing for two reasons. A frame of a film
         // arriving is a reason to draw, and a flag set inside `draw` would be
@@ -1493,10 +1741,59 @@ fn load_builtin_icons() -> Vec<(String, icons::Icon)> {
     out
 }
 
+/// Every icon name a session will want, and which of those names an
+/// application asked to have cut into the shell's own material.
+///
+/// Every row of every column, subcategories included: what a column holds is a
+/// tree, and an icon missed here is one the atlas has no slot for. Then the
+/// applications with no tile, which are drawn by their loading screen and by
+/// the menu row that starts them.
+///
+/// The second answer is a set of names rather than of entries because
+/// `icons::shaped` answers by name — two applications can share an icon name,
+/// and one of them asking is enough for that drawing to be a shape.
+fn icons_wanted(
+    categories: &[apps::Category],
+    aside: &[apps::App],
+) -> (Vec<String>, HashSet<String>) {
+    let mut rows: Vec<String> = Vec::new();
+    let mut as_shapes: HashSet<String> = HashSet::new();
+    let mut want = |icon: &str, shaped: bool| {
+        rows.push(icon.to_string());
+        if shaped {
+            as_shapes.insert(icon.to_string());
+        }
+    };
+    for category in categories {
+        apps::walk(&category.entries, &mut |entry| {
+            if let Some(icon) = entry.icon() {
+                want(
+                    icon,
+                    entry.app().is_some_and(apps::App::wears_shell_material),
+                );
+            }
+        });
+    }
+    for app in aside {
+        if let Some(icon) = app.icon.as_deref() {
+            want(icon, app.wears_shell_material());
+        }
+    }
+    (rows, as_shapes)
+}
+
 /// Decode every icon the catalogue names, with the built-ins first so their
 /// slots and fallbacks retain the exact ordering the settled atlas had before
 /// startup was split over two threads.
-fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
+///
+/// `aside` is the applications that are installed but have no tile — see
+/// [`apps::take_off_the_bar`]. Their marks belong in the settled atlas with
+/// every other one: having no tile is not the same as never being drawn, and
+/// the loading screen the photo viewer is started behind draws its icon at
+/// full size. The one way into the atlas afterwards is [`gpu::Renderer::put_icon`],
+/// whose band is a ring a notification is free to evict from, which is no
+/// place for a picture the shell itself draws.
+fn load_icons(categories: &[apps::Category], aside: &[apps::App]) -> Vec<(String, icons::Icon)> {
     let mut out = load_builtin_icons();
     let mut loader = IconLoader::new();
     let mut seen: HashSet<String> = icons::BUILTIN
@@ -1505,25 +1802,7 @@ fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
         .chain(icons::package_glyphs().iter().map(|(name, _)| name.clone()))
         .collect();
 
-    // Every row of every column, subcategories included: what a column holds
-    // is a tree, and an icon missed here is one the atlas has no slot for.
-    let mut rows: Vec<String> = Vec::new();
-    // And the few of them whose application asked to be drawn in the shell's
-    // own material rather than as the picture its theme holds. Gathered here
-    // because this is where the tree is walked and the question is the entry's
-    // rather than the name's — two applications can share an icon name, and one
-    // of them asking is enough for that drawing to be a shape.
-    let mut as_shapes: HashSet<String> = HashSet::new();
-    for category in categories {
-        apps::walk(&category.entries, &mut |entry| {
-            if let Some(icon) = entry.icon() {
-                rows.push(icon.to_string());
-                if entry.app().is_some_and(apps::App::wears_shell_material) {
-                    as_shapes.insert(icon.to_string());
-                }
-            }
-        });
-    }
+    let (rows, as_shapes) = icons_wanted(categories, aside);
 
     let names = std::iter::once(FALLBACK_APP_ICON.to_string())
         .chain(categories.iter().map(|c| c.icon.to_string()))
@@ -1558,6 +1837,72 @@ fn load_icons(categories: &[apps::Category]) -> Vec<(String, icons::Icon)> {
     out
 }
 
+#[cfg(test)]
+mod startup_icon_tests {
+    use super::*;
+
+    fn app(name: &str, icon: &str, keywords: &[&str]) -> apps::App {
+        apps::App {
+            name: name.into(),
+            comment: None,
+            icon: Some(icon.into()),
+            exec: "true".into(),
+            terminal: false,
+            categories: Vec::new(),
+            keywords: keywords.iter().map(|word| (*word).to_string()).collect(),
+            mime_types: Vec::new(),
+            path: std::path::PathBuf::from("/tmp/x.desktop"),
+            wm_class: None,
+        }
+    }
+
+    /// The atlas is built from the catalogue, and an application with no tile
+    /// is not in it. It is still drawn: its loading screen puts its mark on
+    /// the middle of the screen at full size while it starts. Without this the
+    /// photo viewer came up behind the generic mark for a program nobody has a
+    /// picture of.
+    #[test]
+    fn an_application_with_no_tile_still_has_its_mark_decoded() {
+        let bar = vec![apps::Category {
+            id: "graphics",
+            title: "Graphics",
+            icon: "graphics",
+            entries: vec![apps::Entry::App(app("GIMP", "gimp", &[]))],
+        }];
+        let aside = vec![app("Pictures", "imagonsole", &["lxb"])];
+
+        let (wanted, as_shapes) = icons_wanted(&bar, &aside);
+
+        assert!(wanted.iter().any(|name| name == "gimp"));
+        assert!(
+            wanted.iter().any(|name| name == "imagonsole"),
+            "the viewer has no tile and its mark is still wanted: {wanted:?}"
+        );
+        // And it asked for the shell's own material, which is a question about
+        // the entry rather than about the name — so it has to be asked on this
+        // side of the bar too.
+        assert!(as_shapes.contains("imagonsole"));
+        assert!(!as_shapes.contains("gimp"));
+    }
+
+    /// Nothing is invented for a session that has nothing on the side, which
+    /// is every session on a machine without the viewer installed.
+    #[test]
+    fn and_nothing_is_wanted_for_an_empty_side() {
+        let bar = vec![apps::Category {
+            id: "graphics",
+            title: "Graphics",
+            icon: "graphics",
+            entries: vec![apps::Entry::App(app("GIMP", "gimp", &[]))],
+        }];
+
+        let (wanted, as_shapes) = icons_wanted(&bar, &[]);
+
+        assert_eq!(wanted, vec!["gimp".to_string()]);
+        assert!(as_shapes.is_empty());
+    }
+}
+
 /// Full catalogue atlas being prepared off the rendering thread.
 struct StartupIcons {
     answer: std::sync::mpsc::Receiver<Vec<(String, icons::Icon)>>,
@@ -1566,13 +1911,14 @@ struct StartupIcons {
 }
 
 impl StartupIcons {
-    fn start(categories: Vec<apps::Category>) -> Self {
+    fn start(categories: Vec<apps::Category>, aside: Vec<apps::App>) -> Self {
         let (tx, answer) = std::sync::mpsc::channel();
         let worker_categories = categories.clone();
+        let worker_aside = aside.clone();
         let pending = match std::thread::Builder::new()
             .name("lxb-startup-icons".to_string())
             .spawn(move || {
-                let _ = tx.send(load_icons(&worker_categories));
+                let _ = tx.send(load_icons(&worker_categories, &worker_aside));
             }) {
             Ok(_) => None,
             Err(err) => {
@@ -1581,7 +1927,7 @@ impl StartupIcons {
                 // it means doing the old synchronous work before the first
                 // wallpaper frame.
                 tracing::warn!(?err, "could not start the icon decoder");
-                Some(load_icons(&categories))
+                Some(load_icons(&categories, &aside))
             }
         };
         Self {
@@ -1885,12 +2231,67 @@ enum Toward {
     Previous,
 }
 
+/// One display, named by something that does not move when another is
+/// unplugged.
+///
+/// The panels are a vector and a display's position in it is not a name: a
+/// screen removed shifts every screen after it down one, and everything that
+/// had written down "display 1" is then reading a different display without
+/// anything having said so. What that cost was a loading screen that quietly
+/// began watching the wrong screen for its window, a question answered onto
+/// the wrong display, and a launch whose display had gone deciding it was
+/// still waiting.
+///
+/// A number of the shell's own making rather than the connector name, because
+/// a connector name comes back: unplug HDMI-A-1 and plug another screen into
+/// the same socket and it is HDMI-A-1 again, and a launch that had been
+/// waiting on the first would silently transfer to the second. These are never
+/// reused within a session.
+///
+/// It is deliberately *not* an index and cannot be used as one. What resolves
+/// it to a panel is [`Shell::panel_at`], which answers `None` for a display
+/// that has gone — which is the question every holder of one of these actually
+/// wants to ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Display(u64);
+
+impl Display {
+    /// A display of this crate's tests' own making.
+    ///
+    /// The one way to build one of these without a screen behind it. Every
+    /// other caller gets theirs from [`Shell::add_panel`], which is what keeps
+    /// the numbers unique to a session.
+    #[cfg(test)]
+    pub const fn for_a_test(number: u64) -> Self {
+        Self(number)
+    }
+
+    /// The number the compositor files this display's launch under, for
+    /// `lxb_shell_v1.place_launch`.
+    ///
+    /// The display's own number, because a display has one launch at a time —
+    /// [`begin_launch`] is the rule, and a second press on a screen is that
+    /// screen's answer changing rather than a second loading screen. So a
+    /// record under this number is replaced by the next press on the same
+    /// screen, which is exactly what should happen to it.
+    ///
+    /// Narrowed rather than carried whole because the request carries a
+    /// `uint`, and a session would have to plug in four billion screens to
+    /// reach the wrap.
+    fn as_launch_number(self) -> u32 {
+        self.0 as u32
+    }
+}
+
 /// The bar as it appears on one display.
 ///
 /// The model behind it is shared, so every display shows the same selection —
 /// what differs is the resolution it is laid out for and the swapchain it is
 /// drawn into.
 struct Panel {
+    /// What everything outside the panel list calls this display. See
+    /// [`Display`].
+    id: Display,
     output: wl_output::WlOutput,
     name: String,
     layer: LayerSurface,
@@ -2034,9 +2435,11 @@ struct Panel {
     /// When the user was last doing something on this display: moving the
     /// pointer over it, taking it over, or pressing something on it.
     ///
-    /// The clock OLED protection counts from. It starts at the moment the
-    /// display appears, so a screen plugged in mid-game gets its full idle
-    /// before it is rested rather than going black as it arrives.
+    /// The clock OLED protection counts from, and it counts nobody else's
+    /// attention: a hand on the screen next to this one is not a hand on this
+    /// one, however busy that screen is. It starts at the moment the display
+    /// appears, so a screen plugged in mid-game gets its full idle before it is
+    /// rested rather than going black as it arrives.
     attention: Instant,
     /// Whether this display was last asked to rest, so an unchanged answer is
     /// not resent every frame — and when it was asked, which is what says
@@ -2363,13 +2766,32 @@ impl Panel {
     }
 }
 
+/// What one loading screen's display looks like this pass.
+///
+/// Read for every splash before any of them is borrowed, because what each
+/// decides has to be acted on with the whole shell in hand. `None` in place of
+/// one of these is a display that has gone.
+struct WhereItIsLoading {
+    /// Where that display is in the panel list *now*, which is not where it was
+    /// when the press was made: see [`Display`].
+    at: usize,
+    /// The windows on it, so anything outside the set the splash started with
+    /// is the application arriving.
+    windows: Vec<u32>,
+    /// And what it is showing in front, for the application that opens no new
+    /// window because it already had one.
+    foreground: String,
+    /// Whether the process this launch started is still running.
+    alive: bool,
+}
+
 /// A window flying back out of the tile that asked for it.
 ///
 /// The compositor draws the flight; this is only what the shell needs to know
 /// while it lasts — which display it is on, so that display keeps drawing, and
 /// when it started, so the bar can step back down as the window lands.
 struct Restore {
-    panel: usize,
+    display: Display,
     /// The tile it is growing out of, so the start screen can lean towards it
     /// the way it does when an application is started.
     from: [f32; 4],
@@ -2476,23 +2898,272 @@ fn waited_long_enough(gone: bool, waited: Duration) -> Leave {
     }
 }
 
-/// A press on a Steam game, waiting for Valve's client to be ready for it.
+/// Whether a press on an installed game has to be refused before it is begun.
 ///
-/// Starting a game is a round trip — the client may have to be woken and
-/// signed in first — so the press is answered immediately with the same splash
-/// every other launch gets, and this is what the shell has to remember until
-/// the client is ready: which game was pressed, and everything about the press
-/// that was read off the bar at the time.
-struct AwaitingSteam {
+/// Valve's rule and not this shell's: a client in Offline Mode starts only what
+/// is fully up to date — "This game is not ready to be played in Offline Mode."
+/// A whole copy with an update Steam has stopped is [`Standing::UpdatePaused`],
+/// which is playable, has a Play on its row, and was played yesterday; it is
+/// the one state where the two answers differ.
+///
+/// A function rather than two lines at each press, because there are two
+/// presses — the tile and the panel that offers to try again — and a rule
+/// written twice is a rule that ends up meaning two things.
+fn cannot_be_played_offline(online: bool, standing: lxb_steam::library::Standing) -> bool {
+    !online && !standing.playable_offline()
+}
+
+/// A question Valve's client stopped a launch on, while the shell's panel for
+/// it is up.
+///
+/// The launch is still the client's; what this holds is enough to answer it and
+/// enough to put the loading screen back where it was if the answer is yes.
+#[derive(Debug, Clone)]
+struct LaunchQuestion {
     app_id: u32,
     name: String,
-    /// So a failure can be explained on the display it was pressed from, out
-    /// of the tile it was pressed on, once the splash has been taken away.
-    panel: usize,
+    /// The display the press was made on, so the loading screen goes back on
+    /// the screen somebody is looking at rather than the one with focus now.
+    ///
+    /// Named rather than numbered, because a question stands until somebody
+    /// answers it and a display can be unplugged while it is up. See
+    /// [`Display`].
+    display: Display,
+    /// The rectangle everything about this press has grown out of.
     from: [f32; 4],
-    /// When the press was, for the log: the interesting number is how long a
-    /// cold client keeps somebody waiting.
-    asked: Instant,
+    question: lxb_steam::webui::Question,
+}
+
+/// What a rebuild of the whole bar does to the cursors standing in it.
+///
+/// The bar is read off the disk again for two quite different reasons, and they
+/// want opposite answers. One is something having been taken off the machine,
+/// where nobody asked for anything and the columns have changed shape under
+/// every display at once. The other is a row of the Settings column being
+/// pressed, where somebody's thumb is on that row and expects to still be on it
+/// afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cursors {
+    /// Put every display back at the top of the column a session opens on. A
+    /// cursor left pointing at the fourth row of a column that now has three is
+    /// worse than one that has plainly started again.
+    Restart,
+    /// Leave every display where it is, by the name of the column rather than
+    /// by its number. See [`Cursor::recolumned`].
+    Kept,
+}
+
+/// Whether Valve's client may be seen, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SteamSight {
+    /// A program this shell drives rather than presents. The ordinary state,
+    /// and the one every session starts in.
+    Background,
+    /// The user asked for a window of Steam's own and it is theirs until they
+    /// are done with it. `arrived` is whether one has actually appeared yet,
+    /// which is what tells "they are still using it" from "it never came".
+    UserVisible { asked: Instant, arrived: bool },
+}
+
+/// How long to wait for the window a hand-over promised before concluding that
+/// Steam is not going to open one.
+///
+/// Generous: the client raises windows on its own schedule and a cold one has a
+/// browser to start first. What it guards against is not a slow window but a
+/// missing one — a request the client did not understand leaves sight given for
+/// something nobody ever saw, for the rest of the session.
+const UNTIL_STEAM_SHOWS_ITSELF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the last Steam game's window must have been gone before the client
+/// is shut down behind it.
+///
+/// Not a settling time for the compositor, which needs none: it is a margin
+/// around the one thing that looks like a game ending and is not — a window
+/// carried from one screen to the other, which leaves the first display's list
+/// on one event and arrives on the second's on the next. Those two events are
+/// milliseconds apart, and five seconds is wide enough that no plausible
+/// scheduling makes them look like an ending.
+///
+/// It costs nothing to be generous with. Nobody is waiting on this: the game is
+/// over, the start screen is already back, and what happens at the end of it is
+/// a program the user cannot see closing itself. See
+/// [`Shell::close_steam_after_the_game`].
+const AFTER_THE_LAST_GAME: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// And how long instead, when Steam has a job it has not finished.
+///
+/// **The five seconds above is what starved an update for three weeks.** A
+/// job Steam suspends to run a game is picked up again by its own scheduler
+/// once the game ends, and not immediately: measured on this machine on
+/// 2026-09-04, Street Fighter 6's resumed **fourteen** seconds after the
+/// window went on one occasion and **thirty-nine** on another, against a
+/// client this shell had shut down at five. So every session began that job
+/// and ended it, and it had gone from nothing to two per cent of 1.4 GB since
+/// the 13th of August. Nothing in the shell said a word: its manifest read
+/// `StateFlags 4`, "Fully Installed", the whole time.
+///
+/// Two minutes is three times the longest resume measured, and it is a
+/// ceiling rather than a wait — the moment the job starts,
+/// [`steam::Steam::nothing_is_under_way`] holds the client for as long as it
+/// takes, and a job that never resumes closes the client at the end of this.
+///
+/// Nobody is waiting on it. The game is over, the start screen is back, and
+/// what this delays is an invisible program closing itself — which is what
+/// makes it the safe direction to be wrong in. See
+/// [`steam::Steam::work_is_outstanding`], which decides when this applies at
+/// all, and which is deliberately read off a source that may say yes too
+/// often rather than too rarely.
+const AFTER_A_SUSPENDED_JOB: std::time::Duration = std::time::Duration::from_secs(120);
+
+const _: () = assert!(AFTER_A_SUSPENDED_JOB.as_secs() > AFTER_THE_LAST_GAME.as_secs());
+
+/// How long a window of Valve's client may stand hidden before it is taken to
+/// be a question rather than the client getting on with something.
+///
+/// Derived rather than picked. The longest thing this shell asks the client to
+/// do without showing anything is the install wizard, and its own patience is
+/// [`lxb_steam::webui::UNTIL_THE_WIZARD_ANSWERS`]; a threshold shorter than
+/// that would reveal the client's own progress window in the middle of an
+/// install this shell asked for. Fifteen seconds past it, so the two cannot
+/// meet.
+///
+/// It is a long time to leave somebody looking at a session that has silently
+/// stopped, and it is still the whole of the improvement: before this the wait
+/// was the rest of the session.
+const UNTIL_A_WINDOW_IS_A_QUESTION: std::time::Duration =
+    std::time::Duration::from_secs(lxb_steam::webui::UNTIL_THE_WIZARD_ANSWERS.as_secs() + 15);
+
+/// What an announcement about a message may print, given whether every screen
+/// is resting.
+///
+/// The user's own rule: the words, unless nobody can be at the machine to read
+/// them. A display the compositor has taken to black under the OLED rule is one
+/// somebody may walk past rather than one somebody is watching, and a message
+/// printed across it is printed for them.
+///
+/// Its own function because the *condition* was wrong once in a way nothing
+/// caught: it asked whether an application was still painting, which is false
+/// for a display showing the start screen — so every message that arrived while
+/// somebody was looking at the bar said only that it had arrived. The condition
+/// is one line at the call site now, and what follows from it is here.
+fn what_a_message_may_say(body: String, asleep: bool) -> String {
+    match asleep {
+        true => "A message arrived while the screen was off.".to_string(),
+        false => body,
+    }
+}
+
+/// Why nothing can be sent to `with`, or `None` when something can.
+///
+/// A free function as well as a method on the shell, because the drawing pass
+/// works it out with the renderer already borrowed and a method would be a
+/// second borrow of the whole shell for the sake of one field.
+fn why_nothing_can_be_said(steam: &steam::Steam, with: u64) -> Option<String> {
+    match steam.may_send(with, "anything") {
+        Ok(_) => None,
+        // The empty field has already said this by being empty.
+        Err(lxb_steam::chat::Refused::Empty) => None,
+        Err(refused) => Some(refused.said().to_string()),
+    }
+}
+
+/// Whether one window Valve's client is being kept from showing is a question
+/// somebody has to answer.
+///
+/// The client is a program this shell drives rather than presents, and hiding
+/// it is right until it stops and asks something: a sign-in it wants doing
+/// again, an agreement, a licence key, a parental code, a conflict between two
+/// saves. Hidden, every one of those is a session that has quietly stopped with
+/// nothing on the screen to say so.
+///
+/// Three questions, and **not one of them reads Valve's wording**. Steam ships
+/// in every language it is translated into, and a rule built on the English for
+/// "Launching…" is a rule that works in one country. So:
+///
+/// 1. It has to be Valve's client. Nothing else is ever hidden by this shell,
+///    and a rule that would let a window of something else through has no
+///    business existing.
+/// 2. The shell must not be showing something of its own about Steam.
+///    A loading screen owns the display it is on, has its own patience and its
+///    own way of giving up; Valve's own window behind it is that same wait said
+///    twice, and revealing it would put two of them on the screen at once.
+/// 3. It must not be the storefront, which is the one window the client has
+///    whenever it is running at all — matched on the client's own name, which
+///    is a brand and not a sentence. See [`lxb_steam::client::STOREFRONT`].
+///
+/// And then time, which is the only thing left that separates the client
+/// *working* from the client *waiting*: a window that has stood for longer than
+/// anything this shell asks the client to do is not a step, it is a stop.
+fn a_hidden_window_is_a_question(
+    app_id: &str,
+    title: &str,
+    the_shell_is_waiting: bool,
+    up_for: std::time::Duration,
+) -> bool {
+    if !is_valves_client(app_id) || the_shell_is_waiting {
+        return false;
+    }
+    if title
+        .trim()
+        .eq_ignore_ascii_case(lxb_steam::client::STOREFRONT)
+    {
+        return false;
+    }
+    up_for >= UNTIL_A_WINDOW_IS_A_QUESTION
+}
+
+/// Whether one window belongs to Valve's client.
+///
+/// The same names the compositor is asked to hide by, folded the same way. A
+/// list of two rather than a guess, and it is the one thing this shell has to
+/// recognise the client's windows by: they carry the class the binary announces
+/// and nothing that says which process raised them.
+fn is_valves_client(app_id: &str) -> bool {
+    let app_id = app_id.trim().to_lowercase();
+    lxb_steam::client::WINDOW_NAMES
+        .iter()
+        .any(|name| *name == app_id)
+}
+
+/// The game a window names itself after, where it names one.
+///
+/// Valve starts a title under a class of its own making — `steam_app_<id>` —
+/// and the window that comes up carries it. It is a second source for the fact
+/// [`lxb_steam::process`] reads out of the environment, and it is here for the
+/// window that route cannot answer for: one whose owner the compositor never
+/// learned, because its client set no `_NET_WM_PID` and its socket carried no
+/// credentials.
+///
+/// Read off a real launch rather than assumed. `steam://rungameid/3812600` on a
+/// live client raised a window whose `WM_CLASS` was
+/// `"steam_app_3812600", "steam_app_3812600"`, while every process from the
+/// reaper down to the game itself carried `SteamAppId=3812600`. The two agree,
+/// which is why the process is asked first and this is only ever the fallback:
+/// the environment is inherited by everything Steam starts, where the class is
+/// whatever the window happens to announce.
+///
+/// Folded the way [`is_valves_client`] folds a name, and for the same reason:
+/// an X11 class is conventionally capitalised where a Wayland app id is not,
+/// and neither spelling is this shell's to insist on.
+fn game_a_window_is_named_after(app_id: &str) -> Option<u32> {
+    let name = app_id.trim().to_lowercase();
+    name.strip_prefix("steam_app_")?.parse().ok()
+}
+
+/// A game whose loading screen ran out of patience, and everything the panel
+/// about it needs.
+///
+/// A record rather than a pair, because it grew two fields that decide what the
+/// panel says and what it offers: which of the two waits ended, and which game
+/// to try again.
+struct GaveUp {
+    /// The rectangle the panel grows out of: the tile it was pressed on.
+    from: [f32; 4],
+    name: String,
+    app_id: u32,
+    /// Whether it gave up before Valve's client was ever up, rather than while
+    /// waiting for a game the client had been asked for.
+    before_the_client_was_up: bool,
 }
 
 /// A desktop portal's question, while it is on screen.
@@ -2511,6 +3182,14 @@ struct ShareQuestion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WindowCard {
     id: u32,
+    /// The process that drew it, where the compositor knows one.
+    ///
+    /// The one thing about a window that is not a name somebody chose. What it
+    /// is here for is saying which of the things this shell started a window
+    /// turned out to be — see [`Shell::steam_windows`], where the alternative
+    /// is the moment it appeared. `None` on a compositor too old to say, and
+    /// for a window whose owner it could not find out.
+    pid: Option<u32>,
     title: String,
     /// What the application behind the window calls itself, empty when it says
     /// nothing or when the compositor is too old to tell us. This is what a
@@ -2518,6 +3197,38 @@ struct WindowCard {
     app_id: String,
     width: u32,
     height: u32,
+}
+
+/// One window the compositor is keeping off the screen on this shell's own
+/// instructions, as it reports them back.
+///
+/// No size and no display, because a hidden window is on neither as far as
+/// anything else is concerned. What it is for is one question:
+/// [`Shell::sync_steam_questions`].
+#[derive(Debug, Clone, PartialEq)]
+struct UnseenWindow {
+    id: u32,
+    app_id: String,
+    title: String,
+}
+
+/// What one window answered when it was asked which game it is, and what it was
+/// asked *from*.
+///
+/// Both sources are kept because either can arrive late. An X11 window is
+/// adopted before it has said anything about itself, so its pid and its class
+/// both turn up after it is already on the list, and a window asked once at the
+/// moment it appeared would be left with the answer it could not have given
+/// yet.
+struct AskedWhichGame {
+    /// The process behind it, where the compositor knew one.
+    pid: Option<u32>,
+    /// The name it went by when it was asked.
+    app_id: String,
+    /// The game, where either source named one. `None` is an answer and is
+    /// kept: most windows on a session are not games, and asking each of them
+    /// once is the point of remembering.
+    game: Option<u32>,
 }
 
 /// What the row under the cursor would have to own for a window to be its own —
@@ -2560,6 +3271,11 @@ struct Shell {
     /// Which display the controller and keyboard are driving. Wayland has no
     /// notion of a primary output, so the compositor's first is the main one.
     focused_panel: usize,
+    /// The next number to hand a display that appears. Only ever goes up, so
+    /// no two displays of one session are ever the same [`Display`] — a socket
+    /// used twice is two screens, and a launch waiting on the first must not
+    /// find itself waiting on the second.
+    next_display: u64,
     /// Layer the bar sits on when it is not covering an application.
     base_layer: Layer,
     /// Displays `--debug-hdr-displays` invented, standing in for what the
@@ -2574,6 +3290,17 @@ struct Shell {
     /// Display last named to the compositor as the one to launch on, so an
     /// unchanged choice is not resent every frame.
     applied_launch_output: Option<wl_output::WlOutput>,
+    /// And the display last named as the one being driven, diffed for the same
+    /// reason. Its own field because the two answers are now two: see
+    /// [`Shell::sync_driven_output`].
+    applied_driven_output: Option<wl_output::WlOutput>,
+    /// The launches the compositor has been given a record of, so a record is
+    /// filed once and taken back once.
+    ///
+    /// Keyed by display because a display has one loading screen at a time —
+    /// [`begin_launch`] is the rule — so this is one entry per screen that is
+    /// loading something, and never more.
+    placed_launches: HashSet<Display>,
     /// How large the compositor was last asked to draw applications, in per
     /// cent, so an unchanged setting is not resent every pass of the loop.
     ///
@@ -2584,6 +3311,15 @@ struct Shell {
     /// the same way and against one value for the whole session — see
     /// [`Shell::sync_picture_in_picture`].
     applied_pip: Option<settings::Pip>,
+    /// And what it was last told the pointing devices are to do, diffed the
+    /// same way and against one value for the whole session — see
+    /// [`Shell::sync_pointer`].
+    applied_pointer: Option<settings::Pointer>,
+    /// And the arrangement it was last told the keyboards are set to, written
+    /// as `layout (variant)`. `None` while the shell has said nothing, which is
+    /// the state a session stays in until somebody picks a row — see
+    /// [`Shell::sync_keyboard_layout`].
+    applied_keyboard_layout: Option<String>,
     /// Display the compositor was last told to show the window overview on,
     /// if any, so the toggle is only sent on changes.
     applied_overview: Option<wl_output::WlOutput>,
@@ -2603,6 +3339,11 @@ struct Shell {
     /// for the session, because it takes every button while it is up and a
     /// second would be a second answer to who has the keys.
     context_menu: menu::Menu,
+    /// The Steam friends list, on a column down the right of the screen. One
+    /// for the session, for the reason the context menu is one: it takes every
+    /// direction while it is up, and a second would be a second answer to who
+    /// has the keys. See [`crate::friends`].
+    friends: friends::Friends,
     /// Which floating window the menu that is up is about, if it is that menu.
     ///
     /// Set when the compositor asks for it and read by the rows it raised.
@@ -2693,6 +3434,15 @@ struct Shell {
     /// the screen. Kept whether or not the daemon started, so every path that
     /// draws or navigates it has one answer rather than two.
     notifications: notify::Center,
+    /// How many lines each announcement's body wraps to in a bubble, by its
+    /// own id.
+    ///
+    /// Beside the centre rather than in it, because it is a fact about the
+    /// *display* rather than about the announcement: it is measured against
+    /// the width a bubble gives words on this screen, and `notify` has no
+    /// business knowing there is one. See
+    /// [`Shell::measure_notification_bodies`].
+    toast_lines: std::collections::BTreeMap<u32, u8>,
     /// The icon theme, kept open for the pictures announcements bring with
     /// them.
     ///
@@ -2736,6 +3486,15 @@ struct Shell {
     removal_plan: Option<(apps::App, uninstall::Survey)>,
     /// A removal the user has agreed to, and how far it has got.
     uninstalling: Option<Uninstall>,
+    /// Which Steam title the open context menu is waiting for a compatibility
+    /// list about, if it is waiting for one.
+    ///
+    /// The one menu in the shell whose rows are not known when it opens: the
+    /// list comes out of Valve's client, which may have to be started first. It
+    /// is remembered here so that an answer arriving late lands on the panel it
+    /// was asked from and nowhere else — a menu the user has since closed, or
+    /// moved on to another game in, is not one to write a list over.
+    compat_menu: Option<u32>,
     /// The applications the open Open with list is offering, in the order it is
     /// offering them: [`menu::Command::OpenWithHandler`] carries a position in
     /// this and nothing else. Rebuilt every time that list is raised and never
@@ -2990,6 +3749,43 @@ struct Shell {
     /// the reason the walk over the user's files is one: nothing that waits on
     /// a network may happen on the thread that draws.
     steam: steam::Steam,
+    /// Which game the download card in the corner of the guide is about, as of
+    /// the last pass — so that its *going* can be noticed.
+    ///
+    /// A download finishing is not an event anywhere on this machine that the
+    /// shell can be told about for a download it did not start itself: what
+    /// happens is that a manifest on the disk stops saying `Downloading` and
+    /// starts saying it is installed. This is the other half of that
+    /// comparison. See [`Shell::a_download_ended`].
+    download_on_the_card: Option<u32>,
+    /// The question Valve's client stopped a launch on, while its panel is up.
+    ///
+    /// Kept here rather than in the command, because a command is a small
+    /// copyable thing and an answer carries a sentence in whatever language
+    /// Steam is running in. See [`Shell::steam_stopped_to_ask`].
+    launch_question: Option<LaunchQuestion>,
+    /// And the ones the client has stopped on that there is no screen free to
+    /// ask yet, oldest first.
+    ///
+    /// The dialog is the session's — one panel, on the display being driven —
+    /// so two questions cannot both be up, and two displays can each have a
+    /// game the client stopped to ask about. A second question used to
+    /// overwrite the first where it stood: the first panel came off the screen
+    /// unanswered and, because nothing said so, Valve's client went on holding
+    /// that launch open for the rest of the session, with the row on the bar
+    /// still saying the game was starting.
+    ///
+    /// Held rather than refused, because the client *is* holding it open and
+    /// somebody did press the game: the question is asked the moment the
+    /// screen is free. See [`Shell::sync_launch_questions`].
+    launch_questions_waiting: VecDeque<LaunchQuestion>,
+    /// And the last game a finish was announced for, so the two things that can
+    /// notice one do not both say it.
+    ///
+    /// Cleared when that same game starts coming down again, which is what
+    /// keeps a game installed twice in one session from being announced only
+    /// the first time.
+    said_a_download_finished: Option<u32>,
     /// The optional RetroArch integration: what it found, what it is doing,
     /// and the rows it turns into.
     ///
@@ -3138,7 +3934,41 @@ struct Shell {
     /// not to be trusted — half the Proton library calls itself `x86_64`, and a
     /// session that tagged the *class* would be claiming every later window of
     /// that name was a game somebody launched here.
+    ///
+    /// Written down from two places, and they are not equally good. A window
+    /// whose own process says which game it is says so on Steam's authority —
+    /// see [`Self::note_which_games_the_windows_are`] — and that holds for a
+    /// game started from Valve's own window, which this shell never watched
+    /// open. The rest is the loading screen's: the window that was not there
+    /// before, less whatever the evidence rules out.
     steam_windows: HashMap<u32, u32>,
+    /// What each window answered when it was asked which game it is, and what
+    /// it was asked from — see [`Shell::note_which_games_the_windows_are`].
+    ///
+    /// Asked once per window rather than once per frame: this is a read out of
+    /// `/proc` and a window list changes every time somebody's title does. What
+    /// it was asked from is kept beside the answer so that a window which
+    /// changes either of them is asked again rather than inheriting the last
+    /// answer, and the whole entry is dropped when the window goes —
+    /// [`Shell::forget_closed_windows`], for the same reason the claim above it
+    /// is.
+    asked_which_game: HashMap<u32, AskedWhichGame>,
+    /// What the compositor says it is keeping off the screen, and since when.
+    ///
+    /// The batch being assembled and the one in force, the same way a display's
+    /// window list is: a batch is the whole truth and replaces what came
+    /// before. The clock beside each is when this shell first heard of that
+    /// window, which is the whole of the question in
+    /// [`Shell::sync_steam_questions`] — Valve's client shows a window while it
+    /// works and a window while it waits, and how long it has stood is what
+    /// tells the two apart without reading a word Valve wrote.
+    pending_unseen: Vec<UnseenWindow>,
+    unseen_windows: Vec<UnseenWindow>,
+    unseen_since: HashMap<u32, Instant>,
+    /// The hidden windows this shell has asked for anyway, by id. Kept so that
+    /// each is asked for once rather than once a frame, and so that one which
+    /// has gone can have its exception taken back.
+    letting_through: HashSet<u32>,
     /// The bus watch that says what the session is playing, where there is a
     /// bus to watch. See [`crate::playing`].
     playing: Option<playing::Watch>,
@@ -3170,9 +4000,72 @@ struct Shell {
     /// eventually does go, and the shell treats that as its own doing. Which it
     /// arguably was.
     ended_by_the_shell: HashSet<u32>,
-    /// A game that has been pressed and cannot be started yet, because Steam
-    /// has not said whether this account owns it. Its splash is already up.
-    awaiting_steam: Option<AwaitingSteam>,
+    /// A game that has been pressed and cannot be started yet, because Valve's
+    /// client is being woken for it. Its splash is already up.
+    ///
+    /// The gate, the record of an abandoned wake and the record of a wake
+    /// nobody is waiting on at all are one thing rather than three fields with
+    /// rules between them — see [`steam::Gate`], which is where every rule
+    /// about a late answer lives now. The flag that used to keep a background
+    /// wake's refusal off the screen is in there as
+    /// [`steam::NoGame::NobodyAsked`], keyed to the wake it is about rather
+    /// than spent by whatever the client said next.
+    awaiting_steam: steam::Gate,
+    /// Whether a Steam game's window was on the screen the last time the shell
+    /// looked.
+    ///
+    /// The whole of what Settings > Games > Steam > Leave Steam running is
+    /// decided from: what it is watching for is the edge — a game that was
+    /// there and is not — because that, and not an empty window list, is the
+    /// moment a game ended. Kept up to date on every frame whichever way the
+    /// setting is thrown, so that turning it off during a game still acts when
+    /// that game ends. See [`Shell::close_steam_after_the_game`].
+    steam_game_was_on_screen: bool,
+    /// When the last one went, while the shell is deciding what to do about it.
+    ///
+    /// A wait rather than an answer on the frame, and the wait is the point: a
+    /// window moved to the other screen leaves one display's list before it
+    /// arrives on the other's, and a shell that shut Valve's client down in
+    /// that gap would end the game somebody was carrying across. Whatever else
+    /// happens in the meantime — another game pressed, a download begun — is
+    /// what [`Shell::close_steam_after_the_game`] is looking for.
+    steam_game_gone_since: Option<Instant>,
+    /// What was last decided about a client behind a game that has ended, so
+    /// the decision is logged when it changes rather than sixty times a second.
+    ///
+    /// [`Shell::steam_becoming`] for the other half. The two halves never run
+    /// at once — a game on the screen hands the question from the press half to
+    /// this one, and takes [`Shell::steam_woken_for`] with it — but they keep
+    /// their notes apart anyway, because what each is a note *about* is
+    /// different: a press that is over, and a game that has ended.
+    steam_after_the_game: Option<Becomes>,
+    /// The game whose press started Valve's client, where a press did.
+    ///
+    /// `None` on a client this shell did not start for a press: one already
+    /// running, one started with the shell, or one whose game has since been on
+    /// the screen — that last is the moment
+    /// [`Shell::close_steam_after_the_game`] takes the question over. See
+    /// [`Shell::close_steam_when_the_press_is_over`].
+    steam_woken_for: Option<u32>,
+    /// Since when there has been nothing for that client to do.
+    steam_unwanted_since: Option<Instant>,
+    /// When it was asked to go, where it has been, so it is asked once rather
+    /// than every five seconds until it finally does.
+    ///
+    /// A time and not a flag, because `steam -shutdown` returns when the client
+    /// has been *asked* and a client may decline: a flag parked the whole
+    /// decision on "it has been asked" for the rest of the session, and the
+    /// client stayed up with the setting saying not to and nothing in the log
+    /// about it. See [`what_becomes_of_the_client`].
+    steam_asked_to_close: Option<Instant>,
+    /// And how many times, because a client that has declined twice is
+    /// declining rather than slow, and the answer to that is to stop asking.
+    steam_times_asked: u8,
+    /// What was last decided about it, so the decision is logged when it
+    /// changes rather than sixty times a second.
+    steam_becoming: Option<Becomes>,
+    /// [`Shell::steam_may_be_seen`].
+    steam_sight: SteamSight,
     /// A window flying back out of its tile, drawn by the compositor.
     restoring: Option<Restore>,
     /// Eased card rectangles by window id (`u64::MAX` is the start card),
@@ -3312,6 +4205,12 @@ struct Shell {
     /// catalogue is rebuilt whenever the account's library changes, and a
     /// picture already fetched does not stop being that game's picture.
     art: art::Art,
+    /// And the worker that fetches the pictures people are recognised by on
+    /// Steam. Beside the game artwork rather than in it, because an avatar is
+    /// addressed by a hash of the file and by nothing else — see
+    /// [`crate::avatars`], where the reason it is a module of its own is
+    /// written down.
+    avatars: avatars::Avatars,
     /// How much colour each of those covers is drawn with, which is whether
     /// its game is on this disk. Beside the pictures rather than in the
     /// catalogue because it is a fade and the catalogue has no clock: the rows
@@ -3433,7 +4332,11 @@ impl Shell {
             .unwrap_or_else(|| "?".to_string());
         tracing::info!(output = %name, "showing the bar on a display");
 
+        let id = Display(self.next_display);
+        self.next_display += 1;
+
         self.panels.push(Panel {
+            id,
             output,
             name,
             layer,
@@ -3572,10 +4475,20 @@ impl Shell {
         if next >= self.panels.len() || next == self.focused_panel {
             return false;
         }
+        let left = self.focused_panel;
         self.focused_panel = next;
         // Control arriving is the user arriving, which is what a display
         // resting behind black is waiting for.
-        self.the_user_is_on(next, Instant::now());
+        let now = Instant::now();
+        self.the_user_is_on(next, now);
+        // And the display control has just left starts its wait *here*, rather
+        // than from whenever somebody last pointed at it. A screen holding
+        // control is spared by the rule itself and never wound while it holds
+        // it, so its clock is as stale as the session is long: without this,
+        // going back to a game on the other screen would take the picture off
+        // the one being left in the same breath, instead of five seconds after
+        // the user has gone.
+        self.the_user_is_on(left, now);
         tracing::debug!(display = %self.panels[next].name, "control moved to a display");
         // The menu does not travel onto a launch, and this is the whole of
         // that rule: control moves, the menu does not come with it.
@@ -3695,7 +4608,17 @@ impl Shell {
         // was pressed, so without this it would have no frames to open in.
         let pressing = self.guide.pressing()
             || self.guide.media_is_moving()
+            // And the download card, which is the same kind of thing again: it
+            // comes in because a download started and leaves because one
+            // finished, and neither of those is a press.
+            || self.guide.download_is_moving()
             || self.context_menu.is_animating()
+            // And the friends list, which comes in from the right edge and
+            // leaves the same way: dismissed with one press, it still has to be
+            // watched going, and without frames it would simply cease to be
+            // there.
+            || self.friends.is_moving()
+            || self.friends.conversation_is_moving()
             || self.dialog.is_animating()
             // The picker is the same kind of thing again: it comes in from the
             // right on its own ramp and its columns ride the bar's own springs,
@@ -3711,11 +4634,14 @@ impl Shell {
                 .as_ref()
                 .is_some_and(picker::Picker::is_animating);
         let keyboard_visible = self.keyboard_visible();
-        let keyboard_overlay = self.keyboard_overlay();
         // Whether the board on screen is typing into a panel this surface is
         // drawing rather than into whatever is in front of it.
         let board_types_here = self.osk.types_here();
         let focused_panel = self.focused_panel;
+        // And which display carries the board and the chip that stands in for
+        // it, which is the driven one unless the user has named another. See
+        // [`Shell::keyboard_panel`].
+        let keyboard_panel = self.keyboard_panel();
         let app_label = self.app_label().map(str::to_string);
         // Whether there is an application in front for the shell's overlays to
         // be over. The same answer `sync_surface_state` lifts the surface on —
@@ -3799,6 +4725,14 @@ impl Shell {
         // reachable once the panels are borrowed for drawing.
         let splashing: Vec<bool> = (0..self.panels.len())
             .map(|index| self.splash_on_screen(index))
+            .collect();
+        // And which of them has an application in front of it, which the board
+        // and the chip that stands in for it now need per display rather than
+        // once for the session: either may be on a screen the user is not
+        // driving. Read here for the reason above — the panels are borrowed for
+        // drawing below and nothing of the shell is reachable then.
+        let app_in_front_of: Vec<bool> = (0..self.panels.len())
+            .map(|index| self.app_in_front_of(index))
             .collect();
 
         // What each display is looking at, if it is looking at anything with a
@@ -3974,6 +4908,10 @@ impl Shell {
         // half-way carries on from where it was, and the easing is put on it
         // at the point it becomes a picture.
         self.guide.animate_media(dt);
+        // And the card in the far corner, on its own linear position for the
+        // same reason: a download that finishes while its card is still
+        // arriving leaves from where it got to.
+        let download_open = self.guide.animate_download(dt);
         // The board's rise and fall, on the same terms and for the same
         // reason: it is drawn on the display being driven, and the others must
         // not run its clock on.
@@ -4002,6 +4940,57 @@ impl Shell {
             .flatten();
         let context_on_screen = self.context_menu.is_on_screen();
 
+        // And the friends list's, on exactly the same terms: it is drawn on the
+        // display being driven, and the others must not run its clock on. Its
+        // highlight is eased here too, so the rectangle it glides towards is
+        // the one the drawing will use.
+        let friends_open = ui::ease(self.friends.animate(dt));
+        let friends_on_screen = self.friends.is_on_screen();
+        // How tall every message in the open conversation is, which is the one
+        // thing about this panel the layout cannot work out for itself.
+        //
+        // **Before the scroll moves and before the highlight is placed**, and
+        // both orderings matter: a conversation opens at the foot of a column
+        // whose height is not known yet — see
+        // [`friends::Friends::talk_to`] — so the frame that measures it has to
+        // be the frame that settles it, or one frame of the spring runs against
+        // a column of no height; and where the field is depends on how many
+        // lines the draft takes.
+        if friends_on_screen {
+            if let Some((width, height)) = self
+                .panels
+                .get(focused_panel)
+                .map(|panel| (panel.width as f32, panel.height as f32))
+            {
+                self.measure_the_conversation(width, height);
+                self.settle_the_conversation(width, height);
+            }
+        }
+        // And then the turn between the panel's two faces, and the message
+        // column's own scroll, on the same clock as everything else here.
+        self.friends.animate_conversation(dt);
+        let friends_highlight = friends_on_screen
+            .then(|| {
+                let (width, height) = self
+                    .panels
+                    .get(focused_panel)
+                    .map(|panel| (panel.width as f32, panel.height as f32))?;
+                // How much room there is can change under an open panel — a
+                // display put into another mode, or a rotated one — so the
+                // window is kept true every frame rather than only at the
+                // moment the panel was raised.
+                self.friends.fits(ui::friends_rows_that_fit(height));
+                let row = ui::friends_highlight_rect(
+                    width,
+                    height,
+                    self.steam.roster(),
+                    self.friends_head_is_a_button(),
+                    &self.friends,
+                )?;
+                Some(self.friends.animate_highlight(row, dt))
+            })
+            .flatten();
+
         // And the centred panel's, on exactly the same terms — it is the same
         // machinery underneath, growing out of the menu row that opened it.
         //
@@ -4018,11 +5007,17 @@ impl Shell {
                 (height - top) * board_arrived
             })
             .unwrap_or_default();
-        self.dialog.set_footer(if self.osk.types_here() {
-            board_room
-        } else {
-            0.0
-        });
+        // And only where the board is on the same screen as the panel. Pinned
+        // to another display, the board covers nothing here and a dialog that
+        // stepped aside for it would be a panel jumping out of the way of
+        // something on the monitor beside it.
+        self.dialog.set_footer(
+            if self.osk.types_here() && keyboard_panel == focused_panel {
+                board_room
+            } else {
+                0.0
+            },
+        );
         let dialog_open = ui::ease(self.dialog.animate(dt));
         let dialog_highlight = self
             .dialog
@@ -4106,8 +5101,20 @@ impl Shell {
             dialog_on_screen,
             transfer_on_screen,
             picker_on_screen,
-            keyboard_visible,
+            // The corner the chip stands in is the corner the legend wants, so
+            // the legend gives it up exactly where the chip is drawn. Pinned to
+            // another display, this corner is free and the legend keeps it.
+            keyboard_visible && keyboard_panel == focused_panel,
         );
+
+        // And why the friends panel has no list, when it has none — worked out
+        // here for the reason the legend is: the loop below holds the panels
+        // mutably and this reads the whole shell.
+        let no_friends_because = self.why_there_are_no_friends();
+        // Beside it, and for the same reason it is read here: the drawing pass
+        // holds the renderer mutably, and both of these are questions about the
+        // shell rather than about the frame.
+        let friends_head_is_a_button = self.friends_head_is_a_button();
 
         // What the keyboard is going into, which the bar draws a caret for.
         // Taken by value rather than borrowed across the loop below, which
@@ -4212,12 +5219,17 @@ impl Shell {
             // place for the same reason.
             battery: self.battery_seen,
             percent: settings::battery_percent(),
+            // Filled in per display below: the friends panel is on the one
+            // being driven, and a corner that stepped aside on the monitor
+            // beside it would be giving way to nothing.
+            aside: 0.0,
         };
         // Where each game's cover ended up, and how much colour is in it, for
         // the rows about to be drawn. Bound out here because the panels are
         // borrowed one at a time below and the shell is not reachable from
         // inside that.
         let art = &self.art;
+        let avatars = &self.avatars;
         let drained = &self.drained;
         // What the shell has in front of the application on the display being
         // driven, which is what decides whether the bar may be drawn at all —
@@ -4246,6 +5258,12 @@ impl Shell {
 
             let (width, height) = target.size();
             let focused = index == focused_panel;
+            // Whether the on-screen keyboard belongs on *this* display, which
+            // is the driven one until somebody names another. Everything the
+            // board owns reads this rather than `focused`: the keys, the chip
+            // that stands in for them, the hole cut in the input region, and
+            // the bar giving the screen up for them.
+            let board_here = index == keyboard_panel;
             // The guide is one overlay on the display the user is driving, not
             // a copy on each. The others carry on showing their own bar, which
             // is the whole point of giving them their own cursor.
@@ -4416,9 +5434,15 @@ impl Shell {
             // of it — over the running application alongside whatever was
             // raised, which is not an overlay anybody asked for. The bar gives
             // the screen up for as long as that thing is on it.
+            // Whether the board is over an application *here*. The three
+            // things beside it below are drawn on the display being driven and
+            // ask about that one; the board is not, so it asks about its own.
+            let app_here = app_in_front_of[index];
+            let board_over_app = keyboard_visible && app_here;
             let board_only = draws_only_what_was_raised(
                 focused,
-                keyboard_overlay,
+                board_here,
+                board_over_app,
                 app_in_front && (toasting || volume_raised || floating_menu),
                 menu_here,
                 board_types_here,
@@ -4457,10 +5481,10 @@ impl Shell {
             // What is left is the narrow case — something raised over an
             // application, with the bar drawn beside it.
             if !board_only
-                && app_in_front
+                && app_here
                 && !menu_here
                 && !start_screen_here
-                && !board_types_here
+                && !(board_types_here && focused)
                 && !picker_on_screen
                 && !splashing[index]
                 && panel
@@ -4470,7 +5494,9 @@ impl Shell {
                 tracing::warn!(
                     display = %panel.name,
                     focused,
-                    keyboard_overlay,
+                    board_here,
+                    app_here,
+                    board_over_app,
                     toasting,
                     volume_raised,
                     floating_menu,
@@ -4516,9 +5542,20 @@ impl Shell {
                     width as f32,
                     height as f32,
                     focused,
-                    corner,
+                    ui::Corner {
+                        // The friends panel is a column down the right of this
+                        // display, and both corners are underneath it. See
+                        // [`ui::Corner::aside`].
+                        aside: if focused { friends_open } else { 0.0 },
+                        ..corner
+                    },
                     time,
-                    &Slots { gpu, art, drained },
+                    &Slots {
+                        gpu,
+                        art,
+                        avatars,
+                        drained,
+                    },
                     // The caret belongs to the display being typed on, which
                     // is the one holding the keyboard.
                     if focused { typing } else { ui::Typing::Nothing },
@@ -4589,6 +5626,15 @@ impl Shell {
                         power_open,
                     );
                 }
+                // The download card is in the same position: its glass is a
+                // quad in the guide's scene and the start card's labels are
+                // text in this one, so they would print straight through it.
+                ui::hide_text_under_guide_download(
+                    &mut scene,
+                    width as f32,
+                    height as f32,
+                    download_open,
+                );
                 let guide = ui::build_guide(
                     ui::GuideView {
                         guide: &self.guide,
@@ -4618,13 +5664,104 @@ impl Shell {
                         power: power_open,
                         time,
                         elsewhere: directions_elsewhere,
-                        slots: &Slots { gpu, art, drained },
+                        slots: &Slots {
+                            gpu,
+                            art,
+                            avatars,
+                            drained,
+                        },
                     },
                     width as f32,
                     height as f32,
                 );
                 scene.quads.extend(guide.quads);
                 scene.texts.extend(guide.texts);
+            }
+
+            // The friends list, over whatever raised it — the start screen, or
+            // the guide's own cards. Before the context menu and after the
+            // guide, which is the order they stand in: this panel is a screen
+            // of the shell's and a menu is a note pinned to one.
+            //
+            // Only on the display being driven, like every other panel: it is
+            // one list about one account, and a second copy on the monitor
+            // beside it would be a list nothing was moving.
+            if focused && friends_on_screen {
+                // Nothing of the shell is drawn under it, so what its glass
+                // shows is the wallpaper and only the wallpaper. See
+                // [`ui::nothing_but_wallpaper_under_friends`], where the reason
+                // that is a rule rather than a preference is written down.
+                ui::nothing_but_wallpaper_under_friends(
+                    &mut scene,
+                    width as f32,
+                    height as f32,
+                    friends_open,
+                );
+                // Who is being talked to, and why nothing may be said to them
+                // where nothing may. Worked out once, here, rather than inside
+                // the drawing: both are facts about Steam and the roster, and
+                // `ui` is arithmetic on rectangles.
+                let talking_to = self.friends.talking_to();
+                let talking_to_name = talking_to
+                    .and_then(|with| {
+                        self.steam
+                            .roster()
+                            .friends
+                            .iter()
+                            .find(|friend| friend.steam_id == with)
+                            .map(|friend| friend.name.clone())
+                    })
+                    .unwrap_or_default();
+                let cannot_send =
+                    talking_to.and_then(|with| why_nothing_can_be_said(&self.steam, with));
+                let over = ui::build_friends(
+                    ui::FriendsView {
+                        friends: &self.friends,
+                        roster: self.steam.roster(),
+                        instead: no_friends_because,
+                        head: friends_head_is_a_button,
+                        open: friends_open,
+                        highlight: friends_highlight,
+                        behind: backdrop_blur,
+                        time,
+                        // Read straight rather than off the start screen's
+                        // legend, which is `None` whenever the guide is up —
+                        // and the guide is one of the two places this panel is
+                        // raised from.
+                        pad: settings::controller_in_hand(),
+                        // The panel is only ever on the display being driven,
+                        // so a hand on a bar is a hand on this one's.
+                        dragging: matches!(self.held_bar, Some((_, Held::Friends))),
+                        conversation: talking_to
+                            .and_then(|with| self.steam.conversations().with(with)),
+                        talking_to: talking_to.and_then(|with| {
+                            self.steam
+                                .roster()
+                                .friends
+                                .iter()
+                                .find(|friend| friend.steam_id == with)
+                        }),
+                        talking_to_name: &talking_to_name,
+                        typing: talking_to.is_some_and(|with| {
+                            self.steam
+                                .conversations()
+                                .with(with)
+                                .is_some_and(|it| it.typing(now))
+                        }),
+                        cannot_send: cannot_send.as_deref(),
+                        unread: &Unread(self.steam.conversations()),
+                        slots: &Slots {
+                            gpu,
+                            art,
+                            avatars,
+                            drained,
+                        },
+                    },
+                    width as f32,
+                    height as f32,
+                );
+                scene.quads.extend(over.quads);
+                scene.texts.extend(over.texts);
             }
 
             // The context menu, over whatever raised it. Drawn on the eased
@@ -4654,7 +5791,12 @@ impl Shell {
                         open: context_open,
                         behind: backdrop_blur,
                         time,
-                        slots: &Slots { gpu, art, drained },
+                        slots: &Slots {
+                            gpu,
+                            art,
+                            avatars,
+                            drained,
+                        },
                     },
                     width as f32,
                     height as f32,
@@ -4682,7 +5824,12 @@ impl Shell {
                             transfer: &carrying.picker,
                             arrived: transfer_arrived,
                             time,
-                            slots: &Slots { gpu, art, drained },
+                            slots: &Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            },
                         },
                         width as f32,
                         height as f32,
@@ -4710,7 +5857,12 @@ impl Shell {
                         open: dialog_open,
                         behind: backdrop_blur,
                         time,
-                        slots: &Slots { gpu, art, drained },
+                        slots: &Slots {
+                            gpu,
+                            art,
+                            avatars,
+                            drained,
+                        },
                     },
                     width as f32,
                     height as f32,
@@ -4744,7 +5896,12 @@ impl Shell {
                             open: picker_open,
                             behind: backdrop_blur,
                             time,
-                            slots: &Slots { gpu, art, drained },
+                            slots: &Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            },
                         },
                         width as f32,
                         height as f32,
@@ -4780,11 +5937,12 @@ impl Shell {
             }
 
             // The on-screen keyboard, and the corner hint that stands in for
-            // it. Only on the display being driven, and on the same answer
+            // it. Only on the display the board belongs to — the driven one, or
+            // the one Settings > Input names — and on the same answer
             // `sync_surface_state` raised this surface on, so the board can
             // never be drawn on a display still sitting behind its
             // application.
-            if focused && keyboard_visible {
+            if board_here && keyboard_visible {
                 // `is_on_screen`, not `is_open`: a dismissed board is still on
                 // its way down, and the hint that replaces it has to wait for
                 // the display's edge to take it rather than appearing through
@@ -4793,7 +5951,12 @@ impl Shell {
                     let board = ui::build_keyboard(
                         ui::KeyboardView {
                             board: &self.osk.board,
-                            slots: &Slots { gpu, art, drained },
+                            slots: &Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            },
                             arrived: board_arrived,
                             behind: backdrop_blur,
                             time,
@@ -4803,15 +5966,29 @@ impl Shell {
                     );
                     // A scene is all its quads and then all its text, so the
                     // board's panel cannot cover a label the bar already put
-                    // down. Those labels have to go.
-                    scene.hide_text_behind(ui::keyboard_panel_rect(width as f32, height as f32));
+                    // down. Those labels have to go — but only once the glass
+                    // is actually over them. The cut follows the board up and
+                    // back down (`keyboard_panel_rect_at`, not the settled
+                    // rectangle): a line that lost its words while the board
+                    // was still climbing towards it read as the shell erasing
+                    // them from a distance.
+                    scene.hide_text_behind(ui::keyboard_panel_rect_at(
+                        width as f32,
+                        height as f32,
+                        board_arrived,
+                    ));
                     scene.quads.extend(board.quads);
                     scene.texts.extend(board.texts);
                 } else {
                     let hint_rect = ui::keyboard_hint_rect(width as f32, height as f32);
                     let hint = ui::build_keyboard_hint(
                         ui::HintView {
-                            slots: &Slots { gpu, art, drained },
+                            slots: &Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            },
                             fade: 1.0,
                             behind: backdrop_blur,
                         },
@@ -4831,7 +6008,11 @@ impl Shell {
             // being started. It does not fade: it is still the thing behind
             // the window for the whole flight, and a bar fading to nothing
             // would leave a hole around a window that has not arrived yet.
-            if let Some(restore) = self.restoring.as_ref().filter(|r| r.panel == index) {
+            if let Some(restore) = self
+                .restoring
+                .as_ref()
+                .filter(|restore| restore.display == panel.id)
+            {
                 let flown = now.duration_since(restore.started).as_secs_f32()
                     / lxb_protocol::overview::FLIGHT.as_secs_f32();
                 let grown = ui::ease(flown.clamp(0.0, 1.0));
@@ -4856,7 +6037,7 @@ impl Shell {
             // why the fade below cannot be asked for by a splash that has
             // already faded off the application.
             if let Some(splash) = self.launching.iter().find(|splash| {
-                the_loading_screen_is_on_this_frame(splash.panel == index, splash.drawing(now))
+                the_loading_screen_is_on_this_frame(splash.display == panel.id, splash.drawing(now))
             }) {
                 let open = splash.open(now);
                 let grown = ui::ease(open);
@@ -4878,7 +6059,15 @@ impl Shell {
                 scene.fade(1.0 - grown);
 
                 let named = splash.icon.as_deref();
-                let icon = named.and_then(|name| Slots { gpu, art, drained }.slot_for(Some(name)));
+                let icon = named.and_then(|name| {
+                    Slots {
+                        gpu,
+                        art,
+                        avatars,
+                        drained,
+                    }
+                    .slot_for(Some(name))
+                });
                 let over = ui::build_launch(
                     ui::LaunchView {
                         name: &splash.name,
@@ -4890,6 +6079,48 @@ impl Shell {
                         game: splash.game().is_some(),
                         logo: splash.game().and_then(|app_id| gpu.logo(app_id)),
                         doing: splash.doing(),
+                        said: splash.said(),
+                        // Only for the one wait somebody may leave, and drawn
+                        // as whichever control is in their hands — the same
+                        // pair the start screen's own legend is built from.
+                        back: splash
+                            .is_fetching()
+                            .then(|| {
+                                let named = match settings::controller_in_hand() {
+                                    true => icons::PAD_EAST,
+                                    false => icons::KEY_ESCAPE,
+                                };
+                                // The name goes with the slot. What it is
+                                // looked up by is also what says how it is
+                                // drawn — see [`ui::shaded`].
+                                Slots {
+                                    gpu,
+                                    art,
+                                    avatars,
+                                    drained,
+                                }
+                                .glyph(named)
+                                .map(|slot| (slot, named))
+                            })
+                            .flatten(),
+                        // And the one press it offers, drawn the same way: the
+                        // button that starts things, because what it does is
+                        // start the game. See
+                        // [`Shell::skip_the_shader_wait`].
+                        skip: splash.step_may_be_skipped().and_then(|_| {
+                            let named = match settings::controller_in_hand() {
+                                true => icons::PAD_SOUTH,
+                                false => icons::KEY_ENTER,
+                            };
+                            Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            }
+                            .glyph(named)
+                            .map(|slot| (slot, named))
+                        }),
                         blackout: splash.blackout(now),
                         from: splash.from,
                         open,
@@ -4921,7 +6152,12 @@ impl Shell {
                             level,
                             fade: self.volume.fade(),
                             behind: backdrop_blur,
-                            slots: &Slots { gpu, art, drained },
+                            slots: &Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            },
                         },
                         width as f32,
                         height as f32,
@@ -4960,6 +6196,11 @@ impl Shell {
                     .map(|toast| ui::ToastCard {
                         title: toast.about.title(),
                         body: &toast.about.body,
+                        // How much room its words need, measured when it
+                        // arrived — see [`Shell::measure_notification_bodies`].
+                        // One for anything not measured yet, which is the card
+                        // this always was.
+                        body_lines: self.toast_lines.get(&toast.about.id).copied().unwrap_or(1),
                         // The program's own picture, and the bell behind it.
                         // A bubble with a hole where its icon should be is
                         // worse than one wearing the shell's own mark: the
@@ -4978,19 +6219,40 @@ impl Shell {
                         icon: toast
                             .about
                             .icon_name()
-                            .and_then(|name| Slots { gpu, art, drained }.glyph(name))
-                            .or_else(|| Slots { gpu, art, drained }.glyph(icons::NOTIFICATIONS)),
+                            .and_then(|name| {
+                                Slots {
+                                    gpu,
+                                    art,
+                                    avatars,
+                                    drained,
+                                }
+                                .glyph(name)
+                            })
+                            .or_else(|| {
+                                Slots {
+                                    gpu,
+                                    art,
+                                    avatars,
+                                    drained,
+                                }
+                                .glyph(icons::NOTIFICATIONS)
+                            }),
                         // And which of those two it ended up being, because the
                         // bell is one of the marks the shader shades out of its
                         // own shape and a program's picture is not. Worked out
                         // the same way round as the line above: the fallback is
                         // reached exactly when the program's own name did not
                         // resolve.
-                        glyph: match toast
-                            .about
-                            .icon_name()
-                            .filter(|name| Slots { gpu, art, drained }.glyph(name).is_some())
-                        {
+                        glyph: match toast.about.icon_name().filter(|name| {
+                            Slots {
+                                gpu,
+                                art,
+                                avatars,
+                                drained,
+                            }
+                            .glyph(name)
+                            .is_some()
+                        }) {
                             Some(name) => Some(name),
                             None => Some(icons::NOTIFICATIONS),
                         },
@@ -5059,7 +6321,7 @@ impl Shell {
             let game_opening = self
                 .launching
                 .iter()
-                .find(|splash| splash.panel == index && splash.game().is_some())
+                .find(|splash| splash.display == panel.id && splash.game().is_some())
                 .is_some_and(|splash| splash.drawing(now) && !splash.uncovering(now));
 
             // What this display has behind each of its two surfaces, back to
@@ -5608,6 +6870,82 @@ impl Shell {
         let _ = self.conn.flush();
     }
 
+    /// The game Valve's client started that is in front on the display being
+    /// driven, where that is what is in front.
+    ///
+    /// The **topmost** window and not merely one of them, which is the whole of
+    /// the care this needs: a display can hold a game and a browser at once,
+    /// and a keystroke meant for the game would otherwise be sent to whichever
+    /// of the two the user had just switched away from.
+    ///
+    /// Read rather than asked — [`Self::steam_windows`] is filled in as windows
+    /// arrive — so this costs a lookup.
+    fn steam_game_in_front(&self) -> Option<u32> {
+        let front = self.panels.get(self.focused_panel)?.windows.first()?;
+        self.steam_windows.get(&front.id).copied()
+    }
+
+    /// Ask Valve's overlay to come up over the game in front.
+    ///
+    /// There is no way to ask the client for this. Its whole JS interface was
+    /// read off a live build and the overlay is only ever a thing the client is
+    /// *told about*: `SteamClient.Overlay` registers for activation requests
+    /// and reports state, and nothing there raises one. The overlay is not the
+    /// client's to raise — it lives inside the game, in the library Steam
+    /// preloads into it, and what that library is watching for is a keystroke.
+    ///
+    /// So the keystroke is what is sent, through `lxb_shell_v1.keyboard_key`,
+    /// which puts it on the seat's own keyboard exactly where a real Shift+Tab
+    /// would land. See [`steam::OVERLAY_CHORD`] for which keys and how that was
+    /// established.
+    ///
+    /// **Two refusals, and both are silent.** Nothing but a game Steam started
+    /// may be sent this: in a browser the same keystroke walks the focus
+    /// backwards, and a chord that did something different in every application
+    /// would be a chord nobody could press with confidence. And the shell must
+    /// not be holding the keyboard, because then the key would be delivered to
+    /// the shell — the game is behind the guide, not in front of it. Neither
+    /// says anything on screen: the first is the ordinary state of a machine
+    /// with no game running, and a message every time somebody brushed two
+    /// buttons in a menu would be worse than nothing happening.
+    ///
+    /// Pressed and released in one go rather than held. The overlay comes up on
+    /// the edge, and a chord that left Shift down would leave every key after
+    /// it capitalised in a game the shell can no longer see the keyboard of.
+    fn show_steams_overlay(&mut self) {
+        let Some(app_id) = self.steam_game_in_front() else {
+            tracing::debug!("nothing Steam started is in front; the overlay chord is spent here");
+            return;
+        };
+        // The on-screen keyboard is deliberately not one of these: it leaves
+        // the keys with the application it is typing into, which is the
+        // application this chord is about. See [`controller_is_driving`], where
+        // the same two fields answer the same question the other way round.
+        if the_shell_holds_the_keyboard(self.keep_keyboard_grabbed, self.focused_surface.is_some())
+        {
+            tracing::debug!(
+                app_id,
+                "the shell is holding the keyboard; Steam's overlay is not asked for"
+            );
+            return;
+        }
+        let Some(control) = self.shell_control.as_ref() else {
+            return;
+        };
+        if control.version() < KEYBOARD_KEY_VERSION {
+            tracing::debug!(app_id, "this compositor cannot be handed a key");
+            return;
+        }
+        tracing::info!(app_id, "asking Valve's overlay to come up over the game");
+        for key in steam::OVERLAY_CHORD {
+            control.keyboard_key(key, lxb_shell_v1::KeyState::Pressed);
+        }
+        for key in steam::OVERLAY_CHORD.iter().rev() {
+            control.keyboard_key(*key, lxb_shell_v1::KeyState::Released);
+        }
+        let _ = self.conn.flush();
+    }
+
     /// The application the pointer switch is about: the one in front on the
     /// display being driven, named the way it names itself.
     ///
@@ -5825,6 +7163,12 @@ impl Shell {
             || self.type_into_picker(stroke)
             || self.type_into_search(stroke)
             || self.type_into_rename(stroke)
+            // Last, because it is the field that is hardest to reach: the
+            // friends panel is drawn over everything the rows above belong to,
+            // so nothing above can be up at the same time. It is here rather
+            // than first only because the passwords must be asked first
+            // whatever else is true.
+            || self.type_into_conversation(stroke)
     }
 
     /// Whether something the shell has drawn is waiting to be typed into, and
@@ -5835,6 +7179,7 @@ impl Shell {
             || self.search_wanted()
             || self.rename_wanted()
             || self.picker_field_wanted()
+            || self.composing()
     }
 
     /// Whether the panel on screen has a field on it that is being typed into.
@@ -5876,6 +7221,30 @@ impl Shell {
     /// Whether an application is on screen in front of this shell.
     fn app_running(&self) -> bool {
         self.app_label().is_some()
+    }
+
+    /// Whether there is an application in front of *one* display.
+    ///
+    /// [`Self::app_running`] asks it of the display holding control, which is
+    /// the only one that mattered while everything this shell draws over an
+    /// application was drawn there. The on-screen keyboard can be sent to
+    /// another screen — see [`Shell::keyboard_panel`] — and the question
+    /// follows it: whether the bar gives that screen up for the board depends
+    /// on whether there is anything on *it* to be in front of, and a screen
+    /// with nothing running that blanked its own bar for a board would be a
+    /// display showing a keyboard on nothing.
+    ///
+    /// Split the way [`Self::app_label`] is split, and for its reason: an older
+    /// compositor describes the session as a whole and has no per-display
+    /// answer to give, so every display gets the session's.
+    fn app_in_front_of(&self, index: usize) -> bool {
+        if self.foreground_is_per_display() {
+            return self
+                .panels
+                .get(index)
+                .is_some_and(|panel| panel.foreground.is_some());
+        }
+        self.app_running()
     }
 
     /// Whether *any* display in this session has an application open on it.
@@ -5947,7 +7316,7 @@ impl Shell {
     /// not arise — and the title is what its own card is captioned with, so
     /// this is the two of them agreeing rather than a second opinion.
     ///
-    /// Only these, which is why they are written down when they arrive rather
+    /// Only these, which is why they are written down as they are found rather
     /// than recognised by their class: see [`Self::steam_windows`]. Anything
     /// the shell is not certain about keeps the old order, so a browser is
     /// still closed by name and not by the tab it is showing.
@@ -5967,7 +7336,11 @@ impl Shell {
     /// again once the window it named is gone, so an id kept past its window
     /// is a claim waiting to be made about somebody else's.
     fn forget_closed_windows(&mut self) {
-        if self.steam_windows.is_empty() {
+        // Both maps, and either being non-empty is reason enough to walk: a
+        // session where nobody has ever played anything still asks every window
+        // it sees once, and those answers are what would otherwise be kept for
+        // the life of the session and inherited by whatever reuses an id.
+        if self.steam_windows.is_empty() && self.asked_which_game.is_empty() {
             return;
         }
         let open: HashSet<u32> = self
@@ -5976,6 +7349,93 @@ impl Shell {
             .flat_map(|panel| panel.windows.iter().map(|window| window.id))
             .collect();
         self.steam_windows.retain(|id, _| open.contains(id));
+        self.asked_which_game.retain(|id, _| open.contains(id));
+    }
+
+    /// Ask every window the shell has not asked yet which game it is, and
+    /// believe it.
+    ///
+    /// The one piece of evidence in the session that is not a guess. A window
+    /// carries the class its binary announces — `x86_64` for a whole shelf of
+    /// Proton titles — and nothing that says who started it, so the shell has
+    /// always had to work out which of the things it started a window turned
+    /// out to be from *when it appeared*: the window that was not there before
+    /// the loading screen went up is the game. That is right until two things
+    /// appear at once, and during a game launch two things routinely do.
+    ///
+    /// Steam runs a game it starts with the app id in its environment, so the
+    /// process behind the window can simply be asked. What it settles is both
+    /// directions: a window that says it is a game is one, whoever started it —
+    /// a game launched from Steam's own window is now nameable too, which
+    /// timing could never do — and a window that says it is a *different* game
+    /// is one this launch may not claim.
+    ///
+    /// Cheap by construction. Nothing here reads `/proc` twice for the same
+    /// window, and a session where nobody is playing anything asks each window
+    /// once in its life and never again.
+    fn note_which_games_the_windows_are(&mut self) {
+        let windows: Vec<(u32, Option<u32>, String)> = self
+            .panels
+            .iter()
+            .flat_map(|panel| panel.windows.iter())
+            .filter(|window| {
+                self.asked_which_game
+                    .get(&window.id)
+                    .is_none_or(|asked| asked.pid != window.pid || asked.app_id != window.app_id)
+            })
+            .map(|window| (window.id, window.pid, window.app_id.clone()))
+            .collect();
+        for (id, pid, app_id) in windows {
+            // The process first: it is Steam's own account of what it started,
+            // it is the same answer for a native game as for a Proton one, and
+            // it is there before the window has said a word about itself. The
+            // name second, for the window the first route cannot answer for.
+            let game = pid
+                .and_then(lxb_steam::process::game_of)
+                .or_else(|| game_a_window_is_named_after(&app_id));
+            self.asked_which_game
+                .insert(id, AskedWhichGame { pid, app_id, game });
+            let Some(game) = game else {
+                continue;
+            };
+            if self.steam_windows.insert(id, game) != Some(game) {
+                tracing::debug!(
+                    window = id,
+                    ?pid,
+                    app_id = game,
+                    "this window says which game it is"
+                );
+            }
+        }
+    }
+
+    /// What a window said about itself when it was asked, if it was asked and
+    /// said anything.
+    ///
+    /// Read rather than asked, so this stays free wherever it is called from:
+    /// the asking is [`Self::note_which_games_the_windows_are`], which runs
+    /// once for each window that turns up.
+    fn game_a_window_says_it_is(&self, id: u32) -> Option<u32> {
+        self.asked_which_game.get(&id).and_then(|asked| asked.game)
+    }
+
+    /// Whether a window that appeared while a game was loading may be recorded
+    /// as that game's. See [`may_be_the_game`], which is the decision; this is
+    /// the three questions the shell has to ask to make it.
+    fn window_may_be_the_game(&self, panel: usize, id: u32, app_id: u32) -> bool {
+        let Some(window) = self
+            .panels
+            .get(panel)
+            .and_then(|panel| panel.windows.iter().find(|window| window.id == id))
+        else {
+            return false;
+        };
+        may_be_the_game(
+            app_id,
+            self.game_a_window_says_it_is(id),
+            &window.app_id,
+            self.lattice.app_for_window(&window.app_id).is_some(),
+        )
     }
 
     /// Name of the display being driven, when naming it tells the user
@@ -6263,6 +7723,11 @@ impl Shell {
             Action::Keyboard => {
                 self.context_menu.close();
                 self.close_dialog();
+                // The board is drawn over the friends list and takes every
+                // direction from it, so the panel would be a column nothing
+                // could reach. See [`Shell::on_friends_action`], which is what
+                // the board displaces.
+                self.close_friends();
                 self.toggle_keyboard();
             }
             // Ahead of everything that could be on screen, and it closes none
@@ -6271,11 +7736,21 @@ impl Shell {
             // tidied the screen before photographing it would be a chord that
             // cannot photograph the screen.
             Action::Screenshot => self.screenshot_driven_display(),
+            // And ahead of everything for the same reason again, with the
+            // difference that this one is *only* ever about what is in front:
+            // it is the guide button's other chord, and what it asks for
+            // belongs to the game rather than to the shell. See
+            // [`Shell::show_steams_overlay`], which is also where it is refused.
+            Action::SteamOverlay => self.show_steams_overlay(),
             // And ahead of it for the same reason, with one thing more: these
             // are the only controls in the shell that are about the machine
             // rather than about anything on the screen. Whatever is up stays
             // up — a keyboard being typed on, a panel being read, a game being
             // played — and the volume moves underneath it.
+            // A message from whoever the friends panel is standing on, as
+            // though one had arrived. `--debug-actions message` only — see
+            // [`Action::PretendAMessage`] — and it reaches Steam not at all.
+            Action::PretendAMessage => self.pretend_a_message_arrived(),
             Action::VolumeUp => self.change_volume(1),
             Action::VolumeDown => self.change_volume(-1),
             Action::VolumeMute => self.mute_volume(),
@@ -6307,6 +7782,9 @@ impl Shell {
                 self.context_menu.close();
                 self.close_dialog();
                 self.cancel_transfer();
+                // And the friends list, which is pinned to the display it was
+                // raised on exactly as the context menu is.
+                self.close_friends();
                 // And the ticks, which belong to a column on the screen being
                 // handed away: a set gathered here and acted on from the next
                 // display would be a Delete whose subject the user cannot see.
@@ -6317,6 +7795,7 @@ impl Shell {
                 self.context_menu.close();
                 self.close_dialog();
                 self.cancel_transfer();
+                self.close_friends();
                 self.end_the_marking();
                 self.focus_screen(1);
             }
@@ -6345,10 +7824,36 @@ impl Shell {
             // is holding the very file being carried, and a direction that
             // reached it would move the selection the transfer is about.
             _ if self.carrying.is_some() => self.on_transfer_action(action),
+            // The friends list, and every direction while it is up. Ahead of
+            // the context menu's button, not behind it: the panel has the keys,
+            // and a menu raised about a row of the bar the user cannot see
+            // would be a menu about something else entirely.
+            // The list of statuses the friends panel raises about the account,
+            // which is in front of that panel exactly as the file question's
+            // menu is in front of its own. Ahead of the panel itself, or the
+            // column underneath would take the directions the menu was opened
+            // to be walked with.
+            _ if self.friends.is_open() && self.context_menu.is_open() => {
+                self.on_context_menu_action(action)
+            }
+            _ if self.friends.is_open() => self.on_friends_action(action),
             Action::Menu => self.toggle_context_menu(),
             _ if self.context_menu.is_open() => self.on_context_menu_action(action),
+            // And the button that raises it, behind the menu that is already
+            // up: a panel over a menu is two panels, and the menu is the one
+            // that was asked for first.
+            Action::Friends => self.toggle_friends(),
             _ if self.guide.is_menu() => self.on_menu_action(action),
             Action::Launch => {
+                // The one press a loading screen offers: Valve's client has
+                // stopped to compile the game's shaders and will start it now
+                // if it is told to. Ahead of everything below because there is
+                // nothing below to press — the bar is not on the screen — and
+                // it is the same button that starts a game everywhere else,
+                // doing the same thing.
+                if self.skip_the_shader_wait() {
+                    return;
+                }
                 // While a column is being marked, the press that opens things
                 // ticks them instead. Ahead of the read below, because a folder
                 // under the cursor is a row being ticked rather than a column
@@ -6455,6 +7960,17 @@ impl Shell {
                     if let settings::Setting::User(value) = setting {
                         self.carry_out_user(value);
                     }
+                    // And a Steam row, which is the shell's own to carry out
+                    // for a reason none of the four above share: what is on the
+                    // other end of it is *this process*. Turning the
+                    // integration off stops a worker, rebuilds the bar and asks
+                    // Valve's client to shut down; `settings` records which way
+                    // the switch was thrown and does none of that. It rebuilds
+                    // the settings column itself, so it is not in the list
+                    // below.
+                    if let settings::Setting::Steam(value) = setting {
+                        self.carry_out_steam(value);
+                    }
                     // The night light is the one page in this tree whose
                     // *shape* depends on what was just chosen: asking it to
                     // keep hours puts two rows on the page that were not there
@@ -6497,6 +8013,18 @@ impl Shell {
                     if matches!(setting, settings::Setting::StartupCategory(_)) {
                         self.rebuild_settings();
                     }
+                    // And the screen the on-screen keyboard comes up on, for
+                    // that reason twice over: the row this list was opened from
+                    // says which screen is chosen, and so does the page above
+                    // that one. Both would go on naming the screen somebody has
+                    // just stopped choosing.
+                    if matches!(
+                        setting,
+                        settings::Setting::KeyboardDisplay(_)
+                            | settings::Setting::KeyboardLayout(_)
+                    ) {
+                        self.rebuild_settings();
+                    }
                     // The accent needs nobody told; a display setting does,
                     // and straight away rather than on the next loop pass —
                     // the user has just pressed a button and is waiting to see
@@ -6507,6 +8035,15 @@ impl Shell {
                     // setting but is the compositor's all the same: the user
                     // has just asked for their video to move.
                     self.sync_picture_in_picture();
+                    // And the pointing devices, which are the compositor's for
+                    // the floating window's reason and want telling for the
+                    // same one: the user has just asked for their mouse to
+                    // move differently and has their hand on it.
+                    self.sync_pointer();
+                    // And the keyboard, for the same reason twice over: the
+                    // user has just asked for their keys to say something else,
+                    // and the shell's own board is redrawn from what comes back.
+                    self.sync_keyboard_layout();
                     self.answer_choice(ChosenFeedback::Kept, Screen::Start);
                     return;
                 }
@@ -6825,6 +8362,38 @@ impl Shell {
             self.needs_redraw = true;
             return;
         }
+        // The friends panel, which is three layers deep and comes off one at a
+        // time. Its own steps in this walk rather than arms of
+        // [`Shell::on_friends_action`], because Back never reaches that: it is
+        // answered near the top of [`Shell::handle_action`], with the guide and
+        // the volume keys, and comes straight here.
+        //
+        // 1. The field being typed into, and the board over it. The draft is
+        //    kept — nothing has been sent, so there is nothing to give up —
+        //    which is what separates this from a rename, where Back puts the
+        //    old name back.
+        // 2. The conversation, back to the list.
+        // 3. The panel, back to whatever raised it: the start screen, or the
+        //    guide, and not out of both.
+        if self.friends.is_open() {
+            if self.stop_composing() {
+                self.stepped_back();
+                return;
+            }
+            if self.stop_talking() {
+                return;
+            }
+            self.close_friends();
+            return;
+        }
+        // A loading screen waiting on Valve's client — coming up, or fetching
+        // the game before it will start it — which are the two waits in the
+        // shell long enough to be worth leaving. What is left is the game
+        // itself starting, which may not be given up on: a game that is
+        // starting is starting, and it is a minute at the outside.
+        if self.stop_waiting_for_a_download() {
+            return;
+        }
         // A name being changed goes back to what it was, board and all. Ahead
         // of the plain "put the board away" below, because those are not the
         // same act: a search field keeps what was typed and this must not —
@@ -6952,6 +8521,11 @@ impl Shell {
         self.close_dialog();
         self.cancel_transfer();
         self.cancel_the_file_question();
+        // And the friends list, which is pinned to one screen: the guide is
+        // about to change the whole of what is under it, and a column of names
+        // left standing over a screen that has become something else is a panel
+        // about nowhere.
+        self.close_friends();
         bar_on_top
     }
 
@@ -7161,7 +8735,14 @@ impl Shell {
             // A game the account owns and this machine has not got is a press
             // that means "get it": the one row on the bar whose press is
             // answered by offering rather than by starting.
-            Some((_, Some(game), ..)) if !game.installed => return self.offer_to_install(&game),
+            //
+            // **Except a copy that is here and broken**, which is a press
+            // Valve's client answers by repairing it and then starting it —
+            // see [`apps::Game::the_client_can_put_it_right`]. That one used
+            // to come here and be sent to Steam's own window.
+            Some((_, Some(game), ..)) if !game.installed && !game.the_client_can_put_it_right() => {
+                return self.offer_to_install(&game)
+            }
             _ => {}
         }
         // It is come back to, never started a second time. A console has one of
@@ -7251,12 +8832,12 @@ impl Shell {
                 // press that started nothing must not be answered as though it
                 // had.
                 self.sounds.launch();
-                match opening {
-                    Some((name, icon)) => {
+                match opening.zip(self.display_at(self.focused_panel)) {
+                    Some(((name, icon), here)) => {
                         let splash = launch::Launch::new(
                             name,
                             icon,
-                            self.focused_panel,
+                            here,
                             from,
                             Some(pid),
                             Instant::now(),
@@ -7301,6 +8882,67 @@ impl Shell {
         // With no loading screen there is nothing to wait for and nothing to
         // stand on, so the press is answered the moment it is forked.
         if the_press_hands_the_display_over(self.lattice.running_app().is_some(), loading_screen) {
+            self.guide.close();
+        }
+    }
+
+    /// Start the application the shelf under the cursor is for.
+    ///
+    /// The tail of [`Shell::launch_the_selection`], for a press that is not
+    /// about the selection: what is under the cursor is a shelf, and what is
+    /// being started is a program that opens the whole of it. Everything after
+    /// the fork is identical — the sound, the loading screen, which display it
+    /// stands on, when the start screen gives the display up — because a launch
+    /// off a menu is a launch on exactly the terms every other one is.
+    fn open_the_shelf_app(&mut self) {
+        let Some(kind) = self.selected_shelf() else {
+            return;
+        };
+        // Which application, before anything else: the shelf under the cursor
+        // says which, and starting whichever one this used to name would open
+        // the photo viewer on a shelf of films.
+        let Some(wanted) = apps::app_for_shelf(kind) else {
+            return;
+        };
+        let Some((name, icon)) = self
+            .shelf_app(kind)
+            .map(|app| (app.name.clone(), app.icon.clone()))
+        else {
+            return;
+        };
+        // Where it is being launched from, before it is started, so the answer
+        // cannot be overtaken by the window itself.
+        self.sync_launch_output(self.focused_panel);
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        let from = ui::launch_origin(panel.width as f32, panel.height as f32);
+        let known: Vec<u32> = panel.windows.iter().map(|window| window.id).collect();
+        let foreground = panel.foreground.clone().unwrap_or_default();
+
+        let Some(pid) = self.lattice.launch_aside(wanted) else {
+            // Nothing was forked; the launcher has already said why.
+            return;
+        };
+        self.needs_redraw = true;
+        self.sounds.launch();
+        let Some(here) = self.display_at(self.focused_panel) else {
+            return;
+        };
+        let splash = launch::Launch::new(
+            name,
+            icon,
+            here,
+            from,
+            Some(pid),
+            Instant::now(),
+            launch::Before {
+                windows: &known,
+                foreground: &foreground,
+            },
+        );
+        self.begin_launch(splash);
+        if the_press_hands_the_display_over(self.lattice.running_app().is_some(), true) {
             self.guide.close();
         }
     }
@@ -7351,8 +8993,669 @@ impl Shell {
 
     /// Put a loading screen on the display it was started from; the rule is
     /// [`begin_launch`].
+    ///
+    /// The compositor is told on the same frame rather than on the next pass
+    /// of the loop, for the reason a press names its display before it forks:
+    /// an answer sent a frame late is an answer a window can overtake.
     fn begin_launch(&mut self, splash: launch::Launch) {
         begin_launch(&mut self.launching, splash);
+        self.place_the_launches();
+    }
+
+    // --- the friends list --------------------------------------------------
+
+    /// Raise the friends list, or put away the one that is already up.
+    ///
+    /// The one button that does both, on a pad and on a keyboard, for the
+    /// reason the picture-in-picture press does: a control that only worked in
+    /// one direction would be a mode with no way back out of it.
+    fn toggle_friends(&mut self) {
+        if self.friends.is_open() {
+            self.close_friends();
+        } else {
+            self.open_friends();
+        }
+    }
+
+    /// Bring it in from the right, and give it the directions.
+    ///
+    /// The panel is told how many rows this display holds before anything else,
+    /// because the scroll is measured in them: a panel that took a direction
+    /// before it had been told would keep the row it moved to on screen by a
+    /// rule that says every row fits.
+    fn open_friends(&mut self) {
+        if let Some((_, height)) = self.focused_size() {
+            self.friends.fits(ui::friends_rows_that_fit(height));
+        }
+        // Against the list as it is *now*, before the panel snaps to it: people
+        // have signed in and out since it was last up, and a window left parked
+        // past the end of a shorter list is a body with nothing drawn in it.
+        self.friends.settle(self.steam.roster());
+        // A conversation left open is come back to, and it is come back to
+        // *read*: the unread count it collected while the panel was away is
+        // what the bell has already said, and a badge on a conversation the
+        // user is looking at would be a count of what is on their screen.
+        if let Some(with) = self.friends.talking_to() {
+            self.steam.read_the_conversation(with);
+        }
+        if self.friends.open() {
+            // The same voice the guide's own screens answer a press in. It is a
+            // screen arriving rather than a row being taken, which is what
+            // separates this from `select`.
+            self.sounds.guide_open();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// And send it back out. The panel keeps drawing itself the whole way.
+    fn close_friends(&mut self) {
+        // The list of statuses goes with it. It is a menu about a control on
+        // this panel, and a menu left standing over a column that has gone
+        // would be hanging off nothing — anchored where the head used to be,
+        // and about an account the user can no longer see.
+        if self.status_menu_is_open() {
+            self.context_menu.close();
+        }
+        // And the board over the compose field, which is the one thing on this
+        // panel drawn *outside* it. A keyboard left standing over a panel that
+        // has gone would be a keyboard typing into nothing.
+        //
+        // The conversation itself stays, and so does what was typed into it:
+        // the panel is coming back to where it was left, which is what every
+        // column in this shell does. See [`friends::Friends::open`].
+        self.stop_composing();
+        if self.friends.close() {
+            self.sounds.back();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Whether the head of the friends panel carries a status button.
+    ///
+    /// An account, and Steam switched on, and a persona Steam has answered
+    /// about — and deliberately nothing about whether there is a list. The
+    /// panel that says *you are offline* is the one panel where this button is
+    /// the only control on the screen that does anything, because it is the
+    /// only way back to a list.
+    fn friends_head_is_a_button(&self) -> bool {
+        settings::steam_integration()
+            && self.steam.account().is_some()
+            && self.steam.roster().me.is_some()
+    }
+
+    /// Whether what is on screen is the list of statuses this panel raised.
+    ///
+    /// Asked of the rows rather than kept as a flag, the way every other menu
+    /// in this shell is identified: a flag would be a second answer to a
+    /// question the panel can already be asked, and one that could be left
+    /// behind by any path that closes a menu without going through here.
+    fn status_menu_is_open(&self) -> bool {
+        self.context_menu.is_open()
+            && self
+                .context_menu
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry.command, menu::Command::SteamStatus(_)))
+    }
+
+    /// Drive it: the two directions that mean anything, and the two ways out.
+    ///
+    /// Everything else is swallowed rather than let through, which is what
+    /// "takes focus" means here — a press that walked the bar behind the panel
+    /// would be a column moving under a list the user is reading. Accept is
+    /// swallowed on the rows and deliberately: they do nothing yet, and a press
+    /// that fell through to the bar would launch whatever the cursor happened
+    /// to be standing on behind the panel. The one thing it is not swallowed on
+    /// is the head's status, which is a button that does something.
+    fn on_friends_action(&mut self, action: Action) {
+        // A conversation is a second face of this panel with a walk of its own,
+        // and while one is open it answers everything: a direction that fell
+        // through to the list would move a selection nobody can see.
+        if self.friends.talking_to().is_some() {
+            self.on_conversation_action(action);
+            return;
+        }
+        match action {
+            Action::Up | Action::Down => {
+                let delta = if matches!(action, Action::Up) { -1 } else { 1 };
+                let head = self.friends_head_is_a_button();
+                if self
+                    .friends
+                    .move_selection(delta, self.steam.roster(), head)
+                {
+                    self.guide_stepped();
+                }
+            }
+            Action::Launch if self.friends.on_status(self.friends_head_is_a_button()) => {
+                self.offer_a_status()
+            }
+            // A friend, which opens their conversation. By SteamID: the row is
+            // only how it was pointed at, and the list it indexes is replaced
+            // whenever anybody in it moves.
+            Action::Launch => {
+                let selected = self.friends.selected(self.steam.roster().friends.len());
+                let Some(steam_id) = self
+                    .steam
+                    .roster()
+                    .friends
+                    .get(selected)
+                    .map(|friend| friend.steam_id)
+                else {
+                    return;
+                };
+                self.talk_to(steam_id);
+            }
+            // The button that raised it, which also puts it away. Back is not
+            // here: it is answered before this is ever reached, in
+            // [`Shell::on_back`], which is the one place the shell's layers are
+            // walked from the top down.
+            Action::Friends => self.close_friends(),
+            _ => {}
+        }
+    }
+
+    /// Drive an open conversation.
+    ///
+    /// Everything is swallowed rather than let through, on the terms the list
+    /// is: this panel has the buttons while it is up. The one exception is the
+    /// button that raised the panel, which still puts the whole thing away —
+    /// somebody who pressed Friends to get out of a conversation meant out of
+    /// the panel, not back to the list, and Back is what means that.
+    fn on_conversation_action(&mut self, action: Action) {
+        match action {
+            Action::Up | Action::Down => {
+                let delta = if matches!(action, Action::Up) { -1 } else { 1 };
+                let with = self.friends.talking_to();
+                let conversation = with.and_then(|with| self.steam.conversations().with(with));
+                if self.friends.move_in_conversation(delta, conversation) {
+                    self.guide_stepped();
+                }
+            }
+            Action::Launch => self.take_what_is_lit_in_the_conversation(),
+            // Options on a message that would not go: the way to stop trying.
+            Action::Menu => self.give_up_on_the_message(),
+            Action::Friends => self.close_friends(),
+            _ => {}
+        }
+    }
+
+    /// Put up the statuses the account can be in, out of the head's own button.
+    ///
+    /// The menu grows out of the button it was pressed on, like every other
+    /// menu in this shell, which on a panel down the right-hand edge puts it
+    /// out to the *left* — see [`ui::context_menu_rect`], which flips it there
+    /// because it would otherwise run off the screen.
+    fn offer_a_status(&mut self) {
+        let Some((width, height)) = self.focused_size() else {
+            return;
+        };
+        let Some(now) = self.steam.roster().me.as_ref().map(|me| me.presence) else {
+            return;
+        };
+        let [x, y, w, h] = ui::friends_status_rect(width, height);
+        let anchor = [
+            x + ui::friends_slide_x(ui::ease(self.friends.at()), width),
+            y,
+            w,
+            h,
+        ];
+        let entries = status_rows(now);
+        if self.context_menu.open_at(
+            anchor,
+            Some(menu::Title::new("Status")),
+            entries,
+            ui::context_menu_rows_that_fit(height),
+        ) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Tell Steam the account is in `status`, because somebody chose it here.
+    ///
+    /// Nothing is written on the panel from this side. What the head says is
+    /// what Steam says about the account — see [`lxb_steam::Ask::SetStatus`],
+    /// which puts the chosen status into the roster the moment it is sent and
+    /// lets Steam's own answer replace it a round trip later.
+    fn choose_a_status(&mut self, status: lxb_steam::Presence) {
+        tracing::info!(status = status.said(), "the friends panel chose a status");
+        self.steam.set_status(status);
+    }
+
+    /// What to write across the panel instead of a list, or `None` when there
+    /// is a list to write.
+    ///
+    /// The three states that are not "here are your friends", and all three are
+    /// said rather than left blank. A button that raised an empty panel would
+    /// be indistinguishable from one that raised nothing, and the whole of what
+    /// somebody needs to know in each case is one sentence long.
+    ///
+    /// The third is the one the user can undo, and it is why the head's status
+    /// button does not go away with the list — see
+    /// [`Shell::friends_head_is_a_button`]. Offline on Steam is a place
+    /// somebody chose to stand and there is no list while they stand there;
+    /// the sentence says which button brings it back, because the button is
+    /// above the sentence and unlabelled.
+    ///
+    /// An account that is signed in and whose roster has not arrived yet is
+    /// deliberately *not* one of these: that is a list that is on its way, and
+    /// the panel says so where an empty list is drawn.
+    fn why_there_are_no_friends(&self) -> Option<&'static str> {
+        if !settings::steam_integration() {
+            return Some("Steam is switched off in Settings > Games > Steam.");
+        }
+        if self.steam.account().is_none() {
+            return Some("Sign in to Steam to see who is online.");
+        }
+        if self.is_offline_on_steam() {
+            return Some("You are offline on Steam. Choose a status above to come back.");
+        }
+        None
+    }
+
+    /// Whether Steam has this account standing offline.
+    ///
+    /// Read off the roster rather than off what was last chosen, because it is
+    /// a fact about the account rather than about this session's intent: a
+    /// status set in Valve's own client is as offline as one set here, and the
+    /// panel has to say so either way.
+    fn is_offline_on_steam(&self) -> bool {
+        self.steam
+            .roster()
+            .me
+            .as_ref()
+            .is_some_and(|me| !me.presence.is_around())
+    }
+
+    // --- a conversation ----------------------------------------------------
+
+    /// The friends panel as a hit test has to see it: where it has got to, what
+    /// is in it, and which of its two faces is showing.
+    ///
+    /// One place, because the pointer asks this in three — a move, a press and
+    /// a drag — and three copies of it would be three chances for a click to
+    /// land somewhere the drawing is not.
+    fn friends_panel(&self) -> ui::FriendsPanel<'_> {
+        ui::FriendsPanel {
+            friends: &self.friends,
+            roster: self.steam.roster(),
+            head: self.friends_head_is_a_button(),
+            open: ui::ease(self.friends.at()),
+            conversation: self
+                .friends
+                .talking_to()
+                .and_then(|with| self.steam.conversations().with(with)),
+            compose_lines: self.friends.compose_lines(),
+        }
+    }
+
+    /// Open somebody's conversation, by SteamID.
+    ///
+    /// The id rather than the row, and that is the whole of the rule: a row is
+    /// a place in a list Steam replaces whenever anybody moves, and a
+    /// conversation opened by position would be a conversation with whoever
+    /// happened to be standing there when the press landed.
+    fn talk_to(&mut self, steam_id: u64) {
+        if self.friends.talk_to(steam_id) {
+            // Marks it read and fetches the history if it has not been fetched.
+            self.steam.open_conversation(steam_id);
+            self.sounds.guide_open();
+        } else {
+            // Already open: the press still marks it read, which is what makes
+            // a second press on a row with an unread count clear it.
+            self.steam.read_the_conversation(steam_id);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Leave a conversation and go back to the list. Answers whether there was
+    /// one.
+    fn stop_talking(&mut self) -> bool {
+        if !self.friends.stop_talking() {
+            return false;
+        }
+        self.close_the_board();
+        self.stepped_back();
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Whether the compose field is being typed into, which is what takes the
+    /// keyboard.
+    fn composing(&self) -> bool {
+        self.friends.is_open() && self.friends.composing()
+    }
+
+    /// Begin typing into the compose field, and put the board up.
+    fn begin_composing(&mut self) {
+        if self.friends.compose(true) {
+            self.needs_redraw = true;
+        }
+        self.osk.open_here();
+    }
+
+    /// Stop typing into it, and take the board away. The draft is kept: leaving
+    /// the field is not giving up on what was written in it.
+    fn stop_composing(&mut self) -> bool {
+        if !self.friends.compose(false) {
+            return false;
+        }
+        self.close_the_board();
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Apply one keystroke to the message being written.
+    fn type_into_conversation(&mut self, stroke: keyboard::Stroke) -> bool {
+        if !self.composing() {
+            return false;
+        }
+        let Some(with) = self.friends.talking_to() else {
+            return false;
+        };
+        match stroke {
+            keyboard::Stroke::Char(character) => {
+                if self.friends.type_into_draft(character) {
+                    // And tell them somebody is writing to them, at most as
+                    // often as Steam's own client does. Throttled inside the
+                    // conversation store, so this is called on every keystroke
+                    // and swallowed on nearly all of them.
+                    self.steam.typing_at(with);
+                    self.needs_redraw = true;
+                }
+            }
+            keyboard::Stroke::BACKSPACE => {
+                if self.friends.rub_out() {
+                    self.needs_redraw = true;
+                }
+            }
+            keyboard::Stroke::ENTER => self.say_it(),
+            // The one thing that puts the field down without sending. The draft
+            // is kept, which is what separates this from the file panel's
+            // rename: nothing has been sent, so nothing is being given up.
+            keyboard::Stroke::ESCAPE => {
+                self.stop_composing();
+            }
+            // Tab, the function keys, the arrows. A field has no use for any of
+            // them, and letting one past to the panel underneath would move the
+            // light off the field being typed into.
+            _ => return true,
+        }
+        true
+    }
+
+    /// Send what has been written, or say why it cannot go.
+    ///
+    /// The draft is *taken* and put back where the send is refused, so a
+    /// message Steam would not accept is still in the field to be tried again
+    /// or edited — losing somebody's sentence because the wifi dropped is the
+    /// one thing a compose field must never do.
+    fn say_it(&mut self) {
+        let Some(with) = self.friends.talking_to() else {
+            return;
+        };
+        let draft = self.friends.take_the_draft();
+        match self.steam.send_message(with, &draft) {
+            Ok(()) => {
+                // The column goes to the end, because what was just written is
+                // at the end of it.
+                self.friends.show_the_latest();
+                self.sounds.select();
+            }
+            Err(lxb_steam::chat::Refused::Empty) => {
+                // Nothing was typed. Not a failure and nothing to say about it:
+                // the field is empty and the user can see that it is.
+                self.friends.put_the_draft_back(draft);
+            }
+            Err(refused) => {
+                tracing::info!(
+                    with = lxb_steam::chat::short(with),
+                    why = refused.said(),
+                    "a message was not sent"
+                );
+                self.friends.put_the_draft_back(draft);
+                self.sounds.back();
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// What pressing the thing the light is on does, inside a conversation.
+    fn take_what_is_lit_in_the_conversation(&mut self) {
+        let Some(with) = self.friends.talking_to() else {
+            return;
+        };
+        match self.friends.talking() {
+            crate::friends::Talking::Compose => self.begin_composing(),
+            crate::friends::Talking::Again => {
+                self.steam.read_the_history_again(with);
+                self.sounds.select();
+                self.needs_redraw = true;
+            }
+            crate::friends::Talking::Message(mark) => {
+                // Only a message that did not go answers a press, and the
+                // answer is to send it again. Everything else in the column is
+                // something that has already happened.
+                let lxb_steam::chat::Mark::Pending(request) = mark else {
+                    return;
+                };
+                if self.steam.send_it_again(with, request) {
+                    self.sounds.select();
+                    self.needs_redraw = true;
+                }
+            }
+        }
+    }
+
+    /// Give up on a message that would not go, and take it off the column.
+    ///
+    /// The Options button, because it is the destructive half of the pair and
+    /// this shell's rule is that Options is where a row's other acts live.
+    fn give_up_on_the_message(&mut self) {
+        let Some(with) = self.friends.talking_to() else {
+            return;
+        };
+        let crate::friends::Talking::Message(lxb_steam::chat::Mark::Pending(request)) =
+            self.friends.talking()
+        else {
+            return;
+        };
+        if self.steam.forget_the_message(with, request) {
+            self.sounds.back();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Measure the open conversation, so the layout knows how tall each message
+    /// is.
+    ///
+    /// The one thing about this panel the arithmetic cannot work out for
+    /// itself: how many lines a sentence wraps to depends on how wide its words
+    /// are. Measured when the column changes rather than every frame — see
+    /// [`crate::friends::Friends::wants_measuring`], which is what decides — so
+    /// a conversation standing still costs nothing.
+    fn measure_the_conversation(&mut self, width: f32, height: f32) {
+        let Some(with) = self.friends.talking_to() else {
+            return;
+        };
+        let conversation = self.steam.conversations().with(with);
+        let marks = friends::Friends::marks_of(conversation);
+        let draft_wanted = self.friends.wants_the_draft_measured(height);
+        let column_wanted = self.friends.wants_measuring(with, &marks, height);
+        if !draft_wanted && !column_wanted {
+            return;
+        }
+        let message_width = ui::friends_message_text_width(width, height);
+        let message_size = ui::friends_message_size(height);
+        let compose_width = ui::friends_compose_text_width(width, height);
+        let compose_size = ui::friends_compose_size(height);
+        let draft = self.friends.draft().to_string();
+        let bodies: Vec<(lxb_steam::chat::Mark, String, bool, bool)> = conversation
+            .map(|it| {
+                it.lines()
+                    .iter()
+                    .map(|line| {
+                        (
+                            line.mark(),
+                            line.body().to_string(),
+                            line.from_me(),
+                            line.failure().is_some(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        if draft_wanted {
+            let lines = gpu.lines_needed(
+                &draft,
+                compose_size,
+                false,
+                compose_width,
+                ui::FRIENDS_COMPOSE_LINES as usize,
+            ) as u8;
+            self.friends.the_draft_takes(lines, height);
+        }
+        if !column_wanted {
+            return;
+        }
+        let laid_out: Vec<crate::friends::Laid> = bodies
+            .iter()
+            .map(|(mark, body, from_me, failed)| crate::friends::Laid {
+                mark: *mark,
+                // No cap worth the name: a message is the thing the panel was
+                // opened to read, and the only thing entitled to cut it short
+                // is the length of the conversation itself.
+                lines: gpu.lines_needed(
+                    body,
+                    message_size,
+                    false,
+                    message_width,
+                    ui::FRIENDS_MESSAGE_LINES,
+                ) as u8,
+                // And how wide those lines really come out, which is what the
+                // bubble is drawn around. See [`crate::friends::Laid::width`].
+                width: gpu.width_needed(body, message_size, false, message_width),
+                from_me: *from_me,
+                failed: *failed,
+            })
+            .collect();
+        let (line_height, padding) = ui::friends_message_metrics(height);
+        self.friends
+            .measured(with, marks, laid_out, line_height, padding, height);
+    }
+
+    /// Tell the panel how tall its message column is and how much of it shows,
+    /// which is what its scroll moves over.
+    fn settle_the_conversation(&mut self, width: f32, height: f32) {
+        let _ = width;
+        if self.friends.talking_to().is_none() {
+            return;
+        }
+        let column = ui::friends_chat_column_height(self.friends.laid_out(), height);
+        let [_, _, _, body_h] =
+            ui::friends_chat_body_rect(0.0, height, self.friends.compose_lines());
+        self.friends.the_column_is(column, body_h);
+    }
+
+    /// Announce a message from whoever is selected on the friends panel, as
+    /// though one had arrived.
+    ///
+    /// The development aid the corner needed: everything else about a
+    /// conversation can be produced from the fixture, and this one thing needs
+    /// another person. It calls [`Self::announce_a_message`] — the same
+    /// function a real arrival calls, with a real friend's name and a real
+    /// friend's face — and nothing else. Nothing is sent, nothing is added to
+    /// any conversation, and no unread count moves.
+    fn pretend_a_message_arrived(&mut self) {
+        let selected = self.friends.selected(self.steam.roster().friends.len());
+        let Some(from) = self.friends.talking_to().or_else(|| {
+            self.steam
+                .roster()
+                .friends
+                .get(selected)
+                .map(|friend| friend.steam_id)
+        }) else {
+            tracing::warn!("--debug-actions message: there is nobody to pretend wrote one");
+            return;
+        };
+        tracing::warn!(
+            with = lxb_steam::chat::short(from),
+            "--debug-actions message: this announcement is invented and nobody sent it"
+        );
+        self.announce_a_message(
+            from,
+            "this message is invented and nobody sent it — it is here so the corner              has something to draw"
+                .to_string(),
+            Instant::now(),
+        );
+    }
+
+    /// Say that a message arrived for a conversation nobody is looking at.
+    ///
+    /// **The body is shown, unless every screen is resting.** That is the
+    /// user's own decision, and the exception is the whole of what makes it
+    /// safe: a display the compositor has taken to black under the OLED rule is
+    /// a display nobody at this machine is watching, and a message printed
+    /// across one is a message printed for whoever walks past. Where it is
+    /// withheld it is withheld for good — the announcement is *kept*, behind
+    /// the bell, and a body dropped here never reaches that list. The
+    /// conversation itself still has every word of it.
+    ///
+    /// **Resting, and nothing else.** It asked `is_rested() || !drawing` at
+    /// first, which is wrong and made the feature look broken: `drawing` is
+    /// whether an *application* on that display is still painting, and it is
+    /// false for a display showing the start screen — so every message that
+    /// arrived while somebody was looking at the bar said only that it had
+    /// arrived.
+    ///
+    /// The picture is the sender's own face, where this machine has it. Named
+    /// by the path it is cached at, which is the same route a finished download
+    /// names a game's `.ico` by — and read off the disk rather than out of the
+    /// atlas, because an announcement is built once and carries whatever
+    /// existed at that moment. See [`avatars::Avatars::on_disk`]. A face this
+    /// machine has never fetched falls back to the figure that stands for
+    /// somebody with no picture, and is asked for so the next one has it.
+    ///
+    /// Nothing is announced for a conversation that is open on screen: the
+    /// message is already being read.
+    fn announce_a_message(&mut self, from: u64, body: String, now: Instant) {
+        if self.friends.is_open() && self.friends.talking_to() == Some(from) {
+            return;
+        }
+        let them = self
+            .steam
+            .roster()
+            .friends
+            .iter()
+            .find(|friend| friend.steam_id == from);
+        let name = them
+            .map(|friend| friend.name.clone())
+            .unwrap_or_else(|| "A friend".to_string());
+        let face = them.and_then(|friend| friend.avatar.clone());
+        let asleep =
+            !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
+        let body = what_a_message_may_say(body, asleep);
+        let picture = face
+            .as_deref()
+            .and_then(|hash| {
+                self.avatars
+                    .on_disk(hash, lxb_steam::AvatarSize::Medium)
+                    .map(|path| path.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| icons::SETTING_PERSON.to_string());
+        // And fetched if it was not there, for the next one. Nothing waits on
+        // it: this announcement has already been given the figure.
+        if let Some(hash) = face.as_deref() {
+            self.avatars.want(hash, lxb_steam::AvatarSize::Medium);
+        }
+        if self.notifications.announce(&name, &body, &picture) {
+            // Once per announcement, exactly as a pairing and an arrival off
+            // the bus are — and through the same chime, which do-not-disturb
+            // switches off like every other.
+            self.sounds.notified();
+        }
     }
 
     // --- the context menu --------------------------------------------------
@@ -7397,6 +9700,11 @@ impl Shell {
         // How many rows this display has room for goes in with the entries: the
         // menu keeps it because where a long list is scrolled to is state, and
         // everything else about its size is worked out afresh every frame.
+        // Whatever this panel is about, it is not a compatibility list that
+        // has not arrived: an answer that lands after the panel it was asked
+        // from has gone must not write itself over this one. See
+        // [`Shell::steam_said_what_runs_it`].
+        self.compat_menu = None;
         let rows = ui::context_menu_rows_that_fit(height);
         if self
             .context_menu
@@ -7498,7 +9806,72 @@ impl Shell {
         if self.selected_console().is_some() {
             return self.console_entry_menu();
         }
+        // A shelf of the user's own files is the eighth, and the only row here
+        // whose menu is about neither a file nor an installation: it stands for
+        // a *kind* of thing the user has, and what is worth offering over it is
+        // the program that shows that kind properly. See
+        // [`Shell::shelf_entry_menu`].
+        if self.selected_shelf().is_some() {
+            return self.shelf_entry_menu();
+        }
         self.application_entry_menu()
+    }
+
+    /// Which shelf the cursor is standing on, if it is standing on one.
+    ///
+    /// The row, not the column: this is the folder on the bar that leads to the
+    /// user's photographs, rather than a photograph in it.
+    fn selected_shelf(&self) -> Option<media::Kind> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)
+            .and_then(apps::shelf_of)
+    }
+
+    /// The menu over a shelf of the user's own files.
+    ///
+    /// One row, and it is there only where the machine has something to put on
+    /// it: the application that shows this kind of file, which the bar carries
+    /// no tile for. A shelf whose kind nothing installed answers for gets no
+    /// menu at all rather than a menu with one dead row — the shell's rule
+    /// everywhere else is that a panel offering nothing is worse than no panel.
+    ///
+    /// Nothing else belongs on it. Sort is about a *listing*, and this row is
+    /// not one — it is the way into one, and the listing has its own menu with
+    /// its own Sort on it. What can be done to a file is about a file. So the
+    /// list is the way in, and the way out.
+    fn shelf_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let kind = self.selected_shelf()?;
+        let app = self.shelf_app(kind)?;
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((
+            anchor,
+            Some(apps::shelf_title(kind).to_string()),
+            vec![
+                menu::Entry::new(menu::Command::OpenTheShelfApp, app.name.clone())
+                    .glyph(icons::LAUNCH),
+                menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+            ],
+        ))
+    }
+
+    /// The application set aside for one kind of the user's files.
+    ///
+    /// The table is [`apps::app_for_shelf`], and it lives there rather than
+    /// here because it is the other half of [`apps::ASIDE`]: an application is
+    /// taken off the bar *because* it is reached from a shelf, and the two
+    /// going out of step is an application that is installed and unreachable.
+    ///
+    /// `None` where nothing installed answers for that kind, which is the
+    /// ordinary state of Music and of a machine with neither package.
+    fn shelf_app(&self, kind: media::Kind) -> Option<&apps::App> {
+        let wanted = apps::app_for_shelf(kind)?;
+        self.lattice
+            .aside
+            .iter()
+            .find(|app| app.owns_window(wanted))
     }
 
     /// The menu for an installed application: the disc it stands on, the name
@@ -7830,7 +10203,7 @@ impl Shell {
         let Some(mime) = self.selected_mime() else {
             return Vec::new();
         };
-        self.open_with = media::handlers(mime, &self.lattice.categories)
+        self.open_with = media::handlers(mime, &self.lattice.categories, &self.lattice.aside)
             .into_iter()
             .filter_map(|app| media::handler_row(mime, app))
             .collect();
@@ -7861,10 +10234,11 @@ impl Shell {
         let Some(mime) = self.selected_mime() else {
             return Vec::new();
         };
-        self.open_with_others = media::every_application(&self.lattice.categories)
-            .into_iter()
-            .filter_map(|app| media::handler_row(mime, app))
-            .collect();
+        self.open_with_others =
+            media::every_application(&self.lattice.categories, &self.lattice.aside)
+                .into_iter()
+                .filter_map(|app| media::handler_row(mime, app))
+                .collect();
         // Off, every time. See the field.
         self.open_with_keeps = false;
         open_with_other_rows(&self.open_with_others, self.open_with_keeps)
@@ -8146,6 +10520,7 @@ impl Shell {
             // the column, carrying what has just been typed.
             apps::Searched::Folder => self.search_here(query),
             apps::Searched::Library => self.search_library(query),
+            apps::Searched::Layouts => self.search_layouts(query),
         }
     }
 
@@ -8167,6 +10542,24 @@ impl Shell {
         }
         self.shelve_games(self.steam.rows());
         self.needs_redraw = true;
+    }
+
+    /// Narrow the keyboard layouts to what is being typed, on this frame.
+    ///
+    /// It can afford that for the reason the library can: the arrangements are
+    /// six hundred strings the shell read off the disk when it started, so a
+    /// letter costs a `contains` per arrangement and a column rebuilt out of
+    /// what is left.
+    ///
+    /// The column is rebuilt through the settings tree's own door, because that
+    /// is where these rows come from — the field is a row of the Settings
+    /// column and not of a shelf, and what it narrows is three columns of that
+    /// tree at once. See [`settings::layout_query`].
+    fn search_layouts(&mut self, query: &str) {
+        if !settings::set_layout_query(query) {
+            return;
+        }
+        self.rebuild_settings();
     }
 
     /// Put this display's cursor on the first thing the search found.
@@ -10612,6 +13005,9 @@ impl Shell {
         // machine is playing, and whatever the machine can be asked about its
         // playing. That is what makes the tile beside the stick pointer one
         // that is never dimmed.
+        // Not a compatibility list either — see the note in
+        // [`Shell::toggle_context_menu`].
+        self.compat_menu = None;
         if self
             .context_menu
             .open_at(anchor, None, entries, ui::mixer_rows_that_fit(height))
@@ -10724,10 +13120,24 @@ impl Shell {
         if standing != !self.notifications.toasts().is_empty() {
             self.sync_surface_state();
         }
+        // Whatever picture the announcements on hand asked for, and how much
+        // room what they say needs. The two things the drawing cannot work out
+        // for itself.
+        //
+        // **Every pass, not only when the bus said something.** They were
+        // behind `arrived.changed`, which is what the *bus* delivered — and the
+        // shell announces on its own account too, a finished download and a
+        // paired device and now a friend's message. None of those set that
+        // flag, so none of them ever had their picture loaded or their words
+        // measured: a message from somebody with a face wore the bell, and a
+        // sentence that needed two lines was cut to one.
+        //
+        // It costs a slot lookup and a map lookup per announcement, of which
+        // there are a handful, and both do nothing at all for one they have
+        // already seen.
+        self.load_notification_icons();
+        self.measure_notification_bodies();
         if arrived.changed {
-            // Whatever picture the new ones asked for, before anything tries
-            // to draw them.
-            self.load_notification_icons();
             // The open panel is a list of the very things that have just
             // changed, so it is brought up to date rather than left showing
             // what was true when it opened — the same bargain the mixer
@@ -10736,6 +13146,65 @@ impl Shell {
         }
         if arrived.changed || moving {
             self.needs_redraw = true;
+        }
+    }
+
+    /// How many lines each announcement's body wraps to in a bubble.
+    ///
+    /// Measured here rather than in the drawing for the reason every other
+    /// measurement in this shell is: how wide a word is is the renderer's to
+    /// answer, `ui` is arithmetic on rectangles, and a body does not change
+    /// between frames. Once per announcement that arrived, not once a frame.
+    ///
+    /// Keyed by the announcement's own id, and pruned to what is on hand, so a
+    /// session that has seen a thousand of them holds a thousand entries only
+    /// if a thousand are still there to be drawn.
+    fn measure_notification_bodies(&mut self) {
+        // Nothing to do is the answer on nearly every frame, and it is answered
+        // before anything is copied: this runs once a pass now, and a pass that
+        // cloned every announcement's body to discover it already knew them all
+        // would be a string allocation per notification per frame.
+        // Every one that has anything to say is measured, and nothing measured
+        // has since gone. Both halves, because either alone lets it drift: the
+        // first misses an announcement that was dismissed, the second an
+        // announcement that arrived beside one that went.
+        let with_bodies = self
+            .notifications
+            .list()
+            .iter()
+            .filter(|held| !held.body.trim().is_empty());
+        let known = with_bodies
+            .clone()
+            .filter(|held| self.toast_lines.contains_key(&held.id))
+            .count();
+        if known == with_bodies.count() && known == self.toast_lines.len() {
+            return;
+        }
+        let Some((_, height)) = self.focused_size() else {
+            return;
+        };
+        let bodies: Vec<(u32, String)> = self
+            .notifications
+            .list()
+            .iter()
+            .filter(|held| !held.body.trim().is_empty())
+            .map(|held| (held.id, held.body.trim().to_string()))
+            .collect();
+        self.toast_lines
+            .retain(|id, _| bodies.iter().any(|(held, _)| held == id));
+        let box_width = ui::toast_body_width(height);
+        let size = ui::toast_body_size(height);
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        for (id, body) in bodies {
+            if self.toast_lines.contains_key(&id) {
+                continue;
+            }
+            let lines =
+                gpu.lines_needed(&body, size, false, box_width, ui::TOAST_BODY_LINES as usize)
+                    as u8;
+            self.toast_lines.insert(id, lines);
         }
     }
 
@@ -10877,6 +13346,9 @@ impl Shell {
         // where the highlight starts, which is near enough to reach and far
         // enough not to be walked into — the same bargain a confirmation
         // makes by opening on No.
+        // Not a compatibility list either — see the note in
+        // [`Shell::toggle_context_menu`].
+        self.compat_menu = None;
         if self.context_menu.open_selecting(
             anchor,
             Some(menu::Title::new("Notifications")),
@@ -11180,6 +13652,9 @@ impl Shell {
         let (before, after) = neighbours(display, self.panels.len());
         let entries = floating_menu_entries(before, after);
         let rows = ui::context_menu_rows_that_fit(height);
+        // Not a compatibility list either — see the note in
+        // [`Shell::toggle_context_menu`].
+        self.compat_menu = None;
         if self.context_menu.open_at(
             anchor,
             Some(menu::Title::new(FLOATING_WINDOW_TITLE.to_string())),
@@ -12210,6 +14685,7 @@ impl Shell {
             // since it went up — so what "the selection" means here is the file
             // the panel is titled after.
             menu::Command::Open => self.start_selection(),
+            menu::Command::OpenTheShelfApp => self.open_the_shelf_app(),
             // These two do not act, they ask. The panel stays where it is and
             // shows what was asked for; see `Menu::descend`.
             menu::Command::OpenWith => {
@@ -12397,10 +14873,12 @@ impl Shell {
                 // is a question that was not answered, and an unanswered
                 // question is a no.
                 self.answer_share(None);
+                self.abandon_the_launch_question("cancelled");
                 self.abandon_authentication("cancelled");
                 self.abandon_network_password();
                 self.abandon_typing();
             }
+            menu::Command::SteamLaunchAnswer(at) => self.answer_the_launch(at),
             menu::Command::ShareDisplay(row) => self.answer_share(Some(row)),
             menu::Command::RefuseShare => self.answer_share(None),
             menu::Command::SteamSignIn => {
@@ -12423,7 +14901,8 @@ impl Shell {
                 self.steam.cancel();
                 self.show_steam_panel();
             }
-            menu::Command::SteamSignOut => self.steam.sign_out(),
+            menu::Command::SteamSignOut => self.offer_to_sign_out_of_steam(),
+            menu::Command::SteamSignOutNow => self.steam.sign_out(),
             menu::Command::SteamRefresh => self.steam.refresh(),
             // Asks rather than acts, exactly as `Sort` does one column along:
             // the panel stays where it is and shows the orders. See
@@ -12434,6 +14913,12 @@ impl Shell {
                 self.context_menu.descend(title, entries);
             }
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
+            menu::Command::SteamStatus(status) => self.choose_a_status(status),
+            menu::Command::SteamDiagnostics => self.show_steam_diagnostics(),
+            menu::Command::SteamForgetArtwork => self.forget_steam_artwork(),
+            menu::Command::SteamShutTheInterface => self.shut_steams_interface(),
+            menu::Command::SteamPlayAgain(app_id) => self.play_steam_game_again(app_id, false),
+            menu::Command::SteamMoveClientHere(app_id) => self.move_steam_here(app_id),
             menu::Command::SteamInstall(app_id) => self.install_steam_game(app_id),
             menu::Command::SteamStopInstalling(app_id) => self.steam.stop_installing(app_id),
             menu::Command::SteamInstallWithSteam(app_id) => {
@@ -12441,6 +14926,11 @@ impl Shell {
             }
             menu::Command::SteamUninstall(app_id) => self.offer_to_uninstall(app_id),
             menu::Command::SteamUninstallNow(app_id) => self.uninstall_steam_game(app_id),
+            menu::Command::SteamStartClient(app_id) => {
+                self.start_steam_because_it_is_needed(app_id)
+            }
+            menu::Command::SteamCompatibility(app_id) => self.offer_compatibility(app_id),
+            menu::Command::SteamRunUnder { app_id, tool } => self.run_under(app_id, tool),
             menu::Command::SteamDo(doing) => self.steam_do(doing),
             menu::Command::Placeholder(name) => tracing::info!(
                 command = name,
@@ -12524,6 +15014,90 @@ impl Shell {
             // authentication panel's sound waits for the same answer.
             self.answer_choice(ChosenFeedback::Kept, Screen::Start);
         }
+    }
+
+    /// Put up what this session's Steam is doing.
+    ///
+    /// The same panel [`Self::show_facts`] draws for a network interface, and
+    /// built the same way: a list of named values, gathered here rather than
+    /// carried on the row it was raised from. See [`steam::Steam::diagnostics`],
+    /// which is where every value comes from and where the rule that none of
+    /// them is a secret is kept.
+    ///
+    /// The Steam column's own mark at the head of it, and not the shell's
+    /// fennec: what this panel is about is Steam on this machine, and the row
+    /// it was raised from is the Steam row. The information mark would be
+    /// wrong here for the opposite reason it is right on the Settings row —
+    /// there it names a door onto something to read, and here the door has
+    /// already been walked through.
+    fn show_steam_diagnostics(&mut self) {
+        let lines = listed_facts_lines(apps::steam_title(), &self.steam.diagnostics());
+        let from = self.dialog_origin();
+        let mut buttons = vec![
+            // No mark on it: a panel's buttons are drawn as words and nothing
+            // else, unlike a menu's rows.
+            menu::Entry::new(menu::Command::SteamForgetArtwork, "Clear artwork cache"),
+        ];
+        // Only when there is one to take away, because a button that did
+        // nothing would be worse than no button: the line above it says the
+        // interface is open, and the two together would read as a shell that
+        // cannot close what it says is open. When the marker is this session's
+        // own there is nothing to press either — the run that made it takes it
+        // back, and pressing this would break the sign-in it is for.
+        if self.steam.interface_can_be_shut() {
+            buttons.push(menu::Entry::new(
+                menu::Command::SteamShutTheInterface,
+                "Close the interface",
+            ));
+        }
+        buttons.push(menu::Entry::new(menu::Command::Dismiss, "Close"));
+        let close = buttons.len() - 1;
+        // Its own panel rather than [`Self::show_facts`], for one reason: it
+        // has something to *do*. Every other panel of values is read and
+        // closed; this one carries the button that throws the artwork away,
+        // which belongs beside the number it is about and nowhere else.
+        //
+        // Close is what a press lands on. The other button deletes something,
+        // and a panel that opens with a delete under the cursor is a panel
+        // where a second press on the button that opened it deletes.
+        let raised = self
+            .dialog
+            .ask(from, Some(icons::STEAM.to_string()), lines, buttons, close);
+        if raised {
+            self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+        }
+    }
+
+    /// Throw away the pictures this shell fetched for the Steam column, and
+    /// show what that came to.
+    ///
+    /// The panel comes straight back up rather than closing, because the answer
+    /// to "did that do anything" is a line on it: the artwork cache reads empty
+    /// where a moment ago it read a number. A panel that simply vanished would
+    /// leave somebody pressing it again.
+    ///
+    /// Only this shell's own directory. Valve's cache belongs to Valve, and
+    /// nothing in the shell deletes out of it.
+    fn forget_steam_artwork(&mut self) {
+        let freed = art::forget_the_cache();
+        tracing::info!(freed, "the Steam artwork cache was cleared by hand");
+        self.show_steam_diagnostics();
+    }
+
+    /// Take away the marker that makes Valve's client expose its interface, and
+    /// show what that came to.
+    ///
+    /// The panel comes back up for the reason [`Self::forget_steam_artwork`]'s
+    /// does, and here it matters more: the line it changes is the one that says
+    /// what was wrong, and it does not change all the way. A client that is
+    /// already running read the marker as it started and has not looked since,
+    /// so its port stays open until it restarts — and the panel then reads
+    /// "open until Steam restarts", which is the truth and is a different
+    /// sentence from the one that was there a moment ago.
+    fn shut_steams_interface(&mut self) {
+        let shut = self.steam.shut_the_interface();
+        tracing::info!(shut, "Steam's debugging marker was taken away by hand");
+        self.show_steam_diagnostics();
     }
 
     /// Ask whether to remove the selected application.
@@ -13289,13 +15863,27 @@ impl Shell {
     /// shorter — and a cursor left pointing at the fourth row of a column that
     /// now has three is worse than one that has plainly started again.
     fn rescan_applications(&mut self) {
+        self.scan_the_bar_again(Cursors::Restart);
+    }
+
+    /// Build the whole bar from the disk again, and put back everything on it
+    /// that did not come off one.
+    ///
+    /// Split from [`Self::rescan_applications`] for the one caller that must
+    /// *not* move anybody: the Steam integration being turned on or off is a
+    /// row of the Settings column being pressed, and the press has to leave the
+    /// user's thumb on the row they pressed. See [`Cursors`].
+    fn scan_the_bar_again(&mut self, cursors: Cursors) {
+        // Before anything is replaced: what a cursor holds about the bar is a
+        // list of numbers, and this is the list of names those numbers meant.
+        // See [`Cursor::recolumned`].
+        let before: Vec<&str> = self
+            .lattice
+            .categories
+            .iter()
+            .map(|column| column.id)
+            .collect();
         let mut categories = apps::scan();
-        let total: usize = categories.iter().map(apps::Category::apps).sum();
-        tracing::info!(
-            categories = categories.len(),
-            applications = total,
-            "scanned applications again"
-        );
         // A scan finds what is on the disk and nothing else, so everything
         // Steam put on the bar has to go back on with it: the row at the head
         // of Games, the library hanging off it, and the client's own entry
@@ -13303,13 +15891,41 @@ impl Shell {
         // the user out of the bar and leave Valve's entry standing in Internet
         // where the shell's row used to be.
         //
-        // Asked of the bar as it stands rather than of a flag, because that is
-        // the same question in every session that has one: `--no-steam` never
-        // put a row up, and must not be given one here.
-        if apps::steam_offered(&self.lattice.categories) {
+        // Asked of the setting rather than of the bar as it stands, because the
+        // bar is what this is about to decide: the press that turns the
+        // integration off arrives here with the old bar still up, and a rebuild
+        // that read it would put the Steam row straight back. The setting folds
+        // in `--no-steam`, which never put a row up and must not be given one
+        // here. See [`settings::steam_integration`].
+        if settings::steam_integration() {
             apps::hide_steam_client(&mut categories);
-            apps::offer_steam(&mut categories, self.steam.account().map(str::to_string));
+            apps::offer_steam(
+                &mut categories,
+                self.steam.account().map(str::to_string),
+                self.steam.standing(),
+            );
         }
+        // And the two applications this shell takes off its own bar, which a
+        // scan has of course just found again. They are reached from the shelf
+        // of files each is for — Graphics > Images, Multimedia > Video — and a
+        // rebuild that left them on would put a Pictures tile beside the
+        // Pictures shelf and a Videos tile beside the Videos shelf, on a bar
+        // that had neither a moment earlier. What comes back is discarded: the
+        // entries themselves are held by the lattice, which is not being
+        // rebuilt. See [`apps::take_off_the_bar`].
+        for app_id in apps::ASIDE {
+            let _ = apps::take_off_the_bar(&mut categories, app_id);
+        }
+        // Counted here rather than straight off the scan, so this line says the
+        // same thing the one at startup does: what is on the bar, and not what
+        // the walk found before the shell had taken its own two rows off it and
+        // put its own one on.
+        let total: usize = categories.iter().map(apps::Category::apps).sum();
+        tracing::info!(
+            categories = categories.len(),
+            applications = total,
+            "scanned applications again"
+        );
         // The files the walk has found are the shell's own record of what is on
         // the disk, and a package coming off the machine has not changed that.
         // So they are carried across to the columns that were just rebuilt
@@ -13327,10 +15943,20 @@ impl Shell {
         // delivery takes, so that a library hung here is a library hung the
         // ordinary way — covers and all; the cursors it puts back are then
         // rebuilt below with the rest.
+        //
+        // Empty for a session whose integration has just been turned off, which
+        // is what takes the library column off the bar: [`steam::Steam::rows`]
+        // is asked of a handle that has just been settled.
         let rows = self.steam.rows();
         self.shelve_games(rows);
         for panel in &mut self.panels {
-            panel.cursor = Cursor::for_model(&self.lattice);
+            match cursors {
+                Cursors::Restart => panel.cursor = Cursor::for_model(&self.lattice),
+                Cursors::Kept => {
+                    panel.cursor.recolumned(&before, &self.lattice);
+                    panel.cursor.keep_in_bounds(&self.lattice);
+                }
+            }
         }
         self.needs_redraw = true;
     }
@@ -13418,7 +16044,14 @@ impl Shell {
     /// since left is dropped on the floor here rather than uploaded — it cost
     /// nothing to make the second time, because it is on the disk now.
     fn sync_thumbnails(&mut self) {
-        let (files, games) = self.rows_worth_having();
+        let (files, mut games) = self.rows_worth_having();
+        // The game in the corner of the open menu is worth a picture wherever
+        // its row happens to be — nobody has to be standing on it, and the
+        // whole reason the card exists is that they are somewhere else. Its
+        // cover joins the rows so that the card has something to draw while its
+        // icon is on its way, and for good if Steam publishes no icon for it.
+        let arriving = self.guide.downloading().map(|coming| coming.app_id);
+        games.extend(arriving);
         for path in &files {
             if self
                 .gpu
@@ -13442,6 +16075,26 @@ impl Shell {
             if held.is_none() {
                 self.art
                     .want(*app_id, art::Piece::Cover, self.steam.pictures(*app_id));
+            }
+        }
+        // And the icon of the one game in the corner of the guide, which is a
+        // different picture of a game from the cover above and is kept under a
+        // key of its own. Only ever one at a time — Valve's client downloads
+        // one game at a time — so this is a single `stat` a frame while
+        // something is coming down and nothing at all the rest of the session.
+        //
+        // The cover is asked for as well, through `games` above, because it is
+        // what the card draws while the icon is on its way and what it draws
+        // for good if the game publishes no icon at all.
+        if let Some(app_id) = arriving {
+            let held = self.art.icon(app_id).and_then(|path| {
+                self.gpu
+                    .as_ref()
+                    .and_then(|gpu| gpu.thumbnail(path).map(|_| ()))
+            });
+            if held.is_none() {
+                self.art
+                    .want(app_id, art::Piece::Icon, self.steam.pictures(app_id));
             }
         }
         // And the picture behind each display, which is the one row each cursor
@@ -13514,15 +16167,44 @@ impl Shell {
             }
         }
 
+        // And the faces on the friends panel, on exactly the same terms: the
+        // rows it is drawing and a few either side, and nothing at all while it
+        // is not on screen.
+        let faces = self.faces_worth_having();
+        for (hash, size) in &faces {
+            if self
+                .avatars
+                .at(hash, *size)
+                .and_then(|path| self.gpu.as_ref().and_then(|gpu| gpu.thumbnail(path)))
+                .is_none()
+            {
+                self.avatars.want(hash, *size);
+            }
+        }
+
         let made = self.thumbs.take();
         // Taken before the keys are worked out, not after: a cover arriving is
         // how the shell learns where that game's picture *is*, and a wanted
         // set built a moment earlier would not have the path in it — so the
         // picture would be dropped, and nothing would ever ask for it again.
         let fetched = self.art.take();
+        let arrived_faces = self.avatars.take();
         let mut wanted = files;
         for app_id in &games {
             if let Some(path) = self.art.cover(*app_id) {
+                wanted.insert(path.to_path_buf());
+            }
+        }
+        // The card's icon is held on the same terms as a cover: it is in the
+        // thumbnail band, so it has to be said to be wanted or the next pass
+        // gives its cell away.
+        if let Some(path) = arriving.and_then(|app_id| self.art.icon(app_id)) {
+            wanted.insert(path.to_path_buf());
+        }
+        // And the faces, which are in that same band and would have their cells
+        // given away by the very next pass without this.
+        for (hash, size) in &faces {
+            if let Some(path) = self.avatars.at(hash, *size) {
                 wanted.insert(path.to_path_buf());
             }
         }
@@ -13570,6 +16252,11 @@ impl Shell {
                 art::Made::Logo { app_id, picture } if logos.contains(app_id) => {
                     gpu.put_logo(*app_id, picture)
                 }
+                art::Made::Icon { path, picture }
+                    if wanted.contains(path) && gpu.thumbnail(path).is_none() =>
+                {
+                    gpu.put_thumbnail(path, picture)
+                }
                 // A picture for a row or a display that has moved on. Dropped
                 // here rather than uploaded; it is in the cache on the disk by
                 // now, so having it back costs a read.
@@ -13577,6 +16264,82 @@ impl Shell {
             };
             self.needs_redraw |= put;
         }
+        // And the faces, which go into the same band under the same rule: only
+        // if something still wants them, and only if the atlas is not already
+        // holding that file.
+        for (path, picture) in &arrived_faces {
+            let put = wanted.contains(path)
+                && gpu.thumbnail(path).is_none()
+                && gpu.put_thumbnail(path, picture);
+            self.needs_redraw |= put;
+        }
+    }
+
+    /// Whose pictures are worth having: the account itself, and the rows of the
+    /// friends panel that are on screen or nearly.
+    ///
+    /// Nothing at all while the panel is not showing. That is the whole of
+    /// "only when they are needed" here — a list of five hundred friends is
+    /// five hundred round trips, and the panel draws a dozen rows.
+    fn faces_worth_having(&self) -> Vec<(String, lxb_steam::AvatarSize)> {
+        /// How many rows either side of the window are worth having ready, so
+        /// that scrolling meets pictures that are already there instead of a
+        /// column filling in behind the user.
+        const REACH: usize = 4;
+
+        if !self.friends.is_on_screen() {
+            return Vec::new();
+        }
+        let roster = self.steam.roster();
+        let mut faces = Vec::new();
+        // The head, at the larger of the two sizes: it is one picture and it is
+        // the first thing on the panel, so it is worth having before anything
+        // under it.
+        if let Some(hash) = roster.me.as_ref().and_then(|me| me.avatar.as_deref()) {
+            faces.push((hash.to_string(), lxb_steam::AvatarSize::Full));
+        }
+        // And whoever is being talked to, at that same larger size, because the
+        // head of an open conversation is *their* picture where the head of the
+        // list is the account's.
+        //
+        // Its own step rather than something the rows below could cover: they
+        // are asked for at `Medium`, and the two sizes are two different files.
+        // Without this the head of every conversation wore the figure that
+        // stands for nobody, whatever face the row it was opened from had.
+        if let Some(hash) = self.friends.talking_to().and_then(|with| {
+            roster
+                .friends
+                .iter()
+                .find(|friend| friend.steam_id == with)
+                .and_then(|friend| friend.avatar.as_deref())
+        }) {
+            faces.push((hash.to_string(), lxb_steam::AvatarSize::Full));
+        }
+        let lines = friends::lines(roster);
+        let window = self
+            .focused_size()
+            .map(|(_, height)| ui::friends_rows_that_fit(height))
+            .unwrap_or_default();
+        // Whole lines, because this counts rows rather than drawing them: the
+        // scroll is fractional while the list is still sliding, and a face is
+        // either worth fetching or it is not.
+        let first = self.friends.first_line();
+        let from = first.saturating_sub(REACH);
+        let to = (first + window + REACH).min(lines.len());
+        for line in lines.get(from..to).unwrap_or_default() {
+            let Some(index) = line.person() else {
+                continue;
+            };
+            let Some(hash) = roster
+                .friends
+                .get(index)
+                .and_then(|friend| friend.avatar.as_deref())
+            else {
+                continue;
+            };
+            faces.push((hash.to_string(), lxb_steam::AvatarSize::Medium));
+        }
+        faces
     }
 
     /// What is on screen and made of pictures, or about to be.
@@ -13765,8 +16528,41 @@ impl Shell {
         self.needs_redraw = true;
     }
 
-    /// A request handed to Valve's client came back refused, with no press
-    /// waiting on it.
+    /// A press that asked for a window of Steam's own did not get one.
+    ///
+    /// Two shapes: it could not be delivered, or it was not attempted because
+    /// the client that would have taken it is not this session's. The second is
+    /// not a failure and does not read as one — nothing was done, and what to
+    /// do about it is on the panel a game press puts up.
+    fn steam_would_not_take_it(&mut self, refused: &lxb_steam::Refused) {
+        match refused {
+            lxb_steam::Refused::Failed(why) => self.say_steam_would_not(why),
+            lxb_steam::Refused::SomebodyElses(why) => self.say_steam_is_elsewhere(why),
+        }
+    }
+
+    /// The client is running somewhere this press did not mean, so the press
+    /// was not made.
+    fn say_steam_is_elsewhere(&mut self, why: &lxb_steam::client::NotOurs) {
+        self.osk.dismiss_at_once();
+        tracing::info!(%why, "a request was not handed to a client that is not ours");
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading("Steam".to_string()),
+                dialog::Line::Note(why.what.clone()),
+                dialog::Line::Note(why.cost.clone()),
+                dialog::Line::Rule,
+            ],
+            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// A request handed to Valve's client came back refused.
     ///
     /// The refusal arrives after the press has been taken, because the request
     /// runs on the worker — starting a process is not something the loop that
@@ -13812,6 +16608,91 @@ impl Shell {
     fn uninstall_steam_game(&mut self, app_id: u32) {
         tracing::info!(app_id, "asking Valve's client to remove a game");
         self.steam.uninstall(app_id);
+    }
+
+    /// Step into the list of compatibility tools this game may be run under.
+    ///
+    /// The list is Valve's client's own answer and there is no other source
+    /// for it: a machine with three Protons installed is offered eleven,
+    /// because what the client knows is what the account may *use* rather than
+    /// what is on the disk. So the press may have to wait — and where it does,
+    /// the panel says so and is written over when the answer lands. See
+    /// [`Shell::steam_said_what_runs_it`].
+    fn offer_compatibility(&mut self, app_id: u32) {
+        let which = lxb_steam::webui::Which::Game(app_id);
+        // Asked before the rows are built, because building them is what reads
+        // the answer: a title nothing is known about is asked about now, and a
+        // failure from a minute ago is asked again. See
+        // [`steam::Steam::ask_about_compatibility`].
+        self.steam.ask_about_compatibility(which);
+        let rows = steam_compat_rows(app_id, self.steam.compatibility(which));
+        let title = self
+            .steam
+            .game(app_id)
+            .map(|game| menu::Title::new(game.name.clone()));
+        if !self.context_menu.descend(title, rows) {
+            return;
+        }
+        // Remembered only while there is something to wait for. A list that was
+        // already known is a list that is on the screen, and marking the panel
+        // as waiting for it would have the next answer about this game write
+        // itself over whatever the user had stepped into by then.
+        self.compat_menu = matches!(self.steam.compatibility(which), Some(steam::Compat::Asking))
+            .then_some(app_id);
+        self.needs_redraw = true;
+    }
+
+    /// Run one game under a particular compatibility tool from now on, or under
+    /// whatever Steam chooses.
+    ///
+    /// Nothing is asked first and nothing is put on the screen. It is a setting
+    /// on a game, it is read the next time the game is started, and it is taken
+    /// back by pressing the row above it — which is the whole of the difference
+    /// between this and the two presses on this menu that ask.
+    fn run_under(&mut self, app_id: u32, tool: Option<&'static str>) {
+        tracing::info!(
+            app_id,
+            tool = tool.unwrap_or("whatever Steam chooses"),
+            "this game is to run under a compatibility tool"
+        );
+        self.steam.run_under(
+            lxb_steam::webui::Which::Game(app_id),
+            tool.map(str::to_string),
+        );
+    }
+
+    /// Steam has said what one title — or every unverified title — runs under.
+    ///
+    /// Two things are waiting on it and neither is on the other's path: a
+    /// context menu that stepped into "asking Steam", and the Settings row that
+    /// asks the same question of the whole machine. Both are answered here
+    /// because both are the same answer arriving.
+    fn steam_said_what_runs_it(&mut self, which: lxb_steam::webui::Which) {
+        match which {
+            lxb_steam::webui::Which::Game(app_id) => {
+                // Only the panel that asked, and only while it is still up. A
+                // list written over a menu somebody has moved on in is a list
+                // taking the rows out from under a press.
+                if self.compat_menu != Some(app_id) || !self.context_menu.is_open() {
+                    return;
+                }
+                self.compat_menu = None;
+                let rows = steam_compat_rows(app_id, self.steam.compatibility(which));
+                let title = self
+                    .steam
+                    .game(app_id)
+                    .map(|game| menu::Title::new(game.name.clone()));
+                self.context_menu.replace(title, rows);
+                self.needs_redraw = true;
+            }
+            lxb_steam::webui::Which::OtherTitles => {
+                let known = self.steam.compatibility(which);
+                if settings::note_compatibility_tools(known) {
+                    self.rebuild_settings();
+                    self.needs_redraw = true;
+                }
+            }
+        }
     }
 
     /// Ask before taking a game off the disk.
@@ -13860,12 +16741,24 @@ impl Shell {
     /// spend forty gigabytes on it now" are the same press, and only one of
     /// them can be taken back.
     fn offer_to_install(&mut self, game: &apps::Game) {
+        // Steam has begun something and is not doing it, because there is no
+        // Steam running to do it. First of all of them, because it is the one
+        // answer here that is about the *machine* rather than about the game:
+        // whatever the manifest says is outstanding — an update, a download, a
+        // check, a removal — none of it is happening, and none of the panels
+        // below would say so.
+        if game.waiting_for_steam {
+            return self.offer_to_start_steam(game);
+        }
+
         // On its way off the disk instead. There is nothing to decide — it is
         // seconds of work and it was asked for — so this says what is
         // happening rather than offering to start it coming back down, which
         // is the one press that would be answered by fetching forty gigabytes
         // of what is being deleted.
-        if self.steam.is_removing(game.app_id) {
+        if self.steam.is_removing(game.app_id)
+            || game.standing == lxb_steam::library::Standing::Uninstalling
+        {
             let from = self.dialog_origin();
             self.dialog.ask(
                 from,
@@ -13876,6 +16769,33 @@ impl Shell {
                     dialog::Line::Rule,
                 ],
                 vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+                0,
+            );
+            self.needs_redraw = true;
+            return;
+        }
+
+        // On the disk and not playable, and not because anything of this
+        // session's is happening to it. Steam paused the download, the copy
+        // needs repairing, or Steam is in the middle of it — and the press used
+        // to be answered by offering to fetch the whole game again, for a game
+        // already taking up the space. The menu over the row says what to do
+        // about each; this says what is true and sends the user there.
+        if !self.steam.is_fetching(game.app_id) && game.standing.on_the_disk() {
+            let (what, doing, action) = what_is_happening_to_it(game);
+            let from = self.dialog_origin();
+            self.dialog.ask(
+                from,
+                Some(icons::STEAM.to_string()),
+                vec![
+                    dialog::Line::Heading(game.name.clone()),
+                    dialog::Line::Note(what),
+                    dialog::Line::Rule,
+                ],
+                vec![
+                    menu::Entry::new(menu::Command::SteamDo(doing), action).glyph(icons::LAUNCH),
+                    menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                ],
                 0,
             );
             self.needs_redraw = true;
@@ -13938,16 +16858,41 @@ impl Shell {
         if !self.steam.signed_in() {
             return self.say_steam_needs_an_account(&game.name);
         }
+        // What is worth knowing before agreeing, rather than the one thing the
+        // person pressing already knows. "This game is not on this machine. It
+        // can be fetched from Steam now" told them nothing: they pressed a row
+        // that said "Not installed", and the question in their head was whether
+        // there is room for it and whether it will start now or sit behind
+        // something else. Both are answerable from this machine.
+        //
+        // How large the download is and which library it lands in are Steam's
+        // to say and Steam does not say them until the wizard has been walked.
+        // They are not guessed at: the last line says plainly that Steam
+        // chooses, which is true and is better than a number that is not.
+        let preflight = self.steam.preflight();
+        let mut lines = vec![
+            dialog::Line::Heading(game.name.clone()),
+            dialog::Line::Note("This game is not on this machine.".to_string()),
+        ];
+        if let Some(room) = preflight.room_said() {
+            lines.push(dialog::Line::Note(room));
+        }
+        match preflight.already.as_deref() {
+            // Not a refusal — Steam queues downloads perfectly well — but it is
+            // the difference between a press that starts something now and one
+            // that starts something in an hour, and nothing said so.
+            Some(first) => lines.push(dialog::Line::Note(format!("{first} is downloading first."))),
+            None => lines.push(dialog::Line::Note(
+                "Steam chooses the size and folder.".to_string(),
+            )),
+        }
+        lines.push(dialog::Line::Rule);
+
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
             Some(icons::STEAM.to_string()),
-            vec![
-                dialog::Line::Heading(game.name.clone()),
-                dialog::Line::Note("This game is not on this machine.".to_string()),
-                dialog::Line::Note("It can be fetched from Steam now.".to_string()),
-                dialog::Line::Rule,
-            ],
+            lines,
             vec![
                 menu::Entry::new(menu::Command::SteamInstall(game.app_id), "Install"),
                 menu::Entry::new(menu::Command::Dismiss, "Not Now"),
@@ -13955,6 +16900,536 @@ impl Shell {
             0,
         );
         self.needs_redraw = true;
+    }
+
+    /// Offer to start Valve's client, for a game whose update nothing is doing.
+    ///
+    /// The one press on this path whose answer is not a window of Steam's own.
+    /// A manifest that says "updating" with no client running is work that has
+    /// stopped, and it stays stopped until a Steam is started — the client
+    /// reads its own manifests as it comes up and gets on with whatever they
+    /// say is outstanding. So this is the whole of the fix, and it is offered
+    /// rather than done: it is somebody's line and somebody's evening, and a
+    /// press that quietly began a gigabyte of downloading would be the same
+    /// press [`Shell::offer_to_install`] refuses to make on anybody's behalf.
+    ///
+    /// Nothing here starts the *game*. What is on the disk is a copy Steam will
+    /// not run until it has finished with it, and a loading screen held up for
+    /// the length of an update is a loading screen that runs out.
+    fn offer_to_start_steam(&mut self, game: &apps::Game) {
+        // Nothing to start. The row still says the truth — nothing is doing
+        // this — and the offer is the half that depends on there being a Steam
+        // on this machine, so it is asked here rather than folded into the row.
+        if !game.steam_client {
+            return self.say_no_steam_client(&game.name);
+        }
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            // Two short lines, because the panel clips rather than wraps: what
+            // is outstanding, and why nothing is happening about it. What
+            // pressing the button does is on the button.
+            vec![
+                dialog::Line::Heading(game.name.clone()),
+                dialog::Line::Note(what_is_outstanding(game.standing).to_string()),
+                dialog::Line::Note("Steam is not running.".to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam")
+                    .glyph(icons::LAUNCH),
+                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+            ],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// Start Valve's client because a press asked for one.
+    ///
+    /// [`Self::start_steam_in_the_background`] with the one difference that
+    /// matters: it is not quiet. That one is the shell warming a client up for
+    /// a game nobody has pressed, where a failure is nothing to put on the
+    /// screen — this is the answer to a press that promised to start Steam, and
+    /// a promise that fails has to say so. See
+    /// [`Self::late_word_from_the_client`], which is what says it.
+    fn start_steam_because_it_is_needed(&mut self, app_id: u32) {
+        tracing::info!(app_id, "starting Valve's client, which a press needs");
+        // Written down before the ask, because it is what closes the client
+        // again: this session started a Steam it was told not to leave running,
+        // and the work it started it for is this game's. See
+        // [`Self::close_steam_when_the_press_is_over`].
+        self.steam_press_wants_a_client(app_id);
+        // No loading screen and no game waiting on the client — the row
+        // promised to *start Steam*, and that is what a failure has to be said
+        // about. Recorded under its own number so the answer is still known to
+        // be this one's when it lands a minute later.
+        let request = self.steam.wake_client();
+        self.awaiting_steam.steam_was_promised(request);
+    }
+
+    /// Whether Valve's client may be seen, and why it may.
+    ///
+    /// A flag with no reason attached is a flag nobody can put back, and that
+    /// was the failure. Sight was given for a hand-over — Open Steam, Verify,
+    /// Install with Steam — and then stayed given until the next game press,
+    /// because nothing knew *why* it had been given and so nothing could decide
+    /// it was no longer wanted. A silent install an hour later ran with Steam's
+    /// storefront sitting on the bar, and Steam's own dialogs landed on top of
+    /// whatever the shell was drawing.
+    fn steam_may_be_seen(&mut self, seen: bool) {
+        let sight = match seen {
+            true => SteamSight::UserVisible {
+                asked: Instant::now(),
+                arrived: false,
+            },
+            false => SteamSight::Background,
+        };
+        if std::mem::replace(&mut self.steam_sight, sight) == self.steam_sight {
+            return;
+        }
+        tracing::info!(seen, "Valve's client may be seen");
+        self.keep_steam_out_of_sight(!seen);
+    }
+
+    /// Take sight back when the user is done with the window they asked for.
+    ///
+    /// The two ways they are done, and both have to be watched for: the window
+    /// goes away, or it never comes. Neither is announced — Steam raises and
+    /// closes its own windows on its own schedule — so this is asked once a
+    /// frame against the windows the compositor has already told the shell
+    /// about, which costs a walk of a list that is nearly always empty.
+    ///
+    /// It is deliberately *not* taken back merely because the user went back to
+    /// the bar. A Steam left running is a Steam they asked for and can switch
+    /// back to, exactly like any other application; hiding it under them would
+    /// be the shell taking away a window it had just given.
+    fn sync_steam_sight(&mut self, now: Instant) {
+        let SteamSight::UserVisible { asked, arrived } = self.steam_sight else {
+            return;
+        };
+        let on_screen = self.panels.iter().any(|panel| {
+            panel
+                .windows
+                .iter()
+                .any(|window| is_valves_client(&window.app_id))
+        });
+        if on_screen {
+            self.steam_sight = SteamSight::UserVisible {
+                asked,
+                arrived: true,
+            };
+            return;
+        }
+        // It was there and has gone: they closed it, and the client goes back
+        // to being something this shell drives rather than presents.
+        if arrived {
+            tracing::info!("the window Steam was asked for has gone");
+            return self.steam_may_be_seen(false);
+        }
+        // Or it never came at all. Steam takes its time raising a window and
+        // sometimes raises none — a `steam://` request it did not understand,
+        // a client still starting — and without this the session would spend
+        // the rest of its life with sight given for a window nobody ever saw.
+        if now.duration_since(asked) > UNTIL_STEAM_SHOWS_ITSELF {
+            tracing::info!("Steam never opened the window it was asked for");
+            self.steam_may_be_seen(false);
+        }
+    }
+
+    /// Shut Valve's client down behind a game that has ended, where somebody
+    /// has asked for that.
+    ///
+    /// Settings > Games > Steam > Leave Steam running, and it is off by nobody's
+    /// default: what this shell has always done is leave the client up, so the
+    /// second game of an evening starts in seconds. Turning it off buys a few
+    /// hundred megabytes back at the cost of paying the cold start again.
+    ///
+    /// What it watches for is the *edge* — a Steam game's window that was on the
+    /// screen and is not — because an empty window list is the state a session
+    /// spends nearly all its life in, and closing the client every frame of it
+    /// would be a shell shutting Steam down while somebody signs into it. The
+    /// windows are the shell's own record of which of them are games, which is
+    /// read off the processes behind them: see
+    /// [`Self::note_which_games_the_windows_are`].
+    ///
+    /// And then it waits, which is the one part that is not obvious. A window
+    /// carried to the other screen leaves one display's list before it arrives
+    /// on the other's, and the frame in between looks exactly like a game that
+    /// has ended. [`AFTER_THE_LAST_GAME`] is longer than that gap by a wide
+    /// margin and is nothing anybody watches: the game is over, the start
+    /// screen is back, and what happens five seconds later is a program the
+    /// user cannot see closing itself.
+    ///
+    /// Four things call it off, and each of them is a different way of taking
+    /// something away from somebody. A game that is starting — the client is
+    /// about to be needed, and on a machine that has just closed one game to
+    /// play another this is the ordinary case. A question the client stopped a
+    /// launch on, which is a launch still in flight. Anything moving on or off
+    /// the disk, which is an evening's download. And a window of Steam's own
+    /// that the user asked to see, which is somebody looking at the storefront
+    /// with a game they have just quit behind it.
+    ///
+    /// **The moment is kept rather than let go of**, and it used to be the
+    /// other way round. The reasoning for letting go was that this is a setting
+    /// about what happens when a game ends, and that closing the client twenty
+    /// minutes later because a download finally finished would be the shell
+    /// acting on a game nobody remembers. What it missed is the ordinary shape
+    /// of an evening: play a game, quit it, and the client — free at last —
+    /// picks up the update it has been holding. Five seconds later something is
+    /// under way, the moment was thrown away, and the client stayed up for the
+    /// rest of the session with the switch saying to close it. **The user's
+    /// call**, put to them on 2026-09-02 against the reasoning above: *the
+    /// Steam should be shut down after such update*.
+    ///
+    /// So the four things above call the shutdown off for as long as they last
+    /// rather than for the session, which is what the other half already did
+    /// for a press. A game starting takes the question away by itself — its
+    /// window arms the edge again — and the switch being thrown the other way
+    /// drops it, so "kept" is not "kept for ever".
+    fn close_steam_after_the_game(&mut self, now: Instant) {
+        if !self.steam_windows.is_empty() {
+            self.steam_game_was_on_screen = true;
+            self.steam_game_gone_since = None;
+            self.steam_after_the_game = None;
+            return;
+        }
+        if std::mem::take(&mut self.steam_game_was_on_screen) {
+            tracing::debug!("the last Steam game's window has gone");
+            self.steam_game_gone_since = Some(now);
+            self.steam_after_the_game = None;
+        }
+        let Some(since) = self.steam_game_gone_since else {
+            return;
+        };
+        // Asked here rather than on the edge above, so that the switch can be
+        // thrown while a game is running and still act when that game ends.
+        //
+        // And answered here rather than handed to `what_becomes_of_the_client`,
+        // which answers them too and answers them the other way round: the
+        // press half returns `LeaveIt` and keeps its note, so a switch thrown
+        // back acts on the client already running. This note is a *game that
+        // ended*, and a game that ended an hour ago is not a reason to shut a
+        // client down the instant somebody changes their mind about a setting.
+        if settings::steam_left_after_a_game() || !self.steam.driving() {
+            self.steam_game_gone_since = None;
+            self.steam_after_the_game = None;
+            return;
+        }
+        // The same decision the press half makes, from the same facts, because
+        // it is the same question — and it used to be a second copy of it that
+        // had fallen behind. **This half asked once and forgot**: it dropped the
+        // moment as it asked, so a client that declined was never asked again
+        // and nothing anywhere said so. The grace period, the second ask, the
+        // giving up and a client that is not this session's to stop are all in
+        // there and were all missing here.
+        let facts = AfterThePress {
+            // Both known by the guard above, which is where this half answers
+            // them, and the window list is what arms it at all.
+            game_on_screen: false,
+            left_running: false,
+            driving: true,
+            // And deliberately **not** `settings::steam_at_startup()`, which
+            // the press half does ask. The Off row of Leave Steam running says
+            // "Steam is closed with the game", with no exception written into
+            // it for the other switch — starting the client up front and
+            // closing it after a game is the two switches each meaning what
+            // they say. The press half is the one with a conflict to resolve:
+            // there, closing a client because a press came to nothing would
+            // undo a setting that asked for it to be up all session.
+            at_startup: false,
+            client_running: self.steam.a_client_is_running(),
+            asked: self
+                .steam_asked_to_close
+                .map(|since| now.duration_since(since)),
+            asks: self.steam_times_asked,
+            starting: self.awaiting_steam.a_wake_is_still_out_there()
+                || self.launching.iter().any(|splash| splash.game().is_some())
+                || self.launch_question.is_some(),
+            seen: matches!(self.steam_sight, SteamSight::UserVisible { .. }),
+            anything_under_way: !self.steam.nothing_is_under_way(),
+            // Not what the client is doing, but what it would pick up if it
+            // were left alone a little longer. See [`AFTER_A_SUSPENDED_JOB`].
+            work_outstanding: self.steam.work_is_outstanding(),
+            answered: self.steam.how_the_close_went(),
+        };
+        let becomes = what_becomes_of_the_client(facts, Some(now.duration_since(since)));
+        // Once, on the edge. Past the mark this is decided sixty times a second
+        // and says the same thing every time, and a download is minutes of it.
+        let moved = self.steam_after_the_game != Some(becomes);
+        if moved {
+            self.steam_after_the_game = Some(becomes);
+            tracing::debug!(
+                ?facts,
+                ?becomes,
+                "what becomes of Valve's client after the game"
+            );
+            if becomes == Becomes::LeaveIt {
+                tracing::info!(
+                    starting = facts.starting,
+                    seen = facts.seen,
+                    under_way = facts.anything_under_way,
+                    "leaving Valve's client running after the game: it is still wanted"
+                );
+            }
+        }
+        // **The moment is kept under `LeaveIt` and `NotYet`**, which is the
+        // whole of what the user asked for: quitting a game is exactly what
+        // frees the client to pick up the update it was holding, and the
+        // shutdown is still owed to the game when that update finishes.
+        if self.act_on_the_client(becomes, now, "the game has ended") {
+            self.steam_game_gone_since = None;
+            self.steam_after_the_game = None;
+        }
+    }
+
+    /// Do what one of those answers says, for the parts both halves do
+    /// identically — the ask, the count behind it, and the two endings worth a
+    /// line — and say whether the calling half is finished with this client.
+    ///
+    /// What the two halves do differently is the note each drops, because what
+    /// each is a note *about* is different: a press that started a client, and
+    /// a game that has ended. Everything else here was a second copy in the
+    /// game half, and it was a copy that had never had the re-ask added to it.
+    fn act_on_the_client(&mut self, becomes: Becomes, now: Instant, after: &'static str) -> bool {
+        match becomes {
+            // Something wants it, or the clock has not run out. Either way
+            // there is nothing to do and nothing to forget.
+            Becomes::LeaveIt | Becomes::NotYet => false,
+            // Nothing left to decide about this one.
+            Becomes::LetItGo => true,
+            Becomes::CloseIt => {
+                tracing::info!(
+                    after,
+                    app_id = ?self.steam_woken_for,
+                    asked_before = self.steam_times_asked,
+                    "asking Valve's client to shut down"
+                );
+                self.steam_asked_to_close = Some(now);
+                self.steam_times_asked = self.steam_times_asked.saturating_add(1);
+                self.steam.close_the_client();
+                false
+            }
+            // Not a failure and not a refusal: it was never asked, because it
+            // is not this session's client. Said at `info` for that reason —
+            // the client stays up and the setting said to close it, and this is
+            // the reason why, but nothing went wrong.
+            Becomes::NotOurs => {
+                tracing::info!(
+                    after,
+                    "Valve's client belongs to another session on this machine; leaving it running"
+                );
+                true
+            }
+            // Nothing more to do about it, and nothing more to be done: a
+            // client that has been asked twice and is still there has said no,
+            // and this shell does not take a running program away from
+            // somebody. Said once, because the session ends with a client up
+            // that the settings asked to have closed and there is otherwise
+            // nothing anywhere to say why.
+            Becomes::GaveUp => {
+                tracing::warn!(
+                    after,
+                    asked = self.steam_times_asked,
+                    how = ?self.steam.how_the_close_went(),
+                    "Valve's client would not shut down; leaving it running"
+                );
+                true
+            }
+        }
+    }
+
+    /// Close Valve's client when the press that started it is over and no game
+    /// ever came of it.
+    ///
+    /// The other half of [`Self::close_steam_after_the_game`], and the half
+    /// that was missing. That one is armed by a *game's window going away*, so
+    /// it answers only the session where a game actually ran. This shell starts
+    /// the client for presses that reach no game at all, and every one of them
+    /// left a client running for the rest of the session with the setting
+    /// saying not to:
+    ///
+    /// * **Start Steam** on the panel over a game with an update waiting. The
+    ///   client comes up, does the update, and there was never a game.
+    /// * A loading screen **left to the download** — the one wait in this shell
+    ///   somebody may walk away from. The launch is cancelled, so no window ever
+    ///   arrives to arm the other half.
+    /// * A launch the client refused, or one that ran out of patience.
+    ///
+    /// So the countdown here is armed by the *client* running out of things to
+    /// do rather than by a window going away, and unlike the game's it is
+    /// **kept**: the whole point is the download that finishes twenty minutes
+    /// later, which is precisely the case the other half deliberately lets go
+    /// of. The two do not overlap — a game reaching the screen clears
+    /// [`Self::steam_woken_for`] and hands the question over.
+    ///
+    /// Never on a session that starts the client with the shell. That setting
+    /// says the client is meant to be up for the whole session, and a client
+    /// shut down five seconds into one because nothing had happened yet would
+    /// be one setting quietly undoing the other.
+    /// Note that a press is why Valve's client is about to be running.
+    ///
+    /// One function for the two presses that start one, because what has to be
+    /// written down is three things and forgetting the last two is a client
+    /// that never closes again. **`steam_asked_to_close` is the one that
+    /// matters**: a session that has already shut a client down once and is now
+    /// starting a second would carry the old answer forward and leave that one
+    /// running for good.
+    fn steam_press_wants_a_client(&mut self, app_id: u32) {
+        self.steam_woken_for = Some(app_id);
+        self.steam_unwanted_since = None;
+        self.steam_asked_to_close = None;
+        self.steam_times_asked = 0;
+        self.steam_becoming = None;
+    }
+
+    fn close_steam_when_the_press_is_over(&mut self, now: Instant) {
+        let Some(app_id) = self.steam_woken_for else {
+            return;
+        };
+        // Every fact in one place and one decision made from them, rather than
+        // a run of early returns with the same conditions written twice. The
+        // first cut had both, and the guards outside silently swallowed the
+        // cases the tested function was there to answer.
+        //
+        // `Steam::nothing_is_under_way` is the one this half exists for: it
+        // covers the stretch of an update the manifest says nothing about, and
+        // without it the countdown would run *during* a verify and the shell
+        // would shut the client down in the middle of the very work it started
+        // it for.
+        let facts = AfterThePress {
+            game_on_screen: !self.steam_windows.is_empty(),
+            left_running: settings::steam_left_after_a_game(),
+            at_startup: settings::steam_at_startup(),
+            driving: self.steam.driving(),
+            client_running: self.steam.a_client_is_running(),
+            asked: self
+                .steam_asked_to_close
+                .map(|since| now.duration_since(since)),
+            asks: self.steam_times_asked,
+            starting: self.awaiting_steam.a_wake_is_still_out_there()
+                || !self.launching.is_empty()
+                || self.launch_question.is_some(),
+            seen: matches!(self.steam_sight, SteamSight::UserVisible { .. }),
+            anything_under_way: !self.steam.nothing_is_under_way(),
+            // Not what the client is doing, but what it would pick up if it
+            // were left alone a little longer. See [`AFTER_A_SUSPENDED_JOB`].
+            work_outstanding: self.steam.work_is_outstanding(),
+            answered: self.steam.how_the_close_went(),
+        };
+        let becomes = what_becomes_of_the_client(
+            facts,
+            self.steam_unwanted_since
+                .map(|since| now.duration_since(since)),
+        );
+        // On the change rather than on the frame: it is decided sixty times a
+        // second and says the same thing nearly every time, and what is worth
+        // reading afterwards is which fact was holding the client open and when
+        // that stopped being true.
+        if self.steam_becoming != Some(becomes) {
+            self.steam_becoming = Some(becomes);
+            tracing::debug!(app_id, ?facts, ?becomes, "what becomes of Valve's client");
+        }
+        // The idle clock, which is this half's alone: the press half is armed
+        // by a client with nothing to do rather than by a window going away, so
+        // it has a moment to start and to take back.
+        match becomes {
+            Becomes::LeaveIt | Becomes::CloseIt => self.steam_unwanted_since = None,
+            Becomes::NotYet => {
+                self.steam_unwanted_since.get_or_insert(now);
+            }
+            Becomes::LetItGo | Becomes::NotOurs | Becomes::GaveUp => {}
+        }
+        // And the note itself, when there is nothing left to decide. Every part
+        // of it goes back, so that the next client a press starts is a fresh
+        // question rather than one already answered.
+        if self.act_on_the_client(becomes, now, "the press it was started for is over") {
+            self.steam_woken_for = None;
+            self.steam_unwanted_since = None;
+            self.steam_asked_to_close = None;
+            self.steam_times_asked = 0;
+            self.steam_becoming = None;
+        }
+    }
+
+    /// Let through anything Valve's client has stopped to ask, and take the
+    /// exception back when it has been answered.
+    ///
+    /// Free on every session that is hiding nothing, which is nearly all of
+    /// them: two empty lists are the whole of it. See
+    /// [`a_hidden_window_is_a_question`], which is the decision, and
+    /// `lxb_shell_v1.let_this_window_be_seen`, which carries it.
+    fn sync_steam_questions(&mut self, now: Instant) {
+        if self.unseen_windows.is_empty() && self.letting_through.is_empty() {
+            return;
+        }
+        // A window let through is no longer in the hidden list — it is in the
+        // display's ordinary one — so a window in neither has gone, and takes
+        // its exception with it. Without this a session that answered one
+        // question would let the next window with that id through unasked.
+        let on_screen: HashSet<u32> = self
+            .panels
+            .iter()
+            .flat_map(|panel| panel.windows.iter().map(|window| window.id))
+            .collect();
+        let answered: Vec<u32> = self
+            .letting_through
+            .iter()
+            .copied()
+            .filter(|id| !on_screen.contains(id))
+            .collect();
+        for id in answered {
+            tracing::info!(window = id, "the window Valve's client asked with has gone");
+            self.letting_through.remove(&id);
+            self.let_one_window_be_seen(id, false);
+        }
+
+        let the_shell_is_waiting = !self.launching.is_empty() || self.awaiting_steam.busy();
+        let questions: Vec<u32> = self
+            .unseen_windows
+            .iter()
+            .filter(|window| {
+                let up_for = self
+                    .unseen_since
+                    .get(&window.id)
+                    .map(|since| now.duration_since(*since))
+                    .unwrap_or_default();
+                a_hidden_window_is_a_question(
+                    &window.app_id,
+                    &window.title,
+                    the_shell_is_waiting,
+                    up_for,
+                )
+            })
+            .map(|window| window.id)
+            .collect();
+        for id in questions {
+            // Once per window, not once a frame: the compositor would answer
+            // an unchanged request with nothing, but a shell that sent one
+            // every pass would be saying something it does not mean.
+            if !self.letting_through.insert(id) {
+                continue;
+            }
+            tracing::info!(window = id, "Valve's client has stopped to ask something");
+            self.let_one_window_be_seen(id, true);
+        }
+    }
+
+    /// Ask for one hidden window to be shown anyway, or put back.
+    ///
+    /// Named apart from the protocol request it sends only because the shell
+    /// already has a `steam_may_be_seen` about the whole client, and the two
+    /// must not read as the same thing: this is one window, and it does not
+    /// give the client back.
+    fn let_one_window_be_seen(&self, id: u32, seen: bool) {
+        let Some(control) = self.shell_control.as_ref() else {
+            return;
+        };
+        if control.version() < UNSEEN_WINDOWS_SHELL_VERSION {
+            return;
+        }
+        control.let_this_window_be_seen(id, u32::from(seen));
     }
 
     /// Keep Valve's client off the screen, or give it back.
@@ -14012,13 +17487,17 @@ impl Shell {
     fn ask_steam_before_starting(&mut self) -> bool {
         // One at a time. A second press while the first is still waiting on
         // the client must not start two of anything.
-        if self.awaiting_steam.is_some() {
+        if self.awaiting_steam.busy() {
             return true;
         }
         let Some(game) = self.selected_game().cloned() else {
             return false;
         };
-        if !game.installed {
+        // A broken copy comes this way too: Steam repairs one as part of
+        // starting it, so the press is the client's to answer and the loading
+        // screen is the shell's to draw. See
+        // [`apps::Game::the_client_can_put_it_right`].
+        if !game.installed && !game.the_client_can_put_it_right() {
             return false;
         }
 
@@ -14030,6 +17509,10 @@ impl Shell {
             self.say_steam_needs_an_account(&game.name);
             return true;
         }
+        if cannot_be_played_offline(self.steam.reach().online(), game.standing) {
+            self.say_it_is_not_up_to_date(&game.name);
+            return true;
+        }
 
         let Some(panel) = self.panels.get(self.focused_panel) else {
             return false;
@@ -14037,17 +17520,120 @@ impl Shell {
         // Its cover, which is the tile a game is pressed on — and the rectangle
         // anything the shell has to say about this press grows out of.
         let from = self.selected_origin(panel.width as f32, panel.height as f32);
-        let known: Vec<u32> = panel.windows.iter().map(|window| window.id).collect();
-        let foreground = panel.foreground.clone().unwrap_or_default();
+        self.begin_steam_launch(game.app_id, game.name, from, false);
+        true
+    }
 
+    /// Try one game again, from the panel that said it did not start.
+    ///
+    /// Not the press path, because the press path asks the cursor what it is
+    /// standing on and the cursor is not what this is about: the panel names
+    /// the game, and by the time somebody reads it the bar may be somewhere
+    /// else entirely. The two checks that can still have changed since the
+    /// press are asked again here rather than assumed.
+    ///
+    /// `take_over` is somebody having been shown what moving a client belonging
+    /// to another session or another account costs, and having said yes. It
+    /// travels with the press rather than being asked for separately: a
+    /// take-over *is* this press's wake, and asking for both was two wakes, of
+    /// which one had nobody waiting on it and reached the screen as a refusal
+    /// nothing had asked for.
+    fn play_steam_game_again(&mut self, app_id: u32, take_over: bool) {
+        if self.awaiting_steam.busy() {
+            return;
+        }
+        let name = self
+            .steam
+            .game(app_id)
+            .map(|game| game.name.clone())
+            .unwrap_or_else(|| "This game".to_string());
+        if !self.steam.has_client() {
+            return self.say_no_steam_client(&name);
+        }
+        if !self.steam.signed_in() {
+            return self.say_steam_needs_an_account(&name);
+        }
+        let standing = self
+            .steam
+            .game(app_id)
+            .map_or(lxb_steam::library::Standing::Ready, |game| game.standing);
+        if cannot_be_played_offline(self.steam.reach().online(), standing) {
+            return self.say_it_is_not_up_to_date(&name);
+        }
+        let from = self.dialog_origin();
+        self.begin_steam_launch(app_id, name, from, take_over);
+    }
+
+    /// Answer the press on the screen and start waking Valve's client.
+    ///
+    /// Everything that is true of both ways in — a press on the tile and a
+    /// second attempt out of a panel — and nothing that is true of only one.
+    fn begin_steam_launch(&mut self, app_id: u32, name: String, from: [f32; 4], take_over: bool) {
         // The press is answered on the screen straight away, exactly as any
         // other launch is. There is no process to watch and there will not be
         // one — the game is the client's child, not ours — so the splash waits
         // on the window and nothing else.
-        let splash = launch::Launch::new(
-            game.name.clone(),
+        let Some(here) = self.display_at(self.focused_panel) else {
+            return;
+        };
+        let splash = self.steam_splash(app_id, &name, here, from);
+        self.begin_launch(splash);
+        // The screen is changing hands, which is what this sound is about, and
+        // it has changed hands whether or not the client comes up.
+        self.sounds.launch();
+        tracing::info!(app_id, %name, "waking Valve's client to start this game");
+        // The same note the Start Steam row leaves, for the same reason: a
+        // session told not to leave Steam running has to close the client it
+        // started, and this press is why it started. See
+        // [`Self::close_steam_when_the_press_is_over`].
+        self.steam_press_wants_a_client(app_id);
+        // Hidden again. It normally already is; what this covers is the user
+        // having asked to see the client earlier in the session, which gave
+        // sight back and would otherwise leave it showing over this game.
+        self.steam_may_be_seen(false);
+        // Asked before the press is written down, because the number the wake
+        // is asked under is *part of* the press: what this shell is waiting for
+        // is not "Valve's client" but one wake of it, and an answer to any
+        // other one is somebody else's. See [`steam::Gate`].
+        let request = match take_over {
+            true => self.steam.take_over_the_client(),
+            false => self.steam.wake_client(),
+        };
+        self.awaiting_steam.press(steam::Awaiting {
+            request,
+            app_id,
+            name: name.clone(),
+            display: here,
+            from,
+            asked: Instant::now(),
+        });
+        self.needs_redraw = true;
+    }
+
+    /// One loading screen for a Steam game, on one display.
+    ///
+    /// Its own function because there are two ways to reach it and they must
+    /// build the same thing: the press, and a question the client stopped the
+    /// launch on being answered *yes* — which goes back to a loading screen for
+    /// the same game on the same screen, having never left the launch.
+    fn steam_splash(
+        &self,
+        app_id: u32,
+        name: &str,
+        display: Display,
+        from: [f32; 4],
+    ) -> launch::Launch {
+        let (known, foreground) = match self.panel_at(display).and_then(|at| self.panels.get(at)) {
+            Some(panel) => (
+                panel.windows.iter().map(|window| window.id).collect(),
+                panel.foreground.clone().unwrap_or_default(),
+            ),
+            None => (Vec::new(), String::new()),
+        };
+        launch::Launch::new(
+            name.to_string(),
             Some(icons::STEAM.to_string()),
-            self.focused_panel,
+            display,
             from,
             None,
             Instant::now(),
@@ -14056,31 +17642,36 @@ impl Shell {
                 foreground: &foreground,
             },
         )
-        .through_steam(game.app_id);
-        self.begin_launch(splash);
-        // The screen is changing hands, which is what this sound is about, and
-        // it has changed hands whether or not the client comes up.
-        self.sounds.launch();
-        self.awaiting_steam = Some(AwaitingSteam {
-            app_id: game.app_id,
-            name: game.name.clone(),
-            panel: self.focused_panel,
-            from,
-            asked: Instant::now(),
-        });
-        tracing::info!(app_id = game.app_id, name = %game.name, "waking Valve's client to start this game");
-        // Hidden again. It normally already is; what this covers is the user
-        // having asked to see the client earlier in the session, which gave
-        // sight back and would otherwise leave it showing over this game.
-        self.keep_steam_out_of_sight(true);
-        self.steam.wake_client();
-        self.needs_redraw = true;
-        true
+        .through_steam(app_id)
+    }
+
+    /// Stop waiting on Valve's client for a press that has ended.
+    ///
+    /// Every terminal path goes through here, which is the point of its being
+    /// one function: the loading screen running out of patience, the display it
+    /// was on being unplugged, and the panel it turned into being dismissed all
+    /// leave the same two things behind — a gate that swallows every later
+    /// press, and a wake still running whose answer would be acted on as though
+    /// somebody were still waiting for it.
+    ///
+    /// Returns what was being waited on, for whoever has something to say
+    /// about it.
+    fn stop_waiting_for_steam(&mut self, why: &str) -> Option<steam::Awaiting> {
+        let waiting = self.awaiting_steam.gave_up()?;
+        tracing::info!(
+            app_id = waiting.app_id,
+            name = %waiting.name,
+            waited = ?waiting.asked.elapsed(),
+            why,
+            "no longer waiting on Valve's client for this game"
+        );
+        Some(waiting)
     }
 
     /// Valve's client has said something about itself, and a press may be
     /// waiting on it.
-    fn steam_client_said(&mut self, report: lxb_steam::ClientReport) {
+    fn steam_client_said(&mut self, ticket: lxb_steam::Ticket, report: lxb_steam::ClientReport) {
+        let request = ticket.request;
         match report {
             // Nothing to do but keep the splash up, which is already up — and
             // is already saying so: the splash goes up on [`launch::Doing::Steam`]
@@ -14093,34 +17684,103 @@ impl Shell {
             // the game is so much as asked for, and a picture with a spinner on
             // it for that long does not read as working, it reads as stuck.
             lxb_steam::ClientReport::Waking => {}
-            lxb_steam::ClientReport::Ready => self.start_the_waiting_game(),
+            lxb_steam::ClientReport::Ready => self.start_the_waiting_game(request),
             lxb_steam::ClientReport::Unavailable(why) => {
-                let Some(waiting) = self.awaiting_steam.take() else {
-                    // Nothing was waiting on the client, so this is one of the
-                    // presses that asked for the client *itself* — Open Steam,
-                    // Install with Steam, Verify — refused on the worker after
-                    // the press had already been taken. It still has to say so:
-                    // those rows promise a window of Steam's, and one that never
-                    // arrives with nothing said reads as a shell that ignored
-                    // the press.
-                    tracing::warn!(%why, "Valve's client refused a request");
-                    self.say_steam_would_not(&why);
-                    return;
+                let waiting = match self.awaiting_steam.answered(request) {
+                    steam::Answer::Waiting(waiting) => waiting,
+                    nobody => return self.late_word_from_the_client(&why, nobody),
                 };
                 // The splash was the shell's promise that something was
                 // starting, and now nothing is. Its own display's, and it goes
                 // before the explanation, so the explanation is not drawn
                 // behind it.
-                self.end_launch(waiting.panel);
+                self.end_launch(waiting.display);
                 self.say_steam_could_not_start_it(&waiting, &why);
+            }
+            // Nothing has been done to the client, and nothing will be until
+            // somebody says so. This is the one refusal here with a way out of
+            // it, and the way out is a question rather than a message.
+            lxb_steam::ClientReport::SomebodyElses(why) => {
+                let waiting = match self.awaiting_steam.answered(request) {
+                    steam::Answer::Waiting(waiting) => waiting,
+                    nobody => return self.late_word_from_the_client(&why.to_string(), nobody),
+                };
+                self.end_launch(waiting.display);
+                self.offer_to_move_steam_here(&waiting, &why);
+            }
+        }
+    }
+
+    /// Valve's client has answered a wake nobody is waiting on any more.
+    ///
+    /// Which is not the same as nobody ever having waited. A wake is a thread
+    /// that always answers, and the press that asked for it can be over by
+    /// then — its loading screen ran out of patience and said so. Saying it
+    /// again, in a second panel, over a start screen the user has already gone
+    /// back to, is the shell answering a question twice.
+    ///
+    /// With nothing abandoned either, this is a wake the shell asked for and
+    /// then forgot about, which is worth a panel and a line in the log.
+    fn late_word_from_the_client(&mut self, why: &str, nobody: steam::Answer) {
+        match nobody {
+            // Impossible: the caller matched this out. Said as an arm rather
+            // than as a panic, because there is nothing about a Steam message
+            // worth ending a session over.
+            steam::Answer::Waiting(_) => {}
+            steam::Answer::NoGame(steam::NoGame::ThePressEnded) => {
+                tracing::info!(%why, "Valve's client answered a press that had already ended");
+            }
+            // A wake this shell asked for on nobody's behalf, so that a game
+            // pressed later would start sooner. Nothing is on screen about it
+            // and nothing goes on screen about it failing — the session simply
+            // has no client ready, which is where every session that has not
+            // asked for one already stands.
+            steam::Answer::NoGame(steam::NoGame::NobodyAsked) => {
+                tracing::info!(%why, "the client started in the background did not come up");
+            }
+            // The one wake with nothing on the screen that still owes an
+            // answer: somebody pressed Start Steam and Steam did not start.
+            steam::Answer::NoGame(steam::NoGame::SteamWasPromised) => {
+                tracing::warn!(%why, "the client the Start Steam row promised did not come up");
+                self.say_steam_would_not(why);
+            }
+            steam::Answer::Unexpected => {
+                tracing::warn!(%why, "Valve's client refused a request nothing was waiting on");
+                self.say_steam_would_not(why);
             }
         }
     }
 
     /// The client is up; ask it for the game the press was about.
-    fn start_the_waiting_game(&mut self) {
-        let Some(waiting) = self.awaiting_steam.take() else {
-            return;
+    ///
+    /// `request` is which wake said so, and it is the whole of how this knows
+    /// there is a game to start. A wake that nobody is waiting on any more
+    /// answers exactly like one somebody is, and the difference between them is
+    /// a game opening over a start screen minutes after the shell said it had
+    /// not started.
+    fn start_the_waiting_game(&mut self, request: u64) {
+        let waiting = match self.awaiting_steam.answered(request) {
+            steam::Answer::Waiting(waiting) => waiting,
+            // The client came up after the press that asked for it had ended,
+            // or it came up for nobody at all. Emphatically nothing to do:
+            // starting a game now would open it over a start screen, with no
+            // loading screen, no dip and no warning, minutes after the shell
+            // said it had not started.
+            steam::Answer::NoGame(why) => {
+                tracing::info!(
+                    request,
+                    ?why,
+                    "Valve's client came up with no game waiting on this wake"
+                );
+                return;
+            }
+            steam::Answer::Unexpected => {
+                tracing::warn!(
+                    request,
+                    "Valve's client came up on a wake nothing asked for"
+                );
+                return;
+            }
         };
         tracing::info!(
             app_id = waiting.app_id,
@@ -14129,9 +17789,15 @@ impl Shell {
             "Valve's client is ready; asking it to start the game"
         );
         if let Err(why) = self.steam.play(waiting.app_id) {
-            self.end_launch(waiting.panel);
+            self.end_launch(waiting.display);
             return self.say_steam_could_not_start_it(&waiting, &why);
         }
+        // From here the client has a launch of its own to walk, and it may stop
+        // in the middle of it to ask somebody something — see
+        // [`Self::steam_stopped_to_ask`]. Started here rather than at the press,
+        // because until this line there is no launch for the client to have an
+        // opinion about.
+        self.steam.watch_this_launch(waiting.app_id);
         // From here the splash waits for a window, and only for a window. The
         // client may update the game, build its prefix or run an installer
         // first; none of that is visible from here and none of it is failure.
@@ -14140,7 +17806,7 @@ impl Shell {
         // have started something of its own while the client was coming up, and
         // moving *its* clock would give it the patience of a game nobody there
         // asked for.
-        if let Some(splash) = self.launch_on_mut(waiting.panel) {
+        if let Some(splash) = self.launch_on_mut(waiting.display) {
             splash.now_starting_through_steam(Instant::now());
         }
         // A game has the screen now, so the guide steps out of its way — the
@@ -14151,8 +17817,532 @@ impl Shell {
         self.needs_redraw = true;
     }
 
+    /// Valve's client has given up on the launch.
+    ///
+    /// **Reported off this machine on 2026-09-03, and it is a loop rather than
+    /// a failure.** A press on Counter-Strike 2 was refused twenty-one seconds
+    /// in with `AppError_19`, which is "update required" — said in a modal this
+    /// shell holds off the screen, so nothing anywhere said it. The same press
+    /// had put the update in Steam's schedule; Steam ran it, finished it
+    /// eighteen seconds after the refusal, and started nothing, because the
+    /// launch it belonged to was over. The loading screen then waited out its
+    /// patience over a game that was by then perfectly ready to play, and said
+    /// it had not started.
+    ///
+    /// So the answer is to ask again. Not at once — the refusal is Steam
+    /// saying it has work to do first, and a press repeated into the middle of
+    /// that work is refused again for the same reason — but when the work
+    /// stops, which is the moment the game becomes startable. The loading
+    /// screen stays up in the meantime and already says what Steam is doing;
+    /// see [`Steam::what_a_press_is_waiting_on`] and
+    /// [`Self::sync_the_launch_downloads`], where the second press is made.
+    ///
+    /// **Once.** A second refusal is about something else, and a press that
+    /// answered every refusal with another press would be a loading screen
+    /// asking for ever. Where there is no work to wait for, or where the press
+    /// has already been made twice, the loading screen comes down and says so:
+    /// the client has decided, and no window is coming.
+    fn steam_would_not_start_it(&mut self, refused: &lxb_steam::LaunchRefused) {
+        let app_id = refused.app_id;
+        // There is nothing left for that thread to report: the client has
+        // finished with this launch, whatever this shell does next.
+        self.steam.stop_watching_the_launch(app_id);
+        // Whether Steam is getting on with something that would make the same
+        // press work — the update it refused over, most of all. The same two
+        // sources the loading screen's own line is drawn from, so the screen
+        // that stays up is one that is saying something true.
+        let work_in_front_of_it = self.steam.what_a_press_is_waiting_on(app_id).is_some()
+            || self.steam.the_client_has_it_in_hand(app_id)
+            || self.steam.game(app_id).is_some_and(|game| {
+                // A copy that needs repairing is work in front of the launch by
+                // definition — Steam will not start a game whose files are
+                // wrong, and putting them right is what the press has just
+                // asked it to do. It is not `moving()`, and it must not be:
+                // that is the row's answer, and the row is right to go on
+                // saying the copy is broken while Steam mends it.
+                game.standing.moving() || game.standing == lxb_steam::library::Standing::Broken
+            });
+        let waiting_on_it = self
+            .launching
+            .iter()
+            .find(|splash| splash.game() == Some(app_id))
+            .map(|splash| splash.display);
+        let asked_again = work_in_front_of_it
+            && waiting_on_it
+                .and_then(|display| self.launch_on_mut(display))
+                .is_some_and(|splash| splash.ask_again_when_the_work_ends());
+        tracing::warn!(
+            app_id,
+            why = %refused.why,
+            splash = ?waiting_on_it,
+            work_in_front_of_it,
+            asked_again,
+            "Valve's client would not start this game"
+        );
+        if asked_again {
+            return;
+        }
+        let (from, name) = match self
+            .launching
+            .iter()
+            .find(|splash| splash.game() == Some(app_id))
+        {
+            Some(splash) => (splash.from, splash.name.clone()),
+            // No loading screen to take down. The press has already ended some
+            // other way — the user left it, the display went — and a panel
+            // about it now would be a panel about nothing.
+            None => return,
+        };
+        if let Some(display) = waiting_on_it {
+            self.end_launch(display);
+        }
+        // A press still waiting on a report from the client is not waiting any
+        // more, exactly as it is not when the client stops to ask.
+        self.stop_waiting_for_steam("Valve's client would not start the game");
+        let needs_an_update = self
+            .steam
+            .game(app_id)
+            .is_some_and(|game| game.update_required);
+        self.say_steam_would_not_start_it(from, name, app_id, needs_an_update);
+    }
+
+    /// Valve's client is on a step of the launch, and it is one worth saying.
+    ///
+    /// **Reported from use twice on 2026-09-04, both with a screenshot**, and
+    /// both a Valve window that came out from under this shell's loading
+    /// screen. First *"Launching Counter-Strike 2 / Processing Vulkan shaders
+    /// (0%)"* with `Skip` and `Cancel`, on a session driven with a controller
+    /// and no way to press either. Then *"Starting game / Counter-Strike 2 /
+    /// LAUNCHING / Downloading content (19%)"*, after this shell had already
+    /// said the game failed to start — a minute into an update the same press
+    /// had asked Steam for.
+    ///
+    /// Steam's desktop UI is where both of those windows come from; its own
+    /// gamepad build shows neither, and puts the line — and, for the shaders, a
+    /// `SKIP` button — on its launch screen instead. The shell's loading screen
+    /// **is** that screen here, so that is where this goes.
+    ///
+    /// The line is not set here — it is set where every other line on that
+    /// screen is set, once a frame, in [`Self::sync_the_launch_downloads`] —
+    /// because the two must not be able to disagree. What is set here is the
+    /// fact, and with it the press that goes with it.
+    ///
+    /// A step this shell has no words for takes the line off rather than
+    /// putting a name on it. Half the walk is over in a second — see
+    /// [`launch::words_for`] — and a line that flickered through five of them
+    /// on the way to a game is worse than the one the screen says already.
+    fn steam_is_working_on_the_launch(&mut self, step: &lxb_steam::Step) {
+        let doing = step
+            .task
+            .as_deref()
+            .and_then(launch::words_for)
+            .map(|doing| launch::Step {
+                doing,
+                how_far: step.how_far,
+                action_id: step.skip,
+            });
+        let Some(splash) = self
+            .launching
+            .iter_mut()
+            .find(|splash| splash.game() == Some(step.app_id))
+        else {
+            return;
+        };
+        splash.working_on(doing);
+        self.needs_redraw = true;
+    }
+
+    /// Let the game start with the shaders Steam has compiled so far.
+    ///
+    /// The one press a loading screen offers while it waits, and it is Valve's
+    /// own button: the client is holding the launch open and takes
+    /// [`lxb_steam::webui::SKIP_SHADERS`] to go on with it. Answered with the
+    /// button that starts things everywhere else in this shell, because that is
+    /// what it does — it starts the game.
+    ///
+    /// Nothing where there is nothing to press: a client that exposes no
+    /// interface can be watched compiling shaders and cannot be told to stop,
+    /// and the screen says so by offering nothing. See
+    /// [`launch::Launch::shaders_may_be_skipped`].
+    fn skip_the_shader_wait(&mut self) -> bool {
+        let Some(action_id) = self
+            .launch_on(self.focused_panel)
+            .and_then(launch::Launch::step_may_be_skipped)
+        else {
+            return false;
+        };
+        self.steam.skip_the_shaders(action_id);
+        // Taken off the screen at once rather than waited for. The client
+        // answers by walking on to the next step of the launch, which the
+        // watcher reports a second or two later — and a legend still offering
+        // a press that has been made reads as a press that did nothing.
+        if let Some(splash) = self
+            .display_at(self.focused_panel)
+            .and_then(|display| self.launch_on_mut(display))
+        {
+            splash.step_was_skipped();
+        }
+        self.needs_redraw = true;
+        true
+    }
+
+    /// And the panel for it, which says the one thing this shell knows.
+    ///
+    /// Valve's own name for the error is not on it. `AppError_19` is an
+    /// internal identifier, it is in English whatever language Steam is running
+    /// in, and it is not a sentence anybody should be shown — so what is said
+    /// is what the manifest on this disk says, and Open Steam is there for the
+    /// window that has Valve's own wording in it.
+    fn say_steam_would_not_start_it(
+        &mut self,
+        from: [f32; 4],
+        name: String,
+        app_id: u32,
+        needs_an_update: bool,
+    ) {
+        self.osk.dismiss_at_once();
+        let notes = match needs_an_update {
+            true => [
+                "Steam would not start this game.",
+                "It has an update to fetch first.",
+            ],
+            false => [
+                "Steam would not start this game.",
+                "Opening Steam will say why.",
+            ],
+        };
+        let mut choices = vec![menu::Entry::new(
+            menu::Command::SteamPlayAgain(app_id),
+            "Try Again",
+        )];
+        if self.steam.has_client() {
+            choices.push(menu::Entry::new(
+                menu::Command::SteamDo(lxb_steam::Doing::BigPicture),
+                "Open Steam",
+            ));
+        }
+        choices.push(menu::Entry::new(menu::Command::Dismiss, "Cancel"));
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note(notes[0].to_string()),
+                dialog::Line::Note(notes[1].to_string()),
+                dialog::Line::Rule,
+            ],
+            choices,
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// Valve's client has stopped the launch to ask somebody something.
+    ///
+    /// The failure this answers, reported from use: a game whose save in the
+    /// cloud disagreed with the one on the disk sat on the loading screen for
+    /// the whole of its patience, then said it did not start — while Valve's
+    /// client had a dialog up, off the screen, asking whether to play anyway.
+    /// The only way through it was to open Steam by hand and press the button.
+    ///
+    /// So the loading screen comes down and **the client is given sight**. Not
+    /// one window of it: the question is asked on the client's main window,
+    /// whose title is the one title [`a_hidden_window_is_a_question`] refuses
+    /// to let through, and a rule that let *that* through on a guess would let
+    /// the storefront through with it.
+    ///
+    /// Nothing is said, and that is deliberate. Valve's own dialog names the
+    /// game and states the question; a panel of this shell's in front of it
+    /// would be one more thing to dismiss before the person can reach the
+    /// button they need. And the shell does not answer it either — a save
+    /// conflict is somebody's progress, and this is the same rule that stops
+    /// the installer clicking through an agreement nobody read.
+    ///
+    /// Sight is taken back the way it always is: [`Self::sync_steam_sight`]
+    /// notices the window has gone. Answering the question starts the game,
+    /// whose window is named by its own process, so it is still known to be a
+    /// game — see [`Self::steam_windows`].
+    fn steam_stopped_to_ask(&mut self, asking: &lxb_steam::Asking) {
+        let waiting_on_it = self
+            .launching
+            .iter()
+            .find(|splash| splash.game() == Some(asking.app_id))
+            .map(|splash| splash.display);
+        tracing::info!(
+            app_id = asking.app_id,
+            task = %asking.task,
+            splash = ?waiting_on_it,
+            "letting Valve's client be seen so this launch can be answered"
+        );
+        self.osk.dismiss_at_once();
+        // Before anything is put in its place, so neither the shell's own panel
+        // nor Valve's window comes up behind a loading screen on its way out.
+        let asked_on = waiting_on_it.or_else(|| self.display_at(self.focused_panel));
+        if let Some(display) = waiting_on_it {
+            self.end_launch(display);
+        }
+        // A press that was still waiting on a report from the client is not
+        // waiting any more: the client answered by asking. Without this the
+        // gate swallows the next press.
+        self.stop_waiting_for_steam("Valve's client stopped this launch to ask something");
+        // This game's watch, and no other. The client has said what it stopped
+        // on and there is nothing left for that thread to report; another
+        // display's game may still be opening, and its watch is not this
+        // launch's to end.
+        self.steam.stop_watching_the_launch(asking.app_id);
+        match asking.question.clone().zip(asked_on) {
+            Some((question, display)) => self.put_the_question(asking.app_id, display, question),
+            // Not one this shell has a panel for. The older answer, and still
+            // the right one: Valve's own window says it, and somebody with a
+            // pointer can answer it there.
+            None => self.steam_may_be_seen(true),
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Put what the client is asking on the shell's own screen.
+    ///
+    /// Valve owns the words — every line and every label came out of the
+    /// client's own localisation table, in the language it is running in — and
+    /// the shell owns the buttons, because Valve's dialog for these is a
+    /// desktop one and a person holding a controller cannot press it. That was
+    /// the whole of the report: "the controller user won't be able to press a
+    /// button easily".
+    fn put_the_question(
+        &mut self,
+        app_id: u32,
+        display: Display,
+        question: lxb_steam::webui::Question,
+    ) {
+        let name = self
+            .steam
+            .game(app_id)
+            .map(|game| game.name.clone())
+            .unwrap_or_else(|| "This game".to_string());
+        let asked = LaunchQuestion {
+            app_id,
+            name,
+            display,
+            // Where the panel grows from, which is read again when it is
+            // actually shown: a question that had to wait its turn grows out
+            // of wherever the screen is when its turn comes, not out of where
+            // it was when the client stopped.
+            from: self.dialog_origin(),
+            question,
+        };
+        // One panel at a time, because there is one panel. A second display's
+        // game stopping while the first display's question is up joins the
+        // queue rather than taking the screen from it — see
+        // [`Self::launch_questions_waiting`].
+        if self.launch_question.is_some() {
+            tracing::info!(
+                app_id,
+                waiting = self.launch_questions_waiting.len() + 1,
+                "another launch has stopped to ask while a question is already up"
+            );
+            self.launch_questions_waiting.push_back(asked);
+            return;
+        }
+        self.show_the_launch_question(asked);
+    }
+
+    /// Put one of them on the screen, and remember it as the one that is up.
+    fn show_the_launch_question(&mut self, asked: LaunchQuestion) {
+        let LaunchQuestion {
+            app_id,
+            name,
+            display,
+            // Read again here rather than carried, for the reason
+            // [`Self::put_the_question`] gives: a question that waited its
+            // turn grows out of the screen as it is now.
+            from: _,
+            question,
+        } = asked;
+        let from = self.dialog_origin();
+        // The game at the head, as every other panel about a game is headed,
+        // and then Steam's own sentences under it. Each is broken between words
+        // rather than cut mid-word by the drawing: a note is one line, and
+        // these are somebody else's sentences — the same problem, and the same
+        // answer, as polkit's messages. See [`wrapped`].
+        let mut lines = vec![dialog::Line::Heading(name.clone())];
+        for said in &question.body {
+            for line in wrapped(said, MESSAGE_WIDTH, LAUNCH_QUESTION_LINES) {
+                lines.push(dialog::Line::Note(line));
+            }
+        }
+        lines.push(dialog::Line::Rule);
+        let buttons = question
+            .answers
+            .iter()
+            .enumerate()
+            .map(|(at, answer)| {
+                menu::Entry::new(menu::Command::SteamLaunchAnswer(at), answer.label.clone())
+            })
+            .collect();
+        // On the first answer rather than on the refusal. Steam's own dialog
+        // opens on the same one, and the refusal is the last row either way —
+        // a panel that opened on Cancel would be a panel that reads as a
+        // warning about the press rather than a question about the game.
+        self.dialog
+            .ask(from, Some(icons::STEAM.to_string()), lines, buttons, 0);
+        self.launch_question = Some(LaunchQuestion {
+            app_id,
+            name,
+            display,
+            from,
+            question,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// Carry one answer back, and put the loading screen back where it was.
+    ///
+    /// The launch never ended: the client is holding it open waiting for
+    /// exactly this. So a yes goes back to a loading screen for the same game
+    /// on the same display, and the watch is armed again — a launch can stop
+    /// twice, on a cloud save and then on something else, and the second one
+    /// must not be the one nobody hears about.
+    fn answer_the_launch(&mut self, at: usize) {
+        let Some(asked) = self.launch_question.take() else {
+            return;
+        };
+        let Some(answer) = asked.question.answers.get(at).cloned() else {
+            // Not one of its rows, so the question is still the one on screen.
+            self.launch_question = Some(asked);
+            return;
+        };
+        tracing::info!(
+            app_id = asked.app_id,
+            answer = %answer.label,
+            carry = ?answer.carry,
+            "answering the question Valve's client stopped this launch on"
+        );
+        self.steam
+            .answer_the_launch(asked.question.action_id, answer.carry.clone());
+        if !matches!(answer.carry, lxb_steam::webui::Carry::Go(_)) {
+            // Nothing is starting, and the press is over. Said by the panel
+            // going away and the bar coming back, which is what a cancelled
+            // press looks like everywhere else in this shell.
+            return;
+        }
+        let splash = self.steam_splash(asked.app_id, &asked.name, asked.display, asked.from);
+        self.begin_launch(splash);
+        if let Some(splash) = self.launch_on_mut(asked.display) {
+            splash.now_starting_through_steam(Instant::now());
+        }
+        self.steam.watch_this_launch(asked.app_id);
+        self.needs_redraw = true;
+    }
+
+    /// Ask the next launch question there is, once the screen is free for it.
+    ///
+    /// Its own step of the loop rather than something the answered question
+    /// does on its way out, and for two reasons. The panel that is going is
+    /// still folding at the moment it is answered — raising the next one there
+    /// would put a panel up inside the animation taking the last one down —
+    /// and the screen is freed by more than an answer: the panel can be
+    /// dismissed, replaced, or taken away with the display it was on. This
+    /// asks the one question that matters at each of them, which is whether
+    /// there is a screen free and something to put on it.
+    ///
+    /// A question whose display has gone is answered rather than asked. The
+    /// client is holding that launch open and there is no screen left to open
+    /// the game on, so it is stopped — the same answer the loading screen on
+    /// that display already got. See [`Self::advance_launch`].
+    fn sync_launch_questions(&mut self) {
+        // The one on screen first, because it is asking about a game that has
+        // nowhere left to open. Answered with a no: the client is holding the
+        // launch open waiting for somebody, and a yes would be a game started
+        // onto a display that is not there.
+        //
+        // The panel itself is left where it is rather than taken down. The
+        // dialog is the session's one panel and this shell cannot ask it which
+        // question it is currently showing, so closing it here would sometimes
+        // close somebody else's — a polkit prompt, a Delete question — raised
+        // over this one in the meantime. What happens instead is what happens
+        // to any withdrawn question: the panel folds on the next row pressed,
+        // and the press does nothing, because there is nothing left for it to
+        // answer.
+        if self
+            .launch_question
+            .as_ref()
+            .is_some_and(|asked| self.panel_at(asked.display).is_none())
+        {
+            self.abandon_the_launch_question("its display was unplugged");
+        }
+        if self.launch_questions_waiting.is_empty() {
+            return;
+        }
+        let here: HashSet<Display> = self.panels.iter().map(|panel| panel.id).collect();
+        let (waiting, gone): (VecDeque<LaunchQuestion>, VecDeque<LaunchQuestion>) =
+            std::mem::take(&mut self.launch_questions_waiting)
+                .into_iter()
+                .partition(|asked| here.contains(&asked.display));
+        self.launch_questions_waiting = waiting;
+        for asked in gone {
+            tracing::info!(
+                app_id = asked.app_id,
+                "this launch's display went away before its question could be asked"
+            );
+            self.steam
+                .answer_the_launch(asked.question.action_id, lxb_steam::webui::Carry::Stop);
+        }
+
+        if self.launch_question.is_some() || self.dialog.is_open() {
+            return;
+        }
+        let Some(asked) = self.launch_questions_waiting.pop_front() else {
+            return;
+        };
+        tracing::info!(
+            app_id = asked.app_id,
+            still_waiting = self.launch_questions_waiting.len(),
+            "asking the launch question that was waiting its turn"
+        );
+        self.show_the_launch_question(asked);
+    }
+
+    /// Let go of a question nobody answered.
+    ///
+    /// A panel closed by anything other than one of its own rows is a question
+    /// that was not answered, and an unanswered question about a launch has to
+    /// be *said* — the client is holding the launch open until somebody does,
+    /// and a game action left standing is the next press of that game walking
+    /// into a flow that is already in the middle of something.
+    fn abandon_the_launch_question(&mut self, why: &str) {
+        let Some(asked) = self.launch_question.take() else {
+            return;
+        };
+        tracing::info!(
+            app_id = asked.app_id,
+            why,
+            "the launch question was not answered"
+        );
+        self.steam
+            .answer_the_launch(asked.question.action_id, lxb_steam::webui::Carry::Stop);
+    }
+
+    /// Let go of every one of them: the one on screen and the ones still
+    /// waiting for a screen.
+    ///
+    /// For the one thing that ends all of them at once: the Steam integration
+    /// being turned off under the whole session. Each is still a launch Valve's
+    /// client is holding open, so each is answered rather than dropped.
+    fn abandon_every_launch_question(&mut self, why: &str) {
+        self.abandon_the_launch_question(why);
+        for asked in std::mem::take(&mut self.launch_questions_waiting) {
+            tracing::info!(
+                app_id = asked.app_id,
+                why,
+                "a launch question that never reached the screen was not answered"
+            );
+            self.steam
+                .answer_the_launch(asked.question.action_id, lxb_steam::webui::Carry::Stop);
+        }
+    }
+
     /// Valve's client could not be brought up, so the game does not start.
-    fn say_steam_could_not_start_it(&mut self, waiting: &AwaitingSteam, why: &str) {
+    fn say_steam_could_not_start_it(&mut self, waiting: &steam::Awaiting, why: &str) {
         self.osk.dismiss_at_once();
         tracing::warn!(app_id = waiting.app_id, %why, "the game was not started");
         let lines = vec![
@@ -14161,7 +18351,7 @@ impl Shell {
             dialog::Line::Note(why.to_string()),
             dialog::Line::Rule,
         ];
-        let from = if self.focused_panel == waiting.panel {
+        let from = if self.display_at(self.focused_panel) == Some(waiting.display) {
             self.dialog_origin()
         } else {
             waiting.from
@@ -14182,21 +18372,177 @@ impl Shell {
     /// minutes promising the user that something was happening. What went
     /// wrong is not knowable from here — the game is the client's child and
     /// the client says nothing about it — so this says only what is true.
-    fn say_steam_never_started_it(&mut self, from: [f32; 4], name: String) {
-        tracing::warn!(%name, "Steam never opened a window for this game");
+    fn say_steam_never_started_it(&mut self, gave_up: GaveUp) {
+        let GaveUp {
+            from,
+            name,
+            app_id,
+            before_the_client_was_up,
+        } = gave_up;
+        tracing::warn!(
+            %name,
+            app_id,
+            before_the_client_was_up,
+            "Steam never opened a window for this game"
+        );
+        // Two different waits, and so two different things to say. Neither of
+        // them is over as far as Steam is concerned — the client is still
+        // coming up, or the game is still loading — which is why the second
+        // line says what is probably happening rather than what went wrong.
+        let notes = match before_the_client_was_up {
+            true => [
+                "Steam did not finish starting in time.",
+                "It may still be starting, or still updating itself.",
+            ],
+            false => [
+                "Steam did not open this game.",
+                "It may still be updating it, or it may have stopped.",
+            ],
+        };
+        // Three answers rather than one, because "OK" is not one. Whoever is
+        // reading this wanted to play a game and has not got one, and the two
+        // things that would help — asking again, and being shown the Steam that
+        // was not answering — were both a whole navigation away.
+        let mut choices = vec![menu::Entry::new(
+            menu::Command::SteamPlayAgain(app_id),
+            "Try Again",
+        )];
+        if self.steam.has_client() {
+            choices.push(menu::Entry::new(
+                menu::Command::SteamDo(lxb_steam::Doing::BigPicture),
+                "Open Steam",
+            ));
+        }
+        choices.push(menu::Entry::new(menu::Command::Dismiss, "Cancel"));
         self.dialog.ask(
             from,
             Some(icons::STEAM.to_string()),
             vec![
                 dialog::Line::Heading(name),
-                dialog::Line::Note("Steam did not open this game.".to_string()),
-                dialog::Line::Note(
-                    "It may still be updating it, or it may have stopped.".to_string(),
-                ),
+                dialog::Line::Note(notes[0].to_string()),
+                dialog::Line::Note(notes[1].to_string()),
                 dialog::Line::Rule,
             ],
-            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            choices,
             0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// Valve's client is running and is not this session's to move.
+    ///
+    /// The one Steam refusal that is a question rather than a message, and it
+    /// is a question because the answer costs somebody something: a client on
+    /// another display session is stopped, with whatever it was downloading,
+    /// and a client signed in to another account is signed out of it. Neither
+    /// is a thing to do to somebody without asking, and both used to happen
+    /// without anybody being asked.
+    ///
+    /// The refusal itself says which of the two it is and what it costs; that
+    /// wording lives with the evidence, in `lxb_steam::client::wake`.
+    fn offer_to_move_steam_here(
+        &mut self,
+        waiting: &steam::Awaiting,
+        why: &lxb_steam::client::NotOurs,
+    ) {
+        self.osk.dismiss_at_once();
+        tracing::info!(app_id = waiting.app_id, %why, "offering to move Valve's client here");
+        let from = if self.display_at(self.focused_panel) == Some(waiting.display) {
+            self.dialog_origin()
+        } else {
+            waiting.from
+        };
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(waiting.name.clone()),
+                dialog::Line::Note(why.what.clone()),
+                dialog::Line::Note(why.cost.clone()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(
+                    menu::Command::SteamMoveClientHere(waiting.app_id),
+                    "Move Steam Here",
+                ),
+                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+            ],
+            // On "Not Now". This one takes something away from somebody who is
+            // not in the room, so the answer it opens on is the one that does
+            // not.
+            1,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The person has been asked and said yes: move Valve's client to this
+    /// session and this account, and start the game that was waiting.
+    fn move_steam_here(&mut self, app_id: u32) {
+        tracing::info!(app_id, "moving Valve's client to this session");
+        // One wake, carrying the permission. It used to be two — a take-over
+        // asked for here and an ordinary wake asked for by the press below —
+        // and the second was silently dropped by the worker's one-at-a-time
+        // rule, so the press was answered by a wake it had not asked for.
+        self.play_steam_game_again(app_id, true);
+    }
+
+    /// Ask before signing out, and say exactly what signing out is.
+    ///
+    /// Three things, because all three used to happen on a press with no
+    /// warning and only the first was in the row's name. LineXinBar forgets the
+    /// account and revokes the credential Steam gave it; Valve's client is
+    /// signed out with it and told to stop signing itself back in; and anything
+    /// this session had asked that client to fetch stops being watched, which
+    /// on a download somebody started five minutes ago is a real loss.
+    ///
+    /// And the one thing it is *not*: Valve's client keeps its own record of
+    /// the accounts it knows, which nothing outside that client can reach. A
+    /// Steam opened by hand afterwards may still come up signed in, and the way
+    /// to change that is in Steam. Saying so here is the difference between an
+    /// honest sign-out and one the next person at the machine discovers.
+    fn offer_to_sign_out_of_steam(&mut self) {
+        let account = self
+            .steam
+            .account()
+            .map(str::to_string)
+            .unwrap_or_else(|| "Steam".to_string());
+        let mut lines = vec![
+            dialog::Line::Heading(account),
+            dialog::Line::Note("LineXinBar forgets this account.".to_string()),
+        ];
+        let downloads = self.steam.downloads_under_way();
+        if downloads > 0 {
+            lines.push(dialog::Line::Note(match downloads {
+                1 => "A download is under way and stops.".to_string(),
+                many => format!("{many} downloads are under way and stop."),
+            }));
+        }
+        lines.push(dialog::Line::Note(
+            "Steam itself may still remember it.".to_string(),
+        ));
+        lines.push(dialog::Line::Rule);
+
+        let mut choices = vec![menu::Entry::new(
+            menu::Command::SteamSignOutNow,
+            "Sign Out of LineXinBar",
+        )];
+        if self.steam.has_client() {
+            choices.push(menu::Entry::new(
+                menu::Command::SteamDo(lxb_steam::Doing::Open),
+                "Open Steam to Finish",
+            ));
+        }
+        choices.push(menu::Entry::new(menu::Command::Dismiss, "Cancel"));
+        let from = self.dialog_origin();
+        // On Cancel, the way every question that takes something away opens.
+        let resting = choices.len() - 1;
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            lines,
+            choices,
+            resting,
         );
         self.needs_redraw = true;
     }
@@ -14226,6 +18572,38 @@ impl Shell {
         self.needs_redraw = true;
     }
 
+    /// A game with an update waiting, pressed with no way to reach Steam.
+    ///
+    /// (See [`cannot_be_played_offline`], which is the rule; this is what it
+    /// puts on the screen.)
+    ///
+    /// Valve's rule and not this shell's: a client in Offline Mode starts only
+    /// what is fully up to date, and answers everything else with "This game is
+    /// not ready to be played in Offline Mode." Said here rather than found out
+    /// two and a half minutes later, which is what the loading screen would
+    /// otherwise spend waiting for a window the client was never going to open.
+    fn say_it_is_not_up_to_date(&mut self, name: &str) {
+        self.osk.dismiss_at_once();
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(name.to_string()),
+                dialog::Line::Note(
+                    "Steam cannot be reached, and this game has an update waiting.".to_string(),
+                ),
+                dialog::Line::Note(
+                    "Only games that are fully up to date can be played offline.".to_string(),
+                ),
+                dialog::Line::Rule,
+            ],
+            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
     /// Take in whatever the Steam worker has said, and put it on the bar.
     ///
     /// Three things can have changed and they are answered separately, because
@@ -14234,12 +18612,43 @@ impl Shell {
     /// and the sign-in panel is a modal that may have to be raised, redrawn or
     /// taken away.
     fn sync_steam(&mut self) {
-        let changed = self.steam.sync();
-        if changed.account {
+        // Before the pass, so a list that arrives answers the frame it was
+        // asked on. Asked every frame the column is open rather than once when
+        // it is entered: the answer is remembered, so the second and every
+        // later frame costs a lookup — and there is no single moment "entered"
+        // could be hung off that a second display standing in the same column
+        // would not miss.
+        if self.standing_in_the_compatibility_tools() {
+            self.steam
+                .ask_about_compatibility(lxb_steam::webui::Which::OtherTitles);
+        }
+        let mut changed = self.steam.sync();
+        // The account and how far away Steam is are the same row, so either
+        // one moving rebuilds it. They are two different facts and both belong
+        // on the one line the row has — see [`apps::Service::new`], which is
+        // where the two are weighed against each other.
+        if changed.account || changed.reach {
             let account = self.steam.account().map(str::to_string);
-            tracing::info!(?account, "the Steam account changed");
-            let shifted = apps::offer_steam(&mut self.lattice.categories, account);
+            let standing = self.steam.standing();
+            tracing::info!(?account, ?standing, "the Steam row changed");
+            let shifted = apps::offer_steam(&mut self.lattice.categories, account, standing);
             self.absorb(shifted);
+        }
+        // And the moment Settings > Games > Steam > Start with the shell is
+        // waiting for. It is here rather than beside the first frame because
+        // the client is signed in with *this session's* credential, and at the
+        // frame the shell comes up on there is not one yet: the stored session
+        // is a round trip to Steam, or a file the worker has not read. So the
+        // wake is asked for on the pass the account arrives on, which is the
+        // earliest it could ever have been asked for.
+        //
+        // On the account changing rather than every pass, so a session spends
+        // one message on this and not one a frame. That also makes signing in
+        // by hand ask for it, which is the same answer to the same question:
+        // the setting says this machine wants a client ready, and it has just
+        // become possible to have one.
+        if changed.account && self.steam.account().is_some() && settings::steam_at_startup() {
+            self.start_steam_in_the_background();
         }
         if changed.library {
             let rows = self.steam.rows();
@@ -14251,14 +18660,140 @@ impl Shell {
         }
         // After the column and the panel, because a failure puts a modal up
         // and the bar it is drawn over should already be the new one.
-        if let Some(report) = changed.client {
-            self.steam_client_said(report);
+        for (ticket, report) in changed.client {
+            self.steam_client_said(ticket, report);
+        }
+        // Its own channel, and so its own answer: this belongs to a press that
+        // promised a window of Steam's own and never got one, and it says so
+        // whether or not a game is starting on some other display at the time.
+        if let Some(refused) = changed.hand_over {
+            self.steam_would_not_take_it(&refused);
+        }
+        // Before the rest of the pass, because it takes a loading screen down:
+        // anything else that drew this frame would draw behind it.
+        if let Some(asking) = changed.asking {
+            self.steam_stopped_to_ask(&asking);
+        }
+        // And a launch the client will not walk at all, which is the same
+        // shape of failure with a different answer: nothing is waiting to be
+        // answered, so there is nothing to be shown and nobody to show it to.
+        if let Some(refused) = changed.launch_refused {
+            self.steam_would_not_start_it(&refused);
+        }
+        // And a step of a launch Valve's client is getting on with, which is
+        // neither a failure nor a question: it is a wait to be drawn, and for
+        // one of them a wait with something to press.
+        if let Some(step) = changed.step {
+            self.steam_is_working_on_the_launch(&step);
         }
         for answer in changed.installed {
             self.steam_ended(answer);
         }
-        if changed.account || changed.library {
+        // A list somebody is standing in front of waiting for. It replaces
+        // whatever the panel is showing rather than opening one of its own —
+        // the menu is already open, on the row that asked — and the Settings
+        // row that asks the same question of the whole machine is redrawn from
+        // the same answer.
+        if let Some(which) = changed.compat {
+            self.steam_said_what_runs_it(which);
+        }
+        // And a choice the client would not take. Its own panel because there
+        // is nothing else to say it on: the menu was answered and put away on
+        // the press, so a refusal with no panel is a row that appeared to work.
+        if let Some(why) = changed.compat_refused {
+            self.say_steam_would_not(&why);
+        }
+        // And what the corner of the open menu says. Told every pass rather
+        // than on a change, exactly as the media card is: what goes on the card
+        // is a percentage that moves on its own clock, and the card itself has
+        // to be up before the frame that would have noticed it. This is also
+        // where the picture is asked for — `sync_thumbnails` runs a few lines
+        // after this in the loop and reads the card to know which game's icon
+        // is worth having.
+        let coming = self
+            .steam
+            .downloading()
+            .or_else(|| self.what_a_waiting_press_is_watching())
+            // And last, work the client has in hand that neither of those
+            // would say: a shader cache over a game that is on the disk and
+            // plays, with nobody standing in front of a loading screen waiting
+            // for it. Measured on this machine on 2026-09-04 — 190 MB fetched
+            // under `StateFlags 4` from the first byte to the last, said
+            // nowhere in the shell at all. See
+            // [`steam::Steam::what_the_client_is_getting_on_with`].
+            .or_else(|| self.steam.what_the_client_is_getting_on_with());
+        // A download only. The second kind of card is work Steam is doing
+        // before it will open a window — a shader cache, an update it has not
+        // written down — and a game that was playable throughout has not
+        // "finished downloading" when that ends. See [`steam::Coming`].
+        self.a_download_ended(
+            coming
+                .as_ref()
+                .filter(|coming| coming.a_download)
+                .map(|coming| coming.app_id),
+        );
+        self.guide.set_downloading(coming);
+        // Every one of the three that a row is built from, and `reach` is not
+        // the afterthought it looks like: Steam answering changes one line of
+        // one row and nothing else, so this is the only thing that would ask
+        // for the frame that draws it.
+        if changed.account || changed.library || changed.reach {
             self.needs_redraw = true;
+        }
+        // Somebody the account knows signed in, started a game or changed
+        // their name. It costs one frame and only while the panel is showing
+        // them: a roster arriving with nothing on screen to draw it on is a
+        // list to be read the next time the button is pressed.
+        if changed.friends && self.friends.is_on_screen() {
+            // The list under the window is a different list. Where it is
+            // standing has to be settled against the new one — and this one
+            // *does* glide, unlike the snap when the panel is raised: somebody
+            // signing out is the list moving while it is being read, and it
+            // should be seen to move.
+            self.friends.settle(self.steam.roster());
+            self.needs_redraw = true;
+        }
+        // Something in a conversation moved: a message arrived, a send was
+        // answered, a history came in, somebody started typing. Only worth a
+        // frame while the panel is on screen, on exactly the terms the roster
+        // is — and one more thing besides, which is that a message arriving
+        // while the reader is at the foot of the column carries them with it.
+        // Somebody reading back through a conversation is *not* carried; being
+        // dragged to the bottom by a message is the one thing a chat panel must
+        // never do to somebody in the middle of reading.
+        if changed.chat {
+            if self.friends.at_the_latest() {
+                self.friends.show_the_latest();
+            }
+            if self.friends.is_on_screen() {
+                self.needs_redraw = true;
+            }
+        }
+        // A CM session came up. The conversation on screen is missing whatever
+        // was said while the connection was down — Steam pushes at sessions,
+        // and this one was not there — so it is asked for again. Nothing that
+        // is already drawn moves: history merges by Steam's own key.
+        if changed.reconnected {
+            if let Some(with) = self.friends.talking_to() {
+                self.steam.open_conversation(with);
+            }
+        }
+        // And the ones that arrived for a conversation nobody is looking at.
+        // Announced whether or not the panel is up: the whole reason to
+        // announce something is that the person is somewhere else.
+        for (from, body) in std::mem::take(&mut changed.messages) {
+            self.announce_a_message(from, body, Instant::now());
+        }
+        // A different account is a different list of people, so the highlight
+        // goes back to the top rather than staying on whichever row number it
+        // was on — and every conversation goes with it. The store has already
+        // thrown its half away; this is the panel's.
+        if changed.account {
+            self.friends.start_again();
+            if self.friends.nothing_to_say() {
+                self.close_the_board();
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -14530,7 +19065,8 @@ impl Shell {
     /// question on screen at once.
     fn rebuild_retroarch(&mut self) {
         let note = self.retroarch.note();
-        let shifted = apps::offer_retroarch(&mut self.lattice.categories, note);
+        let arriving = self.retroarch.arriving();
+        let shifted = apps::offer_retroarch(&mut self.lattice.categories, note, arriving);
         self.absorb(shifted);
         let picking = self
             .picking
@@ -14772,7 +19308,7 @@ impl Shell {
             ],
             vec![
                 menu::Entry::new(menu::Command::ChooseRomsFolder, "Choose folder"),
-                menu::Entry::new(menu::Command::Dismiss, "Not now"),
+                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
             ],
             0,
         );
@@ -15443,7 +19979,7 @@ impl Shell {
             Some(retroarch::mark().to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Not now"),
+                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
                 menu::Entry::new(menu::Command::ChooseBiosFolder, "Choose folder"),
             ],
             // On the answer that gets the game played, for the reason the core
@@ -15694,11 +20230,16 @@ impl Shell {
 
     /// A game has finished moving on or off the disk, one way or the other.
     ///
-    /// Only the ways that did not work are announced. One that worked has
-    /// already said so on the bar — the row it was counting up on now reads as
-    /// an installed game, or as one that is not there any more — and a modal
+    /// Only the ways that did not work raise anything **here**. One that worked
+    /// has already said so on the bar — the row it was counting up on now reads
+    /// as an installed game, or as one that is not there any more — and a modal
     /// over the top of that would be the shell interrupting somebody to tell
     /// them what they are looking at.
+    ///
+    /// A finished *download* is announced, quietly, and not from here: it is
+    /// noticed where a download started in Steam's own window can be noticed
+    /// too, which is the card in the corner of the guide losing its game. See
+    /// [`Shell::a_download_ended`].
     fn steam_ended(&mut self, answer: steam::Ended) {
         let (app_id, lines, rows) = match answer {
             steam::Ended::Done { .. } | steam::Ended::Removed { .. } => {
@@ -15719,6 +20260,32 @@ impl Shell {
                     vec![
                         dialog::Line::Note(format!("This game has {what} first.")),
                         dialog::Line::Note("Steam has to ask that itself.".to_string()),
+                    ],
+                    vec![
+                        menu::Entry::new(
+                            menu::Command::SteamInstallWithSteam(app_id),
+                            "Install with Steam",
+                        )
+                        .glyph(icons::LAUNCH),
+                        menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                    ],
+                )
+            }
+            // Nothing went wrong here either, and the answer is the same
+            // window — but the wording is not, because this is not a question
+            // the game is asking. Valve's private interface has moved under
+            // this shell, and what the user needs to know is that Steam can
+            // still do it, not that their game wants a licence agreeing to.
+            steam::Ended::Failed {
+                app_id,
+                why: lxb_steam::Stopped::NotFromHere(why),
+            } => {
+                tracing::warn!(app_id, %why, "this Steam cannot be driven from here");
+                (
+                    app_id,
+                    vec![
+                        dialog::Line::Note(why),
+                        dialog::Line::Note("Steam can still install it itself.".to_string()),
                     ],
                     vec![
                         menu::Entry::new(
@@ -15936,10 +20503,18 @@ impl Shell {
                 .map(|game| game.name.clone())
                 .unwrap_or_else(|| "Steam".to_string())
         };
-        self.keep_steam_out_of_sight(false);
-        // Handed to the client rather than started as a program: the client is
-        // already running, and a second one would exit the moment it had
-        // passed the request to the first.
+        self.steam_may_be_seen(true);
+        // Handed to the client rather than started as a program: where one is
+        // running, a second would exit the moment it had passed the request to
+        // the first.
+        //
+        // **A row that names a title may take as long as starting Steam takes**,
+        // and it did not use to. A `steam:` URL about a game is delivered only
+        // to a client this session has woken and proved — see
+        // `lxb_steam::hand_over_to_a_proven_client` — because handing one to a
+        // client started from cold is handing it to whichever account that
+        // client remembered. Sight is given back first either way, which is
+        // what makes the wait legible: what appears is Steam's own window.
         if let Err(why) = self.steam.tell(app_id, doing) {
             tracing::warn!(%name, %why, "Steam would not take that");
             self.say_no_steam_client(&name);
@@ -16241,6 +20816,7 @@ impl Shell {
             service.account.is_some(),
             self.steam_column().is_some(),
             self.steam.has_client(),
+            self.steam.reach().online(),
         );
         Some((
             anchor,
@@ -16565,7 +21141,10 @@ impl Shell {
         // panel holding that field still standing and still answerable, and
         // everything else belongs to the application underneath — which is why
         // nothing outside the keys reaches us there at all.
-        if focused && self.keyboard_visible() && self.osk.is_open() {
+        // The board is the one thing here that is not asked of the driven
+        // display: it is on whichever screen Settings > Input names, and a
+        // press on its keys has to land there. See [`Shell::keyboard_panel`].
+        if index == self.keyboard_panel() && self.keyboard_visible() && self.osk.is_open() {
             if let Some((row, column)) = ui::keyboard_key_at(x, y, width, height) {
                 return Spot::Key(row, column);
             }
@@ -16587,6 +21166,25 @@ impl Shell {
 
         if focused && self.context_menu.is_open() {
             return self.menu_spot_at(x, y, width, height);
+        }
+
+        // The friends list, which is drawn over the guide and over the bar and
+        // takes every button while it is up. `is_on_screen` rather than
+        // `is_open` would be wrong here for once: a panel on its way out has
+        // already handed the buttons back, and a click that pressed a row of it
+        // as it left would press a list the user has dismissed.
+        if focused && self.friends.is_open() {
+            return match ui::friends_hit(self.friends_panel(), x, y, width, height) {
+                ui::FriendsSpot::Row(person) => Spot::FriendsRow(person),
+                ui::FriendsSpot::Status => Spot::FriendsStatus,
+                ui::FriendsSpot::Track(at) => Spot::FriendsTrack(at),
+                ui::FriendsSpot::Message(mark) => Spot::FriendsMessage(mark),
+                ui::FriendsSpot::Compose => Spot::FriendsCompose,
+                ui::FriendsSpot::Again => Spot::FriendsAgain,
+                ui::FriendsSpot::ChatTrack(at) => Spot::FriendsChatTrack(at),
+                ui::FriendsSpot::Panel => Spot::Nothing,
+                ui::FriendsSpot::Outside => Spot::OutsideFriends,
+            };
         }
 
         // An application's file question, which has taken the display from that
@@ -16639,6 +21237,7 @@ impl Shell {
         let slots = self.gpu.as_ref().map(|gpu| Slots {
             gpu,
             art: &self.art,
+            avatars: &self.avatars,
             drained: &self.drained,
         });
         for row in 0..self.context_menu.entries().len() {
@@ -16794,15 +21393,54 @@ impl Shell {
             // on that button at once: a hand that has come this far has already
             // said which of the three it means.
             Spot::Transport(what) => (self.guide.select_transport(what, closable), true),
+            // A row of the friends list stands still, so hovering it is
+            // selecting it — the sidebar's rule and the menu's, and the same
+            // one the column of names is drawn to. It does not scroll: see
+            // [`friends::Friends::point_at`], which is where the reason a
+            // pointer must not move the list under itself is written down.
+            Spot::FriendsRow(person) => (
+                self.friends.point_at(person, self.steam.roster()),
+                self.friends.selected(self.steam.roster().friends.len()) == person
+                    && !self.friends.on_status(self.friends_head_is_a_button()),
+            ),
+            // And the head's status, which stands just as still. It is taken on
+            // the hover and pressed on the click, like a row — the whole panel
+            // answers a pointer the same way or none of it does.
+            Spot::FriendsStatus => (
+                self.friends.point_at_status(),
+                self.friends.on_status(self.friends_head_is_a_button()),
+            ),
+            // And a conversation's own three, on exactly the same terms: a
+            // message, the field and the retry all stand still, so a hand
+            // resting on one takes it.
+            Spot::FriendsMessage(mark) => (
+                self.friends.point_at_message(mark),
+                self.friends.talking() == friends::Talking::Message(mark),
+            ),
+            Spot::FriendsCompose => (
+                self.friends.point_at_compose(),
+                self.friends.talking() == friends::Talking::Compose,
+            ),
+            Spot::FriendsAgain => (
+                self.friends.point_at_again(),
+                self.friends.talking() == friends::Talking::Again,
+            ),
             // The picker is the bar, so it moves the way the bar does: hovering
             // says nothing and the first click is what carries the selection
             // over. Anything else would have a folder opening under a pointer
             // that was only crossing the screen.
+            //
+            // The scroll bar and the screen around the panel are neither: one
+            // is a value said with where it was pressed and the other is a way
+            // out, and neither is a thing the highlight can stand on.
             Spot::Card(_)
             | Spot::Bar(_)
             | Spot::Destination(_)
             | Spot::FileRow(_)
+            | Spot::FriendsTrack(_)
+            | Spot::FriendsChatTrack(_)
             | Spot::OutsideMenu
+            | Spot::OutsideFriends
             | Spot::Nothing => (false, false),
         };
         if moved {
@@ -16986,6 +21624,41 @@ impl Shell {
             Spot::MenuRow { .. } | Spot::Entry { .. } | Spot::Transport(_) if landed => {
                 self.on_action(Action::Launch)
             }
+            // A friend's row: the same press `A` makes, which opens their
+            // conversation. Routed through the action rather than acted on
+            // here, so a mouse and a pad reach the same one place.
+            Spot::FriendsRow(_) if landed => self.on_action(Action::Launch),
+            // And a conversation's own three. Straight to the act rather than
+            // through `Action::Launch`, which is what the row above does: the
+            // board is up while the field is being typed into, and every action
+            // is the board's while it is — so a click on the panel would press
+            // whichever key the board happened to be standing on.
+            Spot::FriendsMessage(_) | Spot::FriendsCompose | Spot::FriendsAgain if landed => {
+                self.take_what_is_lit_in_the_conversation()
+            }
+            // The bar beside a conversation, which is the list's own groove
+            // about a different column. Its own arm rather than sharing
+            // [`Held::Friends`], or a drag begun on one would carry the other.
+            Spot::FriendsChatTrack(at) => {
+                self.drag_the_conversation(at);
+                return Some(Held::FriendsChat);
+            }
+            // The head's status, which does do something: it raises the list of
+            // statuses. Through the action, for the reason the row above is —
+            // the press a mouse makes and the press a pad makes are one press.
+            Spot::FriendsStatus if landed => self.on_action(Action::Launch),
+            // The bar beside the list, which is a groove like any other: the
+            // press carries its answer in where it was made, and it is not over
+            // until the button comes up.
+            Spot::FriendsTrack(at) => {
+                self.drag_friends(at);
+                return Some(Held::Friends);
+            }
+            // Pressing past the panel is how it is dismissed, exactly as
+            // pressing past a menu dismisses that. There is nothing else out
+            // there a press could be about: the panel has every button while it
+            // is up, and the bar behind it is not being drawn.
+            Spot::OutsideFriends => self.close_friends(),
             // The deck and the bar move when they are selected, so the first
             // press is the selection travelling to the pointer and the second
             // is the press of what has arrived there.
@@ -17033,6 +21706,16 @@ impl Shell {
             Held::Mixer(row) => {
                 if let Some(level) = self.mixer_bar_level(index, row, x) {
                     self.set_mixer_at(row, level);
+                }
+            }
+            Held::Friends => {
+                if let Some(at) = self.friends_track_at(index, y) {
+                    self.drag_friends(at);
+                }
+            }
+            Held::FriendsChat => {
+                if let Some(at) = self.friends_chat_track_at(index, y) {
+                    self.drag_the_conversation(at);
                 }
             }
         }
@@ -17102,9 +21785,75 @@ impl Shell {
         let slots = Slots {
             gpu: self.gpu.as_ref()?,
             art: &self.art,
+            avatars: &self.avatars,
             drained: &self.drained,
         };
         ui::mixer_level_along(chip, entry, level, height, &slots, x)
+    }
+
+    /// How far down its list a drag at `y` on display `index` is asking the
+    /// friends panel to go, or `None` when there is no bar to be asking it of.
+    ///
+    /// Worked out again on every motion rather than remembered from the press,
+    /// exactly as every other groove in this shell is: the list can grow under
+    /// a held button — friends sign in — and the display can be resized while
+    /// the hand is still on it. The slide is not in it at all, because the track
+    /// only ever moves sideways and what is being asked is a height.
+    fn friends_track_at(&self, index: usize, y: f32) -> Option<f32> {
+        if !self.friends.is_open() {
+            return None;
+        }
+        let (width, height) = self.panel_size(index)?;
+        let lines = friends::lines(self.steam.roster());
+        let (_, run) = ui::friends_scroll_place(&lines, self.friends.scroll(), height)?;
+        Some(ui::friends_scroll_asked(
+            ui::friends_scroll_track(width, height),
+            run,
+            y,
+        ))
+    }
+
+    /// Where along its bar a drag at `y` puts a conversation's column.
+    fn friends_chat_track_at(&self, index: usize, y: f32) -> Option<f32> {
+        if !self.friends.is_open() || self.friends.talking_to().is_none() {
+            return None;
+        }
+        let (width, height) = self.panel_size(index)?;
+        let compose_lines = self.friends.compose_lines();
+        let [_, body_y, _, body_h] = ui::friends_chat_body_rect(width, height, compose_lines);
+        let column = ui::friends_chat_column_height(self.friends.laid_out(), height);
+        if column <= body_h {
+            return None;
+        }
+        let run = (body_h / column).clamp(0.0, 1.0);
+        let mut track = ui::friends_scroll_track(width, height);
+        track[1] = body_y;
+        track[3] = body_h;
+        Some(ui::friends_scroll_asked(track, run, y))
+    }
+
+    /// Carry the friends list to `at` of the way down itself.
+    ///
+    /// The press and every motion of the drag it began both come here. What
+    /// moves with the list is the *selection*, for the reason
+    /// [`friends::Friends::drag_to`] gives: this shell has one selection, and a
+    /// view dragged away from it would be pulled straight back the next time
+    /// anybody on the list changed what they were doing.
+    fn drag_friends(&mut self, at: f32) {
+        if self.friends.drag_to(at, self.steam.roster()) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The same, for the column of a conversation.
+    ///
+    /// Nothing is carried with it: a conversation's light stands on the field
+    /// or on one message, and neither is a thing a scroll may move — dragging
+    /// the view must not change which message a press would send again.
+    fn drag_the_conversation(&mut self, at: f32) {
+        if self.friends.drag_the_conversation(at) {
+            self.needs_redraw = true;
+        }
     }
 
     /// Set mixer row `row` to `level`, and say so on screen.
@@ -17412,16 +22161,25 @@ impl Shell {
         // What each splash's display has on it, and whether the process it
         // started is still running. Read before the splashes are borrowed, one
         // entry each, and `None` where that display has gone away.
-        let displays: Vec<Option<(Vec<u32>, String, bool)>> = self
+        //
+        // The panel is looked up by name and the index it is at now is carried
+        // along with it, rather than the index being what was written down at
+        // the press: a display unplugged mid-launch shifts every panel after it
+        // down one, and a splash holding a number would silently start reading
+        // another screen's windows and waiting for another screen's foreground.
+        // See [`Display`].
+        let displays: Vec<Option<WhereItIsLoading>> = self
             .launching
             .iter()
             .map(|splash| {
-                let panel = self.panels.get(splash.panel)?;
-                Some((
-                    panel.windows.iter().map(|window| window.id).collect(),
-                    panel.foreground.clone().unwrap_or_default(),
-                    splash.pid.is_none_or(|pid| self.lattice.launch_alive(pid)),
-                ))
+                let at = self.panel_at(splash.display)?;
+                let panel = self.panels.get(at)?;
+                Some(WhereItIsLoading {
+                    at,
+                    windows: panel.windows.iter().map(|window| window.id).collect(),
+                    foreground: panel.foreground.clone().unwrap_or_default(),
+                    alive: splash.pid.is_none_or(|pid| self.lattice.launch_alive(pid)),
+                })
             })
             .collect();
 
@@ -17437,18 +22195,41 @@ impl Shell {
         // rather than written straight down, because this is the one place in
         // the shell that knows it — see [`Self::steam_windows`].
         let mut game_windows: Vec<(u32, u32)> = Vec::new();
+        // Displays whose loading screen was still waiting on Valve's client
+        // when the display itself went away.
+        let mut unplugged: Vec<Display> = Vec::new();
         // And the ones that ended with nothing to show for themselves, which is
         // the only kind the user has to be told about.
-        let mut never_appeared: Vec<([f32; 4], String)> = Vec::new();
+        let mut never_appeared: Vec<GaveUp> = Vec::new();
         // And the displays whose loading screen has just been answered, so the
         // start screen it was standing on can step behind the application that
         // answered it. See [`Self::an_application_took_the_display`].
         let mut answered: Vec<usize> = Vec::new();
+        // And the other direction: the displays whose loading screen ended
+        // because the application it had handed over to has been and gone. The
+        // compositor's own window-list change already asked about this and was
+        // turned away, because a display with a loading screen on it is the
+        // splash's to answer for — so it is asked again here, now that the
+        // splash has let go. Without it the bar stays in the mode it was put in
+        // for the game, over a display with nothing on it.
+        let mut left_behind: Vec<usize> = Vec::new();
 
         for (splash, display) in splashes.iter_mut().zip(&displays) {
-            let Some((known, foreground, alive)) = display else {
+            let Some(WhereItIsLoading {
+                at,
+                windows: known,
+                foreground,
+                alive,
+            }) = display
+            else {
                 // Its display was unplugged mid-launch; nothing is going to
                 // show up on it now.
+                if splash.doing() == Some(launch::Doing::Steam) {
+                    // And if it was a game still waiting on Valve's client,
+                    // that wait ends here as well. Its display has gone, so
+                    // there is nowhere left for the game to open.
+                    unplugged.push(splash.display);
+                }
                 finished = true;
                 keep.push(false);
                 continue;
@@ -17467,8 +22248,20 @@ impl Shell {
             // which is the whole of what this is for. The set it collects from
             // is fixed at the press, so this is the same difference asked
             // again, and it stops when the splash does.
+            //
+            // And every one of them is asked whether it may be claimed, which
+            // is the half that is not about timing at all: a window that says
+            // which game it is settles it, and the client's own windows and
+            // this machine's own applications are refused outright. See
+            // [`Self::window_may_be_the_game`].
             if let Some(app_id) = splash.game() {
-                game_windows.extend(splash.newcomers(known).map(|id| (id, app_id)));
+                let panel = *at;
+                game_windows.extend(
+                    splash
+                        .newcomers(known)
+                        .filter(|id| self.window_may_be_the_game(panel, *id, app_id))
+                        .map(|id| (id, app_id)),
+                );
             }
             if let Some(arrival) = arrival {
                 // At `info`, because this is the one line that says why a
@@ -17482,12 +22275,22 @@ impl Shell {
                     %foreground,
                     display = self
                         .panels
-                        .get(splash.panel)
+                        .get(*at)
                         .map(|panel| panel.name.as_str())
                         .unwrap_or("?"),
                     windows = known.len(),
                     waited = now.duration_since(splash.started()).as_secs_f32(),
-                    "launch splash handing the display over"
+                    // One line either way, because what a reader wants from
+                    // it is the same: which splash let go of which display and
+                    // why. `arrival` above already says which of the two this
+                    // is; the sentence says it in words.
+                    "{}",
+                    match arrival {
+                        launch::Arrival::Left => {
+                            "the application the splash handed over to has closed"
+                        }
+                        _ => "launch splash handing the display over",
+                    }
                 );
                 // Only the two arrivals that are claims about something being
                 // on the screen. A launch that died or ran out of patience has
@@ -17496,12 +22299,23 @@ impl Shell {
                 // answer a failed press by opening something they did not ask
                 // for.
                 if matches!(arrival, launch::Arrival::Window | launch::Arrival::Raised) {
-                    answered.push(splash.panel);
+                    answered.push(*at);
+                }
+                // And the application that had the screen has given it back,
+                // which is the same thing an application walking out of a
+                // display with no loading screen on it is.
+                if matches!(arrival, launch::Arrival::Left) {
+                    left_behind.push(*at);
                 }
             }
             let done = splash.finished(now);
             if done && splash.steam_never_appeared() {
-                never_appeared.push((splash.from, splash.name.clone()));
+                never_appeared.push(GaveUp {
+                    from: splash.from,
+                    name: splash.name.clone(),
+                    app_id: splash.game().unwrap_or_default(),
+                    before_the_client_was_up: splash.gave_up_waiting_for_the_client(),
+                });
             }
             finished |= done;
             drawing |= splash.drawing(now);
@@ -17520,6 +22334,12 @@ impl Shell {
         for index in answered {
             self.an_application_took_the_display(index);
         }
+        // After those, and after the list is back, for the same reason: what
+        // this asks is a question about the list, and the splash that asked it
+        // has just been dropped from it.
+        for index in left_behind {
+            self.an_application_ended_by_itself(index);
+        }
 
         // Only what was not already written down, so a question asked every
         // frame is answered in the log once per window rather than once per
@@ -17535,8 +22355,28 @@ impl Shell {
             );
             self.steam_windows.extend(news);
         }
-        for (from, name) in never_appeared {
-            self.say_steam_never_started_it(from, name);
+        // The one that was actually being waited on, if it is among them: there
+        // is only ever one press waiting on the client, and it belongs to one
+        // display. Another screen's loading screen going away says nothing
+        // about it.
+        if self
+            .awaiting_steam
+            .waiting()
+            .is_some_and(|waiting| unplugged.contains(&waiting.display))
+        {
+            self.stop_waiting_for_steam("its display was unplugged");
+        }
+        for gave_up in never_appeared {
+            // The gate first, and then the panel. A loading screen that has run
+            // out of patience is a press that has ended, and until this the
+            // press went on being waited for: the next `Ready` started the game
+            // over the panel saying it had not started, and a wake that never
+            // answered left every later press swallowed for the rest of the
+            // session. See [`Shell::stop_waiting_for_steam`].
+            if gave_up.before_the_client_was_up {
+                self.stop_waiting_for_steam("its loading screen ran out of patience");
+            }
+            self.say_steam_never_started_it(gave_up);
         }
         // Only while there is something of one on the screen. Once a splash has
         // faded it goes on watching for a few seconds with nothing to draw, and
@@ -17651,11 +22491,17 @@ impl Shell {
                 from[2].max(0.0).round() as u32,
                 from[3].max(0.0).round() as u32,
             );
-            self.restoring = Some(Restore {
-                panel: display,
-                from,
-                started: Instant::now(),
-            });
+            // Named rather than numbered, like everything else that is
+            // written down about a display: see [`Display`]. It resolves —
+            // the panel was read a few lines above — and a flight nobody can
+            // name is simply not tracked rather than a press that stops here.
+            if let Some(id) = self.display_at(display) {
+                self.restoring = Some(Restore {
+                    display: id,
+                    from,
+                    started: Instant::now(),
+                });
+            }
         } else {
             // An older compositor cannot fly it, and the shell cannot fly it
             // for them. Raising it is still the right answer to the press.
@@ -17692,9 +22538,29 @@ impl Shell {
     /// Whether a window is flying back onto `index`, which keeps that display
     /// drawing while the flight is on.
     fn restoring_on(&self, index: usize) -> bool {
+        let Some(display) = self.display_at(index) else {
+            return false;
+        };
         self.restoring
             .as_ref()
-            .is_some_and(|restore| restore.panel == index)
+            .is_some_and(|restore| restore.display == display)
+    }
+
+    /// The name of the display at `index`, for something that has to write it
+    /// down and read it back later. See [`Display`].
+    fn display_at(&self, index: usize) -> Option<Display> {
+        self.panels.get(index).map(|panel| panel.id)
+    }
+
+    /// And back: where that display is in the list now, or `None` if it has
+    /// been unplugged.
+    ///
+    /// The `None` is the whole point. Everything that held an index got a
+    /// wrong answer when a display went away — a shifted list reads as another
+    /// screen rather than as a missing one — and everything that holds a
+    /// [`Display`] gets told.
+    fn panel_at(&self, display: Display) -> Option<usize> {
+        panel_at(self.panels.iter().map(|panel| panel.id), display)
     }
 
     /// Whether a launch splash still has a claim on `index`, drawn or not.
@@ -17727,24 +22593,301 @@ impl Shell {
 
     /// The splash on `index`, if that display is loading something.
     fn launch_on(&self, index: usize) -> Option<&launch::Launch> {
-        self.launching.iter().find(|splash| splash.panel == index)
+        let display = self.display_at(index)?;
+        self.launching
+            .iter()
+            .find(|splash| splash.display == display)
     }
 
-    /// The same, to be moved on.
-    fn launch_on_mut(&mut self, index: usize) -> Option<&mut launch::Launch> {
+    /// The same, named rather than numbered, and to be moved on.
+    ///
+    /// A [`Display`] rather than an index because everything that moves a
+    /// splash on is holding the display the press was made on — a press
+    /// waiting on Valve's client, a question that has just been answered — and
+    /// both of those outlive a display being unplugged.
+    fn launch_on_mut(&mut self, display: Display) -> Option<&mut launch::Launch> {
         self.launching
             .iter_mut()
-            .find(|splash| splash.panel == index)
+            .find(|splash| splash.display == display)
     }
 
-    /// Take the loading screen off `index`, wherever it had got to.
+    /// Keep a loading screen honest about a game Valve's client is fetching
+    /// rather than starting.
+    ///
+    /// A press on a game whose update Steam decided was due gets a client that
+    /// downloads first and launches after — which for a 1.3 GB update is
+    /// minutes. The splash waits [`launch::STEAM_PATIENCE`] for a window and
+    /// then says the game did not start, and then the game starts, over
+    /// whatever is on the screen by then. The shell can see all of it: the
+    /// game's own manifest starts moving, which is the same thing the row on
+    /// the bar and the guide's download card are already drawn from.
+    ///
+    /// So the splash is told, once a frame, and what follows is in
+    /// [`launch::Launch::now_fetching`]: it says what is being downloaded and
+    /// how far along it is, and it stops giving up while the bytes move.
+    fn sync_the_launch_downloads(&mut self, now: Instant) {
+        if self.launching.is_empty() {
+            return;
+        }
+        // Whether there is still a client to be doing any of it. A step is the
+        // last thing the client *said*, out of a log that outlives it, and the
+        // watcher goes on reading that log for five minutes — so a client that
+        // died mid-launch would otherwise hold a loading screen up on a
+        // sentence about work nothing is doing. The same guard the quiet
+        // stretch of an update is under, and for the same reason.
+        let client_running = self.steam.a_client_is_running();
+        // Read out first, because the splash below is borrowed from the same
+        // shell the library is on.
+        let fetching: Vec<(Display, Option<Underway>)> = self
+            .launching
+            .iter()
+            .filter_map(|splash| Some((splash.display, splash.game()?, splash.step().copied())))
+            .map(|(display, app_id, step)| {
+                // The step first, because it is the client's own account of
+                // what it is doing with this very press — and because for half
+                // of these there is nothing on the disk that describes them at
+                // all. It is work in flight like any other here: the line says
+                // what it is, and the patience stops while it runs. See
+                // [`Self::steam_is_working_on_the_launch`].
+                //
+                // **This is what was missing when a press ran out of patience
+                // over a client that was one fifth of the way through
+                // answering it.** The game's manifest read `StateFlags 1158` —
+                // installed, update required, files corrupt, update started,
+                // which is a copy being repaired rather than one of the
+                // standings below — and its byte counters were nought. Steam's
+                // own launch window said "Downloading content (19%)" the whole
+                // time.
+                if let Some(step) = step.filter(|_| client_running) {
+                    return (
+                        display,
+                        Some(Underway {
+                            // The manifest's own count where the client's
+                            // interface has none to give, which on an ordinary
+                            // press is always — see [`launch::Step::said`].
+                            // Throwing it away here is what left a repair
+                            // counting nothing on the screen while the file on
+                            // the disk counted it perfectly well.
+                            said: step.said(self.steam.how_far_along_percent(app_id)),
+                            arrived: self.steam.game(app_id).map_or(0, |game| game.downloaded),
+                            // Nothing on the disk counts these, so what says
+                            // the work is moving is that the client is doing it
+                            // — the same answer the quiet stretch of an update
+                            // gives. What ends it is the client walking on to a
+                            // step with nothing to say, or the launch ending.
+                            quietly: true,
+                        }),
+                    );
+                }
+                // Steam saying what it is doing to this game, and Steam doing
+                // it without saying — see [`steam::Steam::quietly_working_on_it`].
+                // The second is what the first ten minutes of an update look
+                // like from here, and it is work in flight exactly as much as
+                // the first is.
+                let quietly = self.steam.quietly_working_on_it(app_id);
+                let work = self
+                    .steam
+                    .game(app_id)
+                    .filter(|game| game.standing.moving() || quietly.is_some())
+                    .map(|game| Underway {
+                        said: match quietly {
+                            Some(standing) => game.note_working(standing),
+                            None => game.note(),
+                        },
+                        arrived: game.downloaded,
+                        quietly: quietly.is_some(),
+                    });
+                (display, work)
+            })
+            .collect();
+        let mut ask_again = Vec::new();
+        for (display, work) in fetching {
+            let Some(splash) = self.launch_on_mut(display) else {
+                continue;
+            };
+            match work {
+                Some(work) => splash.now_fetching(now, work.said, work.arrived, work.quietly),
+                // Whatever Steam was doing to it is done. What is left is the
+                // window, which is the wait the splash was always for.
+                None => {
+                    splash.done_fetching(now);
+                    // Unless the client refused this press over the very work
+                    // that has just finished, in which case there is no launch
+                    // left to wait for and the press is made again. See
+                    // [`Self::steam_would_not_start_it`].
+                    if splash.take_the_second_press() {
+                        ask_again.extend(splash.game().map(|app_id| (display, app_id)));
+                    }
+                }
+            }
+        }
+        // After the walk, because each of these hands a game to Valve's client
+        // and then reaches back into the loading screen it belongs to.
+        for (display, app_id) in ask_again {
+            self.press_the_game_again(display, app_id);
+        }
+    }
+
+    /// Ask Valve's client for a game a second time, now that whatever it
+    /// refused the first press over is done.
+    ///
+    /// Everything [`Self::start_the_waiting_game`] does at the end of a wake,
+    /// minus the wake: the client is up — it has just finished working on the
+    /// game — and the loading screen is already on the screen, so what is left
+    /// is the press, a watch on it, and a clock that starts again.
+    // `on` rather than `display`, because `tracing`'s own macros bring a
+    // function of that name into scope and a local one is shadowed by it.
+    fn press_the_game_again(&mut self, on: Display, app_id: u32) {
+        let name = self
+            .steam
+            .game(app_id)
+            .map(|game| game.name.clone())
+            .unwrap_or_default();
+        tracing::info!(
+            app_id,
+            name = %name,
+            on = ?on,
+            "asking Valve's client for this game again, now the work it refused over is done"
+        );
+        if let Err(why) = self.steam.play(app_id) {
+            let from = self
+                .launch_on(self.focused_panel)
+                .map_or_else(|| self.dialog_origin(), |splash| splash.from);
+            self.end_launch(on);
+            tracing::warn!(app_id, %why, "and it would not take it");
+            return self.say_steam_would_not_start_it(from, name, app_id, false);
+        }
+        self.steam.watch_this_launch(app_id);
+        if let Some(splash) = self.launch_on_mut(on) {
+            splash.now_starting_through_steam(Instant::now());
+        }
+        self.needs_redraw = true;
+    }
+
+    /// What a loading screen is standing there waiting for, where Steam is
+    /// doing something that can be said in the corner of the guide.
+    ///
+    /// The card's second source, and it is a press rather than a manifest:
+    /// nothing on the disk describes an update Steam has begun and not written
+    /// down, or a check it is running over the files, or the shader cache it
+    /// fetches before it will open the window — and those are the minutes
+    /// somebody spends looking at a loading screen with the guide open over it
+    /// asking what is happening. See
+    /// [`steam::Steam::what_a_press_is_waiting_on`], which is where the words
+    /// come from, and which answers nothing for a game Steam is not touching.
+    ///
+    /// The first splash with an answer, of however many displays are loading.
+    /// There is one card and it cannot be about two games, and this is the
+    /// order the loading screens are in rather than the order they were
+    /// started in — but a second press while a first is still waiting is
+    /// already a session doing two things at once, and either answer is a true
+    /// one about a game somebody is waiting for.
+    fn what_a_waiting_press_is_watching(&self) -> Option<steam::Coming> {
+        self.launching.iter().find_map(|splash| {
+            let app_id = splash.game()?;
+            // The client's own account of this press first, exactly as the
+            // loading screen's line takes it — and for the same reason. It
+            // answers where nothing on the disk does, it names the step rather
+            // than guessing at it, and it is the only one of the two that can
+            // carry a percentage. See
+            // [`steam::Steam::what_a_step_is_waiting_on`].
+            splash
+                .step()
+                .map(|step| {
+                    self.steam.what_a_step_is_waiting_on(
+                        app_id,
+                        step.doing.verb,
+                        step.share().or_else(|| self.steam.how_far_along(app_id)),
+                    )
+                })
+                .or_else(|| self.steam.what_a_press_is_waiting_on(app_id))
+        })
+    }
+
+    /// Stop waiting for a game Valve's client has not got to yet — because it
+    /// is downloading it first, or because it is not up yet.
+    ///
+    /// The two waits in the shell somebody may walk away from, and they are the
+    /// two because of how long they can be: everything else a loading screen
+    /// waits for is seconds. A download is however long somebody's connection
+    /// takes over however large the update is, and a cold client is
+    /// [`launch::STEAM_CLIENT_PATIENCE`] — seventy seconds of a picture and a
+    /// spinner. The guide does not open over a splash — see [`guide_answers`] —
+    /// so without this both are screens with no way off them.
+    ///
+    /// The launch goes with it, and how depends on which wait it was. A client
+    /// that is coming up has not been asked for the game yet, so what has to be
+    /// let go of is the *wake*: [`Self::stop_waiting_for_steam`] is the one
+    /// path that releases the gate and stops the answer being acted on, and
+    /// without it the client would come up and open the game over the start
+    /// screen minutes later. A download is the other way round — the client
+    /// has a launch of its own walking, and it would open the game at the end
+    /// of the download whatever this shell does — so that one is stopped where
+    /// it is being walked. Neither touches the download itself: what happens to
+    /// that is Steam's own decision about its own queue.
+    ///
+    /// **The client is still closed afterwards.** `steam_woken_for` is left
+    /// exactly as the press set it, so the half that closes a client started
+    /// for a press that reached no game takes it from here — see
+    /// [`Self::close_steam_when_the_press_is_over`].
+    fn stop_waiting_for_a_download(&mut self) -> bool {
+        let Some(splash) = self
+            .launch_on(self.focused_panel)
+            .filter(|splash| splash.may_be_left())
+        else {
+            return false;
+        };
+        let display = splash.display;
+        let app_id = splash.game();
+        let fetching = splash.is_fetching();
+        tracing::info!(
+            ?app_id,
+            fetching,
+            "the loading screen has been left to Valve's client"
+        );
+        match (fetching, app_id) {
+            (true, Some(app_id)) => self.steam.stop_launch(app_id),
+            (true, None) => {}
+            // Nothing has been handed to the client to stop; what there is is a
+            // wake this shell asked for and is no longer waiting on.
+            (false, _) => {
+                self.stop_waiting_for_steam("its loading screen was left");
+            }
+        }
+        self.end_launch(display);
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Take the loading screen off `display`, wherever it had got to.
     ///
     /// For the launches that end without ever reaching [`Launch::finished`]:
     /// Valve's client refusing to come up, and the request to play failing on
     /// the way out. Both are a promise the shell has to withdraw, and only from
     /// the display it was made on.
-    fn end_launch(&mut self, index: usize) {
-        self.launching.retain(|splash| splash.panel != index);
+    ///
+    /// Named rather than numbered, because half of what calls this is holding a
+    /// press made minutes ago: a wake that failed, a question nobody answered.
+    /// A screen unplugged in between renumbers the panels, and an index would
+    /// take the loading screen off whichever display had moved into that slot.
+    fn end_launch(&mut self, display: Display) {
+        // Whatever the client was going to say about *this* launch, nobody is
+        // waiting for it now — and only about this one. The watch used to be
+        // one for the session, so a loading screen ending on either screen
+        // stopped the watch for both: a question the client asked about the
+        // game still loading on the other display was then never heard, and
+        // that loading screen waited out its whole patience and said the game
+        // had not started, while the client sat behind it holding a dialog
+        // nobody could see.
+        let watched = self
+            .launching
+            .iter()
+            .find(|splash| splash.display == display)
+            .and_then(|splash| splash.game());
+        if let Some(app_id) = watched {
+            self.steam.stop_watching_the_launch(app_id);
+        }
+        self.launching.retain(|splash| splash.display != display);
     }
 
     /// An application on `index` has ended without the shell being the one to
@@ -17954,7 +23097,13 @@ impl Shell {
         // So is the keyboard, and its hint: both are drawn over the
         // application on purpose, so a display that has stopped drawing
         // because something covered its bar has to start again for them.
-        if index == self.focused_panel && self.keyboard_visible() {
+        //
+        // On the display the board is *on*, which the user is not necessarily
+        // driving — see [`Shell::keyboard_panel`]. Asked of the focused one
+        // instead, a board pinned to the second screen would be drawn on a
+        // panel that had stopped drawing behind its own application, which is
+        // a keyboard summoned onto a screen that never repaints.
+        if index == self.keyboard_panel() && self.keyboard_visible() {
             return true;
         }
         // And so is the corner of the screen. This is the one case where the
@@ -18014,6 +23163,35 @@ impl Shell {
             self.app_running(),
             self.osk.types_here(),
             settings::controller_in_hand(),
+        )
+    }
+
+    /// Which display the board — and the corner chip that stands in for it —
+    /// belongs on this frame.
+    ///
+    /// The screen being driven, unless the user has named one under
+    /// Settings > Input > Keyboard > On-screen keyboard > Default display. What
+    /// that page sets is a fact about the *board* rather than about a screen:
+    /// there is
+    /// one of it in the session and it is on one display at a time, and a desk
+    /// where only one of the two screens is within arm's reach is the case the
+    /// setting exists for.
+    ///
+    /// **A name this session has no display for falls back to the driven
+    /// screen**, silently and every frame — a keyboard on a monitor that is not
+    /// plugged in is a keyboard nobody can type on, and the shell has to put it
+    /// somewhere. Nothing is written back: the setting goes on naming that
+    /// screen and the board returns to it the moment it is plugged in again.
+    /// See [`settings::keyboard_display`], where that is argued.
+    ///
+    /// Asked once a frame rather than once per display: it walks the panels and
+    /// clones a name out of the settings, and the answer is the same for every
+    /// panel in the loop that reads it.
+    fn keyboard_panel(&self) -> usize {
+        board_display(
+            settings::keyboard_display().as_deref(),
+            self.panels.iter().map(|panel| panel.name.as_str()),
+            self.focused_panel,
         )
     }
 
@@ -18077,20 +23255,14 @@ impl Shell {
             // ever grow something that touches a disk, this is the call to
             // split in two — the row it is about, and the rows it builds.
             options: self.bar_entry_menu().is_some(),
+            // Asked the same way and for the same reason: the word is on the
+            // legend exactly when pressing the button would raise a list of
+            // people. `why_there_are_no_friends` is the one place that question
+            // is answered, so the legend and the panel cannot disagree about
+            // it — see [`Shell::why_there_are_no_friends`].
+            friends: self.why_there_are_no_friends().is_none(),
             pad: settings::controller_in_hand(),
         })
-    }
-
-    /// Whether that drawing is happening *over* a running application.
-    ///
-    /// The narrower question, and the one the bar has to answer to: the
-    /// surface it shares with the board is raised above the application to
-    /// carry it, and the bar belongs behind that application. With nothing
-    /// running there is nothing to be in front of, and the bar stays where it
-    /// is rather than blanking itself for a board floating over an empty
-    /// screen.
-    fn keyboard_overlay(&self) -> bool {
-        self.keyboard_visible() && self.app_running()
     }
 
     /// Settle where each display's start screen flies from, for a menu that
@@ -19357,6 +24529,9 @@ impl Shell {
         // whole panel would be a rectangle with no room on either side of it,
         // which is a menu hanging off the edge of the thing it belongs to.
         let anchor = ui::picker_showing_rect(width, height);
+        // Not a compatibility list either — see the note in
+        // [`Shell::toggle_context_menu`].
+        self.compat_menu = None;
         self.context_menu.open_at(
             anchor,
             Some(menu::Title::new("Showing")),
@@ -19751,6 +24926,18 @@ impl Shell {
     /// because it is the same answer a press gives — the last thing started is
     /// the one still to arrive. It falls back to the older one the moment the
     /// newer is satisfied.
+    ///
+    /// **The fallback rather than the whole answer**, on a compositor new
+    /// enough to be told more. Each launch is also filed on its own — see
+    /// [`Self::place_the_launches`] — and a window that answers one of those
+    /// records is placed by it, whichever launch this happens to name. What
+    /// this is for is the window that matches no record at all: something the
+    /// shell started without knowing what it would call itself, or a program
+    /// that opened a second window from a process nothing can be traced to.
+    ///
+    /// A launch whose display has been unplugged names nothing, and the answer
+    /// falls back to the display being driven — there is no screen left for it
+    /// to prefer.
     fn launch_display(&self) -> usize {
         launch_display(
             self.focused_panel,
@@ -19758,7 +24945,8 @@ impl Shell {
                 // Between the press and Valve's client being ready there is a
                 // splash and this, and they name the same display; the second
                 // is here for the moment either of them is let go of first.
-                .or_else(|| self.awaiting_steam.as_ref().map(|waiting| waiting.panel)),
+                .or_else(|| self.awaiting_steam.waiting().map(|waiting| waiting.display))
+                .and_then(|display| self.panel_at(display)),
         )
     }
 
@@ -19794,6 +24982,133 @@ impl Shell {
         tracing::debug!(display = %panel.name, "applications will open on this display");
         if let Err(err) = self.conn.flush() {
             tracing::warn!(?err, "could not send the launch display");
+        }
+    }
+
+    /// Tell the compositor which display the user is at.
+    ///
+    /// Not the same question as [`Self::sync_launch_output`], and the whole
+    /// reason the two are two. That one is held on the display a game was
+    /// started from for as long as the game takes to open — which is what puts
+    /// the game's window on the screen it was pressed on — and the compositor
+    /// was reading the same field for questions that are about the *person*:
+    /// which display gives the keyboard back when something closes, which
+    /// display's window the X screen calls active, which display a screenshot
+    /// binding photographs.
+    ///
+    /// So a game loading on the second screen quietly moved all three to the
+    /// second screen for the whole of its loading time. What that costs is a
+    /// game being played on the first screen told by the root window that it
+    /// is in the background — every Proton title reads that — and the keyboard
+    /// handed to a window on a display nobody is looking at when something
+    /// closes.
+    ///
+    /// This one is always the display being driven, and nothing holds it
+    /// anywhere: a press moves it, a shoulder button moves it, and a launch
+    /// does not.
+    fn sync_driven_output(&mut self) {
+        let Some(control) = self.shell_control.as_ref() else {
+            return;
+        };
+        if control.version() < PER_LAUNCH_SHELL_VERSION {
+            // An older compositor has one field for both and is already being
+            // sent it. See [`Self::sync_launch_output`].
+            return;
+        }
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        if self.applied_driven_output.as_ref() == Some(&panel.output) {
+            return;
+        }
+        control.set_driven_output(&panel.output);
+        self.applied_driven_output = Some(panel.output.clone());
+        tracing::debug!(display = %panel.name, "the user is driving this display");
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not say which display is being driven");
+        }
+    }
+
+    /// File one record per loading screen, so that the window each is waiting
+    /// for opens on the screen its press was made on.
+    ///
+    /// `set_launch_output` is one value for the session and two screens can be
+    /// loading at once, so it names one launch and every window that maps goes
+    /// there. Two games started on two displays, whose windows arrive in the
+    /// other order, opened on each other's screens — and on a session where
+    /// the second launch is the slower one, both opened on the second screen.
+    /// A record per launch is the same answer asked once per press.
+    ///
+    /// Matched by the process the shell forked, where it forked one, and by
+    /// the class the window will carry, where it did not: a game handed to
+    /// Valve's client is started by the client and there is no pid of ours
+    /// anywhere in it, but its window announces `steam_app_<id>` — see
+    /// [`game_a_window_is_named_after`], which is the same fact read the other
+    /// way round.
+    ///
+    /// Diffed, and called every pass: a record is filed once and taken back
+    /// once, however the loading screen it belongs to ended. Doing it here
+    /// rather than at each of the half-dozen places a splash is dropped is the
+    /// same reason the splash list is swept rather than notified — a launch
+    /// ends in six places and a record forgotten in five of them is a record
+    /// that outlives its launch.
+    fn place_the_launches(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < PER_LAUNCH_SHELL_VERSION {
+            return;
+        }
+        if self.launching.is_empty() && self.placed_launches.is_empty() {
+            return;
+        }
+        let mut sent = false;
+        let loading: HashSet<Display> =
+            self.launching.iter().map(|splash| splash.display).collect();
+        for display in self.placed_launches.clone() {
+            if loading.contains(&display) {
+                continue;
+            }
+            control.forget_launch(display.as_launch_number());
+            self.placed_launches.remove(&display);
+            sent = true;
+        }
+        for splash in &self.launching {
+            if self.placed_launches.contains(&splash.display) {
+                continue;
+            }
+            let Some(panel) = self.panels.iter().find(|panel| panel.id == splash.display) else {
+                // Its display has gone. The splash is about to be dropped for
+                // the same reason — see [`Self::advance_launch`] — and a
+                // record naming an output that no longer exists is one the
+                // compositor would refuse anyway.
+                continue;
+            };
+            control.place_launch(
+                splash.display.as_launch_number(),
+                &panel.output,
+                // Zero is the protocol's "no process", and it is what a game
+                // handed to Valve's client has: the game is the client's
+                // child, and nothing this shell forked is anywhere above it.
+                splash.pid.unwrap_or_default(),
+                splash
+                    .game()
+                    .map(|app_id| format!("steam_app_{app_id}"))
+                    .unwrap_or_default(),
+            );
+            self.placed_launches.insert(splash.display);
+            sent = true;
+            tracing::debug!(
+                app = %splash.name,
+                display = %panel.name,
+                pid = ?splash.pid,
+                "this launch's window belongs on this display"
+            );
+        }
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not file the launches");
+            }
         }
     }
 
@@ -19943,12 +25258,27 @@ impl Shell {
         // whatever its switch says and however long ago it was touched.
         let in_use = self.panels.iter().any(|panel| panel.in_use);
         let driven = self.focused_panel;
+        // And the display the on-screen keyboard is on, which counts as driven
+        // for exactly as long as the board is on it.
+        //
+        // Without the pin the two are always the same screen and this says
+        // nothing. With one they come apart, and the display the board was sent
+        // to is precisely a display nobody is driving — so it is the one this
+        // feature rests, and a keyboard summoned onto it would be painted under
+        // the compositor's black. That is the setting appearing to do nothing
+        // at all.
+        //
+        // Said here rather than as a fifth clause in [`display_should_rest`]
+        // because it is not a fifth thing: a screen with the shell's own
+        // keyboard on it is a screen somebody is looking at, which is what
+        // `driven` already means. See [`Shell::keyboard_panel`].
+        let board = self.keyboard_visible().then(|| self.keyboard_panel());
         let mut sent = false;
         for (index, panel) in self.panels.iter_mut().enumerate() {
             let wanted = display_should_rest(
                 settings::oled_protection_for(&panel.name),
                 in_use,
-                index == driven,
+                index == driven || board == Some(index),
                 panel.drawing,
                 now.saturating_duration_since(panel.attention),
             );
@@ -20134,24 +25464,24 @@ impl Shell {
     /// button, pressing something on it, putting a finger on it — winds the same
     /// clock.
     ///
-    /// A display with an application in front of it winds *every* screen's
-    /// clock rather than only its own. That is the difference between "the
-    /// second screen has been alone for five seconds" and "the user has been
-    /// away from it for five seconds", and the second is what was asked for:
-    /// going back to what was open is going back to what the user was doing,
-    /// and the screen they just left gets its full wait from that moment rather
-    /// than from whenever they last touched it.
+    /// One display's clock and nobody else's, whatever is open on it. Being at
+    /// one screen is not being at the screen beside it, which is the whole of
+    /// what the switch was turned on for.
+    ///
+    /// It used to be that attention on a display with an application in front
+    /// of it wound *every* screen's clock — going back to what was open being
+    /// going back to what the user was doing, so the screen they had just left
+    /// got its full wait from that moment. What that actually bought was a
+    /// mouse moved over a game on one screen counting as a hand on the screen
+    /// beside it: `output_pointer` arrives every two seconds for as long as the
+    /// pointer keeps moving, so a second display resting behind black came back
+    /// up, and stayed up, for a pointer that never crossed it. The grace it was
+    /// there for is kept where it belongs — see [`Shell::focus_panel`], which
+    /// winds the clock of the display control is *leaving*.
     fn the_user_is_on(&mut self, index: usize, now: Instant) {
-        let Some(panel) = self.panels.get(index) else {
-            return;
-        };
-        if panel.in_use {
-            for panel in &mut self.panels {
-                panel.attention = now;
-            }
-            return;
+        if let Some(panel) = self.panels.get_mut(index) {
+            panel.attention = now;
         }
-        self.panels[index].attention = now;
     }
 
     /// Tell the compositor how large applications are to draw themselves.
@@ -20242,6 +25572,92 @@ impl Shell {
             place = wanted.place.key(),
             "asked for this picture-in-picture"
         );
+    }
+
+    /// Tell the compositor what the session's pointing devices are to do.
+    ///
+    /// One answer for every mouse, touchpad and trackball at once, diffed
+    /// against a single remembered value like the application scale and the
+    /// floating window beside it: what is being said is how a hand has to move
+    /// and how well somebody sees, which is a fact about the person and not
+    /// about a screen or a device.
+    ///
+    /// All four in one request, because three of them are applied by walking
+    /// the same device list on the other side: four requests would walk it four
+    /// times for one press, and the fourth — the cursor's size — travels with
+    /// them rather than alone because the page they are set on is one page.
+    ///
+    /// Safe to call every loop iteration, and called there for the reason
+    /// [`Shell::sync_app_scale`] is: this is also how the setting arrives after
+    /// a restart. The file is read before anything is drawn, and the first pass
+    /// of the loop hands whatever it said to a compositor that has just come up
+    /// at its own config's defaults — which is what lets the compositor
+    /// remember nothing of its own.
+    fn sync_pointer(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < MOUSE_SHELL_VERSION {
+            return;
+        }
+        let wanted = settings::pointer();
+        if self.applied_pointer == Some(wanted) {
+            return;
+        }
+        control.set_pointer(
+            i32::from(wanted.speed),
+            u32::from(wanted.size),
+            u32::from(wanted.scroll),
+            u32::from(wanted.natural),
+        );
+        self.applied_pointer = Some(wanted);
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the pointer settings");
+        }
+        tracing::debug!(
+            speed = wanted.speed,
+            size = wanted.size,
+            scroll = wanted.scroll,
+            natural = wanted.natural,
+            "asked for this pointer"
+        );
+    }
+
+    /// Tell the compositor which arrangement the session's keyboards are to
+    /// use.
+    ///
+    /// Diffed against a remembered value like the pointer settings beside it,
+    /// and called every loop iteration for the same reason: this is also how
+    /// the setting arrives after a restart, since the file is read before
+    /// anything is drawn and the first pass of the loop hands what it said to a
+    /// compositor that has just come up at its own config's defaults.
+    ///
+    /// **Nothing is sent while the shell has no setting of its own.** That is
+    /// not the same as sending `us`: a machine whose owner set
+    /// `keyboard_layout` in the compositor's config file has answered this
+    /// question already, and a shell that overwrote it at startup because
+    /// nobody had opened the page would take the answer away. See
+    /// [`settings::keyboard_layout`].
+    fn sync_keyboard_layout(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < LAYOUT_SHELL_VERSION {
+            return;
+        }
+        let Some(wanted) = settings::keyboard_layout() else {
+            return;
+        };
+        if self.applied_keyboard_layout.as_deref() == Some(wanted.as_str()) {
+            return;
+        }
+        let (layout, variant) = layouts::from_key(&wanted);
+        control.set_keyboard_layout(layout.clone(), variant.clone());
+        self.applied_keyboard_layout = Some(wanted);
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the keyboard layout");
+        }
+        tracing::debug!(layout, variant, "asked for this keyboard layout");
     }
 
     /// Ask each display for the mode it has been given, if it has been given
@@ -20569,6 +25985,32 @@ impl Shell {
                     .cursor
                     .current_category(&self.lattice)
                     .is_some_and(|category| category.id == id)
+        })
+    }
+
+    /// Whether any display being drawn has the list of compatibility tools
+    /// open.
+    ///
+    /// The gate on asking Valve's client for that list, and it is the Bluetooth
+    /// scan's gate rather than [`Self::standing_in_settings`] for the same
+    /// reason: what is behind it is expensive. The list can only come from the
+    /// client's own interface, so asking for it may *start Steam* — and a
+    /// cursor walking down the Settings column past a row is not somebody
+    /// asking for that. Opened rather than highlighted, so it costs nothing
+    /// until the column is actually stepped into.
+    fn standing_in_the_compatibility_tools(&self) -> bool {
+        let (id, ..) = apps::SHELL_SETTINGS;
+        (0..self.panels.len()).any(|index| {
+            self.panel_is_visible(index)
+                && self.panels[index]
+                    .cursor
+                    .current_category(&self.lattice)
+                    .is_some_and(|category| category.id == id)
+                && self.panels[index]
+                    .cursor
+                    .opened_rows(&self.lattice)
+                    .iter()
+                    .any(|row| row.title() == settings::COMPATIBILITY_PAGE)
         })
     }
 
@@ -21197,6 +26639,187 @@ impl Shell {
         true
     }
 
+    /// Carry out a press on Settings > Games > Steam.
+    ///
+    /// `settings` has already written down which way the switch was thrown —
+    /// see [`settings::Setting::Steam`]. What is left is the doing, and only
+    /// the first of the three has any: the other two are answers to questions
+    /// asked at moments that have not arrived yet.
+    fn carry_out_steam(&mut self, value: settings::SteamValue) {
+        match value {
+            settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
+            // What this changes is what happens as a session comes up, and one
+            // has already come up — so on the face of it there is nothing to
+            // do until the next. Except that the state somebody has just asked
+            // for is "Steam is ready", and the whole point of the setting is
+            // not waiting for it: turning it on and then having to press a game
+            // and wait anyway would be the row appearing to do nothing. So the
+            // client is woken now as well, on exactly the path a startup would
+            // have taken. Turning it *off* stops nothing that is already
+            // running, for the reason nothing else here does: a client that is
+            // up is one somebody may be about to play a game with.
+            settings::SteamValue::AtStartup(true) => self.start_steam_in_the_background(),
+            settings::SteamValue::AtStartup(false) => {}
+            // And this one changes what happens when a game ends, which is a
+            // moment that is not now. Nothing is closed on the press: somebody
+            // reading a settings page has no game running, and shutting their
+            // client down under them would be the row acting a game early.
+            settings::SteamValue::AfterAGame(_) => {}
+            // And this one is not the shell's to write down at all: it is
+            // Steam's own setting, so the press is the telling of it. What the
+            // row says afterwards is what Steam answers with, which arrives on
+            // the next pass — see [`Self::steam_said_what_runs_it`].
+            settings::SteamValue::OtherTitles(tool) => self.steam.run_under(
+                lxb_steam::webui::Which::OtherTitles,
+                tool.map(str::to_string),
+            ),
+        }
+    }
+
+    /// Turn the whole Steam half of the shell on or off, now.
+    ///
+    /// The bar changes shape either way, so it is read off the disk again
+    /// rather than edited: turning the integration off has to give Valve's own
+    /// `.desktop` entry back to whichever column the scan files it in — Valve
+    /// declares `Categories=Network;FileTransfer;Game`, so on an ordinary
+    /// machine that is Internet and not Games — and no amount of taking rows
+    /// off the bar the shell is holding would produce one it never kept. The
+    /// cursors are kept where they are, because this is a press: see
+    /// [`Cursors::Kept`].
+    ///
+    /// Nothing here checks what the setting was a moment ago. The press is
+    /// idempotent by construction — a worker started twice is the second handle
+    /// dropped, a bar rebuilt twice is the same bar — and the one thing that is
+    /// not is guarded where it has to be: the client is only asked to shut down
+    /// on the way *off*.
+    fn steam_integration_changed(&mut self, on: bool) {
+        tracing::info!(on, "the Steam integration was switched");
+        if on {
+            // Before the worker, so the first window the client ever raises is
+            // one the compositor has already been told about. It is the same
+            // order a session that came up with the integration on uses.
+            self.steam = steam::Steam::start();
+            self.keep_steam_out_of_sight(true);
+        } else {
+            // The other way round, and it has to be: both of these speak to
+            // somebody through a handle that is about to be thrown away, and
+            // one of them is the only thing in the session that can give the
+            // client's windows back.
+            //
+            // Sight first. A client left hidden by a shell that has stopped
+            // driving it is a Steam nobody can see and nothing will ever
+            // reveal — the compositor goes on hiding those names for the life
+            // of the session, and the half of the shell that would take it back
+            // has just been told this is not its business.
+            self.steam_may_be_seen(true);
+            self.keep_steam_out_of_sight(false);
+            self.steam_sight = SteamSight::Background;
+            // Then everything the old half was in the middle of, while there is
+            // still a worker to tell: a launch the client stopped to ask about
+            // is cancelled through that worker, and a sign-in is a conversation
+            // being held by it. Both would be sent nowhere a moment later.
+            self.give_up_on_steam();
+            // Then the client itself, which is only ended if this session
+            // started it — the user has said the shell is not to drive Steam,
+            // and a client it started under the old answer is exactly what that
+            // leaves behind. One somebody started for themselves is left alone.
+            //
+            // Never in the middle of a download. See
+            // [`steam::Steam::nothing_is_under_way`]: the setting is about who
+            // drives the client, and losing an evening's download to it would
+            // be a price nobody agreed to.
+            if self.steam.nothing_is_under_way() {
+                self.steam.close_the_client();
+            } else {
+                tracing::info!("leaving Valve's client running: it is in the middle of something");
+            }
+            // And then the handle, whose drop is what stops the worker. Every
+            // press below this point finds a settled Steam: no account, no
+            // library, no client, and nothing that can be asked for one.
+            self.steam = steam::Steam::settled();
+        }
+        // The friends panel with it, whichever way the switch went. Every
+        // conversation on it belonged to a Steam this session no longer has —
+        // the store went with the handle — and a panel still drawing one would
+        // be showing what was said over a connection that has been thrown away.
+        // The list is emptied by the roster going; this is the half the roster
+        // cannot reach.
+        self.friends.start_again();
+        if self.friends.nothing_to_say() {
+            self.close_the_board();
+        }
+        // Which rebuilds the page that was just pressed as well, and it has to:
+        // it is two rows shorter or two rows longer, because the client's own
+        // settings are not offered by a shell that is not driving one. The
+        // Settings column is built inside the scan — see [`apps::assemble`] —
+        // from the value this press has already written down, so there is
+        // nothing left for [`Self::rebuild_settings`] to do here.
+        self.scan_the_bar_again(Cursors::Kept);
+    }
+
+    /// Let go of everything the Steam half of the shell was in the middle of.
+    ///
+    /// For the one moment it can be in the middle of something and then stop
+    /// existing: the integration being turned off. Each of these is a thing
+    /// waiting on an answer that is never coming now.
+    fn give_up_on_steam(&mut self) {
+        // A loading screen, and the press behind it. Ended rather than left to
+        // time out, because what it is waiting for is a client this session has
+        // just decided not to start — the wait would run its whole patience out
+        // and then say the game could not be launched, which would be true and
+        // would be the shell's own doing.
+        // Every wake this shell was accounting for goes with it, not only the
+        // one a press is waiting on: the worker that would have answered them
+        // is about to be dropped, and a mark left standing would say for the
+        // rest of the session that a client is still on its way up. See
+        // [`steam::Gate::everything_is_off`].
+        if let Some(waiting) = self.awaiting_steam.everything_is_off() {
+            tracing::info!(
+                app_id = waiting.app_id,
+                name = %waiting.name,
+                waited = ?waiting.asked.elapsed(),
+                "the Steam integration was turned off; no longer waiting on Valve's client"
+            );
+            self.end_launch(waiting.display);
+        }
+        // And every launch this shell was watching, for the same reason: the
+        // worker that would have answered them is about to be dropped.
+        self.steam.stop_watching_every_launch();
+        // A question the client stopped a launch on, which is now a panel about
+        // a launch nobody is going to answer.
+        self.abandon_every_launch_question("the Steam integration was turned off");
+        // And the sign-in panel, if one is up. It is a conversation with Steam
+        // held by a worker that is about to be gone.
+        self.steam.cancel();
+        self.show_steam_panel();
+    }
+
+    /// Start Valve's client in the background, because somebody has asked for
+    /// it to be ready before it is needed.
+    ///
+    /// The two ways in are the session coming up and the switch being turned
+    /// on, and they are the same call: this is exactly what a game press does,
+    /// less the loading screen. What comes back arrives as
+    /// [`steam::Changed::client`] like any other client report, and is
+    /// deliberately not put on the screen — nobody is waiting on it.
+    ///
+    /// Silently nothing on a session that is not driving Steam, and on one that
+    /// is not signed in: the worker refuses a client for an account it has not
+    /// got, which is the right answer and not one worth a panel. The session
+    /// asks again when it signs in — see [`Shell::sync_steam`].
+    fn start_steam_in_the_background(&mut self) {
+        if !self.steam.driving() || !self.steam.signed_in() {
+            return;
+        }
+        tracing::info!("starting Valve's client in the background");
+        // Written down against the number it was asked under, so a refusal
+        // stays off the screen — nobody pressed anything, and there is nothing
+        // to explain — while a press made a second later is still answered by
+        // its own wake and not by this one. See [`steam::Gate::nobody_asked`].
+        let request = self.steam.wake_client();
+        self.awaiting_steam.nobody_asked(request);
+    }
+
     /// Hand a chosen network row to the worker.
     ///
     /// Everything here is the worker's to carry out, exactly as a display
@@ -21253,6 +26876,79 @@ impl Shell {
         self.ask_about_pairing(wanted.as_ref());
         self.bluetooth_wanted = wanted;
         self.announce_pairings();
+    }
+
+    /// Notice the card's game going, and say so where it has finished.
+    ///
+    /// **A download finishing is not something this machine can tell the shell
+    /// about**, for a download the shell did not start: what happens is that a
+    /// file on the disk stops saying `Downloading` and starts saying the game
+    /// is installed. So the finish is a *comparison* — what the card was about
+    /// last pass against what it is about now — and this is where the two ends
+    /// of it meet.
+    ///
+    /// The card going is not by itself a finish. Steam pausing a download takes
+    /// the card away too, and so does a copy turning out to need repairing, and
+    /// neither is anything to announce — so the game has to be **playable** on
+    /// the disk before a word is said. That is the whole of the test.
+    fn a_download_ended(&mut self, now: Option<u32>) {
+        let was = self.download_on_the_card;
+        self.download_on_the_card = now;
+        // Whether the game that has left the card is on the disk and ready to
+        // play. Looked up here, because the rule below is about *what to do*
+        // and has no library to ask.
+        let finished = was
+            .and_then(|app_id| self.steam.game(app_id))
+            .is_some_and(|game| game.standing.playable());
+        let (announce, said) =
+            a_finished_download(was, now, finished, self.said_a_download_finished);
+        self.said_a_download_finished = said;
+        let Some(app_id) = announce else {
+            return;
+        };
+        let Some(name) = self.steam.game(app_id).map(|game| game.name.clone()) else {
+            return;
+        };
+        self.say_a_download_finished(app_id, &name);
+    }
+
+    /// Put the finished download in the corner and on the list behind the bell.
+    ///
+    /// **Announced without a sound**, which is the one thing here that is not
+    /// the ordinary path: `Center::announce` is called and `Sounds::notified`
+    /// is not. It is deliberate and it is the user's own decision — a download
+    /// finishing is news somebody is glad of and never news they have to act
+    /// on, and it lands at whatever hour the line happened to finish, quite
+    /// possibly over a game or a film. Everything else about it is ordinary:
+    /// it is filed behind the bell, it lights the unread mark, and
+    /// do-not-disturb keeps it out of the corner on exactly the terms it keeps
+    /// everything else out.
+    ///
+    /// It wears **the game's own icon**, by handing the announcement the path
+    /// of the picture rather than one of the shell's glyph names — see
+    /// [`notify::Notification::icon_name`], where a path and a name are the
+    /// same kind of thing, and [`Shell::load_notification_icons`], which
+    /// decodes it. Steam's client icon where the card has already fetched one,
+    /// the game's cover where it has not, and the Steam mark where there is
+    /// neither.
+    fn say_a_download_finished(&mut self, app_id: u32, name: &str) {
+        let icon = self
+            .art
+            .icon(app_id)
+            .or_else(|| self.art.cover(app_id))
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| icons::STEAM.to_string());
+        tracing::info!(app_id, name, "announcing a finished download");
+        self.said_a_download_finished = Some(app_id);
+        self.notifications
+            .announce(name, "The download has finished.", &icon);
+        // No `Sounds::notified` here, and that is the whole point — see above.
+        // The rest is what every other announcement does: the open panel is a
+        // list of the very thing that has just changed, and the picture has to
+        // be found before anything tries to draw it.
+        self.load_notification_icons();
+        self.sync_notification_panel();
+        self.needs_redraw = true;
     }
 
     /// Say how each pairing that has finished ended.
@@ -21889,26 +27585,27 @@ impl Shell {
     /// has just been given.
     ///
     /// The board's rectangle is asked for on exactly the condition the drawing
-    /// uses — this display is the one being driven, the board is up, and it is
-    /// the board rather than the corner hint — so the hole in the input region
-    /// is never anywhere but under a keyboard that is actually painted there.
+    /// uses — this display is the one the board is on, the board is up, and it
+    /// is the board rather than the corner hint — so the hole in the input
+    /// region is never anywhere but under a keyboard that is actually painted
+    /// there.
     fn clickable(
         &self,
         index: usize,
         state: (Layer, KeyboardInteractivity),
         keyboard_visible: bool,
+        board_here: bool,
     ) -> Clickable {
         // `is_open`, not `is_on_screen`: a board on its way down has already
         // given the keys back, and the clicks go with them. Pressing a key
         // that is halfway off the display would be pressing a keyboard that,
         // as far as the user has been told, is gone.
-        let board =
-            (index == self.focused_panel && keyboard_visible && self.osk.is_open()).then(|| {
-                let panel = &self.panels[index];
-                let [x, y, w, h] =
-                    ui::keyboard_panel_rect(panel.width.max(16) as f32, panel.height.max(9) as f32);
-                [x as i32, y as i32, w.ceil() as i32, h.ceil() as i32]
-            });
+        let board = (board_here && keyboard_visible && self.osk.is_open()).then(|| {
+            let panel = &self.panels[index];
+            let [x, y, w, h] =
+                ui::keyboard_panel_rect(panel.width.max(16) as f32, panel.height.max(9) as f32);
+            [x as i32, y as i32, w.ceil() as i32, h.ceil() as i32]
+        });
         clickable_region(state, board)
     }
 
@@ -21938,8 +27635,14 @@ impl Shell {
         // is meant to go on drawing and go on being seen round the edges, which
         // is the whole of what says it is still there and still waiting.
         let file_panel = self.file_question_on_screen();
+        // Which display the board is on, which is the driven one until somebody
+        // names another — see [`Shell::keyboard_panel`]. The layer follows it
+        // and the keys do not: a surface is lifted where the keys are *drawn*,
+        // and keyboard focus belongs to the seat rather than to a screen.
+        let keyboard_panel = self.keyboard_panel();
         let states: Vec<(SurfaceState, bool)> = (0..self.panels.len())
             .map(|index| {
+                let board_here = index == keyboard_panel;
                 let toasting =
                     index == self.focused_panel && !self.notifications.toasts().is_empty();
                 let volume = index == self.focused_panel && self.volume.on_screen();
@@ -21951,7 +27654,7 @@ impl Shell {
                     index == self.focused_panel && self.guide.is_over_app(),
                     self.splash_on_screen(index),
                     index == self.focused_panel && self.guide.is_menu(),
-                    index == self.focused_panel && keyboard,
+                    board_here && keyboard,
                     toasting,
                     volume,
                 );
@@ -21966,6 +27669,7 @@ impl Shell {
                     // layer over a game somebody is already playing.
                     self.splash_on_screen(index),
                     keyboard,
+                    board_here,
                     typing_here,
                     // Only the display being driven. A bubble is the shell
                     // asking for a moment of the user's attention, and it asks
@@ -22003,7 +27707,10 @@ impl Shell {
                     true => (Layer::Overlay, KeyboardInteractivity::Exclusive),
                     false => state,
                 };
-                ((state, self.clickable(index, state, keyboard)), opaque)
+                (
+                    (state, self.clickable(index, state, keyboard, board_here)),
+                    opaque,
+                )
             })
             .collect();
         // Whether each display is currently visible enough for a new frame to
@@ -22138,15 +27845,30 @@ fn steam_service_menu_rows(
     signed_in: bool,
     has_column: bool,
     has_client: bool,
+    online: bool,
 ) -> Vec<menu::Entry> {
     let mut rows = Vec::new();
     if signed_in {
+        // The same request, and not the same sentence. Offline it is the only
+        // thing on the machine that will make Steam be tried again before its
+        // own five seconds are up, and calling that "Refresh the library" asks
+        // somebody to guess that a row about the library is the retry. It is
+        // also the row that is actually pressed: a column that is a memory is
+        // a column somebody wants made current.
+        let (label, glyph) = match online {
+            true => ("Refresh the library", icons::REFRESH),
+            false => ("Try Steam again", icons::REFRESH),
+        };
+        rows.push(menu::Entry::new(menu::Command::SteamRefresh, label).glyph(glyph));
         rows.push(
-            menu::Entry::new(menu::Command::SteamRefresh, "Refresh the library")
-                .glyph(icons::REFRESH),
-        );
-        rows.push(
-            menu::Entry::new(menu::Command::SteamSignOut, "Sign out")
+            // Named for what it actually does. This forgets the account here,
+            // revokes the credential this shell was given and stops Valve's
+            // client signing itself back in — and it does not reach into that
+            // client's own private store of who it knows, which nothing outside
+            // Valve's client can. A Steam somebody opens for themselves
+            // afterwards may still come up signed in, and a row that said
+            // "Sign out" flatly was promising otherwise.
+            menu::Entry::new(menu::Command::SteamSignOut, "Sign out of LineXinBar")
                 .glyph(icons::SIGN_OUT)
                 .grave(),
         );
@@ -22179,6 +27901,16 @@ fn steam_service_menu_rows(
             rows.push(menu::Entry::new(menu::Command::SteamDo(doing), doing.label()).group(1));
         }
     }
+    // Offered whatever else is: it is the row for a session where something is
+    // wrong, and every one of the states worth diagnosing — nobody signed in,
+    // no client on the machine, Steam not answering — is a state where the
+    // rows above it are missing. A panel that only appeared when everything
+    // worked would be a panel nobody could reach when they needed it.
+    rows.push(
+        menu::Entry::new(menu::Command::SteamDiagnostics, "Steam diagnostics")
+            .glyph(icons::SETTING_INFO)
+            .group(1),
+    );
     rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
     rows
 }
@@ -22196,27 +27928,117 @@ fn steam_service_menu_rows(
 /// menu, and neither has anything to ask Steam — which is why the shorter menu
 /// on a machine with no client is still worth raising.
 fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
+    use lxb_steam::library::Standing;
+
     let mut rows = Vec::new();
     if game.steam_client {
-        if game.installed {
+        // What the menu offers follows what the game is actually doing, rather
+        // than the one bit that used to decide it. Installed-or-not could not
+        // tell a paused download from a game nobody has asked for, so a
+        // half-downloaded title was offered "Install" — starting the whole
+        // thing again — and a copy with files missing was offered the same,
+        // for a game already taking up the space.
+        //
+        // **And `game.updating` beside the standing, wherever an offer would
+        // fight Steam.** The standing is the manifest, and the manifest is
+        // silent for the first stretch of an update — ten minutes and
+        // thirty-nine seconds of it, measured — so the row and this menu were
+        // drawn from two different answers one press apart: the row greyed and
+        // refused while the menu, a finger's width away, still offered Play,
+        // Verify and Uninstall for a game Steam had in hand. `apps::Game`
+        // carries the row's answer, quiet stretch and all — see
+        // `steam::Steam::row` — and this asks it.
+        if game.standing.playable() && !game.updating {
             rows.push(menu::Entry::new(menu::Command::Launch, "Play").glyph(icons::LAUNCH));
-            // Verifying is the client's own window, and is named as such:
-            // unlike Play and Uninstall, it is not something this shell can
-            // put a screen of its own in front of. It runs for minutes and
-            // the only account of how it is going is Steam's.
+        }
+        // Work Steam has begun and is not doing, because there is no Steam
+        // running to do it. One row, and it is the only thing on this machine
+        // that would move it: the client reads its own manifests as it comes
+        // up and gets on with whatever they say is outstanding.
+        if game.waiting_for_steam {
+            rows.push(
+                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam")
+                    .glyph(icons::LAUNCH),
+            );
+        }
+        // A download that has stopped is somebody else's to resume. Pausing and
+        // resuming are Steam's own list, and a second implementation of it here
+        // would be a second opinion about somebody's bandwidth — so this says
+        // where it can be done rather than offering a button that cannot do it.
+        // And a download that says it is running while nothing arrives is the
+        // same row for the same reason: whatever is wrong with it is wrong in
+        // Steam's own list, and this shell has no business guessing at it.
+        if matches!(game.standing, Standing::Paused | Standing::UpdatePaused) || game.stuck {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::SteamDo(lxb_steam::Doing::Downloads),
+                    lxb_steam::Doing::Downloads.label(),
+                )
+                .glyph(icons::LAUNCH),
+            );
+        }
+        // Repairing is what a broken copy needs, and it is the same request
+        // Verify is — named for what it is *for* here, because "Verify" is a
+        // thing to try and this is the answer to a row that says it is broken.
+        if game.standing == Standing::Broken {
+            rows.push(menu::Entry::new(
+                menu::Command::SteamDo(lxb_steam::Doing::Verify),
+                "Repair with Steam",
+            ));
+        }
+        // Stopping is offered for anything with bytes on the disk that has not
+        // finished arriving, running or not: the promise it makes — that
+        // nothing is left behind — is the same either way.
+        if game.standing.is_a_download() {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::SteamStopInstalling(game.app_id),
+                    "Stop and Delete",
+                )
+                .grave(),
+            );
+        }
+        if game.standing == Standing::NotInstalled {
+            rows.push(
+                menu::Entry::new(menu::Command::SteamInstall(game.app_id), "Install")
+                    .glyph(icons::LAUNCH),
+            );
+        }
+        // Verifying is the client's own window, and is named as such: unlike
+        // Play and Uninstall, it is not something this shell can put a screen
+        // of its own in front of. It runs for minutes and the only account of
+        // how it is going is Steam's. Not over work Steam is already doing —
+        // a verify asked for in the middle of an update is a second opinion
+        // about the same files.
+        if game.standing.playable() && !game.updating {
             rows.push(menu::Entry::new(
                 menu::Command::SteamDo(lxb_steam::Doing::Verify),
                 lxb_steam::Doing::Verify.label(),
             ));
+        }
+        // Which Steam Play tool it runs under, which is a setting on the game
+        // rather than something done to it — so it is offered whether or not
+        // the game is on the disk, exactly as Steam's own properties window
+        // offers it. It is in this band all the same: the list of tools comes
+        // out of Valve's client and there is nowhere else to get it.
+        rows.push(menu::Entry::new(
+            menu::Command::SteamCompatibility(game.app_id),
+            "Compatibility",
+        ));
+        // Anything with a whole copy on the disk can be taken off it. Not a
+        // part-built one: that is the row above, which promises to delete what
+        // arrived, and offering both would be two names for one thing. And not
+        // one Steam is in the middle of writing to, which is the same fight
+        // Verify above would pick.
+        if matches!(
+            game.standing,
+            Standing::Ready | Standing::UpdatePaused | Standing::Broken
+        ) && !game.updating
+        {
             rows.push(
                 menu::Entry::new(menu::Command::SteamUninstall(game.app_id), "Uninstall")
                     .glyph(icons::UNINSTALL)
                     .grave(),
-            );
-        } else {
-            rows.push(
-                menu::Entry::new(menu::Command::SteamInstall(game.app_id), "Install")
-                    .glyph(icons::LAUNCH),
             );
         }
     }
@@ -22227,6 +28049,361 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
     );
     rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
     rows
+}
+
+/// What to say about a title that is on the disk and cannot be started, and
+/// where to send somebody about it.
+///
+/// Kept out of the panel it is drawn in so the *diagnosis* can be tested
+/// without a Wayland session, which is exactly the half that was wrong.
+/// Everything that was not a pause came out as "Some of this game's files are
+/// missing": a game Steam was in the middle of updating — with a percentage on
+/// its own row saying so — answered a press with an offer to repair it, and a
+/// game being checked over said its files were gone.
+fn what_is_happening_to_it(game: &apps::Game) -> (String, lxb_steam::Doing, &'static str) {
+    use lxb_steam::library::Standing;
+    match game.standing {
+        // The one that really is a broken copy. Named for what the row is *for*
+        // here rather than for what Steam calls it: Verify is a thing to try,
+        // and this is the answer to a game that says it is broken.
+        //
+        // **A press no longer comes here** (2026-09-04): Steam repairs a copy
+        // as part of starting it, so the press is handed to the client and the
+        // waiting happens under the shell's own loading screen — see
+        // [`crate::apps::Game::the_client_can_put_it_right`]. This is still the
+        // description of a broken copy, and Repair with Steam is still offered
+        // over the row for somebody who wants the check without the game.
+        Standing::Broken => (
+            "Some of this game's files are missing.".to_string(),
+            lxb_steam::Doing::Verify,
+            "Repair with Steam",
+        ),
+        Standing::Paused => (
+            "Steam has paused this download.".to_string(),
+            lxb_steam::Doing::Downloads,
+            lxb_steam::Doing::Downloads.label(),
+        ),
+        // Everything else on this path is work Steam is in the middle of, and
+        // the row it was pressed on already says which and how far. Said in its
+        // own words rather than in a second set: a panel describing the same
+        // state differently from the row a finger's width away is two answers
+        // to one question.
+        _ => (
+            game.note.clone(),
+            lxb_steam::Doing::Downloads,
+            lxb_steam::Doing::Downloads.label(),
+        ),
+    }
+}
+
+/// What the shell knows about a Valve client it started for a press.
+///
+/// Read off the shell, decided by [`what_becomes_of_the_client`], which is a
+/// free function so that the decision can be tested without a session. See
+/// [`Shell::close_steam_when_the_press_is_over`].
+#[derive(Debug, Clone, Copy)]
+struct AfterThePress {
+    /// A window of the game is on the screen: the press worked, and
+    /// [`Shell::close_steam_after_the_game`] owns the question from here.
+    game_on_screen: bool,
+    /// Settings > Games > Steam > Leave Steam running.
+    left_running: bool,
+    /// ...and Start with the shell, which says the client is meant to be up for
+    /// the whole session however this press turns out.
+    at_startup: bool,
+    driving: bool,
+    client_running: bool,
+    /// How long ago it was asked to go, where it has been. It is asked once
+    /// rather than every five seconds until it finally goes — and once is not
+    /// for ever, because it may decline.
+    asked: Option<Duration>,
+    /// And how many times it has been asked.
+    asks: u8,
+    /// What the worker said became of the last ask.
+    ///
+    /// `None` until it answers, which is the ordinary state for a frame or two
+    /// after an ask and is not a missing answer. The one that matters here is
+    /// [`Closing::NotOurs`] — a client that was never asked, and never will be
+    /// while it goes on running. See [`steam::Steam::how_the_close_went`].
+    ///
+    /// [`Closing::NotOurs`]: lxb_steam::client::Closing::NotOurs
+    answered: Option<lxb_steam::client::Closing>,
+    /// A launch of some kind is in flight.
+    starting: bool,
+    /// A window of Steam's own that the user asked to see.
+    seen: bool,
+    /// Anything moving on or off the disk — including the pressed game, and
+    /// including the stretch of an update where the manifest says nothing at
+    /// all. See [`steam::Steam::nothing_is_under_way`].
+    ///
+    /// One fact where there were two. The pressed game had a question of its
+    /// own here, and every *other* game had none: a client could be shut down
+    /// five seconds into a silent Proton update because the walk that counts
+    /// work asked only whether bytes were arriving.
+    anything_under_way: bool,
+    /// And whether it has anything it has *not* finished — a job suspended to
+    /// run a game, which its own scheduler picks up again seconds to minutes
+    /// after that game ends. Only lengthens the wait; it never keeps a client
+    /// that nothing else wants. See [`AFTER_A_SUSPENDED_JOB`].
+    work_outstanding: bool,
+}
+
+/// What is to become of that client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Becomes {
+    /// Leave it, and go on asking. Either something still wants it, or the
+    /// settings say this half has no business with it — and that second one is
+    /// deliberately not [`Becomes::LetItGo`], so that a switch thrown
+    /// mid-session still acts on the client already running.
+    LeaveIt,
+    /// Nothing wants it, and not for long enough yet.
+    NotYet,
+    /// Stop asking about it at all: a game reached the screen and the other
+    /// half owns the question, or the client has gone on its own.
+    LetItGo,
+    /// Close it.
+    CloseIt,
+    /// It is not this session's client, so it was never asked and never will
+    /// be while it goes on running.
+    ///
+    /// Told from [`Becomes::GaveUp`] because it is a different fact and wants a
+    /// different sentence: nothing declined anything here. The shell used to
+    /// reach the same place the long way round — two grace periods, two asks
+    /// the worker silently dropped on the floor, and then a warning that the
+    /// client *would not shut down*, which was not true of it.
+    NotOurs,
+    /// It has been asked as often as it is going to be and it is still here.
+    ///
+    /// Its own answer rather than [`Becomes::LetItGo`] because it is the one
+    /// that is worth a line in the log: everything else here ends with the
+    /// client in the state the settings asked for, and this ends with a client
+    /// running that the user said not to leave running. Nothing further is done
+    /// about it — a shell that killed a client which had declined to shut down
+    /// would be taking whatever it was busy with away from somebody.
+    GaveUp,
+}
+
+/// How long a client that has been asked to shut down is given to do it.
+///
+/// [`lxb_steam::client::stop`] returns when the client has been *asked* — it is
+/// `steam -shutdown`, which hands a message over and exits — and the client has
+/// its own work to finish first. Past this it is not going: it has a dialog
+/// open, or something it will not stop, and the answer is to ask once more and
+/// then leave it alone.
+///
+/// The same length as the fast look that watches it go, so the second ask is
+/// made on evidence a second old rather than on evidence from before the first.
+const GIVEN_TO_GO: Duration = steam::UNTIL_THE_CLIENT_GOES;
+
+/// And how many times, counting the first.
+const TIMES_TO_ASK: u8 = 2;
+
+/// Whether a client this shell started for a press has anything left to do.
+///
+/// The order is the substance, as it is in [`lxb_steam::library::standing_from`].
+/// Handing over to the other half comes before every setting, because a game on
+/// the screen makes all of this somebody else's question. The settings come
+/// before the work, because a session that is not to close its client need not
+/// ask what the client is doing. **A launch still in flight comes before
+/// whether a client is running**, because for the first seconds of one there is
+/// no client yet and reading that as "it has gone" throws the whole question
+/// away. And the work comes before the clock, because the clock is what the
+/// work is being given time to finish.
+///
+/// **What the last ask came back as comes before the clock that times it.** A
+/// client belonging to another session is not asked at all — see
+/// [`lxb_steam::client::stop_if_ours`] — so giving it a grace period to go in,
+/// and then another, is seventy seconds spent waiting on a question nobody put.
+///
+/// **What has already been asked comes before the work and after the client**,
+/// which is the one place the order was wrong rather than merely arguable. A
+/// client that has gone is answered by `client_running` and there is nothing
+/// left to decide; a client that is still here after being asked is one that
+/// declined, and whether it declined because it is busy is worth knowing before
+/// asking it again — so the work is asked in between, and a client that picked
+/// up a download after being told to go is left rather than nagged.
+fn what_becomes_of_the_client(facts: AfterThePress, waited: Option<Duration>) -> Becomes {
+    if facts.game_on_screen {
+        return Becomes::LetItGo;
+    }
+    if facts.left_running || facts.at_startup || !facts.driving {
+        return Becomes::LeaveIt;
+    }
+    // **Before `client_running`, and that is the whole of why the order is
+    // written down.** A press that has just asked for a client is a press with
+    // no client running yet — measured on this machine, three and a half
+    // seconds of it — and reading that as "the client has gone" threw the
+    // question away on the first frame after the press, so nothing was ever
+    // closed. `starting` is what tells the two apart: a wake this shell asked
+    // for and is still waiting on.
+    if facts.starting {
+        return Becomes::LeaveIt;
+    }
+    // It was up and has gone, or it never came at all. Either way there is
+    // nothing to close and nothing left to decide.
+    if !facts.client_running {
+        return Becomes::LetItGo;
+    }
+    // Asked, and the answer came back saying it was never really asked: the
+    // client belongs to another session on this machine, and the worker will
+    // not stop one of those however often it is told to. Ahead of the grace
+    // period because the grace period is time given to a client to *go* in, and
+    // this one is not going.
+    if facts.answered == Some(lxb_steam::client::Closing::NotOurs) {
+        return Becomes::NotOurs;
+    }
+    // Asked, and not yet given long enough to have gone. Every session that
+    // works spends its last few seconds here.
+    if facts.asked.is_some_and(|since| since < GIVEN_TO_GO) {
+        return Becomes::LeaveIt;
+    }
+    if facts.seen || facts.anything_under_way {
+        return Becomes::LeaveIt;
+    }
+    // Asked, given long enough, still here, and with nothing to be busy with:
+    // it declined. Once more, and then it is left alone and said so.
+    if facts.asked.is_some() {
+        return match facts.asks >= TIMES_TO_ASK {
+            true => Becomes::GaveUp,
+            false => Becomes::CloseIt,
+        };
+    }
+    // Long enough for Steam's own scheduler to pick up what it suspended to
+    // run the game, where there is anything for it to pick up. Once it does,
+    // `anything_under_way` above holds the client for the whole job; where it
+    // never does, this is simply a longer wait before the same ending.
+    let long_enough = match facts.work_outstanding {
+        true => AFTER_A_SUSPENDED_JOB,
+        false => AFTER_THE_LAST_GAME,
+    };
+    match waited {
+        Some(waited) if waited >= long_enough => Becomes::CloseIt,
+        _ => Becomes::NotYet,
+    }
+}
+
+/// What Steam is doing to a game that a loading screen is waiting on.
+///
+/// Read out of the library before the splash is reached, because the splash is
+/// borrowed from the same shell the library is on. See
+/// [`Shell::sync_the_launch_downloads`].
+struct Underway {
+    /// The line the splash says while it waits.
+    said: String,
+    /// How far the manifest says the work has got, in bytes.
+    arrived: u64,
+    /// Whether the manifest is saying nothing at all about work that is
+    /// nonetheless going on. See [`steam::Steam::quietly_working_on_it`].
+    quietly: bool,
+}
+
+/// What a game is waiting for a client to get on with, in one line.
+///
+/// The manifest says which of them it is, and they are not the same sentence:
+/// an update is a copy that still runs, a download is one that does not yet
+/// exist, and neither is a check or a removal. Somebody deciding whether to
+/// start Steam is deciding about that.
+fn what_is_outstanding(standing: lxb_steam::library::Standing) -> &'static str {
+    use lxb_steam::library::Standing;
+    match standing {
+        Standing::Updating => "This game has an update waiting.",
+        Standing::Validating => "Steam was checking this game's files.",
+        Standing::Uninstalling => "Steam was removing this game.",
+        _ => "This download has not finished.",
+    }
+}
+
+/// The rows under Compatibility: what Steam offers to run one title with, and
+/// the tick on the one it is set to use.
+///
+/// Kept separate from the live menu beside [`steam_game_menu_rows`], and for
+/// the same reason — and this one has three shapes rather than one, because
+/// the list is fetched. A list that has not arrived, a list that could not be
+/// fetched and the list itself are three different panels, and the first two
+/// are writing to be read rather than rows to press: a wait somebody is
+/// standing in front of has to say it is a wait, and a failure has to say what
+/// went wrong, because the press promised a list.
+fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::Entry> {
+    let mut rows = Vec::new();
+    match known {
+        None | Some(steam::Compat::Asking) => rows.push(
+            // Named for the wait rather than for the client: Valve's client
+            // being started is what this is most of the time, and it is not
+            // what somebody who pressed Compatibility is waiting for.
+            menu::Entry::new(menu::Command::Dismiss, "Asking Steam…").reading(),
+        ),
+        Some(steam::Compat::Unavailable(why)) => {
+            rows.push(menu::Entry::new(menu::Command::Dismiss, why.clone()).reading())
+        }
+        // A title Steam offers nothing for. Not a failure — a game built for
+        // this machine needs no tool to run on it — so it says what is true
+        // rather than what went wrong.
+        Some(steam::Compat::Said(said)) if said.tools.is_empty() => rows.push(
+            menu::Entry::new(menu::Command::Dismiss, "Steam offers no tools for this").reading(),
+        ),
+        Some(steam::Compat::Said(said)) => {
+            // The row that takes a choice back, first and ticked when nothing
+            // is forced. It is Steam's own checkbox turned off, said as a row:
+            // what a list of tools with none of them chosen would otherwise
+            // leave is a setting nobody could undo.
+            rows.push(chosen_when(
+                menu::Entry::new(
+                    menu::Command::SteamRunUnder { app_id, tool: None },
+                    "Steam's choice",
+                ),
+                said.forced.is_none(),
+            ));
+            rows.extend(said.tools.iter().map(|tool| {
+                chosen_when(
+                    menu::Entry::new(
+                        menu::Command::SteamRunUnder {
+                            app_id,
+                            tool: Some(settings::intern(&tool.name)),
+                        },
+                        tool.display.clone(),
+                    ),
+                    said.forced.as_deref() == Some(tool.name.as_str()),
+                )
+            }));
+        }
+    }
+    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows
+}
+
+/// The rows of the friends panel's Status list: the statuses an account may be
+/// put into, the one it is in ticked.
+///
+/// Four, and which four is Valve's business rather than this shell's — see
+/// [`lxb_steam::friends::CHOOSABLE`], where the four that are missing are each
+/// accounted for and where the measurement is. No Cancel row: Back is the way
+/// out of every menu in this shell and the two lists that carry one carry it
+/// because a press there is irreversible. Choosing a status is not — the next
+/// press changes it again, and that is as true of Offline as of the rest.
+///
+/// A status Steam has the account in that cannot be chosen — Busy, Snooze, and
+/// the two retired ones — simply ticks nothing. That is the honest drawing: the
+/// account really is in a state that is not on this list, and a tick invented
+/// for the nearest row would be this shell saying the account is somewhere it
+/// is not.
+fn status_rows(now: lxb_steam::Presence) -> Vec<menu::Entry> {
+    lxb_steam::friends::CHOOSABLE
+        .iter()
+        .map(|status| {
+            chosen_when(
+                menu::Entry::new(menu::Command::SteamStatus(*status), status.said()),
+                *status == now,
+            )
+        })
+        .collect()
+}
+
+/// The tick beside the row that is in force, and nothing beside the rest.
+fn chosen_when(row: menu::Entry, chosen: bool) -> menu::Entry {
+    match chosen {
+        true => row.glyph(icons::CHOSEN),
+        false => row,
+    }
 }
 
 /// The rows of the Steam column's Sort list: the eight orders, the one in force
@@ -22261,19 +28438,107 @@ fn steam_sort_rows(
     rows
 }
 
+/// What an announcement about a friend's message says, and when it says less.
+#[cfg(test)]
+mod chat_announcement_tests {
+    use super::*;
+
+    /// The words, whenever anybody can be at the machine to read them.
+    ///
+    /// This is the regression: the rule asked whether an *application* was
+    /// still painting as well as whether the screen was resting, and a display
+    /// showing the start screen paints nothing — so every message that arrived
+    /// while somebody was looking at the bar came out as "A message arrived
+    /// while the screen was off", which is the one thing it was not.
+    #[test]
+    fn a_message_says_what_it_said_unless_every_screen_is_resting() {
+        assert_eq!(
+            what_a_message_may_say("are you playing tonight?".to_string(), false),
+            "are you playing tonight?"
+        );
+        let withheld = what_a_message_may_say("something private".to_string(), true);
+        assert!(
+            !withheld.contains("private"),
+            "the words reached a dark screen"
+        );
+        assert!(withheld.contains("screen was off"));
+    }
+
+    /// And a body that fits on one line is not made to wrap, while a longer one
+    /// is given the second line and no more.
+    #[test]
+    fn a_short_message_fits_and_a_long_one_is_cut_at_two_lines() {
+        // A bubble is 380-odd points wide and gives the words about three
+        // quarters of that, so one line is a handful of words: the number of
+        // lines is what has to be measured, but the *cap* is arithmetic and can
+        // be checked here.
+        assert_eq!(ui::toast_height(1), ui::toast_height(0));
+        assert!(ui::toast_height(2) > ui::toast_height(1));
+        assert_eq!(
+            ui::toast_height(9),
+            ui::toast_height(ui::TOAST_BODY_LINES),
+            "a paragraph grew the bubble past two lines"
+        );
+        // And the box the words are measured in is narrower than the card, by
+        // the picture beside them and the margins.
+        for height in [800.0, 1080.0, 2160.0] {
+            assert!(ui::toast_body_width(height) > 0.0);
+            assert!(ui::toast_body_size(height) > 0.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod steam_game_menu_tests {
     use super::*;
 
     fn game(installed: bool, steam_client: bool) -> apps::Game {
+        doing(
+            match installed {
+                true => lxb_steam::library::Standing::Ready,
+                false => lxb_steam::library::Standing::NotInstalled,
+            },
+            steam_client,
+        )
+    }
+
+    fn doing(standing: lxb_steam::library::Standing, steam_client: bool) -> apps::Game {
         apps::Game {
+            progress: None,
             app_id: 7,
             name: "Fixture".to_string(),
             note: String::new(),
-            installed,
-            updating: false,
+            installed: standing.playable(),
+            updating: standing.moving(),
             steam_client,
+            standing,
+            stuck: false,
+            waiting_for_steam: false,
         }
+    }
+
+    /// A download that says it is running while nothing arrives offers the one
+    /// place it can be looked at, exactly as a paused one does.
+    ///
+    /// Whatever is wrong with it is wrong in Steam's own downloads list, and
+    /// this shell has no business guessing at it — so the row is the same row,
+    /// and the menu is what tells somebody where to go.
+    #[test]
+    fn a_download_that_has_stopped_moving_offers_steams_own_list() {
+        let mut game = doing(lxb_steam::library::Standing::Downloading, true);
+        assert!(
+            !labels(&game).contains(&lxb_steam::Doing::Downloads.label().to_string()),
+            "a download that is moving does not need somebody sent anywhere"
+        );
+
+        game.stuck = true;
+        assert!(
+            labels(&game).contains(&lxb_steam::Doing::Downloads.label().to_string()),
+            "a download nothing is arriving for offers nowhere to look at it"
+        );
+        // And it is still a download: stopping it and deleting what arrived is
+        // still the answer for somebody who has given up on it.
+        assert!(labels(&game).contains(&"Stop and Delete".to_string()));
     }
 
     fn labels(game: &apps::Game) -> Vec<String> {
@@ -22281,6 +28546,72 @@ mod steam_game_menu_tests {
             .into_iter()
             .map(|row| row.label)
             .collect()
+    }
+
+    /// The menu follows the row, and not the manifest the row has stopped
+    /// following.
+    ///
+    /// The standing is what the disk says, and for the first stretch of an
+    /// update the disk says nothing — so the row and this menu were drawn from
+    /// two different answers about one game, one press apart. The row greyed
+    /// the cover, said "Updating" and refused; the menu, opened on the same
+    /// row, still offered **Play** (which lands on the "Updating" panel),
+    /// **Verify** and **Uninstall** — the last two fighting the update Steam
+    /// has in hand. `apps::Game::updating` carries the row's own answer, quiet
+    /// stretch and all.
+    #[test]
+    fn nothing_is_offered_that_would_fight_an_update_steam_is_doing() {
+        use lxb_steam::library::Standing;
+
+        // The quiet stretch: the manifest says `Ready`, and the row has
+        // already decided otherwise.
+        let mut quiet = game(true, true);
+        quiet.installed = false;
+        quiet.updating = true;
+        assert_eq!(
+            labels(&quiet),
+            vec!["Compatibility", "Sort", "Cancel"],
+            "the menu offered what the row a finger's width away refused"
+        );
+
+        // And every standing, against what each of the three means. A pause is
+        // a whole copy with the work stopped, so it keeps Play; a broken copy
+        // is not playable and can still be taken off the disk; a verify is work
+        // in flight and loses both of the ones that would collide with it.
+        for (standing, expected) in [
+            (
+                Standing::Ready,
+                vec!["Play", "Verify with Steam", "Compatibility", "Uninstall"],
+            ),
+            (
+                Standing::UpdatePaused,
+                vec![
+                    "Play",
+                    "Open Downloads in Steam",
+                    "Verify with Steam",
+                    "Compatibility",
+                    "Uninstall",
+                ],
+            ),
+            (
+                Standing::Broken,
+                vec!["Repair with Steam", "Compatibility", "Uninstall"],
+            ),
+            (Standing::Validating, vec!["Compatibility"]),
+            (Standing::Updating, vec!["Compatibility"]),
+            (
+                Standing::Downloading,
+                vec!["Stop and Delete", "Compatibility"],
+            ),
+            (Standing::Uninstalling, vec!["Compatibility"]),
+        ] {
+            let wanted: Vec<String> = expected
+                .into_iter()
+                .chain(["Sort", "Cancel"])
+                .map(String::from)
+                .collect();
+            assert_eq!(labels(&doing(standing, true)), wanted, "for {standing:?}");
+        }
     }
 
     /// Every row that acts on a game needs Valve's client, so a machine
@@ -22300,11 +28631,22 @@ mod steam_game_menu_tests {
     fn what_a_game_offers_depends_on_whether_it_is_here() {
         assert_eq!(
             labels(&game(true, true)),
-            vec!["Play", "Verify with Steam", "Uninstall", "Sort", "Cancel"]
+            vec![
+                "Play",
+                "Verify with Steam",
+                "Compatibility",
+                "Uninstall",
+                "Sort",
+                "Cancel"
+            ]
         );
+        // Compatibility is on both, and deliberately: what a game *would* run
+        // under is a setting on the game rather than something done to a copy
+        // of it, and Steam's own properties window offers it for a title that
+        // is not on the machine too.
         assert_eq!(
             labels(&game(false, true)),
-            vec!["Install", "Sort", "Cancel"]
+            vec!["Install", "Compatibility", "Sort", "Cancel"]
         );
     }
 
@@ -22421,18 +28763,399 @@ mod steam_game_menu_tests {
     /// confirmation up, so this menu row must reach the shell's panel — a menu
     /// wired straight to the removal would delete somebody's game on one
     /// press with nothing in between.
+    /// What the menu offers follows what the game is actually doing.
+    ///
+    /// One bit used to decide it, and one bit cannot tell a paused download
+    /// from a game nobody has asked for. So a half-downloaded title was offered
+    /// "Install", which starts the whole thing again, and a copy with files
+    /// missing was offered the same — for a game already taking up the space.
+    /// The window Steam was asked for is given, and taken back when the person
+    /// is done with it.
+    ///
+    /// Sight used to be a bare flag: given for a hand-over and then given until
+    /// the next game press, because nothing knew *why* it had been given. A
+    /// silent install an hour later ran with Steam's storefront on the bar.
+    #[test]
+    fn a_window_asked_for_is_given_back_when_it_has_gone() {
+        let t0 = Instant::now();
+        let after = |seconds: u64| t0 + std::time::Duration::from_secs(seconds);
+
+        // Asked for, and nothing has appeared yet.
+        let asked = SteamSight::UserVisible {
+            asked: t0,
+            arrived: false,
+        };
+        assert_ne!(asked, SteamSight::Background);
+
+        // It came, so it is theirs until they close it — including while they
+        // are back on the bar, exactly like any other application they left
+        // running.
+        let arrived = SteamSight::UserVisible {
+            asked: t0,
+            arrived: true,
+        };
+        assert_ne!(arrived, asked);
+
+        // And a window that never comes does not leave sight given for the
+        // rest of the session. A request the client did not understand raises
+        // nothing at all and says nothing about it.
+        assert!(after(31).duration_since(t0) > UNTIL_STEAM_SHOWS_ITSELF);
+        assert!(after(29).duration_since(t0) < UNTIL_STEAM_SHOWS_ITSELF);
+    }
+
+    /// The client's windows are recognised by the names the compositor is asked
+    /// to hide by, folded the same way — an X11 class is conventionally
+    /// capitalised where a Wayland app id would not be.
+    #[test]
+    fn valves_windows_are_recognised_by_either_name() {
+        assert!(is_valves_client("steam"));
+        assert!(is_valves_client("Steam"));
+        assert!(is_valves_client(" steamwebhelper "));
+        assert!(!is_valves_client("steamcmd"));
+        assert!(!is_valves_client(""));
+        assert!(!is_valves_client("firefox"));
+    }
+
+    #[test]
+    fn the_rows_follow_what_the_game_is_doing() {
+        use lxb_steam::library::Standing;
+
+        // Paused: not a game to install and not one to play. What it needs is
+        // Steam's own list, which is the only place a download resumes.
+        let paused = labels(&doing(Standing::Paused, true));
+        assert!(
+            paused.contains(&"Open Downloads in Steam".to_string()),
+            "{paused:?}"
+        );
+        assert!(
+            paused.contains(&"Stop and Delete".to_string()),
+            "{paused:?}"
+        );
+        assert!(!paused.contains(&"Install".to_string()), "{paused:?}");
+        assert!(!paused.contains(&"Play".to_string()), "{paused:?}");
+        assert!(!paused.contains(&"Uninstall".to_string()), "{paused:?}");
+
+        // Broken: on the disk, unplayable, and what it wants is repairing —
+        // not fetching from scratch.
+        let broken = labels(&doing(Standing::Broken, true));
+        assert!(
+            broken.contains(&"Repair with Steam".to_string()),
+            "{broken:?}"
+        );
+        assert!(broken.contains(&"Uninstall".to_string()), "{broken:?}");
+        assert!(!broken.contains(&"Install".to_string()), "{broken:?}");
+        assert!(!broken.contains(&"Play".to_string()), "{broken:?}");
+
+        // Coming down now: nothing to do but stop it.
+        let downloading = labels(&doing(Standing::Downloading, true));
+        assert!(
+            downloading.contains(&"Stop and Delete".to_string()),
+            "{downloading:?}"
+        );
+        assert!(
+            !downloading.contains(&"Play".to_string()),
+            "{downloading:?}"
+        );
+        assert!(
+            !downloading.contains(&"Install".to_string()),
+            "{downloading:?}"
+        );
+
+        // Being taken off: nothing at all, until it has gone.
+        let removing = labels(&doing(Standing::Uninstalling, true));
+        for offered in ["Play", "Install", "Uninstall", "Stop and Delete"] {
+            assert!(!removing.contains(&offered.to_string()), "{removing:?}");
+        }
+
+        // And the two ordinary ones are what they always were.
+        assert!(labels(&doing(Standing::Ready, true)).contains(&"Play".to_string()));
+        assert!(labels(&doing(Standing::NotInstalled, true)).contains(&"Install".to_string()));
+    }
+
     #[test]
     fn the_uninstall_row_asks_rather_than_removes() {
         let rows = steam_game_menu_rows(&game(true, true));
-        assert_eq!(rows[2].command, menu::Command::SteamUninstall(7));
-        assert_ne!(rows[2].command, menu::Command::SteamUninstallNow(7));
+        // Found rather than counted to: this row's neighbours change as rows
+        // are added to the menu, and what it is has to go on being checked.
+        let uninstall = rows
+            .iter()
+            .find(|row| row.label == "Uninstall")
+            .expect("the Uninstall row");
+        assert_eq!(uninstall.command, menu::Command::SteamUninstall(7));
+        assert_ne!(uninstall.command, menu::Command::SteamUninstallNow(7));
+    }
+
+    /// A list that has not arrived is a row saying so, and not an empty panel
+    /// or a menu that refuses to open.
+    ///
+    /// The whole reason this list has three shapes: it comes out of Valve's
+    /// client, which may have to be started first, and a press that promised a
+    /// list has to say something in the second or the minute before it can
+    /// keep the promise.
+    #[test]
+    fn a_compatibility_list_that_has_not_arrived_says_so() {
+        for waiting in [None, Some(steam::Compat::Asking)] {
+            let rows = steam_compat_rows(7, waiting.as_ref());
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["Asking Steam…", "Cancel"]
+            );
+            assert!(!rows[0].enabled, "there is nothing to press yet");
+            assert!(rows[1].enabled, "and a way out that is not Back");
+        }
+
+        // A failure says what went wrong, in the client's own words, and is
+        // still a panel somebody can leave.
+        let refused = steam::Compat::Unavailable("Steam is not signed in.".to_string());
+        let rows = steam_compat_rows(7, Some(&refused));
+        assert_eq!(rows[0].label, "Steam is not signed in.");
+        assert!(!rows[0].enabled);
+
+        // And a title Steam offers nothing for is not a failure: a game built
+        // for this machine needs no tool to run on it.
+        let native = steam::Compat::Said(lxb_steam::webui::Compatibility::default());
+        let rows = steam_compat_rows(7, Some(&native));
+        assert_eq!(rows[0].label, "Steam offers no tools for this");
+        assert!(!rows[0].enabled);
+    }
+
+    /// The list itself: Steam's own choice first and ticked while nothing is
+    /// forced, then the tools, with the tick on whichever is in force.
+    ///
+    /// The first row is what makes this a setting rather than a one-way door.
+    /// Valve draws the same thing as a checkbox above a dropdown; a list with
+    /// no way back to "let Steam decide" would be a choice nobody could undo.
+    #[test]
+    fn the_compatibility_list_ticks_what_is_in_force() {
+        let offered = |forced: Option<&str>| {
+            steam::Compat::Said(lxb_steam::webui::Compatibility {
+                tools: vec![
+                    lxb_steam::webui::Tool {
+                        name: "proton_experimental".to_string(),
+                        display: "Proton Experimental".to_string(),
+                    },
+                    lxb_steam::webui::Tool {
+                        name: "Proton-GE Latest".to_string(),
+                        display: "Proton-GE Latest".to_string(),
+                    },
+                ],
+                forced: forced.map(str::to_string),
+            })
+        };
+
+        let free = offered(None);
+        let rows = steam_compat_rows(7, Some(&free));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Steam's choice",
+                "Proton Experimental",
+                "Proton-GE Latest",
+                "Cancel"
+            ]
+        );
+        assert_eq!(rows[0].glyph, Some(icons::CHOSEN), "nothing is forced");
+        assert_eq!(rows[1].glyph, None);
+        assert_eq!(
+            rows[0].command,
+            menu::Command::SteamRunUnder {
+                app_id: 7,
+                tool: None
+            },
+            "and pressing it stops forcing one"
+        );
+
+        // The key Steam files it under travels on the command, and never the
+        // label: they are the same string for a third-party tool and are not
+        // for Valve's own.
+        let forced = offered(Some("proton_experimental"));
+        let rows = steam_compat_rows(7, Some(&forced));
+        assert_eq!(rows[0].glyph, None, "something is forced now");
+        assert_eq!(rows[1].glyph, Some(icons::CHOSEN));
+        assert_eq!(
+            rows[1].command,
+            menu::Command::SteamRunUnder {
+                app_id: 7,
+                tool: Some("proton_experimental")
+            }
+        );
+    }
+
+    /// The Status list is the four statuses an account may be put into — the
+    /// four Valve's own client offers — the one it is in ticked.
+    #[test]
+    fn the_status_list_is_the_four_that_can_be_chosen() {
+        let rows = status_rows(lxb_steam::Presence::Invisible);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Online", "Away", "Invisible", "Offline"]
+        );
+        assert_eq!(rows[2].glyph, Some(icons::CHOSEN), "the one in force");
+        assert_eq!(rows[0].glyph, None);
+        assert_eq!(rows[1].glyph, None);
+        assert_eq!(rows[3].glyph, None);
+        assert_eq!(
+            rows[0].command,
+            menu::Command::SteamStatus(lxb_steam::Presence::Online)
+        );
+        // Offline is on the list and is not a grave row. It is a place to
+        // stand rather than a step nobody comes back from: the row above it
+        // brings the list straight back.
+        assert_eq!(
+            rows[3].command,
+            menu::Command::SteamStatus(lxb_steam::Presence::Offline)
+        );
+        assert!(rows.iter().all(|row| row.enabled && !row.grave));
+    }
+
+    /// An account Steam has in a state this shell does not offer — Snooze,
+    /// which a client falls into on its own — ticks nothing. A tick moved to
+    /// the nearest row would be the shell saying the account is somewhere it is
+    /// not.
+    #[test]
+    fn a_status_that_is_not_on_the_list_ticks_nothing() {
+        let rows = status_rows(lxb_steam::Presence::Snooze);
+        assert!(rows.iter().all(|row| row.glyph.is_none()));
+        assert_eq!(rows.len(), 4, "and the list is the same four");
+    }
+
+    /// Only the four have a verb to send Valve's client, and the four that do
+    /// not are the four the client's URL table accepts and ignores.
+    #[test]
+    fn only_a_status_that_can_be_chosen_is_worth_a_url() {
+        for status in lxb_steam::friends::CHOOSABLE {
+            assert!(status.url_verb().is_some(), "{status:?}");
+        }
+        for silent in [
+            lxb_steam::Presence::Busy,
+            lxb_steam::Presence::Snooze,
+            lxb_steam::Presence::LookingToTrade,
+            lxb_steam::Presence::LookingToPlay,
+        ] {
+            assert_eq!(silent.url_verb(), None, "{silent:?}");
+        }
+    }
+
+    /// A game Steam is in the middle of is not a game with files missing, and
+    /// the press must not say it is.
+    ///
+    /// This is the defect, in one assertion. Everything that was not a pause
+    /// fell through to one catch-all: press a game Steam was updating — with
+    /// "Updating · 33% of 1.3 GB" written on its own row — and the panel said
+    /// "Some of this game's files are missing" and offered to repair it. The
+    /// same for a game being checked over, and for one waiting its turn in
+    /// Steam's queue.
+    #[test]
+    fn work_in_progress_is_not_a_broken_copy() {
+        use lxb_steam::library::Standing;
+
+        let mut updating = doing(Standing::Updating, true);
+        updating.note = "Updating · 33% of 1.3 GB".to_string();
+        let (said, doing_this, action) = what_is_happening_to_it(&updating);
+        assert_eq!(
+            said, "Updating · 33% of 1.3 GB",
+            "the panel says what the row a finger's width away says"
+        );
+        assert_eq!(doing_this, lxb_steam::Doing::Downloads);
+        assert_eq!(action, lxb_steam::Doing::Downloads.label());
+
+        // The one that really is a broken copy still is.
+        let (said, doing_this, action) = what_is_happening_to_it(&doing(Standing::Broken, true));
+        assert_eq!(said, "Some of this game's files are missing.");
+        assert_eq!(doing_this, lxb_steam::Doing::Verify);
+        assert_eq!(action, "Repair with Steam");
+
+        // And a pause is still a pause, in Steam's own list.
+        let (said, doing_this, _) = what_is_happening_to_it(&doing(Standing::Paused, true));
+        assert_eq!(said, "Steam has paused this download.");
+        assert_eq!(doing_this, lxb_steam::Doing::Downloads);
+
+        // Nothing else claims files are missing.
+        for standing in [
+            Standing::Queued,
+            Standing::Downloading,
+            Standing::Validating,
+        ] {
+            let (said, ..) = what_is_happening_to_it(&doing(standing, true));
+            assert!(!said.contains("missing"), "{standing:?} said {said:?}");
+        }
+    }
+
+    /// What is outstanding is said in its own words, because they are not the
+    /// same decision: an update is a copy that still runs, a download is one
+    /// that does not exist yet, and neither is a check or a removal.
+    #[test]
+    fn what_is_waiting_says_which_it_is() {
+        use lxb_steam::library::Standing;
+        assert_eq!(
+            what_is_outstanding(Standing::Updating),
+            "This game has an update waiting."
+        );
+        assert_eq!(
+            what_is_outstanding(Standing::Validating),
+            "Steam was checking this game's files."
+        );
+        assert_eq!(
+            what_is_outstanding(Standing::Uninstalling),
+            "Steam was removing this game."
+        );
+        assert_eq!(
+            what_is_outstanding(Standing::Downloading),
+            "This download has not finished."
+        );
+    }
+
+    /// A game whose work nothing is doing offers the one thing that would move
+    /// it, and offers it only where there is a Steam to start.
+    #[test]
+    fn a_game_waiting_for_steam_offers_to_start_it() {
+        let mut game = doing(lxb_steam::library::Standing::Updating, true);
+        game.waiting_for_steam = true;
+        assert!(labels(&game).contains(&"Start Steam".to_string()));
+
+        // And on a machine with no client, the whole band is missing as it
+        // always was: a row that could only refuse is worse than no row.
+        let mut none = doing(lxb_steam::library::Standing::Updating, false);
+        none.waiting_for_steam = true;
+        assert_eq!(labels(&none), vec!["Sort", "Cancel"]);
+
+        // A game Steam is actually updating is not offered it.
+        let updating = doing(lxb_steam::library::Standing::Updating, true);
+        assert!(!labels(&updating).contains(&"Start Steam".to_string()));
     }
 
     fn service(signed_in: bool, has_column: bool, has_client: bool) -> Vec<String> {
-        steam_service_menu_rows(signed_in, has_column, has_client)
+        steam_service_menu_rows(signed_in, has_column, has_client, true)
             .into_iter()
             .map(|row| row.label)
             .collect()
+    }
+
+    /// Offline, the row that asks Steam again says so. It is the only thing on
+    /// the machine that will bring the next attempt forward, and a session
+    /// waiting out its five seconds had nothing anybody could press.
+    #[test]
+    fn offline_the_refresh_row_is_the_retry() {
+        let offline: Vec<String> = steam_service_menu_rows(true, true, true, false)
+            .into_iter()
+            .map(|row| row.label)
+            .collect();
+        assert_eq!(offline.first().map(String::as_str), Some("Try Steam again"));
+        assert_eq!(
+            service(true, true, true).first().map(String::as_str),
+            Some("Refresh the library")
+        );
+
+        // The same command either way: what changes is the sentence, not what
+        // pressing it does.
+        let rows = steam_service_menu_rows(true, true, true, false);
+        assert_eq!(rows[0].command, menu::Command::SteamRefresh);
     }
 
     /// The client can be opened two ways and the menu says which is which:
@@ -22444,15 +29167,16 @@ mod steam_game_menu_tests {
             service(true, true, true),
             vec![
                 "Refresh the library",
-                "Sign out",
+                "Sign out of LineXinBar",
                 "Sort",
                 "Open Steam",
                 "Open Steam (Client)",
+                "Steam diagnostics",
                 "Cancel"
             ]
         );
 
-        let rows = steam_service_menu_rows(true, true, true);
+        let rows = steam_service_menu_rows(true, true, true, true);
         let opens: Vec<menu::Command> = rows
             .iter()
             .filter(|row| matches!(row.command, menu::Command::SteamDo(_)))
@@ -22481,12 +29205,49 @@ mod steam_game_menu_tests {
     fn without_a_client_there_is_nothing_to_open() {
         assert_eq!(
             service(false, false, false),
-            vec!["Sign in to Steam", "Cancel"]
+            vec!["Sign in to Steam", "Steam diagnostics", "Cancel"]
         );
         assert_eq!(
             service(true, true, false),
-            vec!["Refresh the library", "Sign out", "Sort", "Cancel"]
+            vec![
+                "Refresh the library",
+                "Sign out of LineXinBar",
+                "Sort",
+                "Steam diagnostics",
+                "Cancel"
+            ]
         );
+    }
+
+    /// And the diagnostics row is on every one of them, which is the point of
+    /// it: every state worth diagnosing — nobody signed in, no client on the
+    /// machine, Steam not answering — is a state where the rows above it are
+    /// the ones that have gone missing.
+    #[test]
+    fn what_is_wrong_can_always_be_looked_at() {
+        for signed_in in [true, false] {
+            for has_column in [true, false] {
+                for has_client in [true, false] {
+                    for online in [true, false] {
+                        let rows =
+                            steam_service_menu_rows(signed_in, has_column, has_client, online);
+                        assert!(
+                            rows.iter()
+                                .any(|row| row.command == menu::Command::SteamDiagnostics),
+                            "no way to look at Steam with \
+                             signed_in={signed_in} column={has_column} \
+                             client={has_client} online={online}"
+                        );
+                        // Below the rule, with the other rows that are not
+                        // about the account.
+                        assert!(rows
+                            .iter()
+                            .filter(|row| row.command == menu::Command::SteamDiagnostics)
+                            .all(|row| row.group == 1));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -23331,6 +30092,15 @@ fn listed_facts_lines(title: &str, values: &[(String, String)]) -> Vec<dialog::L
 const MESSAGE_WIDTH: usize = 46;
 const MESSAGE_LINES: usize = 3;
 
+/// And how many one of Valve's launch questions gets.
+///
+/// More than polkit's three, because these are longer: the whole paragraph
+/// Steam shows when a game's own installer failed runs to about two hundred and
+/// eighty characters, which is six lines here. Five is enough for every one in
+/// the table but that one, and that one ends in an ellipsis rather than being
+/// allowed to push its own buttons off the screen — the buttons are the point.
+const LAUNCH_QUESTION_LINES: usize = 5;
+
 /// What the panel says while an authentication is on screen.
 ///
 /// One function for every pass — as it opens, as PAM asks for something, and
@@ -23437,6 +30207,38 @@ fn wrapped(text: &str, width: usize, lines: usize) -> Vec<String> {
 /// they are holding. The board is not asked the same question, because the board
 /// is not offered — it is asked for, and a keyboard user who asks for it wants
 /// it.
+/// Which of the session's displays the on-screen keyboard belongs on, given
+/// what Settings > Input names and what is plugged in.
+///
+/// The rule behind [`Shell::keyboard_panel`], with the two things it needs
+/// handed to it — free-standing for the reason [`keyboard_is_visible`] is: it
+/// is the part worth being sure of, and a shell it were a method on could not
+/// be built without a compositor to check it against.
+///
+/// `screens` is the connector names in the order the compositor announced them,
+/// which is the order the panels stand in, and `driven` is the one the user is
+/// on.
+fn board_display<'a>(
+    pinned: Option<&str>,
+    screens: impl Iterator<Item = &'a str>,
+    driven: usize,
+) -> usize {
+    // Nobody has named a screen, so the board follows the hands.
+    let Some(pinned) = pinned else {
+        return driven;
+    };
+    screens
+        .enumerate()
+        .find(|(_, name)| *name == pinned)
+        .map(|(index, _)| index)
+        // A screen that is not plugged in. The board goes to the driven display
+        // for as long as it is away and comes back the moment it returns —
+        // nothing is written back, because a monitor unplugged for the
+        // afternoon is not somebody changing their mind. See
+        // [`settings::keyboard_display`].
+        .unwrap_or(driven)
+}
+
 fn keyboard_is_visible(
     menu_over_app: bool,
     board_open: bool,
@@ -23479,9 +30281,20 @@ fn keyboard_is_visible(
 /// everything it draws is meant to be seen. A menu raised over an application
 /// with the guide closed is the opposite case: it arrives with nothing behind
 /// it, and the caller counts it among the things raised over the application.
+///
+/// The four are not all asked about the same screen, which is the one thing
+/// here that is not obvious. Three of them are drawn on the display being
+/// driven and ask about that one. The keyboard can be sent to a display of its
+/// own — Settings > Input > Keyboard > On-screen keyboard > Default display —
+/// so it asks about *its* display: whether it is there (`board_here`) and
+/// whether there is
+/// anything on that screen for it to be in front of (`board_over_app`). Asked
+/// once for the session instead, a board pinned to a second screen with nothing
+/// running on it blanked that screen's bar for a keyboard floating on nothing.
 fn draws_only_what_was_raised(
     focused: bool,
-    keyboard_overlay: bool,
+    board_here: bool,
+    board_over_app: bool,
     raised_over_app: bool,
     menu_here: bool,
     typing_here: bool,
@@ -23499,7 +30312,18 @@ fn draws_only_what_was_raised(
     // And the board's own field is the other exception, for the mirror of that
     // reason: what the board is typing into is a panel this surface is drawing,
     // so blanking everything but the keys would take the field away.
-    focused && (keyboard_overlay || raised_over_app) && !menu_here && !typing_here
+    //
+    // **Where the field is**, which is the display being driven and not
+    // necessarily the one the board is on: a board pinned to the second screen
+    // is over that screen's application with nothing of the shell's underneath
+    // it, and the exception written as `typing_here` alone would lay the whole
+    // start screen over that application for as long as somebody typed a
+    // password on the first. See [`Shell::keyboard_panel`].
+    let field_here = focused && typing_here;
+    // The keyboard lifts the display it is drawn on; everything else here is
+    // raised on the display being driven, because everything else here is drawn
+    // there.
+    ((board_here && board_over_app) || (focused && raised_over_app)) && !menu_here && !field_here
 }
 
 /// Whether `window` belongs to the row a press was made on — the rule behind
@@ -23512,6 +30336,49 @@ fn draws_only_what_was_raised(
 ///
 /// `game_windows` is [`Shell::steam_windows`] — which of the windows on screen
 /// the shell watched a game open, and which game each one is.
+/// Whether one window that appeared while `app_id` was loading may be recorded
+/// as that game's.
+///
+/// The order is the whole of it: evidence first, and the moment a window
+/// appeared only where there is none.
+///
+/// 1. **What the window says it is**, which settles it both ways — `said`,
+///    which is its own process out of [`lxb_steam::process`] or, for a window
+///    whose process nobody knows, the game its class is named after (see
+///    [`game_a_window_is_named_after`]). A window that says it is this game is
+///    this game; one that says it is another is another's, and a loading screen
+///    that claimed it would be handing the guide the wrong window to close.
+/// 2. **Valve's own client** is never the game it was asked to start. Its
+///    windows are hidden while it works in the background, but a window is
+///    nameless between mapping and announcing its class, and there is a moment
+///    where the client's own is neither hidden nor recognisable. See
+///    [`is_valves_client`].
+/// 3. **An application this machine has installed** — `an_application_owns_it`
+///    — whose windows are its own however convenient the timing. A message the
+///    user was sent, a password prompt, a browser opening a link: none of them
+///    stop being themselves because a game was loading when they appeared.
+/// 4. Otherwise the timing stands, which is the answer this shell has always
+///    given and is right far more often than not.
+///
+/// Nothing here is a claim that a refused window is *not* the game. It is a
+/// claim that the shell has no business saying it is, which is a different
+/// thing and the one that matters: a wrong entry here is a guide that offers to
+/// close a game and closes somebody's browser.
+fn may_be_the_game(
+    app_id: u32,
+    said: Option<u32>,
+    window_app_id: &str,
+    an_application_owns_it: bool,
+) -> bool {
+    if let Some(said) = said {
+        return said == app_id;
+    }
+    if is_valves_client(window_app_id) {
+        return false;
+    }
+    !an_application_owns_it
+}
+
 fn owns_window(owner: Owning<'_>, window: &WindowCard, game_windows: &HashMap<u32, u32>) -> bool {
     match owner {
         Owning::App(app) => app.owns_window(&window.app_id),
@@ -23682,8 +30549,52 @@ fn lattice_music_wanted(has_panel: bool, apps_open: bool, handing_over: bool) ->
 /// can arrive mid-launch. Refusing the press with the menu already up would
 /// turn the button that gets the user out of everything into the one that
 /// trapped them there.
+/// Which finished download to announce, and what to remember having said.
+///
+/// `was` and `now` are the game the download card was about last pass and this
+/// one, `finished` says whether the one that has gone is on the disk and ready
+/// to play, and `said` is the last game a finish was announced for.
+///
+/// Three rules, and each of them is a thing that goes wrong without it.
+///
+/// * **The card going is not a finish.** Steam pausing a download takes the
+///   card away, and so does a copy turning out to need repairing, and neither
+///   is anything to announce — hence `finished`, which is the whole test.
+/// * **Two things can notice one finish** — a job this session started and a
+///   download somebody began in Steam's own window — so the last one announced
+///   is remembered and not announced twice.
+/// * **And that memory is cleared when the same game starts coming down
+///   again**, or a game installed twice in one session would be announced only
+///   the first time.
+fn a_finished_download(
+    was: Option<u32>,
+    now: Option<u32>,
+    finished: bool,
+    said: Option<u32>,
+) -> (Option<u32>, Option<u32>) {
+    let said = said.filter(|said| now != Some(*said));
+    let Some(app_id) = was.filter(|was| Some(*was) != now && finished && said != Some(*was)) else {
+        return (None, said);
+    };
+    (Some(app_id), Some(app_id))
+}
+
 fn guide_answers(launching_here: bool, showing: bool) -> bool {
     showing || !launching_here
+}
+
+/// Where a display named at some point in the past is in the list now, as a
+/// rule on its own.
+///
+/// The whole of what a [`Display`] buys, and it is the `None` rather than the
+/// index: an index written down is right until a screen before it in the list
+/// is unplugged, at which point it silently becomes another screen's, and
+/// nothing anywhere says so. A name that is no longer in the list is a display
+/// that has gone, and every holder of one is told.
+fn panel_at(panels: impl IntoIterator<Item = Display>, display: Display) -> Option<usize> {
+    panels
+        .into_iter()
+        .position(|candidate| candidate == display)
 }
 
 /// Which display the compositor should be opening applications on, as a rule
@@ -23721,12 +30632,12 @@ fn launch_display(driving: usize, in_flight: Option<usize>) -> usize {
 /// moment the newer is satisfied, which is the best a single answer can do —
 /// and it is the same answer a press gives, which is what keeps the two from
 /// contradicting each other.
-fn display_still_waiting(splashes: &[launch::Launch]) -> Option<usize> {
+fn display_still_waiting(splashes: &[launch::Launch]) -> Option<Display> {
     splashes
         .iter()
         .rev()
         .find(|splash| splash.waiting())
-        .map(|splash| splash.panel)
+        .map(|splash| splash.display)
 }
 
 /// Put a loading screen on the display it was started from.
@@ -23743,7 +30654,7 @@ fn display_still_waiting(splashes: &[launch::Launch]) -> Option<usize> {
 /// back to the bar is press the game again, which is how one press becomes
 /// three.
 fn begin_launch(splashes: &mut Vec<launch::Launch>, splash: launch::Launch) {
-    splashes.retain(|other| other.panel != splash.panel);
+    splashes.retain(|other| other.display != splash.display);
     splashes.push(splash);
 }
 
@@ -23820,7 +30731,23 @@ fn controller_pressed_something(poll: &controller::Poll) -> bool {
 /// into. Asking about focus alone dropped every direction and every press for
 /// as long as the board was on screen.
 fn controller_is_driving(grabbed: bool, has_keyboard_focus: bool, board_open: bool) -> bool {
-    grabbed || has_keyboard_focus || board_open
+    the_shell_holds_the_keyboard(grabbed, has_keyboard_focus) || board_open
+}
+
+/// Whether the shell itself is what the seat's keys are being delivered to.
+///
+/// Cut out of [`controller_is_driving`] rather than written twice, because the
+/// two questions are not the same one and the difference is exactly the
+/// on-screen keyboard: the board is a screen of the shell's that the pad is
+/// being read for, and it is *also* a screen that has deliberately left the
+/// Wayland keyboard with the application it is typing into.
+///
+/// That difference is the whole of what [`Shell::show_steams_overlay`] needs.
+/// A key it sends goes to whatever holds keyboard focus, so it may only be sent
+/// when that is the game — and the board being up does not stop it being the
+/// game.
+fn the_shell_holds_the_keyboard(grabbed: bool, has_keyboard_focus: bool) -> bool {
+    grabbed || has_keyboard_focus
 }
 
 /// Whether a surface in this state lets the pointer through to whatever is
@@ -23877,6 +30804,32 @@ enum Spot {
     /// A row of the panel an application's file question is answered in, or
     /// the panel itself where the point missed every row.
     FileRow(ui::PickerSpot),
+    /// Somebody in the friends list, by their place in the roster.
+    FriendsRow(usize),
+    /// The account's own status at the head of the friends panel, which is a
+    /// button that raises the list of statuses to change it to.
+    FriendsStatus,
+    /// The friends list's scroll bar, and how far down the list the hand on it
+    /// is asking to go.
+    FriendsTrack(f32),
+    /// One message in an open conversation, by Steam's own key for it or by the
+    /// request it is going out under. Never by its place in the column — see
+    /// [`crate::friends::Talking`], where the reason is the same one the roster
+    /// keeps its selection by SteamID for.
+    FriendsMessage(lxb_steam::chat::Mark),
+    /// The field a message is typed into.
+    FriendsCompose,
+    /// The "Try again" a conversation whose history could not be fetched
+    /// offers.
+    FriendsAgain,
+    /// A conversation's own scroll bar, and how far down it the hand is asking
+    /// to go.
+    FriendsChatTrack(f32),
+    /// The screen around the friends panel, which is a way out of it — the same
+    /// thing [`Spot::OutsideMenu`] is, for the same reason: the panel has the
+    /// buttons while it is up, so there is nothing out there for a press to be
+    /// about except the panel itself.
+    OutsideFriends,
     /// Somewhere the shell is drawing but nothing of it is: the sidebar's own
     /// glass, the air between two keys, the wallpaper past the end of the bar.
     Nothing,
@@ -23913,6 +30866,14 @@ enum Held {
     Entry(Item),
     /// A mixer row of the context menu, by its row.
     Mixer(usize),
+    /// The friends list's scroll bar. Nothing to name: there is one list on the
+    /// panel and one bar beside it.
+    Friends,
+    /// And a conversation's, which is a different column behind the same edge
+    /// of the same panel. Two arms rather than one, so a drag begun on the list
+    /// cannot end up scrolling a conversation the panel turned to under the
+    /// hand.
+    FriendsChat,
 }
 
 /// Whether `(x, y)` is inside a rectangle.
@@ -25188,6 +32149,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "guide" => Action::Guide,
         "keyboard" => Action::Keyboard,
         "menu" => Action::Menu,
+        "friends" => Action::Friends,
         "floating" => Action::Floating,
         "back" => Action::Back,
         "launch" => Action::Launch,
@@ -25199,6 +32161,8 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "prev-screen" => Action::PrevScreen,
         "next-screen" => Action::NextScreen,
         "screenshot" => Action::Screenshot,
+        "message" => Action::PretendAMessage,
+        "steam-overlay" => Action::SteamOverlay,
         "volume-up" => Action::VolumeUp,
         "volume-down" => Action::VolumeDown,
         "volume-mute" => Action::VolumeMute,
@@ -25304,6 +32268,20 @@ fn action_for_keysym(keysym: Keysym) -> Option<Action> {
         // nothing has been left without a way in. What this key gains is being
         // where everybody already expects it.
         Keysym::Menu | Keysym::F10 | Keysym::y | Keysym::Y => Some(Action::Menu),
+        // And of the left-hand face button: the Steam friends list, on the key
+        // the user asked for.
+        //
+        // Shift alone, which is the one thing in this table that is otherwise a
+        // *modifier* — and the reason it can be a key here is that nothing this
+        // shell listens to is spelled with it. Shift+Tab belongs to Valve's
+        // overlay and is sent to that client rather than read (see
+        // `steam::OVERLAY_CHORD`); Shift+F10 arrives as plain F10; and every
+        // other chord in the shell is spelled on Select or on the guide button.
+        // A key press is what this answers, so holding Shift to type a capital
+        // letter still raises it — which is why the branch that feeds a field
+        // never reaches here at all. See `stroke_for`, where a key over a field
+        // is a character or nothing.
+        Keysym::Shift_L | Keysym::Shift_R => Some(Action::Friends),
         // And of the right stick pressed: the videos floating over the guide.
         // `p` for picture-in-picture, which is the same kind of shorthand as
         // the `y` above — the one letter the feature is called by wherever it
@@ -25375,10 +32353,27 @@ fn set_shell_sound(value: f32) -> bool {
     })
 }
 
+/// Adapts the conversation store to the one number a friend's row draws.
+///
+/// A wrapper for the reason [`Slots`] is one: the layout is arithmetic on
+/// rectangles and has no business reaching into a message store — what it needs
+/// is a count, and this is the whole of what it can ask for.
+struct Unread<'a>(&'a lxb_steam::chat::Conversations);
+
+impl ui::UnreadCount for Unread<'_> {
+    fn unread(&self, steam_id: u64) -> usize {
+        self.0
+            .with(steam_id)
+            .map(lxb_steam::chat::Conversation::unread)
+            .unwrap_or(0)
+    }
+}
+
 /// Adapts the renderer's atlas lookup to what the layout code needs.
 struct Slots<'a> {
     gpu: &'a Gpu,
     art: &'a art::Art,
+    avatars: &'a avatars::Avatars,
     drained: &'a Drained,
 }
 
@@ -25407,6 +32402,19 @@ impl SlotLookup for Slots<'_> {
     /// worker's business, and whether the atlas is still holding it.
     fn cover(&self, app_id: u32) -> Option<gpu::Thumb> {
         self.gpu.thumbnail(self.art.cover(app_id)?)
+    }
+
+    /// The same two questions about the game's own icon, which is kept under a
+    /// key of its own — see [`art::Art::icon`].
+    fn game_icon(&self, app_id: u32) -> Option<gpu::Thumb> {
+        self.gpu.thumbnail(self.art.icon(app_id)?)
+    }
+
+    /// And the same two about one person's picture on Steam: where the file
+    /// ended up, which is the avatar worker's business, and whether the atlas
+    /// is still holding it. See [`avatars::Avatars::at`].
+    fn avatar(&self, hash: &str, size: lxb_steam::AvatarSize) -> Option<gpu::Thumb> {
+        self.gpu.thumbnail(self.avatars.at(hash, size)?)
     }
 
     /// The fading answer rather than the plain one: a cover that has just
@@ -26504,6 +33512,7 @@ impl Dispatch<LxbShellV1, ()> for Shell {
             } => {
                 if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
                     panel.pending_windows.push(WindowCard {
+                        pid: None,
                         id,
                         title,
                         app_id: String::new(),
@@ -26525,6 +33534,51 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                         window.app_id = app_id;
                     }
                 }
+            }
+            // Attaches to the window it followed, like the name before it, and
+            // by id for the same reason.
+            lxb_shell_v1::Event::OutputWindowPid { output, id, pid } => {
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    if let Some(window) = panel
+                        .pending_windows
+                        .iter_mut()
+                        .find(|window| window.id == id)
+                    {
+                        window.pid = Some(pid);
+                    }
+                }
+            }
+            // The windows that are in none of the display lists because this
+            // shell asked for them to be in none of them. Not per display: a
+            // hidden window is not on one as far as anything else here is
+            // concerned. See [`Shell::sync_steam_questions`].
+            lxb_shell_v1::Event::UnseenWindow { id, app_id, title } => {
+                state
+                    .pending_unseen
+                    .push(UnseenWindow { id, app_id, title });
+            }
+            lxb_shell_v1::Event::UnseenWindowsDone => {
+                let windows = std::mem::take(&mut state.pending_unseen);
+                if state.unseen_windows == windows {
+                    return;
+                }
+                tracing::debug!(
+                    count = windows.len(),
+                    "what is being kept off the screen changed"
+                );
+                // The clock each window has been standing on, carried across
+                // the batch. Keyed by id and only ever started once, because a
+                // client that retitles a window it is still waiting on has not
+                // started waiting again — and Valve's client retitles a window
+                // as it walks a wizard.
+                let now = Instant::now();
+                state
+                    .unseen_since
+                    .retain(|id, _| windows.iter().any(|window| window.id == *id));
+                for window in &windows {
+                    state.unseen_since.entry(window.id).or_insert(now);
+                }
+                state.unseen_windows = windows;
             }
             lxb_shell_v1::Event::OutputWindowsDone { output } => {
                 let Some(index) = state.panels.iter().position(|p| p.output == output) else {
@@ -26554,6 +33608,12 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                 panel.windows = windows;
                 // What is being let go of here is a claim about an id.
                 state.forget_closed_windows();
+                // And what is being made here is a claim about a window, on
+                // the evidence of its own process rather than on the moment it
+                // turned up. Before anything asks which game a window is: a
+                // window that has just arrived is exactly the one a loading
+                // screen is about to decide about.
+                state.note_which_games_the_windows_are();
                 // Against the list that replaced it: what a departure means
                 // depends on what it left behind — see [`walked_out`].
                 if walked_out(
@@ -26566,6 +33626,41 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                     state.an_application_ended_by_itself(index);
                 }
                 state.needs_redraw = true;
+            }
+            lxb_shell_v1::Event::KeyboardLayout { layout, variant } => {
+                let key = match variant.is_empty() {
+                    true => layout.clone(),
+                    false => format!("{layout} ({variant})"),
+                };
+                tracing::debug!(layout = %key, "the compositor says this is the keyboard layout");
+                // The board's caps come off it whether or not the settings
+                // column is on screen, and they come off the compositor's
+                // answer rather than the shell's request: what the user is
+                // shown to press has to be what a real key would send.
+                //
+                // This is also how a layout the shell never chose — the one in
+                // the compositor's own config file — reaches the board.
+                state.needs_redraw |= keyboard::note_layout(&layout, &variant);
+                // A layout this shell asked for and did not get is one xkb
+                // would not compile. Written down it would be re-sent and
+                // refused at the start of every session, and the page would go
+                // on marking a row that never did anything.
+                let refused = state
+                    .applied_keyboard_layout
+                    .as_deref()
+                    .is_some_and(|asked| asked != key);
+                if refused {
+                    tracing::warn!(
+                        asked = state.applied_keyboard_layout.as_deref().unwrap_or_default(),
+                        %key,
+                        "the compositor would not take that keyboard layout"
+                    );
+                    state.applied_keyboard_layout = None;
+                    settings::forget_keyboard_layout();
+                }
+                if settings::note_compositor_layout(key) || refused {
+                    state.rebuild_settings();
+                }
             }
             _ => {}
         }
@@ -26848,6 +33943,469 @@ mod flight_tests {
         assert!(!debug_action_is_due(true, 4.0, None));
     }
 
+    /// A client this shell started for a press is closed when that press is
+    /// over — and not one moment before it.
+    ///
+    /// Reported by the user, who asked the question this half exists to answer:
+    /// *what if "Leave Steam running" is off and the update finishes?* Nothing
+    /// closed it. `close_steam_after_the_game` is armed by a game's window
+    /// going away, and on this path no game ever ran — Start Steam on the panel
+    /// over a game with an update waiting, or a loading screen left to the
+    /// download, both end with the client doing an evening's work and then
+    /// sitting there for the rest of the session.
+    #[test]
+    fn a_client_started_for_a_press_is_closed_when_the_press_is_over() {
+        // Nothing wanting it, long enough: the case the user asked about.
+        let idle = AfterThePress {
+            game_on_screen: false,
+            left_running: false,
+            at_startup: false,
+            driving: true,
+            client_running: true,
+            asked: None,
+            asks: 0,
+            starting: false,
+            seen: false,
+            anything_under_way: false,
+            work_outstanding: false,
+            answered: None,
+        };
+        assert_eq!(
+            what_becomes_of_the_client(idle, Some(AFTER_THE_LAST_GAME)),
+            Becomes::CloseIt
+        );
+        // The clock has to run first, and an unstarted clock is not a finished
+        // one — the frame that first finds nothing happening must not close it.
+        assert_eq!(what_becomes_of_the_client(idle, None), Becomes::NotYet);
+        assert_eq!(
+            what_becomes_of_the_client(idle, Some(AFTER_THE_LAST_GAME / 2)),
+            Becomes::NotYet
+        );
+
+        // **The one that threw the question away before it could be asked.**
+        // For the first seconds after a press there is no client running yet —
+        // three and a half seconds of it, measured — and a launch in flight has
+        // to outrank that, or the first frame after the press decides the
+        // client has gone and nothing is ever closed. Found by running it.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    starting: true,
+                    client_running: false,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::LeaveIt,
+            "a client that has been asked for is not a client that has gone"
+        );
+
+        // **The one that would have shut Steam down mid-update.** During the
+        // first stretch of an update the manifest carries no working bit and no
+        // byte count — measured at ten minutes and thirty-nine seconds of it —
+        // so nothing but the walk in `Steam::nothing_is_under_way` can see it,
+        // and that walk is what `anything_under_way` is. It used to be a
+        // separate fact about the pressed game alone, which left every *other*
+        // game uncovered: a silent Proton update was a client shut down five
+        // seconds into it.
+        let verifying = AfterThePress {
+            anything_under_way: true,
+            ..idle
+        };
+        assert_eq!(
+            what_becomes_of_the_client(verifying, Some(AFTER_THE_LAST_GAME * 200)),
+            Becomes::LeaveIt,
+            "the client was shut down in the middle of the update it was started for"
+        );
+
+        // Everything else that means somebody still wants it, one at a time.
+        for (what, facts) in [
+            (
+                "a launch in flight",
+                AfterThePress {
+                    starting: true,
+                    ..idle
+                },
+            ),
+            (
+                "a Steam window the user asked for",
+                AfterThePress { seen: true, ..idle },
+            ),
+            (
+                "a download",
+                AfterThePress {
+                    anything_under_way: true,
+                    ..idle
+                },
+            ),
+        ] {
+            assert_eq!(
+                what_becomes_of_the_client(facts, Some(AFTER_THE_LAST_GAME)),
+                Becomes::LeaveIt,
+                "closed the client with {what}"
+            );
+        }
+
+        // Asked once. Valve's client takes a moment to go, and `client_running`
+        // is a poll — without this it would be asked again every five seconds
+        // until it did.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(Duration::ZERO),
+                    asks: 1,
+                    ..idle
+                },
+                Some(AFTER_THE_LAST_GAME)
+            ),
+            Becomes::LeaveIt
+        );
+
+        // **And not asked once for ever, which is what it was.** `steam
+        // -shutdown` returns when the client has been *asked*, not when it has
+        // gone, and a client with a dialog open declines. The flag then parked
+        // the whole decision on "it has been asked" until the end of the
+        // session: the client stayed up with the setting saying not to, and
+        // there was nothing anywhere saying why.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(GIVEN_TO_GO),
+                    asks: 1,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::CloseIt,
+            "a client that did not go was never asked again"
+        );
+        // Twice is as often as it is asked. A client that has declined twice
+        // with nothing to be busy with is declining, and taking a running
+        // program away from somebody is not the answer to that.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(GIVEN_TO_GO),
+                    asks: TIMES_TO_ASK,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::GaveUp
+        );
+        // And a client that declined and then picked up a download is left
+        // rather than asked again: the work is asked about between the grace
+        // and the second ask, which is the whole reason for that order.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(GIVEN_TO_GO),
+                    asks: 1,
+                    anything_under_way: true,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::LeaveIt
+        );
+        // A client that has gone outranks all of it, and is the ordinary end of
+        // this: there is nothing left to decide about a client that is not
+        // there.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(GIVEN_TO_GO),
+                    asks: TIMES_TO_ASK,
+                    client_running: false,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::LetItGo
+        );
+
+        // A game reached the screen: the press worked, and the other half owns
+        // it from here. Ahead of every setting, because it is not a question
+        // about settings.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    game_on_screen: true,
+                    left_running: false,
+                    ..idle
+                },
+                Some(AFTER_THE_LAST_GAME)
+            ),
+            Becomes::LetItGo
+        );
+        // And a client that has gone by itself is nothing left to decide about.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    client_running: false,
+                    ..idle
+                },
+                None
+            ),
+            Becomes::LetItGo
+        );
+
+        // A press that comes back after a close has been asked for. Without
+        // the reset in `steam_press_wants_a_client` the old answer stands, and
+        // the second client this session starts is one it waits a grace period
+        // over before it will even look at.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    asked: Some(Duration::ZERO),
+                    asks: 1,
+                    ..idle
+                },
+                Some(AFTER_THE_LAST_GAME)
+            ),
+            Becomes::LeaveIt,
+            "which is why the note is cleared where a press is taken, not here"
+        );
+
+        // The two settings that say this is not this half's business. Both are
+        // `LeaveIt` rather than `LetItGo` **on purpose**: the note stays
+        // written down, so a switch thrown while the client is running still
+        // acts on it.
+        for (what, facts) in [
+            (
+                "Leave Steam running",
+                AfterThePress {
+                    left_running: true,
+                    ..idle
+                },
+            ),
+            (
+                "Start with the shell",
+                AfterThePress {
+                    at_startup: true,
+                    ..idle
+                },
+            ),
+            (
+                "an integration that is off",
+                AfterThePress {
+                    driving: false,
+                    ..idle
+                },
+            ),
+        ] {
+            assert_eq!(
+                what_becomes_of_the_client(facts, Some(AFTER_THE_LAST_GAME)),
+                Becomes::LeaveIt,
+                "closed the client with {what}"
+            );
+        }
+    }
+
+    /// A client that was never asked is not a client that refused.
+    ///
+    /// The worker will not stop a Steam belonging to another session on this
+    /// machine — see [`lxb_steam::client::stop_if_ours`] — and it used to say
+    /// nothing back about that, so the shell above went on as though the ask
+    /// had been made: it waited the grace period out, asked a second time into
+    /// the same silence, waited again, and then warned that the client *would
+    /// not shut down*. Driven against a client started from a terminal on
+    /// 2026-09-02, and the whole of it is seventy seconds long:
+    ///
+    /// ```text
+    /// 19:22:47.959  asking it to shut down  asked_before=0
+    /// 19:22:47.979  leaving Valve's client running: it belongs to another session
+    /// 19:23:22.962  asking it to shut down  asked_before=1
+    /// 19:23:22.982  leaving Valve's client running: it belongs to another session
+    /// 19:23:57.965  WARN Valve's client would not shut down  asked=2
+    /// ```
+    /// A client with a job it has not finished is given long enough to pick it
+    /// back up.
+    ///
+    /// **Reported from use on 2026-09-04**: *"Street Fighter 6 update pending
+    /// that is simply being ignored by the Shell and it launches the game
+    /// without updating the game."* It was not being ignored — it was being
+    /// killed, once a session, for three weeks.
+    ///
+    /// The whole chain is in Valve's own two logs. A press starts the job
+    /// (`scheduler update : Priority First`), Steam suspends it because the
+    /// game it belongs to is now running (`scheduler finished : staying in
+    /// schedule (result Suspended, state 0x200c)`), and its scheduler comes
+    /// back for it once the game ends — at 00:49→00:54 fourteen seconds later,
+    /// and at 01:24:31→01:25:10 thirty-nine. This shell closed the client at
+    /// five. So the job had gone from nothing to 32 MB of 1.4 GB since the
+    /// 13th of August, and the manifest said `StateFlags 4` — Fully Installed,
+    /// nothing pending — throughout.
+    #[test]
+    fn a_client_with_an_unfinished_job_is_given_time_to_resume_it() {
+        let after_a_game = |work_outstanding, waited| {
+            what_becomes_of_the_client(
+                AfterThePress {
+                    game_on_screen: false,
+                    left_running: false,
+                    at_startup: false,
+                    driving: true,
+                    client_running: true,
+                    asked: None,
+                    asks: 0,
+                    starting: false,
+                    seen: false,
+                    // Suspended is not running, and this is the whole reason
+                    // the fact above had to be added: nothing the client is
+                    // *doing* says a word about a job it has put down.
+                    anything_under_way: false,
+                    work_outstanding,
+                    answered: None,
+                },
+                Some(waited),
+            )
+        };
+
+        // What happened. Both measured resumes are inside the new wait and
+        // outside the old one.
+        for resumed_after in [Duration::from_secs(14), Duration::from_secs(39)] {
+            assert_eq!(
+                after_a_game(false, resumed_after),
+                Becomes::CloseIt,
+                "with nothing outstanding the client goes, as it always did"
+            );
+            assert_eq!(
+                after_a_game(true, resumed_after),
+                Becomes::NotYet,
+                "Steam had not got back to the job yet, and this is what killed it"
+            );
+        }
+
+        // A game that ends with nothing outstanding is untouched by any of
+        // this: five seconds, exactly as before.
+        assert_eq!(after_a_game(false, AFTER_THE_LAST_GAME), Becomes::CloseIt);
+        assert_eq!(
+            after_a_game(true, AFTER_THE_LAST_GAME),
+            Becomes::NotYet,
+            "the same five seconds is not long enough for a job to come back"
+        );
+
+        // And it is a ceiling, not an open door. A job that never resumes ends
+        // the same way, two minutes later instead of five seconds.
+        assert_eq!(after_a_game(true, AFTER_A_SUSPENDED_JOB), Becomes::CloseIt);
+
+        // Once it does resume, the wait stops being this one's to decide:
+        // work in flight holds the client for as long as it takes.
+        let running = AfterThePress {
+            game_on_screen: false,
+            left_running: false,
+            at_startup: false,
+            driving: true,
+            client_running: true,
+            asked: None,
+            asks: 0,
+            starting: false,
+            seen: false,
+            anything_under_way: true,
+            work_outstanding: true,
+            answered: None,
+        };
+        assert_eq!(
+            what_becomes_of_the_client(running, Some(AFTER_A_SUSPENDED_JOB * 10)),
+            Becomes::LeaveIt
+        );
+    }
+
+    #[test]
+    fn a_client_that_is_not_this_sessions_is_not_a_client_that_refused() {
+        use lxb_steam::client::Closing;
+
+        let asked = AfterThePress {
+            game_on_screen: false,
+            left_running: false,
+            at_startup: false,
+            driving: true,
+            client_running: true,
+            asked: Some(Duration::ZERO),
+            asks: 1,
+            starting: false,
+            seen: false,
+            anything_under_way: false,
+            work_outstanding: false,
+            answered: None,
+        };
+        // The answer has not crossed the thread yet. A frame or two of this is
+        // ordinary, and it is the grace period, not a conclusion.
+        assert_eq!(what_becomes_of_the_client(asked, None), Becomes::LeaveIt);
+
+        // And then it has. **Ahead of the grace period**: that is time given to
+        // a client to go in, and this one was not asked to.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    answered: Some(Closing::NotOurs),
+                    ..asked
+                },
+                None
+            ),
+            Becomes::NotOurs,
+            "waited a grace period out over a client nobody had asked anything"
+        );
+        // Even with the second ask already spent, which is the state the old
+        // code took seventy seconds to reach and then described wrongly.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    answered: Some(Closing::NotOurs),
+                    asked: Some(GIVEN_TO_GO),
+                    asks: TIMES_TO_ASK,
+                    ..asked
+                },
+                None
+            ),
+            Becomes::NotOurs
+        );
+
+        // The other three answers change nothing. `Asked` is the ordinary one,
+        // `Gone` resolves itself through `client_running` a moment later, and
+        // `Refused` is this session's client with a request that did not go
+        // through — worth one more try, exactly as a silent decline is.
+        for how in [Closing::Asked, Closing::Gone, Closing::Refused] {
+            assert_eq!(
+                what_becomes_of_the_client(
+                    AfterThePress {
+                        answered: Some(how),
+                        ..asked
+                    },
+                    None
+                ),
+                Becomes::LeaveIt,
+                "{how:?} stopped the grace period"
+            );
+            assert_eq!(
+                what_becomes_of_the_client(
+                    AfterThePress {
+                        answered: Some(how),
+                        asked: Some(GIVEN_TO_GO),
+                        ..asked
+                    },
+                    None
+                ),
+                Becomes::CloseIt,
+                "{how:?} was not asked again"
+            );
+        }
+
+        // A client that has gone still outranks it. `NotOurs` is about a client
+        // that is running, and one that is not there is nothing to leave alone.
+        assert_eq!(
+            what_becomes_of_the_client(
+                AfterThePress {
+                    answered: Some(Closing::NotOurs),
+                    client_running: false,
+                    ..asked
+                },
+                None
+            ),
+            Becomes::LetItGo
+        );
+    }
+
     /// Icon discovery may finish on either side of the first presented
     /// wallpaper frame. Neither ordering is allowed to charge hidden startup
     /// time to the bar's arrival: it starts only after both have happened.
@@ -26975,6 +34533,7 @@ mod flight_tests {
 
     fn window(width: u32, height: u32) -> WindowCard {
         WindowCard {
+            pid: None,
             id: 1,
             title: "App".into(),
             app_id: String::new(),
@@ -27184,6 +34743,8 @@ mod flight_tests {
     #[test]
     fn the_bar_gives_the_screen_up_while_the_keyboard_is_on_it() {
         const DRIVEN: bool = true;
+        /// The board belongs on this display — see [`Shell::keyboard_panel`].
+        const MINE: bool = true;
         const BOARD: bool = true;
         const RAISED: bool = true;
         const MENU: bool = true;
@@ -27191,27 +34752,114 @@ mod flight_tests {
         const PANEL: bool = true;
 
         assert!(draws_only_what_was_raised(
-            DRIVEN, BOARD, !RAISED, !MENU, !HERE, !PANEL
+            DRIVEN, MINE, BOARD, !RAISED, !MENU, !HERE, !PANEL
         ));
         // The menu raises the surface for its own reasons and is meant to be
         // seen, so it keeps drawing everything it draws.
         assert!(!draws_only_what_was_raised(
-            DRIVEN, BOARD, !RAISED, MENU, !HERE, !PANEL
+            DRIVEN, MINE, BOARD, !RAISED, MENU, !HERE, !PANEL
         ));
         // Nothing is being kept off a display with nothing raised over it.
         assert!(!draws_only_what_was_raised(
-            DRIVEN, !BOARD, !RAISED, !MENU, !HERE, !PANEL
+            DRIVEN, MINE, !BOARD, !RAISED, !MENU, !HERE, !PANEL
         ));
-        // Nor off the displays the user is not driving: the board is on one
-        // screen, and the others carry on showing their own bar.
+        // Nor off the displays the board is not on: it is on one screen, and
+        // the others carry on showing their own bar.
         assert!(!draws_only_what_was_raised(
-            !DRIVEN, BOARD, !RAISED, !MENU, !HERE, !PANEL
+            DRIVEN, !MINE, BOARD, !RAISED, !MENU, !HERE, !PANEL
+        ));
+        assert!(!draws_only_what_was_raised(
+            !DRIVEN, !MINE, BOARD, !RAISED, !MENU, !HERE, !PANEL
         ));
         // And a board typing into the shell's own password field is the whole
         // exception: what it types into is a panel on this very surface, so
         // blanking everything but the keys would take the field away.
         assert!(!draws_only_what_was_raised(
-            DRIVEN, BOARD, !RAISED, !MENU, HERE, !PANEL
+            DRIVEN, MINE, BOARD, !RAISED, !MENU, HERE, !PANEL
+        ));
+    }
+
+    /// Where the on-screen keyboard goes, given what Settings > Input names.
+    ///
+    /// The screen being driven until somebody names one, and back to it while
+    /// the named one is unplugged — the fallback being *silent and every frame*
+    /// is the whole of the setting's behaviour with a monitor that comes and
+    /// goes, and it is what keeps a keyboard off a screen nobody can see.
+    #[test]
+    fn the_board_goes_where_it_is_told_and_back_when_that_screen_leaves() {
+        let two = || ["TEST-OUT-1", "TEST-OUT-2"].into_iter();
+        let driven = 1;
+
+        // Nobody has named a screen: the board follows the hands.
+        assert_eq!(board_display(None, two(), driven), driven);
+        // Named, and plugged in: the board goes there whichever screen is
+        // being driven, and that is the point of the setting.
+        assert_eq!(board_display(Some("TEST-OUT-1"), two(), driven), 0);
+        assert_eq!(board_display(Some("TEST-OUT-2"), two(), 0), 1);
+        // Named and *not* plugged in: back to the driven screen, so a keyboard
+        // is never summoned onto a monitor that is not there.
+        assert_eq!(board_display(Some("TEST-OUT-3"), two(), driven), driven);
+        // And back again the moment it returns — which is only true because
+        // nothing above wrote the setting back. See [`settings::keyboard_display`].
+        assert_eq!(
+            board_display(
+                Some("TEST-OUT-3"),
+                ["TEST-OUT-1", "TEST-OUT-2", "TEST-OUT-3"].into_iter(),
+                driven
+            ),
+            2
+        );
+    }
+
+    /// A board pinned to a display of its own splits the two halves of that
+    /// last exception between two screens, and each half has to land on the
+    /// right one.
+    ///
+    /// The field is drawn by the display being driven, whatever Settings >
+    /// Input says; the keys are on the screen it names. So the driven display
+    /// keeps its bar — the field is in it — and the display the board is on
+    /// gives the screen up, which it would not do if the exception were written
+    /// as "somebody is typing" without asking where.
+    ///
+    /// Written as a test because the failure is one frame of the whole start
+    /// screen over an application, which is the defect this rule exists for and
+    /// the one a film of the session has missed more than once.
+    #[test]
+    fn a_pinned_board_takes_its_own_screen_and_leaves_the_field_its_one() {
+        const DRIVEN: bool = true;
+        const MINE: bool = true;
+        const BOARD: bool = true;
+        const RAISED: bool = true;
+        const MENU: bool = true;
+        const HERE: bool = true;
+        const PANEL: bool = true;
+
+        // The screen the keys are on, which the user is not driving: nothing of
+        // the shell's is under them, so the bar gives it up.
+        assert!(draws_only_what_was_raised(
+            !DRIVEN, MINE, BOARD, !RAISED, !MENU, HERE, !PANEL
+        ));
+        // And the screen the field is on, which the user is driving: the field
+        // is drawn by this surface and has to be left standing.
+        assert!(!draws_only_what_was_raised(
+            DRIVEN, !MINE, BOARD, !RAISED, !MENU, HERE, !PANEL
+        ));
+        // With nothing being typed into the shell, the driven screen has
+        // nothing of the board's on it at all and goes back to its own bar.
+        assert!(!draws_only_what_was_raised(
+            DRIVEN, !MINE, BOARD, !RAISED, !MENU, !HERE, !PANEL
+        ));
+        // A bubble or a volume control on the driven screen still takes it,
+        // though: those are drawn here whatever the board is doing elsewhere.
+        assert!(draws_only_what_was_raised(
+            DRIVEN, !MINE, !BOARD, RAISED, !MENU, !HERE, !PANEL
+        ));
+        // And a screen the board was sent to with nothing running on it keeps
+        // its own bar. `BOARD` is asked of *that* screen, so it is false here
+        // however busy the display being driven is — a keyboard floating over
+        // an empty start screen is not a reason to take the start screen away.
+        assert!(!draws_only_what_was_raised(
+            !DRIVEN, MINE, !BOARD, !RAISED, !MENU, !HERE, !PANEL
         ));
     }
 
@@ -27225,6 +34873,7 @@ mod flight_tests {
     #[test]
     fn the_bar_gives_the_screen_up_for_a_bubble_and_for_the_volume_too() {
         const DRIVEN: bool = true;
+        const MINE: bool = true;
         const BOARD: bool = true;
         const RAISED: bool = true;
         const MENU: bool = true;
@@ -27232,13 +34881,13 @@ mod flight_tests {
         const PANEL: bool = true;
 
         assert!(draws_only_what_was_raised(
-            DRIVEN, !BOARD, RAISED, !MENU, !HERE, !PANEL
+            DRIVEN, MINE, !BOARD, RAISED, !MENU, !HERE, !PANEL
         ));
         // With nothing in front there is nothing to be over, and the caller
         // says so by passing this false: the bar *is* the screen then, and
         // blanking it would leave an empty display with a volume bar on it.
         assert!(!draws_only_what_was_raised(
-            DRIVEN, !BOARD, !RAISED, !MENU, !HERE, !PANEL
+            DRIVEN, MINE, !BOARD, !RAISED, !MENU, !HERE, !PANEL
         ));
         // The same two exceptions as the board's, for the same two reasons.
         // The first of them is the *guide's* overlay and not a context menu:
@@ -27246,13 +34895,13 @@ mod flight_tests {
         // over the application, by the caller, and it is the reason a video
         // right-clicked over a game does not bring the start screen with it.
         assert!(!draws_only_what_was_raised(
-            DRIVEN, !BOARD, RAISED, MENU, !HERE, !PANEL
+            DRIVEN, MINE, !BOARD, RAISED, MENU, !HERE, !PANEL
         ));
         assert!(!draws_only_what_was_raised(
-            !DRIVEN, !BOARD, RAISED, !MENU, !HERE, !PANEL
+            !DRIVEN, MINE, !BOARD, RAISED, !MENU, !HERE, !PANEL
         ));
         assert!(!draws_only_what_was_raised(
-            DRIVEN, !BOARD, RAISED, !MENU, HERE, !PANEL
+            DRIVEN, MINE, !BOARD, RAISED, !MENU, HERE, !PANEL
         ));
         // And the exception that is *not* an exception: an application's file
         // question carries fields of its own, so a board typing into one must
@@ -27260,11 +34909,11 @@ mod flight_tests {
         // panel's search row put the whole start screen over somebody's game
         // for as long as they were typing.
         assert!(draws_only_what_was_raised(
-            DRIVEN, BOARD, !RAISED, !MENU, HERE, PANEL
+            DRIVEN, MINE, BOARD, !RAISED, !MENU, HERE, PANEL
         ));
         // On the screen being driven and no other, like everything else here.
         assert!(!draws_only_what_was_raised(
-            !DRIVEN, BOARD, !RAISED, !MENU, HERE, PANEL
+            !DRIVEN, !MINE, BOARD, !RAISED, !MENU, HERE, PANEL
         ));
     }
 
@@ -27590,12 +35239,17 @@ mod flight_tests {
         assert_eq!(launch_display(DRIVING, None), DRIVING);
     }
 
+    /// The two screens the rules below are about, named the way the shell
+    /// names them: a display is not its position in a list. See [`Display`].
+    const FIRST: Display = Display::for_a_test(0);
+    const SECOND: Display = Display::for_a_test(1);
+
     /// A loading screen and the display it is on, for the rules below.
-    fn splash(name: &str, panel: usize, game: Option<u32>) -> launch::Launch {
+    fn splash(name: &str, display: Display, game: Option<u32>) -> launch::Launch {
         let splash = launch::Launch::new(
             name.to_string(),
             None,
-            panel,
+            display,
             [0.0; 4],
             None,
             Instant::now(),
@@ -27621,24 +35275,24 @@ mod flight_tests {
     #[test]
     fn a_press_on_one_screen_leaves_the_other_screens_loading_screen_alone() {
         let mut splashes = Vec::new();
-        begin_launch(&mut splashes, splash("Hollow Knight", 0, Some(367520)));
-        begin_launch(&mut splashes, splash("Celeste", 1, None));
+        begin_launch(&mut splashes, splash("Hollow Knight", FIRST, Some(367520)));
+        begin_launch(&mut splashes, splash("Celeste", SECOND, None));
 
-        let on = |splashes: &[launch::Launch], panel: usize| {
+        let on = |splashes: &[launch::Launch], display: Display| {
             splashes
                 .iter()
-                .find(|splash| splash.panel == panel)
+                .find(|splash| splash.display == display)
                 .map(|splash| splash.name.clone())
         };
-        assert_eq!(on(&splashes, 0).as_deref(), Some("Hollow Knight"));
-        assert_eq!(on(&splashes, 1).as_deref(), Some("Celeste"));
+        assert_eq!(on(&splashes, FIRST).as_deref(), Some("Hollow Knight"));
+        assert_eq!(on(&splashes, SECOND).as_deref(), Some("Celeste"));
 
         // A second press on a screen is that screen's own answer changing, and
         // still nothing to do with the other one.
-        begin_launch(&mut splashes, splash("Hades", 0, Some(1145360)));
+        begin_launch(&mut splashes, splash("Hades", FIRST, Some(1145360)));
         assert_eq!(splashes.len(), 2, "a display grew a second loading screen");
-        assert_eq!(on(&splashes, 0).as_deref(), Some("Hades"));
-        assert_eq!(on(&splashes, 1).as_deref(), Some("Celeste"));
+        assert_eq!(on(&splashes, FIRST).as_deref(), Some("Hades"));
+        assert_eq!(on(&splashes, SECOND).as_deref(), Some("Celeste"));
     }
 
     /// With two screens loading, the compositor's one answer goes to the newest
@@ -27649,18 +35303,126 @@ mod flight_tests {
         let mut splashes = Vec::new();
         assert_eq!(display_still_waiting(&splashes), None);
 
-        begin_launch(&mut splashes, splash("Hollow Knight", 0, Some(367520)));
-        assert_eq!(display_still_waiting(&splashes), Some(0));
+        begin_launch(&mut splashes, splash("Hollow Knight", FIRST, Some(367520)));
+        assert_eq!(display_still_waiting(&splashes), Some(FIRST));
 
-        begin_launch(&mut splashes, splash("Celeste", 1, None));
-        assert_eq!(display_still_waiting(&splashes), Some(1));
+        begin_launch(&mut splashes, splash("Celeste", SECOND, None));
+        assert_eq!(display_still_waiting(&splashes), Some(SECOND));
 
         // The newer one gets its window. The older is still waiting for its
         // own, so the answer goes back to it rather than staying where the
         // last press happened to be.
         let now = Instant::now();
         assert!(splashes[1].advance(now, &[9], "", true).is_some());
-        assert_eq!(display_still_waiting(&splashes), Some(0));
+        assert_eq!(display_still_waiting(&splashes), Some(FIRST));
+    }
+
+    /// Unplugging a display renumbers the panels, and a launch waiting on
+    /// another one is not moved by it.
+    ///
+    /// The failure this is here for is silent, which is what makes it worth a
+    /// test. Everything about a launch used to be written down as a position
+    /// in the panel list, and unplugging a screen shifts every screen after it
+    /// down one — so a loading screen that had been waiting on panel 1 began
+    /// waiting on whatever moved into slot 1, watching its windows, reading
+    /// its foreground and eventually handing the display over to somebody
+    /// else's application. Nothing anywhere said the display it was actually
+    /// about had gone.
+    #[test]
+    fn a_display_is_named_rather_than_numbered() {
+        let third = Display::for_a_test(2);
+        let plugged_in = [FIRST, SECOND, third];
+        assert_eq!(panel_at(plugged_in, FIRST), Some(0));
+        assert_eq!(panel_at(plugged_in, SECOND), Some(1));
+        assert_eq!(panel_at(plugged_in, third), Some(2));
+
+        // The first display is unplugged. The other two are where they always
+        // were as far as anything holding their names is concerned.
+        let now = [SECOND, third];
+        assert_eq!(panel_at(now, SECOND), Some(0));
+        assert_eq!(panel_at(now, third), Some(1));
+        // And the one that has gone is *gone*, which is the answer an index
+        // could never give: slot 0 exists and belongs to somebody else.
+        assert_eq!(panel_at(now, FIRST), None);
+    }
+
+    /// Two screens loading at once keep their own loading screens, whichever
+    /// window arrives first.
+    ///
+    /// The half of it a single answer could never get right: the compositor is
+    /// told one display and both windows go there, so the game that arrives
+    /// second opens beside the first and its own screen waits out its patience
+    /// for a window standing on the other display. The launch each window
+    /// belongs to is filed on its own — see [`Shell::place_the_launches`] — and
+    /// this is what the shell's own half of it has to keep straight: a splash
+    /// answers for its own display and for nothing else.
+    #[test]
+    fn two_screens_loading_at_once_are_answered_apart() {
+        let mut splashes = Vec::new();
+        begin_launch(&mut splashes, splash("Hollow Knight", FIRST, Some(367520)));
+        begin_launch(&mut splashes, splash("Celeste", SECOND, None));
+        assert_eq!(display_still_waiting(&splashes), Some(SECOND));
+
+        // The window the *second* press was waiting for turns up first. Only
+        // that splash lets go, and the answer falls back to the first screen,
+        // which is still waiting for its own.
+        let now = Instant::now();
+        assert!(splashes[1].advance(now, &[9], "", true).is_some());
+        assert!(splashes[0].waiting(), "the other screen stopped waiting");
+        assert_eq!(display_still_waiting(&splashes), Some(FIRST));
+
+        // And each is still about the screen it was pressed on.
+        assert_eq!(splashes[0].display, FIRST);
+        assert_eq!(splashes[1].display, SECOND);
+    }
+
+    /// A loading screen whose display was unplugged knows it, and the one on
+    /// the other screen is untouched.
+    ///
+    /// Both halves matter. The launch on the display that has gone has nothing
+    /// left to wait for — there is no screen for its window to open on — and
+    /// the launch on the display that is still there must not be ended by its
+    /// neighbour being unplugged, which is what a shifted index amounts to.
+    #[test]
+    fn unplugging_one_screen_ends_that_screens_launch_and_no_other() {
+        let mut splashes = Vec::new();
+        begin_launch(&mut splashes, splash("Hollow Knight", FIRST, Some(367520)));
+        begin_launch(&mut splashes, splash("Celeste", SECOND, None));
+
+        // The first display is unplugged, so the panel list is the second one
+        // alone — and it is at index 0, where the first used to be.
+        let now = [SECOND];
+        let homeless: Vec<&str> = splashes
+            .iter()
+            .filter(|splash| panel_at(now, splash.display).is_none())
+            .map(|splash| splash.name.as_str())
+            .collect();
+        assert_eq!(homeless, ["Hollow Knight"]);
+        assert_eq!(panel_at(now, SECOND), Some(0));
+    }
+
+    /// Where a window opens and where the user is are two questions, and a
+    /// launch answers only the first.
+    ///
+    /// The compositor read one field for both, so a game loading on the second
+    /// screen quietly moved the keyboard, the X screen's active window and the
+    /// screenshot binding to the second screen for as long as it took to open.
+    /// A game being played on the first screen was told by the root window that
+    /// it was in the background — every Proton title reads that — while its own
+    /// display was the one being driven. The launch answer still holds; what
+    /// changed is that it is no longer the answer to the other question. See
+    /// `lxb_shell_v1.set_driven_output`.
+    #[test]
+    fn walking_to_the_other_screen_moves_the_user_and_not_the_launch() {
+        const DRIVING: usize = 1;
+        const STARTED_ON: usize = 0;
+
+        // The launch holds where it was started from …
+        assert_eq!(launch_display(DRIVING, Some(STARTED_ON)), STARTED_ON);
+        // … and the display being driven is where the user actually is, which
+        // is what the shell sends as the driven output every pass. Nothing a
+        // launch does moves it, which is the whole of the difference.
+        assert_ne!(launch_display(DRIVING, Some(STARTED_ON)), DRIVING);
     }
 
     /// A game somebody presses twice is a game that starts once.
@@ -27671,8 +35433,8 @@ mod flight_tests {
     /// come of that.
     #[test]
     fn something_already_loading_is_not_started_again() {
-        let game = splash("Hollow Knight", 0, Some(367520));
-        let app = splash("Firefox", 1, None);
+        let game = splash("Hollow Knight", FIRST, Some(367520));
+        let app = splash("Firefox", SECOND, None);
 
         // The same game, pressed on the other screen: by id, whatever the row
         // it was pressed from is called.
@@ -27766,6 +35528,15 @@ mod flight_tests {
         // And with no board and no focus the shell is behind an application,
         // where only the guide button and the keyboard chord reach it.
         assert!(!controller_is_driving(!GRABBED, !FOCUSED, !BOARD));
+
+        // The half of that question that decides where a key the shell sends
+        // would land. It parts from the whole on exactly one state — the board
+        // — which is the state the Steam overlay chord has to be allowed in:
+        // the board leaves the keys with the game, so a chord sent while it is
+        // up still reaches the game.
+        assert!(!the_shell_holds_the_keyboard(!GRABBED, !FOCUSED));
+        assert!(the_shell_holds_the_keyboard(GRABBED, !FOCUSED));
+        assert!(the_shell_holds_the_keyboard(!GRABBED, FOCUSED));
     }
 
     /// Animating a background nobody can see costs a game the frames it is
@@ -27802,6 +35573,7 @@ mod flight_tests {
     fn an_application_that_quits_by_itself_hands_the_display_back() {
         let mut shells = HashSet::new();
         let game = WindowCard {
+            pid: None,
             id: 7,
             ..window(1920, 1080)
         };
@@ -27815,6 +35587,7 @@ mod flight_tests {
     fn a_card_closed_from_the_guide_is_not_an_application_walking_out() {
         let mut shells = HashSet::from([7]);
         let killed = WindowCard {
+            pid: None,
             id: 7,
             ..window(1920, 1080)
         };
@@ -27842,6 +35615,7 @@ mod flight_tests {
     fn a_small_window_closing_is_not_a_display_being_handed_over() {
         let mut shells = HashSet::new();
         let dialog = WindowCard {
+            pid: None,
             id: 3,
             ..window(600, 400)
         };
@@ -27857,6 +35631,7 @@ mod flight_tests {
     fn one_window_of_an_application_closing_is_not_the_application_leaving() {
         let mut shells = HashSet::new();
         let named = |id: u32, app_id: &str| WindowCard {
+            pid: None,
             id,
             app_id: app_id.into(),
             ..window(1920, 1080)
@@ -27899,11 +35674,13 @@ mod flight_tests {
     fn a_game_quitting_back_to_its_client_still_hands_the_display_back() {
         let mut shells = HashSet::new();
         let game = WindowCard {
+            pid: None,
             id: 7,
             app_id: "cs2".into(),
             ..window(1920, 1080)
         };
         let client = WindowCard {
+            pid: None,
             id: 3,
             app_id: "steam".into(),
             ..window(1920, 1080)
@@ -27922,6 +35699,7 @@ mod flight_tests {
         assert!(walked_out(
             &[window(1920, 1080)],
             &[WindowCard {
+                pid: None,
                 id: 2,
                 ..window(1920, 1080)
             }],
@@ -27938,10 +35716,12 @@ mod flight_tests {
     fn one_shell_kill_does_not_account_for_every_window_that_went_with_it() {
         let mut shells = HashSet::from([7]);
         let killed = WindowCard {
+            pid: None,
             id: 7,
             ..window(600, 400)
         };
         let went_with_it = WindowCard {
+            pid: None,
             id: 8,
             ..window(1920, 1080)
         };
@@ -28446,6 +36226,7 @@ mod input_tests {
 
     fn window(id: u32, app_id: &str, title: &str) -> WindowCard {
         WindowCard {
+            pid: None,
             id,
             title: title.to_string(),
             app_id: app_id.to_string(),
@@ -28565,6 +36346,206 @@ mod input_tests {
             &watched
         ));
         assert!(!owns_window(Owning::App(&firefox), &celeste, &watched,));
+    }
+
+    /// Which of the windows that appeared while a game was loading the shell
+    /// may say is the game.
+    ///
+    /// The rule it replaces was "whatever turned up on that display", and a
+    /// great many things turn up on a display while a game loads: Valve's own
+    /// client raises windows on its own schedule, an anti-cheat installer comes
+    /// and goes, and everything else on the machine goes on running. Each of
+    /// them was recorded as the game, and from then on the guide offered to
+    /// close the game and closed something else.
+    #[test]
+    fn a_window_is_only_the_game_when_nothing_says_otherwise() {
+        // Nothing known about it at all: the timing is all there is, and the
+        // timing stands. This is the ordinary case and the one that must not
+        // become a refusal — a Proton title announces `x86_64` and says
+        // nothing else about itself for the whole of its life.
+        assert!(may_be_the_game(504230, None, "x86_64", false));
+        assert!(may_be_the_game(504230, None, "", false));
+
+        // The window's own process says which game it is, and that settles it
+        // in both directions. A second game still running on the same display
+        // is not the one this loading screen is waiting for.
+        assert!(may_be_the_game(504230, Some(504230), "x86_64", false));
+        assert!(!may_be_the_game(504230, Some(367520), "x86_64", false));
+        // Even where everything else about it looks wrong: a game that ships a
+        // desktop entry of its own is still the game its process says it is.
+        assert!(may_be_the_game(504230, Some(504230), "celeste", true));
+
+        // Valve's client is never the game it was asked to start. Its windows
+        // are hidden once it has said what they are, and this is the moment
+        // before that — where it has a name and is still on the display.
+        assert!(!may_be_the_game(504230, None, "steam", false));
+        assert!(!may_be_the_game(504230, None, "steamwebhelper", false));
+
+        // And an application this machine has installed is its own, however
+        // convenient the timing.
+        assert!(!may_be_the_game(504230, None, "firefox", true));
+    }
+
+    /// The second source for the same fact, for the window whose process the
+    /// compositor never learned.
+    ///
+    /// The numbers are a real one: a live client asked for
+    /// `steam://rungameid/3812600` raised a window whose class was
+    /// `steam_app_3812600`, with `SteamAppId=3812600` in every process behind
+    /// it.
+    #[test]
+    fn a_window_valve_named_after_a_game_names_the_game() {
+        assert_eq!(
+            game_a_window_is_named_after("steam_app_3812600"),
+            Some(3812600)
+        );
+        // Folded, because a class is capitalised where an app id is not and
+        // this shell does not get to insist on either spelling.
+        assert_eq!(
+            game_a_window_is_named_after("  Steam_App_504230 "),
+            Some(504230)
+        );
+
+        // Everything else says nothing, and saying nothing is what leaves the
+        // decision to the evidence that follows it. A Proton title's own class
+        // is the file its binary lives in; Valve's client is not a game; and a
+        // name that only looks like one is not an app id.
+        assert_eq!(game_a_window_is_named_after("x86_64"), None);
+        assert_eq!(game_a_window_is_named_after("steam"), None);
+        assert_eq!(game_a_window_is_named_after("steamwebhelper"), None);
+        assert_eq!(game_a_window_is_named_after("steam_app_"), None);
+        assert_eq!(game_a_window_is_named_after("steam_app_shortcut"), None);
+        assert_eq!(game_a_window_is_named_after(""), None);
+    }
+
+    /// Which of Valve's hidden windows the shell puts back on the screen.
+    ///
+    /// The failure being fixed is a session that has silently stopped: the
+    /// client is hidden because it is a program this shell drives rather than
+    /// presents, and then it puts up a window that nothing gets past until
+    /// somebody answers it. Hidden, that is a console showing a bar with
+    /// nothing wrong with it and nothing working.
+    ///
+    /// The rule reads no wording of Valve's, deliberately — Steam is
+    /// translated into every language it ships in, and the one string here is
+    /// the client's own name.
+    #[test]
+    fn a_window_valves_client_is_waiting_on_is_put_back_on_the_screen() {
+        let long = UNTIL_A_WINDOW_IS_A_QUESTION;
+        let brief = Duration::from_secs(1);
+
+        // A window of the client's that has stood longer than anything this
+        // shell asks the client to do, with the shell waiting on nothing. This
+        // is the whole point: it may be a sign-in, an agreement, a licence
+        // key, a parental code — the shell cannot tell and does not try.
+        assert!(a_hidden_window_is_a_question(
+            "steam",
+            "Steam Guard",
+            false,
+            long
+        ));
+        assert!(a_hidden_window_is_a_question(
+            "steamwebhelper",
+            "",
+            false,
+            long
+        ));
+
+        // Not while the shell is showing something of its own about Steam. A
+        // loading screen owns the display, has its own patience and its own
+        // way of giving up, and Valve's window behind it is that same wait
+        // said twice — which is exactly what the client puts up there:
+        // `steam://rungameid/…` on a live client raises a window titled
+        // "Launching…" for as long as the game takes to appear.
+        assert!(!a_hidden_window_is_a_question(
+            "steam",
+            "Launching...",
+            true,
+            long
+        ));
+
+        // Never the storefront, which is the one window the client has
+        // whenever it is running at all. Matched on the client's own name, and
+        // however the title is spaced or capitalised.
+        assert!(!a_hidden_window_is_a_question(
+            "steam", "Steam", false, long
+        ));
+        assert!(!a_hidden_window_is_a_question(
+            "steam", "  steam ", false, long
+        ));
+
+        // And not before it has stood long enough to be a stop rather than a
+        // step. A client signing itself in raises "Sign in to Steam" and takes
+        // it away again a couple of seconds later, which is work.
+        assert!(!a_hidden_window_is_a_question(
+            "steam",
+            "Sign in to Steam",
+            false,
+            brief
+        ));
+
+        // Nothing else is ever hidden by this shell, and a rule that would
+        // reveal somebody else's window has no business existing.
+        assert!(!a_hidden_window_is_a_question(
+            "firefox",
+            "Downloads",
+            false,
+            long
+        ));
+        assert!(!a_hidden_window_is_a_question("", "", false, long));
+    }
+
+    /// The threshold is derived from the client's own patience rather than
+    /// picked, and the derivation is what stops the two meeting: a shorter one
+    /// would put Valve's install progress on the screen in the middle of an
+    /// install this shell asked for and is already reporting itself.
+    #[test]
+    fn a_question_outlasts_anything_the_shell_asks_the_client_to_do() {
+        assert!(UNTIL_A_WINDOW_IS_A_QUESTION > lxb_steam::webui::UNTIL_THE_WIZARD_ANSWERS);
+    }
+
+    /// The fixture that puts a game part-way through a download, and the game
+    /// names it must not eat.
+    ///
+    /// Colons are common in game titles and the fields are optional, so every
+    /// field is peeled from the right and only where the one under it is there
+    /// too. Without that rule a subtitle beginning with a number is a
+    /// percentage and the game loses half its name.
+    #[test]
+    fn a_made_up_library_can_say_a_game_is_coming_down() {
+        let game = |raw: &str| parse_debug_game(raw).expect(raw);
+        assert_eq!(game("A Game"), ("A Game".to_string(), false, None));
+        assert_eq!(game("A Game:1"), ("A Game".to_string(), true, None));
+        assert_eq!(game("A Game:0:40"), ("A Game".to_string(), false, Some(40)));
+        assert_eq!(game("A Game:1:0"), ("A Game".to_string(), true, Some(0)));
+        assert_eq!(
+            game("A Game:1:100"),
+            ("A Game".to_string(), true, Some(100))
+        );
+
+        // Names that end in something that looks like a field. Neither has a
+        // flag under it, so neither is one.
+        assert_eq!(
+            game("Portal 2: 50"),
+            ("Portal 2: 50".to_string(), false, None)
+        );
+        assert_eq!(
+            game("Half-Life 2"),
+            ("Half-Life 2".to_string(), false, None)
+        );
+        assert_eq!(
+            game("Zero Escape: 999:1"),
+            ("Zero Escape: 999".to_string(), true, None)
+        );
+        // Out of range, so the whole of it is the name again rather than a
+        // fixture quietly saying something else.
+        assert_eq!(
+            game("A Game:1:400"),
+            ("A Game:1:400".to_string(), false, None)
+        );
+
+        assert!(parse_debug_game("").is_err());
+        assert!(parse_debug_game(" :1").is_err());
     }
 
     #[test]
@@ -30631,6 +38612,102 @@ mod bios_walk_tests {
         assert!(
             worth_answering(A_START_RATHER_THAN_A_CRASH, 1),
             "and the edge belongs to the start: a cold disk is slow"
+        );
+    }
+}
+
+#[cfg(test)]
+mod finished_download_tests {
+    use lxb_steam::library::Standing;
+
+    /// Online, everything the row says is playable is playable. Offline, one
+    /// state falls away — and only one.
+    ///
+    /// The failure this stops is two and a half minutes of loading screen: a
+    /// client in Offline Mode takes the press, opens nothing, and says nothing
+    /// this shell can hear, so the splash waits out both its clocks and then
+    /// reports a game that did not start.
+    #[test]
+    fn only_a_game_that_is_up_to_date_is_pressed_with_no_steam() {
+        assert!(!super::cannot_be_played_offline(
+            true,
+            Standing::UpdatePaused
+        ));
+        assert!(super::cannot_be_played_offline(
+            false,
+            Standing::UpdatePaused
+        ));
+        assert!(!super::cannot_be_played_offline(false, Standing::Ready));
+        assert!(!super::cannot_be_played_offline(true, Standing::Ready));
+    }
+
+    use super::*;
+
+    /// A finished download is announced once, whichever half of the shell
+    /// noticed it, and only when the game really did arrive.
+    #[test]
+    fn only_a_download_that_arrived_is_announced_and_only_once() {
+        // Nothing on the card and nothing before it: nothing to say.
+        assert_eq!(a_finished_download(None, None, false, None), (None, None));
+        // A card that has just gone up is not one that has gone.
+        assert_eq!(
+            a_finished_download(None, Some(945360), false, None),
+            (None, None)
+        );
+        // Still the same download: not a finish either, however far it has got.
+        assert_eq!(
+            a_finished_download(Some(945360), Some(945360), false, None),
+            (None, None)
+        );
+
+        // Gone, and on the disk. Said, and remembered as said.
+        assert_eq!(
+            a_finished_download(Some(945360), None, true, None),
+            (Some(945360), Some(945360))
+        );
+        // Gone without arriving — Steam paused it, or it needs repairing, or
+        // somebody stopped it. The row says which in its own words, which is a
+        // better answer than a bubble.
+        assert_eq!(
+            a_finished_download(Some(945360), None, false, None),
+            (None, None)
+        );
+        // And a download that hands the card straight to the next one in the
+        // queue still gets its own announcement.
+        assert_eq!(
+            a_finished_download(Some(945360), Some(504230), true, None),
+            (Some(945360), Some(945360))
+        );
+    }
+
+    /// Two things can notice one finish — the job this session started, and the
+    /// card losing its game — and between them it is said once.
+    ///
+    /// And the memory of having said it is cleared the moment that same game
+    /// starts coming down again, or a game installed twice in one session would
+    /// be announced only the first time.
+    #[test]
+    fn one_finish_is_announced_once_and_a_second_install_again() {
+        assert_eq!(
+            a_finished_download(Some(945360), None, true, Some(945360)),
+            (None, Some(945360)),
+            "already said; the second noticer stays quiet"
+        );
+
+        // The same game starts downloading again: the record goes.
+        assert_eq!(
+            a_finished_download(None, Some(945360), false, Some(945360)),
+            (None, None)
+        );
+        // …so the second finish is announced like the first.
+        assert_eq!(
+            a_finished_download(Some(945360), None, true, None),
+            (Some(945360), Some(945360))
+        );
+        // A record about some other game never silences this one.
+        assert_eq!(
+            a_finished_download(Some(945360), None, true, Some(504230)),
+            (Some(945360), Some(945360))
         );
     }
 }

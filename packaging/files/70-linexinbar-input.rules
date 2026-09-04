@@ -1,0 +1,80 @@
+# The two device nodes a LineXinBar session opens directly.
+#
+# Everything else about input arrives through the compositor, which reads
+# `/dev/input` on a seat logind has already granted it. These two are the
+# exceptions, and neither is granted to anybody by default — so without this
+# file the shell's controller handling half works on the machine it was written
+# for, and says nothing about why.
+#
+# `uaccess` rather than a group: it grants the device to whoever holds the
+# active session on the seat, which is the person sitting there and at no point
+# every account on the machine. Numbered below 73 so the ACL is applied by
+# systemd's own 73-seat-late.rules, which is what acts on the tag.
+#
+# What that narrows is *which account*, and nothing whatever about which
+# program. The ACL names a uid and every process of that uid is inside it: this
+# shell, and equally Valve's client, every game it starts, whatever the software
+# hub installed. A game cannot bind `lxb_shell_v1` — the compositor checks the
+# pid the kernel stamped on the connection — but with `/dev/uinput` it can
+# publish a keyboard and type, and nothing downstream can tell those events from
+# the real keyboard's, because by then there is nothing to tell apart. This is
+# the one place the session's rule that games are untrusted clients does not
+# hold, and it is a property of the ACL rather than an oversight in it.
+#
+# Closing it means a component the games are not — something running as root
+# that opens these nodes and hands the descriptor to a process it has
+# authenticated — and there is none. Moving the open into the compositor would
+# not do it: the compositor runs as the same user, and takes its devices through
+# libseat, which asks logind, which hands out only what is assigned to the seat.
+# `/dev/uinput` is `misc` with a static node and is on no seat. See the
+# Permissions section of the README, which says the same at length.
+
+ACTION!="add|change", GOTO="linexinbar_input_end"
+
+# The second-generation Steam Controller, which no kernel driver claims.
+#
+# `hid-steam` claims the older controllers and the Deck, so this one falls
+# through to `hid-generic` and never grows a joystick node: nothing on the
+# machine enumerates it as a gamepad, and the shell reads its input report
+# straight from hidraw instead. See `crates/lxb-desktop/src/steam_hid.rs` for
+# why that is the only source that survives both lizard mode and Steam having
+# claimed the pad.
+#
+# hidraw nodes are 0600 root:root by default and systemd's own uaccess rules
+# tag none of them, so this is the whole of what makes that pad readable. The
+# wireless dongle presents one interface per pad slot and every one of them
+# reports the same pair, which is why this matches the device rather than a
+# node number.
+#
+# Read-only is all the shell wants — writing feature reports, which is what
+# turning lizard mode off means, stays Steam's business — but read-only is not
+# on offer. systemd's `uaccess` builtin grants `rw` and takes no argument saying
+# otherwise, so the ACL below carries the write bit whatever the mode says, and
+# anything running as the user can send this pad feature reports. The only way
+# to withhold it is a group with a mode, which is broader in the dimension that
+# was worth narrowing. The mode below is the conventional one for a pad; the ACL
+# is what actually grants the node.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", MODE="0660", TAG+="uaccess"
+
+# The same pad over Bluetooth, which has no USB parent to carry those
+# attributes. The pair is in the HID device's own kernel name, uppercase,
+# between the bus number and the interface.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*28DE:*1304*", MODE="0660", TAG+="uaccess"
+
+# And `/dev/uinput`, which is how the shell hands controllers back to the rest
+# of the machine.
+#
+# Two things need it and they are the same trade from opposite ends. A pad the
+# kernel does drive is taken away from every application, has its Guide button
+# read off, and is republished as a device one button short — see `pad_guard`.
+# A pad the kernel does not drive is read from hidraw and published as the
+# gamepad that was missing — see `steam_stand_in`. Without this node neither
+# happens: in the first case the guard gives up and leaves the pad alone, which
+# is a working controller with the guide button reaching games as well as the
+# shell, and in the second there is no controller at all.
+#
+# `static_node` because the module is often not loaded when udev reads its
+# rules, and a rule for a node that does not exist yet does nothing.
+KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+LABEL="linexinbar_input_end"

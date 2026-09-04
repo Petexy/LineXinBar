@@ -590,21 +590,31 @@ impl LxbState {
 
     /// Place a freshly created window on the focused output and give it focus.
     pub(crate) fn map_new_window(&mut self, window: Window) {
-        // Where the user actually is, in order of how well each answer knows:
-        // what the session shell said outright, then the display holding
-        // keyboard focus, then the one under the pointer, then whatever
-        // exists.
+        // Where this window belongs, in order of how well each answer knows:
+        // the record the shell filed for the launch this window turns out to
+        // be, then what the shell said about launches in general, then the
+        // display holding keyboard focus, then the one under the pointer, then
+        // whatever exists.
         //
-        // The shell comes first because it is the only source that is still
-        // right while an application is starting. Focus has usually moved back
-        // to the *previous* application by the time the new window maps, and a
-        // controller-driven session never moves the pointer at all.
+        // The launch's own record comes first because it is the only answer
+        // that is right when two displays are loading at once: the
+        // session-wide one names a single launch, so the *other* launch's
+        // window — arriving second, or first, depending on which toolkit is
+        // quicker — was placed on a display nobody started it from. See
+        // `lxb_shell_v1.place_launch`.
+        //
+        // The shell's session-wide answer comes next because it is the only
+        // source that is still right while an application is starting. Focus
+        // has usually moved back to the *previous* application by the time the
+        // new window maps, and a controller-driven session never moves the
+        // pointer at all.
         //
         // Whatever this settles on is recorded on the window by the tiling
         // below and is where it stays: an application belongs to the display
         // it was started on, and nothing it does afterwards moves it.
         let output = self
-            .shell_launch_output()
+            .launch_output_for(&window)
+            .or_else(|| self.shell_launch_output())
             .or_else(|| self.keyboard_focus_output())
             .or_else(|| {
                 self.lxb

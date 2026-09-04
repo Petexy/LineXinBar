@@ -2391,6 +2391,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "rodio",
+ "roxmltree 0.20.0",
  "serde",
  "serde_json",
  "smithay-client-toolkit 0.21.1",

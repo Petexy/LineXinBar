@@ -1,0 +1,56 @@
+<!--
+  A keyboard, at the head of the Input column.
+
+  Not a pad, which is the obvious mark for a column about how a machine is
+  driven and is the one mark this shell may not use for it: Games is a pad, and
+  the two rows stand four apart in the same column. One drawing may not mean two
+  things — and of the two subjects the pad belongs to the games, because that is
+  the row somebody comes to this column looking for.
+
+  A keyboard is what is left, and it is honest: what is under this row today is
+  the shell's own board, and a keyboard is the mark for typing in every set
+  there has ever been.
+
+  The case is an outline and the keys inside it are filled, as they are on
+  keyboard-hide.svg, and for that drawing's reason: a solid slab with
+  key-shaped holes in it is a slab, because at the sizes a settings row is drawn
+  at the holes would be two pixels across. An outline keeps the board's shape at
+  any size, and the shader runs a bead of water along a stroke exactly as it
+  does along the edge of a fill.
+
+  Two units to one, and deliberately wide. The other mark in this column is
+  setting-keyboard.svg — the same board standing inside a screen — and at
+  eighty-four pixels the two are told apart by their silhouette long before
+  anybody counts the rows inside them. So this one is a keyboard's shape and
+  that one is a screen's.
+
+  A stroke straddles the line it is on, so half its width hangs outside the
+  rectangle given here — half a unit of the two the shadow needs.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="3.2" y="9.4" width="25.6" height="13.2" rx="2.2"
+        fill="none" stroke="#fff" stroke-width="2"/>
+  <g fill="#fff">
+    <rect x="5.6" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="9.25" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="12.9" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="16.55" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="20.2" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="23.85" y="11.8" width="2.5" height="2.2" rx="0.6"/>
+
+    <rect x="5.6" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="9.25" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="12.9" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="16.55" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="20.2" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="23.85" y="14.7" width="2.5" height="2.2" rx="0.6"/>
+
+    <rect x="5.6" y="17.6" width="2.5" height="2.2" rx="0.6"/>
+    <rect x="9.25" y="17.6" width="13.5" height="2.2" rx="0.7"/>
+    <rect x="23.85" y="17.6" width="2.5" height="2.2" rx="0.6"/>
+  </g>
+</svg>

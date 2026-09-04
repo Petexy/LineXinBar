@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, OwnedFd};
+use std::sync::Mutex;
 
 use smithay_client_toolkit::seat::keyboard::Keysym;
 use wayland_client::globals::{BindError, GlobalList};
@@ -67,18 +68,233 @@ use crate::guide::Move;
 use crate::icons;
 use crate::Shell;
 
-/// The character rows, as a keycap is printed: what the key types, and what
-/// Shift makes of it.
+/// The character rows a board with no layout to read shows: what the key
+/// types, and what Shift makes of it.
 ///
-/// The ANSI arrangement, and a US layout — right down to where the backslash
-/// sits and which row the backtick starts. These are not the symbols of the
-/// user's configured keymap, because the shell sends its own; the question is
-/// not which layout the machine is set to but which arrangement the user has
-/// seen printed on keyboards, and that is this one.
+/// The ANSI arrangement and a US layout, right down to where the backslash sits
+/// and which row the backtick starts. It is the **fallback** and not the board:
+/// the caps follow whatever the session's keyboards are set to, read off that
+/// layout's own keymap — see [`note_layout`] — and this is what is shown until
+/// something says what that is, on a compositor too old to say, and if a
+/// keymap will not compile.
+///
+/// What does *not* follow the layout is where the keys are. The arrangement
+/// stays ANSI whatever is printed on it, which is the one thing a board driven
+/// with a thumb cannot afford to move: the user is hunting for a letter by
+/// looking, and a grid that changed shape between layouts would be a different
+/// board each time. So a French layout puts A where ANSI prints Q — because
+/// that is what xkb maps that position to — and the position itself does not
+/// move.
+///
+/// The one key an ANSI board does not have is ISO's extra one beside the left
+/// Shift, which carries `<` and `>` on most European layouts. Nothing can be
+/// done about that here: it is a key this board does not have, exactly as it is
+/// a key an American keyboard does not have.
 const NUMBER_ROW: (&str, &str) = ("`1234567890-=", "~!@#$%^&*()_+");
 const UPPER_ROW: (&str, &str) = ("qwertyuiop[]", "QWERTYUIOP{}");
 const HOME_ROW: (&str, &str) = ("asdfghjkl;'", "ASDFGHJKL:\"");
 const LOWER_ROW: (&str, &str) = ("zxcvbnm,./", "ZXCVBNM<>?");
+
+/// The X11 keycode of every character key on the board, by row.
+///
+/// This is what makes the caps follow the layout: a keymap answers "what does
+/// this key produce" about a *keycode*, so the board's ANSI positions have to
+/// be named in the only language xkb has for them. X11's numbering, which is
+/// evdev's plus eight — `<AE01>`, the key printed 1, is `KEY_1` (2) plus eight.
+///
+/// Four rows, in the order [`row_spans`] lays them out and with exactly the
+/// number of keys that row draws: thirteen across the numbers, twelve letters
+/// and the backslash on the upper row, eleven on the home row and ten on the
+/// lower. The counts are fixed here rather than read from anywhere, which is
+/// what stops a layout changing the width of a row — every row but the function
+/// row comes to exactly [`COLUMNS`], and a keymap is not allowed a say in that.
+const KEYCODES: [&[u32]; 4] = [
+    // <TLDE> and <AE01>..<AE12>
+    &[49, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+    // <AD01>..<AD12>, then <BKSL> — which the row draws last and wider.
+    &[24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 51],
+    // <AC01>..<AC11>
+    &[38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48],
+    // <AB01>..<AB10>
+    &[52, 53, 54, 55, 56, 57, 58, 59, 60, 61],
+];
+
+/// What the session's keyboards are set to, as caps this board can print.
+///
+/// `None` until something says — a compositor too old to report its layout
+/// leaves it here for the whole session, and so does a keymap that would not
+/// compile. Both fall back to the ANSI/US rows above, which is the arrangement
+/// this board had before it followed anything.
+///
+/// A static rather than a field on [`Board`], because the board is built fresh
+/// whenever the keyboard comes up and this is a fact about the session: reading
+/// a keymap is a file opened and a grammar parsed, and doing it per board would
+/// be doing it every time somebody touched a text field.
+static CAPS: Mutex<Option<Arrangement>> = Mutex::new(None);
+
+/// The caps of the four character rows, in [`KEYCODES`] order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Arrangement {
+    rows: [Vec<Cap>; 4],
+    /// Whether anything on it is reached with AltGr, which is what decides
+    /// whether the board draws that key at all. A US board has no AltGr, and
+    /// one that drew a dead key in the bottom row would be a key that does
+    /// nothing on the layout most people are using.
+    altgr: bool,
+}
+
+/// Read what a layout puts on the board, and keep it. `true` when the board has
+/// to be redrawn, which is whenever it changed.
+///
+/// Called with whatever the compositor says the seat is set to — including the
+/// layout the shell never chose, which is the one in that compositor's own
+/// config file. See `Shell::sync_keyboard_layout`.
+pub fn note_layout(layout: &str, variant: &str) -> bool {
+    let read = read_arrangement(layout, variant);
+    if read.is_none() {
+        tracing::warn!(
+            layout,
+            variant,
+            "that keyboard layout would not compile; the board keeps the US arrangement"
+        );
+    }
+    let mut held = CAPS.lock().unwrap();
+    if *held == read {
+        return false;
+    }
+    *held = read;
+    true
+}
+
+/// Compile a layout and read the four character rows off it.
+///
+/// The four faces the board can show are xkb's first four shift levels, which
+/// is what a keyboard's four-level type *is*: plain, Shift, AltGr, and both.
+/// Levels beyond those exist on a handful of layouts and are not reachable
+/// here — this board has one modifier key for the third and fourth, and no
+/// keycap says what a fifth would be.
+///
+/// A key with nothing on a level gets nothing, rather than falling back to its
+/// plain character. A cap that showed `a` on the AltGr face and typed `a` when
+/// pressed would be a key that ignores the modifier the user is holding, and
+/// there would be no way to tell it from one that does something.
+fn read_arrangement(layout: &str, variant: &str) -> Option<Arrangement> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    // The names as given and nothing else: rules, model and options are the
+    // compositor's to decide, and this only has to agree with it about which
+    // symbols the keys carry.
+    let keymap = xkb::Keymap::new_from_names(
+        &context,
+        "",
+        "",
+        layout,
+        variant,
+        None,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )?;
+    let mut rows: [Vec<Cap>; 4] = Default::default();
+    let mut altgr = false;
+    for (row, keycodes) in KEYCODES.iter().enumerate() {
+        for keycode in *keycodes {
+            let cap = cap_of(&keymap, *keycode);
+            altgr |= cap.has_altgr();
+            rows[row].push(cap);
+        }
+    }
+    // A keymap that compiled but says nothing about the alphabet is not an
+    // arrangement — it is a layout this board cannot show, and the US fallback
+    // is a better board than one with a blank home row.
+    rows[2]
+        .iter()
+        .any(|cap| cap.at(Level::Plain).is_some())
+        .then_some(Arrangement { rows, altgr })
+}
+
+/// What one key of the keymap types on each of the board's four faces.
+fn cap_of(keymap: &xkb::Keymap, keycode: u32) -> Cap {
+    let key = xkb::Keycode::new(keycode);
+    let mut levels = [None; 4];
+    for (index, slot) in levels.iter_mut().enumerate() {
+        // One keysym or none. A level bound to several — which xkb allows and
+        // almost nothing uses — is one keycap's worth of typing here, so the
+        // first is what the key says and what it sends.
+        *slot = keymap
+            .key_get_syms_by_level(key, 0, index as u32)
+            .first()
+            .copied()
+            .and_then(stroke_of);
+    }
+    Cap { levels }
+}
+
+/// One keysym as this board would type it.
+///
+/// A character where it has one — which is nearly all of them, and is what lets
+/// a layout grow an accented letter without a line of code — and the keysym
+/// itself where it has not. The second is the dead keys: `dead_acute` types no
+/// character, it changes what the *next* key types, and the honest thing for a
+/// board to do with it is send exactly what the key on the desk sends.
+fn stroke_of(keysym: Keysym) -> Option<Stroke> {
+    if let Some(character) =
+        char::from_u32(xkb::keysym_to_utf32(keysym)).filter(|c| !c.is_control())
+    {
+        return Some(Stroke::Char(character));
+    }
+    // Anything else with no character of its own is not a thing a keycap can
+    // say: NoSymbol, and the handful of layouts that put a function key in the
+    // middle of the alphabet.
+    dead_mark(keysym)
+        .is_some()
+        .then_some(Stroke::Keysym(keysym.raw()))
+}
+
+/// The accent printed on a dead key's cap.
+///
+/// A dead key has no character, so this is the one place the board cannot ask
+/// the keymap what to print. What a real keycap shows is the accent itself, and
+/// that is what this is: the spacing form of each `dead_` keysym
+/// xkeyboard-config puts on the alphabet of a European layout.
+///
+/// A dead key this table does not know is left off the board rather than shown
+/// blank — [`stroke_of`] answers `None` for it — because a cap with nothing on
+/// it is a key nobody can find out the meaning of by pressing.
+fn dead_mark(keysym: Keysym) -> Option<&'static str> {
+    let name = xkb::keysym_get_name(keysym);
+    Some(match name.strip_prefix("dead_")? {
+        "grave" => "`",
+        "acute" => "´",
+        "circumflex" => "^",
+        "tilde" | "perispomeni" => "~",
+        "macron" => "¯",
+        "breve" => "˘",
+        "abovedot" => "˙",
+        "diaeresis" => "¨",
+        "abovering" => "˚",
+        "doubleacute" => "˝",
+        "caron" => "ˇ",
+        "cedilla" => "¸",
+        "ogonek" => "˛",
+        "iota" => "ͅ",
+        "belowdot" => "̣",
+        "hook" => "̉",
+        "horn" => "̛",
+        "stroke" => "̶",
+        "abovecomma" | "psili" => "᾿",
+        "abovereversedcomma" | "dasia" => "῾",
+        "doublegrave" => "̏",
+        "belowring" => "̥",
+        "belowmacron" => "̱",
+        "belowcircumflex" => "̭",
+        "belowtilde" => "̰",
+        "belowbreve" => "̮",
+        "belowdiaeresis" => "̤",
+        "invertedbreve" => "̑",
+        "belowcomma" => "̦",
+        "currency" => "¤",
+        "greek" => "µ",
+        _ => return None,
+    })
+}
 
 /// The function row. The word printed on the cap and the name xkb knows the
 /// key by are the same, so one list serves for both.
@@ -168,8 +384,9 @@ impl Arrow {
 /// One key on the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
-    /// A character key: what it types, and what Shift makes of it.
-    Char(char, char),
+    /// A character key: what it types on each of the four faces the board can
+    /// show. See [`Cap`].
+    Char(Cap),
     /// A key that types one fixed thing whatever the shift state, and the word
     /// printed on it: Esc, Tab, Enter, Back, Space, and the twelve function
     /// keys.
@@ -186,6 +403,18 @@ pub enum Key {
     /// a board can reach Ctrl+C and Alt+F4 as well as the alphabet.
     Ctrl,
     Alt,
+    /// AltGr: the third and fourth faces of the board, where most layouts keep
+    /// their accented letters and their currency signs.
+    ///
+    /// It latches like Shift and, like Shift, is **not** sent as a modifier:
+    /// the board's own keymap gives every character its own key, so `ą` is
+    /// reached by sending `ą` and nothing can be left held down when the board
+    /// goes away. See [`Board::modifiers`].
+    ///
+    /// On the board only where the layout has something on those faces. A US
+    /// keyboard has no AltGr, and a key that did nothing on the layout most
+    /// people use would be a key nobody could learn the meaning of.
+    AltGr,
     /// Not an ANSI key at all, and the one addition to the arrangement: a
     /// keyboard that has appeared by itself has to be dismissable by someone
     /// who did not summon it and does not know what did.
@@ -193,18 +422,26 @@ pub enum Key {
 }
 
 impl Key {
-    /// What is printed on the key, given the shift state. Empty for the keys
-    /// that are drawn instead — see [`Self::glyph`].
-    pub fn cap(self, shifted: bool) -> String {
+    /// A character key with a plain and a shifted character and nothing on
+    /// AltGr, for naming one in a test without spelling out four levels.
+    #[cfg(test)]
+    pub const fn letter(plain: char, shifted: char) -> Key {
+        Key::Char(Cap::letter(plain, shifted))
+    }
+
+    /// What is printed on the key, on the face the board is showing. Empty for
+    /// the keys that are drawn instead — see [`Self::glyph`] — and for a
+    /// character key with nothing on that face.
+    pub fn cap(self, level: Level) -> String {
         match self {
-            Key::Char(_, shift) if shifted => shift.to_string(),
-            Key::Char(plain, _) => plain.to_string(),
+            Key::Char(cap) => cap.printed(level),
             Key::Named(cap, _) => cap.to_string(),
             Key::Arrow(_) | Key::Close => String::new(),
             Key::Shift => "Shift".to_string(),
             Key::Caps => "Caps".to_string(),
             Key::Ctrl => "Ctrl".to_string(),
             Key::Alt => "Alt".to_string(),
+            Key::AltGr => "AltGr".to_string(),
         }
     }
 
@@ -230,6 +467,96 @@ impl Key {
     }
 }
 
+/// Which face of the board is showing.
+///
+/// xkb's first four shift levels, which is what a keyboard's four-level type
+/// is. The board reaches them with two keys: Shift, and AltGr where the layout
+/// has anything on the far two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Level {
+    #[default]
+    Plain,
+    Shift,
+    AltGr,
+    AltGrShift,
+}
+
+impl Level {
+    fn of(shifted: bool, altgr: bool) -> Level {
+        match (altgr, shifted) {
+            (false, false) => Level::Plain,
+            (false, true) => Level::Shift,
+            (true, false) => Level::AltGr,
+            (true, true) => Level::AltGrShift,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Level::Plain => 0,
+            Level::Shift => 1,
+            Level::AltGr => 2,
+            Level::AltGrShift => 3,
+        }
+    }
+}
+
+/// What one character key types, on each face the board can show.
+///
+/// Four answers rather than the two a keycap is printed with, because a layout
+/// keeps its accented letters on the far two: `ą` is AltGr and `a` on a Polish
+/// keyboard, and a board offering only the near pair would be a board a Pole
+/// could not write their own language on.
+///
+/// `None` where the layout puts nothing on that face, which is most keys on
+/// most layouts. The cap is blank there and the press types nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cap {
+    levels: [Option<Stroke>; 4],
+}
+
+impl Cap {
+    /// A key with a plain and a shifted character and nothing on AltGr.
+    pub const fn letter(plain: char, shifted: char) -> Cap {
+        Cap {
+            levels: [
+                Some(Stroke::Char(plain)),
+                Some(Stroke::Char(shifted)),
+                None,
+                None,
+            ],
+        }
+    }
+
+    /// What it types on one face, if it types anything there.
+    fn at(self, level: Level) -> Option<Stroke> {
+        self.levels[level.index()]
+    }
+
+    /// What is printed on it on one face.
+    fn printed(self, level: Level) -> String {
+        match self.at(level) {
+            Some(Stroke::Char(character)) => character.to_string(),
+            // The accent a dead key carries, which is what the cap on a real
+            // keyboard shows: the key types no character, so there is nothing
+            // else it could say.
+            Some(Stroke::Keysym(raw)) => dead_mark(Keysym::new(raw)).unwrap_or("").to_string(),
+            Some(Stroke::Named(name)) => name.to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// Whether the layout puts anything on either AltGr face.
+    fn has_altgr(self) -> bool {
+        self.levels[2].is_some() || self.levels[3].is_some()
+    }
+
+    /// Everything this key can send, for the keymap to give each of them a key.
+    fn strokes(self) -> impl Iterator<Item = Stroke> {
+        self.levels.into_iter().flatten()
+    }
+}
+
 /// One key's worth of typing, as the keymap knows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stroke {
@@ -237,6 +564,21 @@ pub enum Stroke {
     /// A key xkb knows by name rather than by the character it produces:
     /// Return, Tab, the function keys, the arrows.
     Named(&'static str),
+    /// A keysym with no character of its own that the *layout* put on the
+    /// alphabet: the dead keys, which is how a French or a German keyboard
+    /// reaches its accented letters.
+    ///
+    /// The raw keysym rather than its name, so this stays `Copy` and one word
+    /// wide like the two above it. The name is what the keymap is written with
+    /// and is looked up when it is written — see [`Stroke::keysym`].
+    ///
+    /// Passed on exactly as the key on the desk sends it, which means it
+    /// composes in the application if the application composes. It does **not**
+    /// compose in this shell's own fields: those take the character out of the
+    /// stroke and a dead key has none, so a dead key pressed into a search box
+    /// types nothing. That is the honest answer — the alternative is a shell
+    /// with a compose table of its own disagreeing with every client's.
+    Keysym(u32),
 }
 
 impl Stroke {
@@ -257,6 +599,9 @@ impl Stroke {
         match self {
             Stroke::Named(name) => name.to_string(),
             Stroke::Char(character) => format!("U{:04X}", character as u32),
+            // xkbcommon's own canonical name, which is what it will parse back:
+            // there is no Unicode form for a keysym that is not a character.
+            Stroke::Keysym(raw) => xkb::keysym_get_name(Keysym::new(raw)),
         }
     }
 }
@@ -268,6 +613,14 @@ pub enum Press {
     Type(Stroke),
     /// Shift changed. Nothing was typed, and the caps all change.
     Shifted,
+    /// The key has nothing on the face the board is showing, so the press did
+    /// nothing at all — not even change what the next one will do.
+    ///
+    /// Its own answer rather than typing the plain character, which is what a
+    /// key that ignored the modifier the user was holding would do: on the
+    /// AltGr face most keys of most layouts are blank, and a blank cap that
+    /// typed a letter would be the one thing on this board that lies.
+    Nothing,
     /// Put the keyboard away.
     Close,
 }
@@ -325,6 +678,7 @@ pub struct Board {
     shift: Latch,
     ctrl: Latch,
     alt: Latch,
+    altgr: Latch,
 }
 
 impl Board {
@@ -332,8 +686,17 @@ impl Board {
         (self.row, self.column.min(row_keys(self.row).len() - 1))
     }
 
+    /// Whether Shift is armed or locked. Not what the caps say on its own —
+    /// that is [`Self::level`], because AltGr has a say in it too.
+    #[cfg(test)]
     pub fn shifted(&self) -> bool {
         self.shift.is_on()
+    }
+
+    /// Which face the board is showing, which is what every cap on it says and
+    /// what the next press will type.
+    pub fn level(&self) -> Level {
+        Level::of(self.shift.is_on(), self.altgr.is_on())
     }
 
     /// How this key is holding the board, if it is one of the keys that can.
@@ -346,6 +709,7 @@ impl Board {
             Key::Shift => self.shift,
             Key::Ctrl => self.ctrl,
             Key::Alt => self.alt,
+            Key::AltGr => self.altgr,
             // Caps names the lock and only the lock. A Shift armed for the
             // next letter alone is Shift's business to show.
             Key::Caps if self.shift == Latch::Locked => Latch::Locked,
@@ -355,8 +719,9 @@ impl Board {
 
     /// The modifier mask to hold down around the next keystroke.
     ///
-    /// Shift is deliberately not in it. The board's keymap gives every capital
-    /// a key of its own, so a shifted letter is reached by sending `A` rather
+    /// Shift is deliberately not in it, and neither is AltGr. The board's keymap
+    /// gives every capital and every accented letter a key of its own, so a
+    /// shifted letter is reached by sending `A` rather
     /// than by sending `a` with Shift — which also means nothing can be left
     /// latched in the application if the board goes away mid-word. Ctrl and
     /// Alt have no such key to send, so they go as the mask they are.
@@ -373,6 +738,7 @@ impl Board {
 
     /// Whether this key is holding the board down rather than armed for a
     /// single press.
+    #[cfg(test)]
     pub fn locked(&self, key: Key) -> bool {
         self.latched(key) == Latch::Locked
     }
@@ -453,6 +819,10 @@ impl Board {
                 self.alt = self.alt.pressed();
                 Press::Shifted
             }
+            Key::AltGr => {
+                self.altgr = self.altgr.pressed();
+                Press::Shifted
+            }
             // Caps goes straight to the lock and straight back off it: that is
             // the whole of what the key is for, and having to pass through
             // Shift's armed-for-one state on the way would make it Shift.
@@ -472,12 +842,21 @@ impl Board {
                 self.spend();
                 Press::Type(arrow.stroke())
             }
-            Key::Char(plain, shifted) => {
+            Key::Char(cap) => {
                 // Read before spending: it is this press the armed shift is
                 // for.
-                let character = if self.shifted() { shifted } else { plain };
-                self.spend();
-                Press::Type(Stroke::Char(character))
+                let typed = cap.at(self.level());
+                match typed {
+                    Some(stroke) => {
+                        self.spend();
+                        Press::Type(stroke)
+                    }
+                    // Nothing on this face, so nothing happens — the latches
+                    // included. A blank cap that spent the AltGr the user had
+                    // just armed would take the modifier away for the key they
+                    // were actually reaching for.
+                    None => Press::Nothing,
+                }
             }
         }
     }
@@ -500,6 +879,7 @@ impl Board {
         self.shift = self.shift.spent();
         self.ctrl = self.ctrl.spent();
         self.alt = self.alt.spent();
+        self.altgr = self.altgr.spent();
     }
 }
 
@@ -519,14 +899,6 @@ impl Board {
 /// only the two modifiers that can be reached without a chord, giving the
 /// space the rest would have taken to the arrow cluster and the way out.
 pub fn row_spans(row: usize) -> Vec<(Key, f32)> {
-    fn characters((plain, shifted): (&'static str, &'static str)) -> Vec<(Key, f32)> {
-        plain
-            .chars()
-            .zip(shifted.chars())
-            .map(|(plain, shifted)| (Key::Char(plain, shifted), 1.0))
-            .collect()
-    }
-
     let mut keys: Vec<(Key, f32)> = Vec::new();
     match row {
         FUNCTION_ROW => {
@@ -538,33 +910,83 @@ pub fn row_spans(row: usize) -> Vec<(Key, f32)> {
             keys.extend(FUNCTION_KEYS.map(|name| (Key::Named(name, Stroke::Named(name)), span)));
         }
         1 => {
-            keys.extend(characters(NUMBER_ROW));
+            keys.extend(caps_in(row).into_iter().map(|cap| (Key::Char(cap), 1.0)));
             keys.push((Key::Named("Back", Stroke::BACKSPACE), 2.0));
         }
         2 => {
             keys.push((Key::Named("Tab", Stroke::TAB), 1.5));
-            keys.extend(characters(UPPER_ROW));
-            keys.push((Key::Char('\\', '|'), 1.5));
+            // The backslash is the row's last key and is drawn wider, which is
+            // where ANSI puts it. It is a character key like the twelve before
+            // it, so the layout has its say about what it prints — on a German
+            // keyboard that position is `#`.
+            let caps = caps_in(row);
+            let (letters, wide) = caps.split_at(caps.len().saturating_sub(1));
+            keys.extend(letters.iter().map(|cap| (Key::Char(*cap), 1.0)));
+            keys.extend(wide.iter().map(|cap| (Key::Char(*cap), 1.5)));
         }
         3 => {
             keys.push((Key::Caps, 1.75));
-            keys.extend(characters(HOME_ROW));
+            keys.extend(caps_in(row).into_iter().map(|cap| (Key::Char(cap), 1.0)));
             keys.push((Key::Named("Enter", Stroke::ENTER), 2.25));
         }
         4 => {
             keys.push((Key::Shift, 2.25));
-            keys.extend(characters(LOWER_ROW));
+            keys.extend(caps_in(row).into_iter().map(|cap| (Key::Char(cap), 1.0)));
             keys.push((Key::Shift, 2.75));
         }
         _ => {
             keys.push((Key::Ctrl, 1.5));
             keys.push((Key::Alt, 1.5));
-            keys.push((Key::Named("Space", Stroke::SPACE), 5.5));
+            // AltGr takes a key and a half out of the space bar, and only where
+            // the layout has something on the faces it reaches. Right of the
+            // space bar, which is where a keyboard that has one puts it.
+            match altgr_on_the_board() {
+                true => {
+                    keys.push((Key::Named("Space", Stroke::SPACE), 4.0));
+                    keys.push((Key::AltGr, 1.5));
+                }
+                false => keys.push((Key::Named("Space", Stroke::SPACE), 5.5)),
+            }
             keys.extend(Arrow::ALL.map(|arrow| (Key::Arrow(arrow), 1.0)));
             keys.push((Key::Close, 2.5));
         }
     }
     keys
+}
+
+/// The caps of one character row: the layout's, or the ANSI/US fallback where
+/// nothing has said what the layout is.
+///
+/// `row` is the board's own row number — 1 to 4 — which is [`KEYCODES`]'s index
+/// plus one.
+fn caps_in(row: usize) -> Vec<Cap> {
+    if let Some(held) = CAPS.lock().unwrap().as_ref() {
+        if let Some(caps) = row.checked_sub(1).and_then(|index| held.rows.get(index)) {
+            return caps.clone();
+        }
+    }
+    let (plain, shifted) = match row {
+        1 => NUMBER_ROW,
+        2 => UPPER_ROW,
+        3 => HOME_ROW,
+        _ => LOWER_ROW,
+    };
+    let mut caps: Vec<Cap> = plain
+        .chars()
+        .zip(shifted.chars())
+        .map(|(plain, shifted)| Cap::letter(plain, shifted))
+        .collect();
+    // The backslash, which the fallback rows above do not carry because it is
+    // the one character key drawn at a width of its own.
+    if row == 2 {
+        caps.push(Cap::letter('\\', '|'));
+    }
+    caps
+}
+
+/// Whether the board draws an AltGr key at all.
+fn altgr_on_the_board() -> bool {
+    CAPS.lock().unwrap().as_ref().is_some_and(|held| held.altgr)
 }
 
 /// The keys in one row, left to right.
@@ -623,17 +1045,18 @@ fn alphabet() -> Vec<Stroke> {
     for row in 0..ROW_COUNT {
         for key in row_keys(row) {
             match key {
-                Key::Char(plain, shifted) => {
-                    push(Stroke::Char(plain));
-                    push(Stroke::Char(shifted));
-                }
+                // All four faces, so a letter the layout keeps behind AltGr
+                // has a key in the keymap to be sent from. The keymap is built
+                // whenever the board is, so it costs nothing on a layout that
+                // uses two of them.
+                Key::Char(cap) => cap.strokes().for_each(&mut push),
                 Key::Named(_, stroke) => push(stroke),
                 Key::Arrow(arrow) => push(arrow.stroke()),
                 // The keys that change what the board does rather than sending
                 // anything — the modifiers go as a mask alongside the next
                 // key, not as a key of their own — and the one that puts it
                 // away.
-                Key::Shift | Key::Caps | Key::Ctrl | Key::Alt | Key::Close => {}
+                Key::Shift | Key::Caps | Key::Ctrl | Key::Alt | Key::AltGr | Key::Close => {}
             }
         }
     }
@@ -1582,6 +2005,35 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
 mod tests {
     use super::*;
 
+    /// One test at a time, because the caps are a fact about the *session*.
+    ///
+    /// [`CAPS`] is a static — reading a keymap is a file opened and a grammar
+    /// parsed, and a board built fresh for every text field could not afford to
+    /// do it — so a test that sets a layout changes what every other test's
+    /// board is made of. Nearly every test in here presses a key or asks what
+    /// one says, so nearly every one of them takes this.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Hold the lock, and put the session's arrangement back when the test
+    /// ends however it ends. A panicking test must not leave a Polish keyboard
+    /// behind for whatever runs next.
+    struct Held(
+        #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
+        Option<Arrangement>,
+    );
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            *CAPS.lock().unwrap() = self.1.take();
+        }
+    }
+
+    fn alone() -> Held {
+        let held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let caps = CAPS.lock().unwrap().clone();
+        Held(held, caps)
+    }
+
     fn key_at(board: &Board) -> Key {
         let (row, column) = board.selected();
         row_keys(row)[column]
@@ -1606,10 +2058,11 @@ mod tests {
     /// at however the user got there.
     #[test]
     fn a_pointer_puts_the_cursor_on_the_key_it_is_over() {
+        let _held = alone();
         let mut board = at(HOME.0, HOME.1);
         assert!(board.select(Q.0, Q.1));
         assert_eq!(board.selected(), Q);
-        assert_eq!(key_at(&board), Key::Char('q', 'Q'));
+        assert_eq!(key_at(&board), Key::letter('q', 'Q'));
         // Pressing it types what is under the cursor, whoever put it there.
         assert_eq!(board.press(), Press::Type(Stroke::Char('q')));
 
@@ -1626,6 +2079,7 @@ mod tests {
 
     #[test]
     fn every_row_fits_the_grid_it_is_centred_in() {
+        let _held = alone();
         for row in 0..ROW_COUNT {
             let layout = row_layout(row);
             assert!(!layout.is_empty(), "row {row} has no keys");
@@ -1663,6 +2117,7 @@ mod tests {
     /// row — see `ui::row_band`.
     #[test]
     fn only_the_function_row_is_drawn_short() {
+        let _held = alone();
         assert!(row_scale(FUNCTION_ROW) < 1.0);
         for row in 0..ROW_COUNT {
             let scale = row_scale(row);
@@ -1673,12 +2128,230 @@ mod tests {
         }
     }
 
+    /// Whether this machine's xkeyboard-config can compile a layout, which is
+    /// what every test below needs and what a build container may not have.
+    /// See [[tests-that-read-the-machine]].
+    fn has(layout: &str, variant: &str) -> bool {
+        read_arrangement(layout, variant).is_some()
+    }
+
+    /// What one row of the board says, key by key, on its plain face.
+    fn printed(row: usize) -> Vec<String> {
+        row_keys(row)
+            .into_iter()
+            .map(|key| key.cap(Level::Plain))
+            .collect()
+    }
+
+    /// The caps come off the layout, and the positions do not move.
+    ///
+    /// German is the clearest pair to check both halves at once: it is QWERTZ,
+    /// so the key ANSI prints Y types z and the key it prints Z types y — the
+    /// letters swapped and the *keys* exactly where they were.
+    #[test]
+    fn the_caps_come_off_the_layout_and_the_keys_stay_where_they_are() {
+        let _held = alone();
+        if !has("de", "") {
+            return;
+        }
+        assert!(note_layout("de", ""));
+
+        // The lower row is a Shift, ten characters and a Shift.
+        assert_eq!(
+            printed(4)[1..11],
+            ["y", "x", "c", "v", "b", "n", "m", ",", ".", "-"]
+        );
+        // The upper row is Tab, twelve characters and the backslash's key.
+        assert_eq!(printed(2)[1..7], ["q", "w", "e", "r", "t", "z"]);
+
+        // And every row is still exactly the width of the grid. A layout may
+        // say what the keys print; it may not say how many there are.
+        for row in 0..ROW_COUNT {
+            let width: f32 = row_spans(row).iter().map(|(_, span)| *span).sum();
+            assert!(
+                (width - COLUMNS).abs() < 1e-4,
+                "row {row} is {width} columns, not {COLUMNS}"
+            );
+        }
+    }
+
+    /// A layout that keeps letters behind AltGr grows the key that reaches
+    /// them, and pressing it changes what the caps say.
+    ///
+    /// Polish is the case this exists for: it is QWERTY, so without AltGr the
+    /// board would look right and be unable to write a single Polish word.
+    #[test]
+    fn a_layout_with_letters_behind_altgr_grows_the_key_that_reaches_them() {
+        let _held = alone();
+        if !has("pl", "") {
+            return;
+        }
+        assert!(note_layout("pl", ""));
+
+        let bottom = row_keys(ROW_COUNT - 1);
+        assert!(
+            bottom.contains(&Key::AltGr),
+            "a layout with a third level has the key for it: {bottom:?}"
+        );
+
+        // AltGr and the key ANSI prints A, which on this layout is ą.
+        let mut board = at(HOME.0, HOME.1);
+        assert_eq!(board.press(), Press::Type(Stroke::Char('a')));
+        let altgr = bottom.iter().position(|key| *key == Key::AltGr).unwrap();
+        let mut board = at(ROW_COUNT - 1, altgr);
+        assert_eq!(board.press(), Press::Shifted);
+        assert_eq!(board.level(), Level::AltGr);
+        board.select(HOME.0, HOME.1);
+        assert_eq!(key_at(&board).cap(Level::AltGr), "ą");
+        assert_eq!(board.press(), Press::Type(Stroke::Char('ą')));
+        // Spent by the key it was armed for, like every other latch.
+        assert_eq!(board.level(), Level::Plain);
+    }
+
+    /// An arrangement with one key on AltGr and nothing else there.
+    ///
+    /// Built rather than read off a layout, because which keys a real layout
+    /// leaves blank is xkeyboard-config's business and changes with the
+    /// package: Polish, the obvious candidate, includes `latin` and so has
+    /// something on AltGr for every key on the board.
+    fn one_key_on_altgr() -> Arrangement {
+        let mut rows: [Vec<Cap>; 4] = Default::default();
+        for (index, keycodes) in KEYCODES.iter().enumerate() {
+            rows[index] = keycodes.iter().map(|_| Cap::letter('a', 'A')).collect();
+        }
+        rows[2][0] = Cap {
+            levels: [
+                Some(Stroke::Char('a')),
+                Some(Stroke::Char('A')),
+                Some(Stroke::Char('ą')),
+                None,
+            ],
+        };
+        Arrangement { rows, altgr: true }
+    }
+
+    /// A key with nothing on the face the board is showing types nothing, and
+    /// does not spend the modifier that was armed for the key next to it.
+    #[test]
+    fn a_blank_cap_types_nothing_and_keeps_the_modifier_it_was_armed_with() {
+        let _held = alone();
+        *CAPS.lock().unwrap() = Some(one_key_on_altgr());
+
+        let bottom = row_keys(ROW_COUNT - 1);
+        let altgr = bottom
+            .iter()
+            .position(|key| *key == Key::AltGr)
+            .expect("the arrangement has a third level");
+        let mut board = at(ROW_COUNT - 1, altgr);
+        assert_eq!(board.press(), Press::Shifted);
+
+        // The one key that has something there types it, and spends the latch.
+        board.select(3, 1);
+        assert_eq!(key_at(&board).cap(Level::AltGr), "ą");
+
+        // Its neighbour has nothing there, and the press changes nothing at
+        // all — the armed AltGr included, because the user is still reaching
+        // for the key it was armed for.
+        board.select(3, 2);
+        assert_eq!(key_at(&board).cap(Level::AltGr), "");
+        assert_eq!(board.press(), Press::Nothing);
+        assert_eq!(
+            board.level(),
+            Level::AltGr,
+            "a key that did nothing takes nothing away"
+        );
+        board.select(3, 1);
+        assert_eq!(board.press(), Press::Type(Stroke::Char('ą')));
+        assert_eq!(board.level(), Level::Plain);
+    }
+
+    /// A US board has no AltGr key, because on that layout it would do nothing.
+    #[test]
+    fn a_layout_with_nothing_on_the_far_faces_draws_no_altgr() {
+        let _held = alone();
+        if !has("us", "") {
+            return;
+        }
+        assert!(note_layout("us", ""));
+        assert!(!row_keys(ROW_COUNT - 1).contains(&Key::AltGr));
+        assert_eq!(
+            row_keys(ROW_COUNT - 1).len(),
+            8,
+            "Ctrl, Alt, Space, four arrows and the way out"
+        );
+    }
+
+    /// A dead key shows the accent it carries and sends the keysym itself,
+    /// which is what the key on the desk sends.
+    ///
+    /// French is the layout this exists for: `^` there is `dead_circumflex`,
+    /// and it is how every circumflex in the language is written.
+    #[test]
+    fn a_dead_key_shows_its_accent_and_sends_the_keysym() {
+        let _held = alone();
+        if !has("fr", "") {
+            return;
+        }
+        assert!(note_layout("fr", ""));
+
+        // <AD11>, which ANSI prints [ and AZERTY prints the circumflex.
+        let dead = row_keys(2)[11];
+        assert_eq!(dead.cap(Level::Plain), "^");
+        let Key::Char(cap) = dead else {
+            panic!("a character key: {dead:?}");
+        };
+        let Some(Stroke::Keysym(raw)) = cap.at(Level::Plain) else {
+            panic!("a dead key sends a keysym: {cap:?}");
+        };
+        assert_eq!(xkb::keysym_get_name(Keysym::new(raw)), "dead_circumflex");
+        // And it has a key of its own in the keymap the board uploads, written
+        // under the name xkbcommon will parse back.
+        assert!(keymap(&alphabet(), false).contains("[ dead_circumflex ]"));
+    }
+
+    /// A layout that will not compile leaves the board exactly as it was.
+    ///
+    /// The one failure a keyboard may not have: a board that fell back to
+    /// something else would be a board somebody cannot type their password on,
+    /// with nothing on screen saying why.
+    #[test]
+    fn a_layout_that_will_not_compile_leaves_the_board_alone() {
+        let _held = alone();
+        if !has("us", "") {
+            return;
+        }
+        assert!(note_layout("us", ""));
+        // Back to the board's own ANSI arrangement, not on to a guess and not
+        // left on the layout before it: the shell cannot know what the keys say
+        // now, and the one thing it must not do is print letters that are not
+        // there.
+        assert!(note_layout("no-such-layout-anywhere", ""));
+        assert!(CAPS.lock().unwrap().is_none());
+        assert_eq!(
+            printed(3)[1..12],
+            HOME_ROW.0.chars().map(String::from).collect::<Vec<_>>()[..]
+        );
+    }
+
+    /// With nothing said, the board is the ANSI/US arrangement it has always
+    /// been — which is what a session on a compositor too old to say gets.
+    #[test]
+    fn a_board_nothing_has_told_a_layout_keeps_the_ansi_one() {
+        let _held = alone();
+        *CAPS.lock().unwrap() = None;
+        // Caps, the eleven characters of the home row, and Enter.
+        assert_eq!(printed(3)[1..12].concat(), HOME_ROW.0);
+        assert_eq!(printed(1).concat(), format!("{}Back", NUMBER_ROW.0));
+        assert!(!row_keys(ROW_COUNT - 1).contains(&Key::AltGr));
+    }
+
     #[test]
     fn the_arrangement_is_the_one_printed_on_an_ansi_keyboard() {
+        let _held = alone();
         let caps = |row: usize| -> Vec<String> {
             row_keys(row)
                 .into_iter()
-                .map(|key| key.cap(false))
+                .map(|key| key.cap(Level::Plain))
                 .collect()
         };
         // Esc and twelve function keys, the backtick opening the number row,
@@ -1718,13 +2391,14 @@ mod tests {
         );
 
         // The cursor opens on `a`, wherever the rows have moved to.
-        assert_eq!(row_keys(HOME.0)[HOME.1], Key::Char('a', 'A'));
+        assert_eq!(row_keys(HOME.0)[HOME.1], Key::letter('a', 'A'));
     }
 
     #[test]
     fn shift_changes_the_caps_and_what_is_typed() {
+        let _held = alone();
         let mut board = at(Q.0, Q.1);
-        assert_eq!(key_at(&board).cap(board.shifted()), "q");
+        assert_eq!(key_at(&board).cap(board.level()), "q");
         assert_eq!(board.press(), Press::Type(Stroke::Char('q')));
 
         (board.row, board.column) = SHIFT;
@@ -1732,7 +2406,7 @@ mod tests {
         assert!(board.shifted() && !board.locked(Key::Shift));
 
         (board.row, board.column) = Q;
-        assert_eq!(key_at(&board).cap(board.shifted()), "Q");
+        assert_eq!(key_at(&board).cap(board.level()), "Q");
         assert_eq!(board.press(), Press::Type(Stroke::Char('Q')));
         // One-shot: the capital used it up.
         assert!(!board.shifted());
@@ -1744,6 +2418,7 @@ mod tests {
     /// armed-for-one on the way.
     #[test]
     fn caps_lock_goes_straight_to_the_lock_and_straight_back_off_it() {
+        let _held = alone();
         let caps = (3, 0);
         let mut board = at(caps.0, caps.1);
         assert_eq!(key_at(&board), Key::Caps);
@@ -1773,6 +2448,7 @@ mod tests {
     /// locked one says so with the brighter of the two tints.
     #[test]
     fn the_keys_that_changed_the_board_stay_lit() {
+        let _held = alone();
         let mut board = at(SHIFT.0, SHIFT.1);
         assert_eq!(board.latched(Key::Shift), Latch::Off);
         board.press();
@@ -1787,7 +2463,7 @@ mod tests {
         assert_eq!(board.latched(Key::Caps), Latch::Locked);
 
         // A letter is never lit for holding anything.
-        assert_eq!(board.latched(Key::Char('a', 'A')), Latch::Off);
+        assert_eq!(board.latched(Key::letter('a', 'A')), Latch::Off);
         assert_eq!(board.latched(Key::Close), Latch::Off);
     }
 
@@ -1796,6 +2472,7 @@ mod tests {
     /// finger on it.
     #[test]
     fn ctrl_and_alt_latch_and_are_sent_with_the_key_that_follows() {
+        let _held = alone();
         const CTRL: (usize, usize) = (ROW_COUNT - 1, 0);
         const ALT: (usize, usize) = (ROW_COUNT - 1, 1);
 
@@ -1808,7 +2485,7 @@ mod tests {
 
         // The next key carries it, and spends it.
         (board.row, board.column) = (2, 3);
-        assert_eq!(key_at(&board), Key::Char('e', 'E'));
+        assert_eq!(key_at(&board), Key::letter('e', 'E'));
         assert_eq!(board.press(), Press::Type(Stroke::Char('e')));
         assert_eq!(board.modifiers(), 0, "the armed Ctrl outlived its key");
 
@@ -1841,10 +2518,11 @@ mod tests {
     /// it, a locked one is not, and the cursor stays where it was.
     #[test]
     fn start_types_enter_without_the_cursor_being_on_it() {
+        let _held = alone();
         const CTRL: (usize, usize) = (ROW_COUNT - 1, 0);
 
         let mut board = at(HOME.0, HOME.1);
-        assert_eq!(key_at(&board), Key::Char('a', 'A'));
+        assert_eq!(key_at(&board), Key::letter('a', 'A'));
         assert_eq!(board.submit(), Press::Type(Stroke::ENTER));
         assert_eq!(
             board.selected(),
@@ -1863,6 +2541,7 @@ mod tests {
 
     #[test]
     fn a_second_press_of_shift_locks_it() {
+        let _held = alone();
         let mut board = at(SHIFT.0, SHIFT.1);
         board.press();
         board.press();
@@ -1883,14 +2562,15 @@ mod tests {
 
     #[test]
     fn up_and_down_land_on_the_key_across_rather_than_the_key_numbered_the_same() {
+        let _held = alone();
         // `a` is the second key of its row, and the row below it opens with a
         // Shift a quarter of a column wider than the Caps Lock above it — so
         // stepping by index would put Down from `a` on `x`, one key to the
         // right of where it looks.
         let mut board = at(HOME.0, HOME.1);
-        assert_eq!(key_at(&board), Key::Char('a', 'A'));
+        assert_eq!(key_at(&board), Key::letter('a', 'A'));
         board.move_selection(Move::Down);
-        assert_eq!(key_at(&board), Key::Char('z', 'Z'));
+        assert_eq!(key_at(&board), Key::letter('z', 'Z'));
 
         // And upwards out of a key five and a half columns wide: what the
         // middle of the space bar is under, not the third key of the row above
@@ -1898,30 +2578,31 @@ mod tests {
         (board.row, board.column) = (ROW_COUNT - 1, 2);
         assert_eq!(key_at(&board), Key::Named("Space", Stroke::SPACE));
         board.move_selection(Move::Up);
-        assert_eq!(key_at(&board), Key::Char('v', 'V'));
+        assert_eq!(key_at(&board), Key::letter('v', 'V'));
 
         // The arrows sit under the keys they are in line with, so a cursor
         // walking down the right-hand side of the board arrives on them rather
         // than skidding past onto Close.
         (board.row, board.column) = (4, 10);
-        assert_eq!(key_at(&board), Key::Char('/', '?'));
+        assert_eq!(key_at(&board), Key::letter('/', '?'));
         board.move_selection(Move::Down);
         assert_eq!(key_at(&board), Key::Arrow(Arrow::Right));
         board.move_selection(Move::Up);
-        assert_eq!(key_at(&board), Key::Char('/', '?'));
+        assert_eq!(key_at(&board), Key::letter('/', '?'));
 
         // A key sitting exactly between two of them goes to the left one.
         // Arbitrary, but fixed: ANSI's rows are a quarter and a half column
         // out of step with their neighbours, so ties are common rather than an
         // edge case, and they have to break the same way every time.
         (board.row, board.column) = (3, 10);
-        assert_eq!(key_at(&board), Key::Char(';', ':'));
+        assert_eq!(key_at(&board), Key::letter(';', ':'));
         board.move_selection(Move::Down);
-        assert_eq!(key_at(&board), Key::Char('.', '>'));
+        assert_eq!(key_at(&board), Key::letter('.', '>'));
     }
 
     #[test]
     fn moving_off_an_end_wraps_rather_than_sticking() {
+        let _held = alone();
         let mut board = at(0, 0);
         assert_eq!(key_at(&board), Key::Named("Esc", Stroke::ESCAPE));
         board.move_selection(Move::Left);
@@ -1941,6 +2622,7 @@ mod tests {
 
     #[test]
     fn the_keymap_gives_every_key_the_board_can_send_a_code_of_its_own() {
+        let _held = alone();
         let alphabet = alphabet();
         let text = keymap(&alphabet, false);
 
@@ -1950,12 +2632,12 @@ mod tests {
         for row in 0..ROW_COUNT {
             for key in row_keys(row) {
                 let wanted: Vec<Stroke> = match key {
-                    Key::Char(plain, shifted) => {
-                        vec![Stroke::Char(plain), Stroke::Char(shifted)]
-                    }
+                    Key::Char(cap) => cap.strokes().collect(),
                     Key::Named(_, stroke) => vec![stroke],
                     Key::Arrow(arrow) => vec![arrow.stroke()],
-                    Key::Shift | Key::Caps | Key::Ctrl | Key::Alt | Key::Close => vec![],
+                    Key::Shift | Key::Caps | Key::Ctrl | Key::Alt | Key::AltGr | Key::Close => {
+                        vec![]
+                    }
                 };
                 for stroke in wanted {
                     assert!(
@@ -1990,6 +2672,7 @@ mod tests {
     /// letter then comes out as a different letter.
     #[test]
     fn no_two_handovers_offer_the_compositor_the_same_keymap() {
+        let _held = alone();
         let alphabet = alphabet();
         let plain = keymap(&alphabet, false);
         let spared = keymap(&alphabet, true);
@@ -2013,6 +2696,7 @@ mod tests {
 
     #[test]
     fn characters_are_written_as_unicode_keysyms() {
+        let _held = alone();
         assert_eq!(Stroke::Char('a').keysym(), "U0061");
         assert_eq!(Stroke::Char('~').keysym(), "U007E");
         assert_eq!(Stroke::Char(' ').keysym(), "U0020");
@@ -2031,6 +2715,7 @@ mod tests {
 
     #[test]
     fn a_keyboard_with_nothing_to_type_with_never_opens() {
+        let _held = alone();
         // No `attach`, so no virtual keyboard: the shell is running on a
         // compositor without the protocol.
         let mut osk = Osk::default();
@@ -2052,6 +2737,7 @@ mod tests {
 
     #[test]
     fn a_field_taking_the_cursor_brings_the_keyboard_up_once() {
+        let _held = alone();
         let mut osk = armed();
         assert!(!osk.is_open());
         assert!(!osk.wants_hint(), "nothing is focused yet");
@@ -2082,6 +2768,7 @@ mod tests {
 
     #[test]
     fn the_keyboard_can_be_summoned_where_no_field_ever_announced_itself() {
+        let _held = alone();
         // The case the shortcut exists for: an X11 client, or a browser
         // without Wayland IME, where `activate` will never arrive.
         let mut osk = armed();
@@ -2106,6 +2793,7 @@ mod tests {
 
     #[test]
     fn closing_by_the_boards_own_button_puts_it_away() {
+        let _held = alone();
         let mut osk = armed();
         osk.open();
         // The Close key is the last of the function row.
@@ -2122,6 +2810,7 @@ mod tests {
     /// wants to do.
     #[test]
     fn any_key_on_a_real_keyboard_puts_the_board_away() {
+        let _held = alone();
         for keysym in [
             Keysym::Left,
             Keysym::Right,
@@ -2152,6 +2841,7 @@ mod tests {
     /// that dismissed it.
     #[test]
     fn the_key_that_dismissed_the_board_is_typed_into_the_application() {
+        let _held = alone();
         assert_eq!(interpret(Keysym::q), Typed::Send(Stroke::Char('q')));
         // The keysym arrives with the shift level already applied, which is
         // why the board needs no modifier to send a capital.
@@ -2213,6 +2903,7 @@ mod tests {
     /// the keyboard down and pick the controller up.
     #[test]
     fn a_board_dismissed_by_typing_stops_offering_itself() {
+        let _held = alone();
         let mut osk = armed();
         osk.set_focused(true);
         assert!(osk.is_open(), "the field's own offer");
@@ -2243,6 +2934,7 @@ mod tests {
     /// morning.
     #[test]
     fn a_board_told_the_keyboard_is_in_hand_stops_offering_itself() {
+        let _held = alone();
         let mut osk = armed();
         osk.set_controller_in_hand(false);
 
@@ -2276,6 +2968,7 @@ mod tests {
     /// everything that draws has to keep saying so until it is not.
     #[test]
     fn the_board_slides_out_of_the_way_rather_than_vanishing() {
+        let _held = alone();
         // A frame at sixty, which is roughly what the shell draws at.
         const FRAME: f32 = 1.0 / 60.0;
         let mut osk = armed();
@@ -2311,6 +3004,7 @@ mod tests {
     /// again straight away must not hand back a keyboard caught halfway out.
     #[test]
     fn the_guide_taking_the_screen_takes_the_board_with_it() {
+        let _held = alone();
         let mut osk = armed();
         osk.open();
         osk.animate(1.0);
@@ -2330,6 +3024,7 @@ mod tests {
     /// keyboards rather than one changing its mind.
     #[test]
     fn a_board_summoned_mid_fall_comes_back_from_where_it_is() {
+        let _held = alone();
         const FRAME: f32 = 1.0 / 60.0;
         let mut osk = armed();
         osk.open();
@@ -2352,6 +3047,7 @@ mod tests {
     /// to go through, or Ctrl+C would stop working while the board was up.
     #[test]
     fn the_modifiers_passed_on_are_the_ones_the_keysym_did_not_already_carry() {
+        let _held = alone();
         const SHIFT: u32 = 0x1;
         const LOCK: u32 = 0x2;
         const CONTROL: u32 = 0x4;
@@ -2390,6 +3086,7 @@ mod tests {
 
     #[test]
     fn a_keyboard_with_nothing_to_type_with_never_opens_by_itself_either() {
+        let _held = alone();
         let mut osk = Osk::default();
         osk.set_focused(true);
         assert!(!osk.is_open(), "a keyboard that cannot type came up anyway");

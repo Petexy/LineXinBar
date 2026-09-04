@@ -83,6 +83,27 @@ const XWAYLAND_POINTER_INTERVAL: Duration = Duration::from_millis(8);
 /// cost worth weighing against either.
 const SESSION_SHELL_POLL: Duration = Duration::from_millis(16);
 
+/// How often the compositor asks whether the desktop portal is still running.
+///
+/// Nothing on screen waits for this, unlike the shell above: a portal that has
+/// gone is noticed the next time somebody asks to share a screen or open a
+/// file, which is a human-scale event. A second is quick enough to have the
+/// replacement listening before the next one of those, and cheap enough not to
+/// think about.
+const SESSION_PORTAL_POLL: Duration = Duration::from_secs(1);
+
+/// How long a portal has to stay up before it counts as having started.
+///
+/// One that exits sooner has failed rather than crashed after a good run — the
+/// usual reason being that its bus name was taken — and it is those in a row
+/// that [`MOST_PORTAL_TRIES`] counts. One that ran for longer resets the count,
+/// so a session left on for a week is not one restart away from having no
+/// portal at all.
+const PORTAL_SETTLED: Duration = Duration::from_secs(10);
+
+/// How many times in a row a portal that will not stay up is started again.
+const MOST_PORTAL_TRIES: u32 = 3;
+
 /// Top level state handed to every calloop callback and protocol dispatch.
 pub struct LxbState {
     pub backend: Backend,
@@ -336,6 +357,16 @@ pub struct Lxb {
     /// question is only put to a window when there is something to compare it
     /// against. See [`Lxb::out_of_sight`] and `lxb_shell_v1.keep_out_of_sight`.
     pub unseen: std::collections::HashSet<String>,
+    /// The windows the shell has let through anyway, by id — the exception
+    /// [`Lxb::unseen`] admits. See `lxb_shell_v1.let_this_window_be_seen`.
+    ///
+    /// Ids rather than names, because the whole point is one window of an
+    /// application the rest of which stays hidden. Pruned against the windows
+    /// that exist on every refresh: ids come from a counter that only goes up,
+    /// so a leftover cannot be given to somebody else's window, but a session
+    /// that answered a hundred of Steam's questions would otherwise still be
+    /// carrying all hundred of them.
+    pub seen_anyway: std::collections::HashSet<u32>,
 
     /// The applications the shell says are playing something, by the name each
     /// calls itself, folded the same way [`Lxb::unseen`] is.
@@ -437,10 +468,11 @@ impl LxbState {
 
         loop_handle
             .insert_source(socket, move |stream, _, state| {
+                let who = ClientState::for_peer(&stream);
                 if let Err(err) = state
                     .lxb
                     .display_handle
-                    .insert_client(stream, Arc::new(ClientState::default()))
+                    .insert_client(stream, Arc::new(who))
                 {
                     tracing::warn!(?err, "failed to accept client");
                 }
@@ -543,6 +575,7 @@ impl LxbState {
                 keyboard_focus_enabled: true,
                 exclusive_keyboard_focus: None,
                 unseen: std::collections::HashSet::new(),
+                seen_anyway: std::collections::HashSet::new(),
                 playing: std::collections::HashSet::new(),
             },
         })
@@ -831,7 +864,7 @@ impl LxbState {
         }
         if let Some(command) = self.lxb.pending_shell.take() {
             self.start_session_shell(&command);
-            self.lxb.start_portal();
+            self.lxb.start_portal(0);
         }
     }
 
@@ -898,6 +931,10 @@ impl LxbState {
 
         tracing::info!(command, pid = child.id(), "session shell started");
         self.lxb.session_shell_pid = Some(child.id() as i32);
+        // And to the one thing that has to know it without a `&mut LxbState` in
+        // hand: whether a client connecting to this compositor may bind its
+        // control protocol. See [`crate::shell_control::role_of`].
+        crate::shell_control::this_is_the_session_shell(child.id() as i32);
 
         let command = command.to_string();
         let poll = self
@@ -907,6 +944,10 @@ impl LxbState {
                 match child.try_wait() {
                     Ok(None) => TimeoutAction::ToDuration(SESSION_SHELL_POLL),
                     Ok(Some(status)) => {
+                        // Waited for, so the number is the kernel's to hand out
+                        // again: give it up here, in the same step, before
+                        // anything else can be started wearing it.
+                        crate::shell_control::the_session_shell_has_gone();
                         if status.success() {
                             tracing::info!(command, %status, "session shell exited; ending session");
                         } else {
@@ -976,7 +1017,21 @@ impl Lxb {
             return false;
         }
         let app_id = crate::shell_control::window_app_id(window);
-        folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id))
+        if !folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id)) {
+            return false;
+        }
+        // Hidden by name, and then one exception: a window the shell has asked
+        // for by id, because the application stopped to ask something and
+        // nobody can answer a window they cannot see. Asked last and only of a
+        // window that was going to be hidden anyway, so the id — which costs a
+        // walk of the window's own data — is worked out for those alone.
+        // See `lxb_shell_v1.let_this_window_be_seen`.
+        if self.seen_anyway.is_empty() {
+            return true;
+        }
+        !self
+            .seen_anyway
+            .contains(&crate::overview::window_id(window))
     }
 
     /// Whether this window belongs to an application the shell says is playing
@@ -1177,11 +1232,92 @@ impl Lxb {
     /// Only with `--shell`. A bare compositor is somebody debugging, and a
     /// second portal claiming the bus name in a session that already has one is
     /// worse than no portal at all.
-    fn start_portal(&self) {
+    ///
+    /// Kept as a real child, unlike everything else this starts, and started
+    /// again if it stops. Two reasons, and they are the same reason twice. The
+    /// portal is allowed onto `lxb_shell_v1` because the compositor knows the
+    /// pid of the process it started, and a pid is only knowable about a child
+    /// it did not fork away — this used to be double-forked, and what stood in
+    /// for knowing which process it was, was the name of its executable, which
+    /// is a thing any program of this user can wear. And the portal is
+    /// registered for D-Bus activation, so a portal that dies is replaced by
+    /// one the *bus* starts, whose pid this compositor never learns and which
+    /// would therefore come up unable to ask the shell anything: every screen
+    /// share refused, every file chooser empty, and nothing saying why. Getting
+    /// there first is what keeps that from happening.
+    fn start_portal(&mut self, attempt: u32) {
         // By name rather than by path, so a portal built beside the compositor
         // and one installed by a package are both found the way everything else
         // in the session is.
-        self.spawn("lxb-portal");
+        let Some(mut command) = self.command_for("lxb-portal") else {
+            tracing::warn!("could not parse the portal command");
+            return;
+        };
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                tracing::warn!(?err, "could not start the session portal");
+                return;
+            }
+        };
+        let pid = child.id() as i32;
+        tracing::info!(pid, attempt, "session portal started");
+        crate::shell_control::this_is_the_session_portal(pid);
+
+        let started = Instant::now();
+        let poll = self.loop_handle.insert_source(
+            Timer::from_duration(SESSION_PORTAL_POLL),
+            move |_, _, state: &mut LxbState| {
+                match child.try_wait() {
+                    Ok(None) => TimeoutAction::ToDuration(SESSION_PORTAL_POLL),
+                    Ok(Some(status)) => {
+                        // Waited for, so the number is free for the next
+                        // process to be given. Forgotten here, in the same
+                        // step, and nothing can read it in between: every
+                        // reader is this same event loop, on this same thread,
+                        // and it is inside this callback.
+                        crate::shell_control::the_session_portal_has_gone();
+
+                        // A portal that ran for a while and then stopped is a
+                        // crash; one that stopped immediately could not start
+                        // at all, and the usual cause is another process — an
+                        // activated one — already holding its bus name. Only
+                        // the second kind is counted, so a long-lived session
+                        // never runs out of tries.
+                        let next = match started.elapsed() >= PORTAL_SETTLED {
+                            true => 0,
+                            false => attempt + 1,
+                        };
+                        if !state.lxb.running {
+                            tracing::debug!(%status, "the session portal stopped with the session");
+                        } else if next < MOST_PORTAL_TRIES {
+                            tracing::warn!(%status, "the session portal stopped; starting it again");
+                            state.lxb.start_portal(next);
+                        } else {
+                            tracing::error!(
+                                %status,
+                                "the session portal will not stay up; sharing a screen and \
+                                 choosing a file will not work for the rest of this session"
+                            );
+                        }
+                        TimeoutAction::Drop
+                    }
+                    Err(err) => {
+                        // Without a usable child status there is nothing left
+                        // to supervise it by. Give the privilege up rather than
+                        // leave a pid trusted that nothing is watching.
+                        crate::shell_control::the_session_portal_has_gone();
+                        tracing::error!(?err, "cannot supervise the session portal");
+                        TimeoutAction::Drop
+                    }
+                }
+            },
+        );
+
+        if let Err(err) = poll {
+            tracing::warn!(?err, "could not supervise the session portal");
+        }
     }
 
     /// Spawn a command, detached from the compositor's own process group.
@@ -1429,6 +1565,85 @@ fn shell_split(input: &str) -> Option<Vec<String>> {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// The process on the other end of the socket, and what program it is.
+    ///
+    /// Read once, here, from the connection itself — peer credentials the
+    /// kernel stamps on the socket and cannot be claimed — because it is the
+    /// only moment it can be read at all: by the time a client binds something,
+    /// the pid may name a process that has already gone, and `/proc` will
+    /// happily answer for whatever took the number next.
+    ///
+    /// What it is for is [`crate::shell_control::role_of`]: `lxb_shell_v1` is
+    /// the compositor's control channel, and a session runs programs — Steam,
+    /// games, whatever the store installed — that have no business on it. Both
+    /// are `None` on a socket whose peer cannot be read, which is answered as
+    /// "not one of ours".
+    pub pid: Option<i32>,
+    /// What that process is running, by the name of its executable.
+    ///
+    /// Kept for the log, where it is what makes a refusal readable, and for
+    /// `--insecure-trust-program`, which is a developer saying out loud that a
+    /// name is good enough for this one session. It is not otherwise part of
+    /// the decision, and must not become part of it again: every program in the
+    /// session runs as the same user, and a name is a thing any of them can put
+    /// on a copy of itself.
+    pub program: Option<String>,
+}
+
+impl ClientState {
+    /// Take the peer's identity off a connection that has just been accepted.
+    pub fn for_peer(stream: &std::os::unix::net::UnixStream) -> ClientState {
+        let pid = peer_pid(stream);
+        let program = pid.and_then(program_of);
+        ClientState {
+            compositor_state: CompositorClientState::default(),
+            pid,
+            program,
+        }
+    }
+}
+
+/// The process at the other end of a connected Unix socket.
+///
+/// `SO_PEERCRED` by hand because the standard library's own `peer_cred` is
+/// still unstable. The kernel fills this in when the connection is made, from
+/// what the connecting process actually was, and nothing on the other end can
+/// influence it.
+fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+
+    let mut who: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: a connected socket we own, and a correctly sized buffer for the
+    // option being asked for. The call writes at most `size` bytes into it and
+    // updates `size` with what it wrote.
+    let asked = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(who).cast(),
+            &mut size,
+        )
+    };
+    if asked != 0 || size as usize != std::mem::size_of::<libc::ucred>() {
+        return None;
+    }
+    // Zero is what the kernel writes for a peer in another pid namespace, which
+    // is no answer rather than process zero.
+    (who.pid != 0).then_some(who.pid)
+}
+
+/// What one process is running, by the name of its executable.
+///
+/// The link rather than the command line: `/proc/<pid>/cmdline` is the
+/// process's own to rewrite and `argv[0]` is whatever it says it is, where the
+/// link is the kernel's answer about the file that was executed. A program that
+/// has been replaced on the disk since it started answers with `(deleted)` on
+/// the end, which is not a name any of ours has and so is not one of ours.
+fn program_of(pid: i32) -> Option<String> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    Some(exe.file_name()?.to_string_lossy().into_owned())
 }
 
 impl ClientData for ClientState {

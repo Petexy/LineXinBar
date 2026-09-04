@@ -1403,7 +1403,7 @@ mod hardware_tests {
     #[test]
     fn an_application_gets_the_whole_pad_except_the_guide_button() {
         if !uinput_is_available() {
-            eprintln!("skipped: /dev/uinput cannot be opened here");
+            crate::skipped("/dev/uinput cannot be opened here");
             return;
         }
 
@@ -1496,7 +1496,7 @@ mod hardware_tests {
     #[test]
     fn the_shell_reads_every_other_button_exactly_once() {
         if !uinput_is_available() {
-            eprintln!("skipped: /dev/uinput cannot be opened here");
+            crate::skipped("/dev/uinput cannot be opened here");
             return;
         }
 
@@ -1507,14 +1507,14 @@ mod hardware_tests {
         {
             Ok(gilrs) => gilrs,
             Err(err) => {
-                eprintln!("skipped: no gamepad API here ({err})");
+                crate::skipped(&format!("no gamepad API here ({err})"));
                 return;
             }
         };
         // Wait for GilRs to notice the pad at all before it is taken, which is
         // the order a running shell meets one in.
         if !settle(&mut gilrs, |gilrs| gilrs.gamepads().count() == 1) {
-            eprintln!("skipped: the gamepad API never saw the test pad");
+            crate::skipped("the gamepad API never saw the test pad");
             return;
         }
 
@@ -1586,7 +1586,7 @@ mod hardware_tests {
     #[test]
     fn a_scan_finds_a_pad_takes_it_and_lets_it_go() {
         if !uinput_is_available() {
-            eprintln!("skipped: /dev/uinput cannot be opened here");
+            crate::skipped("/dev/uinput cannot be opened here");
             return;
         }
         // Both sources of the ignore list this asserts on, held still, and in
@@ -1671,7 +1671,7 @@ mod hardware_tests {
     #[test]
     fn rumble_reaches_the_real_pad() {
         if !uinput_is_available() {
-            eprintln!("skipped: /dev/uinput cannot be opened here");
+            crate::skipped("/dev/uinput cannot be opened here");
             return;
         }
 

@@ -1,0 +1,27 @@
+<!--
+  Which way the page goes: two arrows side by side, one up and one down.
+
+  Not one arrow with a head at each end, which was drawn first and says the
+  wrong thing — a double-headed arrow is an *axis*, and the row is not asking
+  whether scrolling is vertical. Two arrows pointing opposite ways is the mark
+  for one direction or the other, and that is the question.
+
+  Set at different heights rather than level, so the pair reads as a turn rather
+  than as two arrows standing in a row. Six units apart at the nearest point,
+  which is well past the bevel: a distance field cannot tell two bodies touching
+  from one, and two arrows that fused would be the double-headed one again by
+  accident.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <rect x="8.6" y="11.4" width="2.9" height="13.6" rx="1.0"/>
+    <path d="M6.0 12.4 H14.1 L10.05 5.0 Z"/>
+
+    <rect x="20.5" y="7.0" width="2.9" height="13.6" rx="1.0"/>
+    <path d="M17.9 19.6 H26.0 L21.95 27.0 Z"/>
+  </g>
+</svg>

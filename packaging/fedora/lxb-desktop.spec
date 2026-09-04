@@ -228,6 +228,7 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 %{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
 %{_datadir}/applications/linexinbar-files.desktop
 %{_datadir}/applications/linexinbar-mimeapps.list
+%{_prefix}/lib/udev/rules.d/70-linexinbar-input.rules
 
 # Both packages carry the licences: they are installed and used independently,
 # and a compositor on a machine with no shell still ships the terms it is

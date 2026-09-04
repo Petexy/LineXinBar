@@ -138,6 +138,26 @@ impl CursorState {
         }
     }
 
+    /// Draw at a different nominal size from now on.
+    ///
+    /// The cache is keyed by shape and integer scale rather than by size —
+    /// there is one size at a time — so it has to go with the number: what is
+    /// in it are pictures decoded for the size that was in force. Left alone,
+    /// the pointer would go on being drawn at the old size until it happened to
+    /// change shape.
+    ///
+    /// A zero is ignored rather than obeyed. It is what an empty or unparsable
+    /// `XCURSOR_SIZE` looks like arriving from somewhere else, and a cursor
+    /// nought pixels across is a session with no pointer at all.
+    pub fn set_size(&mut self, size: u32) {
+        if size == 0 || size == self.size {
+            return;
+        }
+        tracing::info!(size, "the cursor's size");
+        self.size = size;
+        self.cache.clear();
+    }
+
     /// Render the cursor at `position` (the pointer tip, in physical pixels).
     pub fn render<R>(
         &mut self,

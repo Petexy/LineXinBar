@@ -36,8 +36,38 @@ pub struct OverviewEntry {
     /// the entry rather than a separate list because it is diffed with the
     /// rest: a window that changes its name is a window list that changed.
     pub app_id: String,
+    /// The process that drew it, where the compositor knows one. `None` for a
+    /// client whose socket carried no credentials and for an X11 window whose
+    /// owner set no `_NET_WM_PID`.
+    ///
+    /// Diffed with the rest for the same reason the name is, and for one more:
+    /// a window whose pid arrives late — an X11 window is adopted before it has
+    /// said anything about itself — is a window list that changed, and a shell
+    /// told once and never again would be left matching on the moment it
+    /// appeared. See `lxb_shell_v1.output_window_pid`.
+    pub pid: Option<u32>,
     pub width: u32,
     pub height: u32,
+}
+
+/// One window the compositor is keeping off the screen, as the shell is told
+/// about it: what it is, and what it is showing.
+///
+/// No size and no display, unlike [`OverviewEntry`] — a hidden window is not
+/// on a display as far as anything else in the session is concerned, and
+/// nothing is going to draw a card of it. What it is for is the one question
+/// the shell has to answer about it: is this the application getting on with
+/// what it was asked, or is it stopping to ask something?
+///
+/// Compared as a whole, so a client renaming or retitling a hidden window is a
+/// list that changed. Both do happen while a window is hidden: an X11 client
+/// announces its class after it maps, and Valve's client retitles the same
+/// window as it walks a wizard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnseenEntry {
+    pub id: u32,
+    pub app_id: String,
+    pub title: String,
 }
 
 /// One floating window as the shell is told about it: the id, and the whole
@@ -53,13 +83,139 @@ pub struct FloatingEntry {
     pub rect: lxb_protocol::overview::Rect,
 }
 
+/// One launch the shell has in flight, and how to recognise the window it
+/// turns into. See `lxb_shell_v1.place_launch`.
+///
+/// It exists because "where do new windows go" and "which launch is this
+/// window" are the same question asked once per launch, and the compositor
+/// used to have room for only one answer. Two games started on two displays
+/// whose windows arrive in the other order were two windows placed by whichever
+/// launch was named last — both on one screen, and neither on the screen it was
+/// pressed on.
+///
+/// Matched by process first and by name second, because the two are known in
+/// different cases and neither covers both. The shell forks an ordinary
+/// application itself and has its pid; a game handed to a store client is
+/// started by the client and the shell has nothing but the class it will
+/// arrive under. A record with neither is still worth filing — its output is
+/// read by nothing else, but it costs nothing and keeps the shell's side of
+/// this one shape rather than two.
+#[derive(Debug, Clone)]
+struct LaunchRecord {
+    /// The shell's own number for the press. Opaque here: all it does is tell
+    /// one record from another and let the shell take this one back.
+    launch: u32,
+    /// The display it was started from, which is the whole answer this carries.
+    output: Output,
+    /// The process the shell started, if it started one itself.
+    pid: Option<u32>,
+    /// What its window will call itself, if the shell can say.
+    app_id: Option<String>,
+    /// When it was filed, for [`UNTIL_A_LAUNCH_IS_STALE`].
+    filed: std::time::Instant,
+}
+
+/// File one launch, replacing any record already under that number, and drop
+/// what nobody came back for.
+///
+/// Swept here rather than on a timer: the list is only ever read while a window
+/// is mapping and only ever grows when a press is made, so the moment a press
+/// is made is the cheapest place to drop a record the shell never took back.
+/// See [`UNTIL_A_LAUNCH_IS_STALE`].
+fn file_launch(launches: &mut Vec<LaunchRecord>, record: LaunchRecord) {
+    let now = record.filed;
+    launches.retain(|kept| kept.launch != record.launch && !kept.stale(now));
+    if launches.len() >= MOST_LAUNCH_RECORDS {
+        launches.remove(0);
+    }
+    launches.push(record);
+}
+
+/// Which filed launch a window belongs to, if any.
+///
+/// The newest match wins. Two records can name one program — the same game
+/// pressed twice on two screens, an application started again before the first
+/// arrived — and the later press is the one whose window has had the least time
+/// to turn up. It is the same rule the shell's own single answer used, applied
+/// where it now belongs.
+///
+/// `descends` is how the process chain is walked, handed in rather than read
+/// here so this rule can be checked against a tree of one's own; the session
+/// passes [`descends_from`], which walks `/proc`.
+fn launch_for<'a>(
+    launches: &'a [LaunchRecord],
+    now: std::time::Instant,
+    pid: Option<u32>,
+    app_id: &str,
+    descends: impl Fn(u32, u32) -> bool,
+) -> Option<&'a LaunchRecord> {
+    launches
+        .iter()
+        .rev()
+        .filter(|record| !record.stale(now))
+        .find(|record| {
+            record.claims_app_id(app_id)
+                || pid.is_some_and(|pid| record.pid.is_some_and(|started| descends(pid, started)))
+        })
+}
+
+/// The display the user is driving, out of the two things a shell may have
+/// named.
+///
+/// The split this rule is the whole of: `set_launch_output` is where an
+/// application *opens*, which a shell holds on the display a game was started
+/// from for as long as the game takes to arrive, and `set_driven_output` is
+/// where the person *is*. Read as one field they contradict each other for the
+/// whole of a loading time, and every question about the person — the keyboard
+/// coming back, the X screen's active window, which screen a screenshot
+/// binding photographs — moved to a display nobody was looking at.
+///
+/// The fallback is what a shell older than version 41 says, which is one value
+/// for both. Reading it here is exactly the behaviour this compositor had
+/// before the two came apart, so such a shell is neither better nor worse off.
+fn the_display_being_driven<'a>(
+    driven: Option<&'a Output>,
+    launch: Option<&'a Output>,
+) -> Option<&'a Output> {
+    driven.or(launch)
+}
+
+impl LaunchRecord {
+    fn stale(&self, now: std::time::Instant) -> bool {
+        now.duration_since(self.filed) > UNTIL_A_LAUNCH_IS_STALE
+    }
+
+    /// Whether this record is about a window that calls itself `app_id`.
+    ///
+    /// Exact, and case-folded because an X11 class is whatever the client
+    /// wrote and the same program spells its own name both ways across
+    /// toolkits. An empty name on either side matches nothing: a window that
+    /// set no class must not be claimed by a record that named none.
+    fn claims_app_id(&self, app_id: &str) -> bool {
+        let Some(wanted) = self.app_id.as_deref() else {
+            return false;
+        };
+        !app_id.trim().is_empty() && wanted.eq_ignore_ascii_case(app_id.trim())
+    }
+}
+
 /// Tracks every shell bound to the protocol, plus the state they were last
 /// told about.
 #[derive(Debug)]
 pub struct ShellControlState {
     #[allow(dead_code)]
     global: GlobalId,
+    /// Every shell bound to the interface. Shells only: the portal binds this
+    /// interface too and is kept in [`Self::portals`] instead, because almost
+    /// nothing here is addressed to it. Every broadcast below walks this list,
+    /// and a portal in it would be sent the title of each window, the list of
+    /// them, and the pid behind each one — none of which it has any use for,
+    /// and all of which is a running account of what the user is doing.
     instances: Vec<LxbShellV1>,
+    /// Every portal bound to the interface, kept apart from the shells for the
+    /// reason above and for one more: what a bound object may *ask* for is
+    /// decided by which of these two lists it is in. See [`Role`].
+    portals: Vec<LxbShellV1>,
     /// Shells bound so recently that they may not have their `wl_output`s
     /// yet. Per-display events name an output, so one sent before the client
     /// has bound any reaches nobody — and the caches below would then record
@@ -79,6 +235,9 @@ pub struct ShellControlState {
     output_app_id: Vec<(Output, String)>,
     /// Last window list broadcast per display, likewise.
     output_windows: Vec<(Output, Vec<OverviewEntry>)>,
+    /// The windows being kept out of sight, session-wide rather than per
+    /// display for the reason [`UnseenEntry`] carries no display.
+    unseen_windows: Vec<UnseenEntry>,
     /// Last floating window list broadcast per display, likewise — and diffed
     /// harder than most, because these rectangles move: a window being dragged
     /// is a new list every frame, and one standing still is the same list
@@ -102,8 +261,29 @@ pub struct ShellControlState {
     /// arranges. Diffed like the rest, and one display moving moves at least
     /// one other — they trade — so a change here is normally two events.
     output_place: Vec<(Output, usize)>,
-    /// Display the shell says the user is on, from `set_launch_output`.
+    /// Display new applications open on by default, from `set_launch_output`.
+    ///
+    /// The fallback rather than the whole answer since version 41: a window
+    /// that matches one of [`Self::launches`] goes where that record says, and
+    /// this is what places everything else.
     launch_output: Option<Output>,
+    /// Display the user is driving, from `set_driven_output`.
+    ///
+    /// Read for the questions that are about where the person is — which
+    /// display gives the keyboard back, which display's window is the X
+    /// screen's active one, which display a screenshot binding photographs —
+    /// and never for placing a window.
+    ///
+    /// `None` on a shell older than version 41, which said one thing for both;
+    /// see [`LxbState::shell_driven_output`], which falls back to the launch
+    /// output so that such a shell keeps the behaviour it always had.
+    driven_output: Option<Output>,
+    /// One record per launch the shell has in flight, from `place_launch`.
+    ///
+    /// A list rather than one value because a session can be loading two things
+    /// on two displays at once, and a single value is a window opening on
+    /// whichever launch happened to be named last. See [`LaunchRecord`].
+    launches: Vec<LaunchRecord>,
     /// Display a press on an application was last reported on, so that clicking
     /// about inside a game does not wake the shell once per click.
     ///
@@ -360,6 +540,66 @@ const PICK_SINCE: u32 = 35;
 /// all a session with no shell has ever had.
 const SWITCH_SINCE: u32 = 36;
 
+/// First version that carries the keyboard layout: the xkb layout and variant
+/// the seat's keyboards are set to, and the event that says what they are.
+/// Below it a session's keyboard is whatever the compositor's own config file
+/// says, which is where this lived before there was a page for it.
+///
+/// Version 37 was the pointing-device settings — how fast the pointer travels,
+/// how large the cursor is drawn, and how far and which way a wheel carries the
+/// content. It has no constant of its own because nothing gates on it: a shell
+/// that can send `set_pointer` at all is one that bound a version carrying it,
+/// and there is no older behaviour to fall back to. The mouse's own settings
+/// lived in this compositor's config file before there was a page for them, and
+/// still do where no shell says otherwise.
+const LAYOUT_SINCE: u32 = 38;
+
+/// First version that says which process drew each listed window.
+///
+/// Gated, and it is one of the few events where an absent one is not the same
+/// as an absent answer: below this version a shell has nothing but the moment a
+/// window appeared to match it by, which is the guess this replaces rather than
+/// a worse version of the same fact.
+const WINDOW_PID_SINCE: u32 = 39;
+
+/// Version 40 says what is being kept out of sight, and takes one window back
+/// out of it: `unseen_window`, `unseen_windows_done` and
+/// `let_this_window_be_seen`. A program the shell runs without showing still
+/// stops and asks things, and a question nobody can see is a session that has
+/// silently stopped.
+const UNSEEN_WINDOWS_SINCE: u32 = 40;
+
+/// First version that tells the driven display from the launch display, and
+/// files a record per launch: `set_driven_output`, `place_launch` and
+/// `forget_launch`.
+///
+/// Gated in both directions, and the fallback is exactly what this compositor
+/// did before it. A shell below this version names one output for both
+/// questions, so [`LxbState::shell_driven_output`] reads `launch_output` when
+/// nothing has named a driven one, and a session with no launch records placed
+/// falls back to `launch_output` for every window it maps — which is the whole
+/// of the old policy, unchanged.
+const LAUNCH_RECORDS_SINCE: u32 = 41;
+
+/// How long a launch record is kept without anything matching it.
+///
+/// The shell drops its own with `forget_launch` on every path out of a press,
+/// and this is what stops a record outliving a shell that somehow did not —
+/// a shell that crashed mid-launch, or one whose splash ended by a route
+/// nobody remembered to wire up. Comfortably past every patience the shell
+/// spends on a window, so it is never what ends a record that matters: the
+/// longest of those is the minute a game handed to Valve's client is given,
+/// plus the wake before it.
+const UNTIL_A_LAUNCH_IS_STALE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How many launch records are kept at once.
+///
+/// One per display would do; this is loose enough that nothing legitimate ever
+/// reaches it and tight enough that a shell filing records and never dropping
+/// them cannot grow this without bound. The oldest goes when a new one arrives
+/// past the cap.
+const MOST_LAUNCH_RECORDS: usize = 32;
+
 /// What is answered when no kind of file was in force — because the
 /// application offered none, or because the user was looking at everything on
 /// the disk rather than at one of the kinds. `lxb_shell_v1.answer_pick`'s own
@@ -387,7 +627,7 @@ const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = SWITCH_SINCE;
+const CURRENT_VERSION: u32 = LAUNCH_RECORDS_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -410,6 +650,199 @@ const _: () = assert!(PICTURE_BEHIND_SINCE == MENU_SURFACE_SINCE + 1);
 const _: () = assert!(WHICH_WINDOWS_FLOAT_SINCE == PICTURE_BEHIND_SINCE + 1);
 const _: () = assert!(PICK_SINCE == WHICH_WINDOWS_FLOAT_SINCE + 1);
 const _: () = assert!(SWITCH_SINCE == PICK_SINCE + 1);
+const _: () = assert!(WINDOW_PID_SINCE == LAYOUT_SINCE + 1);
+const _: () = assert!(UNSEEN_WINDOWS_SINCE == WINDOW_PID_SINCE + 1);
+const _: () = assert!(LAUNCH_RECORDS_SINCE == UNSEEN_WINDOWS_SINCE + 1);
+
+/// What a client allowed onto this protocol is allowed to do with it.
+///
+/// Two programs of a LineXinBar session bind `lxb_shell_v1`, and they want very
+/// different things from it. The shell drives the session and uses nearly every
+/// request there is. The portal carries one question from an application
+/// outside the session to the shell — may this be shared, which file — and
+/// needs three of them. Handing both the whole interface would mean any flaw in
+/// the portal, which is the process that talks to untrusted applications for a
+/// living, costing the session its keyboard, its windows and its screen
+/// contents. So the two are told apart at the bind and each is held to its own
+/// half. See [`portal_may_ask`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The session shell: the whole interface.
+    Shell,
+    /// The desktop portal: `offer_kind`, `ask_to_pick_files` and
+    /// `ask_to_share`, and nothing else.
+    Portal,
+}
+
+/// The session's own processes, by the one thing about a process that another
+/// process cannot counterfeit.
+///
+/// A pid, and specifically the pid of a child this compositor started itself
+/// and has not yet reaped. The kernel stamps it on the socket at connect
+/// (`SO_PEERCRED`), nothing on the far end can influence it, and it cannot be
+/// taken by anything else while the child is alive — a process that has exited
+/// but not been waited for still holds its number, so the number is only ever
+/// released at the moment this compositor reaps it, which is the same moment it
+/// forgets it here.
+///
+/// It used to be a name as well: any process whose executable was called
+/// `lxb-desktop` or `lxb-portal` was let through. A name is not a credential.
+/// This session deliberately runs programs it cannot vet — Valve's client and
+/// every game it starts, every Flatpak out of the software hub, a browser — all
+/// as the same user, and any one of them could copy itself to a file of that
+/// name and connect. What it would then hold is the interface that hides any
+/// window, closes anybody's, injects keys and pointer clicks, captures the
+/// screen and ends the session.
+#[derive(Default)]
+struct Privileged {
+    /// The session shell, from [`this_is_the_session_shell`].
+    shell: Option<i32>,
+    /// The desktop portal, from [`this_is_the_session_portal`].
+    portal: Option<i32>,
+    /// Program names an operator has explicitly told this session to trust,
+    /// from `--insecure-trust-program`.
+    ///
+    /// Empty in every session that did not ask for it, which is every session
+    /// that is not being worked on: this is the old spoofable rule, kept behind
+    /// a flag nobody types by accident, because a shell or a portal run by hand
+    /// beside the compositor has no pid the compositor could have learned —
+    /// `lxb-portal --debug-pick` is how the file chooser is looked at. Trusting
+    /// a name is trusting every process of this user that can write a file, so
+    /// it is off unless somebody says otherwise. See [`trust_these_programs`].
+    by_name: Vec<String>,
+}
+
+/// Who may drive this compositor, as the whole process knows it.
+///
+/// A static rather than a field because of where the question is asked from:
+/// `can_view` decides whether a client may so much as see this global, and it
+/// is handed the client and nothing else — no compositor state, no display.
+static PRIVILEGED: std::sync::Mutex<Privileged> = std::sync::Mutex::new(Privileged {
+    shell: None,
+    portal: None,
+    by_name: Vec::new(),
+});
+
+fn privileged() -> std::sync::MutexGuard<'static, Privileged> {
+    match PRIVILEGED.lock() {
+        Ok(privileged) => privileged,
+        Err(held) => held.into_inner(),
+    }
+}
+
+/// The compositor has started the session shell, and this is its pid.
+pub fn this_is_the_session_shell(pid: i32) {
+    tracing::info!(pid, "this process is the session shell and may drive it");
+    privileged().shell = Some(pid);
+}
+
+/// The session shell has been reaped.
+///
+/// Called from the same step that waits for it, and that ordering is the whole
+/// point: until the child is reaped its number is still its own, and after it is
+/// reaped the next process to start could be given it. Forgetting it here in
+/// between leaves no moment where something else wearing that number would be
+/// taken for the shell.
+pub fn the_session_shell_has_gone() {
+    privileged().shell = None;
+}
+
+/// The compositor has started the session's desktop portal, and this is its pid.
+pub fn this_is_the_session_portal(pid: i32) {
+    tracing::info!(pid, "this process is the session portal");
+    privileged().portal = Some(pid);
+}
+
+/// The portal has been reaped. On the terms [`the_session_shell_has_gone`] sets
+/// out, and it matters more here: the session outlives its portal, so the
+/// number really is handed out again.
+pub fn the_session_portal_has_gone() {
+    privileged().portal = None;
+}
+
+/// Trust these program names as the session shell as well, because an operator
+/// asked for it on the command line.
+///
+/// Every name here is one any process of this user can wear, so this is only
+/// ever what somebody developing the session typed. Said out loud in the log,
+/// once, so a machine running with it cannot do so quietly.
+pub fn trust_these_programs(names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        ?names,
+        "trusting these program names on lxb_shell_v1: any process of this user \
+         can take a name, so this session's control protocol is open to all of them"
+    );
+    privileged().by_name = names.to_vec();
+}
+
+/// Whether this client may bind `lxb_shell_v1` at all, and as what.
+///
+/// Answered from the credentials the kernel put on the socket when the client
+/// connected — see [`crate::state::ClientState::for_peer`] — and never from
+/// anything the client says about itself.
+///
+/// Refusing is safe in one direction only, so it is worth saying which. A
+/// client wrongly refused loses this protocol, and for the shell that is the
+/// whole session; a client wrongly allowed can hide windows and press keys. The
+/// ways in are therefore all *positive* evidence, and a session that started no
+/// shell of its own recognises nothing rather than everything.
+pub fn role_of(client: &Client) -> Option<Role> {
+    let who = client.get_data::<crate::state::ClientState>()?;
+    role_for(who.pid, who.program.as_deref(), &privileged())
+}
+
+/// Whether this client may bind `lxb_shell_v1`, in either part.
+pub fn may_drive_the_shell(client: &Client) -> bool {
+    role_of(client).is_some()
+}
+
+/// The decision itself, on the facts it is made of.
+fn role_for(pid: Option<i32>, program: Option<&str>, privileged: &Privileged) -> Option<Role> {
+    if let Some(pid) = pid {
+        if privileged.shell == Some(pid) {
+            return Some(Role::Shell);
+        }
+        if privileged.portal == Some(pid) {
+            return Some(Role::Portal);
+        }
+    }
+    // Only ever reached in a session started with `--insecure-trust-program`.
+    // A name that got this far is trusted as a shell, because what the flag is
+    // for is standing in for one.
+    let program = program?;
+    privileged
+        .by_name
+        .iter()
+        .any(|trusted| trusted == program)
+        .then_some(Role::Shell)
+}
+
+/// Whether the portal may ask this.
+///
+/// Three requests, and each of them is the same act: putting a question from an
+/// application outside the session in front of the user, and waiting to be told
+/// what they said. `offer_kind` describes the kinds of file a chooser should
+/// offer, `ask_to_pick_files` is the chooser itself, `ask_to_share` is the
+/// screen-sharing consent. Nothing else on this interface is any of the
+/// portal's business: the answers come back on `pick_chosen`, `pick_answered`
+/// and `share_answered`, which are events, and the requests that *give* those
+/// answers belong to the shell.
+///
+/// Written as a list of what is allowed rather than what is not, so a request
+/// added to this protocol later is out of the portal's reach until somebody
+/// decides otherwise.
+fn portal_may_ask(request: &lxb_shell_v1::Request) -> bool {
+    matches!(
+        request,
+        lxb_shell_v1::Request::OfferKind { .. }
+            | lxb_shell_v1::Request::AskToPickFiles { .. }
+            | lxb_shell_v1::Request::AskToShare { .. }
+            | lxb_shell_v1::Request::Destroy
+    )
+}
 
 impl ShellControlState {
     pub fn new<D>(display: &DisplayHandle) -> Self
@@ -419,11 +852,13 @@ impl ShellControlState {
         Self {
             global: display.create_global::<D, LxbShellV1, _>(CURRENT_VERSION, ()),
             instances: Vec::new(),
+            portals: Vec::new(),
             awaiting_outputs: Vec::new(),
             foreground: String::new(),
             output_foreground: Vec::new(),
             output_app_id: Vec::new(),
             output_windows: Vec::new(),
+            unseen_windows: Vec::new(),
             output_pip: Vec::new(),
             output_hdr: Vec::new(),
             output_modes: Vec::new(),
@@ -433,6 +868,8 @@ impl ShellControlState {
             output_drawing: Vec::new(),
             pointer_output: None,
             launch_output: None,
+            driven_output: None,
+            launches: Vec::new(),
             pressed_output: None,
             typing_is_news: true,
             asked: Vec::new(),
@@ -446,16 +883,44 @@ impl ShellControlState {
         !self.instances.is_empty()
     }
 
+    /// Whether this bound object is the portal's rather than the shell's.
+    ///
+    /// Which list it went into at the bind is the whole of the answer, and the
+    /// bind put it there from the pid the kernel stamped on its connection.
+    fn is_portal(&self, instance: &LxbShellV1) -> bool {
+        self.portals.contains(instance)
+    }
+
     pub fn launch_output(&self) -> Option<&Output> {
         self.launch_output.as_ref()
+    }
+
+    pub fn driven_output(&self) -> Option<&Output> {
+        self.driven_output.as_ref()
+    }
+
+    /// File one launch, replacing any record already under that number.
+    ///
+    /// Pruned here rather than on a timer: the list is only ever read while a
+    /// window is mapping and only ever grows when a press is made, so the
+    /// moment a press is made is the cheapest place to drop what the shell
+    /// never came back for. See [`UNTIL_A_LAUNCH_IS_STALE`].
+    fn place_launch(&mut self, record: LaunchRecord) {
+        file_launch(&mut self.launches, record);
+    }
+
+    fn forget_launch(&mut self, launch: u32) {
+        self.launches.retain(|kept| kept.launch != launch);
     }
 
     /// Whether `client` is the session shell — the one that bound
     /// `lxb_shell_v1`.
     ///
     /// Asked when two clients want the same thing and only the shell may have
-    /// it. Binding this protocol is what makes a client the shell, so it is
-    /// also the only honest way to tell it apart from an application.
+    /// it. Holding this protocol as a shell is what makes a client the shell,
+    /// so it is also the only honest way to tell it apart from an application.
+    /// The portal holds the same interface and is not the shell: it is in
+    /// [`Self::portals`], which this does not look at.
     pub fn is_shell_client(&self, client: &Client) -> bool {
         self.instances.iter().any(|instance| {
             instance
@@ -679,9 +1144,11 @@ impl ShellControlState {
     /// Put one client's question to everybody else bound to this interface,
     /// which in a running session is the shell.
     ///
-    /// Never back to the asker: the portal binds this interface too, and a
-    /// question that came back to the client that asked it would be a portal
-    /// answering itself.
+    /// The shells and not the asker. A portal is never in this list at all, so
+    /// a question cannot come back to the client that asked it — which would be
+    /// a portal answering itself — and one portal cannot be handed another
+    /// portal's question to answer. The asker is skipped as well, for the one
+    /// case left: a shell that asks.
     fn send_share_request(&mut self, asker: &LxbShellV1, id: u32, app_id: &str) -> bool {
         let mut asked = false;
         for instance in &self.instances {
@@ -954,6 +1421,22 @@ impl ShellControlState {
         self.output_windows = current;
     }
 
+    /// Publish what is being kept off the screen, resending only when the list
+    /// itself changes.
+    ///
+    /// One list rather than one per display, and one diff over the whole of it:
+    /// nearly every session hides nothing at all, and for those this compares
+    /// an empty list with an empty list once a pass and sends nothing.
+    fn broadcast_unseen_windows(&mut self, current: Vec<UnseenEntry>) {
+        if self.unseen_windows == current {
+            return;
+        }
+        self.unseen_windows = current;
+        for instance in &self.instances {
+            send_unseen_windows(instance, &self.unseen_windows);
+        }
+    }
+
     /// Publish the floating windows on each display, so a shell with no pointer
     /// has something to point its own controls at.
     fn broadcast_output_pip(&mut self, current: Vec<(Output, Vec<FloatingEntry>)>) {
@@ -1146,6 +1629,10 @@ impl ShellControlState {
         for (output, windows) in &self.output_pip {
             sent |= send_output_pip(shell, output, windows);
         }
+        // Not per display, so it does not need a wl_output and cannot be the
+        // thing that makes this a wasted call: `sent` is deliberately not
+        // touched by it.
+        send_unseen_windows(shell, &self.unseen_windows);
         for (output, status) in &self.output_hdr {
             sent |= send_output_hdr(shell, output, status);
             sent |= send_output_night_light(shell, output, status);
@@ -1508,6 +1995,22 @@ fn send_output_pip(shell: &LxbShellV1, output: &Output, windows: &[FloatingEntry
 
 /// Send one display's whole window list, ending with the done event that
 /// makes the batch replace whatever the shell knew before.
+/// Tell one shell what is being kept off the screen.
+///
+/// Always ended with `unseen_windows_done`, empty batch included: a done event
+/// with nothing before it is how "nothing is hidden any more" is said, and
+/// without it a shell that had been told about a window would go on believing
+/// in it.
+fn send_unseen_windows(shell: &LxbShellV1, windows: &[UnseenEntry]) {
+    if shell.version() < UNSEEN_WINDOWS_SINCE {
+        return;
+    }
+    for entry in windows {
+        shell.unseen_window(entry.id, entry.app_id.clone(), entry.title.clone());
+    }
+    shell.unseen_windows_done();
+}
+
 fn send_output_windows(shell: &LxbShellV1, output: &Output, windows: &[OverviewEntry]) -> bool {
     if shell.version() < OVERVIEW_SINCE {
         return false;
@@ -1531,6 +2034,16 @@ fn send_output_windows(shell: &LxbShellV1, output: &Output, windows: &[OverviewE
             // the shell to special-case, and its absence says the same.
             if shell.version() >= WINDOW_APP_ID_SINCE && !entry.app_id.is_empty() {
                 shell.output_window_app_id(&wl_output, entry.id, entry.app_id.clone());
+            }
+            // And behind that, who drew it. Sent on the same terms as the
+            // name and for the same reason it is separate: a window whose
+            // process the compositor cannot find out is left without one
+            // rather than given a zero, so that "nobody said" and "process
+            // number nothing" cannot be read as the same answer.
+            if shell.version() >= WINDOW_PID_SINCE {
+                if let Some(pid) = entry.pid {
+                    shell.output_window_pid(&wl_output, entry.id, pid);
+                }
             }
         }
         shell.output_windows_done(&wl_output);
@@ -1761,7 +2274,7 @@ impl LxbState {
         // that survives a session where nothing has taken focus at all.
         let output = self
             .keyboard_focus_output()
-            .or_else(|| self.shell_launch_output())
+            .or_else(|| self.shell_driven_output())
             .or_else(|| {
                 self.lxb
                     .outputs
@@ -1910,6 +2423,82 @@ impl LxbState {
         self.queue_redraw();
     }
 
+    /// Say what is being kept off the screen, and forget the exceptions whose
+    /// windows have gone.
+    ///
+    /// Free on a session that hides nothing, which is nearly all of them: two
+    /// empty sets are all it looks at. A session that *is* hiding something
+    /// walks its windows once a pass, which is the same walk the overview
+    /// already does beside it.
+    fn refresh_unseen_windows(&mut self) {
+        if self.lxb.unseen.is_empty() && self.lxb.seen_anyway.is_empty() {
+            return;
+        }
+        // Every window there is, not the ones on a display: a hidden window is
+        // deliberately not reported as being on one, so asking per display
+        // would ask about a list it has been taken out of.
+        let windows: Vec<(u32, bool)> = self
+            .lxb
+            .space
+            .elements()
+            .map(|window| {
+                (
+                    crate::overview::window_id(window),
+                    self.lxb.out_of_sight(window),
+                )
+            })
+            .collect();
+        // An exception outlives nothing. A window that has gone takes its own
+        // with it, so a shell that answered a question and never said anything
+        // more is not what keeps the next window through.
+        self.lxb
+            .seen_anyway
+            .retain(|id| windows.iter().any(|(seen, _)| seen == id));
+
+        let unseen = self
+            .lxb
+            .space
+            .elements()
+            .filter(|window| self.lxb.out_of_sight(window))
+            .map(|window| UnseenEntry {
+                id: crate::overview::window_id(window),
+                app_id: window_app_id(window),
+                title: window_title(window),
+            })
+            .collect();
+        self.lxb.shell_control.broadcast_unseen_windows(unseen);
+    }
+
+    /// Let one window of a hidden application through, or put it back.
+    ///
+    /// The whole of the decision is the shell's: this records the exception and
+    /// then makes the screen agree with it, exactly as
+    /// [`LxbState::keep_out_of_sight`] does for the application. A window that
+    /// has just been let through may need the keyboard — it is very likely a
+    /// question somebody has to type an answer into — and one put back cannot
+    /// keep it.
+    ///
+    /// Naming a window that does not exist is not an error. The shell is
+    /// answering a list it was sent, and a window can go between the two.
+    pub fn let_this_window_be_seen(&mut self, id: u32, seen: bool) {
+        let changed = if seen {
+            self.lxb.seen_anyway.insert(id)
+        } else {
+            self.lxb.seen_anyway.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        tracing::info!(
+            window = id,
+            seen,
+            "the shell made an exception for a window"
+        );
+        self.focus_topmost_window();
+        self.refresh_foreground();
+        self.queue_redraw();
+    }
+
     /// Draw every application this much larger than life from now on.
     ///
     /// One relayout does all three parts of it: every window is configured at
@@ -1943,6 +2532,150 @@ impl LxbState {
         // Nothing here reaches a screen by itself: every window has been given
         // a new size and nothing has been scanned out since.
         self.queue_redraw();
+    }
+
+    /// What the session's pointing devices do from now on: how fast the pointer
+    /// travels, how large it is drawn, and how far and which way a wheel
+    /// carries the content under it.
+    ///
+    /// **Written into the config this compositor is running on**, rather than
+    /// kept beside it. Three of the four are read again for every device
+    /// libinput hands over — see `configure_libinput_device` — so a mouse
+    /// plugged in after the shell said this gets the shell's answer without
+    /// anything else being told, and a session with no shell goes on getting
+    /// the file's. Two copies of "how fast is the pointer" would be two answers
+    /// to it, and the one that lost would be whichever was read second.
+    ///
+    /// Then applied to the devices already open, because this arrives while
+    /// somebody is watching the pointer they are changing.
+    ///
+    /// Nothing is written to disk here, for the reason
+    /// [`LxbState::set_application_scale`] writes nothing: the shell says what
+    /// these are as soon as it connects, and it is the shell that has the page
+    /// they were set on.
+    /// Set the xkb layout every keyboard on the seat types through, and tell
+    /// the shell what it ended up being.
+    ///
+    /// **Refused rather than fallen back from.** xkbcommon compiles the names
+    /// or it does not, and a machine whose keyboard silently became American is
+    /// a machine somebody may not be able to type their password into. A layout
+    /// that will not compile leaves the seat exactly as it was, says so in the
+    /// log, and the event below tells the shell what is really in force — which
+    /// is what stops a settings page showing a mark for a row that did nothing.
+    ///
+    /// The seat's, not a device's. A keymap belongs to the seat's keyboard and
+    /// every physical board on it types through the same one; smithay sends the
+    /// new keymap and modifier state to every client that holds the keyboard,
+    /// so an application already running follows without being restarted.
+    pub fn set_keyboard_layout(&mut self, layout: &str, variant: &str) {
+        let input = &self.lxb.config.input;
+        if input.keyboard_layout == layout && input.keyboard_variant == variant {
+            return;
+        }
+        let Some(keyboard) = self.lxb.seat.get_keyboard() else {
+            tracing::warn!("the shell asked for a keyboard layout and this seat has no keyboard");
+            return;
+        };
+        // Copied out before the call: `set_xkb_config` takes the whole state,
+        // and the names it is being handed are read off that state.
+        let (rules, model, options) = (
+            input.keyboard_rules.clone(),
+            input.keyboard_model.clone(),
+            input.keyboard_options.clone(),
+        );
+        let xkb = smithay::input::keyboard::XkbConfig {
+            rules: &rules,
+            model: &model,
+            layout,
+            variant,
+            options,
+        };
+        if let Err(err) = keyboard.set_xkb_config(self, xkb) {
+            tracing::warn!(
+                layout,
+                variant,
+                ?err,
+                "that keyboard layout will not compile; the keyboard is unchanged"
+            );
+            // Still told, and deliberately: the shell has just moved a mark to
+            // a row this did not carry out, and the event is what puts it back.
+            self.tell_the_shell_the_keyboard_layout();
+            return;
+        }
+        let input = &mut self.lxb.config.input;
+        input.keyboard_layout = layout.to_string();
+        input.keyboard_variant = variant.to_string();
+        tracing::info!(layout, variant, "the shell changed the keyboard layout");
+        export_keyboard_environment(layout, variant);
+        self.tell_the_shell_the_keyboard_layout();
+    }
+
+    /// Say what the seat's keyboards are set to.
+    ///
+    /// Sent when a shell binds and again after every change, including one this
+    /// compositor refused: a shell cannot read this compositor's config file,
+    /// so without it a settings page has nothing to mark on a machine nobody
+    /// has ever set a layout on — which is every machine the first time.
+    pub fn tell_the_shell_the_keyboard_layout(&mut self) {
+        let input = &self.lxb.config.input;
+        let (layout, variant) = (
+            input.keyboard_layout.clone(),
+            input.keyboard_variant.clone(),
+        );
+        for instance in &self.lxb.shell_control.instances {
+            if instance.version() >= LAYOUT_SINCE {
+                instance.keyboard_layout(layout.clone(), variant.clone());
+            }
+        }
+    }
+
+    pub fn set_pointer(&mut self, speed: i32, size: u32, scroll: u32, natural: bool) {
+        // libinput's own range, in the units the protocol carries it in. Out of
+        // range is clamped rather than refused, as a colour temperature is: a
+        // pointer at some unrelated speed is a worse way to report a bad number
+        // than the nearest one that means something.
+        let accel = f64::from(speed.clamp(-100, 100)) / 100.0;
+        let scroll = f64::from(scroll.clamp(1, 1000)) / 100.0;
+        let input = &mut self.lxb.config.input;
+        let changed = input.pointer_accel != accel
+            || input.natural_scroll != natural
+            || input.scroll_speed != scroll;
+        input.pointer_accel = accel;
+        input.natural_scroll = natural;
+        input.scroll_speed = scroll;
+        if changed {
+            tracing::info!(
+                accel,
+                natural,
+                scroll,
+                "the shell changed what the pointing devices do"
+            );
+            let config = self.lxb.config.input.clone();
+            self.backend.apply_input_settings(&config);
+        }
+
+        // The cursor is the backend's own picture rather than a device setting,
+        // so it is set whatever the three above did — and it is the one of the
+        // four that needs a frame: nothing has been scanned out since the
+        // pointer changed size, and a cursor that waited for the next mouse
+        // movement to grow would read as a press that half worked.
+        //
+        // Zero means "say nothing", which is what an unset `cursor_size`
+        // already means to this compositor. [`CursorState::set_size`] ignores
+        // it rather than drawing a pointer nought pixels across.
+        if size > 0 && self.lxb.config.general.cursor_size != Some(size) {
+            self.lxb.config.general.cursor_size = Some(size);
+            self.backend.set_cursor_size(size);
+            // And every client started from now on, so an application drawing
+            // its own pointer out of its own theme draws it at the size the
+            // rest of the session is using. It cannot reach one already
+            // running: a toolkit reads this when it starts.
+            crate::cursor::export_cursor_environment(
+                self.lxb.config.general.cursor_theme.as_deref(),
+                Some(size),
+            );
+            self.queue_redraw();
+        }
     }
 
     /// Float a browser's picture-in-picture window from now on, at this size and
@@ -2088,6 +2821,12 @@ impl LxbState {
                             id: crate::overview::window_id(&window),
                             title: window_title(&window),
                             app_id: window_app_id(&window),
+                            // A negative pid is not a process; the two ways
+                            // of not knowing are the same answer here.
+                            pid: self
+                                .window_pid(&window)
+                                .and_then(|pid| u32::try_from(pid).ok())
+                                .filter(|pid| *pid != 0),
                             width: size.w.max(0) as u32,
                             height: size.h.max(0) as u32,
                         }
@@ -2099,6 +2838,11 @@ impl LxbState {
         self.lxb
             .shell_control
             .broadcast_output_windows(per_output_windows);
+
+        // And the windows that are in none of those lists because the shell
+        // asked for them to be in none of them. See
+        // `lxb_shell_v1.unseen_window`.
+        self.refresh_unseen_windows();
 
         // And the windows that are deliberately absent from that list: the ones
         // floating over it. A shell driven by a controller has no pointer to
@@ -2578,6 +3322,122 @@ impl LxbState {
             .find(|output| *output == wanted)
             .cloned()
     }
+
+    /// The display the user is driving, if the shell has said and it is still
+    /// connected.
+    ///
+    /// Validated the same way and for the same reason as the launch output: a
+    /// display can be unplugged between the shell naming it and this being
+    /// asked.
+    ///
+    /// Falls back to the launch output, which is what a shell older than
+    /// version 41 says instead — one value answering both questions. That
+    /// fallback is exactly the behaviour this compositor had before the two
+    /// came apart, so an old shell is neither better nor worse off.
+    pub fn shell_driven_output(&self) -> Option<Output> {
+        let wanted = the_display_being_driven(
+            self.lxb.shell_control.driven_output(),
+            self.lxb.shell_control.launch_output(),
+        )?;
+        self.lxb
+            .space
+            .outputs()
+            .find(|output| *output == wanted)
+            .cloned()
+    }
+
+    /// The display one newly mapped window's own launch was started from, if
+    /// the shell filed a record this window answers to.
+    ///
+    /// Asked before the session-wide launch output, and it is the whole of what
+    /// keeps two displays loading two things from opening them on one screen.
+    /// A window that matches nothing falls through to that older answer, so a
+    /// session where the shell files nothing places windows exactly as it
+    /// always did.
+    ///
+    /// The newest matching record wins. Two records can name one program — the
+    /// same game pressed twice on two screens, an application started again
+    /// before the first arrived — and the later press is the one whose window
+    /// has had the least time to turn up. It is the same rule the shell's own
+    /// single answer used, applied where it now belongs.
+    pub(crate) fn launch_output_for(&self, window: &Window) -> Option<Output> {
+        if self.lxb.shell_control.launches.is_empty() {
+            return None;
+        }
+        let pid = self
+            .window_pid(window)
+            .and_then(|pid| u32::try_from(pid).ok());
+        let app_id = window_app_id(window);
+        let matched = launch_for(
+            &self.lxb.shell_control.launches,
+            std::time::Instant::now(),
+            pid,
+            &app_id,
+            descends_from,
+        )?;
+        // Validated at the moment it is read, like every other output the
+        // shell names: the display a launch was filed against can be unplugged
+        // while the application it started is still coming up.
+        let output = self
+            .lxb
+            .space
+            .outputs()
+            .find(|output| **output == matched.output)
+            .cloned();
+        if output.is_none() {
+            tracing::debug!(
+                launch = matched.launch,
+                "this launch's display went away before its window arrived"
+            );
+        }
+        output
+    }
+}
+
+/// Whether `pid` is `ancestor`, or was started by it however far down.
+///
+/// A window's process is very often not the process the shell forked. A
+/// desktop entry runs a shell script, a game runs under a container and a
+/// runtime and a compatibility tool, a launcher execs the thing it launched —
+/// and every one of those is the same launch as far as anybody watching the
+/// screen is concerned. So the chain is walked rather than the pid compared.
+///
+/// Read straight off `/proc`, which is the only place this answer exists, and
+/// bounded: a corrupt or racing chain must not spin. Anything it cannot read —
+/// a process that exited between the window mapping and this being asked, a
+/// kernel without `/proc` — is not a match, which puts the window back on the
+/// session's own answer rather than on a guess.
+fn descends_from(pid: u32, ancestor: u32) -> bool {
+    /// Deeper than any launch this session makes; a chain longer than this is
+    /// one that is not going to end.
+    const AS_FAR_AS_A_LAUNCH_GOES: usize = 32;
+    let mut walking = pid;
+    for _ in 0..AS_FAR_AS_A_LAUNCH_GOES {
+        if walking == ancestor {
+            return true;
+        }
+        if walking <= 1 {
+            return false;
+        }
+        let Some(parent) = parent_of(walking) else {
+            return false;
+        };
+        walking = parent;
+    }
+    false
+}
+
+/// The parent of one process, out of `/proc/<pid>/stat`.
+///
+/// Parsed from the last `)` rather than by splitting on spaces: the second
+/// field is the executable's name in brackets and a program is free to have
+/// spaces and brackets in its name — which is not a curiosity, it is what a
+/// game's own launcher is called half the time.
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_the_name = stat.rsplit_once(')')?.1;
+    // What follows the name is " R <ppid> …": the state, then the parent.
+    after_the_name.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// A window's human-readable title, falling back to something the shell can
@@ -2640,15 +3500,53 @@ pub(crate) fn window_app_id(window: &Window) -> String {
 }
 
 impl GlobalDispatch<LxbShellV1, ()> for LxbState {
+    /// Whether this client may see the global at all.
+    ///
+    /// The one hook that does both halves of it: a client this refuses is not
+    /// told the global exists, and an attempt to bind it by number anyway is a
+    /// protocol error rather than a bound object. See [`may_drive_the_shell`].
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        let allowed = may_drive_the_shell(&client);
+        if !allowed {
+            let who = client.get_data::<crate::state::ClientState>();
+            tracing::debug!(
+                pid = ?who.and_then(|who| who.pid),
+                program = ?who.and_then(|who| who.program.as_deref()),
+                "not offering lxb_shell_v1 to this client"
+            );
+        }
+        allowed
+    }
+
     fn bind(
         state: &mut Self,
         _handle: &DisplayHandle,
-        _client: &Client,
+        client: &Client,
         resource: New<LxbShellV1>,
         _global_data: &(),
         data_init: &mut DataInit<'_, Self>,
     ) {
+        // Belt as well as braces. `can_view` is what actually refuses, and it
+        // refuses in the registry where the client can neither see nor bind
+        // this; reaching here without it having said yes would mean the
+        // guarantee had moved somewhere else, and the cost of noticing that
+        // late is every request below.
+        let Some(role) = role_of(client) else {
+            tracing::warn!("refusing lxb_shell_v1 to a client that may not drive the session");
+            return;
+        };
         let shell = data_init.init(resource, ());
+
+        // The portal gets the object and nothing else: no state, and none of
+        // the session-wide work below. It binds this to ask one question and
+        // hear one answer, and everything the shell is told on binding is a
+        // description of what the user has on screen.
+        if role == Role::Portal {
+            state.lxb.shell_control.portals.push(shell);
+            tracing::info!("the session portal bound lxb_shell_v1");
+            return;
+        }
+
         // A shell that binds late still needs to know what is on screen, and
         // the broadcasts only carry changes. This early it will usually have
         // no `wl_output` bound yet, so it is queued for another try.
@@ -2675,6 +3573,42 @@ impl GlobalDispatch<LxbShellV1, ()> for LxbState {
         state.refresh_modes();
         state.refresh_transforms();
         state.refresh_places();
+        // And what the keyboard is set to, which no other process in the
+        // session can find out: it is this compositor's own configuration file,
+        // and the shell's settings page would otherwise have nothing to mark
+        // the first time it was ever opened.
+        state.tell_the_shell_the_keyboard_layout();
+    }
+}
+
+/// Tell the session's children which keyboard they are being typed on.
+///
+/// `XKB_DEFAULT_LAYOUT` and `XKB_DEFAULT_VARIANT` are what libxkbcommon reads
+/// when nothing hands it a keymap, so this is how a program that draws its own
+/// picture of a keyboard finds out what to print on it — the login screen's
+/// board, and the one a toolkit application raises for a search field. Both
+/// fall back to this machine's X11 keyboard configuration without it, which is
+/// right until somebody changes the layout on the Settings page and only one of
+/// the two answers moves.
+///
+/// Exactly the bargain [`crate::cursor::export_cursor_environment`] is under,
+/// and with the same limitation said out loud: a process reads these when it
+/// starts, so this reaches the next client and cannot reach one already
+/// running. Nothing that matters depends on it — the seat's own keymap is set
+/// either way, and every Wayland client is sent that.
+pub fn export_keyboard_environment(layout: &str, variant: &str) {
+    // SAFETY: single-threaded startup and event loop; nothing else in this
+    // process reads the environment concurrently. The same argument the cursor
+    // export is made under.
+    unsafe {
+        std::env::set_var("XKB_DEFAULT_LAYOUT", layout);
+        match variant.is_empty() {
+            // Removed rather than set empty: an empty variant is what "the
+            // layout's own arrangement" means, and a stale one left behind
+            // would be a different keyboard.
+            true => std::env::remove_var("XKB_DEFAULT_VARIANT"),
+            false => std::env::set_var("XKB_DEFAULT_VARIANT", variant),
+        }
     }
 }
 
@@ -2688,6 +3622,24 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
         _handle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        // Which half of the interface this object reaches. `can_view` decided
+        // whether the client may be here at all, from the pid on its socket;
+        // this decides what it may ask for now that it is. A portal reaching
+        // past its three requests is a portal that has been taken over, or one
+        // that has grown a use for the shell's half and should be discussed
+        // rather than quietly allowed — either way it is a protocol error and
+        // not a silent no, so it cannot be mistaken for a request that worked.
+        if state.lxb.shell_control.is_portal(resource) && !portal_may_ask(&request) {
+            tracing::warn!(
+                ?request,
+                "the portal asked for something only the shell may ask"
+            );
+            resource.post_error(
+                lxb_shell_v1::Error::NotPermitted,
+                "this request belongs to the session shell",
+            );
+            return;
+        }
         match request {
             lxb_shell_v1::Request::CloseForeground => state.close_foreground_window(None),
             lxb_shell_v1::Request::CloseOutputForeground { output } => {
@@ -2710,6 +3662,56 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                 // has just left is news again. See
                 // [`ShellControlState::pressed_output`].
                 state.lxb.shell_control.pressed_output = None;
+            }
+            lxb_shell_v1::Request::SetDrivenOutput { output } => {
+                let output = Output::from_resource(&output);
+                tracing::debug!(
+                    display = output.as_ref().map(|o| o.name()).unwrap_or_default(),
+                    "shell said which display is being driven"
+                );
+                state.lxb.shell_control.driven_output = output;
+                // The same reason `set_launch_output` spends it: the shell has
+                // said where the user is, so a press reported on the display
+                // they have just left is news again.
+                state.lxb.shell_control.pressed_output = None;
+            }
+            lxb_shell_v1::Request::PlaceLaunch {
+                launch,
+                output,
+                pid,
+                app_id,
+            } => {
+                let Some(output) = Output::from_resource(&output) else {
+                    // The display went away between the press and this
+                    // reaching the compositor. Nothing to file: a record
+                    // naming an output that does not exist would never match
+                    // anything, and the window falls back to the session's
+                    // own answer either way.
+                    tracing::debug!(launch, "a launch was placed on a display that is gone");
+                    return;
+                };
+                let app_id = Some(app_id).filter(|name| !name.trim().is_empty());
+                tracing::debug!(
+                    launch,
+                    display = %output.name(),
+                    pid,
+                    app_id = app_id.as_deref().unwrap_or_default(),
+                    "shell filed a launch"
+                );
+                state.lxb.shell_control.place_launch(LaunchRecord {
+                    launch,
+                    output,
+                    // Zero is the protocol's "no process", and it is also the
+                    // one pid nothing can be descended from, so it is dropped
+                    // here rather than matched against later.
+                    pid: Some(pid).filter(|pid| *pid != 0),
+                    app_id,
+                    filed: std::time::Instant::now(),
+                });
+            }
+            lxb_shell_v1::Request::ForgetLaunch { launch } => {
+                tracing::debug!(launch, "shell took a launch back");
+                state.lxb.shell_control.forget_launch(launch);
             }
             lxb_shell_v1::Request::SetOutputOverview { output, enabled } => {
                 match Output::from_resource(&output) {
@@ -3098,11 +4100,23 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             lxb_shell_v1::Request::KeepOutOfSight { app_id, hidden } => {
                 state.keep_out_of_sight(&app_id, hidden == 1)
             }
+            lxb_shell_v1::Request::LetThisWindowBeSeen { id, seen } => {
+                state.let_this_window_be_seen(id, seen == 1)
+            }
             lxb_shell_v1::Request::KeepAwake { app_id, awake } => {
                 state.keep_application_awake(&app_id, awake == 1)
             }
             lxb_shell_v1::Request::SetApplicationScale { scale } => {
                 state.set_application_scale(crate::scale::AppScale::from_percent(scale))
+            }
+            lxb_shell_v1::Request::SetPointer {
+                speed,
+                size,
+                scroll,
+                natural,
+            } => state.set_pointer(speed, size, scroll, natural == 1),
+            lxb_shell_v1::Request::SetKeyboardLayout { layout, variant } => {
+                state.set_keyboard_layout(&layout, &variant)
             }
             lxb_shell_v1::Request::SetPictureInPicture {
                 enabled,
@@ -3197,12 +4211,22 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             .shell_control
             .instances
             .retain(|instance| instance != resource);
+        state
+            .lxb
+            .shell_control
+            .portals
+            .retain(|instance| instance != resource);
         // Anything this client was waiting on is nobody's business now.
         state.lxb.shell_control.forget_shares(resource);
         state.lxb.shell_control.forget_picks(resource);
         // And anything anybody else was waiting on has lost the client that
         // could have said yes to it. An unanswered question is a no.
-        if state.lxb.shell_control.instances.len() < 2 {
+        //
+        // Only a shell could have said yes, so it is the shells that are
+        // counted. Written as "fewer than two of everything bound" while the
+        // portal shared this list, which meant a portal disconnecting refused
+        // the questions a perfectly live shell was still looking at.
+        if !state.lxb.shell_control.has_shell() {
             state.lxb.shell_control.refuse_all_shares();
             state.lxb.shell_control.refuse_all_picks();
         }
@@ -3223,13 +4247,405 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                 tracing::info!("the shell has gone; nothing is exempt from being stopped any more");
                 state.refresh_application_sleep();
             }
+
+            // And nothing left to say an application may be seen again. These
+            // outlived the client that asked for them: a shell that crashed
+            // while it had Valve's client hidden left every Steam window on
+            // this machine invisible for the rest of the session, including the
+            // ones somebody opened for themselves afterwards, with nothing on
+            // screen able to explain it. A rule with nobody behind it is not a
+            // rule the compositor should still be keeping.
+            if !state.lxb.unseen.is_empty() {
+                let forgotten: Vec<String> = state.lxb.unseen.drain().collect();
+                tracing::info!(
+                    ?forgotten,
+                    "the shell has gone; these applications may be seen again"
+                );
+                state.focus_topmost_window();
+                state.refresh_foreground();
+                state.queue_redraw();
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod privilege_tests {
+    use super::*;
+    use smithay::reexports::wayland_server::WEnum;
+
+    fn session(shell: i32, portal: i32) -> Privileged {
+        Privileged {
+            shell: Some(shell),
+            portal: Some(portal),
+            by_name: Vec::new(),
+        }
+    }
+
+    /// The two processes this compositor started may drive it, each as itself,
+    /// and nothing else may.
+    #[test]
+    fn only_the_processes_this_compositor_started_may_drive_it() {
+        let running = session(4242, 9001);
+
+        assert_eq!(
+            role_for(Some(4242), Some("lxb-desktop"), &running),
+            Some(Role::Shell)
+        );
+        assert_eq!(
+            role_for(Some(9001), Some("lxb-portal"), &running),
+            Some(Role::Portal)
+        );
+
+        // Every one of these is a client this session started itself, which is
+        // exactly the reasoning that used to let them all bind.
+        assert_eq!(role_for(Some(9002), Some("steam"), &running), None);
+        assert_eq!(role_for(Some(9003), Some("firefox"), &running), None);
+        assert_eq!(role_for(Some(9004), Some("Xwayland"), &running), None);
+    }
+
+    /// The one this is all for: a program that calls itself by one of the
+    /// session's own names is still not one of them.
+    ///
+    /// Nothing stops a process of this user copying itself to a file called
+    /// `lxb-portal` and connecting — not a permission, not a policy, not this
+    /// compositor. It is an ordinary file copy, and the session runs Valve's
+    /// client, every game it starts, whatever the software hub installed and a
+    /// browser, all as that same user. What the name used to buy was the
+    /// interface that hides any window while leaving it running, closes
+    /// anybody's, types, clicks, captures the screen and logs the user out.
+    #[test]
+    fn a_program_wearing_one_of_our_names_is_not_one_of_ours() {
+        let running = session(4242, 9001);
+
+        assert_eq!(role_for(Some(31337), Some("lxb-desktop"), &running), None);
+        assert_eq!(role_for(Some(31338), Some("lxb-portal"), &running), None);
+        // Including after the real one has gone and let its number go with it.
+        let ended = Privileged::default();
+        assert_eq!(role_for(Some(4242), Some("lxb-desktop"), &ended), None);
+        assert_eq!(role_for(Some(9001), Some("lxb-portal"), &ended), None);
+    }
+
+    /// A connection whose peer cannot be read is nobody.
+    ///
+    /// It is the one place this could have been written the other way round —
+    /// "if we cannot tell, allow it" — and that is a rule any client can meet
+    /// by arranging not to be readable.
+    #[test]
+    fn a_peer_that_cannot_be_read_is_not_one_of_ours() {
+        let running = session(4242, 9001);
+        assert_eq!(role_for(None, None, &running), None);
+        assert_eq!(role_for(Some(9006), None, &running), None);
+        assert_eq!(role_for(None, Some("lxb-desktop"), &running), None);
+    }
+
+    /// A session that started nothing of its own recognises nothing, rather
+    /// than everything.
+    #[test]
+    fn a_session_with_no_shell_of_its_own_recognises_nothing() {
+        let nobody = Privileged::default();
+        assert_eq!(role_for(Some(1), Some("lxb-desktop"), &nobody), None);
+        assert_eq!(role_for(Some(2), Some("steam"), &nobody), None);
+    }
+
+    /// `--insecure-trust-program` is the old rule, and it is only ever what
+    /// somebody typed. Named programs drive the session as a shell; everything
+    /// else is refused exactly as before.
+    #[test]
+    fn a_name_is_trusted_only_when_an_operator_asked_for_it() {
+        let asked = Privileged {
+            shell: None,
+            portal: None,
+            by_name: vec!["lxb-desktop".to_string()],
+        };
+
+        assert_eq!(
+            role_for(Some(7777), Some("lxb-desktop"), &asked),
+            Some(Role::Shell)
+        );
+        assert_eq!(role_for(Some(7778), Some("lxb-portal"), &asked), None);
+        assert_eq!(role_for(Some(7779), Some("steam"), &asked), None);
+    }
+
+    /// The portal may put a question to the shell and may do nothing else with
+    /// the interface.
+    ///
+    /// The list is written the safe way round — what is allowed, rather than
+    /// what is not — so a request added to this protocol later starts out of
+    /// the portal's reach. These four are what it actually sends; the rest are
+    /// a sample of what a portal taken over would otherwise reach for.
+    #[test]
+    fn the_portal_may_only_ask_the_shell_a_question() {
+        assert!(portal_may_ask(&lxb_shell_v1::Request::Destroy));
+        assert!(portal_may_ask(&lxb_shell_v1::Request::OfferKind {
+            id: 1,
+            name: String::new(),
+            pattern: String::new(),
+            matching: WEnum::Value(lxb_shell_v1::Matching::Glob),
+        }));
+        assert!(portal_may_ask(&lxb_shell_v1::Request::AskToPickFiles {
+            id: 1,
+            app_id: String::new(),
+            purpose: WEnum::Value(lxb_shell_v1::Picking::OneFile),
+            title: String::new(),
+            accept: String::new(),
+            name: String::new(),
+            at: String::new(),
+        }));
+        assert!(portal_may_ask(&lxb_shell_v1::Request::AskToShare {
+            id: 1,
+            app_id: String::new(),
+        }));
+
+        // Hiding a window while it keeps running, which is the request that
+        // makes a good enough hiding place that the shell uses it as one.
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::KeepOutOfSight {
+            app_id: String::new(),
+            hidden: 1,
+        }));
+        // Typing, clicking, and logging the user out.
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::KeyboardKey {
+            key: 1,
+            state: WEnum::Value(lxb_shell_v1::KeyState::Pressed),
+        }));
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::MovePointer {
+            dx: 0.0,
+            dy: 0.0,
+        }));
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::Quit));
+        // And answering the questions it is the one that asks them.
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::AnswerShare {
+            id: 1,
+            output: None,
+        }));
+        assert!(!portal_may_ask(&lxb_shell_v1::Request::CloseForeground));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A display, for the launch records below.
+    fn a_display(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        )
+    }
+
+    /// A launch as the shell files it.
+    fn a_launch(
+        launch: u32,
+        output: &Output,
+        pid: Option<u32>,
+        app_id: Option<&str>,
+    ) -> LaunchRecord {
+        LaunchRecord {
+            launch,
+            output: output.clone(),
+            pid,
+            app_id: app_id.map(str::to_string),
+            filed: std::time::Instant::now(),
+        }
+    }
+
+    /// A process tree of the test's own: a pid is descended from an ancestor
+    /// when the ancestor's number divides it, which is enough to say "this
+    /// window's process is one the shell started" without a machine under it.
+    fn descends(pid: u32, ancestor: u32) -> bool {
+        pid == ancestor || (ancestor != 0 && pid % ancestor == 0)
+    }
+
+    /// Two screens loading two things, whose windows arrive in the other
+    /// order, open on the screens they were pressed on.
+    ///
+    /// This is the whole reason the records exist. There used to be one value
+    /// for the session naming one launch, so *every* window that mapped went
+    /// wherever that value pointed: the game started second held it while it
+    /// loaded, and the game started first — slower, or simply unluckier —
+    /// opened on the second screen beside it. Both games on one display, and
+    /// neither on the display anybody pressed it on.
+    #[test]
+    fn two_launches_place_their_own_windows_however_they_arrive() {
+        let (first, second) = (a_display("HDMI-A-1"), a_display("DP-1"));
+        let mut launches = Vec::new();
+        file_launch(&mut launches, a_launch(0, &first, Some(100), None));
+        file_launch(&mut launches, a_launch(1, &second, Some(200), None));
+
+        let now = std::time::Instant::now();
+        // The newer launch's window arrives first.
+        let placed = launch_for(&launches, now, Some(200), "", descends);
+        assert_eq!(placed.map(|record| record.launch), Some(1));
+        assert_eq!(placed.map(|record| &record.output), Some(&second));
+
+        // And then the older one's, which is the half a single value got
+        // wrong: it goes to the display it was started from, not to whichever
+        // launch happens to be named now.
+        let placed = launch_for(&launches, now, Some(100), "", descends);
+        assert_eq!(placed.map(|record| record.launch), Some(0));
+        assert_eq!(placed.map(|record| &record.output), Some(&first));
+    }
+
+    /// A window from a process the launch only started indirectly is still
+    /// that launch's.
+    ///
+    /// The ordinary case rather than the exotic one: a desktop entry runs a
+    /// shell script, a game runs under a container and a runtime and a
+    /// compatibility tool, a launcher execs the thing it launched.
+    #[test]
+    fn a_windows_launch_is_found_up_the_process_chain() {
+        let display = a_display("HDMI-A-1");
+        let launches = vec![a_launch(0, &display, Some(7), None)];
+        let now = std::time::Instant::now();
+        assert!(launch_for(&launches, now, Some(49), "", descends).is_some());
+        assert!(launch_for(&launches, now, Some(50), "", descends).is_none());
+    }
+
+    /// A game handed to Valve's client has no process of the shell's, and is
+    /// recognised by the class its window carries instead.
+    #[test]
+    fn a_game_is_placed_by_the_class_its_window_carries() {
+        let display = a_display("DP-1");
+        let launches = vec![a_launch(0, &display, None, Some("steam_app_1145360"))];
+        let now = std::time::Instant::now();
+        assert!(launch_for(&launches, now, None, "steam_app_1145360", descends).is_some());
+        // Spelled the other way by whichever toolkit set it, and still the
+        // same game.
+        assert!(launch_for(&launches, now, None, "Steam_App_1145360", descends).is_some());
+        assert!(launch_for(&launches, now, None, "steam_app_367520", descends).is_none());
+    }
+
+    /// A window that answers to no record is left to the session's own answer,
+    /// which is what places every window on a session that files none.
+    #[test]
+    fn a_window_that_matches_nothing_is_placed_by_nothing() {
+        let display = a_display("HDMI-A-1");
+        let launches = vec![a_launch(0, &display, Some(100), Some("steam_app_1"))];
+        let now = std::time::Instant::now();
+        assert!(launch_for(&launches, now, Some(101), "firefox", descends).is_none());
+        // A window that named itself nothing must not be claimed by a record
+        // that named nothing either.
+        let anonymous = vec![a_launch(0, &display, None, None)];
+        assert!(launch_for(&anonymous, now, Some(101), "", descends).is_none());
+    }
+
+    /// A second press on one screen is that screen's record changing, not a
+    /// second record.
+    #[test]
+    fn a_screen_holds_one_launch_record() {
+        let (first, second) = (a_display("HDMI-A-1"), a_display("DP-1"));
+        let mut launches = Vec::new();
+        file_launch(&mut launches, a_launch(0, &first, Some(100), None));
+        file_launch(&mut launches, a_launch(0, &second, Some(200), None));
+        assert_eq!(launches.len(), 1);
+        let now = std::time::Instant::now();
+        assert!(launch_for(&launches, now, Some(100), "", descends).is_none());
+        assert_eq!(
+            launch_for(&launches, now, Some(200), "", descends).map(|record| &record.output),
+            Some(&second)
+        );
+    }
+
+    /// A record nobody came back for is dropped rather than kept for the rest
+    /// of the session.
+    #[test]
+    fn a_launch_nobody_took_back_goes_stale() {
+        let display = a_display("HDMI-A-1");
+        let mut old = a_launch(0, &display, Some(100), None);
+        old.filed = std::time::Instant::now() - UNTIL_A_LAUNCH_IS_STALE * 2;
+        let launches = vec![old.clone()];
+        let now = std::time::Instant::now();
+        assert!(launch_for(&launches, now, Some(100), "", descends).is_none());
+
+        // And the next press is what sweeps it out of the list.
+        let mut launches = vec![old];
+        file_launch(&mut launches, a_launch(1, &display, Some(200), None));
+        assert_eq!(launches.len(), 1);
+    }
+
+    /// The two answers the shell gives are two, and the one about the person
+    /// wins.
+    ///
+    /// The failure this is about: a game loading on the second screen holds the
+    /// launch answer for the whole of its loading time — which is right, and is
+    /// what opens it on the screen it was pressed on — and read as "where the
+    /// user is" it walked the keyboard and the X screen's active window off to
+    /// a display nobody was looking at.
+    #[test]
+    fn the_driven_display_is_not_the_launch_display() {
+        let (driving, loading) = (a_display("HDMI-A-1"), a_display("DP-1"));
+        assert_eq!(
+            the_display_being_driven(Some(&driving), Some(&loading)),
+            Some(&driving)
+        );
+        // A shell too old to say has one value for both, and it is read for
+        // both — which is exactly what this compositor did before the two came
+        // apart.
+        assert_eq!(
+            the_display_being_driven(None, Some(&loading)),
+            Some(&loading)
+        );
+        assert_eq!(the_display_being_driven(None, None), None);
+    }
+
+    /// The process chain is walked on the machine the same way the rule above
+    /// walks a made-up one.
+    #[test]
+    fn a_child_of_this_process_is_descended_from_it() {
+        let ours = std::process::id();
+        assert!(descends_from(ours, ours));
+        let Ok(mut child) = std::process::Command::new("sleep").arg("30").spawn() else {
+            // No `sleep` on the machine running the tests. The rule above is
+            // what this checks; this is the half that needs a process table.
+            return;
+        };
+        assert_eq!(parent_of(child.id()), Some(ours));
+        assert!(descends_from(child.id(), ours));
+        assert!(!descends_from(ours, child.id()));
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The variant is *removed* when there is none, not set empty.
+    ///
+    /// An empty variant is what "the layout's own arrangement" means, and a
+    /// stale one left behind from a previous choice would be a different
+    /// keyboard: `pl` with `dvorak` still exported is Polish Dvorak.
+    #[test]
+    fn the_exported_keyboard_carries_no_stale_variant() {
+        // Read before, put back after: this test touches only the two
+        // variables it is about.
+        let (layout, variant) = (
+            std::env::var("XKB_DEFAULT_LAYOUT").ok(),
+            std::env::var("XKB_DEFAULT_VARIANT").ok(),
+        );
+        export_keyboard_environment("pl", "dvorak");
+        assert_eq!(std::env::var("XKB_DEFAULT_LAYOUT").as_deref(), Ok("pl"));
+        assert_eq!(
+            std::env::var("XKB_DEFAULT_VARIANT").as_deref(),
+            Ok("dvorak")
+        );
+        export_keyboard_environment("de", "");
+        assert_eq!(std::env::var("XKB_DEFAULT_LAYOUT").as_deref(), Ok("de"));
+        assert!(std::env::var("XKB_DEFAULT_VARIANT").is_err());
+        // SAFETY: single-threaded test; nothing else reads these two.
+        unsafe {
+            match layout {
+                Some(layout) => std::env::set_var("XKB_DEFAULT_LAYOUT", layout),
+                None => std::env::remove_var("XKB_DEFAULT_LAYOUT"),
+            }
+            match variant {
+                Some(variant) => std::env::set_var("XKB_DEFAULT_VARIANT", variant),
+                None => std::env::remove_var("XKB_DEFAULT_VARIANT"),
+            }
+        }
+    }
 
     fn output(name: &str) -> Output {
         Output::new(

@@ -110,6 +110,36 @@ pub async fn load_owned_app_catalog(
     Ok(apps)
 }
 
+/// What Steam calls a handful of apps, by their ids alone.
+///
+/// `load_owned_app_catalog` above answers the same question about an account's
+/// *licences*, which is the only shape the published crate offers — and it is
+/// the wrong shape for the one caller this exists for. A friend's game is an
+/// app id with no licence of this account's behind it: `ClientPersonaState`
+/// carries `game_played_app_id` and very often no `game_name` at all, which is
+/// why every other client that draws a friends list resolves the name itself
+/// (see `third_party/Pluvia`, which keeps a PICS queue for exactly this).
+///
+/// Apps Steam declines to name are absent from the answer rather than present
+/// and empty, so a caller can tell "not named" from "named nothing".
+pub async fn app_names(
+    connection: &Connection,
+    state: &ConnectionState,
+    appids: &[u32],
+) -> Result<HashMap<u32, String>> {
+    let appids = normalized_ids(appids.iter().copied());
+    if appids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let tokens = access_tokens_for_apps(connection, state, &appids).await?;
+    let apps = resolve_app_infos(connection, state, &appids, &tokens).await?;
+    Ok(apps
+        .into_iter()
+        .filter(|app| !app.name.is_empty())
+        .map(|app| (app.appid, app.name))
+        .collect())
+}
+
 /// The app information Steam holds for one app, exactly as it sent it.
 ///
 /// `load_owned_app_catalog` reads the few keys a library listing needs out of

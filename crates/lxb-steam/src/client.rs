@@ -42,7 +42,9 @@
 //! read out of the client's own environment instead; see [`in_this_session`],
 //! which is asked once per [`wake`] rather than polled.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -96,6 +98,18 @@ pub fn confine_children_with(hook: fn(&mut Command)) {
 /// window — where missing one costs the whole point of this module.
 pub const WINDOW_NAMES: [&str; 2] = ["steam", "steamwebhelper"];
 
+/// What the client titles its own main window — the storefront and library,
+/// the one window it has whenever it is running with a UI at all.
+///
+/// Read off a live client, where it is exactly this. It is the client's own
+/// name rather than a sentence about what the window is showing, which is the
+/// only reason it can be matched on: everything else Valve puts in a title bar
+/// is prose, and prose ships in every language Steam is translated into.
+///
+/// Used to tell the client *working* from the client *asking*. See
+/// `lxb_shell_v1.unseen_window`, which is what the shell reads it against.
+pub const STOREFRONT: &str = "Steam";
+
 /// Where Valve's client is on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Where {
@@ -110,13 +124,27 @@ impl Where {
     /// where nothing in this integration works and the shell says so once,
     /// plainly, rather than failing at every press.
     pub fn find() -> Option<Where> {
+        Where::all().into_iter().next()
+    }
+
+    /// Every client on this machine, in the order [`Where::find`] prefers them.
+    ///
+    /// One entry is the ordinary machine and the whole of what [`Where::find`]
+    /// needs. Two is a machine where this shell has picked one Steam and the
+    /// user may have meant the other, and there is no honest way to guess which
+    /// — a `steam` on `PATH` is as likely to be the one somebody uses as a
+    /// Flatpak they installed last week. So the second answer exists to be
+    /// *said* rather than to be chosen between; see
+    /// [`crate::backend::say_which_steam`].
+    pub fn all() -> Vec<Where> {
+        let mut found = Vec::new();
         if let Some(path) = on_path("steam") {
-            return Some(Where::Native(path));
+            found.push(Where::Native(path));
         }
         if flatpak_deployed() && on_path("flatpak").is_some() {
-            return Some(Where::Flatpak);
+            found.push(Where::Flatpak);
         }
-        None
+        found
     }
 
     /// A command that runs the client with no arguments yet.
@@ -145,8 +173,8 @@ impl Where {
 
 /// What the background client is doing.
 ///
-/// Deliberately four states and not a bag of booleans: every caller wants to
-/// know one of these four things, and a caller that had to work out "up but
+/// Deliberately five states and not a bag of booleans: every caller wants to
+/// know one of these five things, and a caller that had to work out "up but
 /// not signed in" from two flags is a caller that will one day get it wrong in
 /// the direction of starting a game that cannot start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,15 +188,52 @@ pub enum State {
     Starting,
     /// It is running and signed in, as this account id. Everything works.
     SignedIn(u32),
+    /// It is running and logged on for this account **without Steam's
+    /// servers** — Valve's own Offline Mode.
+    ///
+    /// A separate state and not a flag on [`State::SignedIn`], because the two
+    /// are read from different places and are true of different things. An
+    /// offline client plays every game that is on the disk and fully up to
+    /// date, and can do nothing at all that needs Steam: no install, no
+    /// removal, no verify, no library. See [`offline`], which is where the
+    /// mode is read and asked for.
+    Offline(u32),
 }
 
 impl State {
     pub fn running(self) -> bool {
-        matches!(self, State::Starting | State::SignedIn(_))
+        !matches!(self, State::Absent | State::Stopped)
     }
 
     pub fn signed_in(self) -> bool {
-        matches!(self, State::SignedIn(_))
+        matches!(self, State::SignedIn(_) | State::Offline(_))
+    }
+
+    /// Whether it is signed in **as this account**, which is what every caller
+    /// in this crate actually wants of it.
+    ///
+    /// [`State::signed_in`] answers a question nobody here is asking. One
+    /// machine has one pipe and one client, and the person at the desk may have
+    /// two accounts, or a household may have four; a client signed in to the
+    /// wrong one of them passes every other test in this module and then
+    /// installs into, verifies and plays out of somebody else's library.
+    ///
+    /// Offline counts, and that is the whole of what makes a game start with
+    /// no network. A client in Valve's Offline Mode is logged on for exactly
+    /// one account and holds exactly that account's library; the question this
+    /// answers is whose games it would open, and the answer is the same either
+    /// way.
+    pub fn signed_in_as(self, who: Credential<'_>) -> bool {
+        matches!(self, State::SignedIn(id) | State::Offline(id) if id == who.account_id())
+    }
+
+    /// Whether what it is signed in to is this machine rather than Steam.
+    ///
+    /// Asked by everything that needs Valve's servers, so that it can say so
+    /// rather than fail somewhere further down: an install driven at an offline
+    /// client is a wizard that opens and cannot fetch anything.
+    pub fn offline(self) -> bool {
+        matches!(self, State::Offline(_))
     }
 }
 
@@ -194,6 +259,16 @@ pub enum Doing {
     Install,
     /// Check what is on the disk against what should be, and repair it.
     Verify,
+    /// Open Steam's own downloads list.
+    ///
+    /// The deliberate hand-off. A download that Steam has paused, queued behind
+    /// another, or stopped over a full disk is a download this shell has no way
+    /// to resume: pausing and resuming are the client's own list, and a second
+    /// implementation of it here would be a second opinion about somebody's
+    /// bandwidth. So the shell says plainly what is happening — see
+    /// [`crate::library::Standing`] — and offers the one place it can be
+    /// changed, rather than offering a button that does nothing.
+    Downloads,
     /// Bring the client up in Big Picture, its own console screen.
     ///
     /// Not about one title at all, which is why it ignores the id it is given.
@@ -222,6 +297,7 @@ impl Doing {
         match self {
             Doing::Install => "Install with Steam",
             Doing::Verify => "Verify with Steam",
+            Doing::Downloads => "Open Downloads in Steam",
             Doing::BigPicture => "Open Steam",
             Doing::Open => "Open Steam (Client)",
         }
@@ -232,6 +308,9 @@ impl Doing {
         match self {
             Doing::Install => format!("steam://install/{app_id}"),
             Doing::Verify => format!("steam://validate/{app_id}"),
+            // About the list rather than about one title, so the id is ignored
+            // exactly as Big Picture's is.
+            Doing::Downloads => "steam://open/downloads".to_string(),
             // Big Picture is a mode of the running client rather than a
             // separate program, so this is the whole of how it is entered —
             // and it starts the client first where there is not one running,
@@ -247,7 +326,7 @@ impl Doing {
     /// Whether this is about the client itself rather than about one title, and
     /// so needs nothing selected to be pressed.
     pub fn about_the_client(self) -> bool {
-        matches!(self, Doing::BigPicture | Doing::Open)
+        matches!(self, Doing::BigPicture | Doing::Open | Doing::Downloads)
     }
 }
 
@@ -308,7 +387,7 @@ impl Options {
     /// an empty path because there is no client here to name: what is being
     /// asked for is a layout, and [`Options::in_home`] reads only which of the
     /// two it is.
-    fn every_layout_in(home: &Path) -> Vec<Options> {
+    pub(crate) fn every_layout_in(home: &Path) -> Vec<Options> {
         vec![
             Options::in_home(&Where::Native(PathBuf::new()), home),
             Options::in_home(&Where::Flatpak, home),
@@ -317,7 +396,7 @@ impl Options {
 
     /// The same, below a given home directory, so a test can put the whole of
     /// it somewhere harmless.
-    fn in_home(client: &Where, home: &Path) -> Options {
+    pub(crate) fn in_home(client: &Where, home: &Path) -> Options {
         match client {
             // The two symbolic links the client maintains come first, since
             // those follow a Steam that has been moved, then the directory it
@@ -409,7 +488,7 @@ pub fn start(client: &Where, options: &Options) -> std::io::Result<()> {
 /// being wrong in that direction is a request that is delivered and not waited
 /// for; the other way round is the freeze.
 pub fn open(client: &Where, options: Option<&Options>, url: &str) -> std::io::Result<()> {
-    let running = options.is_some_and(|options| state(Some(client), options).running());
+    let running = options.is_some_and(|options| is_running(Some(client), options));
     if running {
         return tell(client, url);
     }
@@ -448,11 +527,77 @@ fn tell(client: &Where, url: &str) -> std::io::Result<()> {
     }
 }
 
+/// What became of a client that was asked to shut down.
+///
+/// [`stop_if_ours`] used to answer `bool`, and the shell above it threw the
+/// answer away — which was right while nothing up there had a decision to make
+/// from it. It has one now: a client that was **never asked** is a client that
+/// is never going, and the shell spent seventy seconds waiting out two grace
+/// periods to discover that and then said the client *would not shut down*,
+/// which was not true of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closing {
+    /// It was asked, and `steam -shutdown` took the message.
+    ///
+    /// Not that it went: that request returns when the client has been *asked*,
+    /// and the client has its own work to finish first. Whether it went is
+    /// [`running`], asked afterwards.
+    Asked,
+    /// There was nothing to ask — no client running, or no Steam on this
+    /// machine at all.
+    Gone,
+    /// It belongs to another session on this machine, so it was not asked.
+    ///
+    /// **The one that will not change by being asked again.** Whose client it
+    /// is cannot turn into this session's while it goes on running, so a shell
+    /// waiting to see whether this one goes is waiting for something that
+    /// cannot happen.
+    NotOurs,
+    /// It is this session's, and the request itself did not go through.
+    ///
+    /// Rare and worth telling from the one above: the client is ours to stop
+    /// and the shell could not manage it — a `steam` that is no longer on the
+    /// disk under a client still running from it, most likely.
+    Refused,
+}
+
+/// Ask the client to shut down **if it is this session's**, saying what became
+/// of it.
+///
+/// [`stop`] documents an assumption it cannot check — that the client being
+/// stopped is one this session is entitled to stop — and signing out used to
+/// call it on whatever was running. On a machine with a desktop session left
+/// open behind this one, that was somebody's Steam shut down, with their
+/// download in it, because somebody else signed out of the shell.
+///
+/// The same evidence [`wake`] refuses on, and read the same way round:
+/// [`in_this_session`] answers `true` when it cannot find out, so the
+/// destructive half only ever happens on evidence.
+pub fn stop_if_ours(client: &Where, options: &Options) -> Closing {
+    if !is_running(Some(client), options) {
+        return Closing::Gone;
+    }
+    if !in_this_session(options) {
+        tracing::info!(
+            "leaving Valve's client running: it belongs to another session on this machine"
+        );
+        return Closing::NotOurs;
+    }
+    if let Err(error) = stop(client) {
+        // Not "would not shut down", which is what the shell says about a
+        // client that was asked and stayed. This is the asking itself failing.
+        tracing::info!(%error, "Valve's client could not be asked to shut down");
+        return Closing::Refused;
+    }
+    Closing::Asked
+}
+
 /// Ask the client to shut down.
 ///
 /// Only ever called for a client this session started, and only when the
 /// session ends: a user who had Steam running before the shell came up wants it
-/// still running after.
+/// still running after. [`stop_if_ours`] is what checks that; call it rather
+/// than this unless the caller has already established whose client it is.
 pub fn stop(client: &Where) -> std::io::Result<()> {
     tracing::info!("asking Valve's client to shut down");
     client
@@ -504,7 +649,11 @@ const UNTIL_IT_SIGNS_ITSELF_IN: Duration = Duration::from_secs(30);
 /// back, closing its connection — and this is generous rather than tight
 /// because the alternative to waiting is starting a second client that does
 /// nothing.
-const UNTIL_IT_STOPS: Duration = Duration::from_secs(30);
+///
+/// Public because the shell watches the same client go and must not be quicker
+/// to give up on it than the crate that asked it: see
+/// `steam::UNTIL_THE_CLIENT_GOES`, which is read off this.
+pub const UNTIL_IT_STOPS: Duration = Duration::from_secs(30);
 
 /// How long to wait for a client that has just been started to come up far
 /// enough to be spoken to. A cold client unpacks an update, starts a browser
@@ -516,6 +665,24 @@ const UNTIL_IT_ANSWERS: Duration = Duration::from_secs(90);
 /// answer; it is the wait a user is watching a loading screen through.
 const UNTIL_IT_SIGNS_IN: Duration = Duration::from_secs(60);
 
+/// How long an ordinary cold [`wake`] can honestly take, for whoever is drawing
+/// the loading screen over it.
+///
+/// A cold client comes up, is watched until it answers, and is then handed a
+/// credential and watched until Steam agrees. That is the two numbers above and
+/// it is the path nearly every first press of a session takes.
+///
+/// Deliberately not the worst case. A client that has to be stopped, started,
+/// found still not exposing its port, stopped and started again can outlast
+/// three of these, and a shell that waited that long before saying anything
+/// would be a shell with a spinner on it for six minutes. What this is is the
+/// number a splash may not give up *before*, published from here so that the
+/// two cannot drift apart: the wait and the patience for it were separately
+/// chosen constants in separate crates, and the splash's was the shorter — so
+/// a cold client reliably outlived the loading screen watching for it.
+pub const LONGEST_ORDINARY_WAKE: Duration =
+    Duration::from_secs(UNTIL_IT_ANSWERS.as_secs() + UNTIL_IT_SIGNS_IN.as_secs());
+
 /// What a caller needs of Valve's client.
 ///
 /// The distinction earns its place because one of these needs the client's JS
@@ -523,14 +690,345 @@ const UNTIL_IT_SIGNS_IN: Duration = Duration::from_secs(60);
 /// worth being careful about here — see [`crate::webui::expose`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
-    /// Up and signed in. Every game press: starting a title is a `steam:` URL
-    /// handed over the client's pipe, and touches no interface at all.
+    /// Up and signed in. Every game press made by a session that has reached
+    /// Steam: starting a title is a `steam:` URL handed over the client's pipe,
+    /// and touches no interface at all.
     SignedIn,
+    /// The same, for a session that cannot reach Steam itself.
+    ///
+    /// Everything [`Need::SignedIn`] accepts, and one thing more: where the
+    /// client will not log on either, it is asked for Valve's own Offline Mode
+    /// rather than watched until the patience runs out. That is the whole of
+    /// what makes a game start on a machine with no network — see [`offline`].
+    ///
+    /// A need and not a second function, because it is the same wake: the
+    /// client may be up already, may be signed in already, may belong to
+    /// somebody else. Only the last step differs.
+    Offline,
     /// Up, signed in, and answering on its JS context. Moving a game on or off
     /// the disk needs this, because those are made as calls into the client
     /// rather than as URLs — a URL for either of them raises a window.
     Context,
 }
+
+/// Who the shell is signed in as, and what signs a client in as them.
+///
+/// The three travel together because separating them is what let the two
+/// questions be confused. "Is a client signed in" and "is a client signed in
+/// as the person whose library is on the screen" are different states, and the
+/// second is the one every press here actually depends on: a client already
+/// signed in to somebody else's account passes every other test in this module
+/// and then installs, verifies or plays out of *their* library.
+#[derive(Debug, Clone, Copy)]
+pub struct Credential<'a> {
+    /// The account name Steam knows them by, which is what its own login
+    /// interface is handed.
+    pub account: &'a str,
+    /// The whole SteamID of that account.
+    pub steam_id: u64,
+    pub refresh_token: &'a str,
+}
+
+impl Credential<'_> {
+    /// The account id, which is the low half of the SteamID and the only form
+    /// a running client ever says out loud — see [`logged_on_in`], which reads
+    /// it out of `[U:1:<account>]` in the client's own connection log.
+    pub fn account_id(&self) -> u32 {
+        self.steam_id as u32
+    }
+}
+
+/// How far a caller may go with a client that is not this session's to move.
+///
+/// The default is [`Permission::AskFirst`], and it is the default because the
+/// alternative is destructive and silent. A client belonging to another display
+/// session is somebody's Steam with somebody's download in it; a client signed
+/// in to another account is somebody's library. Both used to be taken over
+/// without anybody being asked — see [`wake`], which is where the two are
+/// found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    /// Refuse a client that is not ours and say so, so the shell can put the
+    /// choice in front of the person who pressed the button.
+    AskFirst,
+    /// The person has been asked and said yes: stop that client and start it
+    /// again here, signed in as this session's account.
+    MayTakeOver,
+}
+
+/// A client that is running and is not this session's: what is in the way, and
+/// what getting past it would cost.
+///
+/// Two short lines rather than one sentence, and that is a fact about the
+/// screen rather than about style. A panel gives one line to each note and cuts
+/// what will not fit, so a sentence long enough to say both halves arrives with
+/// its end missing — and here the end is the half that says whose download is
+/// about to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotOurs {
+    /// Which client is in the way.
+    pub what: String,
+    /// And what moving it would cost, said to whoever is about to decide.
+    pub cost: String,
+}
+
+impl NotOurs {
+    fn new(what: &str, cost: &str) -> NotOurs {
+        NotOurs {
+            what: what.to_string(),
+            cost: cost.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for NotOurs {
+    /// For a log line, where one line is what there is.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.what, self.cost)
+    }
+}
+
+/// Why a client could not be brought up.
+///
+/// Two shapes rather than one string for the reason [`crate::Stopped`] has two:
+/// the shell answers them differently. A failure is something to report; a
+/// client that belongs to somebody else is a question to ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// Something went wrong, and this is what to say about it.
+    Failed(String),
+    /// Nothing went wrong. There is a client running that this session must
+    /// not take over on its own: it is drawing into another session, or it is
+    /// signed in as another account. Answered by asking, and then by
+    /// [`Permission::MayTakeOver`].
+    NotOurs(NotOurs),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Failed(why) => f.write_str(why),
+            Refusal::NotOurs(refusal) => write!(f, "{refusal}"),
+        }
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(why: String) -> Refusal {
+        Refusal::Failed(why)
+    }
+}
+
+/// One client, proved to be this session's and this account's, at one moment.
+///
+/// Every question this module asks about whose client it is — is one running,
+/// is it drawing into this session, is it signed in to this account — is a
+/// reading of the machine as it stands, and the machine does not stand still.
+/// A wake is most of two minutes; the flow behind it takes a mutex, opens a
+/// socket and drives an install wizard. Somewhere in that gap Valve's client
+/// can die and be replaced by one that signed itself into whichever account it
+/// last remembered, and every check made before the gap is then a check about
+/// a process that is no longer there.
+///
+/// So the checks answer with *what they proved about*, and the answer is
+/// carried to the moment of acting and asked again — see [`Proven::still_there`],
+/// which every irreversible step is preceded by.
+///
+/// The process is named by the pid holding the pipe rather than by anything
+/// stronger, and a pid can in principle be reused. It cannot be reused inside
+/// the window this covers: what separates a proof from the act it guards is
+/// milliseconds, or the length of one wizard flow, and reuse needs the whole of
+/// the machine's pid space to turn over in that time. The failure actually seen
+/// is a client that was killed and started again, and that takes a new pid
+/// every time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Proven {
+    /// The process holding `steam.pipe` open for reading when the proof was
+    /// made, where it could be found.
+    ///
+    /// `None` is the same "could not find out" [`in_this_session`] answers with
+    /// — a client running as another user, a `/proc` entry that went while it
+    /// was being read — and two of them compare equal, so a shell that cannot
+    /// see into the client is no worse off than it was before this existed. It
+    /// is not weaker than that either: the account half below is read from the
+    /// client's own log and does not depend on finding the process at all.
+    pub pid: Option<u32>,
+    /// The account id it was signed in — or logged on offline — as.
+    pub account: u32,
+}
+
+impl Proven {
+    /// Ask both questions again, of the client as it stands this instant.
+    ///
+    /// **This is step five**, and it is a separate call rather than something
+    /// folded into the wake because the two are minutes apart. What it must
+    /// catch is not one race but three of them: the client stopped, the client
+    /// was replaced by one somebody else started, and the client signed itself
+    /// into another account while this session was queueing behind a wizard.
+    ///
+    /// Unsure refuses here, which is the opposite of the rule
+    /// [`in_this_session`] is under, and deliberately: that one decides whether
+    /// to *stop* somebody's Steam, where being wrong costs them a download, and
+    /// this one decides whether to install into, remove from or play out of a
+    /// library, where being wrong costs somebody else's. The whole cost of
+    /// refusing is a press that says so and can be made again.
+    pub fn still_there(&self, client: &Where, options: &Options) -> Result<(), Refusal> {
+        let now = proven_for(client, options, self.account)?;
+        if now.pid != self.pid {
+            tracing::info!(
+                was = ?self.pid,
+                now = ?now.pid,
+                "Valve's client was replaced between the check and the request"
+            );
+            return Err(Refusal::Failed(
+                "Steam was restarted while this was being asked for.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Prove that the client running **now** is this session's and this account's.
+///
+/// The ownership contract asked as one question, in one place, so that every
+/// path which acts on a title asks it the same way and in the same order:
+/// running at all, then which session it draws into, then which account it is
+/// acting for. Answering with a [`Proven`] rather than with a `bool` is what
+/// lets the answer be checked again later against the same client rather than
+/// against whatever is holding the pipe by then.
+///
+/// A client that is **not running is not proof of anything**, and this is where
+/// that differs from [`crate::not_ours`], which reads a stopped client as
+/// nobody's and lets a `steam:` URL start one. That is right for opening
+/// Steam's own window and wrong for everything else: a client started with a
+/// title's URL already in hand signs itself into whichever account it
+/// remembered, and does the thing to that account's library before this session
+/// has proved anything at all. So there is nothing to prove here, and the
+/// caller's answer is to wake a client first — see [`wake`], which answers with
+/// one of these.
+pub fn prove(client: &Where, options: &Options, who: Credential<'_>) -> Result<Proven, Refusal> {
+    proven_for(client, options, who.account_id())
+}
+
+/// The same, asked with the account id alone.
+///
+/// For the caller that has no credential to hand and needs none: the shell's
+/// own launch, which delivers `steam://rungameid/…` from the thread that draws
+/// and holds the account's number rather than the token that would sign one in.
+/// Proving *whose* client it is only ever needs the number, because the number
+/// is the whole of what a client says out loud — see [`logged_on_in`].
+pub fn proven_for(client: &Where, options: &Options, account: u32) -> Result<Proven, Refusal> {
+    if !is_running(Some(client), options) {
+        return Err(Refusal::Failed(
+            "Steam is not running, so there was nothing to ask.".to_string(),
+        ));
+    }
+    if !in_this_session(options) {
+        return Err(Refusal::NotOurs(NotOurs::new(
+            "Steam is running in another session.",
+            "This would happen there, not here.",
+        )));
+    }
+    // [`state_now`] and never [`state`]: the tail of the connection log belongs
+    // to the run before for the first second or two of a client's life, and
+    // this is exactly the moment that is true — something has just started a
+    // client, or one has just been replaced.
+    match state_now(Some(client), options) {
+        State::SignedIn(id) | State::Offline(id) if id == account => Ok(Proven {
+            pid: holder_of(&options.home.join("steam.pipe")),
+            account,
+        }),
+        State::SignedIn(_) | State::Offline(_) => Err(Refusal::NotOurs(NotOurs::new(
+            "Steam is signed in to another account.",
+            "This would happen to that account.",
+        ))),
+        // Up and has not said who it is yet, which is not the same as nobody's
+        // and must not be read as this session's. A client three seconds into
+        // starting is about to be signed in to *something*, and what it is
+        // about to be signed in to is the account it remembered.
+        State::Starting => Err(Refusal::Failed(
+            "Steam is still starting and has not signed in yet.".to_string(),
+        )),
+        // Neither is reachable past `is_running` above, and both are said as
+        // arms rather than as a panic: there is nothing about a Steam that has
+        // gone in the last microsecond worth ending a session over.
+        State::Absent | State::Stopped => Err(Refusal::Failed(
+            "Steam stopped before it could be asked.".to_string(),
+        )),
+    }
+}
+
+/// Hand one `steam:` URL to a client that has just been proved, and to no
+/// other — starting none.
+///
+/// The difference from [`open`] is the whole of it. `open` starts a client
+/// where there is none, with the URL already in its hand, which is what makes
+/// "Open Steam" work on a machine where Steam has never run; handed a title's
+/// URL it is also what delivers an install to whichever account that fresh
+/// client remembered. This one refuses instead, because by the time anything
+/// gets here a client has already been woken and proved, and a client that has
+/// gone since is a press to make again rather than a fresh Steam to start
+/// blind.
+pub fn deliver(
+    client: &Where,
+    options: &Options,
+    proven: &Proven,
+    url: &str,
+) -> Result<(), Refusal> {
+    proven.still_there(client, options)?;
+    tell(client, url).map_err(|error| Refusal::Failed(error.to_string()))
+}
+
+/// Prove the client that is running and hand it one `steam:` URL, in one pass.
+///
+/// For the caller that has no proof carried from anywhere to check against, and
+/// cannot afford to make two: the shell's own launch, which runs the courier
+/// from the thread that draws. [`deliver`] would walk `/proc` twice over — once
+/// to make a proof and once to check it against itself — to answer one
+/// question.
+///
+/// It is the same question either way, and asking it here is the point.
+/// `steam://rungameid/…` used to go out through [`open`], which starts a client
+/// where there is none: a wake that succeeded and a client that died in the
+/// seconds after it meant a game delivered to a Steam started from cold, signed
+/// into whichever account it remembered, with no check made of either half.
+///
+/// Answers with what it proved, so the caller's log can name the client that
+/// took the game.
+pub fn prove_and_deliver(
+    client: &Where,
+    options: &Options,
+    account: u32,
+    url: &str,
+) -> Result<Proven, Refusal> {
+    let proven = proven_for(client, options, account)?;
+    tell(client, url).map_err(|error| Refusal::Failed(error.to_string()))?;
+    Ok(proven)
+}
+
+/// One client, one caller at a time.
+///
+/// Everything [`wake`] does to Valve's client is global to the machine: it
+/// makes and takes away one marker file, it stops and starts one process, and
+/// it hands one credential to one login interface. Two callers doing that at
+/// once — an install and a launch pressed seconds apart, which is an ordinary
+/// thing to do — interleave into a client being started while it is being
+/// stopped, and a marker withdrawn out from under a client that has not read
+/// it yet.
+///
+/// The worker's own `waking` flag never covered this. It guards the explicit
+/// launch wake and nothing else, so every background job went straight past it.
+/// Holding this for the whole of a wake is what makes the second caller wait
+/// for the first and then, nearly always, find the client already up and
+/// return in microseconds.
+///
+/// **It is a lock on the machine and not on this program**, and it had to
+/// become one. A `static Mutex` here excluded the threads of one process and
+/// nothing else, while every sentence above is about the *user's* one client —
+/// so a second session, or one of this crate's own `probe-*` examples run
+/// against a live shell, went through all of it beside the first. See
+/// [`crate::turns`].
+const ONE_AT_A_TIME: crate::turns::What = crate::turns::What::TheClient;
 
 /// The whole of what "Steam is available in the background" means, in one call:
 /// start it if it is not running, wait for it to sign in, and — if it cannot do
@@ -549,10 +1047,18 @@ pub enum Need {
 ///
 /// A client that is not this session's is stopped and started again here, which
 /// is the only thing that moves it: where it draws is fixed when it starts.
-/// That is somebody's Steam being taken away, so it happens on evidence and
-/// never on a guess — and it is the answer the alternative deserves, which is
-/// a shell that says a game did not start while the game is running on a screen
-/// nobody is looking at.
+/// That is somebody's Steam being taken away, so it happens on evidence, never
+/// on a guess — and, since it is somebody's, never without being asked. See
+/// [`Permission`]: the ordinary call refuses with [`Refusal::NotOurs`] and the
+/// shell puts the choice on the screen, and only the second call, made because
+/// the person said yes, moves it.
+///
+/// **Whose account it is** is the same question one step in. A client signed in
+/// to another household account answers its pipe, exposes its context and takes
+/// every URL — and installs into, verifies and plays out of a library that is
+/// not the one on the screen. It is found the same way and refused the same
+/// way; see [`met`], which compares the account id in the client's own log with
+/// the account this session holds a credential for.
 ///
 /// ## What this exposes, and when
 ///
@@ -580,20 +1086,55 @@ pub enum Need {
 /// its credential was wanted, and if the interface is genuinely needed there is
 /// nothing for it but to start it again.
 ///
-/// Blocking, and for as long as a minute and a half. Never call it on a thread
-/// that draws — see [`crate::Steam::wake_client`], which is how the shell asks.
+/// Blocking, and for as long as a minute and a half — and now, where another
+/// session of this user's is already inside one, for as long as *its* wake
+/// takes as well. Never call it on a thread that draws — see
+/// [`crate::Steam::wake_client`], which is how the shell asks.
+///
+/// `request` is the number the shell gave whatever asked for this. Nothing here
+/// decides on it; it goes into the lock's lease, so that a session waiting for
+/// this one can say in its log which press it is waiting behind, and so that the
+/// wait can be put beside a line in the audit log. See [`crate::turns::Behalf`].
 pub fn wake(
     client: &Where,
     options: &Options,
-    account: &str,
-    refresh_token: &str,
+    who: Credential<'_>,
     need: Need,
-) -> Result<(), String> {
+    permission: Permission,
+    request: u64,
+) -> Result<Proven, Refusal> {
+    // One caller at a time, for the whole of it, across every process this user
+    // is running. See [`ONE_AT_A_TIME`]: two presses seconds apart used to run
+    // every step of this concurrently, and two *sessions* still did after that
+    // was fixed within one.
+    let _turn = crate::turns::take(
+        ONE_AT_A_TIME,
+        crate::turns::Behalf {
+            backend: Some(options.root.clone()),
+            request: Some(request),
+        },
+    );
+
     // Asked before anything else is, because it is the one thing a client can
     // be wrong about while looking perfectly right: up, signed in, meeting
     // every `need` there is, and attached to somebody else's display. See
     // `in_this_session`.
-    let elsewhere = state(Some(client), options).running() && !in_this_session(options);
+    let elsewhere = is_running(Some(client), options) && !in_this_session(options);
+
+    // And the other way a running client is not this session's to use: it is
+    // signed in, and to somebody else. Every test below this line would pass —
+    // it answers its pipe, it exposes its context, it takes a `steam:` URL —
+    // and what it would then do is install into, verify and play out of an
+    // account whose library is not the one on the screen.
+    // [`state_now`], not [`state`]: the account it names is read out of a log
+    // that is appended across runs, so a client which is *starting* still
+    // carries the run before's account in it — and that account is routinely
+    // somebody else's, because the ordinary reason a client is starting is that
+    // the last one was killed. Read raw, a press landing in those two seconds
+    // was refused with "Steam is signed in to another account", about a client
+    // that had not signed in to anything.
+    let running = state_now(Some(client), options);
+    let another_account = running.signed_in() && !running.signed_in_as(who);
 
     // Whether this client has ever been run. Read before anything here touches
     // the disk, because the first thing this does to it is make the root.
@@ -603,19 +1144,87 @@ pub fn wake(
     // is still the first run. What ends it is Valve's own furniture arriving.
     let first_run = !crate::library::looks_like_a_root(&options.root);
 
-    if !elsewhere && met(need, client, options) {
-        return Ok(());
+    let not_ours = elsewhere || another_account;
+    if !not_ours && met(need, client, options, who) {
+        // Asked here too, and that is the point of it being a function. The
+        // guide button is meant to be settled on *every* wake, and this is the
+        // path most wakes take — a client already up and already ours — so a
+        // bare `return` here was the one way to reach a running client without
+        // ever having asked it. See [`ask_about_the_guide_button`].
+        ask_about_the_guide_button();
+        // Proved on the way out, even here. This is the path most wakes take
+        // and it is the one that used to answer `Ok(())` — a word about a
+        // client, naming no client — so the press behind it had nothing to
+        // check against when its own moment came. See [`Proven`].
+        return prove(client, options, who);
+    }
+
+    // A client that is not ours is not taken over on a guess. Which of the two
+    // it is decides what there is to say about it, and both are questions for
+    // the person who pressed the button rather than decisions for this module.
+    if not_ours && permission == Permission::AskFirst {
+        let why = if elsewhere {
+            NotOurs::new(
+                "Steam is running in another session.",
+                "Moving it here ends its downloads.",
+            )
+        } else {
+            NotOurs::new(
+                "Steam is signed in to another account.",
+                "Moving it signs that account out.",
+            )
+        };
+        tracing::info!(
+            elsewhere,
+            another_account,
+            "Valve's client is not this session's to use"
+        );
+        return Err(Refusal::NotOurs(why));
+    }
+
+    // Two things this session's own reach decides, and both are decided here
+    // rather than in [`bring_up`], because the client reads its own list as it
+    // comes up and never looks again — after it is started it is too late for
+    // either of them.
+    //
+    // A session that cannot reach Steam asks for Valve's Offline Mode. Not as a
+    // last resort after the ordinary patience has run out: the wait it would be
+    // spent on is a client reaching for the same network this session has
+    // already failed to reach, and at the end of it the client has to be
+    // started again anyway. See [`offline`].
+    let want_it_offline = need == Need::Offline
+        && !running.signed_in_as(who)
+        && offline::ask_for(options, who.account);
+    // And a session that *has* reached Steam takes back an Offline Mode it
+    // asked for itself, so the next client comes up on Steam. Only where there
+    // is no client running: the field is read on the way up, so changing it
+    // under a client that is already going would do nothing until it was
+    // restarted, and restarting one is how you end somebody's game.
+    if need != Need::Offline && !running.running() {
+        offline::give_back(options, who.account);
     }
 
     let mut ours = false;
-    let mut fresh = false;
+    // Whether this call started a client, which decides how long the one that
+    // comes up is given. Dating its log is not this variable's job any more —
+    // see [`the_log_is_this_runs`], which asks the running client itself.
+    let mut started_one = false;
     // Kept rather than returned on, so that a start which fails still reaches
     // the withdrawal below. Restarting a client that will not let go of its
     // pipe is the likeliest way for this to fail and it fails *after* the
     // marker is up, which without this would leave the next Steam somebody
     // starts for themselves exposing a debugging port nobody asked for.
     let mut up = Ok(());
-    if elsewhere {
+    if want_it_offline && is_running(Some(client), options) {
+        // A client that is up and cannot log on. Nothing else here would move
+        // it: the mode is read once, and this one was started before it was
+        // asked for.
+        tracing::info!(
+            "restarting Valve's client, which came up before Offline Mode was asked for"
+        );
+        started_one = true;
+        up = restart(client, options);
+    } else if elsewhere {
         // Started again rather than left alone, because there is nothing else
         // that would work: where a client draws is fixed when it starts, and
         // no URL handed to it afterwards can move it. The cost is real and
@@ -625,67 +1234,41 @@ pub fn wake(
         // pressing the button is not looking at.
         tracing::info!("Valve's client belongs to another session; starting it again in this one");
         ours = expose(options)?;
-        fresh = true;
+        started_one = true;
         up = restart(client, options);
-    } else if !state(Some(client), options).running() {
+    } else if !is_running(Some(client), options) {
         // Before it is started, not after: the client tests for this file as
         // it comes up and never looks again, so the order here is the whole of
         // why it works.
         ours = expose(options)?;
-        fresh = true;
+        started_one = true;
         up = start(client, options).map_err(|error| format!("Steam would not start: {error}"));
     }
 
     let woken = up.and_then(|()| {
-        bring_up(
-            client,
-            options,
-            account,
-            refresh_token,
-            need,
-            fresh,
-            &mut ours,
-        )
-        // A client being run for the first time is not a client that failed.
-        // What it does with its first start is fetch and unpack Valve's
-        // bootstrap, which is minutes of somebody's connection and none of it
-        // visible from here, so it reliably outlasts the patience above. It
-        // goes on doing it — it was started detached and nothing here stops it
-        // — so what this says is what is true and what to do about it, rather
-        // than the symptom, which is that a client that does not exist yet did
-        // not sign in.
-        .map_err(|why| {
-            if first_run {
-                tracing::info!(%why, "Valve's client is still installing itself");
-                "Steam is setting itself up on this machine, which it does once. \
+        bring_up(client, options, who, need, started_one, &mut ours)
+            // A client being run for the first time is not a client that failed.
+            // What it does with its first start is fetch and unpack Valve's
+            // bootstrap, which is minutes of somebody's connection and none of it
+            // visible from here, so it reliably outlasts the patience above. It
+            // goes on doing it — it was started detached and nothing here stops it
+            // — so what this says is what is true and what to do about it, rather
+            // than the symptom, which is that a client that does not exist yet did
+            // not sign in.
+            .map_err(|why| {
+                if first_run {
+                    tracing::info!(%why, "Valve's client is still installing itself");
+                    "Steam is setting itself up on this machine, which it does once. \
                  It will be ready in a few minutes."
-                    .to_string()
-            } else {
-                why
-            }
-        })
+                        .to_string()
+                } else {
+                    why
+                }
+            })
     });
 
-    // While there is still an interface to say it through: the guide button is
-    // this shell's, and Valve's client answers it too unless it is asked not
-    // to. See [`crate::webui::leave_the_guide_button_alone`], which explains
-    // why this is the only pad on the machine that needs asking rather than
-    // taking.
-    //
-    // Best effort, and never the reason a press fails. Somebody who wanted to
-    // start a game has started one; a Big Picture opening behind it is worth a
-    // line in the log and nothing more. It is said on every wake rather than
-    // once, because the client keeps this setting in memory and a client that
-    // was restarted — or reinstalled, or is somebody's second machine — starts
-    // out answering the button again.
     if woken.is_ok() {
-        if let Err(why) = crate::webui::leave_the_guide_button_alone() {
-            tracing::warn!(
-                %why,
-                "could not ask Valve's client to leave the guide button alone; \
-                 it may open Big Picture when the guide is pressed"
-            );
-        }
+        ask_about_the_guide_button();
     }
 
     // Whatever happened, the marker is spent: it is read as the client starts
@@ -695,7 +1278,79 @@ pub fn wake(
     if ours {
         crate::webui::withdraw(&options.root);
     }
+    // What came up, named. `met` has already established the account inside
+    // `bring_up`, and this asks the session half again as well — a client this
+    // call restarted is a new process, and which session it draws into is
+    // fixed as it starts rather than by what it was started for.
     woken
+        .map_err(Refusal::Failed)
+        .and_then(|()| prove(client, options, who))
+}
+
+/// Ask Valve's client to leave the guide button to this shell, and find out
+/// what it has left in its place.
+///
+/// The guide button is this shell's, and Valve's client answers it too unless
+/// it is asked not to. See [`crate::webui::leave_the_guide_button_alone`],
+/// which explains why this is the only pad on the machine that needs asking
+/// rather than taking.
+///
+/// Best effort, and never the reason a press fails. Somebody who wanted to
+/// start a game has started one; a Big Picture opening behind it is worth a
+/// line in the log and nothing more. It is said on every wake rather than once,
+/// because the client keeps this setting in memory and a client that was
+/// restarted — or reinstalled, or is somebody's second machine — starts out
+/// answering the button again.
+///
+/// A closed port refuses at once, so the wake that finds a signed-in client and
+/// returns in microseconds still pays only a refused connection for this.
+fn ask_about_the_guide_button() {
+    match crate::webui::leave_the_guide_button_alone() {
+        // Only once the first question has been answered, and that ordering is
+        // not tidiness. Both are one expression over the same loopback socket
+        // with the same patience, and this runs inside the wake a loading
+        // screen is watching: a client whose interface accepts connections but
+        // does not answer them would otherwise be waited out *twice* before the
+        // press it was for got anywhere. One question already establishes
+        // whether there is anybody there.
+        Ok(()) => the_overlay_is_still_where_the_shell_thinks_it_is(),
+        Err(why) => tracing::warn!(
+            %why,
+            "could not ask Valve's client to leave the guide button alone; \
+             it may open Big Picture when the guide is pressed"
+        ),
+    }
+}
+
+/// Say so where Valve's overlay is not where a shell can reach it.
+///
+/// Taking the guide button leaves a hole: on every other machine shaped like a
+/// console that button is what raises Steam's overlay. A shell fills it with a
+/// chord, and a chord can only send a keystroke — the overlay lives inside the
+/// game rather than in the client, so there is nothing to *ask*. Which
+/// keystroke is a setting, and one the client keeps in memory and writes to no
+/// file until it is changed, so this is the one moment it can be read: the
+/// interface is open, and it is open because a game is being started.
+///
+/// Only a client that has moved it, or switched the overlay off, says anything.
+/// The ordinary case is silent, because the ordinary case is Valve's default
+/// and the shell's chord sending exactly that.
+///
+/// This does not *fix* anything and is not meant to. It is the difference
+/// between a chord that does nothing and a chord that does nothing for a reason
+/// somebody can read.
+fn the_overlay_is_still_where_the_shell_thinks_it_is() {
+    let Ok(key) = crate::webui::overlay_key() else {
+        return;
+    };
+    if key.is_shift_tab() && key.enabled {
+        return;
+    }
+    tracing::warn!(
+        overlay = %key,
+        "Valve's overlay is not on the keystroke this shell's controller chord sends; \
+         the guide button held with Select will do nothing in a game"
+    );
 }
 
 /// Tell the client to expose its interface, saying whether the marker had to be
@@ -728,16 +1383,19 @@ fn expose(options: &Options) -> Result<bool, String> {
 
 /// From a client that is running to one that is everything `need` asks for.
 ///
-/// `fresh` says this call started it, which decides how long to wait — a cold
-/// client has a browser to start and a network to reach before it will answer
-/// anything, where one that was already up has had its chance.
+/// `started_one` says whether this call started it, which decides how long to
+/// wait: a cold client has a browser to start and a network to reach before it
+/// will answer anything, where one that was already up has had its chance.
+///
+/// It used to carry the *moment* as well, for dating the client's own log
+/// against — see [`the_log_is_this_runs`], which now dates it against the
+/// running client instead and so needs nothing from up here.
 fn bring_up(
     client: &Where,
     options: &Options,
-    account: &str,
-    refresh_token: &str,
+    who: Credential<'_>,
     need: Need,
-    fresh: bool,
+    started_one: bool,
     ours: &mut bool,
 ) -> Result<(), String> {
     // Most sessions end here. The client keeps its own credential and comes
@@ -749,16 +1407,35 @@ fn bring_up(
     // session found it will never open a port it was never told to open, and
     // watching one for thirty seconds to establish that is thirty seconds of
     // somebody's loading screen.
-    let worth_waiting = fresh || need == Need::SignedIn || crate::webui::reachable();
+    //
+    // And one thing waiting can never fix: a client signed in to somebody
+    // else. It will not become ours by being watched — it has to be told,
+    // which is what everything below this does — so waiting on it is thirty
+    // seconds of a loading screen spent establishing what is already known.
+    let signed_in_to_somebody_else = {
+        let now = state_now(Some(client), options);
+        now.signed_in() && !now.signed_in_as(who)
+    };
+    let worth_waiting = !signed_in_to_somebody_else
+        && (started_one || need != Need::Context || crate::webui::reachable());
     if worth_waiting {
-        let patience = if fresh {
-            UNTIL_IT_ANSWERS
-        } else {
-            UNTIL_IT_SIGNS_ITSELF_IN
+        let patience = match started_one {
+            true => UNTIL_IT_ANSWERS,
+            false => UNTIL_IT_SIGNS_ITSELF_IN,
         };
-        if settles(need, client, options, patience) {
+        if settles(need, client, options, who, patience) {
             return Ok(());
         }
+    }
+
+    if need == Need::Offline {
+        // Everything below this line ends in `SetLoginToken`, which is a
+        // credential handed to *Steam* — and this path was taken because Steam
+        // cannot be reached. So there is nothing left to try, and the honest
+        // answer is the one Valve gives for the same case: Offline Mode is not
+        // available to an account that has never signed in on this machine.
+        return Err("Steam could not be reached, and its client would not start in Offline                     Mode. Offline Mode needs an account that has signed in on this machine                     while it had a connection."
+            .to_string());
     }
 
     // It will not get there on its own, and everything past this point is said
@@ -769,21 +1446,37 @@ fn bring_up(
         *ours |= expose(options)?;
         tracing::info!("restarting Valve's client, which came up before it was told to expose it");
         restart(client, options)?;
-        if settles(need, client, options, UNTIL_IT_ANSWERS) {
+        if settles(need, client, options, who, UNTIL_IT_ANSWERS) {
             return Ok(());
         }
     }
 
-    sign_it_in(client, options, account, refresh_token)
+    sign_it_in(client, options, who)
 }
 
-/// Whether the client is already everything `need` asks for.
-fn met(need: Need, client: &Where, options: &Options) -> bool {
-    if !state(Some(client), options).signed_in() {
+/// Whether the client is already everything `need` asks for, **for this
+/// account**.
+///
+/// The account half is not decoration. `State::SignedIn` carries whose it is
+/// and this used to throw it away, which made "somebody is signed in" the whole
+/// of what a press had to establish before it installed a game or started one.
+fn met(need: Need, client: &Where, options: &Options, who: Credential<'_>) -> bool {
+    // The same answer [`state_now`] gives, asked in the cheaper order. A state
+    // that is not this account's is a no whatever the log's age turns out to
+    // be, and finding out its age is a walk of `/proc` — so it is asked only of
+    // a log that claims what is being waited for. This runs twice a second for
+    // as long as a minute and a half.
+    if !state(Some(client), options).signed_in_as(who) {
+        return false;
+    }
+    // And then whose log it is, because the tail of it may be the run before's
+    // — which is a wake that answers in half a second and a game that opens ten
+    // seconds later. See [`the_log_is_this_runs`].
+    if !the_log_is_this_runs(options) {
         return false;
     }
     match need {
-        Need::SignedIn => true,
+        Need::SignedIn | Need::Offline => true,
         Need::Context => crate::webui::reachable(),
     }
 }
@@ -797,10 +1490,16 @@ fn met(need: Need, client: &Where, options: &Options) -> bool {
 /// one and then testing the other once was how a client that had opened its
 /// port a second later got taken for one that never would, and answered with a
 /// restart it did not need.
-fn settles(need: Need, client: &Where, options: &Options, patience: Duration) -> bool {
+fn settles(
+    need: Need,
+    client: &Where,
+    options: &Options,
+    who: Credential<'_>,
+    patience: Duration,
+) -> bool {
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
-        if met(need, client, options) {
+        if met(need, client, options, who) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -808,26 +1507,159 @@ fn settles(need: Need, client: &Where, options: &Options, patience: Duration) ->
     false
 }
 
+/// Whether the tail of the connection log was written by the client that is
+/// running **now**.
+///
+/// **It was not, for the first second or two of a client's life, and reading it
+/// anyway is a wake that answers before the client has signed in.**
+/// `connection_log.txt` is appended across runs and never truncated — six
+/// hundred runs of it on this machine — so until the client that is coming up
+/// writes its own `Client version:` line, the tail still belongs to the run
+/// before. [`last_stamp`] therefore reads *that* run's account, and
+/// [`logged_on_in`] answers with it.
+///
+/// [`RUN_ENDED`] already closes half of this: a client that shut down cleanly
+/// writes `Log session ended` as its last line, and the stamp is refused. **A
+/// client that was killed writes no such line** — and being killed is the
+/// ordinary end of a client this shell started, because it is started inside
+/// the session and dies with it.
+///
+/// Measured on this machine on 2026-09-02, sampling five times a second: a
+/// client was killed at 21:27:33 with `[Logged On, 4, 7]` as its last line, and
+/// on the next start the pipe was held at 21:28:11.4 while the log's last run
+/// marker still read 21:27:31 — **2.1 seconds** in which `state` answered
+/// `SignedIn` for a client that had not reached Steam. Seen in the wild first:
+/// a press whose wake reported ready in 501 ms, and the game opened ten seconds
+/// later because Valve's client had queued the request rather than refused it.
+///
+/// **Dated against the running client itself, and it used to be dated against
+/// the moment the wake started one.** That was cheaper — one `stat`, no walk —
+/// and it left the whole question unanswered for every client this session did
+/// *not* start, because there is no such moment for one of those. Which is
+/// precisely the client the account half is about: one somebody else started,
+/// whose log tail may be a third run's. A press landing in the first seconds of
+/// a client's life was refused with *"Steam is signed in to another account"*,
+/// which is alarming, wrong, and about a client that had not signed in to
+/// anything yet.
+///
+/// **Unsure counts as this run's**, as everywhere else here: a log or a process
+/// that cannot be looked at is answered by reading what the state says, which
+/// is what happened before any of this existed.
+fn the_log_is_this_runs(options: &Options) -> bool {
+    written_since(&options.root, the_running_client_started(options))
+}
+
+/// Whether the connection log has been written to since a moment, with the
+/// comparison kept apart from the two readings so it can be tested without a
+/// client or a `/proc`.
+fn written_since(root: &Path, started: Option<std::time::SystemTime>) -> bool {
+    let Some(started) = started else {
+        return true;
+    };
+    let written = std::fs::metadata(root.join("logs").join(CONNECTION_LOG))
+        .and_then(|it| it.modified())
+        .ok();
+    match written {
+        Some(written) => written >= started,
+        None => true,
+    }
+}
+
+/// When the process holding the pipe started.
+///
+/// From `/proc/<pid>/stat`'s start time **and `/proc/uptime`**, rather than
+/// from `/proc/stat`'s `btime`, which is the obvious route and is a second
+/// wrong: `btime` is whole seconds and a machine does not boot on a second
+/// boundary. Measured here — `btime` put a process 0.87 s before its true
+/// start, where the age below put it 0.3 ms after. A second of error is the
+/// wrong size for a question about two seconds.
+///
+/// **A clock that steps, and what is left of it.** The route this replaced held
+/// a wall-clock moment captured when the wake started, so a clock stepping
+/// *backwards* — the ordinary shape of one, an NTP correction as a session
+/// comes up — put every later log line before it and the wake spent its whole
+/// patience refusing a perfectly good log. Here the moment is recomputed at
+/// each look out of an age, so a backwards step carries it down with the log
+/// and the answer does not move.
+///
+/// A step *forwards* still costs, and there is no fixing it from this side: the
+/// log line carries the clock as it read when the line was written, and nothing
+/// on the disk says what the clock was then. It costs one line rather than a
+/// wake, though — the client writes its next one within seconds, that one
+/// carries the new clock, and the guard opens.
+///
+/// The walk in [`holder_of`] is what this costs — 24 ms of reading every
+/// process's descriptors — which is why it is asked once per press, on the
+/// worker, and only where the log claims a sign-in worth checking. See
+/// [`state_now`].
+fn the_running_client_started(options: &Options) -> Option<std::time::SystemTime> {
+    let pid = holder_of(&options.home.join("steam.pipe"))?;
+    let age = age_of(Path::new("/proc"), pid)?;
+    std::time::SystemTime::now().checked_sub(age)
+}
+
+/// How long that process has been alive, below a directory standing in for
+/// `/proc` so a test can build one.
+///
+/// The start time is the twenty-second field of `stat`, in clock ticks since
+/// the machine booted, and the parse starts after the **last** `)`: the second
+/// field is a program name in brackets and a program may be called `a) b (c`.
+fn age_of(proc: &Path, pid: u32) -> Option<Duration> {
+    let stat = std::fs::read_to_string(proc.join(pid.to_string()).join("stat")).ok()?;
+    let ticks: f64 = stat[stat.rfind(')')? + 1..]
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()?;
+    let uptime = std::fs::read_to_string(proc.join("uptime")).ok()?;
+    let uptime: f64 = uptime.split_whitespace().next()?.parse().ok()?;
+    // Hundredths on every Linux this runs on, and asked rather than assumed.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let seconds = uptime - ticks / (hz as f64).max(1.0);
+    Duration::try_from_secs_f64(seconds.max(0.0)).ok()
+}
+
+/// [`state`], with the account half thrown away where the log carrying it
+/// belongs to the run before.
+///
+/// The honest answer for a client that is up and has not yet said who it is, is
+/// [`State::Starting`] — which is what this returns rather than a `SignedIn`
+/// naming somebody who is not signed in here.
+///
+/// Everything that acts on *whose* client it is goes through this. Everything
+/// that asks only whether one is running goes through [`is_running`], which
+/// costs one syscall. `state` itself is left for the rare caller that wants the
+/// file read exactly as it stands.
+pub fn state_now(client: Option<&Where>, options: &Options) -> State {
+    let state = state(client, options);
+    // The walk is paid only here, and only where there is something to be
+    // wrong about: a client that is not running, or one whose log says nothing
+    // about an account, has nothing for this to take away.
+    if !state.signed_in() || the_log_is_this_runs(options) {
+        return state;
+    }
+    tracing::debug!(
+        ?state,
+        "Valve's client has not written its own first line yet; that account is the run before's"
+    );
+    State::Starting
+}
+
 /// Hand a running, exposed client this session's credential, and wait for
 /// Steam to agree.
 ///
 /// Reached only by a client that would not sign itself in — the first time, or
 /// after the token it kept has expired.
-fn sign_it_in(
-    client: &Where,
-    options: &Options,
-    account: &str,
-    refresh_token: &str,
-) -> Result<(), String> {
+fn sign_it_in(client: &Where, options: &Options, who: Credential<'_>) -> Result<(), String> {
     // Wait for it to be able to answer at all. Its own JS context is the thing
     // that has to be there, and it is the last of the client to come up — so
     // waiting for that is waiting for all of it.
     let deadline = Instant::now() + UNTIL_IT_ANSWERS;
     loop {
-        if state(Some(client), options).signed_in() && crate::webui::reachable() {
+        if met(Need::Context, client, options, who) {
             return Ok(());
         }
-        match crate::webui::sign_in(account, refresh_token) {
+        match crate::webui::sign_in(who.account, who.refresh_token) {
             Ok(()) => break,
             // Not up yet, or up and not finished building itself. A context
             // that is listed is not the same as one that has `SteamClient` in
@@ -849,21 +1681,51 @@ fn sign_it_in(
 
     // It took the credential. Whether Steam agrees is a separate question, and
     // the client's own log is what answers it.
+    // As *this* account, and not merely signed in. A client that was already
+    // signed in to somebody else takes the credential and goes on saying it is
+    // signed in for as long as it takes to swap, and a wait that asked only
+    // whether somebody was signed in would come back at once with the wrong
+    // answer and hand the next press their library.
     let deadline = Instant::now() + UNTIL_IT_SIGNS_IN;
     while Instant::now() < deadline {
-        if state(Some(client), options).signed_in() {
-            tracing::info!(account, "Valve's client is signed in and out of sight");
+        if met(Need::SignedIn, client, options, who) {
+            tracing::info!(
+                account = who.account,
+                "Valve's client is signed in and out of sight"
+            );
             return Ok(());
         }
         std::thread::sleep(Duration::from_secs(1));
     }
-    Err("Steam took the credential but did not sign in with it.".to_string())
+    Err("Steam took the credential but did not sign in to this account with it.".to_string())
+}
+
+/// Whether a client is running at all, without asking whose it is.
+///
+/// **The cheap half of [`state`], split out because most callers want only
+/// this.** One `open` on a FIFO and nothing else: no log to read, no account to
+/// parse. `state(…).running()` is exactly this and was what the shell asked on
+/// every frame — sixty-four kilobytes of somebody's connection log read and
+/// scanned backwards, per tick, on the thread that draws, to answer a question
+/// a single syscall answers. See [`crate::Steam::client_is_running`], which is
+/// where that was being paid.
+///
+/// Splitting it is also what lets the *expensive* half afford to be exact.
+/// Asked once per press rather than once per frame, the account question can
+/// pay for the walk that dates the log — see [`state_now`].
+pub fn is_running(client: Option<&Where>, options: &Options) -> bool {
+    client.is_some() && running(&options.home)
 }
 
 /// What the client is doing, read from the disk.
 ///
 /// Cheap enough to poll: a small file, a directory entry, and the tail of a
 /// log. Nothing here starts a process or touches the network.
+///
+/// **The account half of this can be the run before's** — the log is appended
+/// across runs — so anything acting on *whose* client it is wants [`state_now`]
+/// rather than this, and anything asking only whether one is running wants
+/// [`is_running`].
 pub fn state(client: Option<&Where>, options: &Options) -> State {
     if client.is_none() {
         return State::Absent;
@@ -871,9 +1733,25 @@ pub fn state(client: Option<&Where>, options: &Options) -> State {
     if !running(&options.home) {
         return State::Stopped;
     }
-    match logged_on_as(&options.root) {
-        Some(account_id) => State::SignedIn(account_id),
-        None => State::Starting,
+    let log = tail_of_the_connection_log(&options.root).unwrap_or_default();
+    if let Some(account_id) = logged_on_in(&log) {
+        return State::SignedIn(account_id);
+    }
+    // Not on Steam, which used to be the end of it. A client in Valve's own
+    // Offline Mode never reaches the state above and never will: it logs on to
+    // this machine alone, writes `Logged Off` in that log for the rest of its
+    // run, and plays every game on the disk perfectly. Read off this machine on
+    // 2026-09-02 — a client started with the mode on was logged on for its
+    // account within a second, and `steam://rungameid/…` started a game — while
+    // this function answered `Starting` for as long as it was up.
+    //
+    // Two facts and not one, and both are needed. The log says which account
+    // the client that is *running* is acting for; the client's own list says
+    // whether that account asked for Offline Mode. Either alone is a client
+    // this shell would hand somebody else's library.
+    match (acting_for_in(&log), offline::account_wanting_it(options)) {
+        (Some(acting), Some(offline)) if acting == offline => State::Offline(acting),
+        _ => State::Starting,
     }
 }
 
@@ -903,6 +1781,58 @@ fn running(home: &Path) -> bool {
         .is_ok()
 }
 
+/// The status Valve's client keeps for this account on this machine.
+///
+/// **The one place a status on this machine is written down, and it is Valve's
+/// own.** The client records the state its friends menu is set to in that
+/// account's user config — `FriendStoreLocalPrefs_<account>`, a small JSON
+/// document escaped into a VDF string — and comes back up wearing it. So it is
+/// two things at once: what a client here *would* announce, which is what the
+/// shell's panel has to be showing to be telling the truth, and the readback
+/// for a status handed over as a URL, which is otherwise unanswerable without
+/// the debugging marker no user-started client has.
+///
+/// Measured on this machine on 2026-09-03, on a client started cold with no
+/// marker anywhere. The field read `1` on the way up; a
+/// `steam://friends/status/invisible` was handed over four seconds after the
+/// client signed in, and the field read `7` four seconds after that. Away
+/// moved it to `3`, and Online back to `1`.
+///
+/// **Offline is the exception, and is not recorded.** The same measurement sent
+/// `steam://friends/status/offline` and the field did not move off `3` — going
+/// offline is the client leaving the friends network rather than a state it
+/// remembers being in. Which is the useful way round: a shell that adopts this
+/// can never be talked into going offline, and a client that comes back up
+/// after one comes back up online.
+pub fn recorded_status(options: &Options, account_id: u32) -> Option<crate::friends::Presence> {
+    let config = options
+        .root
+        .join("userdata")
+        .join(account_id.to_string())
+        .join("config")
+        .join("localconfig.vdf");
+    let raw = std::fs::read_to_string(config).ok()?;
+    let key = format!("FriendStoreLocalPrefs_{account_id}");
+    persona_state_in(raw.lines().find(|line| line.contains(&key))?)
+}
+
+/// The number out of one of those lines.
+///
+/// Its own function so the parse can be tested without a client's config on the
+/// disk. The value is JSON that has been escaped to live inside a VDF string,
+/// so what is on the line is `\"ePersonaState\":7` — backslashes and all — and
+/// unescaping the whole of it to reach one digit would be a JSON parser and a
+/// VDF parser for a field that is a single number.
+fn persona_state_in(line: &str) -> Option<crate::friends::Presence> {
+    let at = line.find("ePersonaState")?;
+    let digits: String = line[at..]
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    crate::friends::Presence::from_number(digits.parse().ok()?)
+}
+
 /// What decides which session a process draws into.
 ///
 /// Both, and not either on its own. Valve's client reaches the screen through
@@ -915,7 +1845,7 @@ fn running(home: &Path) -> bool {
 /// environment of Valve's client holds rather more than this, none of which is
 /// any of the shell's business, so [`displays_in`] keeps these and drops the
 /// rest as it parses rather than copying a stranger's environment about.
-const DRAWS_INTO: [&str; 2] = ["WAYLAND_DISPLAY", "DISPLAY"];
+pub(crate) const DRAWS_INTO: [&str; 2] = ["WAYLAND_DISPLAY", "DISPLAY"];
 
 /// Whether the client that is running belongs to *this* session.
 ///
@@ -1070,10 +2000,493 @@ fn displays_in(environ: &[u8]) -> Vec<Option<String>> {
 ///
 /// Only the tail is read. The file runs to megabytes over a few weeks and this
 /// is polled while somebody is watching a loading screen.
-fn logged_on_as(root: &Path) -> Option<u32> {
+fn tail_of_the_connection_log(root: &Path) -> Option<String> {
+    tail_of(&root.join("logs").join(CONNECTION_LOG))
+}
+
+/// The log the client stamps with what its connection is doing and whose it is.
+const CONNECTION_LOG: &str = "connection_log.txt";
+
+/// What the client says it is in the middle of, for one game.
+///
+/// The phases are Valve's own words, read off this machine: `Reconfiguring`,
+/// `Preallocating`, `Downloading,Staging`, `Verifying Installed`,
+/// `Verifying Staged`, `Staging`, `Committing`, `Running Script`, and any of
+/// them with `Stopping` appended — two thousand of them in one machine's logs.
+///
+/// Two, and not nine, because the shell has words for two. What a row can say
+/// is [`crate::library::Standing`], and everything below is one of its states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InHand {
+    /// `Verifying Installed`: reading back what is on the disk and checking it
+    /// against what should be there.
+    ///
+    /// Its own answer because it is the one phase that is long, silent, and
+    /// **not** an update — it moves no byte, writes nothing to the manifest,
+    /// and on a large game runs for minutes. A row that called it "Updating"
+    /// would be making the mistake `library::standing_from` already refuses to
+    /// make: a check on a 70 GB game is not a download.
+    ///
+    /// `Verifying Staged` is deliberately *not* this. That one checks what has
+    /// just arrived, so it happens inside a download the manifest is already
+    /// describing, and the row has nothing to learn from it.
+    Checking,
+    /// Any other part of a job.
+    Working,
+}
+
+/// Which of the client's three job tracks a line belongs to.
+///
+/// Not one list, because the two questions this answers want different halves
+/// of it. A shader cache must never reach a row — the game is on the disk and
+/// plays perfectly while Steam fetches one — and it must equally not be
+/// interrupted, because one of them ran for **sixty-four minutes** on this
+/// machine. Measured over both of this machine's content logs, 2026-09-02:
+///
+/// ```text
+///            jobs   median      p90       max     total
+/// App         290       6s     108s     2916s      5.3h
+/// Workshop    353       1s       1s       41s      0.1h
+/// Shader      439       3s      14s     3832s      1.8h
+/// ```
+///
+/// So shaders are seconds nearly always, which is what makes counting them for
+/// the shutdown cost nothing, and hours occasionally, which is what makes
+/// counting them worth it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Track {
+    /// The game's own files.
+    App,
+    /// Content somebody subscribed to for it.
+    Workshop,
+    /// A cache of compiled shaders. Steam's own housekeeping, fetched while the
+    /// game is being played and rebuilt whenever it likes.
+    Shaders,
+}
+
+impl Track {
+    /// Whether this is the game itself, which is what a row may speak about.
+    fn is_the_game(self) -> bool {
+        matches!(self, Track::App | Track::Workshop)
+    }
+
+    /// The words the client writes in front of the phase.
+    fn said(self) -> &'static str {
+        match self {
+            Track::App => " App update changed : ",
+            Track::Workshop => " Workshop update changed : ",
+            Track::Shaders => " Shader update changed : ",
+        }
+    }
+}
+
+/// Every track, for the walk that decides which one a line is.
+const TRACKS: [Track; 3] = [Track::App, Track::Workshop, Track::Shaders];
+
+/// What Valve's client has in hand, kept up to date from its own log.
+///
+/// **The manifests do not say.** `appmanifest_<id>.acf` picks up a working bit
+/// when bytes move and at no other time, and there are whole operations that
+/// move none: measured on this machine on 2026-09-02, a file check driven
+/// through `steam://validate` ran for **thirty-six seconds** on a 15 GB game
+/// with the client's own log reading
+/// `App update changed : Running Update,Verifying Installed,` throughout, while
+/// the file on the disk said `StateFlags 4` and was never rewritten — a watcher
+/// sampling it twice a second saw no change at all. A shell that asks only the
+/// manifests therefore believes nothing is happening: it draws a row saying
+/// "Installed" over a game Steam has in hand, answers a press on it with a
+/// launch the client will queue behind the check, and shuts the client down in
+/// the middle of the very work it asked for.
+///
+/// So this is the third source about a game, beside the manifest and beside
+/// whatever this session started itself. It needs no account and no interface,
+/// and answers for work begun in Steam's own window as readily as for work
+/// begun here.
+///
+/// **Only the current run of the client counts.** [`NEW_RUN`] is written as the
+/// first line of every run, and a client killed in the middle of an update
+/// never writes the line that ends it — so without that boundary a session that
+/// lost its Steam once would go on believing that update was in flight for
+/// ever, and nothing would ever close a client again. See [`Jobs::fold`].
+///
+/// **Stateful, because the log is a stream and not a state.** The first cut of
+/// this read the last 64 KB every time and folded what it found, which is right
+/// until a job outlives its own line: the client writes `App update changed`
+/// only when the job moves between phases, and it writes a great deal else in
+/// between — cache connections, schedulers, the other two tracks — so a long
+/// job's last line is pushed out of the window and the job reads as finished.
+/// Here it is read the way it is written: forward, once, from where the last
+/// look stopped.
+#[derive(Debug, Default)]
+pub struct Jobs {
+    /// How far into the log this has read. Bytes, and always the end of a whole
+    /// line — a client writing while this reads leaves a half-written last one,
+    /// and folding half a line and then skipping the rest of it would lose the
+    /// only word that mattered.
+    read_to: u64,
+    /// And *which file* that offset is into: the device and inode the last look
+    /// read from.
+    ///
+    /// A position alone is not a place. The client rotates this log at four
+    /// megabytes by renaming it and opening a new one at the same path, so the
+    /// path stops meaning the file the offset was measured against — and the
+    /// only cut of this that asked whether the file had gone backwards missed
+    /// every rotation the new file had already grown past the old offset by.
+    /// It then went on reading from that offset into a file it had never seen
+    /// the start of, which is to say it skipped whatever was written before it
+    /// and folded a stream it had cut in half.
+    file: Option<(u64, u64)>,
+    /// And what everything up to there said. Keyed by the track as well as the
+    /// app, because the three run at once: a game whose shader cache finishes
+    /// downloading has not finished updating.
+    doing: BTreeMap<(Track, u32), InHand>,
+}
+
+impl Jobs {
+    /// Read whatever the client has written since the last look, and say
+    /// whether what it has in hand changed.
+    pub fn look(&mut self, root: &Path) -> bool {
+        let before = self.doing.clone();
+        self.read(&root.join("logs").join(CONTENT_LOG));
+        self.doing != before
+    }
+
+    /// Forget all of it, for a client that is no longer running.
+    ///
+    /// A log is a record of what the client *was* doing, exactly as a manifest
+    /// is — see [`crate::library::Game::update_outstanding`] — and with nothing
+    /// running there is nothing doing any of it. The offset goes too, so the
+    /// next client is read from its own first line.
+    pub fn forget(&mut self) -> bool {
+        let had = !self.doing.is_empty() || self.read_to != 0;
+        self.read_to = 0;
+        self.file = None;
+        self.doing.clear();
+        had
+    }
+
+    /// Whether the client has anything at all in hand, of any kind.
+    ///
+    /// The question the two rules that close a client ask, and they ask it of
+    /// all three tracks: a shader cache is none of a row's business and is
+    /// still not something to shut a client down under. See [`Track`].
+    pub fn anything_in_hand(&self) -> bool {
+        !self.doing.is_empty()
+    }
+
+    /// And what it is doing to one game's own content, in the two words a row
+    /// has for it — or nothing, which is what a shader cache always is here.
+    pub fn to_the_game(&self, app_id: u32) -> Option<InHand> {
+        let mut found = None;
+        for (&(track, id), &phase) in &self.doing {
+            if id != app_id || !track.is_the_game() {
+                continue;
+            }
+            // A check is the more particular word, so it wins where the two
+            // tracks disagree.
+            if phase == InHand::Checking {
+                return Some(InHand::Checking);
+            }
+            found = Some(phase);
+        }
+        found
+    }
+
+    /// Whether the client is fetching this game's **shader cache**, which is
+    /// the one thing it does to a game that [`Self::to_the_game`] will not
+    /// speak about.
+    ///
+    /// Kept out of that answer on purpose and still kept: the game is on the
+    /// disk and plays perfectly while Steam fetches one, so a row saying
+    /// "Updating" over it would be describing housekeeping nobody asked for.
+    /// See [`Track`].
+    ///
+    /// What this is for is the one moment when it is the answer to a question
+    /// somebody is actually asking. Read off this machine on 2026-09-03: a
+    /// press on Counter-Strike 2 woke the client, and what the client did with
+    /// it was fetch **five gigabytes of shader cache** — `Shader update
+    /// changed : Running Update,Downloading,Staging,` against
+    /// `update started : download 0/5191457952` — while the game's own update
+    /// waited behind it. Every other source was silent, so the guide had
+    /// nothing in the corner and the loading screen had nothing to say.
+    pub fn fetching_shaders_for(&self, app_id: u32) -> bool {
+        self.doing.contains_key(&(Track::Shaders, app_id))
+    }
+
+    /// Everything in hand, for a probe that has to show its working.
+    pub fn each(&self) -> impl Iterator<Item = (Track, u32, InHand)> + '_ {
+        self.doing
+            .iter()
+            .map(|(&(track, id), &phase)| (track, id, phase))
+    }
+
+    /// Read whatever is there to read, wherever this look finds itself.
+    ///
+    /// Three situations, and the whole of the difficulty is telling them
+    /// apart. A steady look reads what has arrived since the last one. A
+    /// **first** look has to find the start of the run it is joining, which may
+    /// be anywhere behind it. And a **rotation** moves the file the offset was
+    /// measured against out from under both of them.
+    ///
+    /// Nothing here throws away what the client has in hand. A job is ended by
+    /// the client saying so — see [`Jobs::fold`] — or by a new run of the
+    /// client, or by there being no client at all, which is [`Jobs::forget`]
+    /// and is the caller's to say. A log rolling over is none of those: the
+    /// work goes on across it, and the client writes nothing to say so because
+    /// nothing about the work has changed.
+    fn read(&mut self, path: &Path) {
+        let Ok(file) = std::fs::File::open(path) else {
+            // No log at that path this instant. That is not the client
+            // dropping what it had: rotation renames the file and opens
+            // another, and for the moment in between there is nothing here to
+            // open. What is lost is the position, so the next look reads the
+            // file it finds from the beginning; what the client has in hand is
+            // not this reader's to forget. A client that is actually gone is
+            // answered by the caller — see [`Jobs::forget`].
+            self.read_to = 0;
+            self.file = None;
+            return;
+        };
+        let Ok(meta) = file.metadata() else {
+            return;
+        };
+        let identity = (meta.dev(), meta.ino());
+        let length = meta.len();
+
+        let from = match self.file {
+            // The same file as last time, and the ordinary case.
+            Some(seen) if seen == identity => {
+                if length == self.read_to {
+                    return;
+                }
+                // Shorter than it was, with the file itself unchanged: the log
+                // has been emptied in place rather than moved aside. What was
+                // read is gone and what is here is to be read from its start.
+                match length < self.read_to {
+                    true => 0,
+                    false => self.read_to,
+                }
+            }
+            // A different file at the same path: rotated. Whatever the client
+            // wrote to the old one after the last look went with it, and it is
+            // still on the disk under another name — so that is read first,
+            // and then this one from its start.
+            Some(seen) => {
+                self.catch_up_with_the_rotated(path, seen);
+                0
+            }
+            // The first look of this run, which is the one that has to find
+            // where the run began. See [`Jobs::attach`].
+            None => {
+                self.attach(path, file, identity);
+                return;
+            }
+        };
+        // Both recorded before the read, so that a look that finds nothing
+        // whole to fold — a log the client has opened and not yet written a
+        // line into — still leaves this reader pointing where it is reading
+        // from rather than at the file before it.
+        self.file = Some(identity);
+        self.read_to = from;
+        let Some((bytes, whole)) = whole_lines_from(file, from) else {
+            return;
+        };
+        self.read_to = from + whole as u64;
+        self.fold(&String::from_utf8_lossy(&bytes[..whole]));
+    }
+
+    /// Join a client that is already running, from the start of the run it is
+    /// in the middle of.
+    ///
+    /// **The whole of this run, and not a window on the end of it.** The first
+    /// cut read back a megabyte, which is a length and not a boundary, and it
+    /// is wrong in both directions: a job whose last phase line is further back
+    /// than that — a check on a large game, an update sitting in one phase
+    /// while the client fills the log with cache connections — is missing from
+    /// the state this attaches with, so the shell believes a game Steam has in
+    /// hand is idle; and a run marker further back than that is a window that
+    /// may open in the middle of a *previous* run, whose unfinished jobs are
+    /// then folded in as though they were this client's.
+    ///
+    /// So the run is found rather than guessed at: [`NEW_RUN`] is the first
+    /// line of every run, and the last one in the file is where this client's
+    /// own account of itself begins. Where there is none, the run began before
+    /// the log was rotated, and the rest of it is in the file that was moved
+    /// aside — which is read first, exactly as far back as its own last run
+    /// marker.
+    ///
+    /// Once per run of the client. A whole log is four megabytes at the
+    /// outside, because that is where the client rotates it.
+    fn attach(&mut self, path: &Path, file: std::fs::File, identity: (u64, u64)) {
+        let Some((bytes, whole)) = whole_lines_from(file, 0) else {
+            return;
+        };
+        // The identity is the open file's own, so what is remembered is the
+        // file these bytes came out of and not whatever is at the path by the
+        // time the fold is over.
+        self.read_to = whole as u64;
+        self.file = Some(identity);
+
+        match this_run_in(&bytes[..whole]) {
+            // The run began in this file, so nothing before that mark is this
+            // client's.
+            Some(at) => self.fold(&String::from_utf8_lossy(&bytes[at..whole])),
+            // It did not, so the beginning of it is in the log the client moved
+            // aside. Read that one first and this one after it, in the order
+            // the client wrote them.
+            None => {
+                if let Some(before) = std::fs::File::open(rotated(path))
+                    .ok()
+                    .and_then(|file| whole_lines_from(file, 0))
+                {
+                    let (bytes, whole) = before;
+                    let at = this_run_in(&bytes[..whole]).unwrap_or_default();
+                    self.fold(&String::from_utf8_lossy(&bytes[at..whole]));
+                }
+                self.fold(&String::from_utf8_lossy(&bytes[..whole]));
+            }
+        }
+    }
+
+    /// Read the end of the log that has just been rotated away, which is the
+    /// stretch this reader never saw.
+    ///
+    /// Between one look and the next the client goes on writing, and if the
+    /// rotation falls in that gap those lines are in the file it moved aside
+    /// rather than in the one at the path. They are exactly the lines that say
+    /// a job ended, so without this a job that finished across a rotation is
+    /// remembered as in hand until the client is closed.
+    ///
+    /// Only where the file that was moved aside is provably the one this was
+    /// reading: the same device and inode the offset was measured against. Any
+    /// other file at that name is a rotation this reader missed entirely, and
+    /// an offset into it would be an offset into somebody else's stream.
+    fn catch_up_with_the_rotated(&mut self, path: &Path, seen: (u64, u64)) {
+        let Ok(file) = std::fs::File::open(rotated(path)) else {
+            return;
+        };
+        let Ok(meta) = file.metadata() else {
+            return;
+        };
+        if (meta.dev(), meta.ino()) != seen || meta.len() <= self.read_to {
+            return;
+        }
+        let Some((bytes, whole)) = whole_lines_from(file, self.read_to) else {
+            return;
+        };
+        self.fold(&String::from_utf8_lossy(&bytes[..whole]));
+    }
+
+    fn fold(&mut self, text: &str) {
+        for line in text.lines() {
+            // A run of the client's own begins here, and nothing the run before
+            // it left unfinished belongs to this one. **A client killed in the
+            // middle of an update never writes the line that ends it**, so
+            // without this a session that lost its Steam once would believe
+            // that update was in flight for ever and nothing would ever close a
+            // client again.
+            if line.contains(NEW_RUN) {
+                self.doing.clear();
+                continue;
+            }
+            let Some((track, app_id, what)) = job_in(line) else {
+                continue;
+            };
+            // Each line is the whole state of that job, so the last one wins
+            // and `None` is how the client says it has finished.
+            match what == NOTHING_IN_HAND {
+                true => self.doing.remove(&(track, app_id)),
+                false => self.doing.insert((track, app_id), phase_of(what)),
+            };
+        }
+    }
+}
+
+/// Everything from `from` to the end of the file, cut back to the last whole
+/// line, and how much of it that is.
+///
+/// Whole lines only, because a client writing while this reads leaves a
+/// half-written last one — see [`Jobs::read_to`] — and bytes rather than a
+/// string, because the seek lands wherever it is asked to and that may be the
+/// middle of a character.
+fn whole_lines_from(mut file: std::fs::File, from: u64) -> Option<(Vec<u8>, usize)> {
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let whole = bytes.iter().rposition(|byte| *byte == b'\n')? + 1;
+    Some((bytes, whole))
+}
+
+/// Where the run of the client that is still going began, in a stretch of its
+/// log, or nothing where the whole stretch belongs to runs before it.
+///
+/// The offset of the start of the last [`NEW_RUN`] line: what follows it is
+/// this client's own account of itself, and what precedes it was written by a
+/// client that is no longer there.
+fn this_run_in(bytes: &[u8]) -> Option<usize> {
+    let marker = NEW_RUN.as_bytes();
+    let at = bytes
+        .windows(marker.len())
+        .rposition(|window| window == marker)?;
+    // Back to the start of the line it is on, so the fold begins on a line
+    // boundary rather than in the middle of one.
+    Some(match bytes[..at].iter().rposition(|byte| *byte == b'\n') {
+        Some(end) => end + 1,
+        None => 0,
+    })
+}
+
+/// The name the client moves this log aside to when it fills up.
+fn rotated(path: &Path) -> PathBuf {
+    path.with_file_name(CONTENT_LOG_BEFORE)
+}
+
+/// The log the client writes what it is doing to each game into.
+const CONTENT_LOG: &str = "content_log.txt";
+
+/// And what it renames that to at four megabytes, keeping one.
+///
+/// Read for two stretches that are in it rather than in the log at the live
+/// name, and both of them are a run of the client that outlived its own log:
+/// the lines written between the last look and the rotation, and — for a shell
+/// that starts while a client is already running — the beginning of that
+/// client's run. See [`Jobs::catch_up_with_the_rotated`] and [`Jobs::attach`].
+const CONTENT_LOG_BEFORE: &str = "content_log.previous.txt";
+
+/// Which of the two a job's phase is. See [`InHand`].
+fn phase_of(what: &str) -> InHand {
+    match what.contains(CHECKING_THE_DISK) {
+        true => InHand::Checking,
+        false => InHand::Working,
+    }
+}
+
+/// The phase that reads back what is already on the disk. Matched whole, so
+/// that `Verifying Staged` — which checks what has just arrived, inside a
+/// download the manifest is already describing — is not taken for it.
+const CHECKING_THE_DISK: &str = "Verifying Installed";
+
+/// The track, the app id and the phase out of one of the client's job lines.
+///
+/// `[2026-09-02 21:03:40] AppID 1391110 App update changed : Running Update,`
+fn job_in(line: &str) -> Option<(Track, u32, &str)> {
+    let (track, (before, what)) = TRACKS
+        .iter()
+        .find_map(|track| Some((*track, line.split_once(track.said())?)))?;
+    let app_id = before.rsplit_once(APP_ID)?.1.trim().parse().ok()?;
+    Some((track, app_id, what.trim()))
+}
+
+const APP_ID: &str = "AppID ";
+
+/// What the client writes when that job is over.
+const NOTHING_IN_HAND: &str = "None";
+
+/// The last 64 KB of a log the client is writing, or nothing where there is no
+/// such file.
+fn tail_of(path: &Path) -> Option<String> {
     const TAIL: u64 = 64 * 1024;
 
-    let path = root.join("logs").join("connection_log.txt");
     let mut file = std::fs::File::open(path).ok()?;
     let length = file.metadata().ok()?.len();
     file.seek(SeekFrom::Start(length.saturating_sub(TAIL)))
@@ -1084,8 +2497,217 @@ fn logged_on_as(root: &Path) -> Option<u32> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
 
-    logged_on_in(&String::from_utf8_lossy(&bytes))
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
+
+/// What the client's own log says is standing between a press and a game.
+///
+/// A launch walks a dozen tasks — `UpdatingAppInfo`, `CheckShaderDepotManifest`,
+/// `DownloadingDepots`, `SynchronizingCloud`, `CreatingProcess` — and this is
+/// the last one it wrote, with the two ends of the walk called out as their
+/// own answers.
+///
+/// **The walk itself is the news, and reading it as silence cost a launch.**
+/// The first cut of this answered nothing at all for a launch that was still
+/// being walked, on the reasoning that a launch in flight is the ordinary case
+/// and the loading screen was already waiting for it. Reported from use on
+/// 2026-09-04, with a screenshot of Valve's own launch window saying
+/// *"Downloading content (19%)"*: a press on Counter-Strike 2 reached
+/// `DownloadingDepots` one second in and stayed there while Steam fetched the
+/// update, and the loading screen — which had nothing on this disk to read,
+/// the game's manifest saying only that the copy was being repaired — ran out
+/// its minute and said the game had not started, over a client that was one
+/// fifth of the way through starting it.
+///
+/// So a task in flight is an answer: **the client is working on this press**,
+/// it says on what, and a screen that can see that has no business giving up
+/// on it. See [`LaunchStanding::Working`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchStanding {
+    /// `LaunchApp failed with <error>`: the client has given up on it, and no
+    /// window is coming.
+    ///
+    /// **Reported off this machine on 2026-09-03, twice in an hour.** A press
+    /// on Counter-Strike 2 walked as far as `DownloadingDepots` and then:
+    ///
+    /// ```text
+    /// [2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp failed with AppError_19 with ""
+    /// [2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Failed with ""
+    /// ```
+    ///
+    /// `AppError_19` is "Update required", and Valve's client says so in a
+    /// modal — which this shell holds off the screen, so nothing anywhere said
+    /// it. Twenty-one seconds into the first press and twenty into the second,
+    /// against a loading screen that waits sixty and then says the game did not
+    /// start. Steam went on to fetch the update the launch had asked it to
+    /// schedule, finished it, and started nothing: the launch it belonged to
+    /// had been over for eighteen seconds.
+    ///
+    /// The string is Valve's own name for the error and is **for the log**. It
+    /// is an internal identifier, it is in English whatever language Steam is
+    /// running in, and nothing here reads it as an enumeration — what to do
+    /// about a refusal is decided from what the shell can see for itself.
+    Refused(String),
+    /// `changed task to Completed`: the client has done its half, and what is
+    /// left is the window.
+    Started,
+    /// `waiting for user response to <task>`: it has stopped on that step, and
+    /// the client is showing a window about it that this shell is holding off
+    /// the screen.
+    ///
+    /// The same fact `bWaitingForUI` carries in
+    /// [`crate::webui::launching`], out of a file rather than out of the
+    /// client's interface — so it is answerable on a client that was already
+    /// running when this session came up, which exposes no interface at all.
+    Waiting(String),
+    /// `changed task to <task>`, with nothing after it: the client is on that
+    /// step of the walk and has not left it.
+    ///
+    /// Not a stop and not an end — it is the ordinary way a launch spends its
+    /// time, and the reason it is worth reporting is that some of these steps
+    /// are *minutes* long. `DownloadingDepots` is the whole of an update the
+    /// press asked for; `ProcessingShaderCache` is a shader cache; and Valve's
+    /// own launch window puts a line and a percentage on the screen for each of
+    /// them while this shell had a spinner and a clock running out.
+    ///
+    /// The string is Valve's own name for the task. Unlike
+    /// [`LaunchStanding::Refused`]'s it **is** read as an enumeration — by the
+    /// shell, which has its own words for the steps worth naming and says
+    /// nothing for the rest.
+    Working(String),
+}
+
+/// What the client's own log says became of the launch of `app_id`, out of
+/// everything it has written since `from`.
+///
+/// **The log rather than the interface.** `GetActiveGameActions` describes a
+/// launch that is still walking — see [`crate::webui::launching`] — and a
+/// launch that has failed is one the client is no longer walking. This is
+/// written down whatever happens, needs no websocket, and is the only place a
+/// refusal is recorded at all.
+///
+/// `from` is where the log stood when the press was made, so that a failure
+/// from an earlier press of the same game is not read as this one's. See
+/// [`launches_so_far`].
+pub fn how_the_launch_went(root: &Path, app_id: u32, from: u64) -> Option<LaunchStanding> {
+    let mut file = std::fs::File::open(root.join("logs").join(CONSOLE_LOG)).ok()?;
+    // A log that has gone backwards has been rolled over under this, so what
+    // this launch wrote is wherever it is: read what is there rather than
+    // seeking past the end of it.
+    let from = match file.metadata().ok()?.len() < from {
+        true => 0,
+        false => from,
+    };
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    what_became_of_the_launch(&String::from_utf8_lossy(&bytes), app_id)
+}
+
+/// How much the client has written into that log so far, or nothing where
+/// there is none to read.
+///
+/// Taken once, as a press goes out, so that everything read afterwards belongs
+/// to it.
+pub fn launches_so_far(root: &Path) -> u64 {
+    std::fs::metadata(root.join("logs").join(CONSOLE_LOG))
+        .map(|meta| meta.len())
+        .unwrap_or_default()
+}
+
+/// The same reading, out of a stretch of log, so the shapes a real client
+/// writes can be checked without one.
+///
+/// Backwards, because what is wanted is the last word about this game and the
+/// client writes a good deal about others in between.
+fn what_became_of_the_launch(log: &str, app_id: u32) -> Option<LaunchStanding> {
+    let mut failed = false;
+    for line in log.lines().rev() {
+        let Some(said) = a_launch_step(line, app_id) else {
+            continue;
+        };
+        if let Some(why) = said.strip_prefix(FAILED_WITH) {
+            return Some(LaunchStanding::Refused(up_to_the_details(why)));
+        }
+        if let Some(task) = said.strip_prefix(WAITING_FOR) {
+            // Unless something after it says the client went on, which is what
+            // the walk backwards has already looked at, this launch is stopped
+            // here. The task's details follow it in quotation marks, without
+            // the `with` the other lines put in front of them, so the name is
+            // taken as the first word rather than by cutting at that.
+            return task
+                .split_whitespace()
+                .next()
+                .map(|task| LaunchStanding::Waiting(task.to_string()));
+        }
+        let Some(task) = said.strip_prefix(CHANGED_TASK) else {
+            // `continues with user response …`, which is a launch that was
+            // stopped and is not any more.
+            continue;
+        };
+        return match up_to_the_details(task).as_str() {
+            COMPLETED => Some(LaunchStanding::Started),
+            // The line that says *why* is the one before it, so this is not an
+            // answer yet — but it is the answer if nothing else turns up.
+            FAILED => {
+                failed = true;
+                continue;
+            }
+            // A step of the walk, which means the client is still walking it
+            // — unless a `Failed` further down was waiting on a reason and
+            // this is the step it failed on rather than the reason.
+            step => match failed {
+                true => Some(LaunchStanding::Refused(String::new())),
+                false => Some(LaunchStanding::Working(step.to_string())),
+            },
+        };
+    }
+    failed.then(|| LaunchStanding::Refused(String::new()))
+}
+
+/// What one of the client's launch lines says about `app_id`, or nothing for
+/// every other line in the log.
+///
+/// ```text
+/// [2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp failed with AppError_19 with ""
+/// ```
+///
+/// `LaunchApp` and nothing else: the same list carries the client's installs
+/// and removals, and an install that failed is not a game that will not start.
+/// The action number is deliberately not read — it counts from one again on
+/// every run of the client, so it names nothing on its own, and `from` is what
+/// tells one press from another.
+fn a_launch_step(line: &str, app_id: u32) -> Option<&str> {
+    let (id, rest) = line.split_once(GAME_ACTION)?.1.split_once(',')?;
+    (id.trim().parse::<u32>().ok()? == app_id).then_some(())?;
+    Some(rest.split_once(A_LAUNCH)?.1.trim())
+}
+
+/// The client puts the task's own details after it, in quotation marks, and
+/// they are empty on every line this reads. Cut rather than assumed empty.
+fn up_to_the_details(said: &str) -> String {
+    said.split(DETAILS)
+        .next()
+        .unwrap_or(said)
+        .trim()
+        .to_string()
+}
+
+const GAME_ACTION: &str = "GameAction [AppID ";
+const A_LAUNCH: &str = "] : LaunchApp ";
+const FAILED_WITH: &str = "failed with ";
+const CHANGED_TASK: &str = "changed task to ";
+/// What the client writes when it has stopped on a step and put a window up
+/// about it. The task's own name follows, and then its details in quotation
+/// marks — `waiting for user response to ProcessingShaderCache ""`.
+const WAITING_FOR: &str = "waiting for user response to ";
+const DETAILS: &str = " with \"";
+/// The client's own words for the two ends of a launch.
+const COMPLETED: &str = "Completed";
+const FAILED: &str = "Failed";
+
+/// The log the client walks each launch through, a line to a step.
+const CONSOLE_LOG: &str = "console_log.txt";
 
 /// What the client writes as the first line of every run.
 const NEW_RUN: &str = "Client version:";
@@ -1093,8 +2715,19 @@ const NEW_RUN: &str = "Client version:";
 /// The state a logged-on client stamps its lines with.
 const LOGGED_ON: &str = "Logged On";
 
-/// Who the client is acting for now, out of a stretch of its log.
-fn logged_on_in(log: &str) -> Option<u32> {
+/// What the client writes as the last line of every run it closes cleanly.
+///
+/// The other half of [`NEW_RUN`], and it is needed for the same reason. A
+/// client that has just been started has not written its own first line yet,
+/// so for a second or so the tail of this log still belongs to the client
+/// before it — and that one's account stamp is still the last one in the file.
+/// Caught on this machine on 2026-09-02: a cold start was called ready one
+/// second in, off the *previous* client's Offline Mode.
+const RUN_ENDED: &str = "Log session ended";
+
+/// The last line of the client's current run that says both what its
+/// connection is doing and whose it is.
+fn last_stamp(log: &str) -> Option<(&str, u32, &str)> {
     let this_run = match log.rfind(NEW_RUN) {
         Some(at) => &log[at..],
         // No start marker in the tail. Either the client has been up long
@@ -1103,10 +2736,37 @@ fn logged_on_in(log: &str) -> Option<u32> {
         // what is here.
         None => log,
     };
-    match this_run.lines().filter_map(stamped).next_back() {
-        Some((LOGGED_ON, account)) if account != 0 => Some(account),
+    this_run.lines().filter_map(stamped).next_back()
+}
+
+/// Who the client is signed in to *Steam* as now, out of a stretch of its log.
+fn logged_on_in(log: &str) -> Option<u32> {
+    match last_stamp(log) {
+        Some((LOGGED_ON, account, said)) if account != 0 && !said.contains(RUN_ENDED) => {
+            Some(account)
+        }
         _ => None,
     }
+}
+
+/// Who the client that is running is acting for, whether or not it has reached
+/// Steam.
+///
+/// The weaker question, and the only one an offline client answers. It stamps
+/// every line with its account from the moment it knows which one it is —
+/// `CCMInterface::SetSteamID( [U:1:82105993] )`, a second into a cold start —
+/// and then stays `Logged Off` for the rest of its run. On its own this says
+/// nothing about whether the client is usable, which is why [`state`] only
+/// reads it beside the client's own list. Zero is the client before it knows,
+/// and is not an account.
+fn acting_for_in(log: &str) -> Option<u32> {
+    let (_, account, said) = last_stamp(log)?;
+    if said.contains(RUN_ENDED) {
+        // The run this stamp belongs to is over, so it says nothing about the
+        // client that is up now. See [`RUN_ENDED`].
+        return None;
+    }
+    (account != 0).then_some(account)
 }
 
 /// The state and account one log line is stamped with, for the lines that
@@ -1116,11 +2776,11 @@ fn logged_on_in(log: &str) -> Option<u32> {
 /// it from the timestamp block that precedes it — a line stamped with an
 /// account but no state says nothing about whether the client is signed in and
 /// must not be read as though it did.
-fn stamped(line: &str) -> Option<(&str, u32)> {
+fn stamped(line: &str) -> Option<(&str, u32, &str)> {
     let at = line.find("[U:1:")?;
-    let account = line[at + "[U:1:".len()..]
+    let (account, said) = line[at + "[U:1:".len()..]
         .split_once(']')
-        .and_then(|(id, _)| id.parse::<u32>().ok())?;
+        .and_then(|(id, said)| Some((id.parse::<u32>().ok()?, said)))?;
 
     let before = &line[..at];
     let open = before.rfind('[')?;
@@ -1134,7 +2794,7 @@ fn stamped(line: &str) -> Option<(&str, u32)> {
     if fields.next().is_some() || counts.0.is_err() || counts.1.is_err() {
         return None;
     }
-    Some((state, account))
+    Some((state, account, said))
 }
 
 /// Valve's Flatpak, which is the name of everything it puts on the disk:
@@ -1269,14 +2929,58 @@ fn on_path(program: &str) -> Option<PathBuf> {
 /// it costs is narrow and worth saying plainly: after signing out of the shell,
 /// a user who starts Valve's client *by hand* may find it still signed in, and
 /// signs out from inside it as they always would.
+/// One writer at a time at `config/loginusers.vdf`, across every session this
+/// user is running.
+///
+/// **Two modules below write that file**, and both do it by reading all of it,
+/// changing a field and putting all of it back: [`offline`] sets
+/// `WantsOfflineMode`, and [`autologin::stop`] clears `AllowAutoLogin` and
+/// `MostRecent`. Two of those at once — two sessions, or a session and one of
+/// this crate's `probe-*` examples — read the same bytes and each put back a
+/// copy without the other's change in it. The second to finish wins, silently,
+/// and what is lost is either somebody's Offline Mode or the sign-out that was
+/// supposed to stop a client signing itself back in.
+///
+/// It is only ever half a guard, and there is no honest way to make it a whole
+/// one: Valve's client writes this file too and has never heard of this lock.
+/// What it makes impossible is two LineXinBar sessions losing each other's
+/// edit. See [`crate::turns::What::TheAccountList`].
+fn the_account_list(root: &Path) -> crate::turns::Turn {
+    crate::turns::take(
+        crate::turns::What::TheAccountList,
+        crate::turns::Behalf {
+            backend: Some(root.to_path_buf()),
+            request: None,
+        },
+    )
+}
+
+/// Beside and rename over, so a client reading one of these files while this
+/// happens sees either all of the old one or all of the new one.
+///
+/// One copy for both modules below, which had one each and identical. The
+/// scratch name carries this process's pid: under [`the_account_list`] no two
+/// sessions are here at once anyway, but a fixed name would be one file two
+/// programs write into — and the machine where that matters is exactly the one
+/// where the lock could not be made. It also means a scratch file left behind
+/// by a session killed mid-write is visibly whose, rather than a permanent
+/// squatter on the only name.
+fn beside_and_rename_over(path: &Path, text: &str) {
+    let scratch = path.with_extension(format!("lxb-writing-{}", std::process::id()));
+    if std::fs::write(&scratch, text).is_ok() {
+        let _ = std::fs::rename(&scratch, path);
+    }
+}
+
 pub mod autologin {
     use std::path::Path;
 
+    use super::beside_and_rename_over as write;
     use crate::vdf::{self, Node};
 
     /// Where the account name goes in the client's Linux registry — its
     /// stand-in for the Windows registry key of the same name.
-    const AUTO_LOGIN_USER: [&str; 6] = [
+    pub(super) const AUTO_LOGIN_USER: [&str; 6] = [
         "Registry",
         "HKCU",
         "Software",
@@ -1292,6 +2996,9 @@ pub mod autologin {
     /// say to somebody about a file they have never heard of. Whatever could
     /// be cleared is cleared.
     pub fn stop(root: &Path, home: &Path, account: &str) {
+        // Held over both files. The second of them is the account list, which
+        // [`super::offline`] writes too — see [`super::the_account_list`].
+        let _turn = super::the_account_list(root);
         // Whether there was anything here to clear. Asked because this is run
         // once per layout a client could have used — see
         // [`crate::client::Options::every_layout`] — and a line saying the
@@ -1344,15 +3051,6 @@ pub mod autologin {
         Some(vdf::parse(&std::fs::read_to_string(path).ok()?))
     }
 
-    /// Beside and rename over, so a client reading the file while this happens
-    /// sees either all of the old one or all of the new one.
-    fn write(path: &Path, text: &str) {
-        let scratch = path.with_extension("lxb-writing");
-        if std::fs::write(&scratch, text).is_ok() {
-            let _ = std::fs::rename(&scratch, path);
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1395,9 +3093,1249 @@ pub mod autologin {
     }
 }
 
+/// Valve's own Offline Mode: reading it, and asking for it.
+///
+/// ## What the mode is
+///
+/// A client in Offline Mode logs on to *this machine* rather than to Steam. It
+/// never opens a connection, it says `Logged Off` in its connection log for the
+/// whole of its run, and it plays every game on the disk that is fully up to
+/// date. Valve's own wording for what it costs is plain: "Many features, such
+/// as Friends and Family Sharing, will not be available while offline. Only
+/// games that are fully up-to-date will be available."
+///
+/// ## Where it lives
+///
+/// In the client's own list of accounts, `config/loginusers.vdf`, as
+/// `WantsOfflineMode` on the entry for one account. Measured on this machine on
+/// 2026-09-02: choosing "Go Offline" in Valve's own menu turned that field from
+/// `0` to `1`, and a client started afterwards — with the network up and
+/// working — came up logged on for that account without so much as trying to
+/// connect, in about a second, with no window and no dialog. So the field is
+/// not a note of what happened; it is what decides how the client comes up, and
+/// writing it is the whole of how a shell with no terminal enters the mode.
+///
+/// The two obvious alternatives were tried first and are worse. `steam://
+/// goonline` and `steam://gooffline` are real verbs in the client's own URL
+/// table and are **silent no-ops** on this build — measured: the URL was
+/// accepted, and nothing happened, ever. `SteamClient.User.StartOffline` is a
+/// real call, and reaching it means opening the client's debugging port and
+/// restarting a client that came up without it, which is a minute of somebody's
+/// loading screen to write a field this shell can write in a millisecond.
+///
+/// ## What this shell will and will not do with it
+///
+/// It turns the mode **on** when it cannot reach Steam and somebody has pressed
+/// a game, because on a console there is nothing else the press can mean. It
+/// turns it **off** only where it turned it on: the marker in [`ours`] is what
+/// separates a mode this shell asked for from one the user chose in Valve's own
+/// menu, and dragging somebody back online because their network came back
+/// would be the shell overruling a choice it never made.
+pub mod offline {
+    use std::path::{Path, PathBuf};
+
+    use super::beside_and_rename_over as write;
+    use super::Options;
+    use crate::vdf;
+
+    /// The field, on one account's entry in the client's own list.
+    const WANTS_OFFLINE_MODE: &str = "WantsOfflineMode";
+
+    /// Which account, if any, would have the client come up offline.
+    ///
+    /// Read as the client reads it: the registry says which account signs
+    /// itself in, and that account's entry says whether it wants the mode. An
+    /// entry for somebody else with the field set is not this client's business
+    /// — a household with two accounts must not have one of them decide how the
+    /// other comes up.
+    ///
+    /// Answers the **account id**, which is the low half of the SteamID64 the
+    /// entry is filed under, because that is the form the client's own log
+    /// stamps its lines with and the form [`super::state`] has to compare
+    /// against.
+    pub fn account_wanting_it(options: &Options) -> Option<u32> {
+        let signs_itself_in = auto_login_user(&options.home)?;
+        let users = read(&list(&options.root))?;
+        let steam_id = users.block(&["users"]).find_map(|(steam_id, user)| {
+            let is_the_one = user
+                .string(&["AccountName"])
+                .is_some_and(|name| name.eq_ignore_ascii_case(&signs_itself_in));
+            let wants_it = user.number(&[WANTS_OFFLINE_MODE]) == Some(1);
+            (is_the_one && wants_it).then(|| steam_id.parse::<u64>().ok())?
+        })?;
+        Some(steam_id as u32)
+    }
+
+    /// Whether this account's entry already asks for the mode.
+    pub fn wanted(options: &Options, account: &str) -> bool {
+        read(&list(&options.root)).is_some_and(|users| {
+            users.block(&["users"]).any(|(_, user)| {
+                user.string(&["AccountName"])
+                    .is_some_and(|name| name.eq_ignore_ascii_case(account))
+                    && user.number(&[WANTS_OFFLINE_MODE]) == Some(1)
+            })
+        })
+    }
+
+    /// Ask for it, so that the next client to start comes up offline.
+    ///
+    /// Says whether the file had to be changed, which is what tells a client
+    /// that has to be started again from one that was going to come up right
+    /// anyway.
+    pub fn ask_for(options: &Options, account: &str) -> bool {
+        // Held over the read, the write and the marker below, because [`set`]
+        // is a read-modify-write of the whole account list and the marker in
+        // [`ours`] must not be able to disagree with the field it records. See
+        // [`super::the_account_list`].
+        let _turn = super::the_account_list(&options.root);
+        if set(options, account, true) {
+            ours::remember(account);
+            tracing::info!(
+                account,
+                "asked Valve's client for its own Offline Mode, having no way to reach Steam"
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Take it back, for a mode this shell asked for and no longer needs.
+    ///
+    /// Deliberately silent about a mode somebody chose themselves: see the
+    /// module's own note, and [`ours`].
+    pub fn give_back(options: &Options, account: &str) -> bool {
+        let _turn = super::the_account_list(&options.root);
+        if !ours::was_it(account) {
+            return false;
+        }
+        ours::forget();
+        if set(options, account, false) {
+            tracing::info!(
+                account,
+                "took Valve's client back out of the Offline Mode this session asked for"
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Write the field, and say whether anything moved.
+    ///
+    /// Called only under [`super::the_account_list`], which is what makes the
+    /// read and the write below one step rather than two.
+    fn set(options: &Options, account: &str, wanted: bool) -> bool {
+        let path = list(&options.root);
+        let Some(mut users) = read(&path) else {
+            return false;
+        };
+        let value = if wanted { "1" } else { "0" };
+        let mut moved = false;
+        if let Some(block) = users.make(&["users"]) {
+            for user in block.values_mut() {
+                let theirs = user
+                    .string(&["AccountName"])
+                    .is_some_and(|name| name.eq_ignore_ascii_case(account));
+                if theirs && user.string(&[WANTS_OFFLINE_MODE]) != Some(value) {
+                    user.set(&[WANTS_OFFLINE_MODE], value);
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            write(&path, &vdf::text(&users));
+        }
+        moved
+    }
+
+    fn list(root: &Path) -> PathBuf {
+        root.join("config").join("loginusers.vdf")
+    }
+
+    /// The account the client signs itself in as, out of its Linux registry.
+    fn auto_login_user(home: &Path) -> Option<String> {
+        let registry = read(&home.join("registry.vdf"))?;
+        let name = registry.string(&super::autologin::AUTO_LOGIN_USER)?;
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    fn read(path: &Path) -> Option<vdf::Node> {
+        Some(vdf::parse(&std::fs::read_to_string(path).ok()?))
+    }
+
+    /// Whether the Offline Mode that is on is one this shell asked for.
+    ///
+    /// A file of this shell's own rather than a field of Valve's, because the
+    /// question is about this shell and Valve's client has no opinion on who
+    /// pressed what. It holds the account name, so that signing in as somebody
+    /// else does not inherit a decision made about a different library, and it
+    /// lives in the cache directory because losing it costs one Offline Mode
+    /// left on until somebody says otherwise — which is exactly what Valve's
+    /// own client does anyway.
+    pub mod ours {
+        use std::path::PathBuf;
+
+        pub(super) fn remember(account: &str) {
+            let Some(path) = marker() else { return };
+            if let Some(folder) = path.parent() {
+                let _ = std::fs::create_dir_all(folder);
+            }
+            let _ = std::fs::write(path, account);
+        }
+
+        pub(super) fn forget() {
+            if let Some(path) = marker() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+
+        /// Whether this shell asked for the mode that is on, for this account.
+        pub fn was_it(account: &str) -> bool {
+            marker()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .is_some_and(|remembered| remembered.trim().eq_ignore_ascii_case(account))
+        }
+
+        fn marker() -> Option<PathBuf> {
+            let cache = std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .or_else(|| {
+                    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+                    Some(home.join(".cache"))
+                })?;
+            Some(cache.join("linexinbar").join("steam-offline-was-ours"))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A layout with one account in the client's list and one name in its
+        /// registry — the shape read off this machine on 2026-09-02.
+        fn a_client(name: &str, offline: &str) -> (std::path::PathBuf, Options) {
+            let root = std::env::temp_dir().join(format!(
+                "lxb-offline-{name}-{offline}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("config")).unwrap();
+            std::fs::write(
+                root.join("registry.vdf"),
+                format!(
+                    "\"Registry\"\n{{\n\t\"HKCU\"\n\t{{\n\t\t\"Software\"\n\t\t{{\n\t\t\t\"Valve\"\n\t\t\t{{\n\t\t\t\t\"Steam\"\n\t\t\t\t{{\n\t\t\t\t\t\"AutoLoginUser\"\t\t\"{name}\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("config").join("loginusers.vdf"),
+                format!(
+                    "\"users\"\n{{\n\t\"76561198042371721\"\n\t{{\n\t\t\"AccountName\"\t\t\"{name}\"\n\t\t\"WantsOfflineMode\"\t\t\"{offline}\"\n\t}}\n\t\"76561198000000002\"\n\t{{\n\t\t\"AccountName\"\t\t\"somebody\"\n\t\t\"WantsOfflineMode\"\t\t\"1\"\n\t}}\n}}\n"
+                ),
+            )
+            .unwrap();
+            let options = Options {
+                root: root.clone(),
+                home: root.clone(),
+            };
+            (root, options)
+        }
+
+        /// The account id is the low half of the SteamID64 the entry is filed
+        /// under, because that is the form the client stamps its log with.
+        #[test]
+        fn the_account_that_would_come_up_offline_is_the_one_that_signs_itself_in() {
+            let (_root, options) = a_client("someone", "1");
+            assert_eq!(account_wanting_it(&options), Some(82105993));
+        }
+
+        /// Somebody else's entry with the field set decides nothing. A
+        /// household with two accounts must not have one of them say how the
+        /// other comes up — and the fixture's second account has it on.
+        #[test]
+        fn another_accounts_offline_mode_is_not_this_clients() {
+            let (_root, options) = a_client("someone", "0");
+            assert_eq!(account_wanting_it(&options), None);
+            assert!(!wanted(&options, "someone"));
+            assert!(wanted(&options, "somebody"), "the fixture's other account");
+        }
+
+        /// Asked for, and then taken back — but only by the session that asked.
+        #[test]
+        fn offline_mode_is_only_taken_back_where_this_shell_asked_for_it() {
+            let _turn = crate::one_at_a_time_with_the_environment();
+            let (root, options) = a_client("someone", "0");
+            let cache = root.join("cache");
+            let was_cache = std::env::var_os("XDG_CACHE_HOME");
+            let was_state = std::env::var_os("XDG_STATE_HOME");
+            // SAFETY: under the environment mutex, which every test that moves
+            // one of these holds.
+            unsafe { std::env::set_var("XDG_CACHE_HOME", &cache) };
+            // The state directory too, because writing the field takes a lock
+            // that lives there — see [`the_list`]. Without this the lock would
+            // go wherever the test that ran before this one left the variable
+            // pointing, which on a fresh process is the real one belonging to
+            // whoever is running the suite.
+            unsafe { std::env::set_var("XDG_STATE_HOME", root.join("state")) };
+            ours::forget();
+
+            assert!(ask_for(&options, "someone"), "the field had to be written");
+            assert!(wanted(&options, "someone"));
+            assert_eq!(account_wanting_it(&options), Some(82105993));
+            // Twice is not twice: the field is already right, so nothing moves.
+            assert!(!ask_for(&options, "someone"));
+
+            // A mode somebody chose in Valve's own menu is theirs, and the
+            // marker is the whole of how the two are told apart.
+            ours::forget();
+            assert!(!give_back(&options, "someone"), "not this shell's to undo");
+            assert!(wanted(&options, "someone"), "and so it is still on");
+
+            ours::remember("someone");
+            assert!(give_back(&options, "someone"));
+            assert!(!wanted(&options, "someone"));
+            // And the marker goes with it, so the next mode starts unclaimed.
+            assert!(!ours::was_it("someone"));
+
+            // Both put back. One left pointing into a directory this test is
+            // about to remove is read by every later test in the process.
+            // SAFETY: still under the environment mutex taken at the top.
+            unsafe {
+                match was_cache {
+                    Some(was) => std::env::set_var("XDG_CACHE_HOME", was),
+                    None => std::env::remove_var("XDG_CACHE_HOME"),
+                }
+                match was_state {
+                    Some(was) => std::env::set_var("XDG_STATE_HOME", was),
+                    None => std::env::remove_var("XDG_STATE_HOME"),
+                }
+            }
+        }
+
+        /// Signing in as somebody else must not inherit a decision made about
+        /// a different library.
+        #[test]
+        fn the_marker_is_about_one_account() {
+            let _turn = crate::one_at_a_time_with_the_environment();
+            let cache =
+                std::env::temp_dir().join(format!("lxb-offline-who-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&cache);
+            // SAFETY: as above.
+            unsafe { std::env::set_var("XDG_CACHE_HOME", &cache) };
+            ours::remember("someone");
+            assert!(ours::was_it("SOMEONE"), "account names are not case");
+            assert!(!ours::was_it("somebody"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The connection log is appended across runs, so until the client that is
+    /// coming up writes its own first line the tail of it is the run before's.
+    ///
+    /// Measured on this machine: a client killed at 21:27:33 with `Logged On`
+    /// as its last line, and the next one holding the pipe at 21:28:11.4 with
+    /// the log's last run marker still reading 21:27:31. Two seconds in which
+    /// the account of a dead client is the answer to "is this one signed in".
+    #[test]
+    fn a_log_that_has_not_moved_since_the_client_started_is_the_run_befores() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-log-age-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("logs")).expect("a scratch directory");
+        let log = root.join("logs").join(CONNECTION_LOG);
+
+        // A machine with no client holding the pipe has no such moment, and
+        // unsure counts as this run's — which is what happened before any of
+        // this existed.
+        assert!(written_since(&root, None));
+        // Nor is it asked of a log that cannot be looked at.
+        assert!(written_since(&root, Some(std::time::SystemTime::now())));
+
+        std::fs::write(&log, "[2026-09-02 21:27:31] Client version: 1788291500\n")
+            .expect("writable");
+        let after_it_was_written = std::time::SystemTime::now();
+        assert!(
+            written_since(&root, Some(std::time::UNIX_EPOCH)),
+            "a log written since the client started is that client's"
+        );
+        assert!(
+            !written_since(&root, Some(after_it_was_written)),
+            "a client started after the last line of this log did not write it"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A client that is up and has not written its own first line yet is
+    /// **starting**, not signed in to whoever ran last.
+    ///
+    /// Driven against a real FIFO and the real `/proc`: this test process holds
+    /// the pipe, so it *is* the running client as far as [`holder_of`] can
+    /// tell, and the log is stamped at the epoch — long before this process
+    /// started. [`state`] reads it and names an account. [`state_now`] asks how
+    /// old the log is against the process holding the pipe, and answers
+    /// [`State::Starting`], which is what is true of it.
+    ///
+    /// The wrong answer was not merely late. `wake` refused the press outright
+    /// — *"Steam is signed in to another account. Moving it signs that account
+    /// out."* — about a client that had signed in to nothing, and the ordinary
+    /// way to reach it is the ordinary way a client ends: killed with the
+    /// session that started it, leaving `Logged On` as the last line of a log
+    /// the next run appends to.
+    #[test]
+    fn an_account_from_before_the_running_client_started_is_not_this_clients() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let scratch = std::env::temp_dir().join(format!(
+            "lxb-stale-account-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let options = Options {
+            root: scratch.join("root"),
+            home: scratch.join("home"),
+        };
+        std::fs::create_dir_all(options.root.join("logs")).expect("a scratch directory");
+        std::fs::create_dir_all(&options.home).expect("a scratch directory");
+
+        let pipe = options.home.join("steam.pipe");
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).expect("a path");
+        assert_eq!(
+            unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+            0,
+            "a scratch FIFO"
+        );
+        // Read-only and non-blocking, which is exactly what a client holds it
+        // as and what `holder_of` looks for — so this process is now the client.
+        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        assert!(held >= 0, "the FIFO could be held");
+
+        let log = options.root.join("logs").join(CONNECTION_LOG);
+        std::fs::write(
+            &log,
+            "[2026-09-02 21:27:31] Client version: 1788291500\n\
+             [2026-09-02 21:27:33] [Logged On, 4, 7] [U:1:82105993] processing complete\n",
+        )
+        .expect("writable");
+        let client = Where::Native(std::path::PathBuf::from("/nonexistent/steam"));
+        let us = Credential {
+            account: "somebody",
+            refresh_token: "not a real token",
+            steam_id: 0,
+        };
+
+        // As it stands on the disk, which is the run before's.
+        assert_eq!(state(Some(&client), &options), State::SignedIn(82105993));
+
+        // Stamped before this process — the one holding the pipe — was born.
+        std::fs::File::options()
+            .write(true)
+            .open(&log)
+            .and_then(|file| {
+                file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            })
+            .expect("the log could be dated");
+        assert!(!the_log_is_this_runs(&options));
+        assert_eq!(
+            state_now(Some(&client), &options),
+            State::Starting,
+            "a client that has not said who it is was taken for the run before's account"
+        );
+        // Which is the whole of the bug: neither signed in as us nor signed in
+        // to somebody else, so nothing refuses the press and nothing calls it
+        // ready either.
+        assert!(!state_now(Some(&client), &options).signed_in());
+        assert!(!state_now(Some(&client), &options).signed_in_as(us));
+
+        // And once this run has written a line of its own, it is this run's.
+        std::fs::write(
+            &log,
+            "[2026-09-02 21:28:12] Client version: 1788291500\n\
+             [2026-09-02 21:28:14] [Logged On, 4, 7] [U:1:82105993] processing complete\n",
+        )
+        .expect("writable");
+        assert!(the_log_is_this_runs(&options));
+        assert_eq!(
+            state_now(Some(&client), &options),
+            State::SignedIn(82105993)
+        );
+
+        unsafe { libc::close(held) };
+        // And with nobody holding the pipe there is no client to date it
+        // against — and no client at all, which `is_running` says for one
+        // syscall and without opening the log.
+        assert!(!is_running(Some(&client), &options));
+        assert_eq!(state_now(Some(&client), &options), State::Stopped);
+
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A client is proved by whose session and whose account it is, and a proof
+    /// is only good for the client it was made about.
+    ///
+    /// The two halves of finding 4, on a scratch Steam this process is itself
+    /// the client of — a FIFO held open for reading is exactly what
+    /// [`holder_of`] looks for, and this process's own environment is what
+    /// [`in_this_session`] compares against, so both come out true without a
+    /// Steam anywhere near the machine.
+    ///
+    /// What each assertion is for:
+    ///
+    /// * A stopped client proves **nothing**, where the check it replaces read
+    ///   one as nobody's and let a title's URL start one from cold.
+    /// * Another account's client is refused rather than driven.
+    /// * A client that has not said who it is yet is refused too — it is about
+    ///   to be signed in to whatever it remembered.
+    /// * And a proof of one process does not carry to another wearing its
+    ///   place, which is the whole of [`Proven::still_there`].
+    #[test]
+    fn a_proof_names_one_client_and_does_not_carry_to_another() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let scratch = std::env::temp_dir().join(format!(
+            "lxb-proof-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let options = Options {
+            root: scratch.join("root"),
+            home: scratch.join("home"),
+        };
+        std::fs::create_dir_all(options.root.join("logs")).expect("a scratch directory");
+        std::fs::create_dir_all(&options.home).expect("a scratch directory");
+        let client = Where::Native(std::path::PathBuf::from("/nonexistent/steam"));
+        let ours = Credential {
+            account: "somebody",
+            refresh_token: "not a real token",
+            steam_id: 82_105_993,
+        };
+        let theirs = Credential {
+            steam_id: 4_242_424,
+            ..ours
+        };
+
+        // Nothing running yet. **This is the case the old check passed**: with
+        // no client to inspect it answered "nobody's", and the URL went to a
+        // Steam started from cold.
+        assert!(matches!(
+            prove(&client, &options, ours),
+            Err(Refusal::Failed(_))
+        ));
+
+        let pipe = options.home.join("steam.pipe");
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).expect("a path");
+        assert_eq!(
+            unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+            0,
+            "a scratch FIFO"
+        );
+        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        assert!(held >= 0, "the FIFO could be held");
+
+        // Up, and it has not said who it is. Not this session's to use, and not
+        // somebody else's to refuse either: it is about to become one of them.
+        std::fs::write(
+            options.root.join("logs").join(CONNECTION_LOG),
+            "[2026-09-03 19:02:11] Client version: 1788291500\n",
+        )
+        .expect("writable");
+        assert_eq!(state_now(Some(&client), &options), State::Starting);
+        assert!(matches!(
+            prove(&client, &options, ours),
+            Err(Refusal::Failed(_))
+        ));
+
+        // Signed in, and to us.
+        std::fs::write(
+            options.root.join("logs").join(CONNECTION_LOG),
+            "[2026-09-03 19:02:11] Client version: 1788291500\n\
+             [2026-09-03 19:02:13] [Logged On, 4, 7] [U:1:82105993] processing complete\n",
+        )
+        .expect("writable");
+        let proven = prove(&client, &options, ours).expect("this session's client");
+        assert_eq!(proven.account, 82_105_993);
+        assert_eq!(
+            proven.pid,
+            Some(std::process::id()),
+            "the process holding the pipe is the one named"
+        );
+        assert!(proven.still_there(&client, &options).is_ok());
+
+        // The same client, and not ours: the household account beside it.
+        assert!(matches!(
+            prove(&client, &options, theirs),
+            Err(Refusal::NotOurs(_))
+        ));
+
+        // A proof of some other process does not hold here, which is what
+        // catches a client that was killed and started again between the wake
+        // and the request.
+        let somebody_else = Proven {
+            pid: Some(std::process::id().wrapping_add(1)),
+            account: 82_105_993,
+        };
+        assert!(matches!(
+            somebody_else.still_there(&client, &options),
+            Err(Refusal::Failed(_))
+        ));
+
+        // And once it has gone there is nothing to prove and nothing to
+        // deliver to. `deliver` never starts one, which is what separates it
+        // from `open`.
+        unsafe { libc::close(held) };
+        assert!(matches!(
+            proven.still_there(&client, &options),
+            Err(Refusal::Failed(_))
+        ));
+        assert!(matches!(
+            deliver(&client, &options, &proven, "steam://rungameid/440"),
+            Err(Refusal::Failed(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A process's age comes off `/proc/uptime` and its own start time, and the
+    /// name in the second field is not to be trusted to be one word.
+    ///
+    /// **`/proc/stat`'s `btime` is the route not taken**, and this is why: it
+    /// is whole seconds, and measured on this machine it put a process 0.87 s
+    /// before its true start where this route put it 0.3 ms after. A second of
+    /// error is the wrong size for a question about two.
+    #[test]
+    fn a_process_is_dated_by_its_age_and_not_by_the_hour_the_machine_booted() {
+        let proc = std::env::temp_dir().join(format!(
+            "lxb-proc-age-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(proc.join("41")).expect("a scratch directory");
+        std::fs::write(proc.join("uptime"), "1000.00 4000.00\n").expect("writable");
+
+        // Twenty-two fields, of which the twenty-second is the start time. The
+        // name is deliberately a bracket and a space, which is what a program
+        // called `a) b (c` puts in there — the parse has to start at the last
+        // `)` and not the first.
+        let ticks = 40_000; // 400 s at 100 Hz, so 600 s old.
+        let stat =
+            format!("41 (a) b (c) S 1 41 41 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {ticks} 0 0 0 0 0\n");
+        std::fs::write(proc.join("41").join("stat"), stat).expect("writable");
+
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+        let age = age_of(&proc, 41).expect("an age");
+        assert!(
+            (age.as_secs_f64() - (1000.0 - 40_000.0 / hz)).abs() < 0.01,
+            "age was {age:?}"
+        );
+
+        // A process younger than the machine is not a negative age, and one
+        // whose files are unreadable is no answer rather than a wrong one.
+        std::fs::write(proc.join("uptime"), "1.00 4.00\n").expect("writable");
+        assert_eq!(age_of(&proc, 41), Some(Duration::ZERO));
+        assert_eq!(age_of(&proc, 42), None);
+
+        let _ = std::fs::remove_dir_all(&proc);
+    }
+
+    /// What the client's own log says it has in hand, which is the one place
+    /// a file check is written down at all.
+    ///
+    /// Every line here is off this machine on 2026-09-02, and the trace is the
+    /// whole finding: Steam ran a check on Dispatch for **thirty-six seconds**
+    /// with `appmanifest_2592160.acf` reading `StateFlags 4` throughout — a
+    /// watcher sampling the file twice a second never saw it rewritten — so
+    /// nothing in a manifest, and nothing in a job of this session's, said the
+    /// client was busy. The shell shut it down under the check it had itself
+    /// asked for.
+    #[test]
+    fn a_check_that_no_manifest_describes_is_in_the_clients_own_log() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-content-log-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("logs")).expect("a scratch directory");
+        let log = root.join("logs").join(CONTENT_LOG);
+        // Written whole each time, which is what the client never does — the
+        // appending half is [`a_job_is_read_forward_and_not_out_of_a_window`].
+        let write = |body: &str| {
+            std::fs::write(&log, body).expect("writable");
+            let mut jobs = Jobs::default();
+            jobs.look(&root);
+            jobs
+        };
+
+        assert!(!Jobs::default().anything_in_hand(), "no log is no work");
+        assert!(!write("nothing to see\n").anything_in_hand());
+
+        let started = "\
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 20:50:49] AppID 2592160 scheduler update : Priority First, not played for 445474 seconds
+[2026-09-02 20:50:49] AppID 2592160 state changed : Fully Installed,Update Queued,
+[2026-09-02 20:50:49] AppID 2592160 state changed : Fully Installed,Update Queued,Update Running,
+[2026-09-02 20:50:49] AppID 2592160 App update changed : Running Update,
+[2026-09-02 20:50:49] AppID 2592160 App update changed : Running Update,Reconfiguring,
+[2026-09-02 20:50:49] AppID 2592160 App update changed : Running Update,
+[2026-09-02 20:50:49] AppID 2592160 App update changed : Running Update,Verifying Installed,
+";
+        let doing = write(started);
+        assert!(doing.anything_in_hand());
+        assert_eq!(
+            doing.to_the_game(2592160),
+            Some(InHand::Checking),
+            "a check the manifests say nothing at all about, named as a check"
+        );
+
+        // And the line that ends it. `scheduler finished` follows, but `None`
+        // is what the client says about the job itself and is enough.
+        let ended = format!(
+            "{started}\
+[2026-09-02 20:51:25] AppID 2592160 App update changed : Running Update,
+[2026-09-02 20:51:25] AppID 2592160 App update changed : None
+[2026-09-02 20:51:25] AppID 2592160 state changed : Fully Installed,
+[2026-09-02 20:51:25] AppID 2592160 scheduler finished : removed from schedule (result No Error, state 0xc)
+"
+        );
+        assert!(!write(&ended).anything_in_hand());
+
+        // **Only this run of the client.** A client killed in the middle of an
+        // update never writes the line that ends it, so without the start
+        // marker a session that had lost its Steam once would believe that
+        // update was in flight for the rest of its life — and nothing would
+        // ever close a client again.
+        let orphaned = "\
+[2026-09-02 18:00:00] Client version: 1788291500
+[2026-09-02 18:00:01] AppID 108600 App update changed : Running Update,Verifying Installed,
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 21:03:12] Loaded Steam library folders configuration: /home/x/steamapps/libraryfolders.vdf
+";
+        assert!(
+            !write(orphaned).anything_in_hand(),
+            "work the client before this one was killed in the middle of"
+        );
+
+        // **The three tracks are three jobs, and they run at once.** A shader
+        // cache must never reach a row — the game is on the disk and plays
+        // perfectly while Steam fetches one — and must equally not be
+        // interrupted, because one of them ran for sixty-four minutes here.
+        let mixed = "\
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 21:03:16] AppID 241100 Workshop update changed : Running Update,Staging,
+[2026-09-02 21:03:16] AppID 3812600 Shader update changed : Running Update,Downloading,Staging,
+";
+        let doing = write(mixed);
+        assert!(
+            doing.anything_in_hand(),
+            "so a client is not shut down under it"
+        );
+        assert_eq!(doing.to_the_game(241100), Some(InHand::Working));
+        assert_eq!(
+            doing.to_the_game(3812600),
+            None,
+            "and a shader cache is never a word on a row"
+        );
+        // It is still asked about, by the one thing that has a use for it: a
+        // press standing there while Steam fetches five gigabytes of them.
+        assert!(doing.fetching_shaders_for(3812600));
+        assert!(!doing.fetching_shaders_for(241100), "that one is Workshop");
+
+        // A shader job of one game's ending says nothing about the update of
+        // the same game, which is why the two are not one entry.
+        let both = "\
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 21:03:16] AppID 108600 App update changed : Running Update,Verifying Installed,
+[2026-09-02 21:03:16] AppID 108600 Shader update changed : Running Update,Downloading,Staging,
+[2026-09-02 21:03:18] AppID 108600 Shader update changed : None
+";
+        let both = write(both);
+        assert_eq!(both.to_the_game(108600), Some(InHand::Checking));
+        assert!(
+            !both.fetching_shaders_for(108600),
+            "and the shader half of it said it had finished"
+        );
+
+        // `Verifying Staged` is the other check, and is not this one: it reads
+        // back what has just arrived, inside a download the manifest is already
+        // describing.
+        let staged = "\
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 21:03:16] AppID 108600 App update changed : Running Update,Verifying Staged,
+";
+        assert_eq!(write(staged).to_the_game(108600), Some(InHand::Working));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job outlives its own line, so the log is read forward rather than
+    /// looked at through a window.
+    ///
+    /// The client writes `App update changed` only when a job moves between
+    /// phases, and it writes a great deal else in between — cache connections,
+    /// schedulers, the other two tracks. So the first cut of this, which folded
+    /// the last 64 KB every time, lost a long job the moment its line was
+    /// pushed out: the check went on running and the shell believed it had
+    /// finished.
+    #[test]
+    fn a_job_is_read_forward_and_not_out_of_a_window() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-content-stream-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("logs")).expect("a scratch directory");
+        let log = root.join("logs").join(CONTENT_LOG);
+        let append = |body: &str| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .expect("writable");
+            file.write_all(body.as_bytes()).expect("written");
+        };
+
+        let mut jobs = Jobs::default();
+        append(
+            "[2026-09-02 21:03:12] Client version: 1788291500\n\
+             [2026-09-02 21:03:16] AppID 730 App update changed : Running Update,Verifying Installed,\n",
+        );
+        assert!(jobs.look(&root), "the answer moved");
+        assert_eq!(jobs.to_the_game(730), Some(InHand::Checking));
+        assert!(!jobs.look(&root), "and a look at nothing new moves nothing");
+
+        // Two hundred kilobytes of everything else, which is a quarter of an
+        // hour of a busy client and three times the window the first cut used.
+        for _ in 0..2000 {
+            append("[2026-09-02 21:04:00] HTTPS (SteamCache,494) - cache12-waw1.steamcontent.com: Closing connection, and some more of the same to fill the line out to a hundred characters\n");
+        }
+        assert!(!jobs.look(&root), "none of that is about a job");
+        assert_eq!(
+            jobs.to_the_game(730),
+            Some(InHand::Checking),
+            "the check is still running and its own line is long gone"
+        );
+
+        append("[2026-09-02 21:19:00] AppID 730 App update changed : None\n");
+        assert!(jobs.look(&root));
+        assert_eq!(jobs.to_the_game(730), None);
+
+        // A line the client is still writing is not folded until it is whole,
+        // or the only word that mattered would be skipped with the rest of it.
+        append("[2026-09-02 21:20:00] AppID 730 App update changed : Running Upd");
+        assert!(!jobs.look(&root), "half a line says nothing yet");
+        append("ate,Verifying Installed,\n");
+        assert!(jobs.look(&root));
+        assert_eq!(jobs.to_the_game(730), Some(InHand::Checking));
+
+        // And the log being emptied under it is a file to be read from its
+        // start again, not one that has gone backwards. **What the client has
+        // in hand survives it.** The check is still running: no log said it had
+        // ended, and a log being shorter than it was is a fact about the log.
+        std::fs::write(
+            &log,
+            "[2026-09-02 21:30:00] AppID 108600 App update changed : Running Update,\n",
+        )
+        .expect("writable");
+        assert!(jobs.look(&root));
+        assert_eq!(
+            jobs.to_the_game(730),
+            Some(InHand::Checking),
+            "nothing said the check had ended"
+        );
+        assert_eq!(jobs.to_the_game(108600), Some(InHand::Working));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job outlives the log it was written into, so a rotation is not the end
+    /// of it.
+    ///
+    /// The client renames this log at four megabytes and opens another at the
+    /// same path, and a download fills it fast: measured on this machine on
+    /// 2026-09-02, the rotated log's last nine minutes were sixty-four
+    /// kilobytes of failed-allocation lines, and the update running across the
+    /// boundary had its last phase line in one file and the line that ended it
+    /// in the next.
+    ///
+    /// Two things had to be true for that to be read correctly, and neither was.
+    /// The reader has to notice the file is a different file — the offset alone
+    /// says nothing, and a new log that has already grown past the old offset
+    /// looks like an ordinary append. And it must not throw away what the
+    /// client has in hand when it notices, because nothing about the work
+    /// changed: the client says a job is over by saying so.
+    #[test]
+    fn a_job_survives_the_log_being_rotated_under_it() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-content-rotate-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("logs")).expect("a scratch directory");
+        let log = root.join("logs").join(CONTENT_LOG);
+        let append = |body: &str| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .expect("writable");
+            file.write_all(body.as_bytes()).expect("written");
+        };
+
+        let mut jobs = Jobs::default();
+        append(
+            "[2026-09-02 18:00:00] Client version: 1788291500\n\
+             [2026-09-02 18:00:01] AppID 108600 App update changed : Running Update,Downloading,Staging,\n",
+        );
+        assert!(jobs.look(&root));
+        assert_eq!(jobs.to_the_game(108600), Some(InHand::Working));
+
+        // What the client wrote between that look and the rotation, which this
+        // reader never saw at the live name: a second job began, and it is in
+        // the file that is about to be moved aside.
+        append(
+            "[2026-09-02 18:34:21] AppID 241100 Workshop update changed : Running Update,Staging,\n",
+        );
+        std::fs::rename(&log, root.join("logs").join(CONTENT_LOG_BEFORE)).expect("renamable");
+        // And the log the client opens in its place, longer than the old offset
+        // so that nothing about the length says anything happened. The update
+        // goes on across it and says nothing, because nothing about it changed.
+        let mut fresh = String::new();
+        for _ in 0..40 {
+            fresh.push_str("[2026-09-02 18:34:22] HTTPS (SteamCache,494) - cache12-waw1.steamcontent.com: Closing connection, and rather more of the same to fill the line out\n");
+        }
+        std::fs::write(&log, &fresh).expect("writable");
+        assert!(
+            std::fs::metadata(&log).expect("there").len() > 200,
+            "a new log that has already grown past the old offset"
+        );
+
+        assert!(jobs.look(&root));
+        assert_eq!(
+            jobs.to_the_game(108600),
+            Some(InHand::Working),
+            "the update is still running and its log has been rolled over"
+        );
+        assert_eq!(
+            jobs.to_the_game(241100),
+            Some(InHand::Working),
+            "and the job that began in the stretch this reader had not got to yet"
+        );
+
+        // The client is what ends a job, and it is read from the new file the
+        // same as from the old one.
+        append("[2026-09-02 18:34:22] AppID 108600 App update changed : None\n");
+        assert!(jobs.look(&root));
+        assert_eq!(jobs.to_the_game(108600), None);
+        assert_eq!(jobs.to_the_game(241100), Some(InHand::Working));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A shell that starts while a client is already running joins that
+    /// client's run at the beginning of it.
+    ///
+    /// The log is not a state, so where the reading starts decides what is
+    /// known — and the first cut started a megabyte back from the end, which is
+    /// a length and not a boundary. It is wrong in both directions. A client
+    /// that has been up a while writes far more than that (this machine's
+    /// rotated log holds ten days above its last megabyte), so a job whose last
+    /// phase line is older than the window is missing, and the shell believes a
+    /// game Steam has in hand is idle: the row goes back to "Installed", a
+    /// press on it is answered as though it would start, and the client is shut
+    /// down under the work. And a window that reaches back past the run marker
+    /// into a *previous* run picks up jobs a killed client never finished.
+    #[test]
+    fn a_client_already_running_is_joined_at_the_start_of_its_run() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-content-attach-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(root.join("logs")).expect("a scratch directory");
+        let log = root.join("logs").join(CONTENT_LOG);
+
+        // A megabyte and a fifth of everything else, which is what a busy
+        // client writes over a long download and is more than the window the
+        // first cut of this looked through.
+        let mut noise = String::new();
+        while noise.len() < 1024 * 1024 + 200 * 1024 {
+            noise.push_str("[2026-09-02 21:04:00] HTTPS (SteamCache,494) - cache12-waw1.steamcontent.com: Closing connection, and some more of the same to fill the line out to a hundred characters\n");
+        }
+
+        let running = format!(
+            "[2026-09-02 17:00:00] Client version: 1788291500\n\
+             [2026-09-02 17:00:01] AppID 480 App update changed : Running Update,Verifying Installed,\n\
+             [2026-09-02 18:00:00] Client version: 1788291500\n\
+             [2026-09-02 18:00:01] AppID 730 App update changed : Running Update,Verifying Installed,\n\
+             {noise}"
+        );
+        std::fs::write(&log, &running).expect("writable");
+        let mut jobs = Jobs::default();
+        jobs.look(&root);
+        assert_eq!(
+            jobs.to_the_game(730),
+            Some(InHand::Checking),
+            "a check that began before the last megabyte is still a check"
+        );
+        assert_eq!(
+            jobs.to_the_game(480),
+            None,
+            "and work the client before this one was killed in the middle of is not this one's"
+        );
+
+        // The steady state carries on from there: the client ends the job and
+        // the next look reads only what arrived.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .expect("writable");
+            file.write_all(b"[2026-09-02 21:19:00] AppID 730 App update changed : None\n")
+                .expect("written");
+        }
+        assert!(jobs.look(&root));
+        assert_eq!(jobs.to_the_game(730), None);
+
+        // And a run that began before its own log was rotated: the start of it
+        // is in the file the client moved aside, and there is no other way to
+        // know what this client has in hand.
+        std::fs::rename(&log, root.join("logs").join(CONTENT_LOG_BEFORE)).expect("renamable");
+        std::fs::write(
+            &log,
+            "[2026-09-02 21:30:00] HTTPS (SteamCache,494) - cache12-waw1.steamcontent.com: Closing connection\n",
+        )
+        .expect("writable");
+        let mut joining = Jobs::default();
+        joining.look(&root);
+        assert_eq!(
+            joining.to_the_game(730),
+            None,
+            "the client said that one was over before the log rolled over"
+        );
+
+        std::fs::write(
+            root.join("logs").join(CONTENT_LOG_BEFORE),
+            format!(
+                "[2026-09-02 18:00:00] Client version: 1788291500\n\
+                 [2026-09-02 18:00:01] AppID 730 App update changed : Running Update,Downloading,Staging,\n\
+                 {noise}"
+            ),
+        )
+        .expect("writable");
+        let mut joining = Jobs::default();
+        joining.look(&root);
+        assert_eq!(
+            joining.to_the_game(730),
+            Some(InHand::Working),
+            "the run began in the log that was moved aside, and the update is still running"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A launch Valve's client gave up on says so in its own log, twenty
+    /// seconds in, and nowhere else at all.
+    ///
+    /// Every line here is off this machine on 2026-09-03. The press on
+    /// Counter-Strike 2 walked to `DownloadingDepots` and failed with
+    /// `AppError_19` — "Update required" — which the client says in a modal
+    /// this shell holds off the screen. The loading screen waited its full
+    /// minute and said the game had not started; Steam then finished the very
+    /// update the launch had asked it to schedule, and started nothing.
+    #[test]
+    fn a_launch_the_client_gave_up_on_is_in_its_own_log() {
+        let walking = "\
+[2026-09-03 23:46:41] ExecuteSteamURL: \"steam://rungameid/730\"
+[2026-09-03 23:46:41] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to UpdatingAppInfo with \"\"
+[2026-09-03 23:46:42] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to CheckShaderDepotManifest with \"\"
+[2026-09-03 23:46:43] IPC function call IClientUser::GetAssociatedSiteName took too long: 71 msec
+[2026-09-03 23:46:43] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to DownloadingDepots with \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(walking, 730),
+            Some(LaunchStanding::Working("DownloadingDepots".to_string())),
+            "a launch that is still being walked says which step it is on"
+        );
+
+        let refused = format!(
+            "{walking}\
+[2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp failed with AppError_19 with \"\"
+[2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Failed with \"\"
+[2026-09-03 23:47:20] IPC function call IClientUGC::GetAppItemsStatus took too long: 62 msec
+"
+        );
+        assert_eq!(
+            what_became_of_the_launch(&refused, 730),
+            Some(LaunchStanding::Refused("AppError_19".to_string()))
+        );
+        assert_eq!(
+            what_became_of_the_launch(&refused, 504230),
+            None,
+            "and it says nothing about anybody else's game"
+        );
+
+        // The whole walk of a launch that worked, off the same log an hour
+        // earlier, questions and all. `Completed` is the client's half done.
+        let started = "\
+[2026-09-03 22:27:57] GameAction [AppID 504230, ActionID 1] : LaunchApp changed task to CheckShaderDepotManifest with \"\"
+[2026-09-03 22:27:58] GameAction [AppID 504230, ActionID 1] : LaunchApp changed task to ShowInterstitials with \"\"
+[2026-09-03 22:27:58] GameAction [AppID 504230, ActionID 1] : LaunchApp waiting for user response to ShowInterstitials \"\"
+[2026-09-03 22:27:58] GameAction [AppID 504230, ActionID 1] : LaunchApp continues with user response \"ShowInterstitials\"
+[2026-09-03 22:27:59] GameAction [AppID 504230, ActionID 1] : LaunchApp changed task to CreatingProcess with \"\"
+[2026-09-03 22:27:59] GameAction [AppID 504230, ActionID 1] : LaunchApp changed task to WaitingGameWindow with \"\"
+[2026-09-03 22:27:59] GameAction [AppID 504230, ActionID 1] : LaunchApp changed task to Completed with \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(started, 504230),
+            Some(LaunchStanding::Started)
+        );
+
+        // A press that failed and was made again: the last word wins, and the
+        // press before it is not this one's news. Both are in the file, which
+        // is why the reading starts where the press did — see
+        // [`launches_so_far`].
+        let again = format!("{refused}{started}");
+        assert_eq!(
+            what_became_of_the_launch(&again, 730),
+            Some(LaunchStanding::Refused("AppError_19".to_string())),
+            "the other game's launch says nothing about this one"
+        );
+
+        // And the client stopping at `Failed` with the reason rolled out of
+        // the stretch being read is still a refusal.
+        let cut_off = "\
+[2026-09-03 23:47:02] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Failed with \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(cut_off, 730),
+            Some(LaunchStanding::Refused(String::new()))
+        );
+
+        assert_eq!(what_became_of_the_launch("", 730), None);
+        assert_eq!(what_became_of_the_launch("nothing to see\n", 730), None);
+    }
+
+    /// A launch that has stopped on a step says so in the same log, which is
+    /// how a client that exposes no interface can still be seen doing it.
+    ///
+    /// Off this machine at 00:10 on 2026-09-04, and it is the whole of what the
+    /// shell had to go on: Valve's own "Processing Vulkan shaders (0%)" dialog
+    /// was up behind the loading screen, on a session driven with a controller,
+    /// and the client this session did not start exposes nothing to ask.
+    #[test]
+    fn a_launch_that_has_stopped_on_a_step_says_which() {
+        let compiling = "\
+[2026-09-04 00:10:17] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SynchronizingControllerConfig with \"\"
+[2026-09-04 00:10:17] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to ProcessingShaderCache with \"\"
+[2026-09-04 00:10:17] GameAction [AppID 730, ActionID 1] : LaunchApp waiting for user response to ProcessingShaderCache \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(compiling, 730),
+            Some(LaunchStanding::Waiting("ProcessingShaderCache".to_string())),
+            "the task's name, without the details that follow it"
+        );
+
+        // And the client going on from it — because somebody pressed Skip, or
+        // because it finished — is a launch that is walking again.
+        let went_on = format!(
+            "{compiling}\
+[2026-09-04 00:10:31] GameAction [AppID 730, ActionID 1] : LaunchApp continues with user response \"SkipShaders\"
+[2026-09-04 00:10:31] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to CreatingProcess with \"\"
+"
+        );
+        assert_eq!(
+            what_became_of_the_launch(&went_on, 730),
+            Some(LaunchStanding::Working("CreatingProcess".to_string()))
+        );
+
+        // The interstitial the same launch stopped on a moment earlier, which
+        // this shell has no panel for and which the client answers itself.
+        let interstitial = "\
+[2026-09-04 00:10:17] GameAction [AppID 730, ActionID 1] : LaunchApp waiting for user response to ShowInterstitials \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(interstitial, 730),
+            Some(LaunchStanding::Waiting("ShowInterstitials".to_string()))
+        );
+    }
+
+    /// A launch that is fetching the game before it starts it says so on every
+    /// poll, for as long as it takes.
+    ///
+    /// **Reported from use on 2026-09-04, with a screenshot** of Valve's own
+    /// launch window — *"Starting game / Counter-Strike 2 / LAUNCHING /
+    /// Downloading content (19%)"* — which came out from under this shell's
+    /// loading screen after the shell had already said the game failed to
+    /// start. These are the lines the client had written by then, verbatim:
+    /// two of them, one second after the press, and then an hour of silence
+    /// because a task that does not change is not written down again.
+    ///
+    /// Nothing else on the machine answered. The game's own manifest read
+    /// `StateFlags 1158` — installed, update required, files corrupt, update
+    /// started — which is [`crate::library::Standing::Broken`], not one of the
+    /// standings the loading screen watches, and its byte counters were all
+    /// nought. So the only account of that press anywhere was this one.
+    #[test]
+    fn a_launch_fetching_the_game_first_says_so_until_it_stops() {
+        let fetching = "\
+[2026-09-04 00:54:39] ExecuteSteamURL: \"steam://rungameid/730\"
+[2026-09-04 00:54:39] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to UpdatingAppInfo with \"\"
+[2026-09-04 00:54:39] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to CheckShaderDepotManifest with \"\"
+[2026-09-04 00:54:40] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to DownloadingDepots with \"\"
+[2026-09-04 00:54:40] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to DownloadingDepots with \"\"
+";
+        assert_eq!(
+            what_became_of_the_launch(fetching, 730),
+            Some(LaunchStanding::Working("DownloadingDepots".to_string())),
+        );
+
+        // A minute later, with the whole of the client's ordinary noise written
+        // over it and the launch still on the same step. This is the moment the
+        // loading screen gave up.
+        let a_minute_on = format!(
+            "{fetching}\
+[2026-09-04 00:55:41] HTTPS (SteamCache,493) - cache11-waw1.steamcontent.com: Connection has been idle for '61' seconds, closing
+[2026-09-04 00:55:42] Timeout calling process '/mnt/GamesSSD/SteamLibrary/steamapps/common/SteamLinuxRuntime_4'/_v2-entry-point --verb=run
+"
+        );
+        assert_eq!(
+            what_became_of_the_launch(&a_minute_on, 730),
+            Some(LaunchStanding::Working("DownloadingDepots".to_string())),
+            "a step nothing has written over is the step the client is still on"
+        );
+
+        // And the two ends of the walk still win, from the same stretch: a step
+        // in flight is the last word only while it is the last word.
+        let started = format!(
+            "{fetching}\
+[2026-09-04 00:56:10] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to CreatingProcess with \"\"
+[2026-09-04 00:56:10] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Completed with \"\"
+"
+        );
+        assert_eq!(
+            what_became_of_the_launch(&started, 730),
+            Some(LaunchStanding::Started)
+        );
+        let refused = format!(
+            "{fetching}\
+[2026-09-04 00:56:10] GameAction [AppID 730, ActionID 1] : LaunchApp failed with AppError_19 with \"\"
+[2026-09-04 00:56:10] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Failed with \"\"
+"
+        );
+        assert_eq!(
+            what_became_of_the_launch(&refused, 730),
+            Some(LaunchStanding::Refused("AppError_19".to_string()))
+        );
+    }
 
     /// Every line the client writes carries a state and an account, and only
     /// the state says whether it is signed in.
@@ -1476,7 +4414,7 @@ mod tests {
         assert_eq!(stamped("[2026-08-12 12:41:25] plain [U:1:7] hello"), None);
         assert_eq!(
             stamped("[2026-08-12 12:41:25] [Logged On, 4, 7] [U:1:7] hello"),
-            Some(("Logged On", 7))
+            Some(("Logged On", 7, " hello"))
         );
         // So a state line still speaks for the client when a stateless one
         // follows it, which is what the client's log actually looks like.
@@ -1500,6 +4438,37 @@ mod tests {
 
     /// The two rows that open the client open two different things, and the
     /// plain name belongs to the one a pad can drive.
+    /// The one number in Valve's client's config that says where the account
+    /// stands on this machine.
+    ///
+    /// The line is taken verbatim off this machine on 2026-09-03, escaping and
+    /// all: the value is a JSON document that has been escaped to live inside a
+    /// VDF string, which is why this reads a digit out of it rather than
+    /// parsing either format.
+    #[test]
+    fn the_clients_own_record_of_where_the_account_stands() {
+        let line = r#"		"FriendStoreLocalPrefs_82105993"		"{\"ePersonaState\":7,\"strNonFriendsAllowedToMsg\":\"\"}""#;
+        assert_eq!(
+            persona_state_in(line),
+            Some(crate::friends::Presence::Invisible)
+        );
+        assert_eq!(
+            persona_state_in(&line.replace(":7", ":1")),
+            Some(crate::friends::Presence::Online)
+        );
+        assert_eq!(
+            persona_state_in(&line.replace(":7", ":3")),
+            Some(crate::friends::Presence::Away)
+        );
+
+        // A line with no such field, and a number that is not a state. Both
+        // have to be nothing rather than Offline: this decides what the shell
+        // announces, and a config it could not read must not put somebody
+        // offline. See `Presence::from_number`.
+        assert_eq!(persona_state_in(r#"		"PersonaName"		"Petexon""#), None);
+        assert_eq!(persona_state_in(&line.replace(":7", ":9")), None);
+    }
+
     #[test]
     fn open_steam_is_the_console_one() {
         assert_eq!(Doing::BigPicture.label(), "Open Steam");
@@ -1609,6 +4578,105 @@ mod tests {
         assert_eq!(
             displays_in(plasma),
             vec![Some("wayland-0".to_string()), Some(":1".to_string())]
+        );
+    }
+
+    /// A client signed in to somebody else is not a client this session may
+    /// use, however signed in it is.
+    ///
+    /// The account id is the low half of a SteamID, which is the only form a
+    /// running client ever says out loud: it stamps its connection log with
+    /// `[U:1:<account>]` and never writes the whole number anywhere. So the
+    /// comparison has to be made in that half, and the shell holds the other
+    /// form — which is exactly the sort of mismatch that gets written as
+    /// "signed in, near enough" and then hands somebody another household
+    /// member's library.
+    ///
+    /// The numbers are a real pair: the account id is the one in the log lines
+    /// [`only_the_logged_on_state_means_signed_in`] is built from, and the
+    /// SteamID is that account's.
+    #[test]
+    fn signed_in_is_not_the_same_as_signed_in_as_us() {
+        const ACCOUNT: u32 = 82105993;
+        const STEAM_ID: u64 = 76561198042371721;
+
+        let us = Credential {
+            account: "someone",
+            steam_id: STEAM_ID,
+            refresh_token: "not a real token",
+        };
+        assert_eq!(us.account_id(), ACCOUNT, "the halves do not line up");
+
+        assert!(State::SignedIn(ACCOUNT).signed_in_as(us));
+        assert!(!State::SignedIn(ACCOUNT + 1).signed_in_as(us));
+        assert!(!State::Starting.signed_in_as(us));
+        assert!(!State::Stopped.signed_in_as(us));
+        assert!(!State::Absent.signed_in_as(us));
+
+        // And the two questions really are different: the household's other
+        // account is signed in, by every measure but the one that matters.
+        let theirs = State::SignedIn(ACCOUNT + 1);
+        assert!(theirs.signed_in(), "the test is not testing anything");
+        assert!(!theirs.signed_in_as(us));
+
+        // Offline Mode is signed in, and to exactly one account. It is what a
+        // game press needs and what somebody else's client still is not.
+        assert!(State::Offline(ACCOUNT).signed_in_as(us));
+        assert!(State::Offline(ACCOUNT).running());
+        assert!(State::Offline(ACCOUNT).offline());
+        assert!(!State::Offline(ACCOUNT + 1).signed_in_as(us));
+        assert!(!State::SignedIn(ACCOUNT).offline(), "on Steam, not offline");
+    }
+
+    /// A client in Valve's Offline Mode never reaches `Logged On`, and the
+    /// stamp it does leave is the only thing in that log saying whose it is.
+    ///
+    /// The lines are a real client's, copied from this machine on 2026-09-02
+    /// out of a cold start made with Offline Mode on.
+    #[test]
+    fn an_offline_client_says_whose_it_is_without_ever_logging_on() {
+        const OFFLINE_RUN: &str = "\
+[2026-09-02 00:30:54] Client version: 1785799196
+[2026-09-02 00:30:54] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )
+[2026-09-02 00:30:55] [Logged Off, 0, 0] [U:1:82105993] CCMInterface::SetSteamID( [U:1:82105993] )
+[2026-09-02 00:30:55] [Logged Off, 0, 0] [U:1:82105993] LogOff()
+[2026-09-02 00:30:56] IPv6 UDP connectivity test (ipv6check-udp.steamserver.net) - TIMEOUT";
+
+        assert_eq!(logged_on_in(OFFLINE_RUN), None, "it is not on Steam");
+        assert_eq!(acting_for_in(OFFLINE_RUN), Some(82105993));
+
+        // Before it knows which account it is. Zero is the client itself, not
+        // somebody with account id nought, and reading it as an account would
+        // make a client that had only just started look like one that was ready.
+        const JUST_STARTED: &str = "\
+[2026-09-02 00:30:54] Client version: 1785799196
+[2026-09-02 00:30:54] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )";
+        assert_eq!(acting_for_in(JUST_STARTED), None);
+
+        // And the run before this one says nothing about this one: the log is
+        // appended to across restarts, so an account that was on Steam an hour
+        // ago is still the last `Logged On` in the file.
+        let two_runs = format!(
+            "[2026-09-01 22:00:00] Client version: 1785799196\n\
+             [2026-09-01 22:00:01] [Logged On, 4, 7] [U:1:99] hello\n\
+             {OFFLINE_RUN}"
+        );
+        assert_eq!(logged_on_in(&two_runs), None);
+        assert_eq!(acting_for_in(&two_runs), Some(82105993));
+
+        // And the run that is over says nothing about the client that has just
+        // been started in its place. Measured, not reasoned about: a cold start
+        // made while writing this was called ready one second in, off the
+        // previous client's Offline Mode, because that client's last stamp was
+        // still the last one in the file. These are the lines it read.
+        let just_gone = format!(
+            "{OFFLINE_RUN}\n\
+             [2026-09-02 00:30:21] [Logged Off, 0, 0] [U:1:82105993] Log session ended"
+        );
+        assert_eq!(
+            acting_for_in(&just_gone),
+            None,
+            "a client that has closed its log is not a client that is up"
         );
     }
 
@@ -1756,6 +4824,14 @@ mod tests {
     /// was the path that said so.
     #[test]
     fn a_first_start_makes_the_directory_it_needs() {
+        // Held because `expose` writes a note beside the marker saying whose it
+        // is, and where that note goes is `$XDG_STATE_HOME` — which the tests
+        // in `webui` point at scratch directories of their own. Without this
+        // the two write into each other: measured on this machine, about one
+        // run of `cargo test -p lxb-steam` in twelve failed in one of those
+        // tests, never in this one, which is what makes it worth writing down
+        // here rather than there.
+        let _turn = crate::one_at_a_time_with_the_environment();
         let scratch = scratch("first-run");
         let options = Options::in_home(&Where::Native(PathBuf::from("/usr/bin/steam")), &scratch);
         assert!(!options.root.exists(), "nothing has been run here");
@@ -1786,7 +4862,17 @@ mod tests {
     /// with, which for a Flatpak user was the native registry it does not use.
     #[test]
     fn signing_out_clears_the_automatic_sign_in_of_both_layouts() {
+        // Clearing the automatic sign-in writes the account list, which is
+        // taken a turn at — and a turn lives under `XDG_STATE_HOME`. Without
+        // both of these the lock would go wherever the test running beside this
+        // one had just pointed that variable, which on a fresh process is the
+        // real state directory belonging to whoever is running the suite.
+        let _environment = crate::one_at_a_time_with_the_environment();
         let scratch = scratch("layouts");
+        let was_state = std::env::var_os("XDG_STATE_HOME");
+        // SAFETY: under the environment mutex, which every test that moves one
+        // of these holds.
+        unsafe { std::env::set_var("XDG_STATE_HOME", scratch.join("state")) };
         let layouts = Options::every_layout_in(&scratch);
         let homes: Vec<&PathBuf> = layouts.iter().map(|options| &options.home).collect();
 
@@ -1805,6 +4891,14 @@ mod tests {
         for options in &layouts {
             autologin::stop(&options.root, &options.home, "someone");
             assert!(!options.home.join("registry.vdf").exists());
+        }
+
+        // SAFETY: still under the environment mutex taken at the top.
+        unsafe {
+            match was_state {
+                Some(was) => std::env::set_var("XDG_STATE_HOME", was),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
         }
     }
 

@@ -58,6 +58,12 @@ pub async fn send_message(
         message: Some(message.clone()),
         // Send the raw text verbatim; brackets render literally in the terminal.
         contains_bbcode: Some(false),
+        // Have Steam push this message back at every session the account has
+        // open, this one included. It is what puts a message sent here into
+        // Valve's own client beside it, and the copy that comes back is keyed
+        // by the same `(server_timestamp, ordinal)` this call returns — so a
+        // caller that files messages under that key cannot show it twice.
+        echo_to_sender: Some(true),
         ..Default::default()
     };
     let response: CFriendMessagesSendMessageResponse =
@@ -84,16 +90,26 @@ pub async fn send_typing(
 }
 
 /// Fetch recent message history for the conversation with `steamid`, oldest first.
+///
+/// `count` is how far back to go. Steam answers with the *most recent* that
+/// many, whatever it is given, so this is a window on the end of the
+/// conversation rather than a page into it.
 pub async fn get_recent_messages(
     connection: &Connection,
     state: &ConnectionState,
     steamid: u64,
+    count: u32,
 ) -> Result<Vec<ChatMessage>> {
     let method = ServiceMethod::new("FriendMessages.GetRecentMessages#1");
     let request = CFriendMessagesGetRecentMessagesRequest {
         steamid1: state.steamid,
         steamid2: Some(steamid),
-        count: Some(50),
+        count: Some(count),
+        // Ask for the text as it was typed. Steam otherwise answers in its own
+        // bbcode, and a message with a link in it comes back wrapped in
+        // `[url=…]…[/url]` — markup this shell has no renderer for and would
+        // print literally.
+        bbcode_format: Some(false),
         ..Default::default()
     };
     let response: CFriendMessagesGetRecentMessagesResponse =

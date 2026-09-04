@@ -1,0 +1,27 @@
+<!--
+  How large the pointer is drawn: the same pointer twice, once big and once
+  small.
+
+  Two sizes of one thing, which is the idiom setting-pip-size.svg already uses
+  for the same question about a different object — and it is the only honest
+  drawing for a size: a number has no shape, and one pointer of some particular
+  size would be a picture of an answer rather than of the question.
+
+  The two are kept well apart. A distance field cannot tell two bodies touching
+  from one body, so a small pointer tucked into the large one's tail would come
+  out as a single melted mark; there are three clear units between them at the
+  nearest point.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="pointer" d="M2 1 L2 17 L5.8 13.4 L8.3 18.8 L10.6 17.7 L8.2 12.5 L13.2 12.2 Z"/>
+  </defs>
+  <g fill="#fff">
+    <use href="#pointer" transform="translate(3.4 3.4) scale(1.15)"/>
+    <use href="#pointer" transform="translate(20.4 15.2) scale(0.6)"/>
+  </g>
+</svg>

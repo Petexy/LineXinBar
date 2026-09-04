@@ -31,11 +31,14 @@ impl Packet {
                 self.header.error_message.as_deref().unwrap_or("no detail")
             )));
         }
+        // Steam answered and said no. The number is kept rather than printed
+        // into a string, because what a caller does about it depends on which
+        // number it is — see [`Error::Refused`].
         if let Some(result) = self.header.eresult.filter(|result| *result != 1) {
-            return Err(Error::Protocol(format!(
-                "Steam result {result}: {}",
-                self.header.error_message.as_deref().unwrap_or("no detail")
-            )));
+            return Err(Error::Refused {
+                result,
+                detail: self.header.error_message.clone(),
+            });
         }
         Ok(())
     }
@@ -193,7 +196,10 @@ mod tests {
             },
             body: Bytes::new(),
         };
-        assert!(matches!(packet.ensure_success(), Err(Error::Protocol(_))));
+        assert!(matches!(
+            packet.ensure_success(),
+            Err(Error::Refused { result: 15, .. })
+        ));
 
         let absent = Packet {
             header: CMsgProtoBufHeader::default(),

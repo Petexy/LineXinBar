@@ -1,0 +1,41 @@
+<!--
+  The on-screen keyboard: a board of keys standing on a screen.
+
+  The row above it in the tree is a keyboard already — see setting-input.svg,
+  which is the whole Input column's mark — so this one has to say which keyboard
+  it is, and what makes this one different is the only thing about it: it is not
+  on a desk, it is on a display. So the screen is drawn and the keys stand
+  inside it, in the lower half, exactly where the board comes up.
+
+  No case round the keys, unlike the two boards this set already has. There is
+  one outline here and it is the screen's; a second rectangle inside it at these
+  sizes is two nested frames a unit and a half apart, which reads as a mistake
+  rather than as a keyboard. The keys alone are enough — a grid of caps in the
+  bottom of a screen is not anything else.
+
+  No stand either, which is what keeps it apart from setting-display.svg. That
+  mark is a monitor, an object standing on a desk; this one is a *picture*, and
+  what matters about it is the rectangle the board is inside.
+
+  A stroke straddles the line it is on, so half its width hangs outside the
+  rectangle given here — half a unit of the two the shadow needs.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="3.2" y="6.6" width="25.6" height="18.8" rx="2.4"
+        fill="none" stroke="#fff" stroke-width="2"/>
+  <g fill="#fff">
+    <rect x="6.25" y="14.4" width="2.7" height="2.5" rx="0.7"/>
+    <rect x="10.45" y="14.4" width="2.7" height="2.5" rx="0.7"/>
+    <rect x="14.65" y="14.4" width="2.7" height="2.5" rx="0.7"/>
+    <rect x="18.85" y="14.4" width="2.7" height="2.5" rx="0.7"/>
+    <rect x="23.05" y="14.4" width="2.7" height="2.5" rx="0.7"/>
+
+    <rect x="6.25" y="18.4" width="2.7" height="2.5" rx="0.7"/>
+    <rect x="10.45" y="18.4" width="12.3" height="2.5" rx="0.8"/>
+    <rect x="23.05" y="18.4" width="2.7" height="2.5" rx="0.7"/>
+  </g>
+</svg>

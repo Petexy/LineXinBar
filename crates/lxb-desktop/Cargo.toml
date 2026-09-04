@@ -106,8 +106,21 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
     "bmp",
     "tiff",
+    # A Steam game's own icon is a Windows `.ico` — a directory of sizes in one
+    # file, which the decoder resolves to the largest. Nothing else in the shell
+    # reads one; see `art::icon`.
+    "ico",
 ] }
 resvg = { version = "0.48", default-features = false, features = ["raster-images"] }
+
+# The keyboard layout registry: `rules/evdev.xml` under the xkb config root,
+# which is where every layout this machine can be set to is described. Read
+# rather than transcribed, so the settings page cannot offer an arrangement
+# the compositor beside it would fail to compile. See `src/layouts.rs`.
+#
+# Already in this tree — resvg parses SVG with it — so the shell gains a name
+# to call rather than a dependency to build.
+roxmltree = "0.20"
 
 # The user's own wallpaper: a picture or a film of theirs standing where the
 # shell's own scene would be drawn. See `src/paper.rs`.

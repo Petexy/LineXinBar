@@ -1,0 +1,37 @@
+<!--
+  Settings > Input > Keyboard: one keycap, with a letter on it.
+
+  The third board this set has to draw and the one that may not be a board.
+  setting-input.svg is a keyboard already — it is the whole Input column's mark
+  — and setting-keyboard.svg is that board standing in a screen, so a page
+  *under* Input about the keyboard on the desk would be the third rectangle full
+  of keys in three adjacent columns.
+
+  So it is not the board, it is one key off it, drawn at the size the others
+  draw a whole keyboard. What is under this row is what the keys say, and a
+  single cap with a letter on it is that in one picture. At eighty-four pixels
+  it is a square with a letter in it against a wide rectangle full of specks and
+  a screen with a band of them in the bottom — three silhouettes, told apart
+  before anybody counts anything.
+
+  The A is drawn with a flat top rather than a point. An apex would close the
+  letter's counter to nothing at the top, and a hole that narrows past the bevel
+  fills in — which would leave a triangle with a bar across it. Held open at two
+  and a half units, the counter survives the smallest size this is drawn at.
+
+  A stroke straddles the line it is on, so half its width hangs outside the
+  rectangle given here — half a unit of the two the shadow needs.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="5.4" y="5.4" width="21.2" height="21.2" rx="4.2"
+        fill="none" stroke="#fff" stroke-width="2"/>
+  <g fill="none" stroke="#fff" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.8 22.2 L13.6 10.2 H18.4 L21.2 22.2"/>
+    <path d="M12.1 16.1 H19.9"/>
+  </g>
+</svg>

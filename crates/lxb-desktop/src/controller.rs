@@ -224,11 +224,12 @@ impl ControllerInput {
     /// discarded in that case, which prevents the background shell reacting
     /// to controls intended for a running game.
     ///
-    /// The guide button is the deliberate exception, along with the two chords
-    /// spelled on it and on Select.  Controllers are read straight from
+    /// The guide button is the deliberate exception, along with the three
+    /// chords spelled on it and on Select.  Controllers are read straight from
     /// `/dev/input` rather than through Wayland, so they reach the shell even
     /// while a game holds the keyboard — which is the only reason a user can
-    /// get back out of that game at all, or photograph it.
+    /// get back out of that game at all, photograph it, or reach Valve's own
+    /// overlay over it.
     ///
     /// The right stick and the two stick presses are read on the same terms
     /// and for the same reason: the pointer they drive is wanted *inside* the
@@ -344,10 +345,15 @@ impl ControllerInput {
                                 // unguarded one — a pad the guard could not
                                 // take, on a machine with no `/dev/uinput` —
                                 // still spells it through GilRs.
-                                photograph_chord(button, code, guide_held || guide_is_held(gilrs))
+                                let held = guide_held || guide_is_held(gilrs);
+                                steam_overlay_chord(button, code, held)
+                                    .or_else(|| photograph_chord(button, code, held))
                             })
                             .or_else(|| action_for_button(button, code, layout));
-                        if action == Some(Action::Screenshot) {
+                        // Both chords spelled on the guide button spend its
+                        // hold: the button was pressed for the chord, and
+                        // letting go of it must not open the guide as well.
+                        if matches!(action, Some(Action::Screenshot | Action::SteamOverlay)) {
                             chorded = true;
                         }
                         // Every press is logged: a button that does nothing is
@@ -749,9 +755,9 @@ fn hat_directions(x: f32, y: f32) -> [bool; Direction::COUNT] {
 /// from an SDL entry that does not cover it.
 ///
 /// Absent on purpose: `X`, which belongs to whatever is running until `View` is
-/// held with it; `View` itself, which is only that chord's modifier; `Steam`,
-/// which acts on its release instead so the screenshot chord can claim the hold
-/// (see [`is_guide`]); the two stick presses, which are the pointer's
+/// held with it; `View` itself, which is only that chord's modifier and the
+/// overlay chord's other half; `Steam`, which acts on its release instead so
+/// the two chords spelled on it can claim the hold (see [`is_guide`]); the two stick presses, which are the pointer's
 /// and never the menu's; and the whole D-pad, which goes through [`Navigation`]
 /// instead so that holding a direction repeats at the same rate every other
 /// pad's does. Listed here as well it would walk the menu two rows per press.
@@ -779,7 +785,7 @@ const PAD_ACTIONS: &[(Buttons, Action)] = &[
 ///
 /// Separate from [`ControllerInput::poll`] because it is the one part of
 /// reading this pad that can be exercised without the pad: everything else
-/// there is a device to open and a report to be handed. Two chords and an
+/// there is a device to open and a report to be handed. Three chords and an
 /// edge-triggered guide button between them have more to get wrong than the
 /// table lookup they surround.
 fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Action> {
@@ -793,6 +799,10 @@ fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Actio
     // The screenshot chord, spelled on this pad as Steam with the right bumper
     // — the same two controls as everywhere else.
     let photograph = frame.held.has(Buttons::STEAM) && frame.pressed.has(Buttons::R1);
+    // And Valve's overlay, spelled as Steam with View. `VIEW` is absent from
+    // [`PAD_ACTIONS`] already, as the keyboard chord's modifier, so this costs
+    // the pad nothing it was doing.
+    let overlay = frame.held.has(Buttons::STEAM) && frame.pressed.has(Buttons::VIEW);
     for (button, action) in PAD_ACTIONS {
         if !frame.pressed.has(*button) {
             continue;
@@ -809,8 +819,12 @@ fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Actio
         actions.push(Action::Screenshot);
         *chorded = true;
     }
+    if overlay {
+        actions.push(Action::SteamOverlay);
+        *chorded = true;
+    }
     // The guide button acts on the way back up rather than the way down, so the
-    // chord above can claim it; `STEAM` is absent from `PAD_ACTIONS` for that
+    // chords above can claim it; `STEAM` is absent from `PAD_ACTIONS` for that
     // reason. See [`is_guide`].
     if frame.released.has(Buttons::STEAM) {
         if !*chorded {
@@ -922,17 +936,19 @@ fn chord_action(button: Button, code: u32, layout: Layout, select_held: bool) ->
 
 /// Whether an action still counts once an application owns the screen.
 ///
-/// Three of them do, and everything else is meant for the game rather than for
+/// Four of them do, and everything else is meant for the game rather than for
 /// the shell behind it: the way back out of the application, the way to type
-/// into it, and the way to photograph it. All three are read straight from
-/// `/dev/input` rather than through Wayland, which is the only reason any of
-/// them arrives at all while the game holds the keyboard — and a picture is
-/// nearly always wanted of the game rather than of the bar, so this is the one
-/// case that matters most for the last of them.
+/// into it, the way to photograph it, and the way to reach Valve's overlay over
+/// it. All four are read straight from `/dev/input` rather than through
+/// Wayland, which is the only reason any of them arrives at all while the game
+/// holds the keyboard — and a picture is nearly always wanted of the game
+/// rather than of the bar, so this is the one case that matters most for the
+/// third of them. The fourth means nothing anywhere else: it is a chord about
+/// the game in front, and with no game in front it is spent on nothing.
 fn survives_an_application(action: &Action) -> bool {
     matches!(
         action,
-        Action::Guide | Action::Keyboard | Action::Screenshot
+        Action::Guide | Action::Keyboard | Action::Screenshot | Action::SteamOverlay
     )
 }
 
@@ -955,6 +971,51 @@ fn photograph_chord(button: Button, code: u32, guide_held: bool) -> Option<Actio
     is_right_bumper(button, code).then_some(Action::Screenshot)
 }
 
+/// Whether a press, with the guide button held, is the Steam overlay chord.
+///
+/// The guide button and Select: `STEAM`+`View` on a Steam Controller or a Deck,
+/// the PlayStation button and Create on a DualSense, Guide and View on an Xbox
+/// pad. The middle two buttons of the pad, side by side, and reachable with one
+/// thumb — which matters here more than it does for the screenshot, because
+/// this is a chord pressed *while playing* rather than while looking at
+/// something.
+///
+/// It is spelled on the guide button because of what it is for. This shell
+/// takes that button for itself (see [`is_guide`]), and on every other machine
+/// shaped like a console it is the button Steam's overlay comes up on. Taking a
+/// control away and offering nothing in its place would be this shell deciding
+/// that nobody may reach Steam's friends list, its browser or its guides while
+/// a game is running. So the button stays the shell's and the overlay is a
+/// chord on it: the same button, one more thumb.
+///
+/// Select rather than another face button for the reason Select is the
+/// keyboard chord's modifier: it is the one control on a pad that no game
+/// wants. Here it is the chord's *other half* rather than its modifier, which
+/// is not a contradiction — a chord is two buttons, and which of them is held
+/// first is decided by which of them the shell has to answer on its release.
+/// The guide button does, so the guide button is the one held.
+fn steam_overlay_chord(button: Button, code: u32, guide_held: bool) -> Option<Action> {
+    if !guide_held {
+        return None;
+    }
+    is_select(button, code).then_some(Action::SteamOverlay)
+}
+
+/// Whether a press is Select — the small button left of centre, called View on
+/// an Xbox pad, Create on a DualSense and View on a Steam Controller.
+///
+/// Named the two ways every other button here is, and for the same reason the
+/// modifier in [`select_is_held`] is read both ways: a pad the mapping database
+/// has never heard of still has the button, and without the raw code the chord
+/// could not be spelled on it at all.
+fn is_select(button: Button, code: u32) -> bool {
+    match button {
+        Button::Select => true,
+        Button::Unknown => code == evdev::BTN_SELECT,
+        _ => false,
+    }
+}
+
 /// Whether a press is the guide button — the one with a logo on it, in the
 /// middle of the pad.
 ///
@@ -965,13 +1026,13 @@ fn photograph_chord(button: Button, code: u32, guide_held: bool) -> Option<Actio
 ///
 /// ## Why this button is answered on its release
 ///
-/// It is the modifier of [`photograph_chord`], and a modifier that also did
-/// something on the way down could not be one: the overlay would already be up
-/// by the time the bumper arrived, and the picture would be of the overlay
-/// rather than of whatever the user wanted a picture of. So the press only
-/// begins a hold, and letting go is what opens or closes the guide — unless the
-/// hold was spent on a chord, in which case nothing happens at all and the
-/// button has done the one job it was pressed for.
+/// It is the modifier of [`photograph_chord`] and of [`steam_overlay_chord`],
+/// and a modifier that also did something on the way down could not be one: the
+/// guide would already be up by the time the bumper arrived, and the picture
+/// would be of the guide rather than of whatever the user wanted a picture of.
+/// So the press only begins a hold, and letting go is what opens or closes the
+/// guide — unless the hold was spent on a chord, in which case nothing happens
+/// at all and the button has done the one job it was pressed for.
 ///
 /// The cost is a few milliseconds on the one control that has to work while a
 /// game holds everything else, and a tap is still a tap. What is not paid for
@@ -1735,6 +1796,47 @@ mod tests {
         }
     }
 
+    /// Steam's own overlay, on the same modifier as the screenshot and with the
+    /// button beside it: the shell took the guide button, and this is what it
+    /// gives back.
+    #[test]
+    fn the_guide_button_with_select_asks_for_steams_overlay() {
+        assert_eq!(
+            steam_overlay_chord(Button::Select, 0, true),
+            Some(Action::SteamOverlay)
+        );
+        assert_eq!(
+            steam_overlay_chord(Button::Unknown, evdev::BTN_SELECT, true),
+            Some(Action::SteamOverlay)
+        );
+
+        // Select on its own is still nothing — it is the keyboard chord's
+        // modifier, and a modifier that also did something could not be one.
+        assert_eq!(steam_overlay_chord(Button::Select, 0, false), None);
+        assert_eq!(
+            action_for_button(Button::Select, evdev::BTN_SELECT, Layout::Mapped),
+            None
+        );
+
+        // And the two chords on the guide button do not overlap: the bumper is
+        // the picture, Select is the overlay, and neither is the other.
+        assert_eq!(steam_overlay_chord(Button::RightTrigger, 0, true), None);
+        assert_eq!(photograph_chord(Button::Select, 0, true), None);
+
+        // Nothing else spells it, `Start` least of all: its raw code is the one
+        // next door to Select's, and a pad the database cannot name is read by
+        // that code alone.
+        for (button, code) in [
+            (Button::Start, evdev::BTN_START),
+            (Button::Mode, evdev::BTN_MODE),
+            (Button::South, evdev::BTN_SOUTH),
+            (Button::Unknown, evdev::BTN_START),
+            (Button::Unknown, evdev::BTN_MODE),
+        ] {
+            assert_eq!(steam_overlay_chord(button, code, true), None, "{button:?}");
+        }
+    }
+
     /// The guide button is the chord's modifier, so it cannot also act on the
     /// way down: the overlay would be up before the bumper arrived, and the
     /// picture would be of the overlay rather than of the game underneath it.
@@ -1794,13 +1896,15 @@ mod tests {
 
     #[test]
     fn the_keyboard_chord_reaches_the_shell_past_a_running_application() {
-        // The three actions an inactive shell still acts on. Everything else
+        // The four actions an inactive shell still acts on. Everything else
         // is meant for the game that has the screen; these are the way out of
-        // it, the way to type into it, and the way to photograph it.
+        // it, the way to type into it, the way to photograph it, and the way to
+        // reach Valve's own overlay over it.
         let mut actions = vec![
             Action::Guide,
             Action::Keyboard,
             Action::Screenshot,
+            Action::SteamOverlay,
             Action::Launch,
             Action::Left,
             Action::Back,
@@ -1808,7 +1912,12 @@ mod tests {
         actions.retain(survives_an_application);
         assert_eq!(
             actions,
-            [Action::Guide, Action::Keyboard, Action::Screenshot]
+            [
+                Action::Guide,
+                Action::Keyboard,
+                Action::Screenshot,
+                Action::SteamOverlay,
+            ]
         );
     }
 
@@ -2087,6 +2196,44 @@ mod tests {
         assert!(!chorded, "and the next press begins a fresh hold");
     }
 
+    /// Steam held with View asks for Valve's overlay, and spends the hold doing
+    /// it — the shell's own guide must not also open behind it.
+    #[test]
+    fn the_pads_overlay_chord_spends_the_guide_buttons_hold() {
+        let mut chorded = false;
+        let steam_down = pad_frame(Buttons::STEAM, Buttons::STEAM, Buttons::empty());
+        assert_eq!(pad_actions(&steam_down, &mut chorded), Vec::new());
+
+        let with_view = pad_frame(
+            Buttons::STEAM.union(Buttons::VIEW),
+            Buttons::VIEW,
+            Buttons::empty(),
+        );
+        assert_eq!(
+            pad_actions(&with_view, &mut chorded),
+            vec![Action::SteamOverlay]
+        );
+        assert!(chorded, "the hold has been spent");
+
+        let steam_up = pad_frame(Buttons::VIEW, Buttons::empty(), Buttons::STEAM);
+        assert_eq!(pad_actions(&steam_up, &mut chorded), Vec::new());
+        assert!(!chorded);
+
+        // View alone is still only the keyboard chord's modifier, whichever
+        // way round the two are pressed.
+        let view_only = pad_frame(Buttons::VIEW, Buttons::VIEW, Buttons::empty());
+        assert_eq!(pad_actions(&view_only, &mut chorded), Vec::new());
+
+        // And the keyboard is still reachable while both are held: `X` with
+        // View is that chord wherever Steam happens to be.
+        let with_x = pad_frame(
+            Buttons::STEAM.union(Buttons::VIEW).union(Buttons::X),
+            Buttons::X,
+            Buttons::empty(),
+        );
+        assert_eq!(pad_actions(&with_x, &mut chorded), vec![Action::Keyboard]);
+    }
+
     /// A tap of the guide button on its own still opens the overlay, which is
     /// the whole reason a user can get back out of a game.
     #[test]
@@ -2148,18 +2295,24 @@ mod tests {
 
     /// The whole point of reading this pad from hidraw: the way out of a
     /// running application has to survive the gate that drops everything else,
-    /// and so does the chord that photographs it. Neither is in the table —
-    /// one is answered on a release and the other is a chord — so what the
-    /// table must not do is smuggle anything *else* past the gate.
+    /// and so do the chords that photograph it and that reach Valve's overlay
+    /// over it. None of the three is in the table — one is answered on a
+    /// release and the others are chords — so what the table must not do is
+    /// smuggle anything *else* past the gate.
     #[test]
-    fn only_the_three_outside_actions_survive_a_running_application() {
+    fn only_the_four_outside_actions_survive_a_running_application() {
         let mut actions: Vec<Action> = PAD_ACTIONS.iter().map(|(_, action)| *action).collect();
         actions.retain(survives_an_application);
         assert!(
             actions.is_empty(),
             "every plain press on this pad belongs to the application in front"
         );
-        for action in [Action::Guide, Action::Keyboard, Action::Screenshot] {
+        for action in [
+            Action::Guide,
+            Action::Keyboard,
+            Action::Screenshot,
+            Action::SteamOverlay,
+        ] {
             assert!(survives_an_application(&action), "{action:?}");
         }
     }

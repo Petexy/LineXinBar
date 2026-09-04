@@ -608,12 +608,64 @@ pub enum Command {
     /// is the question having two names already answers.
     SteamSort,
     SteamSortBy(lxb_steam::library::Sort),
+    /// Put the account into one of Steam's statuses, off the friends panel.
+    ///
+    /// The one row anywhere in this shell that writes something to somebody
+    /// else's service about the person using it, which is why it names the
+    /// state rather than a verb: what is chosen is what the row says, and what
+    /// the row says is what everybody on the list will see.
+    SteamStatus(lxb_steam::Presence),
+    /// Put up what this session's Steam is doing, as a panel to read.
+    ///
+    /// A panel rather than a page, for the reason System information is one:
+    /// what is behind it is a dozen named values with an answer beside each,
+    /// and a column offering them as rows would be a list somebody has to walk
+    /// down to read a value at a time. See `Steam::diagnostics`.
+    SteamDiagnostics,
+    /// Throw away the pictures this shell fetched for the Steam column.
+    ///
+    /// Offered from the diagnostics panel, beside the number it is about, and
+    /// nowhere else — it is a thing to do when something is wrong with a
+    /// picture or when a disk is full, and neither is a row anybody should meet
+    /// while walking their library. Nothing is lost that cannot be fetched
+    /// again.
+    SteamForgetArtwork,
+    /// Take away the marker that makes Valve's client expose its interface.
+    ///
+    /// Offered from the diagnostics panel, beside the line that says the
+    /// interface is open, and only when there is a marker to take away that
+    /// this shell did not make itself. Everything about why that is a button
+    /// rather than something the shell does on its own is in
+    /// `lxb_steam::webui::shut_the_interface`: the shell will not turn off a
+    /// thing somebody else turned on, and being asked to is not the shell
+    /// deciding.
+    SteamShutTheInterface,
     /// Fetch a game the account owns and this machine does not have.
     ///
     /// Carries the app rather than acting on whatever is selected, because the
     /// answer arrives after a round trip and the selection may have moved by
     /// then — and because the same command is offered from a dialog, where
     /// there is no selection to speak of.
+    /// Try one game again, out of the panel that said it did not start.
+    ///
+    /// Carries the app for the reason [`Command::SteamInstall`] does: the panel
+    /// is read after the fact and the bar may have moved on, so the row cannot
+    /// mean "whatever is selected".
+    /// Ask before signing out, rather than doing it.
+    ///
+    /// The row it is on says "Sign out of LineXinBar" and that is exactly what
+    /// it does — it is not the whole of signing out of Steam on this machine,
+    /// and the panel behind this is where the difference is said.
+    SteamSignOutNow,
+    SteamPlayAgain(u32),
+    /// Move Valve's client to this session and this account, having asked, and
+    /// start the game that was waiting on it.
+    ///
+    /// The only row in the shell that may end a Steam this session did not
+    /// start. It is offered from one panel and nowhere else — see
+    /// `Shell::offer_to_move_steam_here` — because the question it is the
+    /// answer to is what makes it allowed.
+    SteamMoveClientHere(u32),
     SteamInstall(u32),
     /// Stop fetching one, and take away what had arrived. There is no
     /// resuming, so pressing Install again starts over.
@@ -639,6 +691,36 @@ pub enum Command {
     /// own confirmation up, which is the whole point — so this is the press
     /// that deletes a game, and it exists only on the panel that asked.
     SteamUninstallNow(u32),
+    /// Start Valve's client, because something the user is looking at needs one
+    /// and there is not one running.
+    ///
+    /// Steam does not take the game as an argument — it comes up and gets on
+    /// with whatever its own manifests say is outstanding — but the app is
+    /// carried anyway, because the shell has to know **what it started the
+    /// client for**. A session that is not to leave Steam running has to close
+    /// it again when that work is done, and "that work" is this game. See
+    /// `Shell::close_steam_when_the_press_is_over`.
+    SteamStartClient(u32),
+    /// Ask Steam which compatibility tools one title may be run with, and step
+    /// into the list.
+    ///
+    /// Carries the app because the list is fetched and the panel may be
+    /// answered a moment later — a client that has to be started first is most
+    /// of a minute — and by then "whatever is selected" is not what the press
+    /// was about.
+    SteamCompatibility(u32),
+    /// Run it under one of them from now on, or under whatever Steam chooses,
+    /// which is what `None` is.
+    ///
+    /// The tool is Valve's own key for it — `proton_experimental`, or the name
+    /// a third-party tool declares itself with — rather than the label on the
+    /// row, and it is borrowed for the life of the session because a command is
+    /// a small copyable thing. See `settings::intern`, which is where the
+    /// keyboard layouts do the same.
+    SteamRunUnder {
+        app_id: u32,
+        tool: Option<&'static str>,
+    },
     /// Do one thing to the Steam title the menu is about — check it, hand its
     /// install over — or bring up the Steam client itself.
     ///
@@ -651,6 +733,11 @@ pub enum Command {
     /// the menu is about whatever was selected when it was raised, and the
     /// shell can look that up again.
     SteamDo(lxb_steam::Doing),
+    /// One answer to the question Valve's client stopped a launch on, by its
+    /// place in the panel. The answers themselves live on the shell, because a
+    /// command is a small copyable thing and one of these carries a sentence
+    /// in whatever language Steam is running in.
+    SteamLaunchAnswer(usize),
     /// Take an account off the machine, leaving what is in its home directory
     /// where it is — and the same, taking that with it.
     ///
@@ -662,6 +749,15 @@ pub enum Command {
     /// `Shell::ask_about_removing_account`, which is the panel that offers them.
     RemoveAccountKeepingFiles,
     RemoveAccountAndFiles,
+    /// Start the application that shelf is for — *Pictures*, over the row of
+    /// photographs.
+    ///
+    /// The shelf is the user's own files and the row over it is the way into
+    /// them; this is the way into the program that shows them properly, which
+    /// has no tile of its own because a console does not want two rows called
+    /// the same thing. See [`crate::apps::take_off_the_bar`] for why it is off
+    /// the bar and still installed, and `Shell::shelf_entry_menu` for the row.
+    OpenTheShelfApp,
     /// Put the menu away and do nothing else. The row that says so out loud,
     /// for a user who has opened the menu and changed their mind; `B` does the
     /// same thing and is not discoverable.
@@ -1049,7 +1145,7 @@ pub const PRESS_TIME: f32 = 0.16;
 
 /// How stiff the spring the highlight glides on is, in radians per second.
 /// The guide's, so the two surfaces feel related.
-const HIGHLIGHT_EASE_RATE: f32 = 21.0;
+pub const HIGHLIGHT_EASE_RATE: f32 = 21.0;
 
 /// The menu as the shell holds it.
 ///
@@ -1260,6 +1356,50 @@ impl Menu {
         // to start.
         self.open = true;
         self.closing_after_press = false;
+        true
+    }
+
+    /// Write a different list on the panel, in place of the one it is showing.
+    ///
+    /// For the one list whose rows are not known when it is opened: a panel
+    /// that stepped into "asking Steam…" and now has the answer. Not
+    /// [`Self::descend`], which would put a second list on the stack and leave
+    /// Back stepping through a wait nobody wants to see again, and not
+    /// [`Self::open_at`], which would fold the panel away and grow it back for
+    /// what the user reads as one list arriving.
+    ///
+    /// A list arriving while the step into it is still in flight replaces what
+    /// is arriving rather than what is on the screen — otherwise the answer
+    /// would be written over the *menu the step came from*, and the wait would
+    /// then land on top of it.
+    ///
+    /// Returns whether there was anything to write, on the terms
+    /// [`Self::descend`] returns them: a list with nothing choosable in it is a
+    /// dead end, and the caller keeps whatever it has.
+    pub fn replace(&mut self, title: Option<Title>, entries: Vec<Entry>) -> bool {
+        if !entries.iter().any(|entry| entry.enabled) {
+            return false;
+        }
+        if self.next.is_some() {
+            self.next = Some((title, entries));
+            return true;
+        }
+        self.title = title;
+        self.entries = entries;
+        // Onto the first row that can be chosen, wherever the wait had left it.
+        // Not kept where it was: the rows underneath it are different rows now,
+        // and a selection that stayed on index 1 would be standing on whichever
+        // tool happened to arrive there.
+        self.selected = self
+            .entries
+            .iter()
+            .position(|entry| entry.enabled)
+            .unwrap_or_default();
+        self.on_aside = false;
+        self.scroll = 0;
+        self.pressed = None;
+        self.closing_after_press = false;
+        self.keep_selection_in_view();
         true
     }
 
@@ -2168,6 +2308,69 @@ mod tests {
         );
         assert_eq!(menu.depth(), 1);
         assert!(!menu.is_descending());
+    }
+
+    /// A list that had to be fetched is written over the wait, on the same
+    /// panel, at the same depth.
+    ///
+    /// The step inward already happened when the row was pressed — what was
+    /// stepped into was "asking Steam" — so this must not push a second list:
+    /// Back from the tools has to reach the menu the press came from, and not
+    /// a wait nobody wants to see again.
+    #[test]
+    fn a_list_that_had_to_be_fetched_replaces_the_wait_it_was_asked_from() {
+        let mut menu = open(&["play", "compatibility"]);
+        while menu.animate(0.05) < 1.0 {}
+        menu.move_selection(1);
+        menu.choose();
+        assert!(menu.descend(
+            Some(Title::new("A Game")),
+            vec![
+                Entry::new(Command::Placeholder("waiting"), "Asking Steam…").reading(),
+                Entry::new(Command::Dismiss, "Cancel"),
+            ]
+        ));
+        menu.backdate_press(PRESS_TIME);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(menu.depth(), 1);
+        assert_eq!(
+            menu.selected_entry().map(|row| row.command),
+            Some(Command::Dismiss),
+            "the wait itself cannot be chosen, so the way out is"
+        );
+
+        assert!(menu.replace(
+            Some(Title::new("A Game")),
+            rows(&["Steam's choice", "Proton Experimental"])
+        ));
+        assert_eq!(menu.depth(), 1, "the same depth, not one further in");
+        assert_eq!(menu.title(), Some("A Game"));
+        assert_eq!(
+            menu.selected_entry().map(|row| row.command),
+            Some(Command::Placeholder("Steam's choice")),
+            "and standing at the top of what arrived"
+        );
+        assert!(menu.back(), "Back reaches the menu the press came from");
+        assert_eq!(menu.depth(), 0);
+        assert_eq!(menu.entries().len(), 2);
+
+        // And a list that arrives while the step inward is still in flight
+        // replaces what is arriving, rather than the menu underneath it.
+        let mut menu = open(&["play", "compatibility"]);
+        while menu.animate(0.05) < 1.0 {}
+        menu.move_selection(1);
+        menu.choose();
+        menu.descend(None, rows(&["waiting", "cancel"]));
+        assert!(menu.replace(None, rows(&["Steam's choice"])));
+        assert_eq!(menu.entries().len(), 2, "the menu it came from, untouched");
+        menu.backdate_press(PRESS_TIME);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(menu.depth(), 1);
+        assert_eq!(
+            menu.entries().len(),
+            1,
+            "and what steps in is what arrived, not the wait"
+        );
     }
 
     /// Back is one level at a time, and the list is found as it was left —

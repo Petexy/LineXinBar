@@ -1543,8 +1543,8 @@ pub struct Opening {
 /// shelved, and a file the explorer found in the folder it lives in. One
 /// function, so a `.flac` opens in the same application whichever column it was
 /// pressed in.
-pub fn opening(path: &Path, mime: &str, categories: &[Category]) -> Option<Opening> {
-    if let Some(app) = handlers(mime, categories).first() {
+pub fn opening(path: &Path, mime: &str, categories: &[Category], aside: &[App]) -> Option<Opening> {
+    if let Some(app) = handlers(mime, categories, aside).first() {
         return Some(opening_with(path, app));
     }
 
@@ -1574,11 +1574,11 @@ pub fn opening(path: &Path, mime: &str, categories: &[Category]) -> Option<Openi
 /// The user's own default heads the list where they have set one, and the rest
 /// follow in [`declares`]'s order. The default is not repeated further down: it
 /// is one application and it gets one row.
-pub fn handlers<'a>(mime: &str, categories: &'a [Category]) -> Vec<&'a App> {
-    let chosen = preferred(mime, categories);
+pub fn handlers<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Vec<&'a App> {
+    let chosen = preferred(mime, categories, aside);
     let mut handlers: Vec<&App> = chosen.into_iter().collect();
     handlers.extend(
-        ranked(mime, categories)
+        ranked(mime, categories, aside)
             .into_iter()
             .filter(|app| chosen.is_none_or(|chosen| !std::ptr::eq(chosen, *app))),
     );
@@ -1774,13 +1774,13 @@ fn quoted(path: &Path) -> String {
 
 /// The application the user has set as the default for `mime`, if it is one
 /// this machine actually has.
-fn preferred<'a>(mime: &str, categories: &'a [Category]) -> Option<&'a App> {
+fn preferred<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Option<&'a App> {
     for list in mimeapps_files() {
         let Ok(raw) = std::fs::read_to_string(&list) else {
             continue;
         };
         for id in defaults(&raw, mime) {
-            if let Some(app) = entry_named(&id, categories) {
+            if let Some(app) = entry_named(&id, categories, aside) {
                 return Some(app);
             }
         }
@@ -1864,8 +1864,8 @@ fn defaults(raw: &str, mime: &str) -> Vec<String> {
 }
 
 /// The installed application whose desktop entry is called `id`.
-pub fn entry_named<'a>(id: &str, categories: &'a [Category]) -> Option<&'a App> {
-    apps_in(categories).find(|app| {
+pub fn entry_named<'a>(id: &str, categories: &'a [Category], aside: &'a [App]) -> Option<&'a App> {
+    apps_in(categories, aside).find(|app| {
         app.path
             .file_name()
             .and_then(OsStr::to_str)
@@ -1893,8 +1893,8 @@ pub fn entry_named<'a>(id: &str, categories: &'a [Category]) -> Option<&'a App> 
 /// start rather than whichever the disk answered with first. The whole list
 /// rather than the best of it, because the Open with menu offers all of them
 /// and the two must not be able to disagree about which is best.
-fn ranked<'a>(mime: &str, categories: &'a [Category]) -> Vec<&'a App> {
-    let mut apps: Vec<&App> = apps_in(categories)
+fn ranked<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Vec<&'a App> {
+    let mut apps: Vec<&App> = apps_in(categories, aside)
         .filter(|app| app.mime_types.iter().any(|own| own == mime))
         .collect();
     apps.sort_by_key(|app| handler_rank(app));
@@ -1926,12 +1926,24 @@ fn handler_rank(app: &App) -> u8 {
 /// Nothing is filtered. A file with no extension is the case this exists for,
 /// nothing declares it, and a list that left out the applications which say
 /// they open nothing would leave out most of what somebody would reach for.
-pub fn every_application(categories: &[Category]) -> Vec<&App> {
-    apps_in(categories).collect()
+pub fn every_application<'a>(categories: &'a [Category], aside: &'a [App]) -> Vec<&'a App> {
+    apps_in(categories, aside).collect()
 }
 
-/// Every installed application in the catalogue, subcategories included.
-fn apps_in(categories: &[Category]) -> impl Iterator<Item = &App> {
+/// Every installed application the shell knows about, subcategories included —
+/// and the ones it has taken off its own bar.
+///
+/// The second half is the whole reason this takes two arguments. An
+/// application can be off the bar and still be the right answer to "what opens
+/// this file": *Pictures* has no tile of its own, because it is reached from
+/// the shelf of photographs it is for, and it is still what a photograph opens
+/// in. Dropping it from the catalogue to hide it would have taken it out of
+/// the Open with list and the handler lookup at the same time — which is one
+/// decision made in the place that only looks like it is about drawing.
+///
+/// See [`crate::apps::take_off_the_bar`], which is where the second list comes
+/// from.
+fn apps_in<'a>(categories: &'a [Category], aside: &'a [App]) -> impl Iterator<Item = &'a App> {
     let mut apps: Vec<&App> = Vec::new();
     for category in categories {
         crate::apps::walk(&category.entries, &mut |entry| {
@@ -1940,7 +1952,7 @@ fn apps_in(categories: &[Category]) -> impl Iterator<Item = &App> {
             }
         });
     }
-    apps.into_iter()
+    apps.into_iter().chain(aside.iter())
 }
 
 #[cfg(test)]
@@ -2648,14 +2660,14 @@ mod tests {
 
         // Nothing chosen: the catalogue's own order decides, so the answer is
         // the same on every start.
-        assert_eq!(ranked(song.mime, &categories)[0].name, "Celluloid");
+        assert_eq!(ranked(song.mime, &categories, &[])[0].name, "Celluloid");
 
         // Chosen: that one, and the command carries the file.
         let list = "[Added Associations]\naudio/mpeg=celluloid.desktop;\n\
                     [Default Applications]\naudio/mpeg=vlc.desktop;celluloid.desktop\n";
         let chosen = defaults(list, "audio/mpeg");
         assert_eq!(chosen, ["vlc.desktop", "celluloid.desktop"]);
-        let app = entry_named(&chosen[0], &categories).unwrap();
+        let app = entry_named(&chosen[0], &categories, &[]).unwrap();
         assert_eq!(app.name, "VLC");
         assert_eq!(
             format!("{} {}", app.exec, quoted(&song.path)),
@@ -2683,7 +2695,7 @@ mod tests {
             app("Something", "s.desktop", "s", &["audio/flac"]),
         ]);
         let song = file("/home/x/a.flac").unwrap();
-        let offered = handlers(song.mime, &categories);
+        let offered = handlers(song.mime, &categories, &[]);
 
         // Every application that opens the type, each of them once: a default
         // the user has set heads the list rather than appearing twice in it.
@@ -2694,7 +2706,7 @@ mod tests {
         assert_eq!(once.len(), names.len(), "{names:?}");
         assert_eq!(names.len(), 3, "{names:?}");
 
-        let opening = opening(&song.path, song.mime, &categories).unwrap();
+        let opening = opening(&song.path, song.mime, &categories, &[]).unwrap();
         assert_eq!(opening.name, names[0]);
         assert!(opening.command.ends_with("'/home/x/a.flac'"));
         assert_eq!(opening.icon, offered[0].icon);
@@ -2702,15 +2714,15 @@ mod tests {
         // And nothing at all for a type nothing installed claims, which is what
         // greys the Open with row out.
         let film = file("/home/x/a.mkv").unwrap();
-        assert!(handlers(film.mime, &categories).is_empty());
+        assert!(handlers(film.mime, &categories, &[]).is_empty());
     }
 
     /// A default naming something that is not installed is not an answer.
     #[test]
     fn a_default_for_an_application_that_is_gone_falls_through() {
         let categories = catalogue(vec![app("VLC", "vlc.desktop", "vlc", &["audio/mpeg"])]);
-        assert!(entry_named("mpv.desktop", &categories).is_none());
-        assert!(ranked("video/mp4", &categories).is_empty());
+        assert!(entry_named("mpv.desktop", &categories, &[]).is_none());
+        assert!(ranked("video/mp4", &categories, &[]).is_empty());
     }
 
     /// The machine this was written on, exactly: Audacity claims `audio/flac`,
@@ -2729,7 +2741,7 @@ mod tests {
                 &["AudioVideo", "Player", "Recorder"],
             ),
         ]);
-        assert_eq!(ranked("audio/flac", &categories)[0].name, "VLC");
+        assert_eq!(ranked("audio/flac", &categories, &[])[0].name, "VLC");
 
         // An application that says nothing either way still beats an editor,
         // and still loses to something that calls itself a player.
@@ -2740,7 +2752,7 @@ mod tests {
             ),
             app("Something", "s.desktop", "s", &["audio/flac"]),
         ]);
-        assert_eq!(ranked("audio/flac", &quiet)[0].name, "Something");
+        assert_eq!(ranked("audio/flac", &quiet, &[])[0].name, "Something");
     }
 
     /// A flatpak is handed the file inside its forwarding markers, or it opens
@@ -2821,5 +2833,82 @@ mod tests {
         assert_eq!(defaults(list, "video/mp4"), ["mpv.desktop"]);
         assert!(defaults(list, "audio/mpeg").is_empty());
         assert!(defaults("[Removed Associations]\nvideo/mp4=x.desktop\n", "video/mp4").is_empty());
+    }
+
+    /// An application off the bar is still what its files open in.
+    ///
+    /// The one that matters: *Pictures* has no tile, because it is reached
+    /// from the menu over the shelf of photographs it is for. Hiding it by
+    /// dropping it from the catalogue — or by writing `NotShowIn` on its
+    /// entry — would have hidden it from this lookup at the same time, and a
+    /// photograph would have opened in whatever came second. See
+    /// [`crate::apps::take_off_the_bar`].
+    #[test]
+    fn an_application_off_the_bar_still_opens_its_files() {
+        let aside = vec![filed(
+            app(
+                "Pictures",
+                "imagonsole.desktop",
+                "imagonsole",
+                &["image/png"],
+            ),
+            &["Graphics", "Viewer"],
+        )];
+
+        // The bar itself has nothing that opens a photograph.
+        let categories: Vec<Category> = Vec::new();
+        assert!(
+            handlers("image/png", &categories, &[]).is_empty(),
+            "and without the set-aside list there is nothing to find"
+        );
+
+        let found = handlers("image/png", &categories, &aside);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Pictures");
+
+        // By name, which is how the Open with list's press reaches it.
+        assert!(entry_named("imagonsole.desktop", &categories, &aside).is_some());
+        // And on the Other application list, which is everything installed.
+        assert_eq!(every_application(&categories, &aside).len(), 1);
+    }
+
+    /// The same, for the film player — and the half that is easy to get wrong
+    /// once there are two of them: each has to open *its own* kind of file.
+    /// One list holds both, and a lookup that answered with whichever came
+    /// first would play a photograph and show a film.
+    #[test]
+    fn each_application_off_the_bar_opens_its_own_files() {
+        let aside = vec![
+            filed(
+                app(
+                    "Pictures",
+                    "imagonsole.desktop",
+                    "imagonsole",
+                    &["image/png"],
+                ),
+                &["Graphics", "Viewer"],
+            ),
+            filed(
+                app(
+                    "Videos",
+                    "videonsole.desktop",
+                    "videonsole",
+                    &["video/x-matroska"],
+                ),
+                &["AudioVideo", "Video", "Player"],
+            ),
+        ];
+        let categories: Vec<Category> = Vec::new();
+
+        let found = handlers("video/x-matroska", &categories, &aside);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Videos");
+
+        let found = handlers("image/png", &categories, &aside);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Pictures");
+
+        assert!(entry_named("videonsole.desktop", &categories, &aside).is_some());
+        assert_eq!(every_application(&categories, &aside).len(), 2);
     }
 }

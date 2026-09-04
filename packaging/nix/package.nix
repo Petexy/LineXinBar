@@ -156,6 +156,12 @@ rustPlatform.buildRustPackage {
     install -Dm0644 packaging/files/lxb.desktop \
       "$out/share/wayland-sessions/lxb.desktop"
 
+    # The two device nodes the shell opens itself. NixOS reads rules out of
+    # `services.udev.packages`, which is what `lib/udev/rules.d` in an output
+    # is for; the module beside this file names this package there.
+    install -Dm0644 packaging/files/70-linexinbar-input.rules \
+      "$out/lib/udev/rules.d/70-linexinbar-input.rules"
+
     install -Dm0644 share/xdg-desktop-portal/portals/lxb.portal \
       "$out/share/xdg-desktop-portal/portals/lxb.portal"
     install -Dm0644 share/xdg-desktop-portal/linexinbar-portals.conf \

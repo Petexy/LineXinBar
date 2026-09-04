@@ -36,11 +36,35 @@ lxb-desktop      bin/lxb-desktop
                  share/wayland-sessions/lxb.desktop
                  share/xdg-desktop-portal/**
                  share/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
+                 lib/udev/rules.d/70-linexinbar-input.rules
 
 lxb-retroarch    bin/lxb-retroarch
                  share/lxb/glyphs/retroarch.svg
                  share/lxb/glyphs/console-*.svg   (one per console it knows)
 ```
+
+The udev rule grants two device nodes to whoever holds the active session on
+the seat — `uaccess`, not a group, so it is the person sitting there and never
+every account on the machine. They are the only two the shell opens itself: the
+second-generation Steam Controller's `hidraw`, which no kernel driver claims
+and which is therefore `0600 root:root` with nothing in systemd's own rules
+tagging it, and `/dev/uinput`, which is how a guarded pad and a stand-in gamepad
+are handed back to the rest of the machine. Without the rule the controller
+handling half works and says nothing about why, which is why it ships here
+rather than being left to whatever device-rules package a distribution happens
+to have.
+
+That narrows which *account* holds the nodes and not which program, and the
+difference matters here: every process of that account is inside the ACL,
+including Valve's client and every game it launches. `/dev/uinput` is input
+injection — anything running as the user can publish a virtual keyboard and
+synthesise presses the compositor cannot distinguish from the real one's — and
+`uaccess` grants `rw` on the pad's `hidraw` whatever `MODE=` says, though the
+shell only reads it. This is a wider trust boundary than the rest of the
+session's, which refuses `lxb_shell_v1` to exactly those programs, and closing
+it needs a root-owned helper that hands out descriptors rather than a rule that
+hands out nodes. There is none yet. The Permissions section of the root README
+sets out the whole of it; packagers shipping this rule are shipping that.
 
 `lxb-session` clears display variables inherited from a greeter, creates a
 private D-Bus session, and starts `lxb --backend udev --shell`. This gives a
@@ -118,8 +142,19 @@ over the environment, so a machine that sets `BUILDDIR` builds there whatever
 
 This checks shell/package syntax, confirms every package definition still
 takes its version from `VERSION`, builds the release binaries,
-stages the common payload, validates the standard desktop-entry fields, and
-verifies that all cursor-theme symlinks survive. Use `--no-build` only when
+stages the common payload, validates the standard desktop-entry fields,
+verifies that all cursor-theme symlinks survive, and checks that the input
+device rules still grant what they are for — `udevadm verify` reads them where
+it is installed.
+
+It also runs the device tests and says what they could actually reach on the
+machine the release is being built on. Ten of the shell's tests need hardware,
+and each of them prints a line and passes where there is none; `cargo test`
+counts that as a pass, so a release built without a controller used to report
+full coverage of the controller work and have none of it. The report names every
+test that was not covered and why. A skip is never fatal — it is a fact about
+the build machine, and one worth writing into a release note. Run it on its own
+with `./packaging/device-report.sh`. Use `--no-build` only when
 current release binaries already exist in `target/release` (or in
 `$CARGO_TARGET_DIR/release`, which the staging step follows).
 

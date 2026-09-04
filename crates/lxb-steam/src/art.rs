@@ -22,7 +22,12 @@
 //!   stand behind a whole display; and
 //! * the **logo** — `logo.png`, the game's title drawn as its own artwork on
 //!   a transparent ground, which is what a game is called when the calling is
-//!   the only thing on the screen.
+//!   the only thing on the screen; and
+//! * the **icon** — the square mark Valve's own client wears on a shortcut and
+//!   in a window's title bar. The odd one out in every respect: it is not store
+//!   artwork, it is not in the library cache, it is a Windows `.ico` holding
+//!   several sizes at once, and it is addressed by a hash that lives in a
+//!   different corner of the app's record. See [`Piece::Icon`].
 //!
 //! Nothing else is fetched. A header and a blurred hero are in the same cache
 //! and neither is drawn by this shell, and a picture that is never drawn is
@@ -90,6 +95,16 @@ const CDN: &str = "https://cdn.cloudflare.steamstatic.com/steam/apps";
 /// path is known is fetched from this host and nothing else.
 const ASSETS: &str = "https://shared.steamstatic.com/store_item_assets/steam/apps";
 
+/// Where the client icon is served, which is neither of the above.
+///
+/// An icon is not store artwork. It is not published under
+/// `library_assets_full`, it is not cached beside the capsules, and it is not
+/// served by either host that serves them — it lives with the community images,
+/// under the app's id and the hash of the file itself. Probed against Valve on
+/// 2026-09-01: `{COMMUNITY}/10/f16b5951….ico` answers 200 `image/x-icon`, and
+/// the same hash under [`ASSETS`] answers 404.
+const COMMUNITY: &str = "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps";
+
 /// How long one picture is given to arrive.
 ///
 /// A hero is around half a megabyte, which is nothing on a working line and
@@ -110,6 +125,36 @@ pub enum Piece {
     /// wordmark is, up to 640 across. A title set in one line comes back a
     /// tenth as tall as a stacked one, so nothing may assume a shape for it.
     Logo,
+    /// The square mark the client wears on a shortcut: `common/clienticon`, a
+    /// Windows `.ico` holding several sizes in one file.
+    ///
+    /// Unlike the three above it in every way that matters here.
+    ///
+    /// * **It is addressed by a bare hash**, not by a published path — the
+    ///   record says `f16b5951eed0…` and the file is that plus `.ico`. So
+    ///   [`Published::of`] answers with a name this crate assembled rather than
+    ///   one Valve wrote, and a game whose record says nothing has *no* icon to
+    ///   ask for at all: there is no name to fall back to, and asking the
+    ///   content network by name would be asking for a file that does not exist
+    ///   for any game.
+    /// * **It is served from a third host** — see [`COMMUNITY`].
+    /// * **It is cached somewhere else again**: not in `librarycache` with the
+    ///   store artwork but flat in `steam/games/{hash}.ico` under the Steam
+    ///   root. See [`in_the_icon_cache`].
+    /// * **It is not one picture.** A `.ico` is a directory of sizes, and on the
+    ///   machine this was measured against 20 of 33 reach 256 px while 8 stop at
+    ///   32. Whatever decodes it has to take the largest and be ready for it to
+    ///   be small.
+    ///
+    /// The hash the shell is given comes from the PICS field the protocol crate
+    /// calls `img_icon_url`, which is `common/clienticon` where there is one and
+    /// `common/icon` where there is not. The second is a `.jpg`, so for a game
+    /// with only that this asks for a `.ico` that is not there and is told 404 —
+    /// which is the ordinary "no such picture" answer and leaves the caller to
+    /// draw whatever it draws without one. Counted on the machine this was
+    /// written against: of 343 games, 337 publish a `clienticon`, one publishes
+    /// only an `icon`, and five publish neither.
+    Icon,
 }
 
 impl Piece {
@@ -124,6 +169,11 @@ impl Piece {
             Piece::Cover => "library_600x900.jpg",
             Piece::Hero => "library_hero.jpg",
             Piece::Logo => "logo.png",
+            // Never asked for over the wire — the icon has no name-only form,
+            // and [`url_of`] refuses one rather than fetching a 404 for every
+            // game at once. This is the name a caller with nowhere else to put
+            // it may file the bytes under.
+            Piece::Icon => "clienticon.ico",
         }
     }
 
@@ -143,6 +193,10 @@ impl Piece {
             Piece::Cover => &["library_600x900.jpg", "library_capsule.jpg"],
             Piece::Hero => &["library_hero.jpg"],
             Piece::Logo => &["logo.png"],
+            // Nothing: the client keeps no icon in the library cache under any
+            // name, so there is nothing here for [`in_cache`] to look for. It
+            // is in [`in_the_icon_cache`] instead.
+            Piece::Icon => &[],
         }
     }
 }
@@ -165,36 +219,58 @@ impl Piece {
 /// here to say where. Those fall back to asking by name, which is what this
 /// crate did before any of this existed and is right for everything published
 /// before the change.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Published {
     cover: Option<String>,
     hero: Option<String>,
     logo: Option<String>,
+    /// The client icon, as `{hash}.ico`.
+    ///
+    /// Assembled here rather than carried, because it is the one piece Valve
+    /// does not publish a path for: the record holds a bare hash, and the file
+    /// name is that hash and the extension the client's own icons are stored
+    /// under. See [`Piece::Icon`].
+    ///
+    /// `#[serde(default)]` because a catalogue written before this existed has
+    /// no such field, and a library restored from the disk is worth having
+    /// without its icons — see [`crate::catalogue`], whose version was raised
+    /// so the icons arrive on the next refresh rather than never.
+    #[serde(default)]
+    icon: Option<String>,
 }
 
 impl Published {
+    /// The record as PICS sends it: where the library pictures are, and the
+    /// hash of the client icon beside them.
+    ///
+    /// The two arrive in different parts of one answer — `common/library_assets_full`
+    /// and `common/clienticon` — which is why this takes them separately rather
+    /// than being a `From` of the first.
+    pub fn from_pics(art: LibraryArt, client_icon: Option<&str>) -> Published {
+        Published {
+            cover: art.capsule.filter(|path| is_a_plain_path(path)),
+            hero: art.hero.filter(|path| is_a_plain_path(path)),
+            logo: art.logo.filter(|path| is_a_plain_path(path)),
+            icon: client_icon
+                .filter(|hash| !hash.is_empty())
+                .map(|hash| format!("{hash}.ico"))
+                .filter(|path| is_a_plain_path(path)),
+        }
+    }
+
     /// Where one piece is, if the record said.
     pub fn of(&self, piece: Piece) -> Option<&str> {
         match piece {
             Piece::Cover => self.cover.as_deref(),
             Piece::Hero => self.hero.as_deref(),
             Piece::Logo => self.logo.as_deref(),
+            Piece::Icon => self.icon.as_deref(),
         }
     }
 
     /// Whether anything at all is known about where this game's pictures are.
     pub fn is_empty(&self) -> bool {
-        self.cover.is_none() && self.hero.is_none() && self.logo.is_none()
-    }
-}
-
-impl From<LibraryArt> for Published {
-    fn from(art: LibraryArt) -> Published {
-        Published {
-            cover: art.capsule.filter(|path| is_a_plain_path(path)),
-            hero: art.hero.filter(|path| is_a_plain_path(path)),
-            logo: art.logo.filter(|path| is_a_plain_path(path)),
-        }
+        self.cover.is_none() && self.hero.is_none() && self.logo.is_none() && self.icon.is_none()
     }
 }
 
@@ -252,19 +328,30 @@ impl Missing {
 /// The file is read where it lies and never written to. It is the client's
 /// cache, and a shell that tidied up after Valve would be deleting pictures
 /// out from under a program that is still running.
-pub fn in_the_client_cache(app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
-    let root = crate::library::root()?;
-    in_cache(
-        &root.join("appcache").join("librarycache"),
-        app_id,
-        piece,
-        published,
-    )
+///
+/// `cache` is handed over rather than looked up, because there can be two
+/// Steams on a machine and this used to go looking on its own: a Flatpak being
+/// driven while the covers came out of a dead native directory is a library of
+/// blank rows with nothing anywhere to explain them. See
+/// [`crate::backend::Backend::client_art_cache`].
+pub fn in_the_client_cache(
+    cache: &Path,
+    app_id: u32,
+    piece: Piece,
+    published: Option<&str>,
+) -> Option<PathBuf> {
+    in_cache(cache, app_id, piece, published)
 }
 
 /// The same, against a cache directory that is handed over — which is what
 /// makes every layout testable without a Steam installation to point at.
 fn in_cache(cache: &Path, app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
+    // The client keeps its icons nowhere near its store artwork: not under this
+    // directory, not under the app's id, and not under any of the three layouts
+    // below. See [`in_the_icon_cache`], which is where that one is looked for.
+    if piece == Piece::Icon {
+        return None;
+    }
     let app = cache.join(app_id.to_string());
     let published = published.filter(|path| is_a_plain_path(path));
     // The layouts that need no telling, under each name the piece is published
@@ -283,6 +370,26 @@ fn in_cache(cache: &Path, app_id: u32, piece: Piece, published: Option<&str>) ->
         // And, only for a game nothing said where to look, the directories the
         // client named after the pictures in them.
         .or_else(|| published.is_none().then(|| under_some_hash(&app, piece))?)
+}
+
+/// Where Valve's own client has already put this game's icon, if it has.
+///
+/// One flat directory of `{hash}.ico` — `steam/games` under the Steam root,
+/// beside the `.zip` of PNGs the Linux client keeps for the same purpose. Not
+/// under the app's id and not in `appcache/librarycache`, which is why this is
+/// a second function rather than a fourth layout inside [`in_cache`]: it is not
+/// a layout of the picture cache at all, it is a different cache.
+///
+/// Read where it lies and never written to, on exactly the terms the picture
+/// cache is.
+///
+/// `None` for a game whose icon hash is not known, which is the same answer as
+/// for one the client has never fetched: without the hash there is no file name
+/// to look for, and a directory of forty hashes says nothing about which of
+/// them belongs to this game.
+pub fn in_the_icon_cache(games: &Path, published: Option<&str>) -> Option<PathBuf> {
+    let file = games.join(published.filter(|path| is_a_plain_path(path))?);
+    file.is_file().then_some(file)
 }
 
 /// The current layout, for a game whose published path is not known.
@@ -361,10 +468,30 @@ impl Cdn {
         piece: Piece,
         published: Option<&str>,
     ) -> Result<Vec<u8>, Missing> {
-        let url = url_of(app_id, piece, published);
+        // Nowhere to ask is the same answer as being told there is nothing
+        // there, and it is permanent on the same terms: the record is what
+        // would have said, and it did not.
+        let Some(url) = url_of(app_id, piece, published) else {
+            return Err(Missing::NotThere);
+        };
+        self.get(&url)
+    }
+
+    /// Fetch one picture Valve publishes, by its whole URL.
+    ///
+    /// The half of [`Self::fetch`] below the URL, made reachable on its own for
+    /// the pictures that are not a game's: an account's avatar is on a host of
+    /// its own under a name only that account knows, so there is nothing here
+    /// to assemble it from — but everything about *asking* is the same, down to
+    /// a 404 being an answer rather than a failure.
+    ///
+    /// The caller is trusted with the URL and this makes no attempt to check
+    /// it. Every one of them in this workspace is built from a constant host
+    /// and a hash Steam itself sent.
+    pub fn get(&self, url: &str) -> Result<Vec<u8>, Missing> {
         let response = self
             .agent
-            .get(&url)
+            .get(url)
             .call()
             .map_err(|err| Missing::Unreachable(err.to_string()))?;
 
@@ -396,11 +523,19 @@ impl Cdn {
 /// paths; otherwise the piece's plain name from the older one, which is the
 /// best that can be done for a game with no record to read and is what answers
 /// for everything published before store artwork was content-addressed.
-fn url_of(app_id: u32, piece: Piece, published: Option<&str>) -> String {
-    match published.filter(|path| is_a_plain_path(path)) {
+fn url_of(app_id: u32, piece: Piece, published: Option<&str>) -> Option<String> {
+    let published = published.filter(|path| is_a_plain_path(path));
+    // The icon is neither of the two below. It is served from a third host, and
+    // it is served *only* by the hash of the file — so a game whose record did
+    // not carry one has nowhere to be asked, and this says so rather than
+    // assembling a name that is a 404 for every game in the library at once.
+    if piece == Piece::Icon {
+        return Some(format!("{COMMUNITY}/{app_id}/{}", published?));
+    }
+    Some(match published {
         Some(path) => format!("{ASSETS}/{app_id}/{path}"),
         None => format!("{CDN}/{app_id}/{}", piece.file_name()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +550,10 @@ mod tests {
         assert_eq!(Piece::Cover.file_name(), "library_600x900.jpg");
         assert_eq!(Piece::Hero.file_name(), "library_hero.jpg");
         assert_eq!(Piece::Logo.file_name(), "logo.png");
+        // The icon's is not one of Valve's names: nothing is served under it,
+        // and [`url_of`] never asks for it. See [`Piece::Icon`].
+        assert_eq!(Piece::Icon.file_name(), "clienticon.ico");
+        assert!(Piece::Icon.file_names().is_empty());
     }
 
     /// The two kinds of absence are not the same thing to do about, which is
@@ -529,19 +668,66 @@ mod tests {
     fn a_published_picture_is_asked_for_where_it_is_published() {
         assert_eq!(
             url_of(3288210, Piece::Cover, Some("28dbb244/library_600x900.jpg")),
-            format!("{ASSETS}/3288210/28dbb244/library_600x900.jpg")
+            Some(format!("{ASSETS}/3288210/28dbb244/library_600x900.jpg"))
         );
         // A bare published name is still the published path: the same host
         // answers for it, so there is one road for everything Steam has said
         // where to find.
         assert_eq!(
             url_of(400, Piece::Hero, Some("library_hero.jpg")),
-            format!("{ASSETS}/400/library_hero.jpg")
+            Some(format!("{ASSETS}/400/library_hero.jpg"))
         );
         assert_eq!(
             url_of(400, Piece::Hero, None),
-            format!("{CDN}/400/library_hero.jpg")
+            Some(format!("{CDN}/400/library_hero.jpg"))
         );
+    }
+
+    /// The icon is on a third host, under the hash and nothing else — and a
+    /// game whose record carried no hash has nowhere to be asked at all.
+    ///
+    /// Both halves matter. The host was probed against Valve on 2026-09-01:
+    /// app 10's client icon answers 200 `image/x-icon` here and 404 under
+    /// [`ASSETS`]. And a name-only fall-back would be a request for
+    /// `clienticon.ico`, which exists for no game — one 404 per game in the
+    /// library, every session, for a picture that was never going to arrive.
+    #[test]
+    fn the_client_icon_is_asked_for_by_its_hash_or_not_at_all() {
+        assert_eq!(
+            url_of(
+                10,
+                Piece::Icon,
+                Some("f16b5951eed02e3c3516389031374e95268d9ce7.ico")
+            ),
+            Some(format!(
+                "{COMMUNITY}/10/f16b5951eed02e3c3516389031374e95268d9ce7.ico"
+            ))
+        );
+        assert_eq!(url_of(10, Piece::Icon, None), None);
+    }
+
+    /// The icon's cache is a flat directory of hashes under the Steam root, and
+    /// the *picture* cache knows nothing about it. A lookup that went to the
+    /// library cache would answer `None` for every game and the icons would
+    /// come off the network every session on a machine that already has them.
+    #[test]
+    fn the_client_icon_has_a_cache_of_its_own() {
+        let scratch = scratch("icons");
+        let games = scratch.join("steam").join("games");
+        std::fs::create_dir_all(&games).expect("a scratch directory");
+        let hash = "f16b5951eed02e3c3516389031374e95268d9ce7.ico";
+        std::fs::write(games.join(hash), [0x00, 0x00, 0x01, 0x00]).expect("an icon");
+
+        assert_eq!(
+            in_the_icon_cache(&games, Some(hash)),
+            Some(games.join(hash))
+        );
+        // Without the hash there is nothing to look for: a directory of forty
+        // of them says nothing about which one is this game's.
+        assert_eq!(in_the_icon_cache(&games, None), None);
+        // And the picture cache is not where it lives, at any of its layouts.
+        assert_eq!(in_cache(&scratch, 10, Piece::Icon, Some(hash)), None);
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// A path from the network is a path onto this machine's disk, so anything
@@ -560,16 +746,30 @@ mod tests {
         assert!(!is_a_plain_path("hash/../../secrets.jpg"));
         assert!(!is_a_plain_path("hash/cover.jpg?t=1"));
 
-        let art = Published::from(LibraryArt {
-            capsule: Some("../../../../etc/passwd".to_string()),
-            hero: Some("67a1c596/library_hero.jpg".to_string()),
-            logo: None,
-        });
+        let art = Published::from_pics(
+            LibraryArt {
+                capsule: Some("../../../../etc/passwd".to_string()),
+                hero: Some("67a1c596/library_hero.jpg".to_string()),
+                logo: None,
+            },
+            Some("f16b5951eed02e3c3516389031374e95268d9ce7"),
+        );
         assert_eq!(art.of(Piece::Cover), None);
         assert_eq!(art.of(Piece::Hero), Some("67a1c596/library_hero.jpg"));
         assert_eq!(art.of(Piece::Logo), None);
+        // The hash is a bare name in the record and a file name here: the one
+        // piece whose path this crate assembles rather than carries.
+        assert_eq!(
+            art.of(Piece::Icon),
+            Some("f16b5951eed02e3c3516389031374e95268d9ce7.ico")
+        );
         assert!(!art.is_empty());
         assert!(Published::default().is_empty());
+        // And a hash that is not a plain name is dropped like any other path
+        // from the network — it would be joined onto a directory on this disk.
+        let crooked = Published::from_pics(LibraryArt::default(), Some("../../../etc/passwd"));
+        assert_eq!(crooked.of(Piece::Icon), None);
+        assert!(crooked.is_empty());
     }
 
     fn scratch(what: &str) -> PathBuf {

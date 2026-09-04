@@ -1,0 +1,26 @@
+<!--
+  How fast the pointer travels: the pointer itself, with the air going past it.
+
+  The two horizontal runs behind the arrow are this set's mark for speed, and
+  they are shared with setting-scroll-speed.svg on purpose — the two rows of the
+  Mouse page that set a speed wear the same idea, and what tells them apart is
+  what is being moved: a pointer here, a plain arrow there.
+
+  The pointer is the classic arrowhead with a tail, which is the shape the
+  cursor on the screen actually has. It is one body: the tail runs back into the
+  head with no seam, because they are one drawing and not two things touching.
+
+  The runs are uneven — the lower one shorter — so they read as air rather than
+  as an equals sign lying beside an arrow.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#fff">
+    <path d="M13 4.6 L13 25.4 L17.6 21.0 L20.7 27.6 L23.6 26.2 L20.6 19.8 L26.6 19.4 Z"/>
+    <rect x="2.6" y="8.0" width="7.6" height="2.1" rx="1.05"/>
+    <rect x="4.9" y="13.6" width="5.3" height="2.1" rx="1.05"/>
+  </g>
+</svg>

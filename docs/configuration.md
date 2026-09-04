@@ -1080,6 +1080,37 @@ likely to be a newer version's than a corrupt one.
 | `natural_scroll`      | boolean | `false` | Reverse scroll direction. |
 | `disable_while_typing`| boolean | `true`  | Ignore the touchpad while typing. |
 | `pointer_accel`       | float   | `0.0`   | libinput acceleration, `-1.0..=1.0`. |
+| `scroll_speed`        | float   | `1.0`   | Multiplies the scroll distance libinput reports. Must be greater than zero; use `natural_scroll` to reverse it. |
+
+`keyboard_layout` and `keyboard_variant` are what the session **starts** at. The
+shell can change them while it runs — Settings > Input > Keyboard > Keyboard
+layout, over `lxb_shell_v1.set_keyboard_layout` — and once somebody has picked a
+row there, the shell's own `keyboard-layout` in `shell.toml` is what a later
+session comes up with. Until then these two are in force, so setting a layout
+here by hand still works and is not overwritten. Nothing is written back to this
+file.
+
+Whatever is in force is exported to the session's children as
+`XKB_DEFAULT_LAYOUT` and `XKB_DEFAULT_VARIANT`, so a program that draws its own
+picture of a keyboard — the login screen's on-screen board, a toolkit
+application's search keyboard — prints the right letters on it. Like the cursor
+size beside it, a process reads these when it starts, so this reaches the next
+client and not one already running; every Wayland client is sent the seat's real
+keymap either way.
+
+Both of those programs also read `keyboard-layout` out of `shell.toml`
+themselves, and read it first. Under this session that is the same answer; away
+from it, it is the better one. A variable is copied into a program as it starts,
+so one left running across a change to the setting holds the answer from before
+it — and the login screen is not in this session at all. It takes the layout of
+whichever account is being looked at, out of that account's own settings, and
+falls back to this machine's keyboard for an account that has never chosen one.
+
+A layout that xkbcommon cannot compile is refused and the keyboard is left
+exactly as it was, rather than falling back to something else: a machine whose
+keyboard silently became American is a machine somebody may not be able to type
+their password into. The refusal is logged, and the shell is told what is really
+in force so its page cannot go on marking a row that did nothing.
 
 ## `[[output]]`
 

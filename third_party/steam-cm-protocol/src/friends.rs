@@ -13,6 +13,12 @@ const PERSONA_STATE_REQUESTED: u32 = 1 | 2 | 64 | 256;
 // EFriendRelationship::Friend
 const RELATIONSHIP_FRIEND: u32 = 3;
 
+impl Friend {
+    pub fn is_friend(&self) -> bool {
+        self.relationship == RELATIONSHIP_FRIEND
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersonaState {
     Offline,
@@ -122,8 +128,16 @@ pub struct ProtocolAchievement {
 }
 
 #[derive(Debug)]
+pub struct FriendsList {
+    /// `false` is the complete snapshot sent at logon; `true` is a patch.
+    pub incremental: bool,
+    /// Every relationship carried by the packet, including removals.
+    pub friends: Vec<Friend>,
+}
+
+#[derive(Debug)]
 pub enum FriendsEvent {
-    FriendsList(Vec<Friend>),
+    FriendsList(FriendsList),
     PersonaStates(Vec<Persona>),
     RecentlyPlayedGames(Vec<ProtocolGame>),
     OwnedGames(Vec<ProtocolGame>),
@@ -151,16 +165,19 @@ pub enum FriendsEvent {
 pub fn decode(packet: &Packet) -> Option<FriendsEvent> {
     if packet.emsg == EMsg::ClientFriendsList.raw() {
         let msg = packet.decode_body::<CMsgClientFriendsList>().ok()?;
+        let incremental = msg.bincremental.unwrap_or(false);
         let friends = msg
             .friends
             .into_iter()
-            .filter(|f| f.efriendrelationship() == RELATIONSHIP_FRIEND)
             .map(|f| Friend {
                 steamid: f.ulfriendid(),
                 relationship: f.efriendrelationship(),
             })
             .collect();
-        return Some(FriendsEvent::FriendsList(friends));
+        return Some(FriendsEvent::FriendsList(FriendsList {
+            incremental,
+            friends,
+        }));
     }
 
     if packet.emsg == EMsg::ClientPersonaState.raw() {
@@ -263,8 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn filters_non_friend_relationships() {
+    fn preserves_incremental_relationship_changes() {
         let mut msg = crate::protobuf::CMsgClientFriendsList::default();
+        msg.bincremental = Some(true);
         // relationship 3 = Friend, 1 = Blocked
         let friend_entry = crate::protobuf::c_msg_client_friends_list::Friend {
             ulfriendid: Some(76561198000000002),
@@ -283,9 +301,13 @@ mod tests {
 
         let event = decode(&packets[0]).expect("should decode");
         match event {
-            FriendsEvent::FriendsList(friends) => {
-                assert_eq!(friends.len(), 1);
-                assert_eq!(friends[0].steamid, 76561198000000002);
+            FriendsEvent::FriendsList(list) => {
+                assert!(list.incremental);
+                assert_eq!(list.friends.len(), 2);
+                assert_eq!(list.friends[0].steamid, 76561198000000002);
+                assert_eq!(list.friends[0].relationship, 3);
+                assert_eq!(list.friends[1].steamid, 76561198000000099);
+                assert_eq!(list.friends[1].relationship, 1);
             }
             _ => panic!("expected FriendsList"),
         }

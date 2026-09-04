@@ -9,6 +9,17 @@ pub enum Error {
     Unsupported(&'static str),
     #[error("protocol error: {0}")]
     Protocol(String),
+    /// Steam answered the request and refused it, with its own `EResult`.
+    ///
+    /// Kept as a number rather than folded into [`Error::Protocol`]'s string,
+    /// because callers act on it: the difference between "too long" and "too
+    /// fast" is the difference between a message that must be shortened and one
+    /// that must simply be sent again, and both arrive here as a bare integer.
+    #[error("Steam refused this with result {result}: {}", detail.as_deref().unwrap_or("no detail"))]
+    Refused {
+        result: i32,
+        detail: Option<String>,
+    },
     #[error("authentication error: {0}")]
     Authentication(String),
     #[error("transport error: {0}")]
