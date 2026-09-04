@@ -80,6 +80,7 @@ pub mod friends;
 pub mod library;
 pub mod process;
 pub mod qr;
+pub mod setup;
 pub mod turns;
 pub mod webui;
 
@@ -154,6 +155,20 @@ pub struct Account {
 /// What the shell asks of Steam.
 #[derive(Debug)]
 pub enum Ask {
+    /// Have Valve's client install itself on this machine, which it has never
+    /// done.
+    ///
+    /// The first thing a session on a new machine asks for and the only one
+    /// that can be asked while signed out — it is not a Steam request at all,
+    /// it is half a gigabyte off Valve's download hosts and an unpack, and it
+    /// has to finish before there is a client for anything else here to talk
+    /// to. Answered by a run of [`Event::Setup`]s ending in
+    /// [`setup::SetUp::Done`] or [`setup::SetUp::Failed`]; see [`setup`].
+    ///
+    /// Does nothing where Steam is already installed, and nothing where a setup
+    /// this session started is still running. Both are ordinary: the second is
+    /// somebody pressing the row again to see the panel they dismissed.
+    SetUpTheClient,
     /// Begin a sign-in to be confirmed by photographing a code.
     SignInWithQr,
     /// Begin one with an account name and a password.
@@ -837,6 +852,15 @@ pub enum Event {
     Uninstalled { app_id: u32 },
     /// It has not, and this is what to tell the user.
     UninstallFailed { app_id: u32, why: String },
+    /// How Valve's client is getting on installing itself, and what became of
+    /// it.
+    ///
+    /// Only ever about a setup this session asked for — see
+    /// [`Ask::SetUpTheClient`] — and it arrives while the session is signed
+    /// out, which nothing else here does. It is not addressed by a [`Ticket`]
+    /// and does not need to be: there is one setup on a machine, ever, and
+    /// nothing is waiting behind it.
+    Setup(setup::SetUp),
     /// A code to photograph, and the URL it stands for.
     ///
     /// Arrives again whenever Steam rotates the code, which it does every
@@ -923,6 +947,23 @@ pub enum Event {
     /// a promised window that never arrives with nothing said reads as a press
     /// that was ignored.
     HandOverRefused(Refused),
+    /// And one that landed: Valve's client took the URL, and whatever it raises
+    /// for it is about to appear.
+    ///
+    /// **The moment sight is given**, which is why this exists at all. Sight
+    /// used to be given at the press, on the argument that what the wait was
+    /// for was Steam's own window and it should be watched arriving. That holds
+    /// where the client is up and is already this account's, which is nearly
+    /// every press — and it is exactly wrong on the press that is not: a wake
+    /// that has to sign the client in first spends those seconds with the
+    /// client's *login screen* on the display, which is the one window of
+    /// Valve's this shell exists to keep off it. Given here instead, the warm
+    /// press is unchanged to the eye and the cold one shows nothing until there
+    /// is something worth showing.
+    ///
+    /// Sent for every hand-over that succeeded, by either route, so the shell
+    /// need not know which one a press took.
+    HandedOver,
     /// The launch that was asked for has stopped, and needs a person.
     ///
     /// Said once per launch, and only about the one this session asked to be
@@ -1229,6 +1270,32 @@ impl Steam {
         ready
     }
 
+    /// Whether Valve's client has yet to install itself on this machine.
+    ///
+    /// Two directory tests, so it is a question the thread that draws may ask —
+    /// and it is asked there, once, at the moment somebody presses the sign-in
+    /// row, to decide which panel goes up. See [`setup`].
+    pub fn client_needs_setting_up(&self) -> bool {
+        match self.client_at.as_ref() {
+            Some(client) => {
+                client::Options::for_client(client).is_some_and(|options| setup::needed(&options))
+            }
+            // No Steam at all is not a Steam part-way through installing
+            // itself, and the shell has its own words for a machine with no
+            // client on it.
+            None => false,
+        }
+    }
+
+    /// Have it install itself, saying how that goes.
+    ///
+    /// Answered by [`Event::Setup`]: once per change while it runs, then
+    /// exactly one [`setup::SetUp::Done`] or [`setup::SetUp::Failed`]. Safe to
+    /// ask twice — see [`Ask::SetUpTheClient`].
+    pub fn set_up_the_client(&self) {
+        self.ask(Ask::SetUpTheClient);
+    }
+
     pub fn sign_in_with_qr(&self) {
         self.ask(Ask::SignInWithQr);
     }
@@ -1447,6 +1514,13 @@ pub(crate) enum WorkerMessage {
     /// keeping [`Watching`], and a job that failed has to stop being watched
     /// for as well as be reported.
     Done(Finished),
+    /// One word from the thread installing Valve's client for the first time.
+    ///
+    /// Routed through the worker rather than straight to the shell for the
+    /// same reason a finished job is: the worker is what holds the one-at-a-
+    /// time flag, and a setup that has ended has to be *let go of* as well as
+    /// be reported. See [`Ask::SetUpTheClient`].
+    SetUp(setup::SetUp),
     Shutdown,
 }
 
@@ -1913,6 +1987,16 @@ struct Ledger {
     /// before this worker's first look would never have been watched arriving,
     /// and would never be told.
     told_the_client: u8,
+    /// Whether Valve's client is being installed on this machine right now, by
+    /// this session.
+    ///
+    /// One install at a time and no more, for the same reason there is one wake
+    /// at a time: two of them are two launchers unpacking half a gigabyte into
+    /// one directory. It is a plain flag rather than a [`Waking`] because
+    /// nothing waits *behind* a first setup — the panel that asked for it is
+    /// told how it goes, and a second press while it runs is somebody looking
+    /// at the same panel again. See [`Ask::SetUpTheClient`].
+    setting_up: bool,
 }
 
 /// The one wake that may be in flight, and everything waiting behind it.
@@ -1963,6 +2047,7 @@ fn work(
         generation: 0,
         status: cm::Status::default(),
         told_the_client: 0,
+        setting_up: false,
     };
     let mut state = restore(worker, events, &mut ledger.generation, &ledger.status);
     // Before the first message is taken, because the first message is a press
@@ -1996,6 +2081,17 @@ fn work(
                 &mut ledger.watching,
                 &mut ledger.waking,
             ),
+            Ok(WorkerMessage::SetUp(word)) => {
+                // The flag is let go of on either ending, and on neither is
+                // there anything else to do here: nothing waits behind a
+                // setup, and what it leaves behind — an installed client — is
+                // read off the disk by whoever asks next.
+                if !matches!(word, setup::SetUp::Working(_)) {
+                    ledger.setting_up = false;
+                }
+                let _ = events.send(Event::Setup(word));
+                state
+            }
             // A download does not stop with the shell: it belongs to Valve's
             // client now, which carries on with it whether this session is
             // running or not, and finishing it is what the user asked for.
@@ -2132,6 +2228,7 @@ fn answer(
         generation,
         status,
         told_the_client,
+        setting_up,
     } = ledger;
     // A second authentication attempt must never replace a live or pending
     // account while leaving its stored credential behind. The shell UI already
@@ -2142,6 +2239,10 @@ fn answer(
         return state;
     }
     match ask {
+        Ask::SetUpTheClient => {
+            set_the_client_up(setting_up, worker, events);
+            state
+        }
         Ask::SignInWithQr => match auth::begin_with_qr(wire) {
             Ok(session) => {
                 offer(events, &session);
@@ -2473,27 +2574,33 @@ fn answer(
             state
         }
         Ask::Tell { app_id, doing } => {
-            // Opening the client is not a thing done to an account: a session
-            // with nobody signed in may still raise Steam's own window, which
-            // is where somebody signs into Steam itself. Everything that names
-            // a title is the other way round — there is no library to install
-            // out of or verify against until Steam has accepted a credential.
-            match (holding(&state), doing.about_the_client()) {
-                // Steam's own window, which is account-neutral and stays so. It
-                // may be asked for by a session with nobody signed in — that
-                // window is where somebody signs into Steam itself — and where
-                // there is no client at all it starts one, which is the whole
-                // reason the row exists.
-                (holding, true) => hand_over(
-                    holding.map(|(stored, _)| stored.clone()),
-                    doing.url(app_id),
-                    events,
-                ),
-                // **Finding 4.** Everything that names a title now takes the
-                // sequence every other title action takes, and what it replaces
-                // is the case the old check passed straight through: with no
-                // client running there was nothing to inspect, so "is this
-                // ours" answered yes, and `steam://install/<id>` started a
+            // **What decides this is whether this session holds a credential,
+            // and not what the URL is about.** It used to be the other way
+            // round: everything naming a title went to a client this session
+            // had woken and proved, and everything about the client itself —
+            // Open Steam, Big Picture, the downloads list — went to whatever
+            // client happened to be holding the pipe. The argument was that
+            // Steam's own window is account-neutral, and it is; what it missed
+            // is that the window a *signed-out* client raises is its own login
+            // screen.
+            //
+            // So on 2026-09-04, on a machine where this shell had just
+            // installed Steam and signed itself in by photographed code, Open
+            // Steam produced Valve's sign-in window: account name, password,
+            // and a QR code of Steam's own. The library was on the bar the
+            // whole time. Nothing had ever handed the client the credential,
+            // because the one path that does is the wake this row went around.
+            let holding = holding(&state);
+            match (route(holding.is_some(), doing.about_the_client()), holding) {
+                // Signed in — and that now includes the client's own windows.
+                // A session holding a credential has exactly one right answer
+                // for "open Steam", which is *their* Steam, signed in; a wake
+                // is the only thing that produces one, and on a client that is
+                // already up and already theirs it costs microseconds.
+                //
+                // **Finding 4** is the other half of this and is unchanged:
+                // with no client running there was nothing to inspect, so "is
+                // this ours" answered yes, and `steam://install/<id>` started a
                 // client from cold — which signed itself into whichever account
                 // it last remembered and installed the game into *that*
                 // library, before this session had proved anything at all.
@@ -2503,7 +2610,7 @@ fn answer(
                 // Mode here as it is everywhere else. Never `Need::Context`: a
                 // URL is carried over the pipe and needs no interface, and
                 // opening one costs a client restart.
-                (Some((stored, need)), false) => hand_over_to_a_proven_client(
+                (Route::AClientOfOurs, Some((stored, need))) => hand_over_to_a_proven_client(
                     stored,
                     a_job_about(&state, watching),
                     ground,
@@ -2511,7 +2618,17 @@ fn answer(
                     doing.url(app_id),
                     events,
                 ),
-                (None, false) => {
+                // Nobody signed in, and Steam's own window asked for. This is
+                // the case the old rule was written for and it is kept whole:
+                // that window is where somebody signs into Steam *itself*,
+                // this session has no credential to offer instead, and where
+                // there is no client at all it starts one. It is the only row
+                // on the bar that works with nobody signed in.
+                (Route::WhoeverIsThere, _) => hand_over(None, doing.url(app_id), events),
+                // `Nobody`, and the unreachable pairing that says the two halves
+                // agree: `AClientOfOurs` is only ever chosen for a session that
+                // is holding one.
+                (Route::Nobody, _) | (Route::AClientOfOurs, None) => {
                     let _ = events.send(Event::HandOverRefused(Refused::Failed(format!(
                         "{}, so it cannot be asked about a game.",
                         out_of_reach(&state)
@@ -2789,6 +2906,58 @@ fn answer(
             }
         }
     }
+}
+
+/// Have Valve's client install itself, on a thread, and report the whole of it.
+///
+/// The odd one out among the jobs in this crate, and it is odd in exactly the
+/// ways that matter. It needs no account — it is asked for by somebody who has
+/// not signed in yet and could not, since there is nothing here to sign in to —
+/// so it carries no [`Ticket`] and takes no [`Ground`]; and it is the only job
+/// that reports *while it runs* rather than once at the end, because it runs
+/// for minutes and a panel is watching it.
+///
+/// Refuses itself twice over, quietly, and both refusals are ordinary rather
+/// than failures. A machine whose Steam is already installed has nothing to
+/// install; a session already installing one is a session where somebody has
+/// pressed the row a second time to look at the panel again, and the answer to
+/// that is the panel, not a second launcher.
+fn set_the_client_up(
+    setting_up: &mut bool,
+    worker: &Sender<WorkerMessage>,
+    events: &Sender<Event>,
+) {
+    if *setting_up {
+        tracing::info!("Valve's client is already being set up by this session");
+        return;
+    }
+    let Some(client) = client::Where::find() else {
+        let _ = events.send(Event::Setup(setup::SetUp::Failed(
+            "Steam is not installed on this machine.".to_string(),
+        )));
+        return;
+    };
+    let Some(options) = client::Options::for_client(&client) else {
+        let _ = events.send(Event::Setup(setup::SetUp::Failed(
+            "There is no home directory for Steam to install itself into.".to_string(),
+        )));
+        return;
+    };
+    // Already done. Said as `Done` rather than as nothing at all: whoever asked
+    // has a panel up waiting to hear, and the honest answer to "set Steam up"
+    // on a machine where Steam is set up is that it is.
+    if !setup::needed(&options) {
+        let _ = events.send(Event::Setup(setup::SetUp::Done));
+        return;
+    }
+
+    *setting_up = true;
+    let worker = worker.clone();
+    std::thread::spawn(move || {
+        setup::run(&client, &options, |word| {
+            let _ = worker.send(WorkerMessage::SetUp(word));
+        });
+    });
 }
 
 /// Do something that needs Valve's client, on a thread, once it is up.
@@ -3124,7 +3293,10 @@ fn hand_over(stored: Option<session::Stored>, url: String, events: &Sender<Event
         }
 
         match client::open(&where_it_is, options.as_ref(), &url) {
-            Ok(()) => audit::went(&doing, audit::How::Done),
+            Ok(()) => {
+                audit::went(&doing, audit::How::Done);
+                let _ = events.send(Event::HandedOver);
+            }
             Err(why) => {
                 tracing::warn!(%url, %why, "Valve's client would not take that");
                 audit::went(&doing, audit::How::Failed(why.to_string()));
@@ -3198,7 +3370,10 @@ fn hand_over_to_a_proven_client(
                 client::deliver(&standing.client, &standing.options, &standing.proven, &url)
             });
         match handed {
-            Ok(()) => audit::went(&doing, audit::How::Done),
+            Ok(()) => {
+                audit::went(&doing, audit::How::Done);
+                let _ = events.send(Event::HandedOver);
+            }
             Err(refusal) => {
                 tracing::warn!(%url, %refusal, "Valve's client would not take that");
                 refuse(refusal)
@@ -3569,6 +3744,32 @@ fn a_wake_landed(
         take_a_wake(request, take_over, &state, waking, watching, worker, events);
     }
     state
+}
+
+/// Which client a `steam:` URL is delivered to.
+///
+/// The whole of the rule in one place, because the whole of a real failure was
+/// one leg of it. See [`Ask::Tell`], where it is used and where the incident is
+/// written down.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// To a client this session has woken and signed in as its own account.
+    AClientOfOurs,
+    /// To whichever client is holding the pipe, starting one where there is
+    /// none. Only ever for Steam's own window, asked for by a session with no
+    /// credential to offer instead.
+    WhoeverIsThere,
+    /// To nobody: there is no account to ask this on behalf of.
+    Nobody,
+}
+
+/// The rule itself, as a table of the two things that decide it.
+fn route(signed_in: bool, about_the_client: bool) -> Route {
+    match (signed_in, about_the_client) {
+        (true, _) => Route::AClientOfOurs,
+        (false, true) => Route::WhoeverIsThere,
+        (false, false) => Route::Nobody,
+    }
 }
 
 /// The credential this session is holding, and how far a client woken with it
@@ -4542,6 +4743,34 @@ mod tests {
 
     use super::*;
 
+    /// Where a `steam:` URL goes, and the leg of it that was wrong.
+    ///
+    /// Until 2026-09-04 the client's own URLs — Open Steam, Big Picture, the
+    /// downloads list — went to whichever client held the pipe *whatever* this
+    /// session was holding, on the argument that Steam's own window is
+    /// account-neutral. It is; its login screen is not. On a machine where this
+    /// shell had just installed Steam and signed itself in by photographed
+    /// code, with the library on the bar, Open Steam produced Valve's sign-in
+    /// window — because the only thing that ever hands the client a credential
+    /// is the wake this row went around.
+    #[test]
+    fn a_session_holding_a_credential_opens_its_own_steam() {
+        // The leg that was wrong. Signed in, and about the client: their Steam,
+        // signed in, and nothing else will do.
+        assert_eq!(route(true, true), Route::AClientOfOurs);
+        // The leg that was already right, and stays right for the same reason.
+        assert_eq!(route(true, false), Route::AClientOfOurs);
+
+        // Signed out, and Steam's own window asked for: whatever is there, and
+        // one started where there is nothing. This is the only row on the bar
+        // that works with nobody signed in — it is where somebody signs in to
+        // Steam itself — and it must keep working.
+        assert_eq!(route(false, true), Route::WhoeverIsThere);
+        // Signed out, and a title named: there is no library to install out of
+        // or verify against until Steam has accepted a credential.
+        assert_eq!(route(false, false), Route::Nobody);
+    }
+
     /// [`came_back`] without the two the wake arm needs and no other job does.
     ///
     /// A worker channel nothing sends on and a hold nothing is in flight
@@ -4651,6 +4880,7 @@ mod tests {
             generation: 0,
             status: cm::Status::default(),
             told_the_client: 0,
+            setting_up: false,
         };
         let state = State::Out;
         ledger.watching.generation = 5;

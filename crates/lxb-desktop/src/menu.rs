@@ -591,6 +591,21 @@ pub enum Command {
     SteamSubmit,
     /// Give up on a sign-in that is under way.
     SteamCancel,
+    /// Stop watching Valve's client install itself, and let it carry on.
+    ///
+    /// Deliberately not a [`Command::SteamCancel`]: nothing is given up. Half a
+    /// gigabyte is coming down and stopping it would throw away what had
+    /// arrived, so the panel goes and the install does not. Whoever pressed it
+    /// is told when it finishes, and pressing the Steam row again brings the
+    /// panel back. See [`crate::steam::Steam::let_the_setup_run_in_the_background`].
+    SteamSetupInBackground,
+    /// Try installing Valve's client again after an install that failed.
+    ///
+    /// Its own command rather than [`Command::SteamSignIn`], which is the Try
+    /// again of a failed *sign-in*: the two look alike on a panel and are not
+    /// the same request, and one of them can only be made on a machine where
+    /// Steam is not installed.
+    SteamSetUpAgain,
     /// Give up the stored session, so this machine stops being signed in.
     SteamSignOut,
     /// Ask Steam for the library again, now.

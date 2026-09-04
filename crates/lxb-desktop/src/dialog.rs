@@ -92,6 +92,19 @@ pub enum Line {
     /// panel that grew by the height of a QR code a moment after it opened
     /// would be the shell moving the buttons out from under somebody's thumb.
     Waiting,
+    /// Something is happening elsewhere that *can* say how far along it is: a
+    /// groove, and the part of it that has been done.
+    ///
+    /// Exactly as tall as [`Line::Waiting`] and drawn in the same place, which
+    /// is the whole reason it is a line of its own rather than a field of it.
+    /// The one thing this is used for — Steam installing itself — spends its
+    /// first seconds with nothing to count and its last minute unpacking
+    /// something whose length nobody knows, so the panel goes from lights to a
+    /// bar and back again while it runs, and it must not change size doing it.
+    ///
+    /// Whole percent, which is Valve's own granularity and a television's. See
+    /// [`lxb_steam::setup::Step::percent`].
+    Progress(u8),
     /// A hairline, where one band of the panel gives way to the next. Drawn
     /// rather than implied by a gap, because two of these panels are a list of
     /// facts and a list is easier to read against a rule than against air.

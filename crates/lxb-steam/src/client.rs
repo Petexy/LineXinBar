@@ -155,7 +155,7 @@ impl Where {
     /// already in hand are all the same command with different arguments, and
     /// a game the client launches inherits whatever the client was given. See
     /// [`CONFINEMENT`].
-    fn command(&self) -> Command {
+    pub(crate) fn command(&self) -> Command {
         let mut command = match self {
             Where::Native(path) => Command::new(path),
             Where::Flatpak => {
@@ -443,6 +443,44 @@ const QUIETLY: [&str; 4] = [
     "-nocrashdialog",
 ];
 
+/// The same, less the one word that makes a *first* start fatal.
+///
+/// **`-noverifyfiles` is not "skip a check" on a machine where Steam has never
+/// run; it is "skip the install".** Measured on this machine on 2026-09-04, on
+/// a home directory with no `~/.local/share/Steam` in it. Valve's launcher
+/// unpacks its bootstrap, and the bootstrap's *verification* step is what
+/// notices there is no client here and fetches one. Told not to verify, it
+/// writes three lines and dies:
+///
+/// ```text
+/// Verifying installation...
+/// Verification skipped
+/// Verification complete
+/// dlmopen steamui.so failed: steamui.so: cannot open shared object file
+/// Fatal error: Failed to load steamui.so
+/// ```
+///
+/// — in under a second, leaving a `.crash` file and a Steam directory holding
+/// nothing but the bootstrap. The identical command without the flag downloads
+/// 496 MB and installs in about forty seconds. So the flag stays for every
+/// ordinary start, where it saves minutes of disk, and is dropped for the one
+/// start that is an installation. See [`crate::setup`].
+const QUIETLY_FIRST_RUN: [&str; 3] = ["-silent", "-nofriendsui", "-nocrashdialog"];
+
+/// What to say to a client that is about to be started, given what is on the
+/// disk where it keeps itself.
+///
+/// One function so that the two lists cannot be chosen between in two places:
+/// [`start`] is not the only caller any more — [`crate::setup`] starts the
+/// first-ever client itself, because it keeps the child in order to hear it
+/// fail.
+pub(crate) fn how_to_start(options: &Options) -> &'static [&'static str] {
+    match crate::library::looks_like_a_root(&options.root) {
+        true => &QUIETLY,
+        false => &QUIETLY_FIRST_RUN,
+    }
+}
+
 /// Start the client, quietly, and do not wait for it.
 ///
 /// The child is deliberately dropped: Valve's client daemonises itself within a
@@ -451,10 +489,15 @@ const QUIETLY: [&str; 4] = [
 /// from [`state`] instead, which works the same whether this session started it
 /// or it was already running when the shell came up.
 pub fn start(client: &Where, options: &Options) -> std::io::Result<()> {
-    tracing::info!(root = %options.root.display(), "starting Valve's client in the background");
+    let words = how_to_start(options);
+    tracing::info!(
+        root = %options.root.display(),
+        first_run = words.len() == QUIETLY_FIRST_RUN.len(),
+        "starting Valve's client in the background"
+    );
     client
         .command()
-        .args(QUIETLY)
+        .args(words)
         // Its output belongs in its own logs, which is where it already goes.
         // Inherited pipes would fill and stall it the moment nothing read them.
         .stdin(Stdio::null())
@@ -1364,7 +1407,7 @@ fn the_overlay_is_still_where_the_shell_thinks_it_is() {
 /// and never looks again. Making it is safe in both directions: this is the
 /// path the client would have made itself, and a Steam that then unpacks into
 /// it finds one empty directory and its own marker.
-fn expose(options: &Options) -> Result<bool, String> {
+pub(crate) fn expose(options: &Options) -> Result<bool, String> {
     if !options.root.is_dir() {
         std::fs::create_dir_all(&options.root).map_err(|error| {
             format!(
@@ -1416,7 +1459,17 @@ fn bring_up(
         let now = state_now(Some(client), options);
         now.signed_in() && !now.signed_in_as(who)
     };
+    // And the third thing waiting cannot fix, which is what a first login on a
+    // new machine *is*: a client that has never signed anybody in. What the
+    // wait below is for is a client coming back up on the credential it kept,
+    // and one with no account in its registry kept none — so the whole
+    // patience, ninety seconds of it on a client this call started, is spent
+    // establishing something the registry answers in a syscall. It is then
+    // handed the credential and signs in within five. See
+    // [`autologin::could_sign_itself_in`].
+    let could_sign_itself_in = autologin::could_sign_itself_in(&options.home);
     let worth_waiting = !signed_in_to_somebody_else
+        && could_sign_itself_in
         && (started_one || need != Need::Context || crate::webui::reachable());
     if worth_waiting {
         let patience = match started_one {
@@ -1442,7 +1495,16 @@ fn bring_up(
     // through the interface. A client of ours is already exposing it; one that
     // was up before this session is not, and nothing short of starting it
     // again will change that.
-    if !crate::webui::reachable() {
+    //
+    // **Never one this call started**, and that guard is what makes skipping
+    // the wait above safe. A client started here was started one line after
+    // [`expose`], so its port is going to open — it may simply not have got
+    // there yet, a second or two in. The wait used to cover that gap by
+    // accident; without it, a client that cannot sign itself in reached this
+    // line while it was still starting and was restarted on the spot, which is
+    // a cold start paid twice. What it actually needs is patience for the
+    // context, and [`sign_it_in`] has its own.
+    if !started_one && !crate::webui::reachable() {
         *ours |= expose(options)?;
         tracing::info!("restarting Valve's client, which came up before it was told to expose it");
         restart(client, options)?;
@@ -1769,7 +1831,7 @@ pub fn state(client: Option<&Where>, options: &Options) -> State {
 /// writing without blocking succeeds when somebody is listening and fails with
 /// `ENXIO` when nobody is. It is what Valve's own launcher script asks, it
 /// costs one syscall, and it is true the instant the client goes away.
-fn running(home: &Path) -> bool {
+pub(crate) fn running(home: &Path) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
 
     // Without O_NONBLOCK this would block until a reader arrived, which on a
@@ -2988,6 +3050,36 @@ pub mod autologin {
         "Steam",
         "AutoLoginUser",
     ];
+
+    /// Whether this client would sign *itself* in, given the chance.
+    ///
+    /// The same field [`stop`] clears, read rather than written, and it is read
+    /// for the one thing worth knowing about a client that is up and signed in
+    /// to nobody: whether waiting is going to change that. A client with an
+    /// account here keeps a credential for it and logs itself back on unaided,
+    /// usually within a couple of seconds, and waiting is by far the cheapest
+    /// way to a signed-in client. A client with this empty has nobody to be —
+    /// it has never signed anybody in, or this shell signed it out — and no
+    /// amount of waiting will make it somebody.
+    ///
+    /// **This is the difference between a first login that takes five seconds
+    /// and one that takes thirty-five.** A machine where this shell has just
+    /// installed Steam has exactly this state: `AutoLoginUser ""`, measured on
+    /// a real one on 2026-09-04. Without this, [`super::bring_up`] spent its
+    /// whole `UNTIL_IT_SIGNS_ITSELF_IN` patience watching a client that was
+    /// never going to, before handing it the credential that worked at once.
+    ///
+    /// A registry that cannot be read at all answers `true`, which is the
+    /// cautious way round: the cost of being wrong here is the wait this
+    /// avoids, and the cost of being wrong the other way is a client restarted
+    /// out from under somebody who was about to be signed in anyway.
+    pub(super) fn could_sign_itself_in(home: &Path) -> bool {
+        let Some(node) = read(&home.join("registry.vdf")) else {
+            return true;
+        };
+        node.string(&AUTO_LOGIN_USER)
+            .is_none_or(|account| !account.trim().is_empty())
+    }
 
     /// Stop the client signing itself in as this account.
     ///
@@ -4467,6 +4559,42 @@ mod tests {
         // offline. See `Presence::from_number`.
         assert_eq!(persona_state_in(r#"		"PersonaName"		"Petexon""#), None);
         assert_eq!(persona_state_in(&line.replace(":7", ":9")), None);
+    }
+
+    /// Whether a client will sign itself in, and what a first-run one says.
+    ///
+    /// The registry written by Valve's own launcher on a machine where Steam
+    /// has never signed anybody in is copied out of a real one, taken from this
+    /// developer's `~/.steam/registry.vdf` on 2026-09-04: the field is there
+    /// and it is empty.
+    #[test]
+    fn a_client_that_has_never_signed_anybody_in_will_not_sign_itself_in() {
+        let home = std::env::temp_dir().join(format!("lxb-autologin-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        let registry = |account: &str| {
+            format!(
+                "\"Registry\"\n{{\n\t\"HKCU\"\n\t{{\n\t\t\"Software\"\n\t\t{{\n\t\t\t\"Valve\"\n\t\t\t{{\n\t\t\t\t\"Steam\"\n\t\t\t\t{{\n\t\t\t\t\t\"AutoLoginUser\"\t\t\"{account}\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+            )
+        };
+
+        // Nothing on the disk at all: the cautious answer, which costs only the
+        // wait it would otherwise have saved.
+        assert!(autologin::could_sign_itself_in(&home));
+
+        // A first-run client. This is the whole point of the function: waiting
+        // for this one to sign itself in is thirty seconds spent on something
+        // that cannot happen.
+        std::fs::write(home.join("registry.vdf"), registry("")).unwrap();
+        assert!(!autologin::could_sign_itself_in(&home));
+
+        // And an ordinary machine, where waiting is by far the cheapest way to
+        // a signed-in client and must go on happening.
+        std::fs::write(home.join("registry.vdf"), registry("someone")).unwrap();
+        assert!(autologin::could_sign_itself_in(&home));
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

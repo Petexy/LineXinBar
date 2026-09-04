@@ -1231,6 +1231,7 @@ fn main() -> anyhow::Result<()> {
         steam_times_asked: 0,
         steam_becoming: None,
         steam_sight: SteamSight::Background,
+        hiding_steams_setup: false,
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
         keyboard: None,
@@ -1562,6 +1563,11 @@ fn main() -> anyhow::Result<()> {
         // announces it, and it is decided against a list the compositor has
         // already sent.
         shell.sync_steam_questions(now);
+        // And whether Valve's launcher is putting its own dialogs up, which it
+        // does for the one minute of its life this shell installs it in. Same
+        // shape again: nothing announces it, and it is decided against a flag
+        // this session already keeps.
+        shell.sync_steam_setup_windows();
         shell.sync_launch_questions();
         // And whether the game somebody was playing has ended, which is the
         // same shape again and moves on its own clock for the same reason as
@@ -3112,6 +3118,17 @@ fn a_hidden_window_is_a_question(
     up_for >= UNTIL_A_WINDOW_IS_A_QUESTION
 }
 
+/// What Valve's launcher shows a progress bar with while it installs the
+/// client.
+///
+/// Not a guess and not a class this shell chose: `steam.sh` and the runtime's
+/// `setup.sh` both pipe into `"${STEAM_ZENITY}" --progress`, and the window
+/// that arrives announces itself as `zenity`. There is no way to talk it out of
+/// this from outside — the script overwrites `STEAM_ZENITY` from its own `which
+/// zenity` on every run — so the window is kept off the screen instead, for the
+/// minute it exists. See [`Shell::sync_steam_setup_windows`].
+const SETUP_WINDOW_NAME: &str = "zenity";
+
 /// Whether one window belongs to Valve's client.
 ///
 /// The same names the compositor is asked to hide by, folded the same way. A
@@ -4066,6 +4083,12 @@ struct Shell {
     steam_becoming: Option<Becomes>,
     /// [`Shell::steam_may_be_seen`].
     steam_sight: SteamSight,
+    /// Whether the compositor has been asked to hide the dialogs Valve's
+    /// launcher puts up while it installs the client.
+    ///
+    /// A plain remembered answer, so the request is made when it changes and
+    /// not once a frame. See [`Shell::sync_steam_setup_windows`].
+    hiding_steams_setup: bool,
     /// A window flying back out of its tile, drawn by the compositor.
     restoring: Option<Restore>,
     /// Eased card rectangles by window id (`u64::MAX` is the start card),
@@ -14901,6 +14924,14 @@ impl Shell {
                 self.steam.cancel();
                 self.show_steam_panel();
             }
+            menu::Command::SteamSetupInBackground => {
+                self.steam.let_the_setup_run_in_the_background();
+                self.show_steam_panel();
+            }
+            menu::Command::SteamSetUpAgain => {
+                self.steam.set_up_again();
+                self.show_steam_panel();
+            }
             menu::Command::SteamSignOut => self.offer_to_sign_out_of_steam(),
             menu::Command::SteamSignOutNow => self.steam.sign_out(),
             menu::Command::SteamRefresh => self.steam.refresh(),
@@ -17385,7 +17416,20 @@ impl Shell {
             self.let_one_window_be_seen(id, false);
         }
 
-        let the_shell_is_waiting = !self.launching.is_empty() || self.awaiting_steam.busy();
+        // The shell's own sign-in is the third thing that must close this door,
+        // and it is not a loading screen. Valve's client raises a login window
+        // of its own — account name, password, and a QR code of Steam's own
+        // beside them — every time it comes up without a credential, which is
+        // exactly the state a machine is in while this shell is installing it
+        // and while this shell is signing in on its behalf. Let that through
+        // and the user is looking at two sign-ins for one account, one of which
+        // the shell cannot see, cannot drive, and will overwrite the moment its
+        // own finishes. So: nothing of the client's, while the client is
+        // arriving or being handed a credential. See
+        // [`steam::Steam::setting_up`] and [`steam::Steam::is_signing_in`].
+        let signing_in_ourselves = self.steam.setting_up() || self.steam.is_signing_in();
+        let the_shell_is_waiting =
+            !self.launching.is_empty() || self.awaiting_steam.busy() || signing_in_ourselves;
         let questions: Vec<u32> = self
             .unseen_windows
             .iter()
@@ -17430,6 +17474,52 @@ impl Shell {
             return;
         }
         control.let_this_window_be_seen(id, u32::from(seen));
+    }
+
+    /// Keep the dialogs Valve's *launcher* puts up out of sight while it is
+    /// installing the client, and give the name back the moment it is done.
+    ///
+    /// [`Self::keep_steam_out_of_sight`] covers the client's own windows, by
+    /// the class the client announces. It does not cover these, because these
+    /// are not the client's: Valve's launcher is a shell script, and what it
+    /// shows a progress bar with is `zenity` — measured on this machine on
+    /// 2026-09-04, where installing Steam under this shell put up a 448×182
+    /// window titled "Steam setup" and a second one titled "Progress", and one
+    /// of them **took the keyboard**. A console that answers "sign in to Steam"
+    /// with somebody else's dialog stealing the pad is the whole of what this
+    /// integration exists to prevent.
+    ///
+    /// **Held for as long as the setup runs and not a moment longer**, which is
+    /// what makes hiding a name as general as `zenity` an honest thing to do: it
+    /// is one minute, once on a machine, during which the only thing on it
+    /// starting a `zenity` is Valve's launcher. Anything else that wanted one
+    /// in that minute would be hidden, and gets its window the moment Steam is
+    /// installed.
+    ///
+    /// Only speaks when the answer changes, like every other request of this
+    /// shape — the compositor would answer an unchanged one with nothing, and a
+    /// session repeating it every pass would be saying something it does not
+    /// mean.
+    fn sync_steam_setup_windows(&mut self) {
+        let hidden = self.steam.setting_up();
+        if hidden == self.hiding_steams_setup {
+            return;
+        }
+        self.hiding_steams_setup = hidden;
+        if !self.steam.driving() {
+            return;
+        }
+        let Some(control) = self.shell_control.as_ref() else {
+            return;
+        };
+        if control.version() < OUT_OF_SIGHT_SHELL_VERSION {
+            return;
+        }
+        tracing::info!(
+            hidden,
+            "asking the compositor about the dialogs Valve's launcher puts up while it installs"
+        );
+        control.keep_out_of_sight(SETUP_WINDOW_NAME.to_string(), u32::from(hidden));
     }
 
     /// Keep Valve's client off the screen, or give it back.
@@ -18777,6 +18867,17 @@ impl Shell {
             if let Some(with) = self.friends.talking_to() {
                 self.steam.open_conversation(with);
             }
+        }
+        // Valve's client took a request of its own and is about to raise a
+        // window for it. See `Shell::steam_hand_over`, where the press is made
+        // and where the reason sight waits until now is written down.
+        if changed.handed_over {
+            self.steam_may_be_seen(true);
+        }
+        // Steam finished installing itself while nobody was watching the panel
+        // it was installing under. See [`Shell::say_steam_is_ready`].
+        if changed.steam_is_ready {
+            self.say_steam_is_ready();
         }
         // And the ones that arrived for a conversation nobody is looking at.
         // Announced whether or not the panel is up: the whole reason to
@@ -20503,18 +20604,25 @@ impl Shell {
                 .map(|game| game.name.clone())
                 .unwrap_or_else(|| "Steam".to_string())
         };
-        self.steam_may_be_seen(true);
         // Handed to the client rather than started as a program: where one is
         // running, a second would exit the moment it had passed the request to
         // the first.
         //
-        // **A row that names a title may take as long as starting Steam takes**,
-        // and it did not use to. A `steam:` URL about a game is delivered only
-        // to a client this session has woken and proved — see
+        // **Any of these rows may take as long as starting Steam takes**, and
+        // none of them used to. A `steam:` URL is delivered only to a client
+        // this session has woken and signed in — see
         // `lxb_steam::hand_over_to_a_proven_client` — because handing one to a
         // client started from cold is handing it to whichever account that
-        // client remembered. Sight is given back first either way, which is
-        // what makes the wait legible: what appears is Steam's own window.
+        // client remembered, and, for the rows about the client itself, because
+        // a client that has been handed no credential opens on Valve's own
+        // login screen.
+        //
+        // **Sight is not given here.** It is given when the client takes the
+        // request, on [`lxb_steam::Event::HandedOver`], which on the ordinary
+        // press — a client already up and already this account's — is the same
+        // instant. What it is not the same instant as is the press that has to
+        // sign a client in first, and those seconds are exactly the ones during
+        // which the client has a login window up.
         if let Err(why) = self.steam.tell(app_id, doing) {
             tracing::warn!(%name, %why, "Steam would not take that");
             self.say_no_steam_client(&name);
@@ -26946,6 +27054,33 @@ impl Shell {
         // The rest is what every other announcement does: the open panel is a
         // list of the very thing that has just changed, and the picture has to
         // be found before anything tries to draw it.
+        self.load_notification_icons();
+        self.sync_notification_panel();
+        self.needs_redraw = true;
+    }
+
+    /// Say that Steam has finished installing itself, to somebody who walked
+    /// away from watching it.
+    ///
+    /// The other half of the panel's only button. Somebody who pressed "Carry
+    /// on in the background" is owed the ending — they asked to sign in to
+    /// Steam and the shell went away for four minutes — and the announcement is
+    /// the shell's one way of saying something to a person who is somewhere
+    /// else.
+    ///
+    /// **Never raised for a setup the panel watched to the end.** That one is
+    /// answered by the panel moving on to the sign-in questions by itself, and
+    /// a notification about something that has just happened on screen is
+    /// noise. See [`steam::Changed::steam_is_ready`], which is only set on the
+    /// backgrounded half.
+    ///
+    /// Silent, exactly as a finished download is, and for the same reason: it
+    /// is news somebody is glad of and never news they have to act on, and it
+    /// lands at whatever moment the line happened to finish.
+    fn say_steam_is_ready(&mut self) {
+        tracing::info!("announcing that Steam has finished setting itself up");
+        self.notifications
+            .announce("Steam", "Steam is ready. Open it to sign in.", icons::STEAM);
         self.load_notification_icons();
         self.sync_notification_panel();
         self.needs_redraw = true;

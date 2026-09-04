@@ -175,6 +175,23 @@ pub struct Steam {
     search: String,
     /// The sign-in on screen, if one is.
     signing_in: Option<Stage>,
+    /// Where Valve's client has got to installing itself, while this session
+    /// is installing one.
+    ///
+    /// Held apart from `signing_in` on purpose, and that is the whole of what
+    /// makes the setup something a user can walk away from: the panel is one
+    /// view of this, and taking the panel down leaves the install exactly where
+    /// it was. Pressing the row again builds the panel back out of it. `None`
+    /// whenever no setup is running, which is every session on every machine
+    /// that has had Steam started once.
+    setting_up: Option<lxb_steam::setup::Step>,
+    /// Whether the panel is what the setup is being watched by.
+    ///
+    /// `false` once somebody has pressed Back on it, and it is what decides who
+    /// hears about the ending: a panel that is still up moves on to the sign-in
+    /// questions by itself, and one that was dismissed is answered by the
+    /// notification instead. See [`Changed::steam_is_ready`].
+    setup_is_watched: bool,
 
     /// The games being fetched, and how far each has got. Kept here rather
     /// than on the game rows because the library is replaced wholesale
@@ -849,6 +866,26 @@ impl Coming {
 /// What the sign-in panel is asking for.
 #[derive(Debug)]
 pub enum Stage {
+    /// Nothing yet, because there is no Steam on this machine to sign in to
+    /// and one is being installed.
+    ///
+    /// The first stage on a new machine and the only one that is not a
+    /// question: what Valve packages is a launcher, and the client proper is
+    /// half a gigabyte it fetches the first time anybody runs it. Until that
+    /// has happened there is nothing here for an account to be signed in *to*,
+    /// so it comes before [`Stage::Choosing`] rather than after it. See
+    /// [`lxb_steam::setup`].
+    ///
+    /// It is also the one stage a user is invited to walk away from — it is a
+    /// wait rather than a question, and there is nothing to answer. See
+    /// [`Steam::let_the_setup_run_in_the_background`].
+    FirstSetup(lxb_steam::setup::Step),
+    /// Steam could not install itself, and this is what to tell the user.
+    ///
+    /// Its own stage rather than a [`Stage::Failed`], because what it offers is
+    /// different: nothing has been asked of any account, nothing has to be
+    /// asked again, and trying again means installing rather than signing in.
+    SetupFailed(String),
     /// Which way to sign in. The first question, and the only one this shell
     /// asks rather than Steam.
     Choosing,
@@ -975,6 +1012,24 @@ pub struct Changed {
     /// there — so the one that is open has to be asked for again. The rest ask
     /// for themselves the next time they are opened.
     pub reconnected: bool,
+    /// Valve's client took a request of its own — Open Steam, Big Picture, the
+    /// downloads list, Install with Steam, Verify — and the window it raises
+    /// for it is about to appear.
+    ///
+    /// What this is for is the one thing the shell has to do about it: give the
+    /// client sight. See `Shell::steam_hand_over`, and
+    /// [`lxb_steam::Event::HandedOver`] for why it is given here rather than
+    /// when the button was pressed.
+    pub handed_over: bool,
+    /// Steam has finished installing itself on this machine, and it was not
+    /// this panel that was waiting to hear it.
+    ///
+    /// Set only where the setup was let run in the background, because that is
+    /// the only case with anything to announce: somebody who is watching the
+    /// panel watches it move on to the sign-in questions by itself, and a
+    /// notification about a thing that just happened on screen is noise. See
+    /// `Shell::say_steam_is_ready`.
+    pub steam_is_ready: bool,
 }
 
 impl Changed {
@@ -1013,6 +1068,8 @@ impl Changed {
             chat,
             messages,
             reconnected,
+            handed_over,
+            steam_is_ready,
         } = one;
         self.library |= library;
         self.panel |= panel;
@@ -1021,6 +1078,8 @@ impl Changed {
         self.friends |= friends;
         self.chat |= chat;
         self.reconnected |= reconnected;
+        self.handed_over |= handed_over;
+        self.steam_is_ready |= steam_is_ready;
         // None of these may be dropped either: two friends writing in one pass
         // is two announcements.
         self.messages.extend(messages);
@@ -1103,6 +1162,8 @@ impl Steam {
             sort: crate::settings::steam_sort().unwrap_or_default(),
             search: String::new(),
             signing_in: None,
+            setting_up: None,
+            setup_is_watched: false,
             reach: lxb_steam::Reach::Online,
             library_as_of: None,
             fetching: BTreeMap::new(),
@@ -1139,6 +1200,8 @@ impl Steam {
             sort: crate::settings::steam_sort().unwrap_or_default(),
             search: String::new(),
             signing_in: None,
+            setting_up: None,
+            setup_is_watched: false,
             reach: lxb_steam::Reach::Online,
             library_as_of: None,
             fetching: BTreeMap::new(),
@@ -2084,6 +2147,55 @@ impl Steam {
     fn apply(&mut self, event: Event) -> Changed {
         let mut changed = Changed::default();
         match event {
+            // Valve's client installing itself, which happens once on a machine
+            // and before anybody can sign in to anything. The panel is one view
+            // of it and not where it is held — see [`Steam::setting_up`] — so
+            // every arm here moves the state first and the panel only if the
+            // panel is up.
+            Event::Setup(word) => match word {
+                lxb_steam::setup::SetUp::Working(step) => {
+                    let moved = self.setting_up.as_ref() != Some(&step);
+                    self.setting_up = Some(step.clone());
+                    // The panel only if there is one. A setup somebody walked
+                    // away from must not ask for a frame every second for the
+                    // four minutes it takes, on a bar nobody is looking at it
+                    // from.
+                    if matches!(self.signing_in, Some(Stage::FirstSetup(_))) {
+                        self.signing_in = Some(Stage::FirstSetup(step));
+                        changed.panel = moved;
+                    }
+                }
+                lxb_steam::setup::SetUp::Done => {
+                    tracing::info!("Steam is installed on this machine");
+                    self.setting_up = None;
+                    // Straight on to the questions for whoever stayed, and a
+                    // notification for whoever did not. Never both: somebody
+                    // watching the panel move on does not also need telling.
+                    if self.setup_is_watched {
+                        self.signing_in = Some(Stage::Choosing);
+                        changed.panel = true;
+                    } else {
+                        changed.steam_is_ready = true;
+                    }
+                    self.setup_is_watched = false;
+                    // The Steam row says what the client is, and there is one
+                    // now where there was none.
+                    changed.account = true;
+                }
+                lxb_steam::setup::SetUp::Failed(why) => {
+                    tracing::warn!(%why, "Steam could not install itself on this machine");
+                    self.setting_up = None;
+                    // Raised even where the panel had been dismissed. A
+                    // download that finished is a good ending and can wait for
+                    // somebody to come back to it; one that failed is a
+                    // question — try again, or not — and a session that
+                    // swallowed it would leave a Steam row that goes on
+                    // offering to sign in and never can.
+                    self.signing_in = Some(Stage::SetupFailed(why));
+                    self.setup_is_watched = false;
+                    changed.panel = true;
+                }
+            },
             Event::Installing {
                 app_id,
                 done,
@@ -2230,6 +2342,10 @@ impl Steam {
             Event::HandOverRefused(refused) => {
                 tracing::info!(?refused, "Valve's client was not handed a request");
                 changed.hand_over = Some(refused);
+            }
+            Event::HandedOver => {
+                tracing::info!("Valve's client took the request and is about to show itself");
+                changed.handed_over = true;
             }
             Event::LaunchIsAsking(asking) => {
                 // The watcher polls Valve's client every two seconds and then
@@ -2729,17 +2845,107 @@ impl Steam {
 
     // --- the sign-in ------------------------------------------------------
 
-    /// Raise the panel, on the first question.
+    /// Raise the panel, on the first question — or on the wait that has to
+    /// come before the questions.
+    ///
+    /// On a machine where Steam has never run there is nothing to sign in to
+    /// yet: what a distribution packages is a launcher, and the client proper
+    /// is half a gigabyte it fetches the first time it is started. So the first
+    /// press starts that and the panel says so, and the questions come when it
+    /// is done. Everything about the sign-in itself is unchanged — the code on
+    /// the screen is Steam's own service and needs no client — but a person who
+    /// signed in and then pressed a game would find the shell installing Steam
+    /// under a loading screen with no idea why it was taking four minutes, so
+    /// the install is put where somebody can see it.
+    ///
+    /// Pressing the row again while an install is running comes back here and
+    /// gets the same panel back, which is the whole of how a setup somebody
+    /// walked away from is returned to.
     pub fn begin(&mut self) {
+        if let Some(step) = self.setting_up.clone() {
+            self.setup_is_watched = true;
+            self.signing_in = Some(Stage::FirstSetup(step));
+            return;
+        }
+        if self.client.client_needs_setting_up() {
+            self.client.set_up_the_client();
+            let step = lxb_steam::setup::Step {
+                said: "Getting Steam ready".to_string(),
+                percent: None,
+            };
+            self.setting_up = Some(step.clone());
+            self.setup_is_watched = true;
+            self.signing_in = Some(Stage::FirstSetup(step));
+            return;
+        }
         self.signing_in = Some(Stage::Choosing);
     }
 
+    /// Whether the shell's own sign-in panel is up, without building it.
+    ///
+    /// [`Self::panel`] answers the same question and allocates a panel's worth
+    /// of strings doing it, which is fine once a press and not fine on the pass
+    /// that decides what the compositor may show — that runs whenever there is
+    /// a window of Valve's being hidden.
+    pub fn is_signing_in(&self) -> bool {
+        self.signing_in.is_some()
+    }
+
+    /// Whether Valve's client is installing itself for this session right now.
+    ///
+    /// Asked by the shell for two things it decides: whether the row somebody
+    /// pressed is a setup to come back to, and whether Valve's own windows may
+    /// be let through. Nothing of the client's may reach the screen while this
+    /// is true — the client it is installing comes up on its own login screen,
+    /// and this shell has its own.
+    pub fn setting_up(&self) -> bool {
+        self.setting_up.is_some()
+    }
+
+    /// Take the panel down and leave the install running.
+    ///
+    /// What Back does on the one panel that is a wait rather than a question.
+    /// Nothing is cancelled: half a gigabyte is coming down, stopping it would
+    /// throw away whatever had arrived, and the person pressing Back is saying
+    /// they would rather not watch — not that they have changed their mind
+    /// about Steam. What they get instead is a notification when it is done.
+    pub fn let_the_setup_run_in_the_background(&mut self) {
+        self.setup_is_watched = false;
+        self.signing_in = None;
+    }
+
+    /// Start the install again after one that failed.
+    pub fn set_up_again(&mut self) {
+        self.client.set_up_the_client();
+        let step = lxb_steam::setup::Step {
+            said: "Getting Steam ready".to_string(),
+            percent: None,
+        };
+        self.setting_up = Some(step.clone());
+        self.setup_is_watched = true;
+        self.signing_in = Some(Stage::FirstSetup(step));
+    }
+
     /// Give up on whatever is on screen.
+    ///
+    /// Three stages are not sign-ins and must not be reported to Steam as
+    /// abandoned ones: the library that would not arrive, and the two about
+    /// Valve's client installing itself. Nothing has been asked of any account
+    /// in any of them, and telling the worker a sign-in was cancelled while one
+    /// was not under way is a message about the wrong thing. The install itself
+    /// is not stopped either — see
+    /// [`Self::let_the_setup_run_in_the_background`], which is what Back
+    /// actually does on that panel.
     pub fn cancel(&mut self) {
-        let cancelling_sign_in = self
-            .signing_in
-            .as_ref()
-            .is_some_and(|stage| !matches!(stage, Stage::LibraryUnavailable(_)));
+        let cancelling_sign_in = self.signing_in.as_ref().is_some_and(|stage| {
+            !matches!(
+                stage,
+                Stage::LibraryUnavailable(_) | Stage::FirstSetup(_) | Stage::SetupFailed(_)
+            )
+        });
+        if matches!(self.signing_in, Some(Stage::FirstSetup(_))) {
+            self.setup_is_watched = false;
+        }
         self.signing_in = None;
         if cancelling_sign_in {
             self.client.cancel_sign_in();
@@ -3591,16 +3797,76 @@ impl Steam {
     pub fn panel(&self) -> Option<Panel> {
         let stage = self.signing_in.as_ref()?;
         let heading = dialog::Line::Heading(
-            if matches!(stage, Stage::LibraryUnavailable(_)) {
-                "Steam library"
-            } else {
-                "Sign in to Steam"
+            match stage {
+                Stage::LibraryUnavailable(_) => "Steam library",
+                // Named for what is happening rather than for what it is on
+                // the way to. Somebody who pressed "Sign in to Steam" and got a
+                // four-minute wait under that heading would reasonably think
+                // the wait *was* the sign-in, and that Steam was being slow
+                // about their account. It is not their account: it is Steam
+                // arriving on the machine.
+                Stage::FirstSetup(_) | Stage::SetupFailed(_) => "Setting up Steam",
+                _ => "Sign in to Steam",
             }
             .to_string(),
         );
         let cancel = menu::Entry::new(menu::Command::SteamCancel, "Cancel");
 
         let panel = match stage {
+            Stage::FirstSetup(step) => Panel {
+                lines: vec![
+                    heading,
+                    // Two sentences on two lines, and both of them are answers
+                    // to questions somebody watching this would otherwise have
+                    // to guess at: why is a sign-in downloading something, and
+                    // is this going to happen every time. Neither is
+                    // decoration.
+                    //
+                    // **Two lines because the panel does not wrap.** A
+                    // [`dialog::Line::Note`] is drawn as one line and cut with
+                    // an ellipsis, so a sentence written as one string and
+                    // measured in a mock arrives on screen saying something
+                    // else: this pair began as one note and reached a
+                    // screenshot reading "Steam has to install itself on this
+                    // machine before you can …".
+                    dialog::Line::Note(
+                        "Steam has to install itself before you can sign in.".to_string(),
+                    ),
+                    dialog::Line::Note("This only happens once.".to_string()),
+                    dialog::Line::Note(match step.percent {
+                        Some(percent) => format!("{}  ·  {percent}%", step.said),
+                        None => step.said.clone(),
+                    }),
+                    // The bar where there is something to count, and the lights
+                    // where there is not. The two are the same height, so the
+                    // panel does not move under a thumb when the download ends
+                    // and the unpack begins. See [`dialog::Line::Progress`].
+                    match step.percent {
+                        Some(percent) => dialog::Line::Progress(percent),
+                        None => dialog::Line::Waiting,
+                    },
+                    dialog::Line::Rule,
+                ],
+                // The only way out, and it is not a cancel: half a gigabyte is
+                // coming down and stopping it would throw away what had
+                // arrived. What this offers is to stop *watching*, which is
+                // what Back does on this panel too.
+                buttons: vec![menu::Entry::new(
+                    menu::Command::SteamSetupInBackground,
+                    "Carry on in the background",
+                )],
+                start: 0,
+                typing: false,
+            },
+            Stage::SetupFailed(why) => Panel {
+                lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
+                buttons: vec![
+                    menu::Entry::new(menu::Command::SteamSetUpAgain, "Try again"),
+                    menu::Entry::new(menu::Command::SteamCancel, "Close"),
+                ],
+                start: 0,
+                typing: false,
+            },
             Stage::Choosing => Panel {
                 lines: vec![
                     heading,
@@ -3750,6 +4016,227 @@ mod tests {
         for character in text.chars() {
             assert_eq!(steam.type_into(Stroke::Char(character)), Typed::Into);
         }
+    }
+
+    /// A session part-way through installing Valve's client, without a machine
+    /// that has to be installing one.
+    ///
+    /// [`Steam::begin`] is what puts a real session into this state and it
+    /// reads the disk to decide; what is worth testing is everything after
+    /// that decision, so the state is set here directly.
+    fn setting_up(said: &str, percent: Option<u8>) -> Steam {
+        let mut steam = Steam::settled();
+        let step = lxb_steam::setup::Step {
+            said: said.to_string(),
+            percent,
+        };
+        steam.setting_up = Some(step.clone());
+        steam.setup_is_watched = true;
+        steam.signing_in = Some(Stage::FirstSetup(step));
+        steam
+    }
+
+    /// What the panel says while Steam installs itself, and what it offers.
+    ///
+    /// The whole of the design decision in one test: it is a *wait*, not a
+    /// question, so there is nothing to answer and nothing to cancel. The one
+    /// button leaves it running.
+    #[test]
+    fn the_first_setup_panel_is_a_wait_that_can_be_walked_away_from() {
+        let steam = setting_up("Downloading Steam", Some(42));
+        let panel = steam.panel().expect("the setup raises a panel");
+
+        assert_eq!(
+            panel.lines.first(),
+            Some(&dialog::Line::Heading("Setting up Steam".to_string())),
+            "a four-minute wait under \"Sign in to Steam\" reads as a slow sign-in"
+        );
+        assert!(
+            panel.lines.iter().any(|line| matches!(
+                line,
+                dialog::Line::Note(note) if note.contains("once")
+            )),
+            "the panel has to say this does not happen every time"
+        );
+        // The panel cuts a note rather than wrapping it, so every one of them
+        // has to fit on its own line. Measured off a screenshot at 1280x800,
+        // where a note of 58 characters was already being cut.
+        for line in &panel.lines {
+            if let dialog::Line::Note(note) = line {
+                assert!(
+                    note.chars().count() <= 55,
+                    "this note will be cut on screen: {note:?}"
+                );
+            }
+        }
+        assert!(
+            panel.lines.contains(&dialog::Line::Progress(42)),
+            "a step that carries a number is drawn as a bar: {:?}",
+            panel.lines
+        );
+        assert!(!panel.typing, "there is nothing here to type into");
+
+        // One button, and it is not a cancel. Half a gigabyte is coming down.
+        let commands: Vec<menu::Command> =
+            panel.buttons.iter().map(|entry| entry.command).collect();
+        assert_eq!(commands, vec![menu::Command::SteamSetupInBackground]);
+    }
+
+    /// The bar and the lights stand in the same place, so the panel does not
+    /// change shape when the download gives way to the unpack.
+    #[test]
+    fn a_step_with_nothing_to_count_waits_rather_than_showing_an_empty_bar() {
+        let counting = setting_up("Downloading Steam", Some(7));
+        let not = setting_up("Unpacking Steam", None);
+
+        let counting = counting.panel().expect("a panel").lines;
+        let not = not.panel().expect("a panel").lines;
+        assert_eq!(counting.len(), not.len(), "{counting:?} against {not:?}");
+        assert!(counting.contains(&dialog::Line::Progress(7)));
+        assert!(not.contains(&dialog::Line::Waiting));
+        assert!(
+            !not.iter()
+                .any(|line| matches!(line, dialog::Line::Progress(_))),
+            "an unpack has no length, and a bar at nothing reads as one that stalled"
+        );
+    }
+
+    /// Back on the setup panel takes the panel away and nothing else.
+    ///
+    /// The two halves that matter: the install goes on — [`Steam::setting_up`]
+    /// is still true, so pressing the row again comes back to it — and Steam is
+    /// never told a sign-in was abandoned, because none was begun.
+    #[test]
+    fn walking_away_from_the_setup_leaves_it_running() {
+        let mut steam = setting_up("Downloading Steam", Some(42));
+
+        steam.let_the_setup_run_in_the_background();
+        assert!(steam.panel().is_none(), "the panel went");
+        assert!(steam.setting_up(), "and the install did not");
+
+        // The same again through Back, which is the other way out of a panel
+        // and must not mean something different.
+        let mut steam = setting_up("Downloading Steam", Some(42));
+        steam.cancel();
+        assert!(steam.panel().is_none());
+        assert!(steam.setting_up());
+    }
+
+    /// Who hears about the ending depends on who stayed to watch it.
+    #[test]
+    fn a_finished_setup_moves_the_panel_on_or_announces_itself_but_never_both() {
+        // Watched: straight on to the questions, and nothing announced. A
+        // notification about what is happening on screen is noise.
+        let mut watched = setting_up("Installing Steam", None);
+        let changed = watched.apply(Event::Setup(lxb_steam::setup::SetUp::Done));
+        assert!(changed.panel);
+        assert!(!changed.steam_is_ready);
+        assert!(!watched.setting_up());
+        assert!(matches!(watched.signing_in, Some(Stage::Choosing)));
+
+        // Walked away from: nothing is raised over whatever they are doing
+        // now, and they are told.
+        let mut away = setting_up("Installing Steam", None);
+        away.let_the_setup_run_in_the_background();
+        let changed = away.apply(Event::Setup(lxb_steam::setup::SetUp::Done));
+        assert!(changed.steam_is_ready);
+        assert!(away.panel().is_none(), "nothing is put in front of them");
+        assert!(!away.setting_up());
+    }
+
+    /// A setup that failed is raised whether or not anybody was watching.
+    ///
+    /// The asymmetry with the finish above is the point: a good ending can wait
+    /// for somebody to come back to it, and a failure is a question — try
+    /// again, or not — that a session which swallowed it would leave a Steam
+    /// row offering a sign-in it can never do.
+    #[test]
+    fn a_failed_setup_is_put_in_front_of_whoever_asked_for_it() {
+        let mut steam = setting_up("Downloading Steam", Some(3));
+        steam.let_the_setup_run_in_the_background();
+        assert!(steam.panel().is_none());
+
+        let changed = steam.apply(Event::Setup(lxb_steam::setup::SetUp::Failed(
+            "Steam could not set itself up: Not enough disk space".to_string(),
+        )));
+        assert!(changed.panel);
+        assert!(!steam.setting_up(), "nothing is still running");
+
+        let panel = steam.panel().expect("the failure is raised");
+        assert!(
+            panel.lines.iter().any(|line| matches!(
+                line,
+                dialog::Line::Note(note) if note.contains("Not enough disk space")
+            )),
+            "Valve's own reason is what is shown: {:?}",
+            panel.lines
+        );
+        let commands: Vec<menu::Command> =
+            panel.buttons.iter().map(|entry| entry.command).collect();
+        assert_eq!(
+            commands,
+            vec![menu::Command::SteamSetUpAgain, menu::Command::SteamCancel],
+            "trying again installs, and is not the Try again of a failed sign-in"
+        );
+    }
+
+    /// Sight is given when the client takes the request, not when the button
+    /// was pressed.
+    ///
+    /// The difference is only ever visible on the press that has to sign a
+    /// client in first — and on that one it is the whole thing, because those
+    /// seconds are seconds with Valve's own login window on the display.
+    #[test]
+    fn a_hand_over_gives_sight_when_it_lands() {
+        let mut steam = Steam::settled();
+
+        // The landing is what asks for sight, and it is the only thing that
+        // does: the press says nothing about it, because whatever the worker
+        // has to do first takes as long as it takes.
+        assert!(steam.apply(Event::HandedOver).handed_over);
+
+        // A refusal is not a landing: a client that would not take the request
+        // has no window to show, and revealing it would be the shell giving
+        // sight for nothing.
+        let refused = steam.apply(Event::HandOverRefused(lxb_steam::Refused::Failed(
+            "no".to_string(),
+        )));
+        assert!(!refused.handed_over);
+        assert!(refused.hand_over.is_some());
+    }
+
+    /// Progress moves the panel where one is up, and moves nothing where one
+    /// is not.
+    ///
+    /// The second half is what keeps a backgrounded install from asking for a
+    /// frame once a second for four minutes, on a bar nobody is looking at it
+    /// from.
+    #[test]
+    fn progress_only_redraws_a_panel_that_is_on_screen() {
+        let mut watched = setting_up("Downloading Steam", Some(10));
+        let changed = watched.apply(Event::Setup(lxb_steam::setup::SetUp::Working(
+            lxb_steam::setup::Step {
+                said: "Downloading Steam".to_string(),
+                percent: Some(11),
+            },
+        )));
+        assert!(changed.panel);
+        assert!(watched
+            .panel()
+            .unwrap()
+            .lines
+            .contains(&dialog::Line::Progress(11)));
+
+        let mut away = setting_up("Downloading Steam", Some(10));
+        away.let_the_setup_run_in_the_background();
+        let changed = away.apply(Event::Setup(lxb_steam::setup::SetUp::Working(
+            lxb_steam::setup::Step {
+                said: "Downloading Steam".to_string(),
+                percent: Some(11),
+            },
+        )));
+        assert!(!changed.panel, "nothing is on screen to redraw");
+        assert!(away.setting_up(), "and it is still going");
     }
 
     /// The sign-in by account name is two questions, and the second one is

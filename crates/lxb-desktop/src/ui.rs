@@ -9118,6 +9118,14 @@ const WAITING_LIGHT: f32 = 12.0;
 const WAITING_LIGHT_GAP: f32 = 14.0;
 /// How long one full pass of that row takes, in seconds.
 const WAITING_CYCLE: f32 = 1.4;
+/// How wide the groove is where the panel counts something up.
+///
+/// Wider than the one under a game's row, which shares its line with the row's
+/// own writing; this has the whole width of the panel to itself and is centred
+/// in it. Short of that width all the same, for the reason
+/// [`ROW_PROGRESS_WIDTH`] gives: a bar running wall to wall reads as part of
+/// the furniture rather than as a reading of something.
+const PANEL_PROGRESS_WIDTH: f32 = 320.0;
 /// How far the rest of the display is dimmed behind it. Deeper than the context
 /// menu's: a menu is a note pinned to something the user can still see, and this
 /// has taken the screen.
@@ -9145,6 +9153,9 @@ fn dialog_line_height(line: &Line) -> f32 {
         Line::Entry(_) => DIALOG_SECRET,
         Line::Qr(_) => DIALOG_QR,
         Line::Waiting => DIALOG_WAITING,
+        // The same height as the lights it stands in for. See
+        // [`Line::Progress`], where the reason is.
+        Line::Progress(_) => DIALOG_WAITING,
         Line::Rule => DIALOG_RULE,
     }
 }
@@ -9678,6 +9689,27 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                         ..Quad::default()
                     });
                 }
+            }
+            // The same thing, for the stretch of it that can be counted: the
+            // groove a game's row is given while it comes down, on the line
+            // the lights would have stood on.
+            //
+            // [`row_progress`] rather than [`track`], and the argument is the
+            // one made there: this is a reading of something, not a value
+            // anybody can set, so it carries no handle. Never stuck, because
+            // the one thing this draws is watched by a panel that goes to a
+            // failure of its own the moment it stops moving.
+            Line::Progress(percent) => {
+                let width = (PANEL_PROGRESS_WIDTH * scale).min(*lw);
+                inside.quads.extend(row_progress(
+                    [lx + (lw - width) * 0.5, ly + lh * 0.5, width, 0.0],
+                    Arriving {
+                        share: f32::from(*percent) / 100.0,
+                        stuck: false,
+                    },
+                    scale,
+                    1.0,
+                ));
             }
             // The same barely-there hairline the guide rules its bands with,
             // and the context menu its groups.
