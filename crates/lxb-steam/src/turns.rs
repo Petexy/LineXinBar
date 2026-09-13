@@ -46,7 +46,7 @@
 //! a wake, and a wake that has to put Valve's own Offline Mode on or take it off
 //! reaches [`What::TheAccountList`] from inside it. Nothing goes the other way.
 //! Both writers of the account list — [`crate::client::offline`] and
-//! [`crate::client::autologin::stop`], which is the sign-out — read and write a
+//! [`crate::client::account::sign_out`], which is the sign-out — read and write a
 //! file and start no client, and the sign-out is not inside a wake to begin
 //! with. Nothing holds [`What::TheWizard`] and either of the others together
 //! either, because a flow finishes its wake before it queues for the wizard.

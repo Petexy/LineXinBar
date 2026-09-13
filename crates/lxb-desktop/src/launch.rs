@@ -433,6 +433,22 @@ pub struct Launch {
     /// answered every refusal with another press would be a loading screen
     /// asking for ever.
     asked_again: bool,
+    /// Which of Valve's own windows this is waiting for, where what is
+    /// opening is the client itself rather than a game.
+    ///
+    /// Open Steam, Open Steam (Client) and the rows that hand the client a
+    /// request about a title all end in a window of the client's own, and
+    /// each of them may take as long as starting Steam takes — most of a
+    /// minute on a cold client. That wait used to be answered by nothing:
+    /// the row folded away and the bar sat there, so the press read as
+    /// ignored, the next press was the same row again, and the window
+    /// arrived over whatever the person had moved on to. So the client is
+    /// opened on the same terms as everything else on this bar, behind a
+    /// loading screen that holds the display until the window is there.
+    ///
+    /// What was asked for is kept so the panel that says it never came can
+    /// offer the same press again. `None` for every other launch.
+    asked_of_the_client: Option<lxb_steam::Doing>,
     /// When the press was answered. The panel's own animation is measured from
     /// this and nothing moves it, because it is the moment the user acted.
     started: Instant,
@@ -492,6 +508,7 @@ impl Launch {
             skipped: false,
             ask_again: false,
             asked_again: false,
+            asked_of_the_client: None,
             started: now,
             waiting_since: now,
             known: before.windows.to_vec(),
@@ -514,9 +531,53 @@ impl Launch {
         self
     }
 
+    /// Mark this as Valve's client itself being opened, and say what for.
+    ///
+    /// The same footing as a game handed to the client and for the same two
+    /// reasons: there is no process of ours to watch — the request is carried
+    /// to the client over its pipe, or by a courier that exits the moment it
+    /// has handed it over — and the wait is the client's, which is
+    /// [`STEAM_CLIENT_PATIENCE`] until the client takes the request and
+    /// [`STEAM_PATIENCE`] for its window after that. Not a game, though: the
+    /// splash is the ordinary panel with the client's own mark on it, and it
+    /// fades onto the window rather than dipping through black, because what
+    /// is behind it is Steam's storefront and not a picture the shell chose.
+    pub fn for_valves_client(mut self, asked: lxb_steam::Doing) -> Self {
+        self.through_steam = true;
+        self.doing = Some(Doing::Steam);
+        self.asked_of_the_client = Some(asked);
+        self
+    }
+
     /// The game this is opening, if it is a game at all.
     pub fn game(&self) -> Option<u32> {
         self.game
+    }
+
+    /// What Valve's client was asked for, where this is the client itself
+    /// opening. See [`Self::for_valves_client`].
+    pub fn asked_of_the_client(&self) -> Option<lxb_steam::Doing> {
+        self.asked_of_the_client
+    }
+
+    /// The window this was waiting for is on the display, brought forward
+    /// rather than newly mapped. `true` when that ends the wait.
+    ///
+    /// [`Self::advance`] decides an arrival by difference — a window that was
+    /// not there before, or a foreground that has changed — and one press
+    /// leaves both unchanged: Open Steam (Client) on a client whose storefront
+    /// is already mapped and already in front, with the bar standing over it.
+    /// The client brings that window forward and opens nothing. The shell's
+    /// watch on Valve's windows knows this is the window the press was for —
+    /// see `Wanted` in the shell — and says so here. Nothing happens to a
+    /// splash that has already been answered.
+    pub fn the_window_was_raised(&mut self, now: Instant) -> bool {
+        if self.arrived.is_some() {
+            return false;
+        }
+        tracing::debug!(app = %self.name, "the window the splash was waiting for was brought forward");
+        self.arrived = Some((now, Arrival::Raised));
+        true
     }
 
     /// Which step of starting it the splash should say it is on.
@@ -555,6 +616,11 @@ impl Launch {
     /// here the wait was Valve's client coming up; from here it is the game,
     /// and a loading screen still saying "Steam" a minute into a shader cache
     /// is a loading screen lying about what it is waiting for.
+    ///
+    /// The same moment for the client's own window — see
+    /// [`Self::for_valves_client`]: the client has taken the request, and
+    /// what is left is the window it raises for it. The step is the second
+    /// one either way; only the panel's own name says what is coming.
     pub fn now_starting_through_steam(&mut self, now: Instant) {
         self.waiting_since = now;
         self.doing = Some(Doing::Game);
@@ -2004,5 +2070,120 @@ mod tests {
             settled.advance(at(t0, 1.0), &[7], "Hollow Knight", true),
             None
         );
+    }
+
+    /// Valve's client opened for its own window waits as a game does — the
+    /// client's patience until the request is taken, the window's after — and
+    /// is drawn as an application: no dip, and the ordinary fade onto what
+    /// arrived.
+    ///
+    /// The press this is about: Open Steam on a machine where the client is
+    /// not running. The client takes most of a minute to come up and sign in,
+    /// and the shell used to answer that with nothing on the screen, so the
+    /// press read as ignored and was made again.
+    #[test]
+    fn the_client_opened_for_its_own_window_waits_like_a_game_and_looks_like_an_application() {
+        let t0 = Instant::now();
+        let mut splash = Launch::new(
+            "Steam".to_string(),
+            None,
+            crate::Display::for_a_test(0),
+            [0.0; 4],
+            None,
+            t0,
+            Before {
+                windows: &[7],
+                foreground: "",
+            },
+        )
+        .for_valves_client(lxb_steam::Doing::Open);
+        assert_eq!(splash.game(), None, "the client is not a game");
+        assert_eq!(splash.asked_of_the_client(), Some(lxb_steam::Doing::Open));
+        assert!(
+            splash.may_be_left(),
+            "the cold client is the one wait worth leaving"
+        );
+
+        // No process of ours exists, so nothing dying means anything; and the
+        // ordinary patience is far too short for a client coming up.
+        assert_eq!(
+            splash.advance(at(t0, PATIENCE + 1.0), &[7], "", false),
+            None
+        );
+        assert_eq!(
+            splash.advance(at(t0, STEAM_PATIENCE + 1.0), &[7], "", true),
+            None
+        );
+
+        // The client takes the request: from here the wait is for its window.
+        splash.now_starting_through_steam(at(t0, 40.0));
+        assert!(
+            !splash.may_be_left(),
+            "a window seconds away is not a wait to leave"
+        );
+        assert_eq!(splash.advance(at(t0, 41.0), &[7], "", true), None);
+
+        // Which arrives as any application's does.
+        assert_eq!(
+            splash.advance(at(t0, 44.0), &[7, 9], "Steam", true),
+            Some(Arrival::Window)
+        );
+        assert_eq!(
+            splash.blackout(at(t0, 44.1)),
+            0.0,
+            "a client is not dipped to"
+        );
+        assert_eq!(splash.fade(at(t0, 44.0 + SETTLE + HANDOVER + 0.05)), 0.0);
+        assert!(!splash.steam_never_appeared());
+    }
+
+    /// And the one arrival the difference cannot see: the client brought
+    /// forward a window it already had. The shell's watch on Valve's windows
+    /// says so, once, and a splash already answered ignores it.
+    #[test]
+    fn a_window_the_client_brought_forward_answers_the_splash_once() {
+        let t0 = Instant::now();
+        let mut splash = Launch::new(
+            "Steam".to_string(),
+            None,
+            crate::Display::for_a_test(0),
+            [0.0; 4],
+            None,
+            t0,
+            Before {
+                windows: &[7],
+                foreground: "Steam",
+            },
+        )
+        .for_valves_client(lxb_steam::Doing::Open);
+        splash.now_starting_through_steam(at(t0, 1.0));
+        // Nothing changed on the display, so nothing here can tell.
+        assert_eq!(splash.advance(at(t0, 2.0), &[7], "Steam", true), None);
+
+        assert!(splash.the_window_was_raised(at(t0, 2.0)));
+        assert!(!splash.waiting());
+        assert!(!splash.the_window_was_raised(at(t0, 2.5)), "answered twice");
+        assert_eq!(splash.fade(at(t0, 2.0 + SETTLE + HANDOVER + 0.05)), 0.0);
+
+        // A client the wait ran out on says so, and says which wait.
+        let mut never = Launch::new(
+            "Steam".to_string(),
+            None,
+            crate::Display::for_a_test(0),
+            [0.0; 4],
+            None,
+            t0,
+            Before {
+                windows: &[],
+                foreground: "",
+            },
+        )
+        .for_valves_client(lxb_steam::Doing::BigPicture);
+        assert_eq!(
+            never.advance(at(t0, STEAM_CLIENT_PATIENCE), &[], "", true),
+            Some(Arrival::GaveUp)
+        );
+        assert!(never.steam_never_appeared());
+        assert!(never.gave_up_waiting_for_the_client());
     }
 }

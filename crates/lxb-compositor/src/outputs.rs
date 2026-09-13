@@ -391,7 +391,7 @@ impl OutputManager {
             // [`crate::scale`]. A Wayland window only — the X11 branch below
             // takes the whole area, because there is no scale to tell an X11
             // client about and a magnified window is not a larger one.
-            let room = crate::scale::configured_size(area.size, self.scale.factor());
+            let room = self.room_for(window, area.size);
             toplevel.with_pending_state(|state| {
                 state.size = Some(room);
                 // A size alone is only advisory. xdg-shell lets a client pick
@@ -425,6 +425,27 @@ impl OutputManager {
             }
         }
         remap_window_preserving_stack(space, window, area.loc);
+    }
+
+    /// The size to configure `window` at so that what the user ends up seeing
+    /// is `area`.
+    ///
+    /// The one division that makes an application draw larger than life, asked
+    /// in one place because two different callers have to make it about two
+    /// different rectangles and they are the same question: tiling a window
+    /// onto the usable area of its display, and answering a client that asks
+    /// to go fullscreen on the whole of it. A caller that took the rectangle
+    /// it wanted covered and handed that to the client would be handing over a
+    /// buffer a factor too large in each direction and having it drawn a
+    /// factor past the screen — which is exactly what cropped a fullscreen
+    /// video, on a browser window scaled above natural size, until the
+    /// fullscreen path came through here too.
+    ///
+    /// [`Self::window_scale`] rather than this manager's own factor, so the
+    /// window the setting does not apply to — the floating one — is answered
+    /// here the same way the render and the input mapping answer it.
+    pub fn room_for(&self, window: &Window, area: Size<i32, Logical>) -> Size<i32, Logical> {
+        crate::scale::configured_size(area, self.window_scale(window))
     }
 
     /// How much larger than life `window` draws itself: the session's factor

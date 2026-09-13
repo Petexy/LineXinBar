@@ -318,6 +318,16 @@ pub struct Steam {
     /// that said "Updating" for a whole session in which nothing was fetched is
     /// what this is here to stop. See [`lxb_steam::Steam::client_is_running`].
     client_running: bool,
+    /// Whether that client is signed in to anybody, as of the same look.
+    ///
+    /// For one decision and no other: whether a window of the client's that
+    /// has stood hidden for a minute is a question somebody has to answer. A
+    /// client signed in to nobody has exactly one window to show — its own
+    /// login screen — and that is the one window of Valve's this shell exists
+    /// to keep off the display. It was let through, on 2026-09-13, fifteen
+    /// milliseconds after the shell's own sign-in panel came down. See
+    /// `Shell::sync_steam_questions`.
+    client_signed_in: bool,
     /// Whether one is on its way up because this session asked for it.
     ///
     /// Only ever about a wake this session asked for, which is exactly the one
@@ -1019,8 +1029,9 @@ pub struct Changed {
     /// What this is for is the one thing the shell has to do about it: give the
     /// client sight. See `Shell::steam_hand_over`, and
     /// [`lxb_steam::Event::HandedOver`] for why it is given here rather than
-    /// when the button was pressed.
-    pub handed_over: bool,
+    /// when the button was pressed — and for the one fact it carries, which
+    /// decides how sight is given.
+    pub handed_over: Option<lxb_steam::HandedOver>,
     /// Steam has finished installing itself on this machine, and it was not
     /// this panel that was waiting to hear it.
     ///
@@ -1078,7 +1089,7 @@ impl Changed {
         self.friends |= friends;
         self.chat |= chat;
         self.reconnected |= reconnected;
-        self.handed_over |= handed_over;
+        self.handed_over = handed_over.or(self.handed_over.take());
         self.steam_is_ready |= steam_is_ready;
         // None of these may be dropped either: two friends writing in one pass
         // is two announcements.
@@ -1149,6 +1160,7 @@ impl Steam {
         // client somebody had already started would spend its first ten seconds
         // telling them nothing was being fetched.
         let client_running = client.client_is_running();
+        let client_signed_in = client_running && client.client_is_signed_in();
         Steam {
             client,
             account: None,
@@ -1184,6 +1196,7 @@ impl Steam {
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
             client_running,
+            client_signed_in,
             client_waking: false,
             driving: true,
         }
@@ -1222,6 +1235,7 @@ impl Steam {
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
             client_running: false,
+            client_signed_in: false,
             client_waking: false,
             driving: false,
         }
@@ -1845,6 +1859,11 @@ impl Steam {
             return false;
         }
         let now = self.client.client_is_running();
+        // Asked on the same look and only of a client that is there: a log is
+        // a record of what a client *was* doing, and with nothing running it
+        // says who was signed in, not who is. Nothing the column draws moves
+        // on this, so it is not part of the answer.
+        self.client_signed_in = now && self.client.client_is_signed_in();
         if now == self.client_running {
             return false;
         }
@@ -2121,6 +2140,14 @@ impl Steam {
         self.client_running
     }
 
+    /// Whether that client is signed in to anybody, as of the last look.
+    ///
+    /// See [`Self::note_whether_a_client_is_running`], which is what looks,
+    /// and [`Steam::client_signed_in`] for the one thing it decides.
+    pub fn a_client_is_signed_in(&self) -> bool {
+        self.client_signed_in
+    }
+
     /// What a pass of the worker's answers does to the shell's own state.
     ///
     /// Split from [`Self::sync`] for the reason [`Self::apply`] is split from
@@ -2283,7 +2310,10 @@ impl Steam {
                 // up is the row being ten seconds behind the machine.
                 let waking = matches!(report, lxb_steam::ClientReport::Waking);
                 if report == lxb_steam::ClientReport::Ready {
+                    // Ready is a client proved up *and* signed in as this
+                    // account, so both answers are known here and now.
                     self.client_running = true;
+                    self.client_signed_in = true;
                 }
                 if waking != self.client_waking {
                     self.client_waking = waking;
@@ -2343,9 +2373,12 @@ impl Steam {
                 tracing::info!(?refused, "Valve's client was not handed a request");
                 changed.hand_over = Some(refused);
             }
-            Event::HandedOver => {
-                tracing::info!("Valve's client took the request and is about to show itself");
-                changed.handed_over = true;
+            Event::HandedOver(handed) => {
+                tracing::info!(
+                    after_signing_in = handed.after_signing_in,
+                    "Valve's client took the request and is about to show itself"
+                );
+                changed.handed_over = Some(handed);
             }
             Event::LaunchIsAsking(asking) => {
                 // The watcher polls Valve's client every two seconds and then
@@ -4193,7 +4226,14 @@ mod tests {
         // The landing is what asks for sight, and it is the only thing that
         // does: the press says nothing about it, because whatever the worker
         // has to do first takes as long as it takes.
-        assert!(steam.apply(Event::HandedOver).handed_over);
+        let landed = lxb_steam::HandedOver {
+            after_signing_in: false,
+            asked: lxb_steam::Doing::Open,
+        };
+        assert_eq!(
+            steam.apply(Event::HandedOver(landed)).handed_over,
+            Some(landed)
+        );
 
         // A refusal is not a landing: a client that would not take the request
         // has no window to show, and revealing it would be the shell giving
@@ -4201,7 +4241,7 @@ mod tests {
         let refused = steam.apply(Event::HandOverRefused(lxb_steam::Refused::Failed(
             "no".to_string(),
         )));
-        assert!(!refused.handed_over);
+        assert!(refused.handed_over.is_none());
         assert!(refused.hand_over.is_some());
     }
 

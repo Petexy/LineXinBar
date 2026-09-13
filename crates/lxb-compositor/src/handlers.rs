@@ -505,9 +505,36 @@ impl XdgShellHandler for LxbState {
 
         if let Some(output) = target {
             let geometry = self.lxb.space.output_geometry(&output).unwrap_or_default();
+            // Fullscreen is the whole display, and on a session drawing
+            // applications larger than life the whole display is not the number
+            // of logical pixels the display has. The window is configured at a
+            // fraction of it, told over `wp_fractional_scale_v1` to fill that
+            // fraction with the display's own pixels, and drawn back out over
+            // all of it — the same three parts as an ordinary tiled window, and
+            // the same division, from the same place. See [`crate::scale`].
+            //
+            // Handing the client the display's own size instead asks it for a
+            // buffer a factor too large in each direction, and the growth that
+            // puts an ordinary window over the whole display then puts that one
+            // a factor past it: a video put fullscreen from a browser on a
+            // session at 150% came back with a third of its width and a third
+            // of its height off the screen. That is the bug this division is.
+            //
+            // A surface with no window yet has been told no scale either —
+            // `new_fractional_scale` answers the display's own until there is a
+            // window to ask about — so the undivided size is the honest answer
+            // for it, and the tiling it gets when it maps carries both halves.
+            let room = match window.as_ref() {
+                Some(window) => self.lxb.outputs.room_for(window, geometry.size),
+                None => geometry.size,
+            };
             surface.with_pending_state(|state| {
                 state.states.set(xdg_toplevel::State::Fullscreen);
-                state.size = Some(geometry.size);
+                state.size = Some(room);
+                // What the window may make of itself, moved with the size it
+                // belongs to: the tiling left this at the usable area, which is
+                // the smaller rectangle of the two.
+                state.bounds = Some(room);
             });
             if let Some(window) = window {
                 assign_output(&window, &output);

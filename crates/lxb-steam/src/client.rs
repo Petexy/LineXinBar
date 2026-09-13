@@ -110,6 +110,33 @@ pub const WINDOW_NAMES: [&str; 2] = ["steam", "steamwebhelper"];
 /// `lxb_shell_v1.unseen_window`, which is what the shell reads it against.
 pub const STOREFRONT: &str = "Steam";
 
+/// What the client names its notification toasts — the small windows it pops
+/// at the corner of the desktop for a friend coming online, a controller
+/// found, a download finished.
+///
+/// Read off a live client on 2026-09-13: `notificationtoasts_1_desktop`, then
+/// `notificationtoasts_10000_desktop` and upwards, one window per toast, each
+/// 283×70 at the bottom right of a desktop the client assumes is there. An
+/// identifier rather than a sentence, like the `steam_app_<id>` class a game
+/// is started under — in no language, and never shown to anybody — which is
+/// what makes it safe to read.
+///
+/// None of them is ever a window somebody asked for. The one that mattered
+/// arrived seven seconds after a fresh client was signed in, while its login
+/// screen was still up: read as "a window of the request's own", it had the
+/// compositor show the client — login screen and all — for the quarter of a
+/// second before that screen closed. See [`is_a_toast`].
+pub const TOAST_WINDOW_PREFIX: &str = "notificationtoasts_";
+
+/// Whether a window of the client's is one of its notification toasts, by
+/// title. See [`TOAST_WINDOW_PREFIX`].
+pub fn is_a_toast(title: &str) -> bool {
+    title
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with(TOAST_WINDOW_PREFIX)
+}
+
 /// Where Valve's client is on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Where {
@@ -323,10 +350,47 @@ impl Doing {
         }
     }
 
+    /// What the shell calls the thing this opens, while it is opening.
+    ///
+    /// The name on the loading screen a press puts up — see
+    /// `Shell::begin_valves_client_splash` — and it is the row's own
+    /// vocabulary rather than Valve's window titles, so that what somebody
+    /// pressed and what they are then looking at are called the same thing.
+    /// "Open Steam" opens *Steam*; "Open Steam (Client)" opens the thing this
+    /// shell has always called Steam (Client); "Open Downloads in Steam"
+    /// opens Steam Downloads.
+    ///
+    /// The two that are about a title open a window of Steam's about that
+    /// title — a wizard, a file check — and neither has a name of its own to
+    /// be given. What is opening is Steam.
+    pub fn opening(self) -> &'static str {
+        match self {
+            Doing::BigPicture | Doing::Install | Doing::Verify => "Steam",
+            Doing::Open => "Steam (Client)",
+            Doing::Downloads => "Steam Downloads",
+        }
+    }
+
     /// Whether this is about the client itself rather than about one title, and
     /// so needs nothing selected to be pressed.
     pub fn about_the_client(self) -> bool {
         matches!(self, Doing::BigPicture | Doing::Open | Doing::Downloads)
+    }
+
+    /// Whether the window this raises is the client's main one — the
+    /// storefront, see [`STOREFRONT`] — rather than a window of its own.
+    ///
+    /// Two of them: `open/main` *is* that window, and `open/downloads` is a
+    /// page of it. On a client whose storefront is already mapped, either
+    /// brings that window forward and maps nothing new, so it is the window
+    /// the press is waiting on. The rest each raise a window of their own —
+    /// Big Picture's console screen, the install wizard, the file check — and
+    /// a storefront that happens to be mapped already is not what any of them
+    /// was for. Read off a live client on 2026-09-13: Big Picture asked for
+    /// from over the storefront had that storefront counted as its arrival,
+    /// 230 ms before the console screen mapped.
+    pub fn answered_by_the_storefront(self) -> bool {
+        matches!(self, Doing::Open | Doing::Downloads)
     }
 }
 
@@ -898,6 +962,20 @@ pub struct Proven {
     pub pid: Option<u32>,
     /// The account id it was signed in — or logged on offline — as.
     pub account: u32,
+    /// Whether the wake that made this proof handed the client its credential,
+    /// rather than finding it signed in already.
+    ///
+    /// Carried because the window a request raises on such a client is not
+    /// the first window there is. A client that had to be signed in was
+    /// sitting on its own login screen, and it keeps that screen up for some
+    /// seconds *after* it reports logged on — measured on 2026-09-13: logged on
+    /// at 20:31:54, login window closed at 20:31:59, storefront mapped at
+    /// 20:32:01. A shell that gave sight the moment the request was taken put
+    /// Valve's login screen on the display for five seconds and then, reading
+    /// its closing as the user being done, hid the storefront that came two
+    /// seconds later. So the shell is told, and waits for a window of the
+    /// request's own. See `Event::HandedOver`.
+    pub just_signed_in: bool,
 }
 
 impl Proven {
@@ -980,6 +1058,7 @@ pub fn proven_for(client: &Where, options: &Options, account: u32) -> Result<Pro
         State::SignedIn(id) | State::Offline(id) if id == account => Ok(Proven {
             pid: holder_of(&options.home.join("steam.pipe")),
             account,
+            just_signed_in: false,
         }),
         State::SignedIn(_) | State::Offline(_) => Err(Refusal::NotOurs(NotOurs::new(
             "Steam is signed in to another account.",
@@ -1288,7 +1367,7 @@ pub fn wake(
         up = start(client, options).map_err(|error| format!("Steam would not start: {error}"));
     }
 
-    let woken = up.and_then(|()| {
+    let woken: Result<bool, String> = up.and_then(|()| {
         bring_up(client, options, who, need, started_one, &mut ours)
             // A client being run for the first time is not a client that failed.
             // What it does with its first start is fetch and unpack Valve's
@@ -1325,9 +1404,16 @@ pub fn wake(
     // `bring_up`, and this asks the session half again as well — a client this
     // call restarted is a new process, and which session it draws into is
     // fixed as it starts rather than by what it was started for.
-    woken
-        .map_err(Refusal::Failed)
-        .and_then(|()| prove(client, options, who))
+    //
+    // And whether this call is what signed it in, carried on the proof: the
+    // press behind it decides how to show the client by it. See
+    // [`Proven::just_signed_in`].
+    woken.map_err(Refusal::Failed).and_then(|just_signed_in| {
+        prove(client, options, who).map(|proven| Proven {
+            just_signed_in,
+            ..proven
+        })
+    })
 }
 
 /// Ask Valve's client to leave the guide button to this shell, and find out
@@ -1433,6 +1519,11 @@ pub(crate) fn expose(options: &Options) -> Result<bool, String> {
 /// It used to carry the *moment* as well, for dating the client's own log
 /// against — see [`the_log_is_this_runs`], which now dates it against the
 /// running client instead and so needs nothing from up here.
+///
+/// Answers with whether it had to hand the client a credential — `false` for a
+/// client that signed itself in, or was signed in already — because the caller
+/// tells the shell, and the shell shows a client it has just signed in
+/// differently. See [`Proven::just_signed_in`].
 fn bring_up(
     client: &Where,
     options: &Options,
@@ -1440,7 +1531,7 @@ fn bring_up(
     need: Need,
     started_one: bool,
     ours: &mut bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     // Most sessions end here. The client keeps its own credential and comes
     // back up signed in by itself, so all this does is watch it happen.
     //
@@ -1466,8 +1557,8 @@ fn bring_up(
     // patience, ninety seconds of it on a client this call started, is spent
     // establishing something the registry answers in a syscall. It is then
     // handed the credential and signs in within five. See
-    // [`autologin::could_sign_itself_in`].
-    let could_sign_itself_in = autologin::could_sign_itself_in(&options.home);
+    // [`account::could_sign_itself_in`].
+    let could_sign_itself_in = account::could_sign_itself_in(&options.home);
     let worth_waiting = !signed_in_to_somebody_else
         && could_sign_itself_in
         && (started_one || need != Need::Context || crate::webui::reachable());
@@ -1477,7 +1568,7 @@ fn bring_up(
             false => UNTIL_IT_SIGNS_ITSELF_IN,
         };
         if settles(need, client, options, who, patience) {
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -1509,11 +1600,11 @@ fn bring_up(
         tracing::info!("restarting Valve's client, which came up before it was told to expose it");
         restart(client, options)?;
         if settles(need, client, options, who, UNTIL_IT_ANSWERS) {
-            return Ok(());
+            return Ok(false);
         }
     }
 
-    sign_it_in(client, options, who)
+    sign_it_in(client, options, who).map(|()| true)
 }
 
 /// Whether the client is already everything `need` asks for, **for this
@@ -2996,7 +3087,7 @@ fn on_path(program: &str) -> Option<PathBuf> {
 ///
 /// **Two modules below write that file**, and both do it by reading all of it,
 /// changing a field and putting all of it back: [`offline`] sets
-/// `WantsOfflineMode`, and [`autologin::stop`] clears `AllowAutoLogin` and
+/// `WantsOfflineMode`, and [`account::sign_out`] clears `AllowAutoLogin` and
 /// `MostRecent`. Two of those at once — two sessions, or a session and one of
 /// this crate's `probe-*` examples — read the same bytes and each put back a
 /// copy without the other's change in it. The second to finish wins, silently,
@@ -3034,7 +3125,7 @@ fn beside_and_rename_over(path: &Path, text: &str) {
     }
 }
 
-pub mod autologin {
+pub mod account {
     use std::path::Path;
 
     use super::beside_and_rename_over as write;
@@ -3064,39 +3155,103 @@ pub mod autologin {
     ///
     /// **This is the difference between a first login that takes five seconds
     /// and one that takes thirty-five.** A machine where this shell has just
-    /// installed Steam has exactly this state: `AutoLoginUser ""`, measured on
-    /// a real one on 2026-09-04. Without this, [`super::bring_up`] spent its
-    /// whole `UNTIL_IT_SIGNS_ITSELF_IN` patience watching a client that was
-    /// never going to, before handing it the credential that worked at once.
+    /// installed Steam has exactly this state. Without this,
+    /// [`super::bring_up`] spent its whole `UNTIL_IT_SIGNS_ITSELF_IN` patience
+    /// watching a client that was never going to, before handing it the
+    /// credential that worked at once.
     ///
-    /// A registry that cannot be read at all answers `true`, which is the
-    /// cautious way round: the cost of being wrong here is the wait this
-    /// avoids, and the cost of being wrong the other way is a client restarted
-    /// out from under somebody who was about to be signed in anyway.
+    /// **Absent is "nobody", the same as empty.** The two are two different
+    /// clients: a client this shell signed out has the field and it is empty
+    /// (`AutoLoginUser ""`, measured 2026-09-04), and a client that has never
+    /// signed anybody in has no field at all — Valve's launcher writes it at
+    /// the first logon and not before, measured on a fresh install on
+    /// 2026-09-13. Reading the missing field as "could" cost that install
+    /// exactly the thirty seconds this exists to save, on the first press
+    /// after the shell's own sign-in.
+    ///
+    /// A registry that cannot be read at all still answers `true`, which is
+    /// the cautious way round: it says nothing about the client either way,
+    /// where a registry with no account in it says the one thing that matters.
     pub(super) fn could_sign_itself_in(home: &Path) -> bool {
         let Some(node) = read(&home.join("registry.vdf")) else {
             return true;
         };
         node.string(&AUTO_LOGIN_USER)
-            .is_none_or(|account| !account.trim().is_empty())
+            .is_some_and(|account| !account.trim().is_empty())
     }
 
-    /// Stop the client signing itself in as this account.
+    /// Where the client keeps the credentials it signs itself back in with.
+    ///
+    /// One entry per account it remembers, under a key derived from the
+    /// account's name — see [`cached_under`].
+    const CONNECT_CACHE: [&str; 5] = [
+        "MachineUserConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "ConnectCache",
+    ];
+
+    /// The flags in the client's own account list that say it may sign this
+    /// account in again without being asked for anything.
+    ///
+    /// Four names for what is really two facts, because Valve's client has
+    /// spelled them differently across its own versions — the build measured
+    /// on 2026-09-13 writes `AutoLogin` and `RememberPassword`, and older ones
+    /// write `AllowAutoLogin` and `MostRecent`. **Only the ones already in the
+    /// account's block are written**, so a client is never given a key its own
+    /// build does not read, and a spelling nobody has thought of yet costs
+    /// nothing: the credential itself is taken away below, and the registry's
+    /// `AutoLoginUser` above, and either alone stops an unattended sign-in.
+    const REMEMBERED: [&str; 4] = [
+        "AutoLogin",
+        "AllowAutoLogin",
+        "RememberPassword",
+        "MostRecent",
+    ];
+
+    /// Sign Valve's client out of this account.
+    ///
+    /// **The whole sign-out, as somebody pressing a row called "Sign out"
+    /// means it**, and the user asked for exactly that on 2026-09-13: what
+    /// the shell forgets is its own half, and a client left holding the
+    /// account's credential is a Steam the next person at the machine opens
+    /// and is already signed in to. Three things, of which only the first was
+    /// here before:
+    ///
+    /// 1. the registry's `AutoLoginUser`, so nothing signs itself in on the
+    ///    way up;
+    /// 2. the flags in the client's own account list that say this account may
+    ///    be signed in again unasked — see [`REMEMBERED`];
+    /// 3. and the credential the client kept for it, which is the one that
+    ///    actually lets somebody in. Without this the client comes up on its
+    ///    login screen with the account listed, and one click signs in.
+    ///
+    /// The account **keeps its place in that list**, which is what Valve's own
+    /// sign-out does too: the name stays on the login screen and a password
+    /// gets somebody back in. Emptying the list would be throwing away
+    /// something the shell was never asked about, and on a household machine
+    /// it is somebody else's row as often as it is this one's.
     ///
     /// Never fails outwards: this runs while the user is signing out, the
     /// sign-out itself has already happened, and there is nothing useful to
     /// say to somebody about a file they have never heard of. Whatever could
     /// be cleared is cleared.
-    pub fn stop(root: &Path, home: &Path, account: &str) {
-        // Held over both files. The second of them is the account list, which
+    ///
+    /// **Call it with no client running.** All three files are the client's
+    /// own and it writes them back as it exits; editing them under a client
+    /// that is still shutting down is an edit it overwrites. See
+    /// [`Ask::SignOut`](crate::Ask), which waits for the pipe to go first.
+    pub fn sign_out(root: &Path, home: &Path, account: &str) {
+        // Held over all three files. One of them is the account list, which
         // [`super::offline`] writes too — see [`super::the_account_list`].
         let _turn = super::the_account_list(root);
         // Whether there was anything here to clear. Asked because this is run
         // once per layout a client could have used — see
         // [`crate::client::Options::every_layout`] — and a line saying the
-        // client will not sign itself back in, said of a directory where no
-        // client has ever been, is a line that would send somebody looking in
-        // the wrong place.
+        // client has been signed out, said of a directory where no client has
+        // ever been, is a line that would send somebody looking in the wrong
+        // place.
         let mut cleared = false;
         let registry = home.join("registry.vdf");
         if let Some(mut node) = read(&registry) {
@@ -3106,10 +3261,6 @@ pub mod autologin {
             }
         }
 
-        // The account keeps its place in the client's own list — the user may
-        // sign in as it from the client later, and emptying that list would be
-        // throwing away something the shell was never asked about. It only
-        // stops being the one that signs itself in.
         let users = root.join("config").join("loginusers.vdf");
         if let Some(mut node) = read(&users) {
             let mut touched = false;
@@ -3119,9 +3270,14 @@ pub mod autologin {
                         .string(&["AccountName"])
                         .is_some_and(|name| name.eq_ignore_ascii_case(account))
                     {
-                        user.set(&["AllowAutoLogin"], "0");
-                        user.set(&["MostRecent"], "0");
-                        touched = true;
+                        for flag in REMEMBERED {
+                            // Only what the client itself put there. See
+                            // [`REMEMBERED`].
+                            if user.string(&[flag]).is_some() {
+                                user.set(&[flag], "0");
+                                touched = true;
+                            }
+                        }
                     }
                 }
             }
@@ -3130,13 +3286,84 @@ pub mod autologin {
                 cleared = true;
             }
         }
+
+        let store = root.join("local.vdf");
+        if let Some(mut node) = read(&store) {
+            if forget_the_credential(&mut node, account) {
+                write(&store, &vdf::text(&node));
+                cleared = true;
+            }
+        }
+
         if cleared {
             tracing::info!(
                 root = %root.display(),
                 account,
-                "Valve's client will not sign itself back in"
+                "Valve's client has been signed out of this account"
             );
         }
+    }
+
+    /// Take this account's stored credential out of the client's cache, and
+    /// say whether one was there.
+    ///
+    /// Only this account's. Every other entry belongs to somebody else who
+    /// signs in on this machine, and a sign-out that emptied the cache would
+    /// sign the rest of a household out with them.
+    fn forget_the_credential(node: &mut Node, account: &str) -> bool {
+        // Asked before it is made: `make` builds every step of a path that is
+        // not there, and a machine whose client has never cached anything must
+        // not gain an empty cache from being signed out of.
+        if node.get(&CONNECT_CACHE).is_none() {
+            return false;
+        }
+        let Some(cache) = node.make(&CONNECT_CACHE) else {
+            return false;
+        };
+        let under = cached_under(account);
+        let before = cache.len();
+        cache.retain(|key, _| !key.to_ascii_lowercase().starts_with(&under));
+        cache.len() != before
+    }
+
+    /// The key one account's credential is filed under in [`CONNECT_CACHE`],
+    /// as far as the key is knowable: the CRC-32 of the account name, in lower
+    /// case hexadecimal.
+    ///
+    /// Read off a live client on 2026-09-13 — account `…1999`, cache key
+    /// `48e613161`, `crc32` of the name `48e61316` — so the whole key is that
+    /// with one more character after it, which is the persistence scheme the
+    /// entry was written under. The scheme digit is deliberately **not**
+    /// derived: what is returned is the prefix, and every entry that begins
+    /// with it is this account's whatever scheme wrote it.
+    ///
+    /// A key that turns out to be built some other way on some other build
+    /// costs nothing here — nothing is removed, and the flags and the registry
+    /// have already said the client may not sign itself in. It is the extra
+    /// mile rather than the whole road.
+    fn cached_under(account: &str) -> String {
+        format!("{:x}", crc32(account.as_bytes()))
+    }
+
+    /// CRC-32, the ordinary IEEE one, computed rather than taken as a
+    /// dependency.
+    ///
+    /// Eight lines against a crate, for the reason this module parses VDF
+    /// itself: it is one short loop, it has not changed since 1975, and a test
+    /// pins it to the standard check value.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                let carry = crc & 1;
+                crc >>= 1;
+                if carry != 0 {
+                    crc ^= 0xEDB8_8320;
+                }
+            }
+        }
+        !crc
     }
 
     fn read(path: &Path) -> Option<Node> {
@@ -3147,11 +3374,12 @@ pub mod autologin {
     mod tests {
         use super::*;
 
-        /// After this, the client comes up asking rather than signing itself
-        /// in — and somebody else's account is still in its list.
+        /// After this the client comes up asking rather than signing itself
+        /// in, it has nothing left to sign in *with*, and somebody else's
+        /// account is untouched in both files.
         #[test]
-        fn it_clears_only_this_accounts_automatic_sign_in() {
-            let root = std::env::temp_dir().join(format!("lxb-autologin-{}", std::process::id()));
+        fn it_signs_only_this_account_out() {
+            let root = std::env::temp_dir().join(format!("lxb-account-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("config")).unwrap();
             std::fs::write(
@@ -3159,13 +3387,24 @@ pub mod autologin {
                 "\"Registry\"\n{\n\t\"HKCU\"\n\t{\n\t\t\"Software\"\n\t\t{\n\t\t\t\"Valve\"\n\t\t\t{\n\t\t\t\t\"Steam\"\n\t\t\t\t{\n\t\t\t\t\t\"AutoLoginUser\"\t\t\"someone\"\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
             )
             .unwrap();
+            // Two accounts, and the two spellings Valve's own builds use: the
+            // one signing out carries the newer pair, the other the older.
             std::fs::write(
                 root.join("config").join("loginusers.vdf"),
-                "\"users\"\n{\n\t\"1\"\n\t{\n\t\t\"AccountName\"\t\t\"someone\"\n\t\t\"AllowAutoLogin\"\t\t\"1\"\n\t}\n\t\"2\"\n\t{\n\t\t\"AccountName\"\t\t\"somebody\"\n\t\t\"AllowAutoLogin\"\t\t\"1\"\n\t}\n}\n",
+                "\"users\"\n{\n\t\"1\"\n\t{\n\t\t\"AccountName\"\t\t\"someone\"\n\t\t\"AutoLogin\"\t\t\"1\"\n\t\t\"RememberPassword\"\t\t\"1\"\n\t}\n\t\"2\"\n\t{\n\t\t\"AccountName\"\t\t\"somebody\"\n\t\t\"AllowAutoLogin\"\t\t\"1\"\n\t\t\"RememberPassword\"\t\t\"1\"\n\t}\n}\n",
+            )
+            .unwrap();
+            let mine = cached_under("someone");
+            let theirs = cached_under("somebody");
+            std::fs::write(
+                root.join("local.vdf"),
+                format!(
+                    "\"MachineUserConfigStore\"\n{{\n\t\"Software\"\n\t{{\n\t\t\"Valve\"\n\t\t{{\n\t\t\t\"Steam\"\n\t\t\t{{\n\t\t\t\t\"ConnectCache\"\n\t\t\t\t{{\n\t\t\t\t\t\"{mine}1\"\t\t\"abcdef\"\n\t\t\t\t\t\"{theirs}1\"\t\t\"123456\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+                ),
             )
             .unwrap();
 
-            stop(&root, &root, "someone");
+            sign_out(&root, &root, "someone");
 
             let registry = vdf::parse(&std::fs::read_to_string(root.join("registry.vdf")).unwrap());
             assert_eq!(registry.string(&AUTO_LOGIN_USER), Some(""));
@@ -3173,14 +3412,54 @@ pub mod autologin {
             let users = vdf::parse(
                 &std::fs::read_to_string(root.join("config").join("loginusers.vdf")).unwrap(),
             );
-            assert_eq!(users.string(&["users", "1", "AllowAutoLogin"]), Some("0"));
+            assert_eq!(users.string(&["users", "1", "AutoLogin"]), Some("0"));
+            assert_eq!(users.string(&["users", "1", "RememberPassword"]), Some("0"));
+            // And nothing the client's own build does not read was invented
+            // for it.
+            assert_eq!(users.string(&["users", "1", "AllowAutoLogin"]), None);
             assert_eq!(
                 users.string(&["users", "2", "AllowAutoLogin"]),
                 Some("1"),
                 "somebody else's account was changed"
             );
+            assert_eq!(
+                users.string(&["users", "2", "RememberPassword"]),
+                Some("1"),
+                "somebody else's account was changed"
+            );
+
+            let store = vdf::parse(&std::fs::read_to_string(root.join("local.vdf")).unwrap());
+            let mut left: Vec<&String> = store
+                .block(&CONNECT_CACHE)
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>();
+            left.sort();
+            assert_eq!(
+                left,
+                vec![&format!("{theirs}1")],
+                "the wrong credentials were taken away"
+            );
 
             let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// A machine whose client has never cached anything is left alone
+        /// rather than given an empty cache to explain.
+        #[test]
+        fn a_client_with_nothing_cached_gains_nothing() {
+            let mut node = vdf::parse("\"MachineUserConfigStore\"\n{\n}\n");
+            assert!(!forget_the_credential(&mut node, "someone"));
+            assert_eq!(vdf::text(&node), "\"MachineUserConfigStore\"\n{\n}\n");
+        }
+
+        /// The check value every CRC-32 implementation is measured against.
+        #[test]
+        fn the_checksum_is_the_ordinary_one() {
+            assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+            assert_eq!(crc32(b""), 0);
+            // And the key is the name's checksum in lower-case hexadecimal,
+            // which is the form the client files it under.
+            assert_eq!(cached_under("123456789"), "cbf43926");
         }
     }
 }
@@ -3346,7 +3625,7 @@ pub mod offline {
     /// The account the client signs itself in as, out of its Linux registry.
     fn auto_login_user(home: &Path) -> Option<String> {
         let registry = read(&home.join("registry.vdf"))?;
-        let name = registry.string(&super::autologin::AUTO_LOGIN_USER)?;
+        let name = registry.string(&super::account::AUTO_LOGIN_USER)?;
         (!name.is_empty()).then(|| name.to_string())
     }
 
@@ -3524,6 +3803,54 @@ pub mod offline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every row that opens one of Valve's windows says what it is opening,
+    /// and says it in the words the row that was pressed used.
+    #[test]
+    fn each_request_names_what_it_opens() {
+        assert_eq!(Doing::BigPicture.opening(), "Steam");
+        assert_eq!(Doing::Open.opening(), "Steam (Client)");
+        assert_eq!(Doing::Downloads.opening(), "Steam Downloads");
+        // And the two about a title open a window of Steam's about it.
+        assert_eq!(Doing::Install.opening(), "Steam");
+        assert_eq!(Doing::Verify.opening(), "Steam");
+        // The row's label and what it opens are not the same sentence: one is
+        // an instruction and the other is a name.
+        for doing in [
+            Doing::BigPicture,
+            Doing::Open,
+            Doing::Downloads,
+            Doing::Install,
+            Doing::Verify,
+        ] {
+            assert_ne!(doing.label(), doing.opening());
+        }
+    }
+
+    /// Which requests the storefront is the answer to, which is what decides
+    /// whether a storefront already mapped counts as the window a press was
+    /// waiting for.
+    #[test]
+    fn only_the_two_requests_the_storefront_answers_say_so() {
+        assert!(Doing::Open.answered_by_the_storefront());
+        assert!(Doing::Downloads.answered_by_the_storefront());
+        // Big Picture has a window of its own, and a storefront standing in
+        // front of it is what the press was pressed to get away from.
+        assert!(!Doing::BigPicture.answered_by_the_storefront());
+        assert!(!Doing::Install.answered_by_the_storefront());
+        assert!(!Doing::Verify.answered_by_the_storefront());
+    }
+
+    /// The toasts are told by the name the client gives them, and nothing else
+    /// of the client's is.
+    #[test]
+    fn a_toast_is_known_by_its_name() {
+        assert!(is_a_toast("notificationtoasts_1_desktop"));
+        assert!(is_a_toast(" NotificationToasts_10003_desktop "));
+        assert!(!is_a_toast(STOREFRONT));
+        assert!(!is_a_toast("Sign in to Steam"));
+        assert!(!is_a_toast(""));
+    }
 
     /// The connection log is appended across runs, so until the client that is
     /// coming up writes its own first line the tail of it is the run before's.
@@ -3772,6 +4099,7 @@ mod tests {
         let somebody_else = Proven {
             pid: Some(std::process::id().wrapping_add(1)),
             account: 82_105_993,
+            just_signed_in: false,
         };
         assert!(matches!(
             somebody_else.still_there(&client, &options),
@@ -4563,13 +4891,15 @@ mod tests {
 
     /// Whether a client will sign itself in, and what a first-run one says.
     ///
-    /// The registry written by Valve's own launcher on a machine where Steam
-    /// has never signed anybody in is copied out of a real one, taken from this
-    /// developer's `~/.steam/registry.vdf` on 2026-09-04: the field is there
-    /// and it is empty.
+    /// Two registries with nobody in them, and they are not the same file. The
+    /// one this shell signs a client out of has the field and it is empty,
+    /// copied out of this developer's `~/.steam/registry.vdf` on 2026-09-04.
+    /// The one Valve's launcher writes on a machine where Steam has never
+    /// signed anybody in has no field at all — the launcher writes it at the
+    /// first logon — copied out of a fresh install on 2026-09-13.
     #[test]
     fn a_client_that_has_never_signed_anybody_in_will_not_sign_itself_in() {
-        let home = std::env::temp_dir().join(format!("lxb-autologin-read-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("lxb-account-read-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
 
@@ -4578,21 +4908,31 @@ mod tests {
                 "\"Registry\"\n{{\n\t\"HKCU\"\n\t{{\n\t\t\"Software\"\n\t\t{{\n\t\t\t\"Valve\"\n\t\t\t{{\n\t\t\t\t\"Steam\"\n\t\t\t\t{{\n\t\t\t\t\t\"AutoLoginUser\"\t\t\"{account}\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
             )
         };
+        // What the launcher leaves before anybody has logged on: the client's
+        // pid and its language, and no account field at all.
+        let never_signed_in = "\"Registry\"\n{\n\t\"HKLM\"\n\t{\n\t\t\"Software\"\n\t\t{\n\t\t\t\"Valve\"\n\t\t\t{\n\t\t\t\t\"Steam\"\n\t\t\t\t{\n\t\t\t\t\t\"SteamPID\"\t\t\"318776\"\n\t\t\t\t\t\"ClientLauncherType\"\t\t\"0\"\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t\"HKCU\"\n\t{\n\t\t\"Software\"\n\t\t{\n\t\t\t\"Valve\"\n\t\t\t{\n\t\t\t\t\"Steam\"\n\t\t\t\t{\n\t\t\t\t\t\"language\"\t\t\"english\"\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n";
 
         // Nothing on the disk at all: the cautious answer, which costs only the
         // wait it would otherwise have saved.
-        assert!(autologin::could_sign_itself_in(&home));
+        assert!(account::could_sign_itself_in(&home));
 
-        // A first-run client. This is the whole point of the function: waiting
-        // for this one to sign itself in is thirty seconds spent on something
-        // that cannot happen.
+        // A client this shell signed out. This is the whole point of the
+        // function: waiting for this one to sign itself in is thirty seconds
+        // spent on something that cannot happen.
         std::fs::write(home.join("registry.vdf"), registry("")).unwrap();
-        assert!(!autologin::could_sign_itself_in(&home));
+        assert!(!account::could_sign_itself_in(&home));
+
+        // And a client that has never signed anybody in, which is the one the
+        // shell has just installed. It has nobody to be either, and reading
+        // its missing field as "could" cost the first press after a first
+        // setup the whole thirty seconds.
+        std::fs::write(home.join("registry.vdf"), never_signed_in).unwrap();
+        assert!(!account::could_sign_itself_in(&home));
 
         // And an ordinary machine, where waiting is by far the cheapest way to
         // a signed-in client and must go on happening.
         std::fs::write(home.join("registry.vdf"), registry("someone")).unwrap();
-        assert!(autologin::could_sign_itself_in(&home));
+        assert!(account::could_sign_itself_in(&home));
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -5017,7 +5357,7 @@ mod tests {
         // Every one of them is cleared, and clearing a layout no client has
         // ever used writes nothing and says nothing.
         for options in &layouts {
-            autologin::stop(&options.root, &options.home, "someone");
+            account::sign_out(&options.root, &options.home, "someone");
             assert!(!options.home.join("registry.vdf").exists());
         }
 

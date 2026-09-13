@@ -668,9 +668,10 @@ pub enum Command {
     /// mean "whatever is selected".
     /// Ask before signing out, rather than doing it.
     ///
-    /// The row it is on says "Sign out of LineXinBar" and that is exactly what
-    /// it does — it is not the whole of signing out of Steam on this machine,
-    /// and the panel behind this is where the difference is said.
+    /// The row it is on says "Sign out" and that is the whole of what it does:
+    /// the shell forgets the account and Valve's client is signed out of it
+    /// too. The panel behind this is where what that costs is said — a
+    /// download stopping, and a password wanted next time.
     SteamSignOutNow,
     SteamPlayAgain(u32),
     /// Move Valve's client to this session and this account, having asked, and

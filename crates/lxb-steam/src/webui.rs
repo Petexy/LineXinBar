@@ -866,7 +866,13 @@ fn noted_as_ours(marker: &std::path::Path) -> bool {
 }
 
 /// Whether anything is listening where the client exposes itself.
-fn listening() -> bool {
+///
+/// The port and nothing more: not whether the context is there yet, which
+/// [`reachable`] asks and which a client still starting its browser takes
+/// seconds to answer. Public for the one caller that wants exactly this — the
+/// first setup, deciding when the client has *read* its marker, which is
+/// before it has anything to say through it. See `crate::setup`.
+pub fn listening() -> bool {
     let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, PORT));
     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
 }

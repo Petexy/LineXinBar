@@ -93,6 +93,20 @@ const UNTIL_A_QUIET_SETUP_IS_STUCK: Duration = Duration::from_secs(600);
 /// finish is tested first.
 const UNTIL_A_GONE_LAUNCHER_IS_A_FAILURE: Duration = Duration::from_secs(20);
 
+/// How long the marker is left in place after the install is over, for the
+/// client to read it.
+///
+/// [`finished`] is true the moment the client's furniture is on the disk and
+/// something answers the pipe, and that is a fraction of a second *before* the
+/// client that was just installed reads the marker and opens its port —
+/// `config/` appeared at 20:28:43.5 and the port opened at 20:28:44.3,
+/// measured on 2026-09-13, with the setup's one-second look landing anywhere
+/// in between. A marker taken back in that gap is a client that comes up with
+/// no interface, which the first press then has to stop and start again to
+/// get one. So the marker stays until the port answers, or until this has
+/// waited longer than any client takes to open one.
+const UNTIL_THE_CLIENT_READS_THE_MARKER: Duration = Duration::from_secs(30);
+
 /// Whether Valve's client has yet to install itself where this one keeps
 /// itself.
 ///
@@ -257,8 +271,17 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
 
     // Whatever happened, the marker is spent — it is read as the client starts
     // and never again — and only what this call created is taken back. The same
-    // rule, and the same reason, as the one at the end of a wake.
+    // rule, and the same reason, as the one at the end of a wake. Not the same
+    // moment, though: a wake takes it back after it has *used* the port, and
+    // an install that has just finished is a client that has not opened its
+    // port yet. See [`UNTIL_THE_CLIENT_READS_THE_MARKER`].
     if ours {
+        if outcome.is_ok() {
+            let deadline = Instant::now() + UNTIL_THE_CLIENT_READS_THE_MARKER;
+            while !crate::webui::listening() && Instant::now() < deadline {
+                std::thread::sleep(LOOK);
+            }
+        }
         crate::webui::withdraw(&options.root);
     }
     if outcome.is_err() {

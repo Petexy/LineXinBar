@@ -331,6 +331,20 @@ const CORNER_PERCENT_LIFT: f32 = 0.36;
 /// application's name is on.
 const MARK_LINE: f32 = 0.60;
 
+/// The line the corner's cluster is centred on, that far down from the top of
+/// the display — and, measured up from the bottom instead, the line a legend is
+/// written on.
+///
+/// One function because it is one line seen twice. The clock and the marks
+/// beside it are written on it in the top corner; the start screen's legend and
+/// the guide's are written on its mirror in the bottom one, so that the two
+/// things a screen has to say about itself hug their edges by the same amount.
+/// Two places computing it would be two chances for one of them to drift, and
+/// the drift would read as a row that had been left slightly out of place.
+fn corner_line(scale: f32) -> f32 {
+    (CORNER_TOP + CORNER_CLOCK * MARK_LINE) * scale
+}
+
 /// Where the cross's arms meet, as a share of the display. The focused entry
 /// sits here, so it is also where a launch opens from.
 const BAR_CROSS_X: f32 = 0.22;
@@ -1958,7 +1972,7 @@ pub fn build(
     slots: &impl SlotLookup,
     typing: Typing<'_>,
     marks: Option<&crate::marks::Marks>,
-    legend: Option<StartLegend>,
+    legend: Option<Legend>,
 ) -> Scene {
     let mut quads = Vec::new();
     let mut texts = Vec::new();
@@ -1983,7 +1997,7 @@ pub fn build(
     // The middle of the line every mark in the corner is centred on. Not the
     // middle of the line *box*, which hangs below the digits; see
     // [`MARK_LINE`].
-    let mark_middle = clock_top + clock_size * MARK_LINE;
+    let mark_middle = corner_line(scale);
 
     // What is left in the battery, on the far side of the time from the
     // wireless fan.
@@ -4029,6 +4043,15 @@ pub struct GuideView<'a> {
     /// A distance rather than a switch so all three can be watched arriving —
     /// see `ELSEWHERE_FLIGHT`, which is what advances it. Nothing here may cut.
     pub elsewhere: f32,
+    /// What the legend at the foot says, or nothing where it is not written.
+    ///
+    /// The start screen's own row, said about this screen instead — see
+    /// [`Legend`], which serves both, and [`guide_hints`], which is this
+    /// screen's list. `None` where the user has turned the hints off, and where
+    /// something is standing over the menu with buttons of its own; the shell
+    /// decides, because every one of those is a question about the session
+    /// rather than about the rectangle.
+    pub legend: Option<Legend>,
     /// For the shell's own glyphs — the two on the quick-settings bars.
     pub slots: &'a dyn SlotLookup,
 }
@@ -4717,6 +4740,55 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             border: scale,
             ..Quad::default()
         });
+    }
+
+    // **What the buttons do**, in the corner opposite the column.
+    //
+    // The same corner of the same display the start screen writes its own
+    // legend in, on the same line and at the same inset — see [`corner_line`]
+    // and [`guide_hints`]. The menu is a screen of this shell's like the bar is,
+    // and the row that says what its buttons do belongs where the reader has
+    // already learned to look for one.
+    //
+    // It climbs out of the way of the download card, which stands in this very
+    // corner and is the one thing in the guide allowed to. Ridden on the card's
+    // own position rather than on whether there is one, so the row rises while
+    // the card slides in and settles back behind it on the way out. Two
+    // clusters of button pictures in one corner is not a legend, it is a pile —
+    // the rule the start screen gives this corner up to the keyboard chip
+    // under, answered here by moving rather than by going away: a legend that
+    // blinked out every time something began downloading would be missing
+    // exactly while the user was reading the corner.
+    if let Some(legend) = view.legend {
+        let glyph = START_HINT_GLYPH * scale;
+        let settled = height - corner_line(scale);
+        let above_the_card =
+            height - (ARRIVING_INSET + TOAST_HEIGHT + GUIDE_MARGIN) * scale - glyph * 0.5;
+        legend_row(
+            &mut quads,
+            &mut texts,
+            &guide_hints(legend.pad, legend.options, legend.friends),
+            view.slots,
+            width - CORNER_INSET * scale,
+            lerp(
+                settled,
+                above_the_card.min(settled),
+                view.guide.download().clamp(0.0, 1.0),
+            ),
+            &LegendSize {
+                glyph,
+                label: START_HINT_LABEL * scale,
+                gap: START_HINT_GAP * scale,
+                step: START_HINT_STEP * scale,
+            },
+            // The corner's own ink, for the reason the line and the inset are
+            // the corner's: this is writing on the same screen the clock is
+            // written on, and two weights of it in two corners would read as
+            // one of them having been left brighter by accident. Faded with the
+            // sidebar, because the whole menu arrives together.
+            theme.text.a(CORNER_INK * slide),
+            theme.text_soft.a(CORNER_INK * slide),
+        );
     }
 
     let mut scene = Scene { quads, texts };
@@ -5726,6 +5798,11 @@ pub struct FriendsView<'a> {
     pub time: f32,
     /// Whether the legend names a controller's buttons or a keyboard's keys.
     pub pad: bool,
+    /// Whether there is a legend at all — Settings > System > Button hints,
+    /// which is one answer for the whole session and not a rule about the start
+    /// screen. Somebody who has turned the pictures of buttons off has turned
+    /// them off here too; see `settings::button_hints`.
+    pub hints: bool,
     /// Whether a hand is on the scroll bar right now, which is what lights it.
     pub dragging: bool,
     /// How many messages are waiting in each conversation.
@@ -6997,6 +7074,15 @@ fn friends_list_leaf(
 /// The legend at the foot of the panel, in the same voice as the start
 /// screen's and the file panel's.
 fn push_friends_legend(scene: &mut Scene, view: &FriendsView, width: f32, height: f32, slide: f32) {
+    // Turned off for the session, so nothing is written here either. The foot
+    // of the panel is left where it was all the same — see
+    // [`friends_body_rect`], which gives it up whatever this says. How many
+    // people fit in the column is what the shell scrolls against, and a list
+    // that held one more row on a machine with the hints off would be a setting
+    // about what the shell *says* quietly changing what it holds.
+    if !view.hints {
+        return;
+    }
     let theme = theme();
     let scale = guide_scale(height);
     let [panel_x, panel_y, panel_w, panel_h] = friends_panel_rect(width, height);
@@ -10520,7 +10606,7 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
     // to the row under the cursor, and it is not the way out.
     //
     // Only where there is an account for it to be about — see
-    // [`StartLegend::friends`]. Without this line the one button on the pad
+    // [`Legend::friends`]. Without this line the one button on the pad
     // that had just been given a job of its own was the one button on the
     // screen nothing named.
     if friends {
@@ -10533,16 +10619,65 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
     hints
 }
 
-/// What the start screen's legend is drawn from, or nothing where it is not
-/// being drawn at all.
+/// What the guide's buttons do, read left to right.
 ///
-/// Two facts, and neither is the scene's to work out. Which control is in hand
-/// is a session-wide answer the shell keeps — see `settings::controller_in_hand`
-/// — and whether the row under the cursor has a menu is a question about the
-/// catalogue that only the shell can ask. See [`start_hints`].
+/// The start screen's row said about the other screen the user spends time on,
+/// and deliberately the same three kinds of thing in the same order: the act
+/// that takes what the light is standing on, the one that asks what *else* can
+/// be done to it, the other screen of the shell's, and the way out. Somebody
+/// who has learned that the filled bead at the foot of the cluster chooses a
+/// row must not have to learn it again one press into the menu.
+///
+/// **The way out is Back, not Guide.** On the start screen that last pair names
+/// the way *in* to this menu; here the reader is already in it, and a legend
+/// offering the way into where somebody is standing is the one thing a legend
+/// must never say. The button that opened the menu closes it too, but Back is
+/// the plainer of the two and naming both would be two pairs for one act.
+///
+/// **Options comes and goes with the card**, on the start screen's own rule:
+/// a legend naming a button that does nothing is worse than naming none. It is
+/// there while the light is on a window's card, which has a menu about that
+/// window, and gone on the trailing start-screen card, which is not a window
+/// and has nothing that can be done to it. See `Shell::window_card_menu`,
+/// which is what answers it — the same function the press asks.
+fn guide_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
+    let one = |label, on_a_pad, otherwise| Hint {
+        label,
+        glyph: if pad { on_a_pad } else { otherwise },
+    };
+    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_ENTER)];
+    if options {
+        hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+    }
+    // Who is on Steam, which this menu is one of the two doors into — see
+    // `Shell::toggle_friends`, which answers the button from here exactly as it
+    // does from the bar. On the same terms as the start screen's: only where
+    // there is an account for the panel to be about.
+    if friends {
+        hints.push(one("Friends", icons::PAD_WEST, icons::KEY_SHIFT));
+    }
+    hints.push(one("Back", icons::PAD_EAST, icons::KEY_ESCAPE));
+    hints
+}
+
+/// What a legend is drawn from, or nothing where it is not being drawn at all.
+///
+/// Three facts, and not one of them is the scene's to work out. Which control
+/// is in hand is a session-wide answer the shell keeps — see
+/// `settings::controller_in_hand` — whether what the cursor is on has a menu is
+/// a question about the catalogue or about the deck that only the shell can
+/// ask, and whether the row is written at all is a setting. See [`start_hints`]
+/// and [`guide_hints`], which are the two lists it serves.
+///
+/// One type for both screens because they are one promise made twice: the same
+/// three questions, answered by the same shell about whichever of its screens
+/// is in front of the user. A second struct with the same three fields would be
+/// two places for the rule about naming a button that does nothing to be
+/// written down, and one of them would eventually say something else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StartLegend {
-    /// Whether the row under the cursor has a context menu.
+pub struct Legend {
+    /// Whether what the cursor is on has a context menu: a row of the bar on
+    /// the start screen, a window's card in the guide.
     pub options: bool,
     /// Whether there is a Steam account signed in for the friends list to be
     /// about.
@@ -13349,6 +13484,11 @@ pub struct PickerView<'a> {
     /// Whether the controller is what the user last reached for, which is what
     /// decides whether the legend at the foot names pad buttons or keys.
     pub pad: bool,
+    /// Whether that legend is written at all — Settings > System > Button
+    /// hints, session-wide. Off, the foot is the one line saying what is
+    /// showing and it has the whole width of the panel; see
+    /// `settings::button_hints`.
+    pub hints: bool,
     /// How far the panel is in, 0 shut and 1 open. Already eased.
     pub open: f32,
     /// How softly the wallpaper behind the overlay is being drawn, so the
@@ -13488,7 +13628,13 @@ pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
     let hint_right = legend_row(
         &mut inside.quads,
         &mut inside.texts,
-        &picker_hints(view.picker.can_be_approved(), view.pad),
+        // Nothing at all where the hints are off, which leaves `hint_right`
+        // exactly where it started: the line on the left then has the whole
+        // foot, because there is no longer anything on the right of it.
+        &match view.hints {
+            true => picker_hints(view.picker.can_be_approved(), view.pad),
+            false => Vec::new(),
+        },
         view.slots,
         panel_x + panel_w - margin,
         foot_top + foot * 0.5,
@@ -15040,6 +15186,18 @@ mod tests {
         width: f32,
         height: f32,
     ) -> Scene {
+        friends_scene_hinted(roster, panel, width, height, true)
+    }
+
+    /// The same panel with the hints turned off, for the one test about the
+    /// switch that turns every legend in the shell off at once.
+    fn friends_scene_hinted(
+        roster: &lxb_steam::Roster,
+        panel: &crate::friends::Friends,
+        width: f32,
+        height: f32,
+        hints: bool,
+    ) -> Scene {
         build_friends(
             FriendsView {
                 conversation: None,
@@ -15058,6 +15216,7 @@ mod tests {
                 time: 0.0,
                 pad: true,
                 dragging: false,
+                hints,
                 slots: &Faces,
             },
             width,
@@ -15652,6 +15811,7 @@ mod tests {
                 typing: false,
                 cannot_send: None,
                 unread: &NothingUnread,
+                hints: true,
                 slots: &NoSlots,
             })
             .into_iter()
@@ -16090,6 +16250,7 @@ mod tests {
                 time: 0.0,
                 pad: true,
                 dragging: false,
+                hints: true,
                 slots: &Faces,
             },
             1280.0,
@@ -16107,6 +16268,45 @@ mod tests {
         // somewhere, and this is somewhere the reader already is. See
         // [`friends_hints`].
         assert!(!written.contains(&"Friends"), "{written:?}");
+    }
+
+    /// Turning the hints off turns this legend off with the start screen's.
+    ///
+    /// The complaint the setting had: it read as a rule about one screen, so a
+    /// session with the pictures of buttons switched off went on drawing them
+    /// on every other one. The list itself is untouched — what is written at
+    /// the foot is the only difference.
+    #[test]
+    fn the_hints_setting_takes_the_friends_legend_with_it() {
+        let roster = roster(vec![someone(
+            "Astrid",
+            lxb_steam::Presence::Online,
+            Some("Celeste"),
+        )]);
+        let panel = crate::friends::Friends::default();
+        let words = |hints| {
+            friends_scene_hinted(&roster, &panel, 1280.0, 800.0, hints)
+                .texts
+                .into_iter()
+                .map(|text| text.content)
+                .collect::<Vec<_>>()
+        };
+
+        let written = words(true);
+        assert!(written.iter().any(|word| word == "Select"), "{written:?}");
+        assert!(written.iter().any(|word| word == "Back"), "{written:?}");
+
+        let quiet = words(false);
+        for word in ["Select", "Back"] {
+            assert!(
+                !quiet.iter().any(|said| said == word),
+                "{word} was written with the hints off: {quiet:?}"
+            );
+        }
+        // And the panel is otherwise the same panel: the people are still on
+        // it, and so is the account at its head.
+        assert!(quiet.iter().any(|word| word == "Astrid"), "{quiet:?}");
+        assert!(quiet.iter().any(|word| word == "Me"), "{quiet:?}");
     }
 
     /// And one that is signed in with nobody in it yet says something else,
@@ -16169,6 +16369,35 @@ mod tests {
         assert!(ink(0.0) > 0.0);
         assert!(ink(0.5) < ink(0.0));
         assert_eq!(ink(1.0), 0.0);
+    }
+
+    /// A legend with nothing on it takes no room and draws nothing.
+    ///
+    /// The property the file panel's foot is built on: with the hints off it
+    /// asks for an empty row, and what comes back is its own right-hand end —
+    /// so the one line of writing beside it gets the whole width of the panel
+    /// rather than the width it would have had with buttons in the way.
+    #[test]
+    fn a_legend_with_nothing_on_it_leaves_the_foot_where_it_found_it() {
+        let (mut quads, mut texts) = (Vec::new(), Vec::new());
+        let left = legend_row(
+            &mut quads,
+            &mut texts,
+            &[],
+            &AllSlots,
+            900.0,
+            500.0,
+            &LegendSize {
+                glyph: START_HINT_GLYPH,
+                label: START_HINT_LABEL,
+                gap: START_HINT_GAP,
+                step: START_HINT_STEP,
+            },
+            [1.0; 4],
+            [1.0; 4],
+        );
+        assert_eq!(left, 900.0, "an empty row ends where it began");
+        assert!(quads.is_empty() && texts.is_empty(), "and drew nothing");
     }
 
     /// The start screen's legend names whichever control is in hand, and the
@@ -16271,7 +16500,7 @@ mod tests {
             )
         };
 
-        let scene = drawn(Some(StartLegend {
+        let scene = drawn(Some(Legend {
             options: true,
             friends: true,
             pad: true,
@@ -19494,7 +19723,7 @@ mod tests {
         cards: &[Card],
         highlight: Option<[f32; 4]>,
     ) -> Scene {
-        guide_scene_with(guide, app, screen, cards, highlight, &AllSlots, 0.0)
+        guide_scene_with(guide, app, screen, cards, highlight, &AllSlots, 0.0, None)
     }
 
     /// The same scene with the directions handed to a video floating over it.
@@ -19512,11 +19741,27 @@ mod tests {
             highlight,
             &AllSlots,
             elsewhere,
+            None,
+        )
+    }
+
+    /// The same scene with a legend asked for at its foot.
+    fn guide_scene_legend(guide: &Guide, cards: &[Card], legend: Legend) -> Scene {
+        guide_scene_with(
+            guide,
+            Some("Celeste"),
+            None,
+            cards,
+            None,
+            &AllSlots,
+            0.0,
+            Some(legend),
         )
     }
 
     /// The same scene with the atlas swapped out, for the one test that has to
     /// see what the column does when a glyph did not rasterise.
+    #[allow(clippy::too_many_arguments)]
     fn guide_scene_with(
         guide: &Guide,
         app: Option<&str>,
@@ -19525,6 +19770,7 @@ mod tests {
         highlight: Option<[f32; 4]>,
         slots: &dyn SlotLookup,
         elsewhere: f32,
+        legend: Option<Legend>,
     ) -> Scene {
         // A window is selected beside the column whenever there is one to
         // select, which is what the shell passes.
@@ -19566,11 +19812,170 @@ mod tests {
                 power: if guide.power_open() { 1.0 } else { 0.0 },
                 time: 0.0,
                 elsewhere,
+                legend,
                 slots,
             },
             1920.0,
             1080.0,
         )
+    }
+
+    /// The menu says what its buttons do, in the corner the start screen says
+    /// it in — same edge inset, same line, mirrored off the bottom.
+    ///
+    /// The whole of the complaint this answers: the hints were a rule about one
+    /// screen, and the screen one press away from it said nothing at all.
+    #[test]
+    fn the_guide_writes_what_its_buttons_do_in_the_start_screens_own_corner() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(1.0);
+        let cards = [card("Celeste")];
+
+        let scene = guide_scene_legend(
+            &guide,
+            &cards,
+            Legend {
+                options: true,
+                friends: true,
+                pad: true,
+            },
+        );
+        let word = |content: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == content)
+                .unwrap_or_else(|| panic!("the legend says {content}"))
+        };
+        let (select, options, friends, back) = (
+            word("Select"),
+            word("Options"),
+            word("Friends"),
+            word("Back"),
+        );
+        // Read left to right in the order they were asked for, which is what
+        // laying the row out from its right-hand end has to come back to.
+        assert!(select.x < options.x && options.x < friends.x && friends.x < back.x);
+        assert_eq!(select.y, back.y, "one line");
+        assert!(select.y > height * 0.5, "at the foot of the display");
+
+        // The corner's own numbers, because that is the whole claim: this is
+        // the start screen's line and the start screen's inset, said about the
+        // other screen. See [`corner_line`].
+        let scale = guide_scale(height);
+        let glyph = START_HINT_GLYPH * scale;
+        let last = scene
+            .quads
+            .iter()
+            .filter(|quad| (quad.h - glyph).abs() < 0.01)
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("the last button in the row");
+        assert!(
+            ((last.x + last.w) - (width - CORNER_INSET * scale)).abs() < 0.01,
+            "the row ends on the edge the clock hugs"
+        );
+        assert!(
+            ((last.y + last.h * 0.5) - (height - corner_line(scale))).abs() < 0.01,
+            "and its middle is the clock's line, mirrored"
+        );
+
+        // And nothing at all where the shell does not ask, which is the switch
+        // under Settings > System and every panel raised over the menu.
+        let bare = guide_scene(&guide, Some("Celeste"), None, &cards, None);
+        for content in ["Select", "Options", "Friends", "Back"] {
+            assert!(
+                !bare.texts.iter().any(|text| text.content == content),
+                "{content} was drawn with no legend asked for"
+            );
+        }
+    }
+
+    /// Options and Friends come and go; the way out never does.
+    ///
+    /// The start screen's own rule — a legend naming a button that does nothing
+    /// is worse than naming none — and the one thing said differently: the way
+    /// out of this screen is Back, because Guide is how the reader got here.
+    #[test]
+    fn the_guides_legend_offers_the_way_out_of_it_and_never_the_way_in() {
+        let words = |options, friends| {
+            guide_hints(true, options, friends)
+                .into_iter()
+                .map(|hint| hint.label)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(true, true), ["Select", "Options", "Friends", "Back"]);
+        assert_eq!(words(false, true), ["Select", "Friends", "Back"]);
+        assert_eq!(words(true, false), ["Select", "Options", "Back"]);
+        assert_eq!(words(false, false), ["Select", "Back"]);
+        for options in [true, false] {
+            for friends in [true, false] {
+                let hints = guide_hints(true, options, friends);
+                assert!(
+                    hints.iter().any(|hint| hint.label == "Back"),
+                    "the way out is always offered"
+                );
+                assert!(
+                    !hints.iter().any(|hint| hint.label == "Guide"),
+                    "and never the way into the screen the reader is on"
+                );
+            }
+        }
+    }
+
+    /// The download card stands in this very corner, so the legend climbs over
+    /// it rather than being printed underneath it.
+    #[test]
+    fn the_guides_legend_steps_up_out_of_the_download_cards_way() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(1.0);
+        let cards = [card("Celeste")];
+        let legend = Legend {
+            options: true,
+            friends: true,
+            pad: true,
+        };
+
+        let line = |scene: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == "Select")
+                .expect("the legend")
+                .y
+        };
+        let settled = line(&guide_scene_legend(&guide, &cards, legend));
+
+        guide.set_downloading(Some(crate::steam::Coming {
+            app_id: 4711,
+            name: "Among Us".to_string(),
+            verb: "Downloading",
+            share: Some(0.33),
+            stuck: false,
+            a_download: true,
+        }));
+        // All the way in, which is where the card is when it is standing still.
+        for _ in 0..240 {
+            guide.animate_download(1.0 / 60.0);
+        }
+        let lifted = line(&guide_scene_legend(&guide, &cards, legend));
+        assert!(
+            lifted < settled,
+            "the legend climbed: {lifted} is no higher than {settled}"
+        );
+
+        // Clear of the card by the guide's own air, rather than merely somewhere
+        // above it: the two are in one corner and have to read as two things.
+        let scale = guide_scale(height);
+        let (rect, _) = guide_download_rect(width, height, guide.download());
+        let glyph = START_HINT_GLYPH * scale;
+        assert!(
+            lifted + glyph * 0.5 <= rect[1] - GUIDE_MARGIN * scale + 0.01,
+            "the row still runs into the card"
+        );
     }
 
     /// The guide's header draws the battery under the day and hard against the
@@ -19758,6 +20163,7 @@ mod tests {
                 power: 0.0,
                 time: 0.0,
                 elsewhere: 0.0,
+                legend: None,
                 slots: &Named,
             },
             1920.0,
@@ -19898,7 +20304,16 @@ mod tests {
         // The ring has to be *cut* rather than painted over: nothing here is
         // opaque, and a painted notch would show as a bar of the wrong colour
         // laid across whatever is behind the sidebar.
-        let bare = guide_scene_with(&guide, Some("Celeste"), None, &[], None, &NoSlots, 0.0);
+        let bare = guide_scene_with(
+            &guide,
+            Some("Celeste"),
+            None,
+            &[],
+            None,
+            &NoSlots,
+            0.0,
+            None,
+        );
         let notched = bare
             .quads
             .iter()
@@ -19964,6 +20379,7 @@ mod tests {
             power: 0.0,
             time: 0.0,
             elsewhere: 0.0,
+            legend: None,
             slots: &AllSlots,
         };
         blind.clock = None;
@@ -20396,6 +20812,7 @@ mod tests {
                     power: 0.0,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &Named,
                 },
                 1920.0,
@@ -20488,6 +20905,7 @@ mod tests {
                     power: 0.0,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &Named,
                 },
                 1920.0,
@@ -20583,6 +21001,7 @@ mod tests {
                     power: 0.0,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &Named,
                 },
                 1920.0,
@@ -20891,6 +21310,7 @@ mod tests {
                     power: 0.0,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &Named,
                 },
                 1920.0,
@@ -21098,6 +21518,7 @@ mod tests {
                     power,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -21418,6 +21839,7 @@ mod tests {
                 power: 0.0,
                 time: 0.0,
                 elsewhere: 0.0,
+                legend: None,
                 slots: &AllSlots,
             },
             1920.0,
@@ -21513,6 +21935,7 @@ mod tests {
                 power: 0.0,
                 time: 0.0,
                 elsewhere: 0.0,
+                legend: None,
                 slots: &AllSlots,
             },
             1920.0,
@@ -22207,6 +22630,7 @@ mod tests {
                     power: 0.0,
                     time,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -22301,6 +22725,7 @@ mod tests {
                     power: 0.0,
                     time: 0.0,
                     elsewhere: 0.0,
+                    legend: None,
                     slots: &AllSlots,
                 },
                 1920.0,
@@ -26430,6 +26855,7 @@ mod tests {
                 power: 0.0,
                 time: 0.0,
                 elsewhere: 0.0,
+                legend: None,
                 slots: &Named,
             },
             1920.0,
@@ -27081,7 +27507,7 @@ mod tests {
         let guide = menu_with_a_download(Some(0.33), false);
         let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
         let drawn = |slots: &dyn SlotLookup| -> Vec<u32> {
-            guide_scene_with(&guide, None, None, &[], None, slots, 0.0)
+            guide_scene_with(&guide, None, None, &[], None, slots, 0.0, None)
                 .quads
                 .into_iter()
                 .filter(|quad| quad.x >= x && quad.y >= y && quad.x < x + w && quad.y < y + h)
@@ -27122,7 +27548,7 @@ mod tests {
         let said = |share: Option<f32>| -> Vec<String> {
             let guide = menu_with_a_download(share, false);
             let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
-            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0)
+            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0, None)
                 .texts
                 .into_iter()
                 .filter(|text| text.x >= x && text.y >= y && text.x < x + w && text.y < y + h)
@@ -27152,7 +27578,7 @@ mod tests {
         let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
         let bars = |share: Option<f32>, stuck: bool| -> Vec<f32> {
             let guide = menu_with_a_download(share, stuck);
-            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0)
+            guide_scene_with(&guide, None, None, &[], None, &slots, 0.0, None)
                 .quads
                 .into_iter()
                 .filter(|quad| {

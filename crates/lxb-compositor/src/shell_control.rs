@@ -2427,11 +2427,18 @@ impl LxbState {
     /// windows have gone.
     ///
     /// Free on a session that hides nothing, which is nearly all of them: two
-    /// empty sets are all it looks at. A session that *is* hiding something
-    /// walks its windows once a pass, which is the same walk the overview
-    /// already does beside it.
+    /// empty sets are all it looks at, and the empty list it then says is
+    /// compared against the last one said and sent only when that was not
+    /// empty. That one send is not optional: a shell that has just given an
+    /// application back reads its own copy of this list to see which windows
+    /// the application *had*, and a list that stopped being updated the moment
+    /// there was nothing to hide is a list still naming windows as hidden that
+    /// are on the screen. A session that *is* hiding something walks its
+    /// windows once a pass, which is the same walk the overview already does
+    /// beside it.
     fn refresh_unseen_windows(&mut self) {
         if self.lxb.unseen.is_empty() && self.lxb.seen_anyway.is_empty() {
+            self.lxb.shell_control.broadcast_unseen_windows(Vec::new());
             return;
         }
         // Every window there is, not the ones on a display: a hidden window is

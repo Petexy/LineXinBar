@@ -415,6 +415,39 @@ mod tests {
         }
     }
 
+    /// A window put fullscreen is divided like any other, which is not a
+    /// restatement of the test above it: fullscreen is the one size a client
+    /// asks for rather than being given, and it is asked for against the whole
+    /// display rather than the area left over.
+    ///
+    /// The bug, in numbers. Until this division was made on that path too, a
+    /// fullscreen configure carried the display's own size: the client filled
+    /// it at the scale it had been told, and the growth that lays an ordinary
+    /// window over the whole display laid that one a factor past it. A video
+    /// put fullscreen from a browser on a session at 150% came back with a
+    /// third of its width and a third of its height off the screen.
+    #[test]
+    fn a_fullscreen_window_is_divided_like_any_other() {
+        let display = Size::<i32, Logical>::from((1280, 800));
+        let factor = AppScale::from_percent(150).factor();
+
+        let room = configured_size(display, factor);
+        assert_eq!(room, Size::from((853, 533)));
+        assert_eq!(
+            visual_geometry(Rectangle::from_size(room), factor).size,
+            display,
+            "the display is what a fullscreen window has to end up covering"
+        );
+
+        // And what the display's own size comes to when it is handed over
+        // undivided and then drawn out: half as much again in each direction,
+        // which is the cropping itself.
+        assert_eq!(
+            visual_geometry(Rectangle::from_size(display), factor).size,
+            Size::from((1920, 1200))
+        );
+    }
+
     #[test]
     fn no_window_is_configured_away_to_nothing() {
         let tiny = Size::<i32, Logical>::from((2, 1));

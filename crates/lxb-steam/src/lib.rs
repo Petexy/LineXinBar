@@ -426,6 +426,20 @@ impl Ground {
     }
 }
 
+/// Whether two roots are one directory under two names, resolved on the disk.
+///
+/// Two names that cannot both be resolved are two names: a root that has gone
+/// is a Steam that has gone, which is exactly the change this exists to notice.
+fn same_directory(a: Option<&std::path::Path>, b: Option<&std::path::Path>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// What one background job stands on, carried from the wake to the act.
 ///
 /// The answer to the audit's sixth step and to its fifth at once: it holds the
@@ -683,6 +697,34 @@ pub enum ClientReport {
     /// asking — see [`client::NotOurs`], which is two lines because the panel
     /// that draws it gives a line to each and cuts the rest.
     SomebodyElses(client::NotOurs),
+}
+
+/// What the shell is told when Valve's client takes a `steam:` URL.
+///
+/// One fact beside the event, and it is the fact that decides how the window
+/// is shown. A client that was up and signed in raises the window the request
+/// is for and nothing else; a client the wake had to sign in first was sitting
+/// on its own login screen, and it keeps that screen up for some seconds
+/// *after* it reports logged on before it raises anything. Measured on
+/// 2026-09-13, on a client this shell had just installed: credential taken at
+/// 20:31:54, login window closed at 20:31:59, storefront mapped at 20:32:01.
+///
+/// A shell that gave sight the moment the request was taken put that login
+/// screen on the display for five seconds, and then — reading a window of
+/// Valve's going away as the person being done with Steam — hid the client
+/// again two seconds before the storefront arrived. That was "Open Steam does
+/// nothing after a first setup". So the shell is told, and on a client that has
+/// just been signed in it waits for a window of the request's own before it
+/// shows anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandedOver {
+    /// Whether the wake behind this hand-over signed the client in, rather
+    /// than finding it signed in already. See [`client::Proven::just_signed_in`].
+    pub after_signing_in: bool,
+    /// And what was asked for, because which of the client's windows is the
+    /// one the press is waiting on depends on it. See
+    /// [`Doing::answered_by_the_storefront`].
+    pub asked: Doing,
 }
 
 /// Why a request that would have raised a window of Steam's own was not made.
@@ -962,8 +1004,10 @@ pub enum Event {
     /// is something worth showing.
     ///
     /// Sent for every hand-over that succeeded, by either route, so the shell
-    /// need not know which one a press took.
-    HandedOver,
+    /// need not know which one a press took — only whether the client had to
+    /// be signed in on the way, which changes what the shell does with the
+    /// sight it gives. See [`HandedOver`].
+    HandedOver(HandedOver),
     /// The launch that was asked for has stopped, and needs a person.
     ///
     /// Said once per launch, and only about the one this session asked to be
@@ -1103,6 +1147,32 @@ impl Steam {
             return false;
         };
         client::is_running(Some(where_it_is), &options)
+    }
+
+    /// Whether the Steam client running on this machine is signed in to
+    /// anybody.
+    ///
+    /// Asked for one decision the shell makes about the client's windows: a
+    /// window of a client that is signed in to nobody is never a question for
+    /// the person at the screen. Such a client has exactly one thing to show
+    /// — its own login screen — and that screen is the one window of Valve's
+    /// this shell exists to keep off the display, because the shell has a
+    /// sign-in of its own and hands the client the credential itself. See
+    /// `Shell::sync_steam_questions`.
+    ///
+    /// Read from the tail of the client's connection log — see
+    /// [`client::state`] — which is the run before's for the first second or
+    /// two of a client's life. Fine for a question that is asked of a window
+    /// that has stood for a minute, on the interval the shell already rechecks
+    /// the client on.
+    pub fn client_is_signed_in(&self) -> bool {
+        let Some(where_it_is) = self.client_at.as_ref() else {
+            return false;
+        };
+        let Some(options) = client::Options::for_client(where_it_is) else {
+            return false;
+        };
+        client::state(Some(where_it_is), &options).signed_in()
     }
 
     /// Read the client's own account of what it has in hand, and say whether
@@ -1795,9 +1865,25 @@ impl Watching {
     /// silently, for ever, with a row counting nothing.
     ///
     /// The first look is not a change: there is nothing yet to have moved.
+    ///
+    /// **Nor is the same directory under a new name.** A native root is named
+    /// by the first of [`library::native_roots`] that looks like one, and the
+    /// first two of those are symbolic links the client makes for itself on
+    /// its first start — so a machine where Steam is installing itself reads
+    /// its root as `~/.local/share/Steam` until the client has run, and as
+    /// `~/.steam/steam` from the moment it has. Same directory, and on
+    /// 2026-09-13 a job that spanned that moment — the wake that was
+    /// installing the client — was refused as standing on ground that had
+    /// moved. The two names are resolved before they are called different.
     fn the_backend_is_now(&mut self, root: Option<&std::path::Path>) {
         let root = root.map(std::path::Path::to_path_buf);
         if self.backend == root {
+            return;
+        }
+        if same_directory(self.backend.as_deref(), root.as_deref()) {
+            // The new spelling is kept, so the next look is the cheap compare
+            // above rather than two resolutions every ten seconds.
+            self.backend = root;
             return;
         }
         let before = std::mem::replace(&mut self.backend, root);
@@ -2333,9 +2419,27 @@ fn answer(
                 // desktop session left running behind this one, and it used to
                 // be: whatever answered the pipe was shut down, download and
                 // all. See [`client::stop_if_ours`].
+                //
+                // **And it has to be gone before the files below are
+                // written.** `-shutdown` returns when the client has been
+                // asked, not when it has finished; what it does on its way out
+                // is write its configuration back — the account list and the
+                // credential cache among it — so a sign-out that edited them
+                // while it was still going would be a sign-out the client
+                // overwrote. See [`client::UNTIL_IT_STOPS`].
                 if let Some(where_it_is) = client::Where::find() {
                     if let Some(options) = client::Options::for_client(&where_it_is) {
                         client::stop_if_ours(&where_it_is, &options);
+                        let deadline = Instant::now() + client::UNTIL_IT_STOPS;
+                        while client::is_running(Some(&where_it_is), &options) {
+                            if Instant::now() >= deadline {
+                                tracing::info!(
+                                    "Valve's client is still running;                                      signing it out on the disk anyway"
+                                );
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
                     }
                 }
                 // Wherever a client on this machine keeps it, and whether or
@@ -2344,7 +2448,7 @@ fn answer(
                 // the one Steam has been taken off. See
                 // [`client::Options::every_layout`].
                 for options in client::Options::every_layout() {
-                    client::autologin::stop(&options.root, &options.home, &stored.account);
+                    client::account::sign_out(&options.root, &options.home, &stored.account);
                 }
             }
             session::Stored::forget();
@@ -2615,6 +2719,7 @@ fn answer(
                     a_job_about(&state, watching),
                     ground,
                     need,
+                    doing,
                     doing.url(app_id),
                     events,
                 ),
@@ -2624,7 +2729,7 @@ fn answer(
                 // this session has no credential to offer instead, and where
                 // there is no client at all it starts one. It is the only row
                 // on the bar that works with nobody signed in.
-                (Route::WhoeverIsThere, _) => hand_over(None, doing.url(app_id), events),
+                (Route::WhoeverIsThere, _) => hand_over(None, doing, doing.url(app_id), events),
                 // `Nobody`, and the unreachable pairing that says the two halves
                 // agree: `AClientOfOurs` is only ever chosen for a session that
                 // is holding one.
@@ -3252,7 +3357,7 @@ fn at_once(state: State) -> State {
 ///
 /// Nothing is reported on success. What the press was for is a window of
 /// Steam's own, and the sign that it worked is that window.
-fn hand_over(stored: Option<session::Stored>, url: String, events: &Sender<Event>) {
+fn hand_over(stored: Option<session::Stored>, asked: Doing, url: String, events: &Sender<Event>) {
     let events = events.clone();
     std::thread::spawn(move || {
         // The URL itself, which is what was actually handed over and is the
@@ -3295,7 +3400,14 @@ fn hand_over(stored: Option<session::Stored>, url: String, events: &Sender<Event
         match client::open(&where_it_is, options.as_ref(), &url) {
             Ok(()) => {
                 audit::went(&doing, audit::How::Done);
-                let _ = events.send(Event::HandedOver);
+                // Nothing here signs anybody in: this is the route for a
+                // session with no credential, handing the URL to whatever
+                // client is there. Its login screen, if that is what comes
+                // up, is the window the row is for.
+                let _ = events.send(Event::HandedOver(HandedOver {
+                    after_signing_in: false,
+                    asked,
+                }));
             }
             Err(why) => {
                 tracing::warn!(%url, %why, "Valve's client would not take that");
@@ -3332,6 +3444,7 @@ fn hand_over_to_a_proven_client(
     ticket: Ticket,
     ground: &Ground,
     need: client::Need,
+    asked: Doing,
     url: String,
     events: &Sender<Event>,
 ) {
@@ -3372,7 +3485,10 @@ fn hand_over_to_a_proven_client(
         match handed {
             Ok(()) => {
                 audit::went(&doing, audit::How::Done);
-                let _ = events.send(Event::HandedOver);
+                let _ = events.send(Event::HandedOver(HandedOver {
+                    after_signing_in: standing.proven.just_signed_in,
+                    asked,
+                }));
             }
             Err(refusal) => {
                 tracing::warn!(%url, %refusal, "Valve's client would not take that");
@@ -4924,6 +5040,7 @@ mod tests {
             proven: client::Proven {
                 pid: None,
                 account: 1,
+                just_signed_in: false,
             },
         };
         let why = standing.about_to_act().expect_err("the ground moved");
@@ -5961,6 +6078,30 @@ mod tests {
         watching.the_backend_is_now(Some(&native));
         assert_eq!(watching.generation, began);
         assert!(watching.fetching.contains_key(&7));
+
+        // The same directory under the name the client's own symbolic link
+        // gives it, which is what a first install turns the root into the
+        // moment the client has run, is not a move. On the disk, because the
+        // question is about the disk.
+        let scratch =
+            std::env::temp_dir().join(format!("lxb-backend-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let unpacked = scratch.join(".local/share/Steam");
+        std::fs::create_dir_all(&unpacked).unwrap();
+        std::fs::create_dir_all(scratch.join(".steam")).unwrap();
+        let linked = scratch.join(".steam/steam");
+        std::os::unix::fs::symlink(&unpacked, &linked).unwrap();
+        let mut here = Watching::default();
+        here.fetching.insert(7, Moved::now());
+        here.the_backend_is_now(Some(&unpacked));
+        let stood = here.generation;
+        here.the_backend_is_now(Some(&linked));
+        assert_eq!(
+            here.generation, stood,
+            "one directory under two names is one Steam"
+        );
+        assert!(here.fetching.contains_key(&7));
+        let _ = std::fs::remove_dir_all(&scratch);
 
         // And then the ground moves.
         let flatpak =

@@ -173,9 +173,9 @@ pub enum Setting {
     /// a display comes up. That is the whole of it, and it is why the row says
     /// what it is for rather than appearing to do nothing.
     StartupCategory(&'static str),
-    /// Whether the start screen writes what its buttons do at its foot.
+    /// Whether this shell writes what its buttons do, anywhere it has room to.
     ///
-    /// Carries no display, like the two above it: the legend is drawn on
+    /// Carries no display, like the two above it: a legend is drawn on
     /// whichever screen is being driven, and a session where one screen
     /// explained the buttons and the other did not would be answering a
     /// question about a person with a fact about a monitor.
@@ -1415,23 +1415,31 @@ fn sort_of(what: &str) -> Option<crate::media::Sort> {
 /// "until I next start the shell".
 static SHOW_HIDDEN: Mutex<bool> = Mutex::new(false);
 
-/// Whether the start screen writes what its buttons do in the corner opposite
-/// the clock.
+/// Whether this shell draws pictures of buttons to say what they do.
 ///
 /// **On.** A console shell is the one kind of interface nobody arrives at
 /// already knowing: there is no menu bar to read, no tooltip to hover, and the
 /// buttons that do the work are on a pad whose letters differ between the three
-/// companies that make them. The legend is how the shell says which one, and it
+/// companies that make them. A legend is how the shell says which one, and it
 /// has to be there before anybody thinks to look for it — somebody who does not
 /// need it is exactly the person who will find the switch, and somebody who
 /// does will never go hunting for a setting to reveal what they do not know is
 /// missing.
 ///
+/// **One answer for the whole session**, which is the only shape this setting
+/// can honestly have. It began as a rule about the start screen's corner, and
+/// a shell that went on writing the same pictures a press away — in the menu,
+/// on the friends list, at the foot of a file question — would be a switch that
+/// did not do what its row says. Everything this shell draws a button with
+/// reads it, and so does everything built on the toolkit: it is written to
+/// `shell.toml` as `button-hints`, which is where an application that is not
+/// this shell asks the same question. See `crate::ui::Legend`.
+///
 /// Session-wide beside the switches above it, and written down for the reason
 /// they are: nobody turns this off meaning "until I next start the shell".
 static BUTTON_HINTS: Mutex<bool> = Mutex::new(true);
 
-/// Whether the start screen says what its buttons do.
+/// Whether the shell says what its buttons do.
 ///
 /// Read only. There is one row in the shell that changes it — Settings >
 /// System > Button hints — and it goes through [`apply`] like every other
@@ -7368,7 +7376,7 @@ fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Op
     (!bar.iter().any(|had| had.id == column.id)).then_some("Not on this machine just now")
 }
 
-/// The start screen's legend, on or off.
+/// The legends, on or off.
 ///
 /// Off and On in that order and marked the way every other switch in this tree
 /// is — see [`battery_percent_switch`], which is the same question asked about
@@ -7379,26 +7387,32 @@ fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Op
 /// above the row that changes nothing, and it is about the shell rather than
 /// about what the shell runs, so it comes below the two that are not.
 ///
-/// The rows say what the legend *is* rather than what the switch does, because
+/// The rows say what a legend *is* rather than what the switch does, because
 /// somebody who has turned it off can no longer see the thing being described.
-/// "What Select, Options and Guide do" is the answer to "what did I just turn
-/// off", and a row reading "Show hints" would not be.
+/// "Pictures of the buttons, and the word for what each one does" is the answer
+/// to "what did I just turn off", and a row reading "Show hints" would not be.
+///
+/// **It says every screen rather than naming them**, and that is deliberate:
+/// the start screen, the menu, the friends list, the corner chip that summons
+/// the keyboard and the foot of an application's file question all read this
+/// one value, and so does anything built on the toolkit. A row that listed them
+/// would be a row to be corrected every time the shell grew another screen.
 fn button_hints_switch() -> Entry {
     let on = button_hints();
     folder(
         "Button hints",
-        "What the buttons do, in the corner of the start screen",
+        "What the buttons do, written where they are used",
         icons::PAD_SOUTH,
         vec![
             value(
                 "Off",
-                Some("Nothing is written at the foot of the start screen"),
+                Some("No screen says which button does what"),
                 !on,
                 Setting::ButtonHints(false),
             ),
             value(
                 "On",
-                Some("Select, Options and the way back to the guide"),
+                Some("A picture of each button, and the word for what it does"),
                 on,
                 Setting::ButtonHints(true),
             ),
@@ -8618,13 +8632,18 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             *BATTERY_PERCENT.lock().unwrap() = written;
             tracing::info!(written, "battery percentage");
         }
-        // Nothing to tell anybody either, and for the corner's own reason: the
-        // legend is laid out from this value every time the bar is drawn, so
-        // the frame this row was pressed on is the frame the row appears or
-        // goes. See [`crate::ui::StartLegend`].
+        // Nothing to tell anybody either, and for the corner's own reason:
+        // every legend in the shell is laid out from this value each time its
+        // screen is drawn, so the frame this row was pressed on is the frame
+        // they appear or go. See [`crate::ui::Legend`].
+        //
+        // Nothing to tell an *application* either, although they read it too:
+        // the toolkit takes it out of `shell.toml`, which [`save`] writes as
+        // this row is pressed, and a program already running reads it on its
+        // own terms rather than being interrupted to be told.
         Setting::ButtonHints(shown) => {
             *BUTTON_HINTS.lock().unwrap() = shown;
-            tracing::info!(shown, "the start screen's button hints");
+            tracing::info!(shown, "button hints");
         }
         // Three switches about one program, and this module's whole part in
         // them is remembering which way each is thrown. What has to *happen* —
@@ -9547,10 +9566,15 @@ struct Stored {
     /// without a bubble and without a chime. Session-wide, like the three keys
     /// above it and unlike anything in `apps.toml`.
     do_not_disturb: Option<bool>,
-    /// Whether the start screen writes what its buttons do at its foot.
+    /// Whether this shell writes what its buttons do, wherever it has room to.
     /// Session-wide, like the switches around it, and written on every machine:
     /// a console handed to somebody else is the case this exists for, and it
     /// must not come back on because the shell was restarted.
+    ///
+    /// The one key here an *application* reads as well. Anything built on
+    /// lxb-toolkit takes it out of this file for its own legends, so a session
+    /// with the hints off is a session with them off in the file question a
+    /// program raises too — see [`button_hints`].
     button_hints: Option<bool>,
     /// Which column of the start screen a session opens on, by the name the
     /// column goes under on the bar rather than the one it is drawn with.
@@ -10283,13 +10307,19 @@ const PREAMBLE: &str = "\
 # neither, and this key is kept for it anyway so that a file carried between
 # the two does not lose the setting on the way.
 #
-# button-hints: whether the start screen writes what its buttons do in the
-# corner opposite its clock — Select, Options where the row has a menu, and the
-# way back to the guide — which is Settings > System > Button hints. On unless
-# this says false, and on for a file written before the key existed: a console
-# is the one kind of machine nobody arrives at already knowing which button
-# does what, so the legend has to be there before anybody thinks to look for a
-# setting that would reveal it.
+# button-hints: whether the shell writes what its buttons do — a picture of
+# each button and the word for what it does — which is Settings > System >
+# Button hints. On unless this says false, and on for a file written before the
+# key existed: a console is the one kind of machine nobody arrives at already
+# knowing which button does what, so the legend has to be there before anybody
+# thinks to look for a setting that would reveal it.
+#
+# One answer for every screen that has one: the corner of the start screen
+# opposite its clock, the foot of the menu the Home button opens, the friends
+# list, the chip that says which two buttons summon the on-screen keyboard, and
+# the foot of the file question an application asks. Applications built on
+# lxb-toolkit read this key too and write their own legends from it, which is
+# why it is here rather than kept to the shell.
 #
 # startup-category: which column of the start screen a session opens on, by the
 # name that column goes under on the bar — settings, system, software,
