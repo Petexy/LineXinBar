@@ -623,6 +623,9 @@ pub enum Command {
     /// is the question having two names already answers.
     SteamSort,
     SteamSortBy(lxb_steam::library::Sort),
+    /// The same game orders applied only to the Trophies library.
+    TrophiesSort,
+    TrophiesSortBy(lxb_steam::library::Sort),
     /// Put the account into one of Steam's statuses, off the friends panel.
     ///
     /// The one row anywhere in this shell that writes something to somebody

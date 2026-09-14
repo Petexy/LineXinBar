@@ -185,6 +185,7 @@ pub const FILE_HOME: &str = "lxb:file-home";
 /// reason every other column glyph is: a coloured application icon comes out
 /// muddy through an atlas that tints what it samples, and this shell's own
 /// hand is what makes eleven columns look like one row.
+pub const CATEGORY_TROPHIES: &str = "lxb:category-trophies";
 pub const CATEGORY_STEAM: &str = "lxb:category-steam";
 pub const STEAM: &str = "lxb:steam";
 
@@ -819,7 +820,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 140] = [
+pub const BUILTIN: [(&str, &str); 141] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -1085,6 +1086,10 @@ pub const BUILTIN: [(&str, &str); 140] = [
     (SEARCH_CLEAR, include_str!("glyphs/search-clear.svg")),
     (AUTHENTICATE, include_str!("glyphs/authenticate.svg")),
     // The Steam column, and the rows that came out of it.
+    (
+        CATEGORY_TROPHIES,
+        include_str!("glyphs/category-trophies.svg"),
+    ),
     (CATEGORY_STEAM, include_str!("glyphs/category-steam.svg")),
     (STEAM, include_str!("glyphs/steam.svg")),
     (REFRESH, include_str!("glyphs/refresh.svg")),
@@ -2657,7 +2662,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            140,
+            141,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2897,6 +2902,7 @@ pub(crate) mod tests {
                 SEARCH,
                 SEARCH_CLEAR,
                 AUTHENTICATE,
+                CATEGORY_TROPHIES,
                 CATEGORY_STEAM,
                 STEAM,
                 REFRESH,

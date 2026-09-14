@@ -1,183 +1,98 @@
-use std::{collections::HashMap, time::Duration};
-
 use crate::{
     connection::{Connection, ConnectionState},
-    emsg::EMsg,
     error::{Error, Result},
     friends::ProtocolAchievement,
     kv::{self, KVValue},
-    protobuf::{
-        CMsgClientGamesPlayed, CMsgClientGetUserStats, CMsgClientGetUserStatsResponse,
-        CMsgProtoBufHeader, c_msg_client_games_played::GamePlayed,
-        c_msg_client_get_user_stats_response::AchievementBlocks,
-    },
 };
+use std::collections::HashMap;
 
-/// Steam EResult OK.
-const ERESULT_OK: i32 = 1;
-/// Delay between starting "games played" and retrying the stats request, so Steam
-/// registers the app as currently playing before serving user-private stats.
-const GAMES_PLAYED_RETRY_DELAY: Duration = Duration::from_millis(500);
-
+/// Reads the account's stats without changing games-played or presence.
 pub async fn get_player_achievements(
     connection: &Connection,
     state: &ConnectionState,
     appid: u32,
 ) -> Result<Vec<ProtocolAchievement>> {
-    let steamid = state
-        .steamid
-        .ok_or(Error::MissingField("steamid not set in connection state"))?;
-
-    let request = CMsgClientGetUserStats {
-        game_id: Some(appid as u64),
-        steam_id_for_user: Some(steamid),
-        crc_stats: Some(0), // 0 forces Steam to return the full schema + blocks
-        schema_local_version: None,
-    };
-
-    let mut response = request_user_stats(connection, state, appid, &request).await?;
-
-    // Steam only serves user-private stats when the app is "currently playing". If the first
-    // request fails (typically eresult=2 Fail), mark the app as played, retry once, then stop.
-    if response.eresult != Some(ERESULT_OK) {
-        tracing::debug!(
-            appid,
-            eresult = ?response.eresult,
-            "user stats request not OK, retrying with games-played"
-        );
-
-        connection
-            .send_message(
-                EMsg::ClientGamesPlayed,
-                &session_header(state),
-                &CMsgClientGamesPlayed {
-                    games_played: vec![GamePlayed {
-                        game_id: Some(appid as u64),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        tokio::time::sleep(GAMES_PLAYED_RETRY_DELAY).await;
-
-        let retry = request_user_stats(connection, state, appid, &request).await;
-
-        // Always clear games-played so we don't leave the user shown as in-game.
-        let _ = connection
-            .send_message(
-                EMsg::ClientGamesPlayed,
-                &session_header(state),
-                &CMsgClientGamesPlayed {
-                    games_played: vec![],
-                    ..Default::default()
-                },
-            )
-            .await;
-
-        response = retry?;
-    }
-
-    let schema_len = response.schema.as_ref().map(|s| s.len()).unwrap_or(0);
-    tracing::info!(
-        appid,
-        eresult = ?response.eresult,
-        schema_len,
-        achievement_blocks = response.achievement_blocks.len(),
-        "user stats response received"
-    );
-
-    let schema_bytes = response.schema.unwrap_or_default();
-    if schema_bytes.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let achievements = build_achievements(&schema_bytes, &response.achievement_blocks);
-
-    tracing::info!(
-        appid,
-        defs = achievements.len(),
-        unlocked = achievements.iter().filter(|a| a.achieved).count(),
-        "achievements built"
-    );
-
-    Ok(achievements)
-}
-
-async fn request_user_stats(
-    connection: &Connection,
-    state: &ConnectionState,
-    appid: u32,
-    request: &CMsgClientGetUserStats,
-) -> Result<CMsgClientGetUserStatsResponse> {
-    let header = CMsgProtoBufHeader {
-        steamid: state.steamid,
-        client_sessionid: state.client_session_id,
-        routing_appid: Some(appid),
+    use crate::protobuf::{CPlayerGetUserStatsRequest, CPlayerGetUserStatsResponse};
+    use crate::service_method::{ServiceMethod, call_authed};
+    let request = CPlayerGetUserStatsRequest {
+        steamid: Some(state.steamid.ok_or(Error::MissingField("steamid"))?),
+        appid: Some(appid),
         ..Default::default()
     };
-    let packet = connection
-        .request(EMsg::ClientGetUserStats, header, request)
-        .await?;
-    packet.decode_body::<CMsgClientGetUserStatsResponse>()
-}
-
-fn session_header(state: &ConnectionState) -> CMsgProtoBufHeader {
-    CMsgProtoBufHeader {
-        steamid: state.steamid,
-        client_sessionid: state.client_session_id,
-        ..Default::default()
-    }
-}
-
-/// Pure mapping from a binary-KV achievement schema plus the response's achievement blocks to the
-/// surfaced achievement list. Kept free of `Connection` so it can be unit tested directly.
-pub(crate) fn build_achievements(
-    schema_bytes: &[u8],
-    blocks: &[AchievementBlocks],
-) -> Vec<ProtocolAchievement> {
-    let defs = match parse_achievement_schema(schema_bytes) {
-        Ok(d) => d,
-        Err(error) => {
-            tracing::warn!(
-                schema_len = schema_bytes.len(),
-                %error,
-                "achievement schema parse failed"
-            );
-            return vec![];
-        }
-    };
-
-    if defs.is_empty() {
-        return vec![];
-    }
-
-    // Build unlock map keyed by (achievement-group stat_id, bit position). An achievement block's
-    // `achievement_id` is the schema stat_id; `unlock_time[pos]` corresponds to schema bits/<pos>.
-    // A bit is unlocked iff its unlock_time != 0 (value = Unix epoch unlock time).
-    let mut unlocked: HashMap<(u32, u32), u64> = HashMap::new();
-    for block in blocks {
-        let stat_id = block.achievement_id.unwrap_or(0);
-        for (pos, &t) in block.unlock_time.iter().enumerate() {
-            if t != 0 {
-                unlocked.insert((stat_id, pos as u32), t as u64);
+    let response: Result<CPlayerGetUserStatsResponse> = call_authed(
+        connection,
+        state,
+        &ServiceMethod::new("Player.GetUserStats#1"),
+        &request,
+    )
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error @ Error::Refused { result: 2, .. }) => {
+            // Fail is ambiguous. The same progress service Steam's library
+            // uses can positively identify a title with no achievements.
+            // A missing row or a refusal must never be mistaken for zero.
+            if let Ok(progress) = get_progress(connection, state, vec![appid]).await {
+                if progress
+                    .iter()
+                    .any(|p| p.appid == Some(appid) && p.total == Some(0))
+                {
+                    return Ok(Vec::new());
+                }
             }
+            return Err(error);
         }
-    }
+        Err(error) => return Err(error),
+    };
+    let schema = response
+        .schema
+        .as_deref()
+        .filter(|bytes| !bytes.is_empty())
+        .ok_or(Error::MissingField("achievement schema"))?;
+    build_player_achievements(schema, &response.stats)
+}
 
-    defs.into_iter()
+fn build_player_achievements(
+    schema: &[u8],
+    values: &[crate::protobuf::c_player_get_user_stats_response::Stats],
+) -> Result<Vec<ProtocolAchievement>> {
+    let defs = parse_achievement_schema(schema)?;
+    let stats: HashMap<_, _> = values
+        .iter()
+        .filter_map(|stat| stat.stat_id.map(|id| (id, stat)))
+        .collect();
+    Ok(defs
+        .into_iter()
         .map(|def| {
-            let unlock_time = unlocked.get(&(def.stat_id, def.bit)).copied().unwrap_or(0);
-            ProtocolAchievement {
-                apiname: def.internal_name,
-                achieved: unlock_time > 0,
-                unlocktime: unlock_time,
-                name: def.display_name,
-                description: def.description,
-            }
+            let stat = stats.get(&def.stat_id);
+            let achieved = stat
+                .and_then(|s| s.stat_value)
+                .is_some_and(|bits| def.bit < 32 && bits & (1u32 << def.bit) != 0);
+            let time = stat
+                .and_then(|s| {
+                    s.unlock_times
+                        .iter()
+                        .find(|t| t.achievement_bit == Some(def.bit))
+                })
+                .and_then(|t| t.unlock_time)
+                .unwrap_or(0) as u64;
+            achievement(def, achieved, time)
         })
-        .collect()
+        .collect())
+}
+
+fn achievement(def: AchievementDef, achieved: bool, unlocktime: u64) -> ProtocolAchievement {
+    ProtocolAchievement {
+        apiname: def.internal_name,
+        achieved,
+        unlocktime,
+        name: def.display_name,
+        description: def.description,
+        icon: def.icon,
+        icon_gray: def.icon_gray,
+        hidden: def.hidden,
+        schema_order: def.schema_order,
+    }
 }
 
 struct AchievementDef {
@@ -186,6 +101,10 @@ struct AchievementDef {
     internal_name: String,
     display_name: Option<String>,
     description: Option<String>,
+    icon: Option<String>,
+    icon_gray: Option<String>,
+    hidden: bool,
+    schema_order: u32,
 }
 
 /// The display "name" and "desc" fields are language-keyed nested blocks:
@@ -219,7 +138,7 @@ fn get_localized_string<'a>(node: &'a KVValue, key: &str) -> Option<&'a str> {
 }
 
 /// Walk the parsed KV tree and extract achievement definitions.
-/// Achievement stat groups have `type = 4` (stored as string).
+/// Achievement groups carry `bits`; real schemas use several different `type` representations.
 fn extract_achievements(root: &KVValue) -> Vec<AchievementDef> {
     let mut defs = Vec::new();
 
@@ -288,6 +207,20 @@ fn extract_achievements(root: &KVValue) -> Vec<AchievementDef> {
                 internal_name,
                 display_name,
                 description,
+                icon: display
+                    .and_then(|d| d.get("icon"))
+                    .and_then(KVValue::as_str)
+                    .map(str::to_owned),
+                icon_gray: display
+                    .and_then(|d| d.get("icon_gray"))
+                    .and_then(KVValue::as_str)
+                    .map(str::to_owned),
+                hidden: display
+                    .and_then(|d| d.get("hidden"))
+                    .and_then(KVValue::as_u32)
+                    .unwrap_or(0)
+                    != 0,
+                schema_order: defs.len() as u32,
             });
         }
     }
@@ -298,6 +231,17 @@ fn extract_achievements(root: &KVValue) -> Vec<AchievementDef> {
 fn parse_achievement_schema(data: &[u8]) -> Result<Vec<AchievementDef>> {
     let root = kv::parse_binary_kv(data)
         .ok_or_else(|| Error::Transport("achievement schema binary KV parse failed".to_owned()))?;
+    let has_stats = root.get("stats").and_then(KVValue::as_nested).is_some()
+        || root.as_nested().is_some_and(|children| {
+            children
+                .iter()
+                .any(|(_, v)| v.get("stats").and_then(KVValue::as_nested).is_some())
+        });
+    if !has_stats {
+        return Err(Error::InvalidResponse(
+            "achievement schema has no stats block",
+        ));
+    }
     Ok(extract_achievements(&root))
 }
 
@@ -387,14 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn build_achievements_joins_schema_and_unlock_blocks() {
+    fn player_stats_join_schema_and_sparse_unlock_times() {
         let schema = synthetic_schema();
-        let blocks = vec![AchievementBlocks {
-            achievement_id: Some(0),
-            unlock_time: vec![1_700_000_000, 0], // bit 0 unlocked, bit 1 locked
+        let blocks = vec![crate::protobuf::c_player_get_user_stats_response::Stats {
+            stat_id: Some(0),
+            stat_value: Some(1),
+            unlock_times: vec![
+                crate::protobuf::c_player_get_user_stats_response::UnlockTime {
+                    achievement_bit: Some(0),
+                    unlock_time: Some(1_700_000_000),
+                },
+            ],
         }];
 
-        let mut achievements = build_achievements(&schema, &blocks);
+        let mut achievements = build_player_achievements(&schema, &blocks).unwrap();
         achievements.sort_by(|a, b| a.apiname.cmp(&b.apiname));
 
         assert_eq!(achievements.len(), 2);
@@ -420,7 +370,7 @@ mod tests {
         let schema = include_bytes!("../tests/fixtures/userstats_schema_410110.bin");
         // No unlock blocks supplied, so every achievement parses as locked — but all 46
         // definitions must still be extracted with api names (and mostly display names).
-        let achievements = build_achievements(schema, &[]);
+        let achievements = build_player_achievements(schema, &[]).unwrap();
         assert_eq!(
             achievements.len(),
             46,
@@ -438,4 +388,73 @@ mod tests {
             "expected most achievements to have display names, got {named}"
         );
     }
+    #[test]
+    fn unlock_state_does_not_depend_on_a_timestamp() {
+        use crate::protobuf::c_player_get_user_stats_response::{Stats, UnlockTime};
+        let stats = [Stats {
+            stat_id: Some(0),
+            stat_value: Some(2),
+            unlock_times: vec![UnlockTime {
+                achievement_bit: Some(0),
+                unlock_time: Some(100),
+            }],
+        }];
+        let result = build_player_achievements(&synthetic_schema(), &stats).unwrap();
+        assert!(
+            !result[0].achieved,
+            "a stale timestamp is not an unlock bit"
+        );
+        assert!(result[1].achieved, "an unlock can have no recorded date");
+        assert_eq!(result[1].unlocktime, 0);
+    }
+
+    #[test]
+    fn malformed_schema_is_an_error_not_an_empty_list() {
+        assert!(build_player_achievements(&[255, 3, 5], &[]).is_err());
+        assert!(build_player_achievements(&[0, 0, 8], &[]).is_err());
+    }
+
+    #[test]
+    fn real_schema_carries_both_steam_icons_and_source_order() {
+        let result = build_player_achievements(
+            include_bytes!("../tests/fixtures/userstats_schema_410110.bin"),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            result
+                .iter()
+                .filter(|a| a.icon.is_some() && a.icon_gray.is_some())
+                .count()
+                >= 40
+        );
+        for (order, achievement) in result.iter().enumerate() {
+            assert_eq!(achievement.schema_order as usize, order);
+        }
+    }
+}
+
+/// Counts for a batch of games, without fetching every game's achievement schema.
+pub async fn get_progress(
+    connection: &Connection,
+    state: &ConnectionState,
+    appids: Vec<u32>,
+) -> Result<Vec<crate::protobuf::c_player_get_achievements_progress_response::Progress>> {
+    use crate::protobuf::{
+        CPlayerGetAchievementsProgressRequest, CPlayerGetAchievementsProgressResponse,
+    };
+    use crate::service_method::{ServiceMethod, call_authed};
+    let response: CPlayerGetAchievementsProgressResponse = call_authed(
+        connection,
+        state,
+        &ServiceMethod::new("Player.GetAchievementsProgress#1"),
+        &CPlayerGetAchievementsProgressRequest {
+            steamid: state.steamid,
+            language: Some("english".into()),
+            appids,
+            include_unvetted_apps: Some(true),
+        },
+    )
+    .await?;
+    Ok(response.achievement_progress)
 }

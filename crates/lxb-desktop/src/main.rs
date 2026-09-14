@@ -76,6 +76,7 @@ mod theme;
 mod thumbs;
 mod transfer;
 mod trash;
+mod trophies;
 mod ui;
 mod uninstall;
 mod users;
@@ -10010,6 +10011,21 @@ impl Shell {
         if self.marking.is_some() {
             return self.marking_menu();
         }
+        if let Some(panel) = self.panels.get(self.focused_panel).filter(|panel| {
+            panel
+                .cursor
+                .current_category(&self.lattice)
+                .is_some_and(|c| c.id == trophies::COLUMN)
+        }) {
+            return Some((
+                ui::launch_origin(panel.width as f32, panel.height as f32),
+                Some("Trophies".into()),
+                vec![
+                    menu::Entry::new(menu::Command::TrophiesSort, "Sort").glyph(icons::SORT),
+                    menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+                ],
+            ));
+        }
         if self.selected_media().is_some() {
             return self.media_entry_menu();
         }
@@ -10783,6 +10799,11 @@ impl Shell {
             // the column, carrying what has just been typed.
             apps::Searched::Folder => self.search_here(query),
             apps::Searched::Library => self.search_library(query),
+            apps::Searched::Trophies => {
+                if self.steam.set_trophy_search(query) {
+                    self.rebuild_trophies();
+                }
+            }
             apps::Searched::Layouts => self.search_layouts(query),
         }
     }
@@ -15184,6 +15205,26 @@ impl Shell {
                 self.context_menu.descend(title, entries);
             }
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
+            menu::Command::TrophiesSort => {
+                let entries = trophies_sort_rows(self.steam.trophy_sort(), self.steam.orders());
+                self.context_menu
+                    .descend(Some(menu::Title::new("Trophies")), entries);
+            }
+            menu::Command::TrophiesSortBy(sort) => {
+                if self.steam.set_trophy_sort(sort) {
+                    settings::remember_trophies_sort(sort);
+                    self.rebuild_trophies();
+                    if let Some(panel) = self.panels.get_mut(self.focused_panel).filter(|panel| {
+                        panel.cursor.depth() == 0
+                            && panel
+                                .cursor
+                                .current_category(&self.lattice)
+                                .is_some_and(|c| c.id == trophies::COLUMN)
+                    }) {
+                        panel.cursor.rest_on_first_row(&self.lattice);
+                    }
+                }
+            }
             menu::Command::SteamStatus(status) => self.choose_a_status(status),
             menu::Command::SteamDiagnostics => self.show_steam_diagnostics(),
             menu::Command::SteamForgetArtwork => self.forget_steam_artwork(),
@@ -16821,12 +16862,25 @@ impl Shell {
                     .iter()
                     .filter_map(|row| row.portrait().map(std::path::Path::to_path_buf)),
             );
+            // Columns include the departing list until its Back animation ends.
+            // Keep both that list's icons and the ancestor game's cover alive.
+            for column in panel.cursor.columns(&self.lattice) {
+                for entry in crate::trophies::drawn_rows(&column) {
+                    if let Entry::Trophy(row) = entry {
+                        games.extend(row.game());
+                        files.extend(row.picture.clone());
+                    }
+                }
+            }
             let entries = panel.cursor.current_entries(&self.lattice);
             let selected = panel.cursor.selected_item();
             let from = selected.saturating_sub(REACH);
             let to = (selected + REACH + 1).min(entries.len());
             for entry in &entries[from..to] {
                 match entry {
+                    Entry::Trophy(row) if row.game().is_some() => {
+                        games.extend(row.game());
+                    }
                     Entry::Game(game) => {
                         games.insert(game.app_id);
                     }
@@ -19410,7 +19464,27 @@ impl Shell {
             self.steam
                 .ask_about_compatibility(lxb_steam::webui::Which::OtherTitles);
         }
+        let mut trophy_games = std::collections::BTreeSet::new();
+        let mut trophy_icons = Vec::new();
+        for panel in &self.panels {
+            for entry in panel.cursor.opened_rows(&self.lattice) {
+                if let apps::Entry::Trophy(row) = entry {
+                    trophy_games.extend(row.game());
+                }
+            }
+            for column in panel.cursor.columns(&self.lattice) {
+                for entry in crate::trophies::drawn_rows(&column) {
+                    if let apps::Entry::Trophy(row) = entry {
+                        trophy_icons.push(row.key.clone());
+                    }
+                }
+            }
+        }
+        let trophies_changed = self.steam.watch_trophies(trophy_games, &trophy_icons);
         let mut changed = self.steam.sync();
+        if trophies_changed || changed.trophies || changed.account {
+            self.rebuild_trophies();
+        }
         // The account and how far away Steam is are the same row, so either
         // one moving rebuilds it. They are two different facts and both belong
         // on the one line the row has — see [`apps::Service::new`], which is
@@ -20901,6 +20975,24 @@ impl Shell {
             .position(|column| column.id == apps::retroarch_column())
     }
 
+    /// Refresh the trophy column while keeping each display on the same game and achievement.
+    fn rebuild_trophies(&mut self) {
+        let selected: Vec<_> = self
+            .panels
+            .iter()
+            .map(|p| p.cursor.trophy_selection(&self.lattice))
+            .collect();
+        let shifted = apps::shelve_trophies(&mut self.lattice.categories, self.steam.trophy_rows());
+        self.absorb(shifted);
+        for (panel, selected) in self.panels.iter_mut().zip(selected) {
+            if let Some(selected) = selected {
+                panel.cursor.keep_on_trophy(&self.lattice, &selected);
+            }
+            panel.cursor.keep_in_bounds(&self.lattice);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Hang the library on the bar, leaving every display on the game it was
     /// on and every cover with the amount of colour its game has earned.
     ///
@@ -20943,6 +21035,7 @@ impl Shell {
 
         let shifted = apps::shelve_steam(&mut self.lattice.categories, rows);
         self.absorb(shifted);
+        self.rebuild_trophies();
 
         // Found again rather than kept: putting the column up or taking it
         // down moves every column after it, and a cursor is about to be told
@@ -29428,6 +29521,21 @@ fn chosen_when(row: menu::Entry, chosen: bool) -> menu::Entry {
 /// an account whose last-played times did not arrive has no dates to sort by.
 /// Offered, chosen, and doing nothing is what the user would read as the shell
 /// being broken, where an outline says out loud that the answer is not here.
+fn trophies_sort_rows(
+    now: lxb_steam::library::Sort,
+    knows: lxb_steam::library::Orders,
+) -> Vec<menu::Entry> {
+    steam_sort_rows(now, knows)
+        .into_iter()
+        .map(|mut entry| {
+            if let menu::Command::SteamSortBy(sort) = entry.command {
+                entry.command = menu::Command::TrophiesSortBy(sort);
+            }
+            entry
+        })
+        .collect()
+}
+
 fn steam_sort_rows(
     now: lxb_steam::library::Sort,
     knows: lxb_steam::library::Orders,
@@ -29686,6 +29794,34 @@ mod steam_game_menu_tests {
     /// ones this library has nothing to be sorted by — with the tick still on a
     /// greyed row if that is where it belongs, because what the column is
     /// listed in is a fact about it whether or not it can be changed from here.
+    #[test]
+    fn trophies_offer_the_same_orders_with_independent_commands() {
+        use lxb_steam::library::{Orders, Sort};
+        for knows in [
+            Orders::default(),
+            Orders {
+                sizes: true,
+                playtimes: true,
+                played: true,
+            },
+        ] {
+            let steam = steam_sort_rows(Sort::NameDescending, knows);
+            let trophies = trophies_sort_rows(Sort::NameDescending, knows);
+            assert_eq!(steam.len(), trophies.len());
+            for (steam, trophies) in steam.iter().zip(&trophies) {
+                assert_eq!(steam.label, trophies.label);
+                assert_eq!(steam.enabled, trophies.enabled);
+                assert_eq!(steam.glyph, trophies.glyph);
+                match steam.command {
+                    menu::Command::SteamSortBy(sort) => {
+                        assert_eq!(trophies.command, menu::Command::TrophiesSortBy(sort))
+                    }
+                    _ => assert_eq!(trophies.command, menu::Command::Dismiss),
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_sort_list_ticks_one_order_and_greys_what_steam_cannot_answer() {
         use lxb_steam::library::{Orders, Sort, SORTS};

@@ -290,6 +290,21 @@ const CORNER_MARK_GAP: f32 = 12.0;
 /// can hold a face on at all. What is drawn on a console has to survive the
 /// smallest screen a console comes on.
 const BATTERY_MARK: f32 = 40.0;
+/// Where the battery's own outline starts inside that square cell, as a share
+/// of it.
+///
+/// The cell is square and the battery is not. All six drawings put the outer
+/// face of the shell at 2.2 of a 32-unit box — a rectangle at 3.4 with a wall
+/// stroked 2.4 wide about it — so a mark drawn hard against something has a
+/// fifteenth of empty cell standing in front of it. Air measured to the cell is
+/// therefore not the air that is *seen*, and anything set beside the mark at a
+/// distance measured that way comes out that much further off than it was asked
+/// to be.
+///
+/// One number for all six because they share the shell exactly: that sharing is
+/// the whole bargain battery-empty.svg strikes with the other five, and it is
+/// what keeps the mark from moving as the charge falls.
+const BATTERY_MARK_INSET: f32 = 2.2 / 32.0;
 /// How solid the corner is: the letters and the mark together, and the one
 /// number for both because they are one cluster. Short of full, because the
 /// corner is written on the wallpaper and not on a pane that could hold it up.
@@ -643,14 +658,41 @@ const GUIDE_TRANSPORT_MIDDLE: f32 = 0.40;
 const GUIDE_MEDIA_TITLE: f32 = 0.80;
 
 const GUIDE_PADDING: f32 = 44.0;
-/// The air between the battery in the header and the figures left of it — and
-/// so also the room the application's name on that line gives up.
+/// The air the application's name keeps from whatever the battery has put at
+/// the far end of its line — the mark, or the figures standing left of it — and
+/// so the room that name gives up.
 ///
 /// Wider than the corner's own gap between mark and clock, because it separates
 /// two different kinds of thing rather than two marks: on the corner's line
 /// everything is the same material, and here a run of ordinary type stands next
-/// to a bead of water.
+/// to a bead of water. Wider again than [`GUIDE_CHARGE_GAP`], and that is the
+/// point of there being two numbers: the name and the battery are two
+/// statements sharing a line, while the figures and the mark are one statement
+/// said twice.
 const GUIDE_BATTERY_GAP: f32 = 16.0;
+/// The air between the battery and its charge in figures.
+///
+/// About half the size of the type this line is set in, and measured to the
+/// mark's own outline rather than to its cell — see [`BATTERY_MARK_INSET`] — so
+/// that is the air the eye gets. Tighter than anything else here, deliberately:
+/// a number and the mark it is the number *of* have to read as one thing from
+/// across a room, and set any further apart the figures start to look like a
+/// second item in the header rather than a caption on the first.
+const GUIDE_CHARGE_GAP: f32 = 9.0;
+/// The room the figures are given, as a share of the type they are set in.
+///
+/// A box rather than a measurement. Nothing in `ui` has a font system in it and
+/// so nothing here can ask how wide a run came out — see `Gpu::width_needed`,
+/// which is the only thing that knows and is not reachable from a layout — so
+/// the figures are handed a box wide enough for the widest charge there is and
+/// right-aligned inside it. "100%" in Roboto is three tabular digits of 0.562
+/// and a sign of 0.732, which is 2.42; the rest is slack, and slack here costs
+/// only a little of the name's line.
+///
+/// Fixed rather than fitted so that nothing moves as the charge falls: the
+/// digits are tabular, the box does not change, and the name beside it is cut
+/// to the same width at 100 per cent as at 9.
+const GUIDE_CHARGE_BOX: f32 = 2.5;
 /// How long the sidebar takes to slide in, seconds.
 const GUIDE_SLIDE: f32 = 0.28;
 /// Where the entry column starts, below the header.
@@ -1712,10 +1754,11 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 // game is reached — which matters most when there is no game to
                 // reach, because a search narrowed to nothing must not change
                 // the shape of the column it narrowed.
-                Searched::Library => return Some(Cards::of(COVER_ASPECT)),
+                Searched::Library | Searched::Trophies => return Some(Cards::of(COVER_ASPECT)),
                 // A settings column is rows, searched or not.
                 Searched::Layouts => return None,
             },
+            Entry::Trophy(row) if row.game().is_some() => return Some(Cards::of(COVER_ASPECT)),
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
             // A console's games are covers on the same terms, and on the same
             // card whether or not the picture on it has arrived: libretro
@@ -2281,6 +2324,32 @@ pub fn build(
             ((depth - level as f32) * COLUMN_CONCEDE).clamp(0.0, 1.0),
         );
 
+        let trophy_sections = TrophySections::new(column, level, near, height);
+        for (section, y) in trophy_sections.headers() {
+            if y + 30.0 * scale * near <= TROPHY_HEADER_TOP * scale || y > height {
+                continue;
+            }
+            texts.push(Text {
+                content: section.to_owned(),
+                x: text_x,
+                y,
+                size: 22.0 * scale * near,
+                color: theme.text.a(column_alpha * present * clarity),
+                bold: true,
+                max_width: text_max,
+                align: TextAlign::Left,
+                clip: Some([
+                    text_x,
+                    TROPHY_HEADER_TOP * scale,
+                    text_max,
+                    (height - TROPHY_HEADER_TOP * scale).max(0.0),
+                ]),
+                halo: 0.0,
+                lines: 1,
+                cut: Cut::Tail,
+            });
+        }
+
         // Only the rows that can be on screen are looked at at all. A shelf of
         // the user's own files is as long as their home directory is full, and
         // a column is a screen tall: reading the whole list to throw all but
@@ -2318,8 +2387,13 @@ pub fn build(
                 )
             };
 
+            let y = y + trophy_sections.row_shift(index);
+
             // Skip rows that cannot be on screen.
-            if y < -item_spacing || y > height + item_spacing {
+            if y < -item_spacing
+                || y > height + item_spacing
+                || (!trophy_sections.starts.is_empty() && y < TROPHY_ROW_TOP * scale)
+            {
                 continue;
             }
 
@@ -2375,6 +2449,8 @@ pub fn build(
             // row on screen is lit however deep the path runs.
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
+            let achievement = matches!(entry, Entry::Trophy(row)
+                if matches!(row.key, crate::trophies::Key::SteamAchievement(..)));
             // A value set on a scale is drawn as the scale, in the room the
             // icon would have had — and the scale is a tall capsule where an
             // icon is a small square, so the light behind it and the glass
@@ -2447,8 +2523,9 @@ pub fn build(
                 });
             }
 
-            // The glass the row stands on: a disc under an icon, a card under
-            // a picture, of the same material the menu's buttons are cut from,
+            // The glass the row stands on: a disc under an application icon,
+            // a rounded square under an achievement, a card under a picture,
+            // of the same material the menu's buttons are cut from,
             // so "this is the thing you have chosen" looks the same everywhere
             // in the shell.
             //
@@ -2494,7 +2571,7 @@ pub fn build(
                     // tinting a purple bloom purple is how a pane stops
                     // looking like glass and starts looking like paint.
                     color: theme.accent.a(0.13 * lit),
-                    radius: if card.is_some() {
+                    radius: if card.is_some() || achievement {
                         ph * CARD_CORNER
                     } else {
                         ph / 2.0
@@ -2514,6 +2591,7 @@ pub fn build(
                 // Steam's own cover, which is to a game exactly what a frame
                 // is to a film: the thing the row is, rather than a mark
                 // standing in for it.
+                Entry::Trophy(row) => row.game().and_then(|app| slots.cover(app)),
                 Entry::Game(game) => slots.cover(game.app_id),
                 // And one of somebody's own games, whose cover is a file this
                 // shell fetched into its own cache — so it is asked for by path
@@ -2595,7 +2673,11 @@ pub fn build(
                     h: size,
                     slot: thumb.slot,
                     color: [1.0, 1.0, 1.0, alpha],
-                    radius: size / 2.0,
+                    radius: if matches!(entry, Entry::Trophy(_)) {
+                        size * 0.06
+                    } else {
+                        size / 2.0
+                    },
                     crop: round_crop(thumb.aspect),
                     ..Quad::default()
                 });
@@ -3011,6 +3093,104 @@ fn bar_item_y(offset: f32, level: usize, near: f32, height: f32, cards: Option<C
     }
 }
 
+// Section labels occupy space between achievements, but never cursor rows.
+// Their natural position follows the first achievement. At the top edge they
+// stick until the next section pushes them out, independent of selection.
+const TROPHY_HEADER_TOP: f32 = 104.0;
+const TROPHY_ROW_TOP: f32 = 174.0;
+const TROPHY_SECTION_GAP: f32 = 80.0;
+const TROPHY_HEADER_ABOVE: f32 = 110.0;
+
+struct TrophySections<'a> {
+    starts: Vec<(usize, &'a str)>,
+    position: f32,
+    section_position: f32,
+    level: usize,
+    near: f32,
+    height: f32,
+}
+
+impl<'a> TrophySections<'a> {
+    fn new(column: &crate::model::Column<'a>, level: usize, near: f32, height: f32) -> Self {
+        let mut starts = Vec::new();
+        let mut start = 0;
+        while let Some(label) = crate::trophies::section(column.entries, start) {
+            starts.push((start, label));
+            // Each of the three groups is contiguous. Find its end without
+            // walking a game's entire achievement list on every frame.
+            start += column.entries[start..].partition_point(|entry| {
+                matches!(entry, Entry::Trophy(row) if row.section.as_deref() == Some(label))
+            });
+        }
+        let mut layout = Self {
+            starts,
+            position: column.position,
+            section_position: 0.0,
+            level,
+            near,
+            height,
+        };
+        let position = column.position.max(0.0);
+        let before = position.floor() as usize;
+        layout.section_position = lerp(
+            layout.group(before),
+            layout.group(before + 1),
+            position.fract(),
+        );
+        layout
+    }
+
+    fn group(&self, index: usize) -> f32 {
+        self.starts
+            .partition_point(|(start, _)| *start <= index)
+            .saturating_sub(1) as f32
+    }
+
+    fn row_shift(&self, index: usize) -> f32 {
+        (self.group(index) - self.section_position)
+            * TROPHY_SECTION_GAP
+            * guide_scale(self.height)
+            * self.near
+    }
+
+    fn natural_header_y(&self, start: usize) -> f32 {
+        bar_item_y(
+            start as f32 - self.position,
+            self.level,
+            self.near,
+            self.height,
+            None,
+        ) + self.row_shift(start)
+            - TROPHY_HEADER_ABOVE * guide_scale(self.height) * self.near
+    }
+
+    fn headers(&self) -> impl Iterator<Item = (&'a str, f32)> + '_ {
+        let scale = guide_scale(self.height);
+        self.starts
+            .iter()
+            .enumerate()
+            .map(move |(group, &(start, label))| {
+                let natural = self.natural_header_y(start);
+                let mut y = natural.max(TROPHY_HEADER_TOP * scale);
+                if let Some(&(next, _)) = self.starts.get(group + 1) {
+                    y = y.min(self.natural_header_y(next) - 38.0 * scale * self.near);
+                }
+                (label, y)
+            })
+    }
+
+    fn blocks_hit(&self, y: f32) -> bool {
+        if self.starts.is_empty() {
+            return false;
+        }
+        let scale = guide_scale(self.height);
+        y < (TROPHY_HEADER_TOP + 44.0) * scale
+            || self.headers().any(|(_, header)| {
+                y >= header - 8.0 * scale * self.near && y <= header + 34.0 * scale * self.near
+            })
+    }
+}
+
 /// What a click at `(x, y)` on the start screen has landed on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BarSpot {
@@ -3151,9 +3331,16 @@ fn column_hit(
             continue;
         }
 
+        let trophy_sections = TrophySections::new(column, level, near, height);
+        if trophy_sections.blocks_hit(y) {
+            continue;
+        }
+
         let band = cards.map_or(ITEM_SPACING, |cards| cards.spacing()) * scale * near;
-        let row_at =
-            |index: usize| bar_item_y(index as f32 - column.position, level, near, height, cards);
+        let row_at = |index: usize| {
+            bar_item_y(index as f32 - column.position, level, near, height, cards)
+                + trophy_sections.row_shift(index)
+        };
 
         // A column behind the open one shows one row and no more — the row it
         // was opened from — so that is the only thing in it a click can mean,
@@ -3182,7 +3369,11 @@ fn column_hit(
         // answer to nothing.
         for index in rows_in_view(column.position, column.entries.len(), band, height) {
             let row_y = row_at(index);
-            if row_y < -band || row_y > height + band {
+
+            if row_y < -band
+                || row_y > height + band
+                || (!trophy_sections.starts.is_empty() && row_y < TROPHY_ROW_TOP * scale)
+            {
                 continue;
             }
             // A bar is not a row-sized thing. Its groove is a track most of the
@@ -4229,13 +4420,14 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         let name = battery_glyph(charge);
         if let Some(slot) = view.slots.glyph(name) {
             let cell = BATTERY_MARK * scale;
+            let mark_x = text_x + text_w - cell;
             // In the day's own ink rather than the white a mark on a lit tile
             // is drawn in. It is not on a tile: it stands on the header's glass
             // beside the date, and the two are one statement about the machine.
             let ink = theme.text_soft.a(0.7 * slide);
             quads.push(shaded(
                 Quad {
-                    x: sidebar_x + text_x + text_w - cell,
+                    x: sidebar_x + mark_x,
                     y: second_line + subtitle_size * MARK_LINE - cell * 0.5,
                     w: cell,
                     h: cell,
@@ -4245,7 +4437,12 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 },
                 Some(name),
             ));
-            app_width -= cell + GUIDE_BATTERY_GAP * scale;
+            // The left edge of everything the battery has put on this line,
+            // which every gap below is measured from. It starts at the mark's
+            // own outline rather than at the edge of the square cell that
+            // outline is drawn in — see [`BATTERY_MARK_INSET`] — because air
+            // measured to an empty corner of a cell is air nobody can see.
+            let mut cluster = mark_x + BATTERY_MARK_INSET * cell;
             if view.battery_percent {
                 // Ordinary type, and not the water the corner writes its own
                 // figures in. Everything in this panel that is *words* goes
@@ -4254,24 +4451,33 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 // figures modelled as beads would be the one place in the
                 // sidebar where writing was made of something else.
                 //
-                // Right-aligned into the room left of the mark, so it is never
-                // measured: the layout cannot ask how wide a run came out, and
-                // it does not need to.
+                // Right-aligned in a box of its own, and that box is the whole
+                // of what this fixes. Given the name's own box to be aligned
+                // in, as it was, the two runs share a rectangle: the layout
+                // cannot ask how wide either came out, so a title long enough
+                // to fill the line was drawn straight under the charge. A box
+                // of its own wide enough for "100%" — see [`GUIDE_CHARGE_BOX`]
+                // — puts the figures against the mark without measuring
+                // anything, and leaves the name a line it is alone on.
+                let figures = GUIDE_CHARGE_BOX * subtitle_size;
+                let figures_x = cluster - GUIDE_CHARGE_GAP * scale - figures;
                 texts.push(Text {
                     content: format!("{}%", charge.percent.min(100)),
-                    x: sidebar_x + text_x,
+                    x: sidebar_x + figures_x,
                     y: second_line,
                     size: subtitle_size,
                     color: ink,
                     bold: false,
-                    max_width: app_width,
+                    max_width: figures,
                     align: TextAlign::Right,
                     clip: None,
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
                 });
+                cluster = figures_x;
             }
+            app_width = (cluster - GUIDE_BATTERY_GAP * scale - text_x).max(0.0);
         }
     }
 
@@ -4285,8 +4491,9 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         size: subtitle_size,
         color: theme.text_soft.a(0.85 * slide),
         bold: false,
-        // Short of the column's width by whatever the battery took, so a long
-        // application name ends in an ellipsis rather than under the mark.
+        // Short of the column's width by whatever the battery and its figures
+        // took, so a long application name ends in an ellipsis rather than
+        // under either of them.
         max_width: app_width,
         align: TextAlign::Left,
         clip: None,
@@ -18606,6 +18813,230 @@ mod tests {
     }
 
     /// That album, open, with the cursor settled on its first picture.
+    #[test]
+    fn trophies_draw_steam_icons_square_and_replace_the_fallback() {
+        let row = Entry::Trophy(crate::trophies::Row {
+            section: None,
+            key: crate::trophies::Key::SteamAchievement(400, "first".into()),
+            facts: crate::apps::Facts {
+                title: "First achievement".into(),
+                comment: "Unlocked".into(),
+                icon: icons::CATEGORY_TROPHIES.into(),
+                about: crate::apps::About::Listed(vec![]),
+            },
+            picture: Some(Path::new("/tmp/steam-achievement.jpg").into()),
+            entries: None,
+        });
+        let lattice = shelved_games(vec![row]);
+        for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let waiting = opened(&lattice, width, height, &AllSlots);
+            let arrived = opened(&lattice, width, height, &Pictures(1.0));
+            let icons: Vec<_> = arrived
+                .quads
+                .iter()
+                .filter(|q| q.slot == THUMB_SLOT)
+                .collect();
+            assert_eq!(icons.len(), 1);
+            let icon = icons[0];
+            assert!((icon.w - icon.h).abs() < 0.01);
+            assert!(
+                icon.radius < icon.w * 0.1,
+                "achievement icons must not be circular portraits"
+            );
+            assert_eq!(icon.crop, [0.0, 0.0, 1.0, 1.0]);
+            for scene in [&waiting, &arrived] {
+                let plate = scene
+                    .quads
+                    .iter()
+                    .find(|q| {
+                        q.slot == SOLID_SLOT
+                            && q.thickness > 0.0
+                            && (q.x + q.w / 2.0 - icon.x - icon.w / 2.0).abs() < 0.01
+                            && (q.y + q.h / 2.0 - icon.y - icon.h / 2.0).abs() < 0.01
+                    })
+                    .expect(
+                        "achievement selection has a glass highlight, even before its icon arrives",
+                    );
+                assert!((plate.w - plate.h).abs() < 0.01);
+                assert!(
+                    plate.radius > 0.0 && plate.radius < plate.w * 0.2,
+                    "achievement selection must be a rounded square"
+                );
+                let padding = (plate.w - icon.w) / 2.0;
+                assert!(
+                    padding >= plate.radius,
+                    "even the icon's square corners fit inside the highlight"
+                );
+            }
+            assert_eq!(
+                arrived.quads.iter().filter(|q| q.slot == 7).count() + 1,
+                waiting.quads.iter().filter(|q| q.slot == 7).count()
+            );
+        }
+    }
+
+    fn trophy_sections_fixture() -> Lattice {
+        let mut lattice = shelved_games(
+            (0..14)
+                .map(|i| {
+                    Entry::Trophy(crate::trophies::Row {
+                        key: crate::trophies::Key::SteamAchievement(400, i.to_string()),
+                        section: Some(
+                            match i {
+                                0..=9 => "Unlocked (10)",
+                                10 => "Locked (1)",
+                                _ => "Hidden (3)",
+                            }
+                            .into(),
+                        ),
+                        facts: crate::apps::Facts {
+                            title: format!("Achievement {i}"),
+                            comment: String::new(),
+                            icon: icons::CATEGORY_TROPHIES.into(),
+                            about: crate::apps::About::Listed(vec![]),
+                        },
+                        picture: None,
+                        entries: None,
+                    })
+                })
+                .collect(),
+        );
+        // Keep pointer input enabled, as in the shell's full application catalogue.
+        lattice.categories[0].entries.push(app("Terminal"));
+        lattice
+    }
+
+    #[test]
+    fn trophies_headers_follow_their_sections_then_stick_and_separate_groups() {
+        let lattice = trophy_sections_fixture();
+        for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = guide_scale(height);
+            let mut cursor = Cursor::for_model(&lattice);
+            cursor.enter(&lattice);
+            settle(&mut cursor);
+            let mut previous = f32::INFINITY;
+            for selected in [0, 1, 5] {
+                cursor.point_at_row(selected, &lattice);
+                settle(&mut cursor);
+                let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
+                let header = scene
+                    .texts
+                    .iter()
+                    .find(|t| t.content == "Unlocked (10)")
+                    .unwrap();
+                assert!(
+                    header.y <= previous,
+                    "the label travels upward with the list"
+                );
+                if selected == 0 {
+                    let first_y = bar_item_y(0.0, 1, 1.0, height, None);
+                    assert!((first_y - header.y - TROPHY_HEADER_ABOVE * scale).abs() < 0.01);
+                    assert!(header.y > TROPHY_HEADER_TOP * scale);
+                }
+                if selected == 5 {
+                    assert_eq!(header.y, TROPHY_HEADER_TOP * scale);
+                }
+                previous = header.y;
+            }
+            cursor.point_at_row(10, &lattice);
+            settle(&mut cursor);
+            let scene = build_with(&lattice, &cursor, width, height, true, &AllSlots);
+            let unlocked = scene
+                .texts
+                .iter()
+                .find(|t| t.content == "Unlocked (10)")
+                .unwrap();
+            let locked = scene
+                .texts
+                .iter()
+                .find(|t| t.content == "Locked (1)")
+                .unwrap();
+            let hidden = scene
+                .texts
+                .iter()
+                .find(|t| t.content == "Hidden (3)")
+                .unwrap();
+            assert_eq!(
+                unlocked.y,
+                TROPHY_HEADER_TOP * scale,
+                "selection does not replace the pinned section"
+            );
+            assert!(locked.y > unlocked.y && hidden.y > locked.y);
+            let columns = cursor.columns(&lattice);
+            let layout = TrophySections::new(&columns[1], 1, 1.0, height);
+            let row_y = |i| {
+                bar_item_y(i as f32 - columns[1].position, 1, 1.0, height, None)
+                    + layout.row_shift(i)
+            };
+            assert!(locked.y > row_y(9) + ITEM_ICON * ITEM_DISC * scale / 2.0);
+            assert!(
+                locked.y + locked.size < row_y(10) - ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0
+            );
+            assert!(hidden.y > row_y(10) + ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0);
+            for header in [unlocked, locked, hidden] {
+                assert!(bar_hit(
+                    &lattice,
+                    &cursor,
+                    header.x + 5.0,
+                    header.y + 5.0,
+                    width,
+                    height
+                )
+                .is_none());
+            }
+            for i in [9, 10, 11] {
+                assert_eq!(
+                    bar_hit(&lattice, &cursor, locked.x + 5.0, row_y(i), width, height),
+                    Some(BarSpot::Item {
+                        row: i,
+                        level: None
+                    }),
+                    "row={i} size={width}x{height} y={} headers={:?} x={} blocks={}",
+                    row_y(i),
+                    layout.headers().collect::<Vec<_>>(),
+                    locked.x,
+                    layout.blocks_hit(row_y(i))
+                );
+            }
+            assert_eq!(
+                cursor.current_entry(&lattice).unwrap().title(),
+                "Achievement 10"
+            );
+        }
+    }
+
+    #[test]
+    fn trophies_next_header_pushes_the_previous_one_out_without_jumping() {
+        let lattice = trophy_sections_fixture();
+        let entries = lattice.categories[0].entries[0].entries().unwrap();
+        let mut previous: Option<Vec<f32>> = None;
+        for step in 0..=280 {
+            let column = crate::model::Column {
+                entries,
+                selected: 10,
+                position: step as f32 / 20.0,
+                standing: Standing::Open,
+            };
+            let layout = TrophySections::new(&column, 1, 1.0, 1080.0);
+            let headers: Vec<_> = layout.headers().map(|(_, y)| y).collect();
+            for pair in headers.windows(2) {
+                assert!(pair[1] - pair[0] >= 37.99);
+            }
+            if let Some(previous) = previous {
+                for (now, before) in headers.iter().zip(previous) {
+                    assert!(
+                        (now - before).abs() < 11.0,
+                        "continuous movement, including section boundaries"
+                    );
+                }
+            }
+            previous = Some(headers);
+        }
+        let last = previous.unwrap();
+        assert!(last[0] < TROPHY_HEADER_TOP && last[1] < TROPHY_HEADER_TOP);
+        assert_eq!(last[2], TROPHY_HEADER_TOP);
+    }
+
     fn opened(lattice: &Lattice, width: f32, height: f32, slots: &impl SlotLookup) -> Scene {
         let mut cursor = Cursor::new(lattice.categories.len());
         assert!(cursor.enter(lattice));
@@ -20061,8 +20492,9 @@ mod tests {
     /// the start screen's corner — and in ordinary type, which is what
     /// everything else in this panel that is words is drawn in.
     ///
-    /// It also takes its room from the application's name, so a long title ends
-    /// in an ellipsis rather than running under the mark.
+    /// It stands in a box of its own, hard against the mark, and the
+    /// application's name is cut short of that box rather than aligned inside
+    /// it. Sharing one box is what made a long title overwrite the charge.
     #[test]
     fn the_charge_is_written_left_of_the_guides_battery() {
         let guide = Guide::default();
@@ -20092,15 +20524,30 @@ mod tests {
             .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
             .expect("96 per cent is drawn full");
 
-        // Right-aligned into the room left of the mark — which is how the
-        // layout places it without ever measuring how wide it came out.
+        // Right-aligned in a box of its own — which is how the layout places it
+        // against the mark without ever measuring how wide it came out — and
+        // that box is wide enough for the widest charge there is. Roboto sets a
+        // digit in 0.562 of its size and the sign in 0.732, so "100%" is 2.42
+        // of it; anything narrower than that would ellipsize a full battery.
         assert_eq!(written.align, TextAlign::Right);
         let scale = guide_scale(1080.0);
         assert!(
-            ((written.x + written.max_width) - (mark.x - GUIDE_BATTERY_GAP * scale)).abs() < 0.5,
-            "the figures end at {}, not clear of the mark at {}",
+            written.max_width >= 2.42 * written.size,
+            "\"100%\" wants {}, the box is {}",
+            2.42 * written.size,
+            written.max_width,
+        );
+
+        // And it ends half its own type from the battery's *outline*, not from
+        // the edge of the empty square that outline is drawn in: the gap the
+        // eye sees is the gap that was asked for.
+        let cell = BATTERY_MARK * scale;
+        let outline = mark.x + BATTERY_MARK_INSET * cell;
+        assert!(
+            ((written.x + written.max_width) - (outline - GUIDE_CHARGE_GAP * scale)).abs() < 0.5,
+            "the figures end at {}, not against the mark at {}",
             written.x + written.max_width,
-            mark.x - GUIDE_BATTERY_GAP * scale,
+            outline - GUIDE_CHARGE_GAP * scale,
         );
 
         // On the same line as the name beside it, and in the day's own ink.
@@ -20117,7 +20564,41 @@ mod tests {
             .expect("the day is drawn");
         assert_eq!(written.color, day.color, "one ink for the whole column");
 
-        // And the name gave up exactly the room the mark and its air took.
+        // And the name's line stops clear of the figures' box rather than
+        // running the full width of it. This is the bug itself: both runs were
+        // given the same rectangle, one aligned left and one right, so a title
+        // long enough to fill the line was drawn under the charge.
+        assert!(
+            ((name.x + name.max_width) - (written.x - GUIDE_BATTERY_GAP * scale)).abs() < 0.5,
+            "the name runs to {}, the figures start at {}",
+            name.x + name.max_width,
+            written.x,
+        );
+
+        // Which holds for a name far too long for the column: what it is cut
+        // to does not depend on what it says, only on what the battery took.
+        let long = guide_header_named(
+            &guide,
+            Some(charge),
+            true,
+            Some("Some Application With A Preposterously Long Name Indeed"),
+        );
+        let long_name = long
+            .texts
+            .iter()
+            .find(|text| text.content.starts_with("Some Application"))
+            .expect("the application's name is drawn");
+        assert_eq!(long_name.max_width, name.max_width);
+        let long_written = figures(&long).expect("the charge is still written out");
+        assert!(
+            long_name.x + long_name.max_width <= long_written.x + 0.5,
+            "a long name reaches {}, past the figures at {}",
+            long_name.x + long_name.max_width,
+            long_written.x,
+        );
+
+        // The room the name gave up: the mark, the air the eye sees in front of
+        // its outline, the figures' box, and the air between the two runs.
         let bare = guide_header(&guide, None, false);
         let bare_name = bare
             .texts
@@ -20125,10 +20606,28 @@ mod tests {
             .find(|text| text.content == "Nothing is running")
             .expect("the second line is drawn");
         let given = bare_name.max_width - name.max_width;
-        let asked = BATTERY_MARK * scale + GUIDE_BATTERY_GAP * scale;
+        let asked = cell * (1.0 - BATTERY_MARK_INSET)
+            + GUIDE_CHARGE_GAP * scale
+            + written.max_width
+            + GUIDE_BATTERY_GAP * scale;
         assert!(
             (given - asked).abs() < 0.5,
             "the name gave up {given}, not {asked}",
+        );
+
+        // With the figures turned off it gives up only the mark and that same
+        // air, and no more: the charge is the only thing that costs the line
+        // anything else.
+        let quiet_name = quiet
+            .texts
+            .iter()
+            .find(|text| text.content == "Nothing is running")
+            .expect("the second line is drawn");
+        let quiet_given = bare_name.max_width - quiet_name.max_width;
+        let quiet_asked = cell * (1.0 - BATTERY_MARK_INSET) + GUIDE_BATTERY_GAP * scale;
+        assert!(
+            (quiet_given - quiet_asked).abs() < 0.5,
+            "without the figures the name gave up {quiet_given}, not {quiet_asked}",
         );
     }
 
@@ -20137,6 +20636,16 @@ mod tests {
         guide: &Guide,
         battery: Option<crate::power::Charge>,
         battery_percent: bool,
+    ) -> Scene {
+        guide_header_named(guide, battery, battery_percent, None)
+    }
+
+    /// The same, with something running in front of it.
+    fn guide_header_named(
+        guide: &Guide,
+        battery: Option<crate::power::Charge>,
+        battery_percent: bool,
+        app: Option<&str>,
     ) -> Scene {
         build_guide(
             GuideView {
@@ -20152,7 +20661,7 @@ mod tests {
                 unread: 0.0,
                 battery,
                 battery_percent,
-                app: None,
+                app,
                 close_target: None,
                 screen: None,
                 cards: &[],

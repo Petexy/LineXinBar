@@ -1664,6 +1664,75 @@ impl Cursor {
         Some(lattice.categories.get(at)?.entries.get(row)?.game()?.app_id)
     }
 
+    /// Remember the full path, including Alphabetical and its letter folders.
+    pub fn trophy_selection(&self, lattice: &Lattice) -> Option<Vec<crate::trophies::Position>> {
+        let at = lattice
+            .categories
+            .iter()
+            .position(|c| c.id == crate::trophies::COLUMN)?;
+        let mut entries = lattice.categories[at].entries.as_slice();
+        let mut row = self.row_in_column(at)?;
+        let depth = if self.selected_category == at {
+            self.stack.len()
+        } else {
+            0
+        };
+        let mut path = Vec::new();
+        for level in 0..=depth {
+            let Some(entry) = entries.get(row) else {
+                break;
+            };
+            let Some(key) = crate::trophies::Position::of(entry) else {
+                break;
+            };
+            path.push(key);
+            let Some(children) = entry.entries() else {
+                break;
+            };
+            entries = children;
+            row = self.row_at(level + 1);
+        }
+        (!path.is_empty()).then_some(path)
+    }
+
+    pub fn keep_on_trophy(&mut self, lattice: &Lattice, path: &[crate::trophies::Position]) {
+        let Some(at) = lattice
+            .categories
+            .iter()
+            .position(|c| c.id == crate::trophies::COLUMN)
+        else {
+            return;
+        };
+        let mut entries = lattice.categories[at].entries.as_slice();
+        for (level, key) in path.iter().enumerate() {
+            let found = entries
+                .iter()
+                .position(|entry| crate::trophies::Position::of(entry).as_ref() == Some(key));
+            let row = found.unwrap_or_else(|| first_row(entries));
+            if self.selected_category != at {
+                self.selected_items[at] = Some(row);
+                break;
+            }
+            let was = self.row_at(level);
+            self.set_row_at(level, row);
+            if level == 0 {
+                self.item_position += row as f32 - was as f32;
+            } else if let Some(column) = self.stack.get_mut(level - 1) {
+                column.position += row as f32 - was as f32;
+            }
+            if found.is_none() {
+                // A filtered-out game or letter cannot keep its descendants open.
+                self.open = self.open.min(level);
+                self.stack.truncate(level);
+                break;
+            }
+            let Some(children) = entries.get(row).and_then(Entry::entries) else {
+                break;
+            };
+            entries = children;
+        }
+    }
+
     /// Keep the cursor on the game it was on, after the column at `at` has been
     /// re-sorted under it.
     ///

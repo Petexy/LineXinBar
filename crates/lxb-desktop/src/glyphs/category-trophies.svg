@@ -1,0 +1,2 @@
+<!-- lxb:shape — the trophy silhouette uses the same material as the category row. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g fill="none" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 9h26v14c0 11-5 17-13 17s-13-6-13-17V9Z"/><path d="M19 14H9v7c0 9 5 13 13 13m23-20h10v7c0 9-5 13-13 13M32 40v12m-11 4h22M26 52h12"/></g></svg>

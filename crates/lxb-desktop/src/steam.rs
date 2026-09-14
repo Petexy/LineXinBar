@@ -150,6 +150,7 @@ pub struct Steam {
     /// each half by name. What order it goes on the *bar* in is `sort`, and
     /// [`Steam::rows`] is where the two meet.
     games: Vec<Game>,
+    trophies: crate::trophies::Trophies,
     /// What order the user asked for the column in, which is what the settings
     /// file remembered from last time until they ask for another.
     ///
@@ -941,6 +942,7 @@ pub enum Compat {
 /// What one pass over the worker's events changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Changed {
+    pub trophies: bool,
     /// The library is different, so the column has to be rebuilt.
     pub library: bool,
     /// What the panel should say is different, so it has to be redrawn — or
@@ -1063,6 +1065,7 @@ impl Changed {
     /// true. Nothing in it may be `..`-ignored for the same reason.
     fn absorb(&mut self, one: Changed) {
         let Changed {
+            trophies,
             library,
             panel,
             account,
@@ -1082,6 +1085,7 @@ impl Changed {
             handed_over,
             steam_is_ready,
         } = one;
+        self.trophies |= trophies;
         self.library |= library;
         self.panel |= panel;
         self.account |= account;
@@ -1166,6 +1170,7 @@ impl Steam {
             account: None,
             steam_id: None,
             games: Vec::new(),
+            trophies: crate::trophies::Trophies::new(),
             // Whatever the file said, which is nothing on a machine where
             // nobody has chosen. Read here rather than when the first library
             // arrives, because the order is a preference and not a property of
@@ -1210,6 +1215,7 @@ impl Steam {
             account: None,
             steam_id: None,
             games: Vec::new(),
+            trophies: crate::trophies::Trophies::new(),
             sort: crate::settings::steam_sort().unwrap_or_default(),
             search: String::new(),
             signing_in: None,
@@ -2174,6 +2180,10 @@ impl Steam {
     fn apply(&mut self, event: Event) -> Changed {
         let mut changed = Changed::default();
         match event {
+            Event::AchievementProgress(heard) => {
+                changed.trophies = self.trophies.progress_heard(heard)
+            }
+            Event::Achievements(heard) => changed.trophies = self.trophies.heard(heard),
             // Valve's client installing itself, which happens once on a machine
             // and before anybody can sign in to anything. The panel is one view
             // of it and not where it is held — see [`Steam::setting_up`] — so
@@ -2359,6 +2369,9 @@ impl Steam {
                 }
             }
             Event::Reach(reach) => {
+                if reach == lxb_steam::Reach::Online && self.reach != reach {
+                    self.trophies.reconnected();
+                }
                 if self.reach != reach {
                     tracing::info!(?reach, "how far away Steam is");
                     self.reach = reach;
@@ -2446,6 +2459,7 @@ impl Steam {
                 changed.compat = Some(which);
             }
             Event::SignedIn(account) => {
+                self.trophies.account(Some(account.steam_id));
                 let name = Some(account.name);
                 changed.account |= self.account != name;
                 self.account = name;
@@ -2477,6 +2491,8 @@ impl Steam {
                 changed.messages.extend(moved.announce);
             }
             Event::SignedOut => {
+                self.trophies.account(None);
+                changed.trophies = true;
                 // Back to the state a session with nobody signed in is in.
                 // Leaving "offline" standing would put a reconnecting line
                 // under the Sign in row, which is about an account that is no
@@ -2536,6 +2552,7 @@ impl Steam {
             }
             Event::Library(games) => {
                 changed.library |= self.games != games;
+                self.trophies.library(&games);
                 self.games = games;
                 if matches!(self.signing_in, Some(Stage::LibraryUnavailable(_))) {
                     self.signing_in = None;
@@ -2574,6 +2591,32 @@ impl Steam {
             }
         }
         changed
+    }
+
+    /// The Trophies column has its own order and search, separate from Steam.
+    pub fn trophy_sort(&self) -> lxb_steam::library::Sort {
+        self.trophies.sort()
+    }
+    pub fn set_trophy_sort(&mut self, sort: lxb_steam::library::Sort) -> bool {
+        self.trophies.set_sort(sort)
+    }
+    pub fn set_trophy_search(&mut self, query: &str) -> bool {
+        self.trophies.set_search(query)
+    }
+
+    /// The same account library presented as searchable achievement pages.
+    pub fn trophy_rows(&self) -> Vec<crate::apps::Entry> {
+        self.trophies.library_rows(&self.games)
+    }
+
+    pub fn watch_trophies(&mut self, games: BTreeSet<u32>, keys: &[crate::trophies::Key]) -> bool {
+        let icons: Vec<_> = keys
+            .iter()
+            .filter_map(|key| self.trophies.icon_for(key))
+            .collect();
+        self.trophies.want_icons(&icons);
+        self.trophies
+            .watch(games, &self.client, self.reach == lxb_steam::Reach::Online)
     }
 
     /// The rows the Steam column is made of, in the order they go in.
@@ -2628,7 +2671,7 @@ impl Steam {
             return rows;
         }
 
-        rows.push(self.alphabetical(&matched));
+        rows.push(Self::alphabetical(&matched, |game| self.row(game)));
         let mut listing = matched;
         // The default order is the one the library is already in, so the
         // ordinary column costs nothing to build.
@@ -2675,7 +2718,10 @@ impl Steam {
     /// row's mark has — see [`crate::icons::INDEX_LETTERS`] — so the column is
     /// read down the alphabet the way a shelf of books is, and the words on the
     /// rows are free to say how much is in each.
-    fn alphabetical(&self, matching: &[&Game]) -> crate::apps::Entry {
+    pub(crate) fn alphabetical(
+        matching: &[&Game],
+        make_row: impl Fn(&Game) -> crate::apps::Entry,
+    ) -> crate::apps::Entry {
         // `None` is everything that does not start with one of the headings the
         // shell cuts, and it goes first because that is where nearly all of it
         // already is in the column's own order — a digit sorts before a letter
@@ -2713,7 +2759,7 @@ impl Steam {
                             .unwrap_or(crate::icons::STEAM)
                             .to_string(),
                     ),
-                    entries: games.into_iter().map(|game| self.row(game)).collect(),
+                    entries: games.into_iter().map(&make_row).collect(),
                     place: None,
                     chosen: false,
                     over_the_list: false,
@@ -6429,6 +6475,26 @@ mod tests {
     /// In that order, which is the order somebody arriving from below meets
     /// them in: the letters are the way into the list under them, and the field
     /// is the way into everything including the letters.
+    #[test]
+    fn trophies_sort_and_search_are_independent_of_steam() {
+        use lxb_steam::library::Sort;
+        let mut steam = library(&[(1, "Alpha", false), (2, "Zulu", true)]);
+        steam.trophies.account(Some(1));
+        steam.set_sort(Sort::NameAscending);
+        steam.set_trophy_sort(Sort::NameDescending);
+        assert_eq!(steam.rows()[2].title(), "Alpha");
+        assert_eq!(steam.trophy_rows()[2].title(), "Zulu");
+        steam.set_search("Alpha");
+        assert_eq!(steam.trophy_rows().len(), 4);
+        steam.set_trophy_search("Zulu");
+        assert_eq!(steam.rows().last().unwrap().title(), "Alpha");
+        assert_eq!(steam.trophy_rows().last().unwrap().title(), "Zulu");
+        steam.set_sort(Sort::InstalledFirst);
+        assert_eq!(steam.trophy_sort(), Sort::NameDescending);
+        steam.set_trophy_sort(Sort::NameAscending);
+        assert_eq!(steam.sort(), Sort::InstalledFirst);
+    }
+
     #[test]
     fn the_library_carries_its_index_above_the_first_game() {
         let steam = library(&[(1, "Aeonic", false), (2, "Zenith", true)]);

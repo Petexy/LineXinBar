@@ -1856,6 +1856,20 @@ pub fn set_show_hidden(on: bool) -> bool {
 /// setting, changed the accent and wrote the file back would otherwise silently
 /// throw the user's choice away.
 static STEAM_SORT: Mutex<Option<String>> = Mutex::new(None);
+static TROPHIES_SORT: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn remember_trophies_sort(sort: lxb_steam::library::Sort) {
+    *TROPHIES_SORT.lock().unwrap() = Some(sort.key().to_string());
+    save(&stored());
+}
+
+pub fn trophies_sort() -> Option<lxb_steam::library::Sort> {
+    TROPHIES_SORT
+        .lock()
+        .unwrap()
+        .as_deref()
+        .and_then(lxb_steam::library::Sort::from_key)
+}
 
 /// Write down that the Steam column is listed in this order from now on.
 pub fn remember_steam_sort(sort: lxb_steam::library::Sort) {
@@ -9097,6 +9111,7 @@ fn adopt_theme(stored: &Stored) {
 fn adopt(stored: Stored) {
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
+    *TROPHIES_SORT.lock().unwrap() = stored.trophies_sort;
     // Whatever it says, without asking the disk whether the folder is still
     // there. A collection on a drive that is not plugged in this morning is
     // still where the user said it was, and the row that says so is where they
@@ -9689,6 +9704,8 @@ struct Stored {
     /// header inside that table, so a bare key declared below them would be
     /// written into `[media-sort]` and read back as a shelf.
     steam_sort: Option<String>,
+    /// Trophies has an independent game order, also above the TOML tables.
+    trophies_sort: Option<String>,
     /// The three switches under Settings > Games > Steam: whether this shell
     /// drives Valve's client at all, whether it starts one as the session comes
     /// up, and whether it leaves one running once a game has ended.
@@ -9947,6 +9964,7 @@ fn stored() -> Stored {
         display,
         media_sort: MEDIA_SORT.lock().unwrap().clone(),
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
+        trophies_sort: TROPHIES_SORT.lock().unwrap().clone(),
         // Written back out so that a file which named a place goes on naming
         // it: everything here is built from the live values, and a key the
         // writer could not see is one the next change to anything else drops.
@@ -11928,6 +11946,7 @@ mod tests {
                 ("Music".to_string(), "type".to_string()),
             ]),
             steam_sort: Some("last-played".to_string()),
+            trophies_sort: Some("name-reversed".to_string()),
             ..Stored::default()
         };
         let written_out = toml::to_string_pretty(&written).unwrap();
@@ -11994,6 +12013,14 @@ mod tests {
                 steam_sort(),
                 Some(lxb_steam::library::Sort::RecentlyPlayedFirst)
             );
+            assert_eq!(
+                trophies_sort(),
+                Some(lxb_steam::library::Sort::NameDescending)
+            );
+            assert_eq!(
+                crate::trophies::Trophies::new().sort(),
+                lxb_steam::library::Sort::NameDescending
+            );
         });
         assert!(body.contains("[media-sort]"), "{body}");
         // Written above both tables, because everything below a table header
@@ -12018,10 +12045,13 @@ mod tests {
             adopt(Stored {
                 media_sort: BTreeMap::from([("Music".to_string(), "by vibes".to_string())]),
                 steam_sort: Some("by vibes".to_string()),
+                trophies_sort: Some("future-order".to_string()),
                 ..Stored::default()
             });
             assert_eq!(media_sort(crate::media::Kind::Audio), None);
             assert_eq!(steam_sort(), None);
+            assert_eq!(trophies_sort(), None);
+            assert_eq!(stored().trophies_sort.as_deref(), Some("future-order"));
             // Ignored, but not thrown away: the next thing that writes the file
             // must not quietly delete a choice made by a later version of the
             // shell than this one.

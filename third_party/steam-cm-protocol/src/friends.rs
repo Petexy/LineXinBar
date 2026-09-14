@@ -118,11 +118,15 @@ pub struct ProtocolGame {
     pub library_art: crate::pics::LibraryArt,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProtocolAchievement {
     pub apiname: String,
     pub achieved: bool,
     pub unlocktime: u64,
+    pub icon: Option<String>,
+    pub icon_gray: Option<String>,
+    pub hidden: bool,
+    pub schema_order: u32,
     pub name: Option<String>,
     pub description: Option<String>,
 }

@@ -58,3 +58,23 @@ message CPlayer_GetLastPlayedTimes_Response {
 
 	repeated .CPlayer_GetLastPlayedTimes_Response.Game games = 1;
 }
+
+// Read-only messages used by Steam's library UI (steamui player service).
+message CPlayer_GetAchievementsProgress_Request {
+ optional uint64 steamid = 1;
+ optional string language = 2;
+ repeated uint32 appids = 3;
+ optional bool include_unvetted_apps = 4;
+}
+message CPlayer_GetAchievementsProgress_Response {
+ message Progress {
+  optional uint32 appid = 1;
+  optional uint32 unlocked = 2;
+  optional uint32 total = 3;
+  optional float percentage = 4;
+  optional bool all_unlocked = 5;
+  optional uint32 cache_time = 6;
+  optional bool vetted = 7;
+ }
+ repeated Progress achievement_progress = 1;
+}

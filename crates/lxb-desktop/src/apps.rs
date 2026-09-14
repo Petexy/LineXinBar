@@ -164,6 +164,7 @@ fn program_name(exec: &str) -> Option<String> {
 /// they all sit in one column together.
 #[derive(Debug, Clone)]
 pub enum Entry {
+    Trophy(crate::trophies::Row),
     App(App),
     /// A piece of music, a film or a photograph found under the user's home
     /// directory. Not an [`App`] wearing a file's name: the two answer
@@ -800,6 +801,8 @@ pub enum Searched {
     /// Somebody's Steam library, which is a column of games the shell owns the
     /// whole of. See [`crate::steam::Steam::rows`].
     Library,
+    /// The independently searched Trophies game library.
+    Trophies,
     /// The keyboard arrangements this machine can be set to, which is a list of
     /// six hundred the shell read off the disk when it started. Narrowing one
     /// is a `contains` per arrangement, on the frame the letter was typed.
@@ -821,7 +824,7 @@ impl Searched {
     pub fn shelf(self) -> Option<crate::media::Kind> {
         match self {
             Searched::Shelf(kind) => Some(kind),
-            Searched::Folder | Searched::Library | Searched::Layouts => None,
+            Searched::Folder | Searched::Library | Searched::Trophies | Searched::Layouts => None,
         }
     }
 
@@ -837,7 +840,7 @@ impl Searched {
             // What the account owns, which is what the count is of: a library
             // of six hundred games says "4 of 600 games match" whether or not
             // any of them is on this machine's disk.
-            Searched::Library => "games",
+            Searched::Library | Searched::Trophies => "games",
             // What the machine has, which is what the count is of: a page
             // saying "3 of 598 layouts match" is counting every arrangement
             // xkeyboard-config on this machine describes.
@@ -868,7 +871,9 @@ impl Search {
                 match of {
                     Searched::Shelf(kind) => format!("Search {} by name", kind.plural()),
                     Searched::Folder => "Search this folder by name".to_string(),
-                    Searched::Library => "Search this library by name".to_string(),
+                    Searched::Library | Searched::Trophies => {
+                        "Search this library by name".to_string()
+                    }
                     // Not "this list": the field searches every arrangement on
                     // the machine from wherever it is typed into, and one that
                     // said "this list" over the continents would be promising
@@ -1151,7 +1156,18 @@ pub fn every_column() -> Vec<Column> {
     let mut ranked: Vec<Column> = CATEGORY_TABLE
         .iter()
         .map(|(id, title, icon, _)| Column { id, title, icon })
-        .chain([STEAM, retroarch_column_id()].map(|(id, title, icon)| Column { id, title, icon }))
+        .chain(
+            [
+                STEAM,
+                retroarch_column_id(),
+                (
+                    crate::trophies::COLUMN,
+                    "Trophies",
+                    crate::icons::CATEGORY_TROPHIES,
+                ),
+            ]
+            .map(|(id, title, icon)| Column { id, title, icon }),
+        )
         .collect();
     ranked.sort_by_key(|column| rank(column.id).unwrap_or(usize::MAX));
 
@@ -1944,6 +1960,36 @@ pub fn shelve_steam(categories: &mut Vec<Category>, games: Vec<Entry>) -> Shifte
     shifted
 }
 
+/// Trophies follow both game integrations, using the remaining quarter-step.
+pub fn shelve_trophies(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let at = categories
+        .iter()
+        .position(|c| c.id == crate::trophies::COLUMN);
+    match (at, rows.is_empty()) {
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = rows,
+        (None, false) => {
+            let at = column_place(categories, crate::trophies::COLUMN);
+            categories.insert(
+                at,
+                Category {
+                    id: crate::trophies::COLUMN,
+                    title: "Trophies",
+                    icon: crate::icons::CATEGORY_TROPHIES,
+                    entries: rows,
+                },
+            );
+            shifted.added = Some(at);
+        }
+        (None, true) => {}
+    }
+    shifted
+}
+
 /// Take RetroArch's own `.desktop` entry off the bar.
 ///
 /// The same act as [`hide_steam_client`] and for the same reason: two rows
@@ -2240,6 +2286,9 @@ fn column_place(categories: &[Category], id: &str) -> usize {
 /// that is a consequence of something rather than a place for something has
 /// somewhere to go without this being re-solved.
 fn rank(id: &str) -> Option<usize> {
+    if id == crate::trophies::COLUMN {
+        return rank(GAMES).map(|games| games + 3);
+    }
     if id == STEAM.0 {
         return rank(GAMES).map(|games| games + 1);
     }
@@ -2512,6 +2561,7 @@ impl Entry {
     /// What the row is called.
     pub fn title(&self) -> &str {
         match self {
+            Entry::Trophy(row) => &row.facts.title,
             Entry::App(app) => &app.name,
             Entry::Media(file) => &file.title,
             Entry::File(file) => &file.name,
@@ -2540,6 +2590,7 @@ impl Entry {
     /// The line under the title, when there is one to say.
     pub fn comment(&self) -> Option<&str> {
         match self {
+            Entry::Trophy(row) => Some(&row.facts.comment),
             Entry::App(app) => app.comment.as_deref(),
             // Where it was found, which for a music collection is the only
             // thing telling the album's copy of a track from the compilation's.
@@ -2587,6 +2638,7 @@ impl Entry {
 
     pub fn icon(&self) -> Option<&str> {
         match self {
+            Entry::Trophy(row) => Some(&row.facts.icon),
             Entry::App(app) => app.icon.as_deref(),
             Entry::Media(file) => Some(file.kind.glyph()),
             Entry::File(file) => Some(file.glyph),
@@ -2658,6 +2710,7 @@ impl Entry {
     /// The column this row opens into, if it opens into one.
     pub fn entries(&self) -> Option<&[Entry]> {
         match self {
+            Entry::Trophy(row) => row.entries.as_deref(),
             Entry::Folder(folder) => Some(&folder.entries),
             _ => None,
         }
@@ -2668,6 +2721,7 @@ impl Entry {
     /// bar is drawn from.
     pub fn entries_mut(&mut self) -> Option<&mut [Entry]> {
         match self {
+            Entry::Trophy(row) => row.entries.as_deref_mut(),
             Entry::Folder(folder) => Some(&mut folder.entries),
             _ => None,
         }
@@ -2683,6 +2737,7 @@ impl Entry {
     /// whole.
     pub fn entries_vec_mut(&mut self) -> Option<&mut Vec<Entry>> {
         match self {
+            Entry::Trophy(row) => row.entries.as_mut(),
             Entry::Folder(folder) => Some(&mut folder.entries),
             _ => None,
         }
@@ -2840,6 +2895,7 @@ impl Entry {
     /// photograph of the person.
     pub fn portrait(&self) -> Option<&std::path::Path> {
         match self {
+            Entry::Trophy(row) => row.picture.as_deref(),
             Entry::Folder(folder) => folder.portrait.as_deref(),
             _ => None,
         }
@@ -2923,6 +2979,9 @@ impl Entry {
     /// panel rather than starting a process. See `Shell::start_selection`.
     pub fn facts(&self) -> Option<&Facts> {
         match self {
+            Entry::Trophy(row) if matches!(row.key, crate::trophies::Key::SteamAchievement(..)) => {
+                Some(&row.facts)
+            }
             Entry::Facts(facts) => Some(facts),
             _ => None,
         }

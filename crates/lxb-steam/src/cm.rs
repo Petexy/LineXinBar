@@ -81,6 +81,14 @@ pub type Status = Arc<Mutex<Stands>>;
 
 #[derive(Debug)]
 pub enum Command {
+    AchievementProgress {
+        app_ids: Vec<u32>,
+        request: u64,
+    },
+    Achievements {
+        app_id: u32,
+        request: u64,
+    },
     /// Ask Steam for the account's catalogue again, now.
     Refresh,
     /// Something about a conversation: fetch its history, send a message, or
@@ -104,6 +112,8 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Event {
+    AchievementProgress(crate::achievements::ProgressHeard),
+    Achievements(crate::achievements::Heard),
     Ready {
         generation: u64,
         commands: mpsc::UnboundedSender<Command>,
@@ -364,6 +374,7 @@ async fn run_session(
         account: stored.steam_id,
         word: crate::chat::Word::Listening,
     })));
+    let achievement_slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut latest_library = 0u64;
     let mut naming = false;
     if let Some(packages) = package_ids.as_deref() {
@@ -383,6 +394,55 @@ async fn run_session(
                             &mut latest_library,
                         );
                     }
+                }
+                Some(Command::AchievementProgress { app_ids, request }) => {
+                    let connection = Arc::clone(&connection);
+                    let account = stored.steam_id;
+                    background.spawn(async move {
+                        let state = connection.state_snapshot().await;
+                        let result: Result<std::collections::BTreeMap<u32, crate::achievements::Progress>, String> = match timeout(Duration::from_secs(25),
+                            steam_cm_protocol::achievements::get_progress(&connection, &state, app_ids)).await {
+                            Ok(Ok(values)) => Ok(values.into_iter().filter_map(|p| {
+                                let (app, unlocked, total) = (p.appid?, p.unlocked?, p.total?);
+                                (unlocked <= total).then_some((app, crate::achievements::Progress {
+                                    unlocked, total, fetched_at: p.cache_time.unwrap_or(0) as u64,
+                                }))
+                            }).collect()),
+                            Ok(Err(error)) => Err(crate::achievements::failure(&error)),
+                            Err(_) => Err("Steam took too long.".into()),
+                        };
+                        if let Ok(values) = &result {
+                            let values = values.clone();
+                            let _ = tokio::task::spawn_blocking(move || crate::achievements::save_progress(account, &values)).await;
+                        }
+                        Background::AchievementProgress(crate::achievements::ProgressHeard { generation, account, request, result })
+                    });
+                }
+                Some(Command::Achievements { app_id, request }) => {
+                    // Rapid navigation must not flood Steam while earlier pages finish.
+                    let Ok(permit) = Arc::clone(&achievement_slots).try_acquire_owned() else {
+                        let _ = worker.send(WorkerMessage::Cm(Event::Achievements(crate::achievements::Heard {
+                            generation, account: stored.steam_id, app_id, request,
+                            result: Err("Other achievement pages are still loading. Reopen this game to retry.".into()),
+                        })));
+                        continue;
+                    };
+                    let connection = Arc::clone(&connection);
+                    let account = stored.steam_id;
+                    background.spawn(async move {
+                        let _permit = permit;
+                        let state = connection.state_snapshot().await;
+                        let result = match timeout(Duration::from_secs(25),
+                            steam_cm_protocol::achievements::get_player_achievements(&connection, &state, app_id)).await {
+                            Ok(result) => result.map_err(|e| crate::achievements::failure(&e)),
+                            Err(_) => Err("Steam took too long. Reopen this game to retry.".into()),
+                        };
+                        let result = tokio::task::spawn_blocking(move || crate::achievements::finish(account, app_id, result))
+                            .await.unwrap_or_else(|_| Err("Achievement worker stopped.".into()));
+                        Background::Achievements(crate::achievements::Heard {
+                            generation, account, app_id, request, result,
+                        })
+                    });
                 }
                 Some(Command::Chat(wanted)) => {
                     start_chat(
@@ -473,6 +533,12 @@ async fn run_session(
             },
             finished = background.join_next(), if !background.is_empty() => {
                 match finished {
+                    Some(Ok(Background::AchievementProgress(heard))) => {
+                        let _ = worker.send(WorkerMessage::Cm(Event::AchievementProgress(heard)));
+                    }
+                    Some(Ok(Background::Achievements(heard))) => {
+                        let _ = worker.send(WorkerMessage::Cm(Event::Achievements(heard)));
+                    }
                     Some(Ok(Background::Chat(Some(word)))) => {
                         let _ = worker.send(WorkerMessage::Cm(Event::Chat(crate::chat::Heard {
                             generation,
@@ -532,6 +598,8 @@ async fn run_session(
 }
 
 enum Background {
+    AchievementProgress(crate::achievements::ProgressHeard),
+    Achievements(crate::achievements::Heard),
     /// One conversation request that has been answered, or failed. It carries
     /// nothing but the word to pass on: the correlation was decided when the
     /// task was started and travels inside it.

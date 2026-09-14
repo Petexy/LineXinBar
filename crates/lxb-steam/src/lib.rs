@@ -69,6 +69,7 @@ mod session;
 mod vdf;
 mod web;
 
+pub mod achievements;
 pub mod art;
 pub mod audit;
 pub mod auth;
@@ -155,6 +156,15 @@ pub struct Account {
 /// What the shell asks of Steam.
 #[derive(Debug)]
 pub enum Ask {
+    AchievementProgress {
+        app_ids: Vec<u32>,
+        request: u64,
+    },
+    /// Read-only achievement progress for one game, correlated with the caller's request.
+    Achievements {
+        app_id: u32,
+        request: u64,
+    },
     /// Have Valve's client install itself on this machine, which it has never
     /// done.
     ///
@@ -172,7 +182,10 @@ pub enum Ask {
     /// Begin a sign-in to be confirmed by photographing a code.
     SignInWithQr,
     /// Begin one with an account name and a password.
-    SignInWithPassword { account: String, password: Password },
+    SignInWithPassword {
+        account: String,
+        password: Password,
+    },
     /// Hand over the Steam Guard code that was asked for.
     SubmitCode(String),
     /// Stop waiting for a sign-in that is under way.
@@ -182,12 +195,18 @@ pub enum Ask {
     /// Ask Steam for the library again, now, rather than at the next interval.
     Refresh,
     /// Have Valve's client fetch one game.
-    Install { app_id: u32 },
+    Install {
+        app_id: u32,
+    },
     /// Stop fetching one, and take away what had arrived.
-    StopInstalling { app_id: u32 },
+    StopInstalling {
+        app_id: u32,
+    },
     /// Have Valve's client take one game off the disk, keeping it in the
     /// library.
-    Uninstall { app_id: u32 },
+    Uninstall {
+        app_id: u32,
+    },
     /// Ask Valve's client which Steam Play compatibility tools one title — or
     /// every unverified title — may be run with, and which of them is forced.
     ///
@@ -219,11 +238,17 @@ pub enum Ask {
     /// of two minutes and the press that asked for it is often over by then**,
     /// so an answer that named nobody was an answer the shell handed to
     /// whichever press happened to be waiting when it arrived. See [`Ticket`].
-    WakeClient { take_over: bool, request: u64 },
+    WakeClient {
+        take_over: bool,
+        request: u64,
+    },
     /// Hand Valve's client one `steam:` URL — install, verify, or simply come
     /// to the front. Off the shell's thread because starting a process is not
     /// something a render loop can afford to wait on; see [`Steam::tell`].
-    Tell { app_id: u32, doing: Doing },
+    Tell {
+        app_id: u32,
+        doing: Doing,
+    },
     /// Watch a launch that has just been asked for, and say if it stops.
     ///
     /// One per game, and several at once: a session can have handed the client
@@ -236,16 +261,24 @@ pub enum Ask {
     /// speaking about ends before the message is read. A watch that has been
     /// stopped and replaced answers under the number it was started with, and
     /// the shell drops it.
-    WatchLaunch { app_id: u32, request: u64 },
+    WatchLaunch {
+        app_id: u32,
+        request: u64,
+    },
     /// Stop watching one launch, or every launch there is.
     ///
     /// `None` is for the one moment when every watch is somebody else's at
     /// once: the account signing out. Every other path out of a press names
     /// the game it was about, because the press beside it may still be
     /// running.
-    StopWatchingLaunch { app_id: Option<u32> },
+    StopWatchingLaunch {
+        app_id: Option<u32>,
+    },
     /// Answer a launch the client stopped, with what somebody chose.
-    AnswerLaunch { action_id: u32, carry: webui::Carry },
+    AnswerLaunch {
+        action_id: u32,
+        carry: webui::Carry,
+    },
     /// Tell Valve's client to stop walking the launch it is in the middle of
     /// for one game.
     ///
@@ -258,7 +291,9 @@ pub enum Ask {
     /// the shell was watching is over either way — this is only what makes the
     /// client agree — and a client that had already finished, or that has no
     /// such action left, is not a failure anybody has to be told about.
-    StopLaunch { app_id: u32 },
+    StopLaunch {
+        app_id: u32,
+    },
     /// Something about a one-to-one conversation: open one, send a message,
     /// or say this account is typing.
     ///
@@ -304,7 +339,9 @@ pub enum Ask {
     /// nobody had put a question to. It reports [`Event::ClientClosing`],
     /// carrying `request` back on its [`Ticket`] so that one ask's answer
     /// cannot be read as another's.
-    CloseClient { request: u64 },
+    CloseClient {
+        request: u64,
+    },
 }
 
 /// What one asynchronous answer belongs to.
@@ -832,6 +869,8 @@ impl Reach {
 /// What Steam says back.
 #[derive(Debug, Clone)]
 pub enum Event {
+    AchievementProgress(achievements::ProgressHeard),
+    Achievements(achievements::Heard),
     /// How a download is going, read off the manifest Valve's client keeps for
     /// the game. `total` is zero for the short stretch at the start where the
     /// client has written the manifest but does not yet know the size.
@@ -856,13 +895,21 @@ pub enum Event {
         live: Option<webui::Live>,
     },
     /// It finished, and the game is at this path.
-    Installed { app_id: u32, into: PathBuf },
+    Installed {
+        app_id: u32,
+        into: PathBuf,
+    },
     /// It did not, and this is why. Whatever had been written is gone again,
     /// unless it was written over a game that was already there.
-    InstallFailed { app_id: u32, why: Stopped },
+    InstallFailed {
+        app_id: u32,
+        why: Stopped,
+    },
     /// Somebody stopped it. Nothing is left on the disk and nothing went
     /// wrong, so this is not a failure and there is nothing to tell anybody.
-    InstallStopped { app_id: u32 },
+    InstallStopped {
+        app_id: u32,
+    },
     /// It has stopped moving without finishing and without failing: Steam
     /// paused it, or what arrived needs repairing before it can go on.
     ///
@@ -871,7 +918,9 @@ pub enum Event {
     /// and goes back to being described by the library, which now says "Download
     /// paused" or "Needs repairing" in its own words. Without it a row that
     /// stopped moving counted the same percentage for the rest of the session.
-    InstallWaiting { app_id: u32 },
+    InstallWaiting {
+        app_id: u32,
+    },
     /// It says it is running and has not written a byte for an hour.
     ///
     /// The one failure the manifest cannot describe. Every state that *stops*
@@ -885,15 +934,25 @@ pub enum Event {
     /// deleted, and the watch goes on. All it changes is what the row says,
     /// and a byte arriving takes it back. Sent once per stall rather than on
     /// every look.
-    InstallStuck { app_id: u32, quiet_for: Duration },
+    InstallStuck {
+        app_id: u32,
+        quiet_for: Duration,
+    },
     /// One game is being taken off the disk. The row has something to say
     /// while the client works through it.
-    Uninstalling { app_id: u32 },
+    Uninstalling {
+        app_id: u32,
+    },
     /// It has gone: its manifest is no longer on the disk, which is the only
     /// thing that can say so.
-    Uninstalled { app_id: u32 },
+    Uninstalled {
+        app_id: u32,
+    },
     /// It has not, and this is what to tell the user.
-    UninstallFailed { app_id: u32, why: String },
+    UninstallFailed {
+        app_id: u32,
+        why: String,
+    },
     /// How Valve's client is getting on installing itself, and what became of
     /// it.
     ///
@@ -908,7 +967,10 @@ pub enum Event {
     /// Arrives again whenever Steam rotates the code, which it does every
     /// twenty seconds or so: the panel redraws around the new one, and the old
     /// one stops working. That is Steam's rule and not this crate's.
-    Challenge { code: qr::Code, url: String },
+    Challenge {
+        code: qr::Code,
+        url: String,
+    },
     /// A sign-in that cannot go further until the user types a code.
     CodeWanted(Confirmation),
     /// One that needs something done elsewhere — a press on the phone — and
@@ -1030,7 +1092,10 @@ pub enum Event {
     },
     /// It could not be asked, and this is what to say on the panel that is
     /// waiting for the list. Never silent: the press promised a list.
-    CompatibilityUnavailable { which: webui::Which, why: String },
+    CompatibilityUnavailable {
+        which: webui::Which,
+        why: String,
+    },
     /// The library, whole. Always the whole of it rather than a change to it,
     /// for the reason the file shelves are delivered whole: the shell swaps
     /// one list for another in a few microseconds however long it is, and a
@@ -1468,6 +1533,16 @@ impl Steam {
     /// Steam's own window, or after the user came back from it.
     pub fn refresh(&self) {
         self.ask(Ask::Refresh);
+    }
+
+    /// Fetch library achievement counts in a batch without loading every schema.
+    pub fn achievement_progress(&self, app_ids: Vec<u32>, request: u64) {
+        self.ask(Ask::AchievementProgress { app_ids, request });
+    }
+
+    /// Ask for this account's achievements without starting the game.
+    pub fn achievements(&self, app_id: u32, request: u64) {
+        self.ask(Ask::Achievements { app_id, request });
     }
 
     /// Ask something of a one-to-one conversation: its history, a message, or
@@ -2879,6 +2954,53 @@ fn answer(
             watching.stop_watching(app_id);
             state
         }
+        Ask::AchievementProgress { app_ids, request } => {
+            let sent = if let State::In { commands, .. } = &state {
+                commands
+                    .send(cm::Command::AchievementProgress { app_ids, request })
+                    .is_ok()
+            } else {
+                false
+            };
+            if !sent {
+                let _ = events.send(Event::AchievementProgress(achievements::ProgressHeard {
+                    generation: *generation,
+                    account: signed_in_as(&state).unwrap_or_default(),
+                    request,
+                    result: Err("Steam is offline.".into()),
+                }));
+            }
+            state
+        }
+        Ask::Achievements { app_id, request } => {
+            let sent = if let State::In { commands, .. } = &state {
+                commands
+                    .send(cm::Command::Achievements { app_id, request })
+                    .is_ok()
+            } else {
+                false
+            };
+            if !sent {
+                let account = signed_in_as(&state).unwrap_or_default();
+                let events = events.clone();
+                let generation = *generation;
+                std::thread::spawn(move || {
+                    let result = achievements::finish(
+                        account,
+                        app_id,
+                        Err("Steam is offline. Reopen this game to retry.".into()),
+                    );
+                    let _ = events.send(Event::Achievements(achievements::Heard {
+                        generation,
+                        account,
+                        app_id,
+                        request,
+                        result,
+                    }));
+                });
+            }
+            state
+        }
         Ask::Chat(wanted) => {
             // Only where there is a connection to carry it. A request made
             // while the CM is down has nowhere to go and is not kept: see
@@ -4136,6 +4258,18 @@ fn answer_cm(
     // one number, and neither is redundant: this one drops packets belonging to
     // a connection the worker has abandoned, and the shell's drops answers to
     // requests it has stopped wanting. See [`chat::Conversations::heard`].
+    if let cm::Event::AchievementProgress(heard) = event {
+        if matches!(&state, State::In { generation, .. } if *generation == heard.generation) {
+            let _ = events.send(Event::AchievementProgress(heard));
+        }
+        return state;
+    }
+    if let cm::Event::Achievements(heard) = event {
+        if matches!(&state, State::In { generation, .. } if *generation == heard.generation) {
+            let _ = events.send(Event::Achievements(heard));
+        }
+        return state;
+    }
     if let cm::Event::Chat(heard) = event {
         if matches!(&state, State::In { generation: expected, .. } if *expected == heard.generation)
         {
