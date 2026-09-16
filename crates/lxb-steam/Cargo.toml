@@ -26,7 +26,7 @@ serde_json = "1"
 # A signed-in Steam client is a persistent Connection Manager session, not a
 # sequence of Web API calls. This supplies the CM WebSocket, license list and
 # PICS catalogue protocol used by Steam itself, without starting Valve's GUI.
-steam-cm-protocol = "0.4.1"
+steam-cm-protocol = { package = "lxb-steam-cm-protocol", path = "../../third_party/lxb-steam-cm-protocol", version = "0.4.1" }
 
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 shlex = "1"

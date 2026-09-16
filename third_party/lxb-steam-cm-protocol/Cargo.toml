@@ -11,7 +11,11 @@
 
 [package]
 edition = "2024"
-name = "steam-cm-protocol"
+# Renamed from upstream's `steam-cm-protocol` so nothing in this tree can be
+# read as the published crate. This copy fixes the error-packet decode and
+# adds four messages: see README.LXB.md. The library it builds is still
+# called `steam_cm_protocol`.
+name = "lxb-steam-cm-protocol"
 version = "0.4.1"
 authors = ["LargeModGames <LargeModGames@gmail.com>"]
 build = "build.rs"

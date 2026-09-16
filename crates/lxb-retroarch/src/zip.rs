@@ -78,6 +78,22 @@ pub fn every_file(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     Ok(out)
 }
 
+/// A ROM archive must have one file, and a bounded decompressed size.
+pub fn single_rom(raw: &[u8]) -> Result<(String, Vec<u8>), String> {
+    let mut files = walk(raw)?
+        .into_iter()
+        .filter(|(name, _)| !name.ends_with('/') && !name.starts_with("__MACOSX/"));
+    let (name, entry) = files.next().ok_or("Archive contains no ROM")?;
+    if files.next().is_some() {
+        return Err("Archive must contain one ROM to identify achievements".into());
+    }
+    if entry.size > 128 * 1024 * 1024 {
+        return Err("ROM inside archive is too large to identify".into());
+    }
+    let bytes = read(raw, &entry)?;
+    Ok((name, bytes))
+}
+
 /// Whether an entry's name is one this is willing to write.
 ///
 /// Relative, staying put, and free of the two things a Windows path can carry

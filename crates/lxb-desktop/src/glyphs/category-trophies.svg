@@ -1,2 +1,132 @@
-<!-- lxb:shape — the trophy silhouette uses the same material as the category row. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g fill="none" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 9h26v14c0 11-5 17-13 17s-13-6-13-17V9Z"/><path d="M19 14H9v7c0 9 5 13 13 13m23-20h10v7c0 9-5 13-13 13M32 40v12m-11 4h22M26 52h12"/></g></svg>
+<!--
+  The Trophies column's glyph: a cup with two handles, on a stem and a two-tier
+  base.
+
+  It is a cup and not the medal Breeze and Tela both draw for
+  `games-achievements`, because the word on the screen is *Trophies*. A column
+  headed by one word and marked with a picture of another has to be read twice.
+
+  ## One mass with two holes in it
+
+  The cup and both handles are a single silhouette, and the handles are what is
+  left over when a crescent is cut out of each side of it. They are not two
+  loops standing beside a bowl — a version that did that ran all three together
+  into one wide rounded blob, which reads as a bell.
+
+  So the *hole* is the drawing. Everything about whether this looks like a
+  trophy is decided by where those two crescents are.
+
+  ## Every corner is rounded, and the body's corners share one radius
+
+  1.2 units: the lip, the plinth, the foot and the two top corners of the cup.
+  Not a taste — the set was counted. Of the slabs on the 32-unit grid between
+  2.5 and 6 units thick and 8 or more long, the radii run 0.8 to 1.6 and
+  cluster on 1.0; 1.2 is what sits with category-system.svg's monitor at a
+  glance without letting the base tiers round off into pills.
+
+  One *absolute* radius rather than one ratio, and that is the point of it. The
+  three parts are close in scale, so a shared radius is what reads as
+  deliberate — and it lands where the house lands anyway: measured against each
+  part's short side it comes out 0.43 on the lip, 0.32 on the plinth, 0.26 on
+  the foot, against a set-wide median of 0.29. The thinner the part, the rounder
+  it reads, which is the set's own habit.
+
+  The two openings are rounded less — 0.65 where the flat top meets each wall,
+  0.42 where the handle rejoins the cup — because that is how this set treats an
+  opening as against a body: setting-system.svg's die is 1.1 across 9.4, and
+  category-system.svg's screen 1.4 across 11, both a shade over a tenth of the
+  hole, where a body is near a third.
+
+  **An earlier version of this file argued the top corners had to be square.**
+  That was wrong as written. What destroys the shoulder a trophy's handles hang
+  from is a *large* fillet, not a fillet — at 1.2 on a cup 22.8 wide the
+  shoulder is still a shoulder, and the mark stops being the one drawing in the
+  category row with hard corners on it.
+
+  ## The handle has to be the same thickness all the way round
+
+  The hole's outer boundary is a **true parallel offset** of the cup's outer
+  edge — every point pushed 2.2 units along its own normal — computed rather
+  than drawn, then fitted back to the single cubic below so the file stays
+  something a person can edit. The fit is within 0.14 units of the computed
+  curve, and the strap measures 2.19, 2.19, 2.19, 2.19 down its length.
+
+  Before that it was a lens drawn by hand, and it measured 1.72 at the shoulder,
+  2.44 at the waist and 4.53 at the turn before merging into the bowl as a lump.
+  A handle that swells as it curves does not look like a handle. None of it
+  showed in anything icons::tests checks; what found it was rasterising at 1024
+  and printing the runs of ink along each scan line.
+
+  2.2 is a shade under the bevel's depth, so the strap beads over into a rounded
+  bar rather than standing a flat face. That is right rather than a compromise:
+  a trophy's handle *is* a round bar, and it is the only part of this object
+  that is.
+
+  ## The proportions
+
+  Measured off a reference rather than invented, because a trophy is an object
+  everybody has seen and a wrong one is obvious without being nameable. The cup
+  is 22.8 wide and 10.4 deep, so it is squat; the lip is 15.4, narrower than the
+  cup, so the handles stand proud of it; the hole is 3.5 wide at its top, which
+  is what stops the strap reading as a rim; the stem shows 5.6 between cup and
+  plinth, which keeps the mark from looking like a bowl sitting on a box; and
+  the foot is 14.4, narrower than the lip, so the cup does not look as though it
+  is sinking into its own base.
+
+  0.29 of the cell in ink, against the gamepad's 0.28 and the monitor's 0.27,
+  which is what makes the three of them look like one row.
+
+  ## What this was before all of it
+
+  A line drawing: the only glyph in the set on a 64-unit grid, the only one
+  built out of a stroke, and the only category mark with no body at all. A
+  material computed from a shape has nothing to work with in a 5-unit stroke —
+  it never gets a flat face anywhere — so the whole mark came out as bent tubing
+  and read as scratched onto the row rather than made of the same water as the
+  rest of it.
+
+  The two openings are the best thing here and they cost nothing: a hole's edge
+  is an edge like any other, so the shader walls each from both sides and the
+  handles stand off the cup for free. That is the argument
+  glyph-language-water-bead makes for cutting a hole rather than painting one.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="lip" x="8.3" y="3" width="15.4" height="2.8" rx="1.2"/>
+    <path id="cup"
+          d="M5.8 5.8H26.2A1.2 1.2 0 0 1 27.4 7V10.4
+             C27.4 14.2 23.2 16.2 17.8 16.2H14.2
+             C8.8 16.2 4.6 14.2 4.6 10.4V7A1.2 1.2 0 0 1 5.8 5.8Z"/>
+    <path id="gap"
+          d="M6.8 7.75V10.63C6.81 12.67 9.59 13.47 11.45 13.78
+             A0.42 0.42 0 0 0 11.82 13.19
+             C10.92 11.68 10.42 9.73 10.31 7.75
+             A0.65 0.65 0 0 0 9.66 7.1H7.45A0.65 0.65 0 0 0 6.8 7.75Z"/>
+    <rect id="stem" x="14.2" y="15.4" width="3.6" height="5.6"/>
+    <rect id="plinth" x="10.7" y="20.6" width="10.6" height="3.7" rx="1.2"/>
+    <rect id="foot" x="8.8" y="24.3" width="14.4" height="4.6" rx="1.2"/>
+    <g id="bead">
+      <use href="#lip"/>
+      <use href="#cup"/>
+      <use href="#stem"/>
+      <use href="#plinth"/>
+      <use href="#foot"/>
+    </g>
+    <g id="holes">
+      <use href="#gap"/>
+      <use href="#gap" transform="translate(32 0) scale(-1 1)"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

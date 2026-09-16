@@ -1,0 +1,54 @@
+<!--
+  A carton with its lid on, seen a little from above, on a row that is an
+  archive.
+
+  **The first drawing of this was a rounded square with a `T` cut into the top
+  of it, and it is a mouse.** Two buttons and a wheel between them — the eye
+  reads that before it reads anything else, and no adjustment of the `T` saves
+  it: what makes a mouse is a tall rounded body divided near the top, which is
+  exactly what a box drawn flat-on with a lid seam also is. There is no flat-on
+  drawing of a closed box that is not something else as well.
+
+  So this is drawn the way the drum on the row above it is, which is the set's
+  own answer to that problem — see file-drive.svg, "a cylinder seen a little
+  from above": let the *silhouette* say what it is. The lid of a carton is a
+  face and not a line, and once that face can be seen there is nothing else the
+  shape could be. A mouse has no top face, a window has no slope, and the bin on
+  the menu beside it tapers the other way and carries a handle.
+
+  Two bodies with the crevice between them, which is the folder's construction
+  and not the drum's: file-folder.svg is a back and a pocket and the only line
+  in it is the gap. Here the gap is the lid sitting *on* the box rather than
+  being part of it, and it is the one thing that has to survive at 27 px — which
+  it does, being an edge rather than a detail.
+
+  Nothing is cut into it. The join where the two top flaps meet was tried, down
+  the middle of the lid face, and it reads as a slot: a dark bar in the top of a
+  container is a post box or a coin slot, and at the size a row is drawn it is a
+  dot with nothing to say. The box is legible without it.
+
+  Corners are tight — 1.5 and 1.6 units, against the drum's unbroken curve —
+  because the two are one row apart in the same column and cardboard has corners
+  where a drum has none.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="lid" d="M8.4 6.8H23.6a1.5 1.5 0 0 1 1.34 0.83L27.4 14.2H4.6L7.06 7.63
+                      A1.5 1.5 0 0 1 8.4 6.8Z"/>
+    <rect id="front" x="4.6" y="13.4" width="22.8" height="14.0" rx="1.6"/>
+    <g id="bead"><use href="#lid"/><use href="#front"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

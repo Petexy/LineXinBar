@@ -655,7 +655,8 @@ fn copy_out(scaled: &ffmpeg::frame::Video, width: u32, height: u32, reel: &Reel)
 
 /// Where the shell keeps its copy of the picture it was given.
 ///
-/// `$XDG_DATA_HOME/linexinbar/wallpaper`, which is data rather than cache on
+/// `$XDG_DATA_HOME/lxb/wallpaper`, beside the Steam session and under the name
+/// every setting of this shell is kept under; data rather than cache on
 /// purpose: a cache is a thing that may be deleted because it can be made again,
 /// and this one cannot — the file it was made from is somebody's own and may
 /// have been on a stick, or thrown away since.
@@ -666,7 +667,11 @@ fn copy_out(scaled: &ffmpeg::frame::Video, width: u32, height: u32, reel: &Reel)
 /// month later wants to see `Sunset over Ålesund.jpg` and not `wallpaper.jpg` —
 /// and a fixed name would have thrown it away the moment the copy landed.
 pub fn kept_in() -> Option<PathBuf> {
-    let data = std::env::var_os("XDG_DATA_HOME")
+    Some(data_home()?.join("lxb").join("wallpaper"))
+}
+
+fn data_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| {
@@ -674,8 +679,7 @@ pub fn kept_in() -> Option<PathBuf> {
                 .map(PathBuf::from)
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".local/share"))
-        })?;
-    Some(data.join("linexinbar").join("wallpaper"))
+        })
 }
 
 /// The name the kept copy takes: the source's own.
@@ -753,11 +757,11 @@ fn same_file(one: &Path, other: &Path) -> bool {
 /// Take away the copies left by earlier choices.
 ///
 /// Everything in the directory but the file just written, and it is safe to be
-/// that broad *because* of what the directory is: `linexinbar/wallpaper` holds
-/// one wallpaper and nothing else has any business writing there. That is the
+/// that broad *because* of what the directory is: `lxb/wallpaper` holds one
+/// wallpaper and nothing else has any business writing there. That is the
 /// whole reason it is a directory of its own rather than a file beside whatever
-/// else this shell may come to keep — a sweep of `linexinbar` itself would be a
-/// routine that could delete something somebody else put there.
+/// else this shell keeps — a sweep of `lxb` itself would be a routine that
+/// could delete the Steam session.
 ///
 /// Files only. Anything else in there was not put there by this, and is left
 /// where it is rather than removed recursively.

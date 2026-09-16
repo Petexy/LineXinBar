@@ -7,7 +7,7 @@ These definitions build three early-development packages from one source tree:
   this project's shell is the one running. This is what a display manager
   depends on to put a login screen on the hardware without installing a
   desktop, and Console Experience Desktop Manager is the one that does.
-* **`lxb-desktop`** — the shell, the portal and the Wayland session entry. It
+* **`lxb-desktop`** — the shell, the portal, the update coordinator and the Wayland session entry. It
   depends on the exact `lxb-compositor` built beside it, version and release
   both: two halves of one build that drift apart are a shell talking to a
   compositor it was never tested against.
@@ -32,6 +32,8 @@ lxb-compositor   bin/lxb
 
 lxb-desktop      bin/lxb-desktop
                  bin/lxb-portal
+                 bin/lxb-updates
+                 share/doc/lxb-desktop/updates.md
                  bin/lxb-session
                  share/wayland-sessions/lxb.desktop
                  share/xdg-desktop-portal/**
@@ -72,6 +74,33 @@ display manager one foreground process whose lifetime is tied to the desktop
 shell. The original application sources and `share/wayland-sessions/lxb.desktop`
 are not modified; packages stage the production session files from
 `packaging/files/`.
+
+## Update dependencies
+
+The desktop package requires **fwupd** and **polkit/pkexec** on Arch, Debian,
+Fedora and Nix. Arch also requires pacman-contrib for safe update checks. Keep
+these dependencies in ports to other distributions. NixOS enables the fwupd
+service through the module. Optional Flatpak, Snap and AUR tools are detected;
+installing the desktop does not install every package manager.
+
+The coordinator ships with the desktop and has no blanket root authorization
+policy. Install the helper as root-owned in a protected executable path; a
+user-writable development binary cannot obtain a job authorization. A working
+logind/elogind service is required for protected installation; updates fail before
+mutation when an inhibitor cannot be acquired. It uses a transient systemd user
+service where available, with a detached
+fallback. Ports with other service managers should validate session teardown and
+provide supervision before promising updates survive logout. See
+[the update guide](../docs/updates.md) for policy examples and the validation matrix.
+
+Immutable distributions can package a custom System updater without enabling a
+native system upgrade. Ship the provider selection in
+`/usr/share/linexinbar/updates.json`, its manifest under
+`/usr/share/linexinbar/update-providers.d/`, and the declared executable with its
+dependencies. See [Custom system update providers](../docs/updates.md#custom-system-update-providers)
+for file modes, administrator overrides, the check/apply JSON contract and a
+Bash adapter example. These are distribution-owned additions, not user-editable
+Settings commands.
 
 ## One version, in one file
 

@@ -31,7 +31,7 @@ pub fn cache_root() -> Option<PathBuf> {
                 .map(|h| PathBuf::from(h).join(".cache"))
                 .filter(|p| p.is_absolute())
         })
-        .map(|p| p.join("linexinbar/steam-achievements"))
+        .map(|p| p.join("lxb/steam-achievements"))
 }
 
 pub(crate) fn finish(

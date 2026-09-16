@@ -1,0 +1,4 @@
+#!/bin/sh
+# Never run: the coordinator takes pkexec only from a root-owned path. Here
+# so that no root step in a fixture run can reach the real one either.
+printf 'FIXTURE: the fake pkexec was executed: %s\n' "$*" >&2; exit 99

@@ -404,12 +404,26 @@ RetroArch, which the probe says, and which backend the shell drew through, which
 does not exist until the first frame. A removal puts it back to being looked at
 again, because what comes back after that is a fresh machine.
 
+### Its own interface
+
+The menu over the RetroArch row under Games — **Open RetroArch**, below the
+rule — starts the emulator's own screens: its command line and nothing else, no
+core and no game. RetroArch's desktop entry is hidden from the applications on
+the bar, so this row is the only way to those screens from the shell, and it
+joins the launched applications under its own name so the guide can close it
+like anything else.
+
+It is answered on the screen exactly as a game or a tile is: the loading screen
+grows out of the row wearing the emulator's mark, holds the display until the
+window is there, and a second press while it is up is spent. A flatpak takes a
+few seconds to come up, and for that stretch the press used to be answered by
+nothing at all — the menu folded away and the bar sat there.
+
 ### Taking it off again
 
-The menu over the RetroArch row under Games — **Remove RetroArch**, below the
-rule with *Open RetroArch*, and last of the three because it is the only row
-there that takes something away. It asks first, and the question names what
-goes.
+The same menu — **Remove RetroArch**, below the rule with *Open RetroArch*, and
+last of the three because it is the only row there that takes something away.
+It asks first, and the question names what goes.
 
 What goes is the application and everything kept for it:
 
@@ -603,7 +617,7 @@ worked around:
   not one, so a core can arrive whole and fail in the dynamic linker. The
   install checks with `ldd` *in the environment the core will be loaded in*.
 
-  A core that will not open is taken back off the disk and its name written to `$XDG_CACHE_HOME/linexinbar/cores-that-will-not-load`, so the
+  A core that will not open is taken back off the disk and its name written to `$XDG_CACHE_HOME/lxb/cores-that-will-not-load`, so the
   next press does not spend another download on it. Delete that file to try
   again after a RetroArch or core update.
 
@@ -816,7 +830,7 @@ none, and keeps the mark its row always wore.
 Everything lands under:
 
 ```text
-$XDG_CACHE_HOME/linexinbar/retroarch-art/
+$XDG_CACHE_HOME/lxb/retroarch-art/
   .shelves/<System Name>.list                    the names, one per line
   <System Name>/Named_Boxarts/<Game Name>.png
   <System Name>/Named_Snaps/<Game Name>.png
@@ -874,7 +888,7 @@ What you choose is **copied**, not pointed at, so tidying the folder you found i
 in does not take the cover with it:
 
 ```text
-$XDG_DATA_HOME/linexinbar/game-art/
+$XDG_DATA_HOME/lxb/game-art/
   <console>/<the game's own file name>.cover.png
   <console>/<the game's own file name>.background.jpg
 ```
@@ -976,6 +990,18 @@ rectangle is not, and the bounding box laid four square corners of the start
 screen over the video. On its own surface the panel is exactly its own shape, and
 its input region is what decides whose a press is, so the shape the pointer finds
 is the shape the eye finds.
+
+That surface is in front of every window on the display, not only the floating
+ones, so a menu of the bar's does not outlive the bar stepping behind an
+application. The moment the compositor says an application is in front of the
+driven display and the bar is not standing over it on purpose — by the guide's
+own row, or as the guide's menu — a context menu still up is put away, whatever
+raised it and however the application got there: a launch handing the display
+over, a window raised on its own, Valve's client given sight of one of its own.
+It could not be driven from there anyway, since the pad's buttons belong to the
+application once one is in front. Only the two menus that are meant to be over
+an application stay: the floating window's own, and the one raised over an
+application's file question.
 
 The panel's glass refracts the video, the way it refracts everything else it
 stands on. The shell cannot see a frame of somebody's video, so the compositor

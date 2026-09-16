@@ -7,36 +7,42 @@ members = [
     "crates/lxb-portal",
     "crates/lxb-steam",
     "crates/lxb-retroarch",
+    "crates/lxb-updates",
 ]
-exclude = ["third_party/steam-cm-protocol"]
+# The two forked crates in `third_party/` are dependencies, not members: the
+# workspace's own lints, tests and formatting are about this project's code, and
+# a fork is carried to be built, not to be worked on. Each is named `lxb-` for
+# what it is — see the note beside each one, and the file each note names.
+exclude = [
+    # `lxb-smithay` — 0.7.0 verbatim, plus the one thing it has no way to
+    # express: an atomic page flip that does not wait for the vertical retrace.
+    # The kernel has taken `DRM_MODE_PAGE_FLIP_ASYNC` on atomic commits for
+    # years and the `drm` crate exposes it as
+    # `AtomicCommitFlags::PAGE_FLIP_ASYNC`, but smithay's atomic surface never
+    # sets it and offers no way to ask — so a compositor built on `DrmOutput`
+    # cannot tear at all, whatever a client requests.
+    #
+    # That is what `wp_tearing_control_v1` is *for*. Advertising the protocol
+    # without this would be worse than not advertising it: Mesa offers clients
+    # `VK_PRESENT_MODE_IMMEDIATE_KHR` because the global exists, so a game would
+    # render uncapped and still be shown at the retrace — all of the cost and
+    # none of the latency. Upstream has no such support on master either,
+    # checked at 347b2b3. See third_party/lxb-smithay/LINEXINBAR-PATCH.md.
+    "third_party/lxb-smithay",
 
-# 0.4.1 supplies the low-level CM transport and PICS parser, but its published
-# response helpers decode error packets as empty successful protobufs. Keep the
-# small, MIT-licensed source here with that boundary fixed so a Steam service
-# error can never erase the last good library.
-#
-# The copy also carries the four messages 0.4.1 leaves out because it never
-# needed them: the app ownership ticket, which is how Steam is asked whether
-# this account may run a game, and the depot decryption key, without which
-# downloaded content cannot be read. Both are plain additions to the enum and
-# the .proto — nothing published was changed to make room for them.
-[patch.crates-io]
-steam-cm-protocol = { path = "third_party/steam-cm-protocol" }
-
-# 0.7.0 verbatim, plus the one thing it has no way to express: an atomic page
-# flip that does not wait for the vertical retrace. The kernel has taken
-# `DRM_MODE_PAGE_FLIP_ASYNC` on atomic commits for years and the `drm` crate
-# exposes it as `AtomicCommitFlags::PAGE_FLIP_ASYNC`, but smithay's atomic
-# surface never sets it and offers no way to ask — so a compositor built on
-# `DrmOutput` cannot tear at all, whatever a client requests.
-#
-# That is what `wp_tearing_control_v1` is *for*. Advertising the protocol
-# without this would be worse than not advertising it: Mesa offers clients
-# `VK_PRESENT_MODE_IMMEDIATE_KHR` because the global exists, so a game would
-# render uncapped and still be shown at the retrace — all of the cost and none
-# of the latency. Upstream has no such support on master either, checked at
-# 347b2b3.
-smithay = { path = "third_party/smithay" }
+    # `lxb-steam-cm-protocol` — 0.4.1 supplies the low-level CM transport and
+    # PICS parser, but its published response helpers decode error packets as
+    # empty successful protobufs. The copy here has that boundary fixed so a
+    # Steam service error can never erase the last good library.
+    #
+    # It also carries the four messages 0.4.1 leaves out because it never needed
+    # them: the app ownership ticket, which is how Steam is asked whether this
+    # account may run a game, and the depot decryption key, without which
+    # downloaded content cannot be read. Both are plain additions to the enum
+    # and the .proto — nothing published was changed to make room for them. See
+    # third_party/lxb-steam-cm-protocol/README.LXB.md.
+    "third_party/lxb-steam-cm-protocol",
+]
 
 [workspace.package]
 version = "0.9.0"

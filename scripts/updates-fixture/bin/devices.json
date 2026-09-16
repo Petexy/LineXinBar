@@ -1,0 +1,5 @@
+{"Devices":[
+ {"DeviceId":"1111111111111111111111111111111111111111","Name":"Samsung SSD 990 PRO","Plugin":"nvme","Protocol":"org.nvmexpress","Flags":["updatable"],"Version":"4B2QJXD7","Releases":[{"Version":"5B2QJXD7"}]},
+ {"DeviceId":"2222222222222222222222222222222222222222","Name":"System Firmware","Plugin":"uefi_capsule","Protocol":"org.uefi.capsule","Flags":["updatable"],"Version":"1.02","Releases":[{"Version":"1.05"}]},
+ {"DeviceId":"3333333333333333333333333333333333333333","Name":"USB Receiver","Plugin":"future","Protocol":"future.device","Flags":["updatable"],"Version":"12.01","Releases":[{"Version":"12.11"}]}
+]}

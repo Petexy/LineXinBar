@@ -348,7 +348,7 @@ fn ours(job: &Job) -> Option<PathBuf> {
     Some(our_cache()?.join(name))
 }
 
-/// `$XDG_CACHE_HOME/linexinbar/steam-avatars`.
+/// `$XDG_CACHE_HOME/lxb/steam-avatars`.
 ///
 /// Beside the artwork cache rather than in it, so that throwing away every
 /// picture of a game — which the Settings page offers — does not also throw
@@ -364,7 +364,7 @@ pub fn our_cache() -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".cache"))
         })?;
-    Some(cache.join("linexinbar").join("steam-avatars"))
+    Some(cache.join("lxb").join("steam-avatars"))
 }
 
 /// One file's bytes, or nothing.

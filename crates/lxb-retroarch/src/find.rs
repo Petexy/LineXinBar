@@ -231,7 +231,7 @@ fn refused_at() -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".cache"))
         })
-        .map(|cache| cache.join("linexinbar").join("cores-that-will-not-load"))
+        .map(|cache| cache.join("lxb").join("cores-that-will-not-load"))
 }
 
 /// The cores this machine has downloaded once and found it could not open.

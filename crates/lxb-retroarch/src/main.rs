@@ -39,6 +39,7 @@
 //! is the command line to use, which is the only part of a launch that is
 //! RetroArch's business.
 
+mod achievements;
 mod art;
 mod assets;
 mod consoles;
@@ -171,6 +172,8 @@ fn deeper(core: &str) -> Option<CoreOptions> {
 
 #[derive(Debug, Subcommand)]
 enum Asked {
+    /// Private JSON stdin protocol for RetroAchievements account and browsing.
+    Achievements,
     /// Whether this machine has RetroArch, and what would start it.
     Probe,
     /// Install RetroArch into this user's own flatpak installation.
@@ -277,6 +280,10 @@ fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
 
     match cli.asked {
+        Asked::Achievements => {
+            achievements::run();
+            ExitCode::SUCCESS
+        }
         Asked::Probe => {
             let installation = find::installation();
             if let Some(installation) = &installation {
@@ -318,6 +325,7 @@ fn main() -> ExitCode {
         }
         Asked::Uninstall => {
             if install::remove(&mut out) {
+                achievements::forget();
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

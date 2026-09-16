@@ -26,7 +26,7 @@ Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
               Everything needed to run a Wayland session and nothing that
               assumes this project's shell is the one being run — which is
               what lets a display manager depend on it alone.
-  desktop     lxb-desktop, lxb-portal, the packaged session launcher, the
+  desktop     lxb-desktop, lxb-portal, lxb-updates, the packaged session launcher, the
               Wayland session entry and the desktop portal's registration.
               Useless without the compositor; the packages say so.
   retroarch   lxb-retroarch and the two marks it draws its rows with: the
@@ -115,6 +115,11 @@ stage_compositor() {
 stage_desktop() {
     install_binary lxb-desktop
     install_binary lxb-portal
+    install_binary lxb-updates
+    local policy="$install_root/share/polkit-1/actions/org.linexinbar.updates.policy"
+    install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.updates.policy.in" "$policy"
+    sed -i "s|@HELPER@|$prefix/bin/lxb-updates|g" "$policy"
+    install -Dm0644 "$PROJECT_ROOT/docs/updates.md" "$install_root/share/doc/lxb-desktop/updates.md"
 
     install -Dm0755 "$PACKAGING_DIR/files/lxb-session" "$install_root/bin/lxb-session"
     install -Dm0644 "$PACKAGING_DIR/files/lxb.desktop" \
@@ -143,6 +148,23 @@ stage_desktop() {
         "$install_root/share/applications/linexinbar-files.desktop"
     install -Dm0644 "$PROJECT_ROOT/share/applications/linexinbar-mimeapps.list" \
         "$install_root/share/applications/linexinbar-mimeapps.list"
+
+    # And the entry standing for the shell's own Extract, which is what opens an
+    # archive in this session. It is not a program: the shell answers a press on
+    # a `.zip` itself, and this exists so the machine has something to *name* as
+    # the handler — a choice the user makes on the Open with list is written
+    # into their own `mimeapps.list` as a desktop entry name, so an answer with
+    # no entry to its name could be displaced and never chosen back. It is also
+    # the road in from outside, `xdg-open` on an archive, which runs the shell
+    # with `--extract`. See crates/lxb-desktop/src/archive.rs.
+    #
+    # Deliberately not named in the list above. Extract is the default *in the
+    # shell*, which the shell decides for itself and needs no file for; naming
+    # it there as well would take archives away from whatever else on the
+    # machine opens them, in a session where this desktop is only the one the
+    # user happens to be in.
+    install -Dm0644 "$PROJECT_ROOT/share/applications/linexinbar-extract.desktop" \
+        "$install_root/share/applications/linexinbar-extract.desktop"
 
     # The desktop portal: how an application outside the session asks for a
     # piece of it. The `.portal` file is what xdg-desktop-portal reads to find

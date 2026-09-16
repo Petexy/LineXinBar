@@ -1,0 +1,46 @@
+<!--
+  Update the applications: the app grid, with the update arrow in the fourth
+  place.
+
+  A handful of tiles is what an application is on this shell's bar and what
+  "all the applications" looks like in every software centre that has a page
+  for them. Three of them and the page's own arrow standing where the fourth
+  would be, so the mark says which programs *and* what is being done to them
+  without a second drawing to read.
+
+  The arrow rather than a fourth tile is also what keeps this from being
+  setting-icons.svg, which is four marks in one cell at these same numbers and
+  is about what every mark in the shell is made of.
+
+  The tiles are 10.4 units with 2.8 between them — setting-icons.svg's own
+  measurements: wide enough that the field reads separate bodies rather than
+  one scalloped slab, and far enough inside the cell's edge for the shadow the
+  shader casts beside each. The arrow is fitted to the fourth box and clears
+  the tile above it by that same 2.8.
+
+  Its head is drawn wider than the arrow the other rows carry — 9.6 units
+  against their 8 — and that is a correction rather than a variation. A solid
+  tile and an arrow of the same bounding box do not weigh the same, because
+  most of the arrow's box is air; the first version was fitted to the box and
+  came out as the light corner of a square of four.
+
+  Nothing is drawn on the tiles. A picture at a third of the cell is finer than
+  the bevel is deep and comes out as a dimple, and three different pictures
+  would be three applications named rather than all of them meant.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <g id="bead">
+      <rect x="4.2" y="4.2" width="10.4" height="10.4" rx="2.4"/>
+      <rect x="17.4" y="4.2" width="10.4" height="10.4" rx="2.4"/>
+      <rect x="4.2" y="17.4" width="10.4" height="10.4" rx="2.4"/>
+      <path d="M22.6 17.4L27.4 22.6H24.2V27.8H21V22.6H17.8Z"/>
+    </g>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

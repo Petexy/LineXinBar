@@ -2,15 +2,13 @@
 /target/
 **/*.rs.bk
 
-# Byte-code left behind when one of the scripts imports another.
 __pycache__/
 
-# Local logs and profiling output.
+
 *.log
 *.profraw
 *.profdata
 
-# Local environment overrides may contain tokens or machine-specific settings.
 .env
 .env.*
 !.env.example
@@ -23,15 +21,12 @@ __pycache__/
 *.swo
 *~
 
-# OS-generated metadata.
 .DS_Store
 Thumbs.db
 .directory
 
-# Local agent/tool state.
 /.agents/
 /.codex/
 
-# Upstream clones kept only for reading; not part of this project.
-third_party/GameNative/
-third_party/Pluvia/
+/*-TO-DO.MD
+/*-TO-DO.md

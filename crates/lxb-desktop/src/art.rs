@@ -15,7 +15,7 @@
 //!    downloaded every picture its library screen has ever shown. Reading it
 //!    costs a `stat` and a decode, works with no network at all, and is
 //!    exactly the picture Steam would show.
-//! 2. **This shell's cache**, `$XDG_CACHE_HOME/linexinbar/steam-art`, holding
+//! 2. **This shell's cache**, `$XDG_CACHE_HOME/lxb/steam-art`, holding
 //!    what had to be fetched. Kept as the bytes Steam sent rather than as
 //!    decoded pixels, so it is small and so it survives a change to any size
 //!    in this file.
@@ -707,7 +707,7 @@ fn ours(app_id: u32, piece: Piece, published: Option<&str>) -> Option<PathBuf> {
     )
 }
 
-/// `$XDG_CACHE_HOME/linexinbar/steam-art`, the whole of what this shell keeps.
+/// `$XDG_CACHE_HOME/lxb/steam-art`, the whole of what this shell keeps.
 ///
 /// Its own function because three things want the directory rather than a file
 /// in it: writing one, measuring the lot, and throwing the lot away.
@@ -721,7 +721,7 @@ pub fn our_cache() -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".cache"))
         })?;
-    Some(cache.join("linexinbar").join("steam-art"))
+    Some(cache.join("lxb").join("steam-art"))
 }
 
 /// How much of the disk this shell's picture cache may take.

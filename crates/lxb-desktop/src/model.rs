@@ -906,6 +906,13 @@ impl Lattice {
     /// Answers the games that came back having failed — see [`Played`]. Every
     /// other kind of exit is tidied away and logged, which is all any of them
     /// has ever needed.
+    pub fn running_roms(&self) -> usize {
+        self.launched_apps
+            .iter()
+            .filter(|app| app.played.is_some())
+            .count()
+    }
+
     pub fn reap_children(&mut self) -> Vec<Played> {
         let now = Instant::now();
         let mut failed = Vec::new();
@@ -3113,6 +3120,35 @@ mod tests {
             cursor.current_entry(&lattice).map(Entry::title),
             Some("a.txt"),
             "standing in the folder, on its first row"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder with nothing in it is stood in all the same. An unpacking
+    /// arrives by this walk — see [`crate::Shell::stand_in_what_was_unpacked`]
+    /// — and an archive holding one empty folder is a thing people make; the
+    /// column it opens carries the explorer's own head rows, which is what
+    /// keeps it from being the dead end [`Cursor::enter`] refuses.
+    #[test]
+    fn an_empty_folder_is_still_stood_in() {
+        let Some(dir) = scratch("show-empty") else {
+            return;
+        };
+        let empty = dir.join("nothing");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(
+            cursor
+                .walk_to_file(&mut lattice, &empty, None, by_name())
+                .is_some(),
+            "the walk arrives"
+        );
+        assert!(cursor.leave(), "and it was stood in, not pointed at");
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("nothing")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

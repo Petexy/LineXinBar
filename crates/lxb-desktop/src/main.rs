@@ -31,6 +31,7 @@ fn skipped(why: &str) {
 
 mod appinfo;
 mod apps;
+mod archive;
 mod art;
 mod avatars;
 mod bluetooth;
@@ -61,6 +62,7 @@ mod playing;
 mod pointer;
 mod polkit;
 mod power;
+mod retroachievements;
 mod retroarch;
 mod reveal;
 mod screenshot;
@@ -79,6 +81,7 @@ mod trash;
 mod trophies;
 mod ui;
 mod uninstall;
+mod updates;
 mod users;
 mod volume;
 mod wallpaper_clock;
@@ -760,6 +763,49 @@ struct Cli {
     /// over, or a plain absolute path, which is what somebody typing it will.
     #[arg(long, value_name = "FILE")]
     show_in_files: Option<String>,
+
+    /// Unpack an archive into the folder it is sitting in, and exit without
+    /// starting a shell.
+    ///
+    /// The front door for the desktop entry that stands for the shell's own
+    /// Extract — see [`archive::ENTRY`] — which is what `xdg-open` on a `.zip`
+    /// reaches in a session where somebody has chosen it. Nothing is asked
+    /// here, and that is the difference between this and a press inside the
+    /// shell: a press has a screen to put a question on and this has a caller
+    /// who wanted a file opened, so the archive is unpacked where it stands.
+    /// Nothing is written over doing it — see [`archive::unpack`].
+    ///
+    /// Takes a `file://` URI, which is what `%f` in a desktop entry hands over
+    /// for a local file, or a plain path, which is what somebody typing it
+    /// will.
+    #[arg(long, value_name = "FILE")]
+    extract: Option<String>,
+}
+
+/// Unpack one archive into the folder it is sitting in, for `--extract`.
+///
+/// A path relative to wherever this was run from is taken as one, which is not
+/// something a desktop entry ever sends and is exactly what somebody typing it
+/// will — [`reveal::ask_the_session`] reads its argument the same way and for
+/// the same reason.
+///
+/// Where it landed is printed, because this is a program somebody ran and the
+/// one thing they want to know is where the contents went: an unpacking never
+/// writes over anything, so the answer is not always the name they would have
+/// guessed.
+fn unpack_and_exit(named: &str) -> anyhow::Result<()> {
+    let path = match reveal::path_of(named) {
+        Some(path) => path,
+        None if !named.contains("://") => std::env::current_dir()?.join(named),
+        None => anyhow::bail!("{named} does not name a file on this machine"),
+    };
+    let into = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} is not in a folder", path.display()))?;
+    let landed =
+        archive::unpack(&path, into).map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))?;
+    println!("{}", landed.display());
+    Ok(())
 }
 
 /// `name[:installed[:percent]]`, for `--debug-steam-library`.
@@ -911,6 +957,14 @@ fn main() -> anyhow::Result<()> {
     // no compositor is looked for. See [`reveal::ask_the_session`].
     if let Some(named) = cli.show_in_files.as_deref() {
         return reveal::ask_the_session(named);
+    }
+
+    // Nor this one: an archive, unpacked where it stands, and out. Before
+    // everything below for the reason above — no settings are read, no
+    // catalogue is scanned, no compositor is looked for — and it does not even
+    // need a session to be running, because nothing is being asked of one.
+    if let Some(named) = cli.extract.as_deref() {
+        return unpack_and_exit(named);
     }
 
     // A WAYLAND_SOCKET file descriptor represents this client's already-open
@@ -1163,6 +1217,9 @@ fn main() -> anyhow::Result<()> {
         renaming: None,
         purging: None,
         carrying: None,
+        to_extract: None,
+        compressing: None,
+        compress_format: archive::Format::Zip,
         file_question: None,
         pending_pick: None,
         offered_kinds: Vec::new(),
@@ -1197,6 +1254,10 @@ fn main() -> anyhow::Result<()> {
         launch_questions_waiting: VecDeque::new(),
         said_a_download_finished: None,
         retroarch,
+        retroachievements: retroachievements::RetroAchievements::default(),
+        trophy_browser: trophies::Browser::default(),
+        retroachievement_buttons: Vec::new(),
+        updates: updates::Updates::default(),
         retroarch_setup: false,
         retroarch_offer: None,
         retroarch_play: None,
@@ -1286,6 +1347,7 @@ fn main() -> anyhow::Result<()> {
         paper_chosen: None,
         drained: Drained::default(),
         leaving: None,
+        update_power_permit: None,
         exit: false,
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
@@ -1383,7 +1445,11 @@ fn main() -> anyhow::Result<()> {
 
     while !shell.exit {
         event_queue.dispatch_pending(&mut shell)?;
+        let running = shell.lattice.running_roms();
         let failed = shell.lattice.reap_children();
+        if running != shell.lattice.running_roms() {
+            shell.retroachievements.refresh();
+        }
         shell.roms_that_would_not_start(failed);
 
         let now = Instant::now();
@@ -1464,6 +1530,8 @@ fn main() -> anyhow::Result<()> {
         // whichever frame it is done.
         if shell.startup.ready {
             shell.sync_retroarch();
+            shell.sync_retroachievements();
+            shell.sync_updates();
         }
         // The other way round as well: a column stepped into is a question
         // about the disk, asked here because every way of stepping into one —
@@ -1511,6 +1579,13 @@ fn main() -> anyhow::Result<()> {
         // clock: it is up for a second whether or not anything else in the
         // session has a reason to draw.
         shell.advance_volume(now);
+        // And a menu of the bar's that an application has come up in front
+        // of, which goes before the surface state is applied for the reason
+        // everything above it does: it is a fact about what the compositor has
+        // already said, and the frame this pass draws is the one that takes
+        // the menu off the application. See
+        // [`Shell::close_the_menu_behind_an_application`].
+        shell.close_the_menu_behind_an_application();
         // Applies whatever the last events settled on: an application exiting
         // changes what the surface should be doing just as much as a keypress.
         shell.sync_surface_state();
@@ -3809,6 +3884,28 @@ struct Shell {
     /// about. Moving control to another screen takes it away for the same
     /// reason a menu is taken away.
     carrying: Option<Carrying>,
+    /// The archive the *where should this be unpacked* question on screen is
+    /// about, taken on the press that raised it.
+    ///
+    /// Held rather than read back off the selection when one of the two answers
+    /// is pressed, for the reason a transfer holds its own subject: the bar
+    /// underneath goes on living while the panel is up — another display is
+    /// driving its own cursor, a drive can be unplugged, a folder's listing is
+    /// thrown away the moment the cursor walks out of it — and an unpacking
+    /// that read its own subject off whatever happened to be selected when the
+    /// answer landed would be one that could act on the wrong file.
+    to_extract: Option<ToExtract>,
+    /// The archive being named on the panel Compress raises, before anything
+    /// is written. See [`Compressing`], and `Shell::ask_to_compress`.
+    compressing: Option<Compressing>,
+    /// The kind of archive the last one was made as, which is what the next
+    /// panel opens offering.
+    ///
+    /// Kept for the session and not written down: somebody packing three
+    /// things one after another should not have to say "tar.gz" three times,
+    /// and a shell that remembered it across sessions would be a setting with
+    /// no page to change it on.
+    compress_format: archive::Format,
     /// The file question on screen, if an application outside this session has
     /// asked one. See [`picker`].
     ///
@@ -3984,6 +4081,10 @@ struct Shell {
     /// whether there is anything in it is whether the `lxb-retroarch` package
     /// is installed. See [`retroarch`].
     retroarch: retroarch::RetroArch,
+    retroachievements: retroachievements::RetroAchievements,
+    trophy_browser: trophies::Browser,
+    retroachievement_buttons: Vec<menu::Command>,
+    updates: updates::Updates,
     /// Whether the folder now being read was *just chosen*, so the cores its
     /// games need are fetched when the reading is done.
     ///
@@ -4424,6 +4525,7 @@ struct Shell {
     /// Set from the moment the user chose to turn the machine off: the screen
     /// is going black, and nothing the user does reaches anything until it has.
     leaving: Option<Leaving>,
+    update_power_permit: Option<lxb_updates::service::PowerPermit>,
     exit: bool,
     needs_redraw: bool,
     next_frame_deadline: Instant,
@@ -6804,6 +6906,15 @@ impl Shell {
         if !self.key_repeat_on {
             return;
         }
+        // A board that has come up since the key went down has the keyboard,
+        // and it throws releases away — so the end of this key will never be
+        // heard and it would repeat for as long as the board is up. Forgotten
+        // rather than paused: what the shell has is a press with no release
+        // coming, which is not a held key, it is a stuck one.
+        if self.osk.has_the_keyboard() {
+            self.held_key = None;
+            return;
+        }
         let Some(held) = self.held_key.as_mut() else {
             return;
         };
@@ -7359,6 +7470,35 @@ impl Shell {
             // while the field is up.
             return;
         }
+        // Page Up, Page Down and End over the terminal frame, which is what
+        // a keyboard reading a wall of text reaches for and what every other
+        // terminal answers. Below the field block on purpose: while a
+        // response is being typed the keyboard is the field's.
+        //
+        // Home is not among them. Home is the guide, and the guide is the one
+        // key this shell never takes away from anybody — a frame that
+        // borrowed it to jump to the top would be a screen with no way out.
+        // Left and Right already walk the frame from the pad, and they reach
+        // the top the same way.
+        if self.updates_output_is_up() {
+            let moved = match keysym {
+                Keysym::Page_Up | Keysym::KP_Page_Up => self.updates.scroll(false),
+                Keysym::Page_Down | Keysym::KP_Page_Down => self.updates.scroll(true),
+                // The clear way back to the live end of a running tool, for
+                // somebody who scrolled up to read something and wants to be
+                // following again.
+                Keysym::End | Keysym::KP_End => {
+                    self.updates.follow_output();
+                    true
+                }
+                _ => false,
+            };
+            if moved {
+                self.stepped();
+                self.show_updates();
+                return;
+            }
+        }
         if let Some(action) = action_for_keysym(keysym) {
             // Enter and the space bar are one key everywhere in this shell, and
             // the file panel is the one screen where they are two acts. Told
@@ -7387,6 +7527,9 @@ impl Shell {
             || self.type_into_network(stroke)
             || self.type_into_pairing(stroke)
             || self.type_into_value(stroke)
+            || self.type_into_compress(stroke)
+            || self.type_into_updates(stroke)
+            || self.type_into_retroachievements(stroke)
             || self.type_into_steam(stroke)
             || self.type_into_picker(stroke)
             || self.type_into_search(stroke)
@@ -7403,7 +7546,9 @@ impl Shell {
     /// so whether keys are letters rather than buttons.
     fn field_wanted(&self) -> bool {
         self.password_wanted()
+            || self.updates.typing
             || self.steam.field_wanted()
+            || self.retroachievements.typing()
             || self.search_wanted()
             || self.rename_wanted()
             || self.picker_field_wanted()
@@ -7429,6 +7574,7 @@ impl Shell {
             // keyboard for one of those would be a panel Escape could not leave.
             || self.pairing.as_ref().is_some_and(Pairing::typed)
             || self.typing.is_some()
+            || self.compressing.is_some()
             || self.steam.password_wanted()
     }
 
@@ -8182,6 +8328,12 @@ impl Shell {
                     return;
                 }
                 if let Some(setting) = chosen {
+                    if let settings::Setting::Update(action) = setting {
+                        self.close_dialog();
+                        self.updates.press(action);
+                        self.show_updates();
+                        return;
+                    }
                     settings::apply(setting);
                     // A sound device is the sound server's to carry out, as a
                     // display setting is the compositor's, and it is handed
@@ -8582,7 +8734,12 @@ impl Shell {
         // One layer at a time, from the top down. A panel raised by a menu row
         // is in front of the menu, so Back from it lands back on the screen the
         // menu was about — the menu itself has already folded away, which is
-        // what makes this one step rather than two.
+        // what makes this one step rather than two. And one layer at a time
+        // inside the panel first, where it has stepped into a further list of
+        // answers — see [`Shell::step_back_in_the_dialog`].
+        if self.step_back_in_the_dialog() {
+            return;
+        }
         if self.close_dialog() {
             self.needs_redraw = true;
             return;
@@ -8900,9 +9057,8 @@ impl Shell {
 
     /// Show or hide the on-screen keyboard.
     ///
-    /// One condition, and it is about whether the letters can leave the shell
-    /// at all: there has to be a virtual keyboard to send them through.
-    /// Nothing else is asked. The board is deliberately summonable over an
+    /// Shell fields receive strokes directly; an application needs a virtual
+    /// keyboard to send them through. The board is deliberately summonable over an
     /// application that never announced a text field — an X11 client, a
     /// browser built without Wayland IME — and that is a case the shell has no
     /// way to tell apart from an application with nothing to type into, so it
@@ -8916,14 +9072,19 @@ impl Shell {
             self.needs_redraw = true;
             return;
         }
-        if !self.osk.can_type() {
+        let here = self.field_wanted();
+        if !here && !self.osk.can_type() {
             tracing::debug!("no virtual keyboard on this compositor; nothing to type with");
             return;
         }
         // Step out of the way first, for the same reason the guide closes the
         // board: whichever of the two is in front has the keys.
         self.guide.close();
-        self.osk.open();
+        if here {
+            self.osk.open_here();
+        } else {
+            self.osk.open();
+        }
         self.sync_surface_state();
         self.needs_redraw = true;
     }
@@ -8935,6 +9096,17 @@ impl Shell {
     /// second answer to the one question that matters here: what happens when
     /// the application is *already* running.
     fn start_selection(&mut self) {
+        if self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|p| p.cursor.current_entry(&self.lattice))
+            .is_some_and(
+                |e| matches!(e,apps::Entry::Trophy(row) if row.key==trophies::Key::RetroConfigure),
+            )
+        {
+            self.configure_retroachievements();
+            return;
+        }
         // The rows the RetroArch integration put on the bar, answered first and
         // separately for the reason the ones below are answered before the
         // rest: none of them starts a process. The row itself installs, asks or
@@ -9008,6 +9180,19 @@ impl Shell {
                 return self.offer_to_install(&game)
             }
             _ => {}
+        }
+        // An archive whose handler is the shell's own Extract, which is every
+        // archive until somebody says otherwise. Nothing is forked for this
+        // one: a press means "get what is in there", and the only thing about
+        // that the shell cannot work out for itself is where it should go. So
+        // the press is answered by asking. See [`archive`].
+        if self.the_selection_is_unpacked() {
+            let Some((width, height)) = self.focused_size() else {
+                return;
+            };
+            // Out of the row's own tile, which is where every panel this bar
+            // raises grows from.
+            return self.ask_where_to_unpack(ui::launch_origin(width, height));
         }
         // It is come back to, never started a second time. A console has one of
         // each thing running, and a tile that silently produced a second copy
@@ -9152,19 +9337,16 @@ impl Shell {
 
     /// Start the application the shelf under the cursor is for.
     ///
-    /// The tail of [`Shell::launch_the_selection`], for a press that is not
-    /// about the selection: what is under the cursor is a shelf, and what is
-    /// being started is a program that opens the whole of it. Everything after
-    /// the fork is identical — the sound, the loading screen, which display it
-    /// stands on, when the start screen gives the display up — because a launch
-    /// off a menu is a launch on exactly the terms every other one is.
+    /// A press that is not about the selection: what is under the cursor is a
+    /// shelf, and what is being started is a program that opens the whole of
+    /// it. Which application, before anything else — the shelf under the
+    /// cursor says which, and starting whichever one this used to name would
+    /// open the photo viewer on a shelf of films. Everything after that is
+    /// [`Shell::open_with_a_loading_screen`].
     fn open_the_shelf_app(&mut self) {
         let Some(kind) = self.selected_shelf() else {
             return;
         };
-        // Which application, before anything else: the shelf under the cursor
-        // says which, and starting whichever one this used to name would open
-        // the photo viewer on a shelf of films.
         let Some(wanted) = apps::app_for_shelf(kind) else {
             return;
         };
@@ -9174,6 +9356,47 @@ impl Shell {
         else {
             return;
         };
+        self.open_with_a_loading_screen(name, icon, |lattice| lattice.launch_aside(wanted));
+    }
+
+    /// Start a program off a menu, and put the loading screen over it.
+    ///
+    /// The tail of [`Shell::launch_the_selection`], for the presses that are
+    /// not about the row under the cursor: a shelf's own application, and
+    /// RetroArch's own interface off the menu over its row. `start` is the fork,
+    /// handed the catalogue so what it starts is filed with everything else the
+    /// bar has started; it answers with the process id, or with nothing when
+    /// nothing was forked — in which case the launcher has already said why and
+    /// nothing goes on the screen, because a press that started nothing must
+    /// not be answered as though it had.
+    ///
+    /// Everything after the fork is identical to a tile's press — the sound,
+    /// the loading screen, which display it stands on, when the start screen
+    /// gives the display up — because a launch off a menu is a launch on
+    /// exactly the terms every other one is. One copy of that tail, so that a
+    /// route added later cannot come out with a different answer: RetroArch's
+    /// own interface used to be forked here with none of it, and the press read
+    /// as ignored until the emulator's window arrived over whatever the person
+    /// had moved on to.
+    ///
+    /// A second press while the first is still opening is spent, on the rule a
+    /// row's press is spent by — [`already_starting`]. The loading screen is
+    /// the answer to the first press, and the second would start a second copy
+    /// under it.
+    fn open_with_a_loading_screen(
+        &mut self,
+        name: String,
+        icon: Option<String>,
+        start: impl FnOnce(&mut Lattice) -> Option<u32>,
+    ) {
+        if self
+            .launching
+            .iter()
+            .any(|splash| already_starting(splash, &name, None))
+        {
+            tracing::debug!(app = %name, "this is already starting, so the press was spent");
+            return;
+        }
         // Where it is being launched from, before it is started, so the answer
         // cannot be overtaken by the window itself.
         self.sync_launch_output(self.focused_panel);
@@ -9184,7 +9407,7 @@ impl Shell {
         let known: Vec<u32> = panel.windows.iter().map(|window| window.id).collect();
         let foreground = panel.foreground.clone().unwrap_or_default();
 
-        let Some(pid) = self.lattice.launch_aside(wanted) else {
+        let Some(pid) = start(&mut self.lattice) else {
             // Nothing was forked; the launcher has already said why.
             return;
         };
@@ -9969,11 +10192,57 @@ impl Shell {
         // from has gone must not write itself over this one. See
         // [`Shell::steam_said_what_runs_it`].
         self.compat_menu = None;
+        let trophies = entries
+            .iter()
+            .any(|entry| entry.command == menu::Command::TrophiesSort);
         let rows = ui::context_menu_rows_that_fit(height);
         if self
             .context_menu
             .open_at(anchor, title.map(menu::Title::new), entries, rows)
         {
+            if trophies {
+                self.context_menu.widen(ui::TROPHIES_EXTRA_WIDTH);
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Put away a context menu that an application has come up in front of.
+    ///
+    /// The menu is drawn on a surface of its own that the compositor puts in
+    /// front of every window on the display — see [`Panel::menu`], which is
+    /// how it stays reachable over a floating video. That is the right answer
+    /// for the one menu that is *about* a floating window and the wrong one
+    /// for every other: a menu raised over a row of the bar belongs to the
+    /// start screen, and when the start screen steps behind an application the
+    /// menu has to go with it. It did not. Reported from use on 2026-09-16: a
+    /// menu opened in the moment between a press and the window it started
+    /// arriving stayed on the screen, over the application, and could not be
+    /// driven — the pad's buttons go to the application once one is in front —
+    /// so there was no way to close it but the guide.
+    ///
+    /// Asked once a pass against what the compositor has already said, like
+    /// every other answer of this shape, rather than at each of the several
+    /// routes by which an application reaches the front: a launch handing the
+    /// display over, a window raised on its own, Valve's client given sight of
+    /// one of its own. None of them knows about the menu, and a rule that had
+    /// to be remembered at each of them would be forgotten at the next one
+    /// added. The rule itself is [`a_menu_cannot_stand_over_an_application`].
+    ///
+    /// Only where the compositor says which application is in front of *this*
+    /// display. An older one describes the session as a whole, and what the
+    /// shell falls back to there is whether anything it started is still
+    /// alive — which a music player behind the bar is, and a menu that closed
+    /// itself over a song playing would be this rule firing on a guess.
+    fn close_the_menu_behind_an_application(&mut self) {
+        let closes = a_menu_cannot_stand_over_an_application(
+            self.context_menu.is_open(),
+            self.foreground_is_per_display() && self.app_in_front_of(self.focused_panel),
+            self.guide.is_over_app(),
+            self.menu_is_the_floating_windows() || self.file_question_is_open(),
+        );
+        if closes && self.context_menu.close() {
+            tracing::debug!("an application is in front of the bar, so the menu over it was put away");
             self.needs_redraw = true;
         }
     }
@@ -10020,10 +10289,22 @@ impl Shell {
             return Some((
                 ui::launch_origin(panel.width as f32, panel.height as f32),
                 Some("Trophies".into()),
-                vec![
-                    menu::Entry::new(menu::Command::TrophiesSort, "Sort").glyph(icons::SORT),
-                    menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
-                ],
+                {
+                    let mut rows =
+                        vec![menu::Entry::new(menu::Command::TrophiesSort, "Sort")
+                            .glyph(icons::SORT)];
+                    if retroarch::offered() {
+                        rows.push(
+                            menu::Entry::new(
+                                menu::Command::RetroAchievementsConfigure,
+                                "Configure RetroAchievements",
+                            )
+                            .glyph(icons::CATEGORY_TROPHIES),
+                        );
+                    }
+                    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+                    rows
+                },
             ));
         }
         if self.selected_media().is_some() {
@@ -10484,7 +10765,7 @@ impl Shell {
         };
         self.open_with = media::handlers(mime, &self.lattice.categories, &self.lattice.aside)
             .into_iter()
-            .filter_map(|app| media::handler_row(mime, app))
+            .filter_map(|opener| media::handler_row(mime, opener))
             .collect();
         // The head of the list, because that is where [`media::handlers`] puts
         // the answer already in force.
@@ -10516,7 +10797,12 @@ impl Shell {
         self.open_with_others =
             media::every_application(&self.lattice.categories, &self.lattice.aside)
                 .into_iter()
-                .filter_map(|app| media::handler_row(mime, app))
+                // Applications and nothing else. The shell's own Extract is not
+                // one and is deliberately absent: this list is the way *past*
+                // the one above it, for a file nothing declares, and Extract is
+                // already on that one wherever it has anything to say.
+                .map(media::Opener::App)
+                .filter_map(|opener| media::handler_row(mime, opener))
                 .collect();
         // Off, every time. See the field.
         self.open_with_keeps = false;
@@ -10800,7 +11086,8 @@ impl Shell {
             apps::Searched::Folder => self.search_here(query),
             apps::Searched::Library => self.search_library(query),
             apps::Searched::Trophies => {
-                if self.steam.set_trophy_search(query) {
+                if self.trophy_browser.search != query {
+                    self.trophy_browser.search = query.into();
                     self.rebuild_trophies();
                 }
             }
@@ -12624,6 +12911,464 @@ impl Shell {
         })
     }
 
+    // --- unpacking one of the user's archives ------------------------------
+
+    /// Whether a press on the selected row means "unpack this".
+    ///
+    /// Two questions, and both of them have to be yes: the row has to be a file
+    /// the explorer found, and the thing that would open its type has to be the
+    /// shell's own Extract rather than a program somebody installed. The second
+    /// is what makes this a *default* and not a rule — a user who has said that
+    /// `.zip` opens in Ark gets Ark, from this press and from the Open row of
+    /// the menu alike, and nothing here intercepts it. See [`media::handlers`].
+    ///
+    /// Only the explorer's rows, deliberately. A shelf gathers songs, films and
+    /// photographs, an archive is none of the three and can never appear on
+    /// one — and asking the question of a row that cannot be an archive would
+    /// be a test that can only ever answer no.
+    fn the_selection_is_unpacked(&self) -> bool {
+        let Some(file) = self.selected_file() else {
+            return false;
+        };
+        matches!(
+            media::handlers(file.mime, &self.lattice.categories, &self.lattice.aside).first(),
+            Some(media::Opener::Extract)
+        )
+    }
+
+    /// Ask where the archive under the cursor should be unpacked.
+    ///
+    /// The one question in this shell with no bad news in it, and it is drawn
+    /// like it: neither answer is grave, neither can lose anything, and the
+    /// panel opens on the first of them. An unpacking writes over nothing — see
+    /// [`archive::unpack`] — and the archive itself stays exactly where it is
+    /// whichever is chosen. What is being asked is not "are you sure", which
+    /// the shell could answer for the user, but "where", which it cannot.
+    ///
+    /// *Here* first and under the highlight because it is the answer nine
+    /// presses in ten: somebody standing in the folder they downloaded a thing
+    /// into wants it unpacked in the folder they are standing in, and the other
+    /// row is a walk. Cancel last, as it is everywhere.
+    fn ask_where_to_unpack(&mut self, from: [f32; 4]) {
+        let Some(source) = self.carried_source().filter(|source| !source.folder) else {
+            return;
+        };
+        // Nothing else may be waiting on the panel this raises.
+        self.app_facts = None;
+        self.removal_plan = None;
+        self.deleting = None;
+        let name = source.name.clone();
+        self.to_extract = Some(ToExtract { source, from });
+        // *Here* is the folder the archive is in, which is the column the press
+        // came from and the column still standing behind this panel — the same
+        // word the mirrored picker puts under its own head row for the two
+        // journeys that carry a file, and it means the same thing. It is left
+        // to say it rather than the folder being named on the button, because a
+        // panel clips its labels rather than wrapping them and a folder called
+        // "Downloads from work" would come out saying something else.
+        //
+        // The buttons wear no marks. A panel's buttons are drawn as plain chips
+        // — see [`ui::build_dialog`], which has no glyph in its layout — so a
+        // mark passed here would be a thing written down and never shown.
+        self.dialog.ask(
+            from,
+            Some(icons::EXTRACT.to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note("Where should this be unpacked?".to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::ExtractHere, "Extract here"),
+                menu::Entry::new(menu::Command::ExtractInto, "Choose a folder"),
+                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+            ],
+            0,
+        );
+    }
+
+    /// *Extract here*: the folder the archive is already sitting in.
+    ///
+    /// No picker at all — the destination was named by the press — so the
+    /// journey is built already answered and the unpacking starts on the same
+    /// frame. See [`transfer::Transfer::already_chosen`], which is what lets the
+    /// panels afterwards be the transfer's own without a mirrored bar ever
+    /// appearing to ask a question that has been answered.
+    fn unpack_here(&mut self) {
+        let Some(asked) = self.to_extract.take() else {
+            return;
+        };
+        let Some(into) = asked.source.path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        self.unpack_into(asked.source, into, asked.from);
+    }
+
+    /// *Choose a folder*: the mirrored bar, wearing the third journey.
+    ///
+    /// The same walk a copy is carried on and the same rows, because it is the
+    /// same question — which folder — and somebody who has moved a file in this
+    /// shell already knows how to drive it. What differs is the head row, which
+    /// says Extract and is never blocked: an archive can be unpacked into the
+    /// folder it is already in, which is the one thing a move cannot do.
+    fn unpack_somewhere(&mut self) {
+        let Some(asked) = self.to_extract.take() else {
+            return;
+        };
+        self.carry_these(transfer::Kind::Extract, vec![asked.source], asked.from);
+    }
+
+    /// Start the unpacking, the folder having been settled one way or the
+    /// other.
+    ///
+    /// It joins the transfers rather than living beside them: an unpacking is a
+    /// worker that moves the user's files about and then has one thing to say,
+    /// which is what [`Carrying`] already is. So the panel while it runs and
+    /// the panel if it fails are the transfer's own and there is no second
+    /// copy of either. Where it parts from a copy is at the end: what it made
+    /// is stepped into rather than read again — see
+    /// [`Self::stand_in_what_was_made`].
+    fn unpack_into(&mut self, source: transfer::Source, into: PathBuf, from: [f32; 4]) {
+        let Some(picker) = transfer::Transfer::already_chosen(
+            transfer::Kind::Extract,
+            vec![source.clone()],
+            &into,
+        ) else {
+            return;
+        };
+        tracing::info!(archive = ?source.path, into = ?into, "unpacking it");
+        self.carrying = Some(Carrying {
+            picker,
+            started: Some(Instant::now()),
+            run: Some(transfer::Run::start(
+                transfer::Kind::Extract,
+                vec![source],
+                into,
+                // Meaningless for an unpacking and passed all the same: nothing
+                // it lands on is ever a name that was taken, so there is no
+                // question for an answer to be the answer to. See
+                // [`transfer::carry_one`].
+                transfer::Settle::KeepBoth,
+            )),
+            from,
+        });
+        // The press that ends the journey, in the voice the start screen
+        // answers every other press in.
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+        self.needs_redraw = true;
+    }
+
+    // --- making an archive of the user's things -----------------------------
+
+    /// Ask what to call an archive of whatever the menu was raised over — a
+    /// file in a folder, or a folder in one.
+    fn ask_to_compress_the_selection(&mut self, from: [f32; 4]) {
+        let Some(source) = self.carried_source() else {
+            return;
+        };
+        self.ask_to_compress(vec![source], from);
+    }
+
+    /// The same for everything ticked, which is what Compress means while a
+    /// column is being marked.
+    ///
+    /// The marking is *not* ended here, unlike a Copy of the set: the panel
+    /// this raises is a question, and a question answered with Cancel should
+    /// leave the ticks where they were, exactly as the Delete question does.
+    /// It ends on the press that spends it — see [`Self::start_compressing`].
+    fn ask_to_compress_the_marked(&mut self, from: [f32; 4]) {
+        let Some(marks) = self.marking.as_ref() else {
+            return;
+        };
+        let sources = marks.sources();
+        if sources.is_empty() {
+            return;
+        }
+        self.ask_to_compress(sources, from);
+    }
+
+    /// Put up the panel that names the archive: the field, the kind it will
+    /// be, and the button that makes it — with the board, on a console.
+    ///
+    /// The panel is the whole journey. There is no folder to walk to, because
+    /// the archive is made beside the things that go into it, and there is no
+    /// second question after this one: the name is checked on the press of
+    /// Compress while the field is still on screen — see
+    /// [`Compressing::fault_in_name`] — so what the press starts is the
+    /// packing itself.
+    ///
+    /// Opening on Compress, for the reason the typed panel opens on Set: the
+    /// panel went up because the user pressed a row, the field already holds
+    /// a name worth having, and the button that finishes what they started is
+    /// the one under their thumb. Nothing here destroys anything.
+    fn ask_to_compress(&mut self, sources: Vec<transfer::Source>, from: [f32; 4]) {
+        // The folder they are in, which is where the archive is made — one
+        // folder for all of them, because a set is ticked in one column. A
+        // thing with no parent is `/` itself, which nobody is packing.
+        let Some(into) = sources
+            .first()
+            .and_then(|source| source.path.parent())
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let carried = transfer::Carried::of(&sources);
+        // Nothing else may be waiting on the panel this raises.
+        self.app_facts = None;
+        self.removal_plan = None;
+        self.deleting = None;
+        self.to_extract = None;
+        let offered = archive::writable();
+        if offered.is_empty() {
+            // A press the machine cannot answer, said the way a press on an
+            // archive nothing unpacks is said: the package that would fix it.
+            self.say_about_the_transfer(
+                from,
+                carried.glyph,
+                vec![
+                    dialog::Line::Heading(carried.name),
+                    dialog::Line::Note(archive::nothing_writes()),
+                ],
+            );
+            return;
+        }
+        // The kind the last one was made as, where this machine still writes
+        // it, and the first on the list otherwise.
+        let format = offered
+            .iter()
+            .copied()
+            .find(|format| *format == self.compress_format)
+            .unwrap_or(offered[0]);
+        let name = suggested_archive_name(&sources, &into);
+        let asked = Compressing {
+            sources,
+            into,
+            name,
+            format,
+            offered,
+            fault: None,
+            from,
+        };
+        let raised = self.dialog.ask(
+            from,
+            Some(icons::COMPRESS.to_string()),
+            asked.lines(),
+            asked.buttons(),
+            1,
+        );
+        if !raised {
+            tracing::warn!("the archive's name could not be asked for");
+            return;
+        }
+        tracing::debug!(things = asked.sources.len(), into = ?asked.into, "asking what to call the archive");
+        self.compressing = Some(asked);
+        // The board comes up with the field, on the terms a sign-in's does:
+        // once, and not for somebody who has shown they have a keyboard.
+        self.osk.offer_shell_field(true);
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Redraw the panel after a keystroke or a change of kind.
+    fn refresh_compress_panel(&mut self) {
+        let Some(asked) = self.compressing.as_ref() else {
+            return;
+        };
+        self.dialog.say(asked.lines());
+        self.needs_redraw = true;
+    }
+
+    /// Step into the list of kinds of archive, out of the button that says
+    /// which it is set to.
+    ///
+    /// The board goes first. The list is as long as what this machine can
+    /// write and stands under the field on the same panel, and a panel that
+    /// has to share the display with a keyboard has half the display to stand
+    /// in — see [`ui::dialog_rect`]. It comes back with the answers, on the
+    /// same terms it came up: offered, not forced.
+    fn offer_archive_kinds(&mut self) {
+        let Some(asked) = self.compressing.as_ref() else {
+            return;
+        };
+        let (kinds, chosen) = (asked.kinds(), asked.chosen());
+        self.osk.offer_shell_field(false);
+        self.sync_surface_state();
+        if !self.dialog.descend(kinds, chosen) {
+            tracing::warn!("there was no list of kinds to step into");
+        }
+        self.needs_redraw = true;
+    }
+
+    /// One of them pressed: it is the kind, and the panel comes back to the
+    /// answers with that written on the button — once the row has been seen
+    /// to go down.
+    fn choose_archive_kind(&mut self, index: usize) {
+        let Some(asked) = self.compressing.as_mut() else {
+            return;
+        };
+        let Some(format) = asked.offered.get(index).copied() else {
+            return;
+        };
+        asked.format = format;
+        // The name may have been fine as a zip and be taken as a tar.gz, or
+        // the other way round; whichever, the complaint was about a name that
+        // is not the one that will be made now.
+        asked.fault = None;
+        self.compress_format = format;
+        tracing::debug!(?format, "the archive will be that kind");
+        let buttons = asked.buttons();
+        self.dialog.back_after_press(buttons);
+        self.refresh_compress_panel();
+        self.came_back_to_the_field();
+    }
+
+    /// The field is the thing on screen again, the list of kinds having been
+    /// left one way or the other: offer the board for it as it was offered
+    /// when the panel went up.
+    fn came_back_to_the_field(&mut self) {
+        if self.compressing.is_none() {
+            return;
+        }
+        self.osk.offer_shell_field(true);
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Step back out of a further column of answers the panel has stepped
+    /// into, if it has. `true` if that is what Back meant.
+    ///
+    /// One layer at a time inside the panel as well, exactly as inside the
+    /// context menu: the list was reached by a press and Back undoes one
+    /// press. The one panel that steps anywhere is the archive's — see
+    /// [`Self::offer_archive_kinds`] — and coming back to its field is coming
+    /// back to the board.
+    fn step_back_in_the_dialog(&mut self) -> bool {
+        if !self.dialog.is_open() || !self.dialog.back() {
+            return false;
+        }
+        self.came_back_to_the_field();
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Compress pressed: check the name while the field can still be typed
+    /// into, and start the packing if there is nothing wrong with it.
+    ///
+    /// It joins the transfers for the reason an unpacking does: a worker that
+    /// writes into the user's folder and then has one thing to say is what
+    /// [`Carrying`] already is, so the panel while it runs and the panel if it
+    /// fails are the transfer's own. Where it parts from a copy is at the end
+    /// — see [`Self::stand_in_what_was_made`].
+    fn start_compressing(&mut self) {
+        let Some(asked) = self.compressing.as_mut() else {
+            return;
+        };
+        if let Some(fault) = asked.fault_in_name() {
+            asked.fault = Some(fault);
+            self.refresh_compress_panel();
+            return;
+        }
+        let Some(asked) = self.compressing.take() else {
+            return;
+        };
+        let Some(picker) = transfer::Transfer::already_chosen(
+            transfer::Kind::Compress,
+            asked.sources.clone(),
+            &asked.into,
+        ) else {
+            return;
+        };
+        // The ticks are spent by the press, exactly as a Copy of the set
+        // spends them: the journey holds its own copy of what was picked out,
+        // and a column left ticked behind a packing would be a set the user
+        // could go on editing under a job that had stopped listening.
+        self.end_the_marking();
+        let name = asked.name.trim().to_string();
+        let members: Vec<String> = asked
+            .sources
+            .iter()
+            .map(|source| source.name.clone())
+            .collect();
+        let (from_folder, into, format) = (asked.into.clone(), asked.into.clone(), asked.format);
+        tracing::info!(things = members.len(), into = ?into, ?format, name, "making an archive");
+        self.carrying = Some(Carrying {
+            picker,
+            started: Some(Instant::now()),
+            run: Some(transfer::Run::of(transfer::Kind::Compress, move || {
+                archive::pack(&from_folder, &members, &into, &name, format)
+            })),
+            from: asked.from,
+        });
+        self.dismiss_password_board();
+        self.osk.offer_shell_field(false);
+        // The button held the panel so that a refused name could be said on
+        // it; the name passed, so the panel goes now — after the press, as it
+        // would have from a button that did not hold.
+        self.dialog.close_after_press();
+        // The press that ends the journey, in the voice the start screen
+        // answers every other press in.
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+        self.needs_redraw = true;
+    }
+
+    /// Give up on naming an archive without making anything.
+    fn abandon_compressing(&mut self) {
+        if self.compressing.take().is_none() {
+            return;
+        }
+        tracing::debug!("the archive was not made");
+        self.dismiss_password_board();
+    }
+
+    /// Apply one keystroke to the archive's name. Returns whether it was this
+    /// field's to take.
+    ///
+    /// Enter presses whichever answer is lit rather than always Compress,
+    /// unlike the typed panel's Set: this panel has an answer that is not a
+    /// way off it, and somebody who arrowed onto the kind and pressed Enter
+    /// meant the kind. The panel opens on Compress, so in the ordinary case
+    /// the two are the same key.
+    fn type_into_compress(&mut self, stroke: keyboard::Stroke) -> bool {
+        let done = {
+            let Some(asked) = self.compressing.as_mut() else {
+                return false;
+            };
+            match stroke {
+                keyboard::Stroke::Char(character) => {
+                    // Bounded for the reason a typed value is — see
+                    // [`LONGEST_VALUE`] — and well inside what a file may be
+                    // called, with the suffix still to come.
+                    if asked.name.chars().count() < LONGEST_VALUE {
+                        asked.name.push(character);
+                    }
+                    asked.fault = None;
+                    None
+                }
+                keyboard::Stroke::BACKSPACE => {
+                    asked.name.pop();
+                    asked.fault = None;
+                    None
+                }
+                keyboard::Stroke::ENTER => Some(true),
+                keyboard::Stroke::ESCAPE => Some(false),
+                _ => return true,
+            }
+        };
+        match done {
+            Some(true) => self.on_dialog_action(Action::Launch),
+            // Escape is Back: out of the list of kinds first, and out of the
+            // panel only from the answers it opened with.
+            Some(false) => {
+                if !self.step_back_in_the_dialog() {
+                    self.close_dialog();
+                    self.needs_redraw = true;
+                }
+            }
+            None => self.refresh_compress_panel(),
+        }
+        true
+    }
+
     /// Drive the picker: the mirror of driving the bar.
     ///
     /// Left steps into the folder the highlight is on and Right steps back out
@@ -12711,7 +13456,7 @@ impl Shell {
         // Asked again here rather than trusted from the row that was drawn,
         // because between the frame that drew it and this press the disk is
         // anybody's.
-        let ready = transfer::ready(carrying.picker.sources(), &into);
+        let ready = transfer::ready(carrying.picker.kind(), carrying.picker.sources(), &into);
         let from = carrying.from;
         let glyph = carrying.picker.carried().glyph;
         match ready {
@@ -13136,7 +13881,10 @@ impl Shell {
     /// choose a folder, and a panel telling them it worked would be a button
     /// that has to be pressed to get back to the screen they were already on.
     /// What they get instead is the column, read again, with the file in it or
-    /// gone from it.
+    /// gone from it — or, for an unpacking, the folder that has just come out
+    /// of the archive, with the cursor standing inside it, and for a packing
+    /// the archive that has just been made, with the cursor standing on it.
+    /// See [`Self::stand_in_what_was_made`].
     ///
     /// A failure is a panel, for the reason a failed delete is one — a command
     /// that silently either worked or did not is a command nobody trusts twice
@@ -13148,7 +13896,14 @@ impl Shell {
                 self.forget_what_moved(carrying);
                 tracing::info!(at = ?landed, "it is there");
                 self.close_dialog();
-                self.reread_the_open_folder();
+                if matches!(
+                    carrying.picker.kind(),
+                    transfer::Kind::Extract | transfer::Kind::Compress
+                ) {
+                    self.stand_in_what_was_made(&landed);
+                } else {
+                    self.reread_the_open_folder();
+                }
             }
             // Some of them went and some did not, which is the one answer that
             // needs both halves doing: the columns are as wrong as a clean run
@@ -13242,6 +13997,51 @@ impl Shell {
             vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
             0,
         );
+    }
+
+    /// Carry the cursor into what an unpacking has just made, or onto what a
+    /// packing has.
+    ///
+    /// The two transfers whose result is something the user has not seen. A
+    /// copy or a move puts a row into a column the cursor is already standing
+    /// in, and reading that column again is the whole of what there is to
+    /// show. An unpacking makes a *new* folder, and the folder was the point of
+    /// the press: somebody who pressed `holiday.tar.gz` wanted the photographs,
+    /// not a row saying `holiday` beside the one they pressed, to be stepped
+    /// into by hand. So the shell steps into it for them — by the walk "Show in
+    /// folder" arrives by, so what is seen is the trail easing one column
+    /// further in with the contents under the highlight. From the mirrored
+    /// picker it is the same walk to a folder further off, which is the whole
+    /// reason to walk rather than read again: the column behind that picker was
+    /// the folder the archive is *in*, and nothing there has changed.
+    ///
+    /// An archive that was one file in a coat has no folder to stand in, so the
+    /// cursor is left standing on the file — its folder read again with that
+    /// row under the highlight, which is what the same walk does with a
+    /// revealed file. An archive that has just been *made* is the same case:
+    /// the cursor stands on the new row, which is how a rename leaves it too.
+    /// Arriving is silent, as every finished transfer is.
+    ///
+    /// A walk that cannot arrive — there is no Files row on this bar, or the
+    /// folder is on no disk it lists — falls back to reading the open folder
+    /// again, so a folder that has just been written to is never left showing
+    /// what it held before.
+    fn stand_in_what_was_made(&mut self, landed: &Path) {
+        let arrived = if landed.is_dir() {
+            self.walk_files_to(landed, None)
+        } else {
+            landed
+                .parent()
+                .is_some_and(|folder| self.walk_files_to(folder, Some(landed)))
+        };
+        if !arrived {
+            tracing::warn!(
+                at = %landed.display(),
+                "there is no way to what was made on this bar"
+            );
+            self.reread_the_open_folder();
+        }
+        self.needs_redraw = true;
     }
 
     /// Read the folder the cursor is standing in again, because what is in it
@@ -14932,6 +15732,16 @@ impl Shell {
                     self.stepped();
                 }
             }
+            // The one panel with something to scroll on it: the transcript
+            // in the updates' terminal frame. Up and Down are the buttons'
+            // — a panel's answers are a column — so the axis a column does
+            // not use is the one the frame's window moves on.
+            Action::Left | Action::Right => {
+                if self.updates_panel_is_up() && self.updates.scroll(action == Action::Right) {
+                    self.stepped();
+                    self.show_updates();
+                }
+            }
             Action::Launch => {
                 let from = self
                     .focused_size()
@@ -14961,6 +15771,64 @@ impl Shell {
     /// this opens grows out of.
     fn carry_out(&mut self, command: menu::Command, from: [f32; 4]) {
         match command {
+            menu::Command::UpdateCancelCheck => {
+                self.updates.cancel_check();
+                self.show_updates();
+            }
+            menu::Command::UpdateRestart => {
+                self.updates.restart();
+                self.show_updates();
+            }
+            menu::Command::UpdateInstall => {
+                self.updates.install();
+                self.show_updates();
+            }
+            menu::Command::UpdateYes => {
+                self.updates.answer(true);
+                self.show_updates();
+            }
+            menu::Command::UpdateNo => {
+                self.updates.answer(false);
+                self.show_updates();
+            }
+            menu::Command::UpdateRespond => {
+                self.updates.view = updates::View::Job;
+                self.updates.edit();
+                self.show_updates();
+            }
+            menu::Command::UpdateSubmit => {
+                self.updates.submit();
+                self.show_updates();
+            }
+            menu::Command::UpdateLog(job) => {
+                self.updates.open_log(job, true);
+                self.show_updates();
+            }
+            menu::Command::UpdateOutputBack => {
+                self.updates.output_back();
+                self.show_updates();
+            }
+            menu::Command::UpdateLive => {
+                self.updates.follow_output();
+                self.show_updates();
+            }
+            menu::Command::UpdateOutput => {
+                self.updates.show_output();
+                self.show_updates();
+            }
+            menu::Command::UpdateOverview => {
+                self.updates.open = true;
+                self.updates.show_overview();
+                self.show_updates();
+            }
+            menu::Command::UpdateDaily => {
+                self.updates.toggle_daily();
+                self.show_updates();
+            }
+            menu::Command::UpdateCheck => {
+                self.updates.press(settings::UpdateValue::Check);
+                self.show_updates();
+            }
             menu::Command::Information => self.show_app_information(from),
             menu::Command::Uninstall => self.ask_to_uninstall(from),
             menu::Command::Launch => self.start_selection(),
@@ -14998,6 +15866,15 @@ impl Shell {
                     .descend(title.map(menu::Title::new), entries);
             }
             menu::Command::OpenWithAlways => self.toggle_open_with_keeps(),
+            menu::Command::ExtractHere => self.unpack_here(),
+            menu::Command::ExtractInto => self.unpack_somewhere(),
+            menu::Command::Compress => self.ask_to_compress_the_selection(from),
+            menu::Command::CompressMarked => self.ask_to_compress_the_marked(from),
+            // The panel's own three controls. The first two hold it and change
+            // what is on it; the third is the press that writes to the disk.
+            menu::Command::CompressFormat => self.offer_archive_kinds(),
+            menu::Command::CompressAs(index) => self.choose_archive_kind(index),
+            menu::Command::ConfirmCompress => self.start_compressing(),
             menu::Command::OpenWithApp(index) => self.open_selection_in(index),
             menu::Command::SortBy(sort) => self.sort_selection(sort),
             menu::Command::ShowHidden => self.show_the_hidden(!self.show_hidden),
@@ -15112,6 +15989,21 @@ impl Shell {
                 self.context_menu.descend(title, entries);
             }
             menu::Command::InvokeNotification(id, action) => {
+                if let Some(event) = self.updates.notifications.remove(&id) {
+                    self.notifications.dismiss(id);
+                    self.updates.acknowledge(event.id);
+                    self.context_menu.close();
+                    if event.attention
+                        || (event.restart.is_some() && self.updates.snapshot.job == event.job)
+                    {
+                        self.updates.open = true;
+                        self.updates.show_overview();
+                    } else {
+                        self.updates.open_log(event.job, true);
+                    }
+                    self.show_updates();
+                    return;
+                }
                 // Looked up now rather than carried in the command, because a
                 // command is `Copy` and a key is a `String` — and because the
                 // announcement may have been replaced under the open panel by
@@ -15177,6 +16069,28 @@ impl Shell {
                 self.steam.with_password();
                 self.show_steam_panel();
             }
+            menu::Command::RetroAchievementsConfigure => self.configure_retroachievements(),
+            menu::Command::RetroAchievementsBack => {
+                self.retroachievements.back();
+                self.show_retroachievements();
+            }
+            menu::Command::RetroAchievementsSubmit => {
+                self.retroachievements.submit();
+                self.show_retroachievements();
+            }
+            menu::Command::RetroAchievementsCancel => {
+                self.close_dialog();
+                self.osk.close();
+                self.sync_surface_state();
+            }
+            menu::Command::RetroAchievementsChange => {
+                self.retroachievements.change_account();
+                self.show_retroachievements();
+            }
+            menu::Command::RetroAchievementsLogout => {
+                self.retroachievements.logout();
+                self.show_retroachievements();
+            }
             menu::Command::SteamSubmit => {
                 self.steam.submit();
                 self.show_steam_panel();
@@ -15206,12 +16120,13 @@ impl Shell {
             }
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
             menu::Command::TrophiesSort => {
-                let entries = trophies_sort_rows(self.steam.trophy_sort(), self.steam.orders());
+                let entries = trophies_sort_rows(self.trophy_browser.sort);
                 self.context_menu
                     .descend(Some(menu::Title::new("Trophies")), entries);
             }
             menu::Command::TrophiesSortBy(sort) => {
-                if self.steam.set_trophy_sort(sort) {
+                if self.trophy_browser.sort != sort {
+                    self.trophy_browser.sort = sort;
                     settings::remember_trophies_sort(sort);
                     self.rebuild_trophies();
                     if let Some(panel) = self.panels.get_mut(self.focused_panel).filter(|panel| {
@@ -15843,8 +16758,19 @@ impl Shell {
                 // the agent's own queue rather than being refused. Nobody is
                 // kept waiting who was not already waiting on the panel in
                 // front of them.
+                //
+                // With one exception, and it is the panel the question is
+                // most likely to arrive over: the updates panel. A root step
+                // of an update goes through `pkexec`, so the question *is*
+                // the update's, and the panel it would wait behind is the
+                // one saying "Working…" over a tool that is waiting for the
+                // very password being asked for. That panel is set aside for
+                // the question and comes back when it is answered — see
+                // [`Shell::sync_updates`]. Before this the question waited
+                // until the person happened to hide the panel, and what they
+                // saw until then was an update that never started.
                 let room = self.authenticating.is_none()
-                    && !self.dialog.is_on_screen()
+                    && (!self.dialog.is_on_screen() || self.updates_panel_is_up())
                     && !self.context_menu.is_on_screen();
                 (agent.withdrawn(), room.then(|| agent.asked()).flatten())
             }
@@ -15876,8 +16802,37 @@ impl Shell {
         self.advance_authentication();
 
         if let Some(request) = asked {
+            if self.updates_panel_is_up() {
+                tracing::info!("the updates panel is set aside for the question");
+                self.updates.set_aside();
+                // The board that came up for the panel's own field goes
+                // with it; the question raises its own.
+                self.osk.offer_shell_field(false);
+            }
             self.ask_to_authenticate(request);
         }
+    }
+
+    /// Whether the centred panel on screen is the updates panel, taking
+    /// input.
+    /// Whether the panel on screen is the updates' terminal frame — the one
+    /// thing this shell draws that is longer than the panel holding it, and
+    /// so the one thing a scroll key or a wheel has anything to do with.
+    fn updates_output_is_up(&self) -> bool {
+        self.updates.view == updates::View::Output && self.updates_panel_is_up()
+    }
+
+    fn updates_panel_is_up(&self) -> bool {
+        self.dialog.is_open()
+            && self.updates.open
+            && !self.updates.buttons.is_empty()
+            && self
+                .dialog
+                .buttons
+                .entries()
+                .iter()
+                .map(|e| e.command)
+                .eq(self.updates.buttons.iter().copied())
     }
 
     /// Whether the panel on screen is about the question this cookie names.
@@ -15921,7 +16876,7 @@ impl Shell {
         }
         let from = self.dialog_origin();
         let lines = match self.authenticating.as_ref() {
-            Some(state) => authentication_lines(&state.request.message, &state.note, 0),
+            Some(state) => update_authentication_lines(&state.request, &state.note, 0),
             None => return,
         };
         let raised = self.dialog.ask(
@@ -15929,7 +16884,18 @@ impl Shell {
             Some(icons::AUTHENTICATE.to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::Authenticate, "Authenticate"),
+                menu::Entry::new(
+                    menu::Command::Authenticate,
+                    if self
+                        .authenticating
+                        .as_ref()
+                        .is_some_and(|s| s.request.action_id == lxb_updates::INSTALL_ACTION)
+                    {
+                        "Continue"
+                    } else {
+                        "Authenticate"
+                    },
+                ),
                 menu::Entry::new(menu::Command::Dismiss, "Cancel"),
             ],
             authentication_answer_under_the_thumb(self.app_running()),
@@ -16115,7 +17081,7 @@ impl Shell {
             return;
         }
         let lines =
-            authentication_lines(&state.request.message, &state.note, state.password.typed());
+            update_authentication_lines(&state.request, &state.note, state.password.typed());
         self.dialog.say(lines);
     }
 
@@ -16465,6 +17431,7 @@ impl Shell {
     /// too, and answering is idempotent — the row that dismisses the panel has
     /// usually answered already.
     fn close_dialog(&mut self) -> bool {
+        self.updates.hide();
         self.app_facts = None;
         self.removal_plan = None;
         self.abandon_uninstall("dismissed");
@@ -16486,12 +17453,18 @@ impl Shell {
         // for it, and a panel taken away by Back with nothing told would leave
         // a keyboard standing over a bar with nothing to type into.
         self.abandon_typing();
+        // And an archive being named, which is the same field with a different
+        // thing behind it.
+        self.abandon_compressing();
         // A sign-in dismissed by Back is a sign-in given up on: the panel was
         // the whole of it, and one left running behind a bar nobody can see it
         // from would go on polling Steam for a code that is no longer on
         // screen.
         self.steam.cancel();
         self.steam_buttons.clear();
+        self.retroachievements.cancel();
+        self.retroachievement_buttons.clear();
+        self.osk.offer_shell_field(false);
         // A core offered and not answered is an offer given up on; a fetch
         // already running is not, and goes on behind the bar with the row
         // saying so. What is dropped here is only the shell's belief that its
@@ -17246,9 +18219,7 @@ impl Shell {
             ],
             vec![
                 menu::Entry::new(menu::Command::Dismiss, "Keep It"),
-                menu::Entry::new(menu::Command::SteamUninstallNow(app_id), "Uninstall")
-                    .glyph(icons::UNINSTALL)
-                    .grave(),
+                menu::Entry::new(menu::Command::SteamUninstallNow(app_id), "Uninstall").grave(),
             ],
             // Standing on the row that changes nothing, because this is the
             // press that cannot be taken back: the one that lands by accident
@@ -17317,7 +18288,7 @@ impl Shell {
                     dialog::Line::Rule,
                 ],
                 vec![
-                    menu::Entry::new(menu::Command::SteamDo(doing), action).glyph(icons::LAUNCH),
+                    menu::Entry::new(menu::Command::SteamDo(doing), action),
                     menu::Entry::new(menu::Command::Dismiss, "Not Now"),
                 ],
                 0,
@@ -17461,8 +18432,7 @@ impl Shell {
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam")
-                    .glyph(icons::LAUNCH),
+                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam"),
                 menu::Entry::new(menu::Command::Dismiss, "Not Now"),
             ],
             0,
@@ -19746,7 +20716,7 @@ impl Shell {
         // is once a second, and a panel that the user has already dismissed
         // must not come back on the next line: the row underneath is saying the
         // same thing, which is what it is for.
-        if change.panel && self.dialog.is_open() {
+        if change.panel && self.dialog.is_open() && self.retroachievements.stage.is_none() {
             self.show_installing_retroarch();
             self.show_getting_cores();
         }
@@ -19754,7 +20724,11 @@ impl Shell {
             self.retroarch_ended(worked);
         }
         if let Some(worked) = change.fetched {
-            self.cores_ended(worked);
+            if self.retroachievements.stage.is_some() {
+                self.retroachievements.core_result = Some(worked);
+            } else {
+                self.cores_ended(worked);
+            }
         }
         // A press over one game that came back with nothing. Said out loud, and
         // said with the one thing that can be done about it: the name is what
@@ -19794,6 +20768,13 @@ impl Shell {
     /// are in there, and which of them have nothing to play them with, is the
     /// answer that has only just arrived.
     fn retroarch_scanned(&mut self) {
+        if self.retroachievements.offer_pending
+            || self.retroachievements.stage.is_some()
+            || (self.retroarch_setup && self.dialog.is_open())
+        {
+            self.retroachievements.resume_setup = true;
+            return;
+        }
         if std::mem::take(&mut self.retroarch_setup) {
             let missing = self.retroarch.missing_cores();
             if self.retroarch.offers_cores() && !missing.is_empty() {
@@ -19850,6 +20831,9 @@ impl Shell {
     /// Games goes on saying the same sentence either way, which is what makes
     /// hiding it safe.
     fn show_getting_cores(&mut self) {
+        if self.retroachievements.stage.is_some() {
+            return;
+        }
         let Some(fetching) = self.retroarch.fetching() else {
             return;
         };
@@ -19950,6 +20934,8 @@ impl Shell {
     /// folder, and rebuilding one without the other is two answers to one
     /// question on screen at once.
     fn rebuild_retroarch(&mut self) {
+        self.retroachievements.refresh();
+        self.rebuild_trophies();
         let note = self.retroarch.note();
         let arriving = self.retroarch.arriving();
         let shifted = apps::offer_retroarch(&mut self.lattice.categories, note, arriving);
@@ -20154,6 +21140,7 @@ impl Shell {
         }
         tracing::info!("RetroArch has been removed");
         self.retroarch.forget();
+        self.retroachievements.removed();
         settings::forget_roms_folder();
         // What comes back after this is a machine that has never had one, so
         // the settings this shell gives a fresh install are looked at again.
@@ -20473,7 +21460,11 @@ impl Shell {
                 // is these columns the cursor has to be walked out of, and they
                 // have to still be there to be walked out of.
                 self.leave_the_picker();
+                let first_setup = settings::roms_folder().is_none();
                 settings::choose_roms_folder(&pick.at);
+                if first_setup && self.retroachievements.user.is_none() {
+                    self.retroachievements.offer_pending = true;
+                }
                 // Before the scan, and once: a sandboxed RetroArch can only
                 // open what its permissions reach, and a collection on a drive
                 // is otherwise a game that starts and cannot be read.
@@ -20976,13 +21967,153 @@ impl Shell {
     }
 
     /// Refresh the trophy column while keeping each display on the same game and achievement.
+    fn configure_retroachievements(&mut self) {
+        if !retroarch::offered() {
+            return;
+        }
+        if self.retroarch.command().is_none() {
+            self.press_retroarch_row();
+            return;
+        }
+        self.close_dialog();
+        self.retroachievements.begin();
+        self.show_retroachievements();
+    }
+
+    fn show_retroachievements(&mut self) {
+        let Some((lines, buttons)) = self.retroachievements.panel() else {
+            return;
+        };
+        let commands = buttons.iter().map(|b| b.command).collect::<Vec<_>>();
+        if self.dialog.is_open() && commands == self.retroachievement_buttons {
+            self.dialog.say(lines);
+        } else {
+            let from = self.dialog_origin();
+            self.dialog.ask(
+                from,
+                Some(icons::CATEGORY_TROPHIES.into()),
+                lines,
+                buttons,
+                0,
+            );
+            self.retroachievement_buttons = commands;
+        }
+        self.osk.offer_shell_field(self.retroachievements.typing());
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    fn type_into_retroachievements(&mut self, stroke: keyboard::Stroke) -> bool {
+        match self.retroachievements.type_into(stroke) {
+            steam::Typed::Elsewhere => return false,
+            steam::Typed::Into => {}
+            steam::Typed::Done { submitted: true } => self.retroachievements.submit(),
+            steam::Typed::Done { submitted: false } => {
+                self.close_dialog();
+                self.osk.close();
+                self.sync_surface_state();
+                return true;
+            }
+        }
+        self.show_retroachievements();
+        true
+    }
+
+    fn sync_retroachievements(&mut self) {
+        let available = retroarch::offered() && self.retroarch.command().is_some();
+        let opened = self
+            .panels
+            .iter()
+            .flat_map(|p| p.cursor.opened_rows(&self.lattice))
+            .filter_map(|e| match e {
+                apps::Entry::Trophy(row) => match row.key {
+                    trophies::Key::RetroGame(id, _) if id != 0 => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let previous_account = self.retroachievements.user.clone();
+        let previous_error = self.retroachievements.error.clone();
+        let was_waiting = matches!(
+            self.retroachievements.stage,
+            Some(retroachievements::Stage::Waiting)
+        );
+        if self
+            .retroachievements
+            .poll(available, settings::roms_folder(), opened)
+        {
+            self.rebuild_trophies();
+            if previous_account != self.retroachievements.user
+                || previous_error != self.retroachievements.error
+            {
+                self.rebuild_settings();
+            }
+        }
+        if was_waiting
+            && !matches!(
+                self.retroachievements.stage,
+                Some(retroachievements::Stage::Waiting)
+            )
+        {
+            self.show_retroachievements();
+        }
+        if available && self.retroachievements.offer_pending && !self.dialog.is_open() {
+            self.retroachievements.offer_pending = false;
+            let from = self.dialog_origin();
+            self.dialog.ask(
+                from,
+                Some(icons::CATEGORY_TROPHIES.into()),
+                vec![
+                    dialog::Line::Heading("Configure RetroAchievements?".into()),
+                    dialog::Line::Note("Sign in to track achievements in supported games.".into()),
+                ],
+                vec![
+                    menu::Entry::new(menu::Command::RetroAchievementsConfigure, "Configure"),
+                    menu::Entry::new(menu::Command::Dismiss, "Not now"),
+                ],
+                0,
+            );
+            self.needs_redraw = true;
+        }
+        if !self.dialog.is_open() && self.retroachievements.stage.is_none() {
+            if let Some(worked) = self.retroachievements.core_result.take() {
+                self.cores_ended(worked);
+            }
+        }
+        if self.retroachievements.resume_setup
+            && !self.dialog.is_open()
+            && self.retroachievements.stage.is_none()
+            && !self.retroachievements.offer_pending
+        {
+            self.retroachievements.resume_setup = false;
+            self.retroarch_scanned();
+        }
+    }
+
     fn rebuild_trophies(&mut self) {
         let selected: Vec<_> = self
             .panels
             .iter()
             .map(|p| p.cursor.trophy_selection(&self.lattice))
             .collect();
-        let shifted = apps::shelve_trophies(&mut self.lattice.categories, self.steam.trophy_rows());
+        let mut games = self.steam.trophy_games();
+        let steam_games = !games.is_empty();
+        let available = retroarch::offered() && self.retroarch.command().is_some();
+        if available {
+            games.extend(self.retroachievements.rows());
+        }
+        let invitation = retroachievements::offer_configuration(
+            available,
+            steam_games,
+            self.retroachievements.user.is_some(),
+            games.is_empty(),
+        )
+        .then(|| self.retroachievements.invitation());
+        let rows = self.trophy_browser.rows(games, invitation, |id| {
+            self.steam.game(id).map(|game| game.installed)
+        });
+        let shifted = apps::shelve_trophies(&mut self.lattice.categories, rows);
         self.absorb(shifted);
         for (panel, selected) in self.panels.iter_mut().zip(selected) {
             if let Some(selected) = selected {
@@ -21280,6 +22411,7 @@ impl Shell {
                 self.close_dialog();
             }
             self.steam_buttons.clear();
+            self.osk.offer_shell_field(false);
             return;
         };
 
@@ -21298,15 +22430,9 @@ impl Shell {
             self.steam_buttons = buttons;
         }
 
-        // The board comes up with a field and goes away with it, because on a
-        // console there is nothing else to type with — the same reason the
-        // uninstall panel raises one. It types *here* rather than through the
-        // virtual keyboard: see `keyboard::Osk::open_here`.
-        if panel.typing {
-            self.osk.open_here();
-        } else if self.osk.types_here() {
-            self.osk.close();
-        }
+        // Rendering the field is not an explicit request to reopen the board.
+        // Honour physical typing and manual dismissal across login updates.
+        self.osk.offer_shell_field(panel.typing);
         self.sync_surface_state();
         self.needs_redraw = true;
     }
@@ -21764,9 +22890,16 @@ impl Shell {
     /// Start RetroArch's own interface.
     ///
     /// Its command line and nothing else — no core and no game, which is what
-    /// makes it the emulator's own screens rather than a launch. It joins the
-    /// launched applications under its own name, so the guide can close it
-    /// exactly like anything else.
+    /// makes it the emulator's own screens rather than a game starting. It
+    /// joins the launched applications under its own name, so the guide can
+    /// close it exactly like anything else.
+    ///
+    /// And it is answered on the screen exactly like anything else: the
+    /// loading screen grows out of the row, wearing the emulator's mark, and
+    /// holds the display until its window is there. It used not to be — the
+    /// menu folded away and the bar sat there for the seconds a flatpak takes
+    /// to come up, which is a press that reads as ignored and a press somebody
+    /// makes twice. See [`Shell::open_with_a_loading_screen`].
     fn open_retroarch(&mut self) {
         let Some(command) = self.retroarch.command().map(<[String]>::to_vec) else {
             return;
@@ -21777,8 +22910,8 @@ impl Shell {
             command: command.join(" "),
         };
         tracing::info!(command = %opening.command, "opening RetroArch's own interface");
-        self.lattice.open_command(opening);
-        self.needs_redraw = true;
+        let (name, icon) = (opening.name.clone(), opening.icon.clone());
+        self.open_with_a_loading_screen(name, icon, |lattice| lattice.open_command(opening));
     }
 
     /// The menu for one Steam title: what can be done to it, in the order a
@@ -22031,7 +23164,7 @@ impl Shell {
             // long as the cursor is standing in the field. A search that ended
             // with the board would turn the rest of the word into button
             // presses.
-            if !matches!(typed, keyboard::Typed::Ignored) && self.osk.close() {
+            if !matches!(typed, keyboard::Typed::Ignored) && self.osk.dismiss_for_typing() {
                 self.sync_surface_state();
                 self.needs_redraw = true;
             }
@@ -23052,6 +24185,25 @@ impl Shell {
         // gesture the user made.
         let (down, carried) = scroll_steps(self.scrolled.1 + scroll_notches(vertical));
         self.scrolled.1 = carried;
+        // Over the updates' terminal frame the wheel moves the text, not the
+        // selection. Everywhere else in this shell a column is what is under
+        // the wheel and Up and Down are the right answer; here a wall of
+        // output is, and a wheel that walked the two buttons under it instead
+        // would be the one place in the shell where the wheel did not do what
+        // the thing under it is made of. The frame's own axis is Left and
+        // Right — see `on_dialog_action` — so that is what the notches become.
+        if self.updates_output_is_up() {
+            for _ in 0..down.abs() {
+                self.on_action(if down > 0 {
+                    Action::Right
+                } else {
+                    Action::Left
+                });
+            }
+            // A tilt wheel has nothing else to move here.
+            self.scrolled.0 = 0.0;
+            return;
+        }
         for _ in 0..down.abs() {
             self.on_action(if down > 0 { Action::Down } else { Action::Up });
         }
@@ -24755,6 +25907,34 @@ impl Shell {
     }
 
     fn activate_power(&mut self, item: guide::PowerItem) {
+        if item != guide::PowerItem::Cancel {
+            match lxb_updates::service::power_permit() {
+                Ok(permit) => self.update_power_permit = Some(permit),
+                Err(error) => {
+                    self.guide.close_power();
+                    let from = self.dialog_origin();
+                    self.dialog.ask(
+                        from,
+                        Some(icons::SETTING_UPDATES.into()),
+                        vec![
+                            dialog::Line::Heading("Please wait for updates".into()),
+                            dialog::Line::Note(
+                                "Your device needs to stay on while updating.".into(),
+                            ),
+                            dialog::Line::Note("You can keep using it in the meantime.".into()),
+                        ],
+                        vec![
+                            menu::Entry::new(menu::Command::Dismiss, "OK"),
+                            menu::Entry::new(menu::Command::UpdateOverview, "View updates"),
+                        ],
+                        0,
+                    );
+                    tracing::info!(%error, "power action blocked by update protection");
+                    self.needs_redraw = true;
+                    return;
+                }
+            }
+        }
         tracing::info!(?item, "power dialog selection");
         match item {
             // The menu closes first either way: what the user should see
@@ -24762,7 +25942,11 @@ impl Shell {
             // an overlay frozen mid-animation.
             guide::PowerItem::Suspend => {
                 self.guide.close();
-                run_detached("systemctl suspend", ["systemctl", "suspend"]);
+                run_detached(
+                    "systemctl suspend",
+                    ["systemctl", "suspend"],
+                    self.update_power_permit.take(),
+                );
             }
             // The two choices the session does not answer immediately. The
             // screen fades to black first and the machine is told to go once
@@ -24890,7 +26074,7 @@ impl Shell {
         // volume, and nothing in between has looked at it.
         settings::tell_the_login_screen_before_leaving();
         let (what, argv) = ending.command();
-        run_detached(what, argv);
+        run_detached(what, argv, None);
     }
 
     /// Keep the session's exit moving on the loop's own clock: the two waits
@@ -24930,6 +26114,7 @@ impl Shell {
     /// it came down over.
     fn stay_after_all(&mut self) {
         self.leaving = None;
+        self.update_power_permit = None;
         if let Some(control) = self
             .shell_control
             .as_ref()
@@ -29063,10 +30248,10 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         // that would move it: the client reads its own manifests as it comes
         // up and gets on with whatever they say is outstanding.
         if game.waiting_for_steam {
-            rows.push(
-                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam")
-                    .glyph(icons::LAUNCH),
-            );
+            rows.push(menu::Entry::new(
+                menu::Command::SteamStartClient(game.app_id),
+                "Start Steam",
+            ));
         }
         // A download that has stopped is somebody else's to resume. Pausing and
         // resuming are Steam's own list, and a second implementation of it here
@@ -29513,6 +30698,28 @@ fn chosen_when(row: menu::Entry, chosen: bool) -> menu::Entry {
     }
 }
 
+/// The rows of the Trophies column's Sort list: its three orders, the one in
+/// force ticked.
+///
+/// Three and not the Steam library's eight, and nothing greyed out. The Steam
+/// list greys an order this account cannot be asked for, which says out loud
+/// that the answer has not arrived; here the other five orders are ones half
+/// this column could never answer at all, whatever arrived — see
+/// [`trophies::Sort`].
+fn trophies_sort_rows(now: trophies::Sort) -> Vec<menu::Entry> {
+    let mut rows: Vec<menu::Entry> = trophies::SORTS
+        .iter()
+        .map(|sort| {
+            chosen_when(
+                menu::Entry::new(menu::Command::TrophiesSortBy(*sort), sort.label()),
+                *sort == now,
+            )
+        })
+        .collect();
+    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows
+}
+
 /// The rows of the Steam column's Sort list: the eight orders, the one in force
 /// ticked, and any this library cannot be put in greyed out.
 ///
@@ -29521,21 +30728,6 @@ fn chosen_when(row: menu::Entry, chosen: bool) -> menu::Entry {
 /// an account whose last-played times did not arrive has no dates to sort by.
 /// Offered, chosen, and doing nothing is what the user would read as the shell
 /// being broken, where an outline says out loud that the answer is not here.
-fn trophies_sort_rows(
-    now: lxb_steam::library::Sort,
-    knows: lxb_steam::library::Orders,
-) -> Vec<menu::Entry> {
-    steam_sort_rows(now, knows)
-        .into_iter()
-        .map(|mut entry| {
-            if let menu::Command::SteamSortBy(sort) = entry.command {
-                entry.command = menu::Command::TrophiesSortBy(sort);
-            }
-            entry
-        })
-        .collect()
-}
-
 fn steam_sort_rows(
     now: lxb_steam::library::Sort,
     knows: lxb_steam::library::Orders,
@@ -29790,36 +30982,59 @@ mod steam_game_menu_tests {
             .all(|row| row.command != menu::Command::SteamSort),);
     }
 
-    /// The Sort list offers every order, ticks the one in force, and greys the
-    /// ones this library has nothing to be sorted by — with the tick still on a
-    /// greyed row if that is where it belongs, because what the column is
-    /// listed in is a fact about it whether or not it can be changed from here.
+    /// The Trophies column's Sort list offers the three orders both halves of
+    /// it can answer, and nothing else.
+    ///
+    /// It used to be the Steam library's list with the commands rewritten —
+    /// eight orders, five of which are facts Valve keeps about Valve's games.
+    /// A RetroAchievements game has no size, no play time and no date on this
+    /// machine or anywhere the site will say, so those five filed half the
+    /// column at the bottom and called it an order. They are not greyed here
+    /// the way the Steam list greys one: greying says the answer has not
+    /// arrived, and this answer is never coming. Platform is the column's own,
+    /// and is the one order in the shell that changes a list into a set of
+    /// folders rather than re-ordering it.
     #[test]
-    fn trophies_offer_the_same_orders_with_independent_commands() {
-        use lxb_steam::library::{Orders, Sort};
-        for knows in [
-            Orders::default(),
-            Orders {
-                sizes: true,
-                playtimes: true,
-                played: true,
-            },
-        ] {
-            let steam = steam_sort_rows(Sort::NameDescending, knows);
-            let trophies = trophies_sort_rows(Sort::NameDescending, knows);
-            assert_eq!(steam.len(), trophies.len());
-            for (steam, trophies) in steam.iter().zip(&trophies) {
-                assert_eq!(steam.label, trophies.label);
-                assert_eq!(steam.enabled, trophies.enabled);
-                assert_eq!(steam.glyph, trophies.glyph);
-                match steam.command {
-                    menu::Command::SteamSortBy(sort) => {
-                        assert_eq!(trophies.command, menu::Command::TrophiesSortBy(sort))
-                    }
-                    _ => assert_eq!(trophies.command, menu::Command::Dismiss),
-                }
-            }
+    fn trophies_offer_only_the_orders_both_halves_can_answer() {
+        let rows = trophies_sort_rows(trophies::Sort::NameDescending);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Installed first",
+                "Name (A to Z)",
+                "Name (Z to A)",
+                "Platform",
+                "Cancel"
+            ]
+        );
+        assert!(
+            rows.iter().all(|row| row.enabled),
+            "nothing here is greyed: every one of these can always be answered"
+        );
+        // The one in force is ticked, and it is the only one.
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.glyph == Some(icons::CHOSEN))
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Name (Z to A)"]
+        );
+        for (row, sort) in rows.iter().zip(trophies::SORTS) {
+            assert_eq!(row.command, menu::Command::TrophiesSortBy(*sort));
         }
+        assert_eq!(rows.last().unwrap().command, menu::Command::Dismiss);
+        // And the Steam column is untouched: it keeps all eight, because its
+        // library really does answer for every one of them.
+        assert_eq!(
+            steam_sort_rows(
+                lxb_steam::library::Sort::NameDescending,
+                lxb_steam::library::Orders::default()
+            )
+            .len(),
+            lxb_steam::library::SORTS.len() + 1
+        );
     }
 
     #[test]
@@ -30709,6 +31924,194 @@ struct Carrying {
     from: [f32; 4],
 }
 
+/// The archive a *where should this be unpacked* question is about.
+///
+/// Two things and no more, because that is the whole of what either answer
+/// needs: the archive itself, in the shape the picker and the panels already
+/// speak — see [`transfer::Source`] — and the rectangle on screen that the
+/// question grew out of, so whatever it leads to grows out of the same place.
+struct ToExtract {
+    source: transfer::Source,
+    from: [f32; 4],
+}
+
+/// An archive being named: what goes into it, where it will stand, what it
+/// is called so far and what kind it will be.
+///
+/// Everything the press of Compress needs, held from the press that raised
+/// the panel, for the reason [`ToExtract`] holds its archive: the bar
+/// underneath goes on living while the panel is up, and a packing that read
+/// its own subject off whatever happened to be ticked or selected when the
+/// button landed would be one that could pack the wrong files.
+struct Compressing {
+    /// What goes in the box, in the shape the panels speak — see
+    /// [`transfer::Source`]. Never empty: every one of them stands in `into`.
+    sources: Vec<transfer::Source>,
+    /// The folder they stand in, which is where the archive is made. Beside
+    /// them rather than somewhere chosen, because that is where every desktop
+    /// puts it and because a walk to choose a folder would be a second journey
+    /// in front of a panel that is already a question.
+    into: PathBuf,
+    /// What the field holds: the name without the suffix, which the format
+    /// supplies.
+    name: String,
+    format: archive::Format,
+    /// The kinds this machine can write, in the list's order — see
+    /// [`archive::writable`]. `format` is always one of them.
+    offered: Vec<archive::Format>,
+    /// What is wrong with the name, once the button has been refused for it.
+    ///
+    /// `None` until Compress is pressed, and `None` again the moment anything
+    /// is typed — the same rule [`Typing::fault`] keeps, for the same reason:
+    /// a panel still telling somebody off for what they have just corrected is
+    /// a panel arguing with them.
+    fault: Option<String>,
+    /// Where the panel grew out of: the menu row that was pressed.
+    from: [f32; 4],
+}
+
+impl Compressing {
+    /// What the archive will be called, suffix and all.
+    fn file_name(&self) -> String {
+        self.format.named(self.name.trim())
+    }
+
+    /// The sentence under the heading: what will be made and where, or what
+    /// is wrong with the name.
+    fn note(&self) -> String {
+        if let Some(fault) = &self.fault {
+            return fault.clone();
+        }
+        let what = self.file_name();
+        match self.sources.len() {
+            1 => format!("{what} will be made beside it."),
+            _ => format!("{what} will be made beside them."),
+        }
+    }
+
+    /// Why the name cannot be used as it stands, if it cannot — asked on the
+    /// press of Compress, while the panel is still up and can still be typed
+    /// into. See `Shell::submit_typing`, which checks a value the same way and
+    /// says why.
+    ///
+    /// A slash is refused rather than made into folders, the empty name is
+    /// refused rather than given one, and a name already standing in the
+    /// folder is refused rather than asked about: the field is right there,
+    /// and changing the name is the whole of the answer to all three. Nothing
+    /// is ever written over — see [`archive::pack`] — so the last is not a
+    /// safety rule but a courtesy: an archive that landed as `holiday (2).zip`
+    /// when the user typed `holiday` would be the shell quietly renaming what
+    /// it was just told.
+    fn fault_in_name(&self) -> Option<String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Some("It needs a name.".to_string());
+        }
+        if name == "." || name == ".." {
+            return Some("That cannot be a name.".to_string());
+        }
+        if name.contains('/') {
+            return Some("A name cannot have a slash in it.".to_string());
+        }
+        let wanted = self.file_name();
+        if std::fs::symlink_metadata(self.into.join(&wanted)).is_ok() {
+            return Some(format!("Something called {wanted} is already here."));
+        }
+        None
+    }
+
+    /// What the panel says above its answers.
+    fn lines(&self) -> Vec<dialog::Line> {
+        let carried = transfer::Carried::of(&self.sources);
+        typing_lines(
+            &carried.name,
+            "",
+            &self.note(),
+            dialog::Line::Entry(self.name.clone()),
+        )
+    }
+
+    /// The panel's answers: the kind it will be, the button that makes it,
+    /// and the way out.
+    ///
+    /// Opening on the middle one — see `Shell::ask_to_compress` — with the
+    /// kind above it, where Up reaches it, and Cancel last, as it is on every
+    /// panel. The kind is written on its button because a chip carries no
+    /// second line: the row says what it is set to, and pressing it steps into
+    /// the list of what it could be.
+    ///
+    /// Compress holds the panel, unlike the button that finishes every other
+    /// question here, because it checks the name before it acts and a name it
+    /// refuses is said *on the panel* — a button that folded the panel away
+    /// under a complaint would leave the field nowhere. When the name passes,
+    /// the panel goes after the press exactly as a plain button's would; see
+    /// `Shell::start_compressing`.
+    fn buttons(&self) -> Vec<menu::Entry> {
+        vec![
+            menu::Entry::new(
+                menu::Command::CompressFormat,
+                format!("Format: {}", self.format.suffix()),
+            )
+            .holds(),
+            menu::Entry::new(menu::Command::ConfirmCompress, "Compress").holds(),
+            menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+        ]
+    }
+
+    /// The list the kind's button steps into: every kind this machine can
+    /// write, with the tick on the one in force.
+    ///
+    /// Every row holds the panel, for the reason a row of the Open with list
+    /// does: this is a value being set, and the answer is the panel itself
+    /// coming back with the value on it rather than the panel going away.
+    fn kinds(&self) -> Vec<menu::Entry> {
+        self.offered
+            .iter()
+            .enumerate()
+            .map(|(index, format)| {
+                let row =
+                    menu::Entry::new(menu::Command::CompressAs(index), format.suffix()).holds();
+                match *format == self.format {
+                    true => row.glyph(icons::CHOSEN),
+                    false => row,
+                }
+            })
+            .collect()
+    }
+
+    /// Which row of that list the kind in force is on.
+    fn chosen(&self) -> usize {
+        self.offered
+            .iter()
+            .position(|format| *format == self.format)
+            .unwrap_or_default()
+    }
+}
+
+/// What an archive of `sources` is called before anybody has typed anything.
+///
+/// One thing keeps its own name, without the extension a file has — the
+/// format supplies one — and a set is called after the folder it was picked
+/// out of, which is the one name a handful of files have in common. Never
+/// empty: a set picked out of the root of a disk is called `Archive`, and a
+/// name that was nothing but an extension keeps it, because a field that opens
+/// empty is a field the user has to fill before the button under their thumb
+/// does anything.
+fn suggested_archive_name(sources: &[transfer::Source], into: &Path) -> String {
+    let stem = match sources {
+        [one] if one.folder => Some(one.name.clone()),
+        [one] => Path::new(&one.name)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|stem| !stem.is_empty()),
+        _ => into
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+    };
+    stem.filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Archive".to_string())
+}
+
 /// The game a picture is being chosen for, and which of its two pictures.
 #[derive(Debug, Clone)]
 struct Chosen {
@@ -30794,6 +32197,12 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
         // Sort, because what it changes is what the *presses* mean rather than
         // what the column looks like.
         rows.insert(rule, select_multiple_row());
+        // And over that, last of the rows that act on the file: it makes a
+        // new one beside this one rather than changing where this one is or
+        // what it is called, which is what the three above it do — and like
+        // Copy and Move it wants a folder to make it in, so it is here and
+        // not on a shelf.
+        rows.insert(rule, compress_row());
         // Above the rule with Open and Delete, because they act on the file and
         // so do these — and below Delete, which is where the eye is expected to
         // stop. Copy and Move are the rows somebody came here on purpose for;
@@ -30842,6 +32251,9 @@ fn folder_rows(deletable: bool, hidden: bool) -> Vec<menu::Entry> {
         transfer_row(menu::Command::Copy, "Copy", icons::COPY),
         transfer_row(menu::Command::Move, "Move", icons::MOVE),
         menu::Entry::new(menu::Command::Rename, "Rename").glyph(icons::RENAME),
+        // Last of the rows that act on the folder, where a file's menu has it
+        // and for its reason: it makes something new beside the folder.
+        compress_row(),
         // At the foot of the band that acts, under the rows it generalises —
         // see [`media_rows`], which puts it in the same place for the same
         // reason.
@@ -30910,6 +32322,19 @@ fn show_hidden_row(hidden: bool) -> menu::Entry {
     }
 }
 
+/// The row that makes an archive of what the menu is about.
+///
+/// The same row on a file's menu and a folder's, and — under its own command —
+/// on the menu over a marked set, so a person who has learnt it on one finds
+/// it on the others without looking. Never disabled, on the terms
+/// [`transfer_row`] never is: it is where it can be pressed and absent where
+/// it cannot. Whether this machine can make any archive at all is answered by
+/// the press rather than by the row, because it is a handful of `stat`s down
+/// `PATH` and a menu is built on every raise.
+fn compress_row() -> menu::Entry {
+    menu::Entry::new(menu::Command::Compress, "Compress").glyph(icons::COMPRESS)
+}
+
 /// The row that turns the column into one being marked, with the row the menu
 /// was raised over already ticked.
 ///
@@ -30928,8 +32353,8 @@ fn select_multiple_row() -> menu::Entry {
 /// set taken out. Open, Open with and Rename are gone because none of them
 /// means anything about several things at once — a rename is one name, and
 /// opening five files is five programs nobody asked for — and what is left is
-/// exactly the three acts that do: get rid of them, take a copy of them, carry
-/// them.
+/// exactly the four acts that do: get rid of them, take a copy of them, carry
+/// them, put them in one box.
 ///
 /// Delete keeps the place it has on every other menu in the shell, above the
 /// two rows somebody came here on purpose for, for the reason it keeps it
@@ -30949,6 +32374,7 @@ fn marked_rows(picked: usize) -> Vec<menu::Entry> {
             .grave()),
         act(transfer_row(menu::Command::CopyMarked, "Copy", icons::COPY)),
         act(transfer_row(menu::Command::MoveMarked, "Move", icons::MOVE)),
+        act(menu::Entry::new(menu::Command::CompressMarked, "Compress").glyph(icons::COMPRESS)),
         // The band break: above it is what to do with the set, below it is what
         // the set *is*. Neither of these two touches the disk.
         // Both hold the panel: what they change is the set the rows above are
@@ -31153,7 +32579,9 @@ fn open_with_rows(offering: &[media::Handler], chosen: usize) -> Vec<menu::Entry
             let row = menu::Entry::new(menu::Command::OpenWithHandler(index), handler.name.clone())
                 // An application the icon theme cannot answer for falls back to the
                 // generic application picture, which the atlas already does for a
-                // name it does not know — the empty one included.
+                // name it does not know — the empty one included. The shell's own
+                // Extract names one of the shell's own marks here, which the atlas
+                // answers for and the row draws shaded.
                 .icon(handler.icon.clone().unwrap_or_default())
                 .holds();
             if index == chosen {
@@ -31409,6 +32837,19 @@ const LAUNCH_QUESTION_LINES: usize = 5;
 /// whole authentication, and `typed` is a count: what the user actually typed
 /// is not something this needs, and a panel built from it would be a copy of a
 /// password living in the layout for as long as the panel was up.
+fn update_authentication_lines(
+    request: &polkit::Request,
+    note: &str,
+    typed: usize,
+) -> Vec<dialog::Line> {
+    if request.action_id != lxb_updates::INSTALL_ACTION {
+        return authentication_lines(&request.message, note, typed);
+    }
+    let mut lines = authentication_lines("", note, typed);
+    lines[0] = dialog::Line::Heading("Install updates".into());
+    lines
+}
+
 fn authentication_lines(message: &str, note: &str, typed: usize) -> Vec<dialog::Line> {
     let mut lines = vec![dialog::Line::Heading("Authentication needed".to_string())];
     for line in wrapped(message, MESSAGE_WIDTH, MESSAGE_LINES) {
@@ -31427,7 +32868,11 @@ fn authentication_lines(message: &str, note: &str, typed: usize) -> Vec<dialog::
 /// it has to be.
 fn waiting_note(request: &polkit::Request) -> String {
     if request.yourself {
-        "Enter your password to allow this.".to_string()
+        if request.action_id == lxb_updates::INSTALL_ACTION {
+            "Enter your password to install the selected updates.".into()
+        } else {
+            "Enter your password to allow this.".to_string()
+        }
     } else {
         format!("Enter the password for {}.", request.user)
     }
@@ -32249,18 +33694,35 @@ struct Touch {
 /// One at a time, which is what `wl_keyboard` describes: a second key pressed
 /// before the first is let go takes the repeat over, and the release of a key
 /// that already lost it changes nothing.
+///
+/// The key is remembered by its `code` — the physical key — and acts as the
+/// `keysym` it was pressed as. They are two different things and the difference
+/// is the whole reason the code is kept: a keysym is the key read through the
+/// modifiers held at that instant, so the same physical key is `A` on the way
+/// down and `a` on the way up if Shift was let go in between. Identity has to
+/// be the half that cannot change while the key is down.
 #[derive(Debug, Clone, Copy)]
 struct HeldKey {
+    code: u32,
     keysym: Keysym,
     next: Instant,
 }
 
 impl HeldKey {
-    fn pressed(keysym: Keysym, now: Instant) -> Self {
+    fn pressed(code: u32, keysym: Keysym, now: Instant) -> Self {
         Self {
+            code,
             keysym,
             next: now + controller::INITIAL_REPEAT_DELAY,
         }
+    }
+
+    /// Whether a release is the end of *this* key being held.
+    ///
+    /// The physical key, never the symbol: see the note on [`HeldKey`] for why
+    /// the two part company halfway through a capital letter.
+    fn released_by(&self, code: u32) -> bool {
+        self.code == code
     }
 
     /// Whether the key is due to act again, booking the step after it if so.
@@ -32835,6 +34297,30 @@ fn a_loading_screen_takes_the_press(
     splash_on_screen && !guide_menu && !context_menu
 }
 
+/// Whether a context menu on the driven display is standing over an
+/// application the bar itself is behind; the rule is
+/// [`Shell::close_the_menu_behind_an_application`].
+///
+/// Four facts. There has to be a menu taking input — one already folding away
+/// needs nothing done to it. An application has to be in front of the display,
+/// which is the compositor's own word for it and the same fact the surface
+/// state is derived from. The bar must not be standing over that application
+/// on purpose — the guide's menu, and the start screen the guide raises over
+/// one — because there the whole bar is in front and a menu on it is exactly
+/// where the user put it. And the menu must not be one of the two that live
+/// over an application by design: the floating window's own, and the one
+/// raised over an application's file question. Both lift the surface they are
+/// drawn on and hold the keys, so they can be seen and driven; a menu over a
+/// row of the bar does neither.
+fn a_menu_cannot_stand_over_an_application(
+    menu_open: bool,
+    app_in_front: bool,
+    bar_over_app: bool,
+    menu_lives_over_an_application: bool,
+) -> bool {
+    menu_open && app_in_front && !bar_over_app && !menu_lives_over_an_application
+}
+
 /// Whether the start screen standing over an application should step back
 /// behind the one that has just taken the display; the rule is
 /// [`Shell::an_application_took_the_display`].
@@ -32931,7 +34417,11 @@ fn cards_have_landed(card_age: f32) -> bool {
 /// process cannot argue with. The failure is logged rather than shown: the
 /// dialog it was chosen from has already closed, and there is nowhere left to
 /// put a message.
-fn run_detached<const N: usize>(what: &str, argv: [&str; N]) {
+fn run_detached<const N: usize>(
+    what: &str,
+    argv: [&str; N],
+    permit: Option<lxb_updates::service::PowerPermit>,
+) {
     let mut command = std::process::Command::new(argv[0]);
     command
         .args(&argv[1..])
@@ -32943,6 +34433,7 @@ fn run_detached<const N: usize>(what: &str, argv: [&str; N]) {
             // Reaped here rather than left a zombie: the shell outlives a
             // refused suspend.
             std::thread::spawn(move || {
+                let _permit = permit;
                 let _ = child.wait();
             });
         }
@@ -34213,7 +35704,11 @@ impl KeyboardHandler for Shell {
         }
         // Taken before the key is acted on, so that whatever the press opens
         // is already the screen the repeat will be walking through.
-        self.held_key = Some(HeldKey::pressed(event.keysym, Instant::now()));
+        self.held_key = Some(HeldKey::pressed(
+            event.raw_code,
+            event.keysym,
+            Instant::now(),
+        ));
         self.on_key(event.keysym);
     }
 
@@ -34243,9 +35738,15 @@ impl KeyboardHandler for Shell {
         // Only if it is still the key that is repeating: a second key pressed
         // meanwhile has taken the repeat over, and letting go of the first must
         // not stop it.
+        //
+        // Asked of the physical key rather than of the symbol, because the
+        // symbol is not the same on both sides of the press: release Shift
+        // before the letter and the letter comes up as `a` having gone down as
+        // `A`, which is a release this shell used to fail to recognise as the
+        // end of anything. See [`HeldKey`].
         if self
             .held_key
-            .is_some_and(|held| held.keysym == event.keysym)
+            .is_some_and(|held| held.released_by(event.raw_code))
         {
             self.held_key = None;
         }
@@ -36496,6 +37997,34 @@ mod flight_tests {
         assert!(!a_loading_screen_takes_the_press(YES, NO, YES));
     }
 
+    /// And a menu of the bar's does not outlive the bar stepping behind an
+    /// application.
+    ///
+    /// Reported on 2026-09-16: a context menu opened between a press and the
+    /// window it started arriving stayed on the screen over the application,
+    /// because the surface it is drawn on is the one the compositor puts in
+    /// front of every window. It could not be driven from there either — the
+    /// pad's buttons belong to the application once one is in front.
+    #[test]
+    fn a_menu_of_the_bars_goes_behind_an_application_with_it() {
+        const NO: bool = false;
+        const YES: bool = true;
+
+        // Nothing in front: the menu is where the user put it.
+        assert!(!a_menu_cannot_stand_over_an_application(YES, NO, NO, NO));
+        // An application in front of a bar that is behind it: the menu goes.
+        assert!(a_menu_cannot_stand_over_an_application(YES, YES, NO, NO));
+        // No menu taking input — none, or one already folding away — and
+        // there is nothing to do.
+        assert!(!a_menu_cannot_stand_over_an_application(NO, YES, NO, NO));
+        // The bar standing over the application on purpose, by the guide's
+        // own row: the whole bar is in front, and its menu with it.
+        assert!(!a_menu_cannot_stand_over_an_application(YES, YES, YES, NO));
+        // The two menus that are meant to be over an application — the
+        // floating window's own, and the file question's — stay.
+        assert!(!a_menu_cannot_stand_over_an_application(YES, YES, NO, YES));
+    }
+
     /// What the shell tells the compositor this surface is hiding, which is
     /// both what decides whether the application underneath goes to sleep and
     /// what the compositor throws away when it draws.
@@ -38098,11 +39627,53 @@ mod input_tests {
     /// The smallest step worth asserting either side of a deadline.
     const MOMENT: Duration = Duration::from_millis(1);
 
+    /// Physical keys, as `wl_keyboard` numbers them — the same on the way down
+    /// and the way up whatever the modifiers are doing.
+    const KEY_A: u32 = 30;
+    const KEY_B: u32 = 48;
+    const KEY_LEFTSHIFT: u32 = 42;
+    const KEY_DOWN: u32 = 108;
+
+    /// A capital letter is let go of even when Shift was let go of first.
+    ///
+    /// This is the shape of a real stuck key. Typing `A` into a login field
+    /// means holding Shift, tapping the letter, and releasing the two in
+    /// whichever order the hand happens to release them — and releasing Shift
+    /// first is the common one, because the letter is the thing being
+    /// concentrated on. The press arrives as `A` and the release arrives as
+    /// `a`, so a repeat identified by its symbol is never told the key came
+    /// back up. In a field, where letters repeat, that is a character typing
+    /// itself until something else is pressed.
+    #[test]
+    fn a_capital_letter_is_released_by_its_own_key_whatever_shift_did() {
+        let start = Instant::now();
+
+        // Shift down, then the letter — which takes the repeat over, as any
+        // second key does.
+        let held = HeldKey::pressed(KEY_LEFTSHIFT, Keysym::Shift_L, start);
+        assert!(held.released_by(KEY_LEFTSHIFT));
+        let held = HeldKey::pressed(KEY_A, Keysym::A, start);
+
+        // Shift comes up first and changes nothing: it is not the held key.
+        assert!(!held.released_by(KEY_LEFTSHIFT));
+
+        // And now the letter, arriving as lowercase because Shift has gone.
+        // The symbol no longer matches what went down; the key does.
+        assert_ne!(Keysym::a, held.keysym, "the test is about this difference");
+        assert!(
+            held.released_by(KEY_A),
+            "a letter typed with Shift would repeat for ever"
+        );
+
+        // A different key is still somebody else's release.
+        assert!(!held.released_by(KEY_B));
+    }
+
     /// A held arrow walks the bar, exactly as a held D-pad does.
     #[test]
     fn holding_a_direction_steps_at_the_pads_rate() {
         let start = Instant::now();
-        let mut held = HeldKey::pressed(Keysym::Down, start);
+        let mut held = HeldKey::pressed(KEY_DOWN, Keysym::Down, start);
 
         // Nothing at all until the initial delay is up: a tap is one row.
         assert!(!held.due(start));
@@ -38412,10 +39983,10 @@ mod file_menu_tests {
         rows.iter().map(|row| row.label.as_str()).collect()
     }
 
-    /// Ten rows in two bands over a file standing in a folder, and the rule
-    /// falls above Sort: everything over it acts on the file — the row that
-    /// says "not just this one" included — and neither of the three under it
-    /// does.
+    /// Eleven rows in two bands over a file standing in a folder, and the
+    /// rule falls above Sort: everything over it acts on the file — the row
+    /// that makes an archive of it and the row that says "not just this one"
+    /// included — and neither of the three under it does.
     #[test]
     fn the_file_menu_puts_the_rule_above_sort_with_the_column_rows_under_it() {
         let rows = media_rows(true, true, false);
@@ -38428,6 +39999,7 @@ mod file_menu_tests {
                 "Copy",
                 "Move",
                 "Rename",
+                "Compress",
                 "Select multiple",
                 "Sort",
                 "Show hidden files",
@@ -38443,6 +40015,7 @@ mod file_menu_tests {
                 menu::Command::Copy,
                 menu::Command::Move,
                 menu::Command::Rename,
+                menu::Command::Compress,
                 menu::Command::SelectMultiple,
                 menu::Command::Sort,
                 menu::Command::ShowHidden,
@@ -38453,7 +40026,7 @@ mod file_menu_tests {
         let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
         assert_eq!(
             bands,
-            [0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
             "one rule, and it falls above Sort"
         );
         assert!(rows.iter().all(|row| row.enabled));
@@ -38463,14 +40036,14 @@ mod file_menu_tests {
         let holds: Vec<bool> = rows.iter().map(|row| row.holds).collect();
         assert_eq!(
             holds,
-            [false, false, false, false, false, false, false, false, true, false]
+            [false, false, false, false, false, false, false, false, false, true, false]
         );
         // No tick on it while the hidden names are hidden — no mark at all
         // rather than an empty box, which is how every other answer in this
         // shell says it is not the one in force.
-        assert_eq!(rows[8].glyph, None);
+        assert_eq!(rows[9].glyph, None);
         assert_eq!(
-            media_rows(true, true, true)[8].glyph,
+            media_rows(true, true, true)[9].glyph,
             Some(icons::CHOSEN),
             "and the tick is there when they are being listed"
         );
@@ -38478,12 +40051,15 @@ mod file_menu_tests {
         // rather than deletes, but it is the way to losing the file, and the
         // rest are not. Move is deliberately not one of them — it ends with the
         // file somewhere, and the opposite move undoes it — and neither is
-        // Rename, which the opposite rename undoes.
+        // Rename, which the opposite rename undoes, nor Compress, which makes
+        // something and takes nothing away.
         let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
         assert_eq!(
             grave,
-            [false, false, true, false, false, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false, false, false]
         );
+        // And the archive's row wears the mark of what it makes.
+        assert_eq!(rows[6].glyph, Some(icons::COMPRESS));
     }
 
     /// The one row that can be unavailable is drawn greyed rather than left
@@ -38509,7 +40085,7 @@ mod file_menu_tests {
         assert_eq!(enabled, [true, true, false, true, true, true]);
     }
 
-    /// A file met in the folder it lives in gets four rows the shelf has not,
+    /// A file met in the folder it lives in gets five rows the shelf has not,
     /// and Sort means the same thing there as here: there it means the folder rather than the shelf, which is the
     /// same statement — the column, not the file the menu was raised over.
     ///
@@ -38523,11 +40099,11 @@ mod file_menu_tests {
     #[test]
     fn a_file_that_is_not_the_users_own_can_still_be_carried_out_of_a_folder() {
         let rows = media_rows(false, true, false);
-        assert_eq!(labels(&rows).len(), 10);
+        assert_eq!(labels(&rows).len(), 11);
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
         assert_eq!(
             enabled,
-            [true, true, false, true, true, true, true, true, true, true]
+            [true, true, false, true, true, true, true, true, true, true, true]
         );
     }
 
@@ -38550,6 +40126,7 @@ mod file_menu_tests {
                 "Copy",
                 "Move",
                 "Rename",
+                "Compress",
                 "Select multiple",
                 "Sort",
                 "Show hidden files",
@@ -38557,17 +40134,18 @@ mod file_menu_tests {
             ]
         );
         assert_eq!(rows[0].command, menu::Command::Delete);
+        assert_eq!(rows[4].command, menu::Command::Compress);
         assert!(rows.iter().all(|row| row.enabled));
         // The one row the highlight arrives on warm, exactly as on a file.
         let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
         assert_eq!(
             grave,
-            [true, false, false, false, false, false, false, false]
+            [true, false, false, false, false, false, false, false, false]
         );
         let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
         assert_eq!(
             bands,
-            [0, 0, 0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0, 1, 1, 1],
             "the rule still falls above Sort"
         );
 
@@ -38577,11 +40155,14 @@ mod file_menu_tests {
         // a copy of somebody else's folder is not destroying it.
         let theirs = folder_rows(false, false);
         let enabled: Vec<bool> = theirs.iter().map(|row| row.enabled).collect();
-        assert_eq!(enabled, [false, true, true, true, true, true, true, true]);
+        assert_eq!(
+            enabled,
+            [false, true, true, true, true, true, true, true, true]
+        );
     }
 
     /// The menu raised while a listing is being marked is about the set: the
-    /// three acts that mean anything about several things at once, and then the
+    /// four acts that mean anything about several things at once, and then the
     /// two rows that are about the set rather than about the disk.
     ///
     /// Open, Open with and Rename are gone rather than greyed, which is the one
@@ -38589,11 +40170,19 @@ mod file_menu_tests {
     /// Move are left off a shelf's menu: there is nothing anybody could do to
     /// make them mean something. A rename is one name.
     #[test]
-    fn a_marked_column_is_offered_the_three_acts_that_mean_anything_about_a_set() {
+    fn a_marked_column_is_offered_the_four_acts_that_mean_anything_about_a_set() {
         let rows = marked_rows(3);
         assert_eq!(
             labels(&rows),
-            ["Delete", "Copy", "Move", "Select all", "Clear", "Cancel"]
+            [
+                "Delete",
+                "Copy",
+                "Move",
+                "Compress",
+                "Select all",
+                "Clear",
+                "Cancel"
+            ]
         );
         assert_eq!(
             commands(&rows),
@@ -38601,6 +40190,7 @@ mod file_menu_tests {
                 menu::Command::DeleteMarked,
                 menu::Command::CopyMarked,
                 menu::Command::MoveMarked,
+                menu::Command::CompressMarked,
                 menu::Command::SelectAll,
                 menu::Command::ClearMarks,
                 menu::Command::Dismiss,
@@ -38609,7 +40199,7 @@ mod file_menu_tests {
         let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
         assert_eq!(
             bands,
-            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 1, 1, 1],
             "above the rule is what to do with the set, below it is what it is"
         );
         // Delete keeps the place it has on every other menu in the shell: the
@@ -38617,7 +40207,7 @@ mod file_menu_tests {
         // to make room for the rows somebody came here on purpose for.
         assert_eq!(rows[0].command, menu::Command::DeleteMarked);
         let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
-        assert_eq!(grave, [true, false, false, false, false, false]);
+        assert_eq!(grave, [true, false, false, false, false, false, false]);
         assert!(rows.iter().all(|row| row.enabled));
         assert!(
             !rows.iter().any(|row| matches!(
@@ -38638,10 +40228,144 @@ mod file_menu_tests {
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
         assert_eq!(
             enabled,
-            [false, false, false, true, false, true],
+            [false, false, false, false, true, false, true],
             "Select all is the one act still open, and Cancel is not an act"
         );
         assert_eq!(labels(&rows), labels(&marked_rows(3)), "the same rows");
+    }
+
+    fn packed(names: &[(&str, bool)], into: &Path) -> Compressing {
+        let sources = names
+            .iter()
+            .map(|(name, folder)| transfer::Source {
+                path: into.join(name),
+                name: name.to_string(),
+                note: String::new(),
+                glyph: icons::FILE_PAGE,
+                folder: *folder,
+            })
+            .collect::<Vec<_>>();
+        let name = suggested_archive_name(&sources, into);
+        Compressing {
+            sources,
+            into: into.to_path_buf(),
+            name,
+            format: archive::Format::Zip,
+            offered: vec![
+                archive::Format::Zip,
+                archive::Format::TarGz,
+                archive::Format::SevenZip,
+            ],
+            fault: None,
+            from: [0.0; 4],
+        }
+    }
+
+    /// What the field opens with: one thing's own name without its
+    /// extension, a folder's whole name, and a set called after the folder it
+    /// was picked out of — and never nothing.
+    #[test]
+    fn an_archive_is_named_after_what_goes_into_it() {
+        let into = Path::new("/home/somebody/Documents");
+        assert_eq!(packed(&[("holiday.jpg", false)], into).name, "holiday");
+        assert_eq!(packed(&[("Photos", true)], into).name, "Photos");
+        assert_eq!(
+            packed(&[("a.txt", false), ("b.txt", false)], into).name,
+            "Documents"
+        );
+        assert_eq!(packed(&[(".bashrc", false)], into).name, ".bashrc");
+        assert_eq!(
+            packed(&[("a", false), ("b", false)], Path::new("/")).name,
+            "Archive"
+        );
+    }
+
+    /// The panel: headed with the thing or the count, saying what will be
+    /// made and where, the field in the middle, and three answers with the
+    /// kind written on the first.
+    #[test]
+    fn the_panel_says_what_will_be_made_and_where() {
+        let into = Path::new("/home/somebody/Documents");
+        let one = packed(&[("holiday.jpg", false)], into);
+        assert_eq!(one.file_name(), "holiday.zip");
+        assert_eq!(one.note(), "holiday.zip will be made beside it.");
+        let lines = one.lines();
+        assert_eq!(lines[0], dialog::Line::Heading("holiday.jpg".to_string()));
+        assert!(lines.contains(&dialog::Line::Entry("holiday".to_string())));
+        assert_eq!(lines.last(), Some(&dialog::Line::Rule));
+
+        let mut many = packed(&[("a.txt", false), ("b.txt", false)], into);
+        many.format = archive::Format::TarGz;
+        assert_eq!(many.note(), "Documents.tar.gz will be made beside them.");
+        assert_eq!(
+            many.lines()[0],
+            dialog::Line::Heading("2 things".to_string())
+        );
+
+        let buttons = many.buttons();
+        assert_eq!(labels(&buttons), ["Format: tar.gz", "Compress", "Cancel"]);
+        assert_eq!(
+            commands(&buttons),
+            [
+                menu::Command::CompressFormat,
+                menu::Command::ConfirmCompress,
+                menu::Command::Dismiss
+            ]
+        );
+        assert!(buttons[0].holds, "the kind is a control on the panel");
+        assert!(
+            buttons[1].holds,
+            "and so is Compress, which may refuse the name"
+        );
+        assert!(!buttons[2].holds);
+
+        // The list of kinds: what the machine writes, ticked on the one in
+        // force, every row holding the panel, and opening on that one.
+        let kinds = many.kinds();
+        assert_eq!(labels(&kinds), ["zip", "tar.gz", "7z"]);
+        assert_eq!(kinds[1].glyph, Some(icons::CHOSEN));
+        assert_eq!(kinds[0].glyph, None);
+        assert!(kinds.iter().all(|row| row.holds && row.enabled));
+        assert_eq!(many.chosen(), 1);
+    }
+
+    /// The names the panel refuses, said on the panel; a name the folder
+    /// already holds is one of them, and the complaint goes when the kind
+    /// changes so that it is a different name.
+    #[test]
+    fn a_name_that_cannot_be_used_is_said_rather_than_written() {
+        let dir = std::env::temp_dir().join(format!("lxb-compress-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let mut asked = packed(&[("holiday.jpg", false)], &dir);
+        assert_eq!(asked.fault_in_name(), None);
+        asked.name = "  ".to_string();
+        assert_eq!(asked.fault_in_name().as_deref(), Some("It needs a name."));
+        asked.name = "..".to_string();
+        assert_eq!(
+            asked.fault_in_name().as_deref(),
+            Some("That cannot be a name.")
+        );
+        asked.name = "a/b".to_string();
+        assert_eq!(
+            asked.fault_in_name().as_deref(),
+            Some("A name cannot have a slash in it.")
+        );
+        std::fs::write(dir.join("holiday.zip"), b"x").unwrap();
+        asked.name = "holiday".to_string();
+        assert_eq!(
+            asked.fault_in_name().as_deref(),
+            Some("Something called holiday.zip is already here.")
+        );
+        // The same name as a tar.gz is free.
+        asked.format = archive::Format::TarGz;
+        assert_eq!(asked.fault_in_name(), None);
+        // And a fault, once written, is what the panel says.
+        asked.fault = Some("It needs a name.".to_string());
+        assert_eq!(asked.note(), "It needs a name.");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// And in the trash it is the trash's own two ways out, for however many

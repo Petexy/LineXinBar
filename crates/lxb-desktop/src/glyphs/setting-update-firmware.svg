@@ -1,0 +1,55 @@
+<!--
+  Update the firmware: a chip, with the update arrow standing in its die.
+
+  A chip is the one object that means firmware, everywhere it is drawn — it is
+  what GNOME Firmware, fwupd and every vendor's own updater put on the screen,
+  because firmware is the software that lives in one. The first drawing of this
+  row was a memory module, chosen only to keep a second chip out of the tree,
+  and it read as a slab on four legs. Avoiding a repetition is not worth a mark
+  nobody can name.
+
+  The repetition it was avoiding is setting-system.svg, which is a chip with
+  its die taken out, at the head of the panel that lists what this machine is
+  built from. The two are not on a page together and they are not the same
+  drawing: that one is a square with an empty window, this one is a larger
+  window with the update arrow standing in it. The arrow is the whole of the
+  difference and it is the same arrow every other row on this page carries.
+
+  The die is cut wider than setting-system.svg's for one reason: the arrow has
+  to stand in it with air on every side, and the shader needs better than the
+  bevel's depth of that or the arrow and the wall of the window close into one
+  another. Twelve units of window with an eight-unit arrow in it leaves 1.8
+  units all round, which measured clear.
+
+  The legs do not touch the package — four tenths of a unit of air between each
+  and the body, which is setting-system.svg's own hair and left for its reason:
+  the field would otherwise measure the lot as one lump with a scalloped edge.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="package" x="6.6" y="6.6" width="18.8" height="18.8" rx="2.4"/>
+    <rect id="die" x="10" y="10" width="12" height="12" rx="1.2"/>
+    <path id="arrow" d="M16 11.8L19.8 16.6H17.4V20.2H14.6V16.6H12.2Z"/>
+    <g id="legs">
+      <path d="M2.8 9.6h3.4v2.3H2.8zM2.8 14.85h3.4v2.3H2.8zM2.8 20.1h3.4v2.3H2.8z"/>
+      <path d="M25.8 9.6h3.4v2.3h-3.4zM25.8 14.85h3.4v2.3h-3.4zM25.8 20.1h3.4v2.3h-3.4z"/>
+      <path d="M9.6 2.8h2.3v3.4H9.6zM14.85 2.8h2.3v3.4h-2.3zM20.1 2.8h2.3v3.4h-2.3z"/>
+      <path d="M9.6 25.8h2.3v3.4H9.6zM14.85 25.8h2.3v3.4h-2.3zM20.1 25.8h2.3v3.4h-2.3z"/>
+    </g>
+    <g id="bead"><use href="#package"/><use href="#legs"/><use href="#arrow"/></g>
+    <g id="holes"><use href="#die"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#arrow" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

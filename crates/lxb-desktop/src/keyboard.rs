@@ -1411,6 +1411,9 @@ pub struct Osk {
     /// has the cursor now. Without it, closing the keyboard over a still
     /// focused field would only re-open it on the next frame.
     offered: bool,
+    /// A shell login offers the board once across redraws and successive fields.
+    /// Kept separate from application text-input focus and from manual dismissal.
+    shell_field_offered: bool,
     /// Whether the user has shown they have a keyboard of their own. It stops
     /// the board offering itself to any further text field; see
     /// [`Self::dismiss_for_typing`], which is what concludes it from a key
@@ -1577,6 +1580,30 @@ impl Osk {
     /// whichever client happens to hold the keys.
     pub fn open_here(&mut self) -> bool {
         self.raise(true)
+    }
+
+    /// Synchronize an automatically offered shell input panel with the board.
+    /// Redrawing a field must not undo a physical keystroke or a manual dismissal.
+    /// Explicit keyboard shortcuts still use `open_here` to request it again.
+    pub fn offer_shell_field(&mut self, typing: bool) -> bool {
+        if !typing {
+            let offered = std::mem::take(&mut self.shell_field_offered);
+            return offered && self.types_here() && self.close();
+        }
+        if std::mem::replace(&mut self.shell_field_offered, true) || self.keyboard_at_hand {
+            return false;
+        }
+        self.open_here()
+    }
+
+    /// Whether the board is holding the physical keyboard.
+    ///
+    /// Asked by the shell's own key repeat, which cannot see a release while
+    /// this is true: the grab takes every key event, and it drops the releases
+    /// — see [`Self::key`]. A key held down when the board comes up is one the
+    /// shell will never be told the end of.
+    pub fn has_the_keyboard(&self) -> bool {
+        self.grab.is_some()
     }
 
     /// Whether what the board types belongs to the shell rather than to
@@ -2925,6 +2952,83 @@ mod tests {
         osk.set_focused(false);
         osk.set_focused(true);
         assert!(osk.is_open(), "summoning it did not undo the refusal");
+    }
+
+    #[test]
+    fn login_redraws_and_next_fields_respect_a_physical_keyboard() {
+        let _held = alone();
+        let mut osk = Osk::default();
+        osk.set_controller_in_hand(false);
+        assert!(!osk.offer_shell_field(true));
+        assert!(!osk.is_open());
+        for _ in 0..10 {
+            assert!(!osk.offer_shell_field(true));
+        }
+        osk.offer_shell_field(false);
+        assert!(
+            !osk.offer_shell_field(true),
+            "next login field must remember physical typing"
+        );
+        assert!(osk.keyboard_at_hand);
+    }
+
+    #[test]
+    fn typing_after_controller_login_does_not_reopen_the_board() {
+        let _held = alone();
+        let mut osk = Osk::default();
+        osk.set_controller_in_hand(true);
+        assert!(osk.offer_shell_field(true));
+        assert!(osk.types_here(), "shell input needs no virtual keyboard");
+        osk.set_controller_in_hand(false);
+        // The first grabbed letter redraws the panel before on_typed closes the board.
+        assert!(!osk.offer_shell_field(true));
+        osk.close();
+        for _ in 0..10 {
+            assert!(!osk.offer_shell_field(true));
+            assert!(!osk.is_open());
+        }
+        osk.offer_shell_field(false);
+        assert!(!osk.offer_shell_field(true));
+        assert!(!osk.is_open());
+    }
+
+    #[test]
+    fn physically_typing_after_manually_reopening_a_login_remembers_the_keyboard() {
+        let _held = alone();
+        let mut osk = Osk::default();
+        osk.set_controller_in_hand(false);
+        osk.offer_shell_field(true);
+        osk.open_here();
+        osk.dismiss_for_typing();
+        osk.offer_shell_field(false);
+        assert!(
+            !osk.offer_shell_field(true),
+            "a later password or Steam Guard field must stay closed"
+        );
+        assert!(osk.keyboard_at_hand);
+    }
+
+    #[test]
+    fn login_keyboard_dismissal_persists_until_requested_again() {
+        let _held = alone();
+        let mut osk = Osk::default();
+        osk.set_controller_in_hand(true);
+        assert!(osk.offer_shell_field(true));
+        osk.close();
+        assert!(
+            !osk.offer_shell_field(true),
+            "refresh must not undo manual dismissal"
+        );
+        assert!(osk.open_here(), "explicit request still opens it");
+        assert!(osk.types_here());
+        assert!(
+            osk.offer_shell_field(false),
+            "leaving the login closes its board"
+        );
+        assert!(
+            osk.offer_shell_field(true),
+            "a new controller login offers it again"
+        );
     }
 
     /// The same refusal, carried in from outside — which is how it survives a

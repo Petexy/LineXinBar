@@ -81,6 +81,28 @@ The rough edge, as for every GBM-based compositor, is the Nvidia proprietary
 driver: it needs a recent version with GBM support and
 `nvidia-drm.modeset=1`. That combination has never been tried here.
 
+### Updates
+
+Settings > Updates is a press and a bar: a check that ends in a count and an
+**Update now**, a bar that fills as the machine's own package managers do the
+work, and a word about a restart. The sources are listed explicitly under it
+— the system, Flatpaks, AUR, Snaps and configured Nix/Guix profiles — and
+what is waiting is a scrollable folder of the column. Update now is the one
+confirmation: every tool runs unattended after it, the password for a root
+step is asked by the shell's own polkit panel in the update panel's place,
+and what a tool asks anyway — a conffile, a helper's sudo — is answered
+with a Yes and a No or a field. **Full output** is the whole transcript in
+an eighty-column terminal frame. Firmware updates use **fwupd**, now a
+required desktop dependency alongside **polkit**, and exclude BIOS/UEFI and
+unclassified devices from routine installation.
+
+See [Updates](docs/updates.md) for provider coverage, administrator configuration,
+recovery behavior and validation limits. Cross-distribution adapters are an
+initial implementation; they still need testing on their target distributions.
+Distributors building immutable systems can ship a
+[custom System update provider](docs/updates.md#custom-system-update-providers);
+the developer guide includes manifests and an adapter script example.
+
 ### Optional at runtime
 
 Each of these is looked for when it is wanted, and its absence costs exactly
@@ -96,7 +118,6 @@ one feature:
 | `ffmpegthumbnailer` **or** `ffmpeg`       | A frame of each film, on its row in Video | Films keep the film-strip glyph; photographs are unaffected |
 | `pipewire`                                | The frames a shared screen is carried on | `lxb-portal` will not start, and screen sharing is unavailable |
 | `xdg-desktop-portal`                      | The front desk applications ask for a screen or for a file — [screen sharing](#screen-sharing) and [choosing a file](#choosing-a-file) both need this and `lxb-portal` | Applications find no portal: none can share a screen, and each falls back to whatever file dialog it has of its own |
-| `polkit` (`polkitd`, and its agent helper) | [Authorisation prompts](#authorisation-prompts): mounting a disk, installing a package, managing a service | Every action whose policy needs a human is refused, with nothing on screen to allow it |
 | `steam` (native or Flatpak)               | Playing and installing anything in the Steam column | The account still signs in and the library is still listed, but nothing in it starts or downloads: every row says so rather than doing nothing |
 | `lxb-retroarch` (a package of its own)    | [RetroArch and your own console games](#retroarch-and-your-own-console-games): a row under Steam, and a column of the consoles in your ROM folder | The shell never mentions RetroArch at all — no row, no column, no page under Settings |
 | `flatpak`, with `lxb-retroarch` installed | Installing RetroArch from the shell, and running the Flathub build | The row says RetroArch is not installed and that there is no flatpak to install it with; a distribution package of `retroarch` is used in preference either way |
@@ -735,7 +756,11 @@ Inside a folder the subcategories come first, then the files. A folder says
 when it was last written until it has been opened, and afterwards what was
 found in it (`239 folders, 5804 files`); a file says how big it is and when it
 was written. Files of a kind the shelves already know keep that shelf's mark —
-a song is drawn as a song here too — and everything else is a page. Dotfiles
+a song is drawn as a song here too — an archive is drawn as a carton with its
+lid on, and everything else is a page. A mark is for a kind the shell can do
+something with: there is a shelf for a song and an
+[Extract](#getting-what-is-inside-an-archive) for a `.tar.gz`, and what a `.pdf`
+is, is written on the row in words. Dotfiles
 are left out: nobody's photographs are in `~/.cache`, and the shell's own
 settings are a column of their own.
 
@@ -954,6 +979,75 @@ Symbolic links are carried as links rather than as what they point at: a folder
 of shortcuts copied the other way could be a hundred times the size of what
 somebody thought they were carrying.
 
+#### Getting what is inside an archive
+
+Pressing a `.zip`, a `.tar.gz`, a `.rar` or a `.7z` does not start a program.
+Nobody wants to *look* at an archive — they want what is inside it — and the
+only part of that the shell cannot work out for itself is where the contents
+should go. So the press is answered by a panel with the archive's name on it and
+two ways out: **Extract here**, which means the folder the archive is sitting
+in, and **Choose a folder**, which is the same mirrored bar Copy and Move are
+carried on, with **Extract** at the head of every column where Paste would
+otherwise be.
+
+Those rows are recognisable before they are pressed. An archive wears a carton
+with its lid on where an ordinary file wears a page — the fifth object in the
+explorer's set, and there on the same rule the other four are: a mark is for a
+kind the shell can do something with, and what wears it is exactly what Extract
+opens, read off that one list so a row can never promise a box the press cannot
+open. It is the carton the panel's own mark is emptying, shut.
+
+It is drawn seen a little from above, which is how the drum a drive is drawn one
+row up is drawn and for the same reason: the lid of a box is a face rather than
+a line, and a box drawn flat-on with a lid seam across it is a mouse — two
+buttons and a wheel — before it is anything else. That was the first drawing and
+it had to go.
+
+Nothing is written over, ever, and that is why the panel asks "where" rather
+than "are you sure". The archive is emptied into a hidden staging directory
+inside the chosen folder, and only what comes out of it is moved into place: one
+thing in the box takes a free name beside its neighbours, so a `holiday.tar.gz`
+holding a single `holiday/` arrives as `holiday/` and not as `holiday/holiday/`,
+and a `report.pdf.gz` arrives as a PDF rather than as a folder with a PDF in it;
+anything else keeps the box, under the archive's own name, so a zip of two
+hundred loose files cannot empty itself over somebody's Downloads. A name
+already taken takes the next free one — `holiday (2)` — exactly as a copy does.
+The archive itself is left exactly where it was.
+
+When it is done the bar is standing inside what came out. A copy or a move ends
+with the column read again, because what changed is a row in a column the cursor
+was already in; an unpacking makes a folder, and the folder was the point of the
+press — somebody who pressed `holiday.tar.gz` wanted the photographs, not a row
+saying `holiday` to step into by hand. So the shell steps into it for them, by
+the walk *Show in folder* arrives by: the trail eases one column further in with
+the contents under the highlight, and from **Choose a folder** it is carried
+across to wherever that folder was. An archive that was one file in a coat has no
+folder to stand in, so the cursor is left standing on the file it became.
+
+The shell does not know how to unpack anything. It knows how to ask the thing
+that does, which is the same arrangement removing an application uses: one
+family of archive becomes one argv, run on a thread, reporting one outcome.
+`bsdtar` — libarchive with a command line on it — is asked first wherever it
+will do, because one program that is already under every package manager reads
+tar, zip, 7z, rar, iso and cab alike; where it is missing the ladder falls to
+`tar`, `unzip`, `7z`, `unar` or `unrar`, and a bare `.gz`, `.xz` or `.zst` goes
+to the program that made it. Where the machine has *nothing* that can open the
+format, the press is answered by a panel naming the package that would fix it
+rather than by silence.
+
+**Extract is an application as far as the rest of the machine is concerned.**
+It is what the Open with list offers first for an archive, wearing a tick like
+any other answer in force, and somebody who would rather press a `.zip` and get
+Ark can say so there and have it stick — the choice is written into their own
+`mimeapps.list` like any other, and from then on Open starts Ark and no panel
+appears. Extract stays on that list underneath, so the choice can be made and
+unmade; this desktop ships an entry named `linexinbar-extract.desktop` for no
+other reason than that a `mimeapps.list` names desktop entries and an answer
+with no name could be displaced and never chosen back. That entry is also the
+road in from outside the shell: `xdg-open` on a `.zip` in a LineXinBar session
+runs `lxb-desktop --extract`, which unpacks it where it stands and asks nothing,
+because there is no screen there to ask on.
+
 ### Steam
 
 The Games column opens with one row of the shell's own: **Steam**. Signed out
@@ -1033,7 +1127,7 @@ the one row actually chosen are asked for, in that order:
 1. **Valve's own cache**, `appcache/librarycache`, which a machine with the
    Steam client on it has already filled — no network, and it includes the
    capsules Valve's client generates for games that never had one.
-2. **`$XDG_CACHE_HOME/linexinbar/steam-art`**, holding what had to be fetched.
+2. **`$XDG_CACHE_HOME/lxb/steam-art`**, holding what had to be fetched.
 3. **Steam's content network**, once, for anything neither cache has.
 
 A game Steam has no picture of keeps the Steam mark on its row and leaves the
@@ -1323,7 +1417,7 @@ the network.
 
 **What this session drove through it is written down.** Every operation and what
 it came to — a wake, a sign-in, an install, a stop, a removal, a `steam:` URL
-handed over — goes into `$XDG_STATE_HOME/linexinbar/steam-actions.log`, oldest
+handed over — goes into `$XDG_STATE_HOME/lxb/steam-actions.log`, oldest
 half dropped when it grows past 64 KiB, and away entirely when the account signs
 out. Two readers: somebody whose game will not install, whose shell said a
 sentence about it a minute ago and has since gone back to the bar; and anybody
@@ -2049,7 +2143,7 @@ for no reason anybody could see would be worse than either of them.
 Nothing about this is announced. The pictures are asked for once per folder per
 session, only for what has not got them, and no panel stands over it: the covers
 appearing one at a time down a column somebody is already scrolling *is* the
-feedback. Everything lands in `$XDG_CACHE_HOME/linexinbar/retroarch-art`, in
+feedback. Everything lands in `$XDG_CACHE_HOME/lxb/retroarch-art`, in
 libretro's own layout — never in RetroArch's thumbnail folder, because what
 somebody sees in the emulator's own interface is the emulator's business.
 
@@ -2275,15 +2369,15 @@ it is decoded at its own frame rate and no faster, and it stops dead when nothin
 is drawing it: an application filling the screen, or a display that has gone to
 rest, costs one sleeping thread.
 
-The file you choose is **copied into `~/.local/share/linexinbar/`**, and it is
-that copy the shell reads from then on. Tidying your Downloads folder, renaming
-the picture or unplugging the stick it came off does not take your wallpaper with
-it. The copy happens on a thread — a film can be several gigabytes — while the
+The file you choose is **copied into `~/.local/share/lxb/wallpaper/`**, under
+its own name, and it is that copy the shell reads from then on. Tidying your
+Downloads folder, renaming the picture or unplugging the stick it came off does
+not take your wallpaper with it. The copy happens on a thread — a film can be several gigabytes — while the
 picture you chose is already on screen.
 
 ```toml
 theme-wallpaper = "Custom wallpaper"
-wallpaper-file = "/home/you/.local/share/linexinbar/wallpaper.jpg"
+wallpaper-file = "/home/you/.local/share/lxb/wallpaper/sunset.jpg"
 ```
 
 If that file is not there when the session starts — a drive not plugged in this

@@ -54,6 +54,23 @@ use crate::system::Level;
 /// menus are answered, and forgetting the second half does not compile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    UpdateInstall,
+    UpdateYes,
+    UpdateNo,
+    UpdateRespond,
+    UpdateSubmit,
+    /// The whole of what the tools said, in a terminal frame. The one home
+    /// for anything technical: there is no Details view beside it, and no
+    /// page to turn — the frame scrolls.
+    UpdateOutput,
+    UpdateLog(u64),
+    UpdateOutputBack,
+    UpdateLive,
+    UpdateOverview,
+    UpdateDaily,
+    UpdateCheck,
+    UpdateCancelCheck,
+    UpdateRestart,
     /// Put up what the shell knows about the application the menu is about.
     Information,
     /// Ask whether to remove it from the machine.
@@ -446,6 +463,49 @@ pub enum Command {
     /// and then. See [`crate::transfer`].
     Copy,
     Move,
+    /// The two answers to *where should this be unpacked* — the folder the
+    /// archive is already sitting in, or one the user walks to.
+    ///
+    /// The question behind them is the one question in this shell with no bad
+    /// news in it, which is why there is no opening half here the way
+    /// [`Command::Delete`] has one: the archive stays where it is whichever is
+    /// pressed, an unpacking writes over nothing, and what is being asked is
+    /// not "are you sure" — which the shell could answer for the user — but
+    /// "where", which it cannot. It is raised by a press on the archive itself,
+    /// and by the Open row, which is the same press.
+    ///
+    /// Two commands rather than one carrying which, for the reason Copy and
+    /// Move are two: one of them acts and the other opens a picker, and a
+    /// single name with a flag in it would be one place for the wrong flag to
+    /// arrive from. Neither carries its subject — the question holds the
+    /// archive it was raised over, exactly as a transfer holds what it is
+    /// carrying. See [`crate::archive`].
+    ExtractHere,
+    ExtractInto,
+    /// Make an archive of the thing the menu is about, and of everything
+    /// ticked while a column is being marked — after asking what to call it.
+    ///
+    /// Two commands rather than one, on the argument [`Command::CopyMarked`]
+    /// makes: the two act on different things, and one name for both would be
+    /// one mis-routed press away from forty files going into a box where one
+    /// was meant to. Neither carries its subject; the panel takes a copy of it
+    /// there and then. See `Shell::ask_to_compress`.
+    Compress,
+    CompressMarked,
+    /// The three controls on that panel: the button that steps into the list
+    /// of kinds of archive, one row of that list, and the button that makes
+    /// it.
+    ///
+    /// The kind is an index into what the panel is offering rather than the
+    /// kind itself, for the reason [`Command::OpenWithHandler`] is one — the
+    /// list is what this machine can write, worked out on the press that
+    /// raised the panel, and the panel is the only thing that holds it.
+    /// [`Command::ConfirmCompress`] is its own command beside
+    /// [`Command::Compress`] for the reason every confirmation here is: one
+    /// opens a question and the other writes to the disk.
+    CompressFormat,
+    CompressAs(usize),
+    ConfirmCompress,
     /// Answer the question a name already taken in the chosen folder puts up:
     /// write over what is there, or put both side by side.
     ///
@@ -624,8 +684,14 @@ pub enum Command {
     SteamSort,
     SteamSortBy(lxb_steam::library::Sort),
     /// The same game orders applied only to the Trophies library.
+    RetroAchievementsConfigure,
+    RetroAchievementsBack,
+    RetroAchievementsSubmit,
+    RetroAchievementsCancel,
+    RetroAchievementsChange,
+    RetroAchievementsLogout,
     TrophiesSort,
-    TrophiesSortBy(lxb_steam::library::Sort),
+    TrophiesSortBy(crate::trophies::Sort),
     /// Put the account into one of Steam's statuses, off the friends panel.
     ///
     /// The one row anywhere in this shell that writes something to somebody
@@ -1232,8 +1298,12 @@ pub struct Menu {
     pressed_aside: bool,
     closing_after_press: bool,
     /// The list a row has asked for, waiting for that row to finish going down
-    /// — see [`Menu::descend`].
-    next: Option<(Option<Title>, Vec<Entry>)>,
+    /// — see [`Menu::descend`] — and which of its rows to open on.
+    next: Option<(Option<Title>, Vec<Entry>, usize)>,
+    /// What the list this one was reached from should say once it is back,
+    /// waiting for the row that answered it to finish going down — see
+    /// [`Menu::back_after_press`]. `Some` is the whole of the request.
+    returning: Option<Vec<Entry>>,
     /// The lists this one was reached through, innermost last, so [`Menu::back`]
     /// can put one of them back.
     stack: Vec<Step>,
@@ -1310,6 +1380,7 @@ impl Menu {
         self.pressed = None;
         self.closing_after_press = false;
         self.next = None;
+        self.returning = None;
         self.stack.clear();
         self.highlight = None;
         self.highlight_speed = [0.0; 4];
@@ -1344,6 +1415,7 @@ impl Menu {
         self.pressed = None;
         self.closing_after_press = false;
         self.next = None;
+        self.returning = None;
         self.stack.clear();
         self.highlight = None;
         self.highlight_speed = [0.0; 4];
@@ -1366,16 +1438,52 @@ impl Menu {
     /// choosable in it is refused here for the same reason [`Self::open_at`]
     /// refuses one: it is a dead end with no way out but Back.
     pub fn descend(&mut self, title: Option<Title>, entries: Vec<Entry>) -> bool {
+        self.descend_selecting(title, entries, 0)
+    }
+
+    /// The same, opening on the first choosable row at or after `from` rather
+    /// than at the top of the list — for a list of values where one of them
+    /// is the value in force, and the highlight should arrive on it.
+    pub fn descend_selecting(
+        &mut self,
+        title: Option<Title>,
+        entries: Vec<Entry>,
+        from: usize,
+    ) -> bool {
         if !entries.iter().any(|entry| entry.enabled) {
             return false;
         }
-        self.next = Some((title, entries));
+        self.next = Some((title, entries, from));
         // Choosing a row handed the keys back. The step is not a way *off* the
         // panel, so it takes them again — and cancels the fold that was about
         // to start.
         self.open = true;
         self.closing_after_press = false;
         true
+    }
+
+    /// Step back out to the list this one was reached from once the row that
+    /// was just chosen has been seen to go down, with `entries` written on
+    /// that list in place of what it said — the mirror of [`Self::descend`].
+    ///
+    /// For a list of values, where pressing one *is* the answer and the answer
+    /// belongs on the list above: the row is watched all the way down, exactly
+    /// as a row that steps in is, and then the list it came from is back with
+    /// the value on it. Stepping back on the frame of the press would take
+    /// the pressed row away underneath the press, which is the one thing
+    /// [`Self::descend`] exists to avoid; the row has to hold the panel for
+    /// this to work, since a row that did not would have folded it away.
+    ///
+    /// `entries` are matched to the returned-to list row by row on their
+    /// commands — see [`Self::refresh`] — so what changes is what is written
+    /// on a row, and the highlight lands where it left.
+    pub fn back_after_press(&mut self, entries: Vec<Entry>) {
+        if self.stack.is_empty() && self.next.is_none() {
+            return;
+        }
+        self.returning = Some(entries);
+        self.open = true;
+        self.closing_after_press = false;
     }
 
     /// Write a different list on the panel, in place of the one it is showing.
@@ -1400,7 +1508,7 @@ impl Menu {
             return false;
         }
         if self.next.is_some() {
-            self.next = Some((title, entries));
+            self.next = Some((title, entries, 0));
             return true;
         }
         self.title = title;
@@ -1439,9 +1547,11 @@ impl Menu {
         // A list that has been asked for but has not arrived is simply
         // forgotten. The user has changed their mind inside the press.
         if self.next.take().is_some() {
+            self.returning = None;
             return true;
         }
         let Some(step) = self.stack.pop() else {
+            self.returning = None;
             return false;
         };
         self.title = step.title;
@@ -1452,6 +1562,12 @@ impl Menu {
         self.pressed = None;
         self.closing_after_press = false;
         self.keep_selection_in_view();
+        // A step back that was waiting on a press lands now, and brings what
+        // it was carrying: whether it was the press finishing or Back that
+        // took the step, the list being returned to says what it was going to.
+        if let Some(entries) = self.returning.take() {
+            self.refresh(entries);
+        }
         true
     }
 
@@ -1461,8 +1577,9 @@ impl Menu {
         self.stack.len()
     }
 
-    /// Put the waiting list on the panel, keeping the one it replaces.
-    fn enter(&mut self, title: Option<Title>, entries: Vec<Entry>) {
+    /// Put the waiting list on the panel, keeping the one it replaces, and
+    /// open it on the first choosable row at or after `from`.
+    fn enter(&mut self, title: Option<Title>, entries: Vec<Entry>, from: usize) {
         self.stack.push(Step {
             title: std::mem::replace(&mut self.title, title),
             entries: std::mem::replace(&mut self.entries, entries),
@@ -1473,7 +1590,11 @@ impl Menu {
         self.selected = self
             .entries
             .iter()
-            .position(|entry| entry.enabled)
+            .enumerate()
+            .skip(from)
+            .chain(self.entries.iter().enumerate())
+            .find(|(_, entry)| entry.enabled)
+            .map(|(index, _)| index)
             .unwrap_or_default();
         self.on_aside = false;
         self.scroll = 0;
@@ -1493,6 +1614,25 @@ impl Menu {
         // the panel folding into its anchor is the end of the whole journey,
         // not of the innermost list.
         self.next = None;
+        self.stack.clear();
+        was
+    }
+
+    /// Put it away once the row that was just chosen has been seen to go
+    /// down — what choosing a row that does not hold does on its own, for a
+    /// row that holds and has, this once, decided the panel is done.
+    ///
+    /// For the button that checks what is in a field before acting on it:
+    /// it holds, because a name the panel refuses has to be said on the panel,
+    /// and when the name passes the panel goes exactly as it would have gone
+    /// from a plain button — after the press, not from under it. Returns
+    /// whether it was open, on [`Self::close`]'s terms.
+    pub fn close_after_press(&mut self) -> bool {
+        let was = self.open;
+        self.open = false;
+        self.closing_after_press = self.pressed.is_some();
+        self.next = None;
+        self.returning = None;
         self.stack.clear();
         was
     }
@@ -1882,8 +2022,14 @@ impl Menu {
         // the panel — for the same reason and in the same breath. The row is
         // watched all the way down, and then the list it asked for arrives.
         if self.pressed.is_none() {
-            if let Some((title, entries)) = self.next.take() {
-                self.enter(title, entries);
+            if let Some((title, entries, from)) = self.next.take() {
+                self.enter(title, entries, from);
+            }
+            // And the step back out, on the same terms — see
+            // [`Self::back_after_press`]. `back` is what carries the entries
+            // over.
+            if self.returning.is_some() {
+                self.back();
             }
         }
         // The selected row opening out to show the rest of its label, or
@@ -2327,6 +2473,84 @@ mod tests {
         );
         assert_eq!(menu.depth(), 1);
         assert!(!menu.is_descending());
+    }
+
+    /// A list of values: it opens on the one in force rather than at the top,
+    /// pressing one is watched all the way down like any other press, and
+    /// only then is the list it came from back — saying the new value.
+    #[test]
+    fn a_value_chosen_from_a_further_list_lands_on_the_list_it_came_from() {
+        let mut menu = open(&["name", "format: zip", "make"]);
+        while menu.animate(0.05) < 1.0 {}
+        menu.move_selection(1);
+        assert_eq!(menu.choose(), Some(Command::Placeholder("format: zip")));
+        let kinds: Vec<Entry> = rows(&["zip", "tar", "7z"])
+            .into_iter()
+            .map(Entry::holds)
+            .collect();
+        assert!(menu.descend_selecting(None, kinds, 2));
+        menu.backdate_press(PRESS_TIME);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(
+            menu.selected_entry().map(|row| row.command),
+            Some(Command::Placeholder("7z")),
+            "the list opens on the value in force"
+        );
+        assert_eq!(menu.depth(), 1);
+
+        // Choosing tar: the row holds the panel and is watched down, and the
+        // list above is not back until it has been.
+        menu.move_selection(-1);
+        assert_eq!(menu.choose(), Some(Command::Placeholder("tar")));
+        assert!(menu.is_open(), "a row that holds keeps the keys");
+        menu.back_after_press(rows(&["name", "format: tar", "make"]));
+        menu.backdate_press(PRESS_TIME * 0.5);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(menu.depth(), 1, "still the list that was pressed");
+        assert_eq!(menu.entries().len(), 3);
+        assert_eq!(menu.entries()[1].label, "tar");
+
+        menu.backdate_press(PRESS_TIME);
+        assert_eq!(menu.animate(1.0 / 60.0), 1.0);
+        assert_eq!(menu.depth(), 0);
+        assert!(menu.is_open());
+        assert_eq!(
+            menu.entries()[1].label,
+            "format: tar",
+            "and it says the value"
+        );
+        assert_eq!(menu.selected(), 1, "on the row that stepped in");
+
+        // Back pressed inside the press takes the same step, with the same
+        // words, rather than leaving the list saying what it used to.
+        assert_eq!(menu.choose(), Some(Command::Placeholder("format: tar")));
+        assert!(menu.descend(
+            None,
+            rows(&["zip", "tar"])
+                .into_iter()
+                .map(Entry::holds)
+                .collect()
+        ));
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(menu.choose(), Some(Command::Placeholder("zip")));
+        menu.back_after_press(rows(&["name", "format: zip", "make"]));
+        assert!(menu.back());
+        assert_eq!(menu.depth(), 0);
+        assert_eq!(menu.entries()[1].label, "format: zip");
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(
+            menu.depth(),
+            0,
+            "and the press finishing takes no second step"
+        );
+
+        // Nothing to step back to: the request is refused rather than kept.
+        menu.back_after_press(rows(&["x"]));
+        menu.backdate_press(PRESS_TIME);
+        menu.animate(1.0 / 60.0);
+        assert_eq!(menu.entries()[1].label, "format: zip");
     }
 
     /// A list that had to be fetched is written over the wait, on the same

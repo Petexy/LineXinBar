@@ -354,7 +354,7 @@ fn whose(what: What) -> String {
     }
 }
 
-/// Under `$XDG_STATE_HOME/linexinbar/`, which is where everything this shell
+/// Under `$XDG_STATE_HOME/lxb/`, which is where everything this shell
 /// remembers about Steam between runs lives — the audit log, the note about the
 /// debugging marker, and these locks.
 ///
@@ -369,7 +369,7 @@ pub(crate) fn beside_the_state(name: &str) -> Option<PathBuf> {
             let home = std::env::var_os("HOME").map(PathBuf::from)?;
             Some(home.join(".local").join("state"))
         })?;
-    Some(state.join("linexinbar").join(name))
+    Some(state.join("lxb").join(name))
 }
 
 /// Who holds something, and enough about them to say whether they are still

@@ -56,26 +56,70 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Which of the two the user asked for.
+/// Which of the four the user asked for.
 ///
-/// One enum rather than two states of the picker, because the whole of what
-/// differs between them is the word on two rows and one line of
-/// [`Run::carry_out`]. What the user does — walk to a folder and press Paste —
-/// is the same journey, and a picker that was a different object for a copy
-/// than for a move would be two things to keep in step for no gain.
+/// One enum rather than a picker per journey, because the whole of what differs
+/// between them is the word on two rows and one line of [`carry_one`]. What the
+/// user does — walk to a folder and press the head row — is the same journey,
+/// and a picker that was a different object for each would be four things to
+/// keep in step for no gain.
+///
+/// [`Kind::Extract`] is the odd one: the thing being carried is not what
+/// arrives. An archive stays exactly where it is and what lands in the chosen
+/// folder is its contents — see [`crate::archive`] — which is why it is a kind
+/// whose head row is not called Paste and a kind that can never be blocked. A
+/// folder holding the archive already is a perfectly good answer to "where
+/// should this be unpacked".
+///
+/// [`Kind::Compress`] is the same thing the other way round, and it never
+/// walks at all: the archive is made beside the things that go into it, so the
+/// panel that asks for its name is the whole journey and the picker it rides on
+/// is one that came back already closed — see [`Transfer::already_chosen`]. It
+/// is a kind of transfer for the reason an unpacking is one: a worker that
+/// writes into the user's folder and then has one thing to say, with the
+/// panel while it runs and the panel if it fails being the transfer's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Copy,
     Move,
+    Extract,
+    Compress,
 }
 
 impl Kind {
-    /// What the quiet line under Paste says: what pressing it would do, in the
-    /// folder the column is of.
+    /// What is written on the head row of every column.
+    ///
+    /// Paste for the two that carry something, because a clipboard is what
+    /// every desktop calls that and the row has no list of commands round it to
+    /// say what it is for. Extract for the third, which is not pasting
+    /// anything: what would arrive is not what was picked up.
+    pub fn answer(self) -> &'static str {
+        match self {
+            Kind::Copy | Kind::Move => "Paste",
+            Kind::Extract => "Extract",
+            // Never drawn: the one picker of this kind comes back closed. It
+            // has a word all the same, for the reason every arm here has one.
+            Kind::Compress => "Compress",
+        }
+    }
+
+    /// The mark that row is drawn with.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Kind::Copy | Kind::Move => crate::icons::PASTE,
+            Kind::Extract => crate::icons::EXTRACT,
+            Kind::Compress => crate::icons::COMPRESS,
+        }
+    }
+
+    /// What the quiet line under that row says: what pressing it would do, in
+    /// the folder the column is of.
     pub fn note(self) -> &'static str {
         match self {
             Kind::Copy => "Copy here",
             Kind::Move => "Move here",
+            Kind::Extract => "Unpack it here",
+            Kind::Compress => "Make it here",
         }
     }
 
@@ -84,6 +128,8 @@ impl Kind {
         match self {
             Kind::Copy => "Copying",
             Kind::Move => "Moving",
+            Kind::Extract => "Unpacking",
+            Kind::Compress => "Compressing",
         }
     }
 }
@@ -189,6 +235,11 @@ pub enum Row {
 
 impl Row {
     /// What is written on it.
+    ///
+    /// The head row answers for the two journeys that carry something and not
+    /// for the third, which does not paste anything: what is drawn on screen is
+    /// [`Kind::answer`], taken off the column — see [`Column`]. This is what the
+    /// row is in itself, and it is the ordinary case.
     pub fn title(&self) -> &str {
         match self {
             Row::Paste => "Paste",
@@ -206,7 +257,8 @@ impl Row {
         }
     }
 
-    /// The mark it is drawn with.
+    /// The mark it is drawn with. The head row's is the journey's, for the
+    /// reason its wording is — see [`Row::title`] and [`Kind::glyph`].
     pub fn glyph(&self) -> &'static str {
         match self {
             Row::Paste => crate::icons::PASTE,
@@ -246,7 +298,13 @@ pub struct Column<'a> {
     /// Where it stands in relation to the cursor, in the same three states the
     /// bar's own columns have — see [`crate::model::Standing`].
     pub standing: crate::model::Standing,
-    /// What the quiet line under this column's Paste row says: what pressing it
+    /// Which journey this is, which is what the head row is called and what it
+    /// is drawn with — see [`Kind::answer`] and [`Kind::glyph`].
+    ///
+    /// On the column rather than read off the picker by whoever is drawing it,
+    /// so that one loop over the columns has everything one row needs.
+    pub kind: Kind,
+    /// What the quiet line under this column's head row says: what pressing it
     /// would do, or why it cannot be pressed here.
     ///
     /// Per column rather than per picker, because it is a fact about the folder
@@ -346,6 +404,29 @@ impl Transfer {
         Some(picker)
     }
 
+    /// One whose destination was named by the press that started it, so there
+    /// is no walk to make.
+    ///
+    /// *Extract here* is the whole of what this is for: the folder the archive
+    /// is already in is a perfectly good answer to "where should this be
+    /// unpacked", and a mirrored bar sliding in to ask a question somebody has
+    /// already answered would be the shell wasting a press.
+    ///
+    /// It comes back **closed** — nothing of it is ever drawn and it never
+    /// takes a button — and standing on its own head row, so the journey is
+    /// already at its end and [`Transfer::chosen`] answers at once. What it is
+    /// still carrying is everything the panels afterwards need: what was
+    /// unpacked, where it went, and which journey this was. See
+    /// `Shell::extract_into`.
+    pub fn already_chosen(kind: Kind, sources: Vec<Source>, into: &Path) -> Option<Self> {
+        let mut picker = Self::begin(kind, sources, into)?;
+        picker.open_state = false;
+        let level = &mut picker.levels[picker.open];
+        level.selected = 0;
+        level.position = 0.0;
+        Some(picker)
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -417,6 +498,7 @@ impl Transfer {
                 Some(Column {
                     level,
                     rows,
+                    kind: self.kind,
                     selected: held.selected.min(rows.len().saturating_sub(1)),
                     position: held.position,
                     standing: match level.cmp(&self.open) {
@@ -786,7 +868,16 @@ pub enum Settle {
 /// machine and the only place a name is really claimed is in the transfer
 /// itself. What it is for is the question — the shell must not overwrite one of
 /// the user's files without having asked.
-pub fn ready(sources: &[Source], into: &Path) -> Ready {
+pub fn ready(kind: Kind, sources: &[Source], into: &Path) -> Ready {
+    // Nothing an unpacking does can be in the way. What lands is not the thing
+    // that was picked up, and where it lands is worked out against the folder
+    // as it is at that moment — see [`crate::archive::unpack`], which never
+    // writes over anything and never has to ask. Nor can anything a packing
+    // does: the name it lands under was refused on the panel while it was
+    // taken, and what is taken in between is stepped round the same way.
+    if matches!(kind, Kind::Extract | Kind::Compress) {
+        return Ready::Clear;
+    }
     for source in sources {
         if !source.folder {
             continue;
@@ -849,6 +940,13 @@ pub fn ready(sources: &[Source], into: &Path) -> Ready {
 /// A *copy* into its own folder is neither: it is a duplicate, which is a thing
 /// people ask for, and it lands under a free name — see [`free_name`].
 fn blocked(kind: Kind, sources: &[Source], into: &Path) -> Option<&'static str> {
+    // An unpacking is never refused a folder. The archive does not move, so it
+    // cannot be put inside itself, and it is never "already here" — what is
+    // already here is the box, and what the press asks for is what is in it.
+    // A packing is never *offered* one: its picker is never drawn.
+    if matches!(kind, Kind::Extract | Kind::Compress) {
+        return None;
+    }
     let one = sources.len() == 1;
     if sources
         .iter()
@@ -932,8 +1030,7 @@ impl Run {
             let mut failed = 0usize;
             let mut why = String::new();
             for source in &sources {
-                let carried = landing(source, &into, settle)
-                    .and_then(|landing| carry_out(kind, &source.path, &landing).map(|()| landing));
+                let carried = carry_one(kind, source, &into, settle);
                 match carried {
                     Ok(landing) => {
                         tracing::info!(from = ?source.path, to = ?landing, ?kind, "carried it over");
@@ -975,6 +1072,38 @@ impl Run {
         Self { outcome }
     }
 
+    /// Do one thing for the whole set, on a thread, and answer with where it
+    /// landed: what making an archive is.
+    ///
+    /// [`Run::start`] is a loop over the sources because a copy is one thing
+    /// per source and the one the disk refuses must not strand the rest. An
+    /// archive is the other shape — every source goes into one file, and there
+    /// is no half of it to have got through — so the job is handed over whole
+    /// and the outcome is one of two rather than one of three.
+    pub fn of<F>(kind: Kind, job: F) -> Self
+    where
+        F: FnOnce() -> io::Result<PathBuf> + Send + 'static,
+    {
+        let outcome = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&outcome);
+        std::thread::spawn(move || {
+            let result = match job() {
+                Ok(landing) => {
+                    tracing::info!(to = ?landing, ?kind, "it is made");
+                    Outcome::Done(landing)
+                }
+                Err(err) => {
+                    tracing::warn!(?kind, %err, "the transfer failed");
+                    Outcome::Failed(said(&err))
+                }
+            };
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(result);
+            }
+        });
+        Self { outcome }
+    }
+
     /// How it went, or `None` while it is still going.
     pub fn outcome(&self) -> Option<Outcome> {
         match self.outcome.lock() {
@@ -984,6 +1113,31 @@ impl Run {
             Err(_) => Some(Outcome::Failed("the transfer did not finish".to_string())),
         }
     }
+}
+
+/// Do one of them, and answer with where it landed.
+///
+/// The one line the journeys differ on. A copy and a move both work out a
+/// name in the chosen folder and then put the thing there; an unpacking hands
+/// the whole question to [`crate::archive::unpack`], because what lands is not
+/// the thing that was picked up and neither its name nor how many of it there
+/// are is known until the box has been opened.
+///
+/// A packing never arrives here. It is one job for the whole set and starts
+/// through [`Run::of`] — and it is answered rather than left unreachable so
+/// that starting one the other way cannot make it reachable in silence.
+fn carry_one(kind: Kind, source: &Source, into: &Path, settle: Settle) -> io::Result<PathBuf> {
+    if kind == Kind::Extract {
+        return crate::archive::unpack(&source.path, into);
+    }
+    if kind == Kind::Compress {
+        return Err(io::Error::other(
+            "an archive is one job for the whole set, not one per thing",
+        ));
+    }
+    let landing = landing(source, into, settle)?;
+    carry_out(kind, &source.path, &landing)?;
+    Ok(landing)
 }
 
 /// The exact path the thing is going to land at.
@@ -1294,7 +1448,7 @@ mod tests {
         std::fs::write(into.join("a.txt"), b"two").unwrap();
         let source = source_of(&dir.join("a.txt"), false);
         assert_eq!(
-            ready(std::slice::from_ref(&source), &into),
+            ready(Kind::Copy, std::slice::from_ref(&source), &into),
             Ready::Taken(Taken {
                 count: 1,
                 name: "a.txt".to_string(),
@@ -1383,17 +1537,24 @@ mod tests {
         std::fs::create_dir_all(from.join("nested")).unwrap();
         let source = source_of(&from, true);
         assert!(matches!(
-            ready(std::slice::from_ref(&source), &from),
+            ready(Kind::Copy, std::slice::from_ref(&source), &from),
             Ready::Refused(_)
         ));
         assert!(matches!(
-            ready(std::slice::from_ref(&source), &from.join("nested")),
+            ready(
+                Kind::Copy,
+                std::slice::from_ref(&source),
+                &from.join("nested")
+            ),
             Ready::Refused(_)
         ));
         // Its own folder is not that. The name there is taken by the very
         // folder being copied, which is not an obstacle: it is a duplicate,
         // and it lands beside itself under a free name with nothing asked.
-        assert_eq!(ready(std::slice::from_ref(&source), &dir), Ready::Clear);
+        assert_eq!(
+            ready(Kind::Copy, std::slice::from_ref(&source), &dir),
+            Ready::Clear
+        );
         let run = Run::start(Kind::Copy, vec![source], dir.clone(), Settle::KeepBoth);
         let Outcome::Done(at) = finished(&run) else {
             panic!("the duplicate failed");
@@ -1446,7 +1607,7 @@ mod tests {
         ];
 
         assert_eq!(
-            ready(&sources, &into),
+            ready(Kind::Copy, &sources, &into),
             Ready::Clear,
             "nothing of any of those names is in there"
         );
@@ -1479,7 +1640,7 @@ mod tests {
             .map(|name| source_of(&dir.join(name), false))
             .collect();
 
-        let Ready::Taken(taken) = ready(&sources, &into) else {
+        let Ready::Taken(taken) = ready(Kind::Copy, &sources, &into) else {
             panic!("two of the three names are taken");
         };
         assert_eq!(taken.count, 2);
@@ -1552,7 +1713,7 @@ mod tests {
         // Named rather than counted: this is about one particular row being
         // impossible, and the user has to be told which.
         assert!(matches!(
-            ready(&sources, &dir.join("box/nested")),
+            ready(Kind::Copy, &sources, &dir.join("box/nested")),
             Ready::Refused(why) if why.contains("box")
         ));
         let _ = std::fs::remove_dir_all(&dir);

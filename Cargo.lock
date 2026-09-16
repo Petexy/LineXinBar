@@ -2358,9 +2358,9 @@ dependencies = [
  "drm-ffi",
  "libc",
  "lxb-protocol",
+ "lxb-smithay",
  "png",
  "serde",
- "smithay",
  "smithay-drm-extras",
  "thiserror 2.0.19",
  "toml 0.9.12+spec-1.1.0",
@@ -2387,6 +2387,7 @@ dependencies = [
  "libc",
  "lxb-protocol",
  "lxb-steam",
+ "lxb-updates",
  "pollster",
  "raw-window-handle",
  "resvg",
@@ -2442,6 +2443,7 @@ dependencies = [
 name = "lxb-retroarch"
 version = "0.9.0"
 dependencies = [
+ "cc",
  "clap",
  "flate2",
  "serde",
@@ -2450,23 +2452,107 @@ dependencies = [
 ]
 
 [[package]]
+name = "lxb-smithay"
+version = "0.7.0"
+dependencies = [
+ "aliasable",
+ "appendlist",
+ "atomic_float",
+ "bitflags 2.13.1",
+ "calloop 0.14.4",
+ "cc",
+ "cgmath",
+ "cursor-icon",
+ "downcast-rs",
+ "drm",
+ "drm-ffi",
+ "drm-fourcc",
+ "encoding_rs",
+ "errno",
+ "gbm",
+ "gl_generator",
+ "indexmap",
+ "input",
+ "libc",
+ "libloading",
+ "libseat",
+ "pkg-config",
+ "profiling",
+ "rand 0.9.5",
+ "rustix 1.1.4",
+ "scopeguard",
+ "sha2",
+ "smallvec",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+ "udev",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-cursor",
+ "wayland-egl",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "wayland-server",
+ "wayland-sys",
+ "winit",
+ "x11rb",
+ "xkbcommon",
+]
+
+[[package]]
 name = "lxb-steam"
 version = "0.9.0"
 dependencies = [
  "anyhow",
  "libc",
+ "lxb-steam-cm-protocol",
  "num-bigint",
  "qrcode",
  "rand 0.9.5",
  "serde",
  "serde_json",
  "shlex 1.3.0",
- "steam-cm-protocol",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "tungstenite",
  "ureq",
+]
+
+[[package]]
+name = "lxb-steam-cm-protocol"
+version = "0.4.1"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "flate2",
+ "futures-util",
+ "prost",
+ "prost-build",
+ "protox",
+ "rand 0.8.7",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
+name = "lxb-updates"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zbus",
 ]
 
 [[package]]
@@ -4348,56 +4434,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
-name = "smithay"
-version = "0.7.0"
-dependencies = [
- "aliasable",
- "appendlist",
- "atomic_float",
- "bitflags 2.13.1",
- "calloop 0.14.4",
- "cc",
- "cgmath",
- "cursor-icon",
- "downcast-rs",
- "drm",
- "drm-ffi",
- "drm-fourcc",
- "encoding_rs",
- "errno",
- "gbm",
- "gl_generator",
- "indexmap",
- "input",
- "libc",
- "libloading",
- "libseat",
- "pkg-config",
- "profiling",
- "rand 0.9.5",
- "rustix 1.1.4",
- "scopeguard",
- "sha2",
- "smallvec",
- "tempfile",
- "thiserror 2.0.19",
- "tracing",
- "udev",
- "wayland-backend",
- "wayland-client",
- "wayland-cursor",
- "wayland-egl",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
- "wayland-server",
- "wayland-sys",
- "winit",
- "x11rb",
- "xkbcommon",
-]
-
-[[package]]
 name = "smithay-client-toolkit"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4520,28 +4556,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "steam-cm-protocol"
-version = "0.4.1"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "flate2",
- "futures-util",
- "prost",
- "prost-build",
- "protox",
- "rand 0.8.7",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tokio-tungstenite",
- "tracing",
-]
 
 [[package]]
 name = "strict-num"

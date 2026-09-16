@@ -45,7 +45,11 @@ wayland-protocols = { version = "0.32", features = ["server", "staging"] }
 # ship; connector names come from the connector type instead, as elsewhere.
 smithay-drm-extras = { version = "0.1", default-features = false }
 
+# The fork in third_party/, not the published crate — see the workspace
+# manifest. Keyed `smithay` so `use smithay::` reads as it always has.
 [dependencies.smithay]
+package = "lxb-smithay"
+path = "../../third_party/lxb-smithay"
 version = "0.7"
 default-features = false
 features = [

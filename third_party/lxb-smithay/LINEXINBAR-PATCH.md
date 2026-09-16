@@ -1,5 +1,9 @@
 # What was changed, and why
 
+The directory and the package are named `lxb-smithay` so that nothing — a
+lock file, `cargo tree`, a vendored source archive — can take this for the
+published crate. The library it builds is still `smithay`.
+
 Smithay 0.7.0 verbatim, apart from one addition: an atomic page flip that does
 not wait for the vertical retrace.
 

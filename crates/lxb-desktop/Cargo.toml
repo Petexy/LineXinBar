@@ -25,6 +25,7 @@ clap.workspace = true
 # format — this crate deliberately does not depend on `lxb-retroarch`, because
 # a machine may have either package without the other.
 serde_json = "1"
+lxb-updates = { path = "../lxb-updates" }
 
 
 # Wayland client: layer-shell, seat, keyboard.

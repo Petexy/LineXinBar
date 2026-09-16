@@ -3,9 +3,9 @@ Version:        0.9.0
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
-# LineXinBar/Bibata, embedded Roboto, and the locked statically linked Rust
-# dependency graph for Linux.
-License:        GPL-3.0-only AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MPL-2.0 AND Unicode-3.0 AND Zlib
+# LineXinBar/Bibata, embedded Roboto and Roboto Mono, and the locked
+# statically linked Rust dependency graph for Linux.
+License:        GPL-3.0-only AND Apache-2.0 AND OFL-1.1 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MPL-2.0 AND Unicode-3.0 AND Zlib
 URL:            https://github.com/Petexy/LineXinBar
 Source0:        linexinbar-%{version}.tar.gz
 
@@ -68,6 +68,8 @@ BuildRequires:  clang
 # manager can depend on a Wayland session running on this hardware without
 # pulling in the shell, the portal and the Steam client behind them.
 Requires:       lxb-compositor%{?_isa} = %{version}-%{release}
+Requires:       fwupd
+Requires:       polkit
 Requires:       dbus-daemon
 Requires:       dbus-tools
 Requires:       libwayland-client
@@ -209,24 +211,31 @@ export CARGO_TARGET_DIR=target
     --prefix %{_prefix} \
     --target-dir target
 
-# `%%license` installs a file under its basename, and the two third-party
-# licences carried in this tree are both called LICENSE.txt: listed as they are
-# they would land on the same path and one would replace the other. Copy them
-# to names that say whose they are and can share a directory.
+# `%%license` installs a file under its basename, and the licences carried in
+# this tree collide on theirs: two are called LICENSE.txt and rcheevos' is
+# called LICENSE, which is the project's own name for its own. Listed as they
+# are they would land on the same paths and replace one another. Copy them to
+# names that say whose they are and can share a directory.
 cp -p font/Roboto/LICENSE.txt Roboto-LICENSE.txt
-cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
+cp -p font/RobotoMono/OFL.txt RobotoMono-OFL.txt
+cp -p third_party/lxb-smithay/LICENSE.txt Smithay-LICENSE.txt
+cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 
 %files
-%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
 %doc README.md
 %{_bindir}/lxb-desktop
 %{_bindir}/lxb-portal
+%{_bindir}/lxb-updates
+%{_datadir}/polkit-1/actions/org.linexinbar.updates.policy
+%{_datadir}/doc/lxb-desktop/updates.md
 %{_bindir}/lxb-session
 %{_datadir}/wayland-sessions/lxb.desktop
 %{_datadir}/xdg-desktop-portal/portals/lxb.portal
 %{_datadir}/xdg-desktop-portal/linexinbar-portals.conf
 %{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.lxb.service
 %{_datadir}/applications/linexinbar-files.desktop
+%{_datadir}/applications/linexinbar-extract.desktop
 %{_datadir}/applications/linexinbar-mimeapps.list
 %{_prefix}/lib/udev/rules.d/70-linexinbar-input.rules
 
@@ -235,7 +244,7 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 # under. The cursor theme goes here because the compositor is what loads it
 # and draws the pointer from it.
 %files -n       lxb-compositor
-%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
 %doc docs/configuration.md examples/config.toml
 %{_bindir}/lxb
 %{_datadir}/icons/Bibata-Modern-Classic/
@@ -251,7 +260,7 @@ cp -p third_party/smithay/LICENSE.txt Smithay-LICENSE.txt
 # leave forty-five console marks installed and unpackaged. Nothing else stages
 # anything under that directory, so this package owns it outright.
 %files -n       lxb-retroarch
-%license LICENSE Roboto-LICENSE.txt Smithay-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
 %{_bindir}/lxb-retroarch
 %{_datadir}/lxb/
 

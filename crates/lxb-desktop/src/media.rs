@@ -1525,27 +1525,106 @@ pub struct Opening {
     pub command: String,
 }
 
+/// One thing that can open a file.
+///
+/// Two arms because there are two kinds of answer and only one of them is a
+/// program on this disk. Everything the shell opens a file with was installed
+/// by somebody — except an archive, which is answered by the shell itself under
+/// the name [`crate::archive::NAME`]: nobody wants to *look* at a `.tar.gz`,
+/// they want what is inside it, and unpacking it is a question ("where?") the
+/// shell is the only thing here in a position to ask.
+///
+/// It travels alongside the applications rather than being tested for
+/// separately, so that every place which answers "what opens this" — the plain
+/// Open, the Open with list, the tick saying which is in force — is looking at
+/// one list with the shell's own answer in its proper place in it.
+#[derive(Debug, Clone, Copy)]
+pub enum Opener<'a> {
+    /// The shell's own Extract. See [`crate::archive`].
+    Extract,
+    /// A program this machine has.
+    App(&'a App),
+}
+
+impl<'a> Opener<'a> {
+    /// What it is called, on a row and in the log.
+    pub fn name(self) -> &'a str {
+        match self {
+            Opener::Extract => crate::archive::NAME,
+            Opener::App(app) => app.name.as_str(),
+        }
+    }
+
+    /// Its picture by icon name — an application's own, or one of the shell's
+    /// marks for the answer that is not an application.
+    pub fn icon(self) -> Option<&'a str> {
+        match self {
+            Opener::Extract => Some(crate::icons::EXTRACT),
+            Opener::App(app) => app.icon.as_deref(),
+        }
+    }
+
+    /// Whether this is the shell's own answer rather than a program.
+    ///
+    /// A method rather than a derived `PartialEq`, because two openers are the
+    /// same one when they are the same *application* — which is a pointer into
+    /// the catalogue and not a field-by-field comparison of an `App`. See
+    /// [`Opener::is`], which is the other half of that.
+    pub fn is_the_extractor(self) -> bool {
+        matches!(self, Opener::Extract)
+    }
+
+    /// Whether this opener is that very application — the same row of the
+    /// catalogue, by identity.
+    fn is(self, app: &App) -> bool {
+        matches!(self, Opener::App(own) if std::ptr::eq(own, app))
+    }
+}
+
+/// Whether a desktop entry name is the one the shell answers to itself.
+///
+/// By name rather than by looking the entry up in the catalogue, and it has to
+/// be: the entry carries `NoDisplay=true` — there is no Extract application to
+/// put a tile on the bar for — and the scan drops every one of those, so
+/// [`entry_named`] would never find it on any machine, installed or not. It is
+/// on the disk so that the rest of the machine has something to *name*; see
+/// [`crate::archive::ENTRY`]. This also makes the answer hold in a session
+/// running straight out of a source tree, which has installed nothing anywhere.
+pub fn is_the_extractor(id: &str) -> bool {
+    id == crate::archive::ENTRY
+}
+
 /// What to open `file` with.
 ///
 /// The user has already answered this question for their desktop, so it is
-/// read rather than asked again: the default they set for the type, then any
-/// installed application that says it handles the type, then `xdg-open` — and
-/// nothing at all if none of the three has an answer, because a row that
-/// starts the wrong program is worse than one that reports it could not start
-/// anything.
+/// read rather than asked again: the default they set for the type, then the
+/// shell's own answer where it has one, then any installed application that
+/// says it handles the type, then `xdg-open` — and nothing at all if none of
+/// them has an answer, because a row that starts the wrong program is worse
+/// than one that reports it could not start anything.
 ///
-/// The catalogue the shell already scanned is what the first two are looked up
-/// in. It knows every installed application's `Exec` and `MimeType`, which is
-/// the whole of what a handler lookup needs, and it means the process that
+/// The catalogue the shell already scanned is what the applications are looked
+/// up in. It knows every installed application's `Exec` and `MimeType`, which
+/// is the whole of what a handler lookup needs, and it means the process that
 /// gets started is one the shell can name, count and close like any other.
 /// A path and a type rather than a file, because that is everything the answer
 /// depends on and there are two kinds of row that have them: a file the walk
 /// shelved, and a file the explorer found in the folder it lives in. One
 /// function, so a `.flac` opens in the same application whichever column it was
 /// pressed in.
+///
+/// An archive answered by [`Opener::Extract`] comes back as a command line like
+/// any other, and not because anything in the shell uses it: a press inside the
+/// shell is intercepted long before this and turned into the question about
+/// where to unpack — see `Shell::start_selection`. What this is for is the one
+/// path with nobody to ask, which is a program outside the session calling
+/// `xdg-open` on a `.zip`. The entry it names runs this binary with
+/// `--extract`, which unpacks it where it stands.
 pub fn opening(path: &Path, mime: &str, categories: &[Category], aside: &[App]) -> Option<Opening> {
-    if let Some(app) = handlers(mime, categories, aside).first() {
-        return Some(opening_with(path, app));
+    match handlers(mime, categories, aside).first() {
+        Some(Opener::App(app)) => return Some(opening_with(path, app)),
+        Some(Opener::Extract) => return Some(extracting(path)),
+        None => {}
     }
 
     if crate::model::executable_on_path(OsStr::new("xdg-open")) {
@@ -1564,25 +1643,52 @@ pub fn opening(path: &Path, mime: &str, categories: &[Category], aside: &[App]) 
     None
 }
 
-/// Everything installed that will open `file`, best first.
+/// Everything that will open `file`, best first.
 ///
 /// What [`opening`] picks from, and what the Open with menu lists — one
-/// function, so the first row of that menu is always the application a plain
-/// Open would have used. Anything else would make Open with a way of finding
-/// out that Open does something else.
+/// function, so the first row of that menu is always what a plain Open would
+/// have used. Anything else would make Open with a way of finding out that Open
+/// does something else.
 ///
 /// The user's own default heads the list where they have set one, and the rest
-/// follow in [`declares`]'s order. The default is not repeated further down: it
-/// is one application and it gets one row.
-pub fn handlers<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Vec<&'a App> {
+/// follow in [`ranked`]'s order. The default is not repeated further down: it is
+/// one answer and it gets one row.
+///
+/// The shell's own Extract is on the list for every archive, wherever it stands
+/// in it — first where nobody has displaced it, and second where somebody has.
+/// Second and not missing, because the Open with list is the only way back:
+/// choosing Ark for `.zip` writes a line in `mimeapps.list`, and a list without
+/// Extract on it would be a choice that could be made and never unmade.
+pub fn handlers<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Vec<Opener<'a>> {
     let chosen = preferred(mime, categories, aside);
-    let mut handlers: Vec<&App> = chosen.into_iter().collect();
+    let mut handlers: Vec<Opener<'a>> = chosen.into_iter().collect();
+    if crate::archive::opens(mime) && !chosen.is_some_and(Opener::is_the_extractor) {
+        handlers.push(Opener::Extract);
+    }
     handlers.extend(
         ranked(mime, categories, aside)
             .into_iter()
-            .filter(|app| chosen.is_none_or(|chosen| !std::ptr::eq(chosen, *app))),
+            .filter(|app| !chosen.is_some_and(|chosen| chosen.is(app)))
+            .map(Opener::App),
     );
     handlers
+}
+
+/// What starting `path` in the shell's own Extract would take.
+///
+/// The desktop entry's own command line, spelt out here rather than read off
+/// the entry: this binary is what the entry names, so asking the disk what the
+/// disk was told about this binary would be the shell taking the long way round
+/// to a fact it already has — and taking it through a file that may not be
+/// installed at all.
+fn extracting(path: &Path) -> Opening {
+    Opening {
+        name: Opener::Extract.name().to_string(),
+        // One of the shell's own marks rather than an icon theme's: this is not
+        // a program on this disk and no theme has a picture of it.
+        icon: Opener::Extract.icon().map(str::to_string),
+        command: format!("lxb-desktop --extract {}", quoted(path)),
+    }
 }
 
 /// What starting the file at `path` in `app` would take.
@@ -1613,17 +1719,27 @@ pub struct Handler {
     pub mime: &'static str,
 }
 
-/// The row `app` gets on the Open with list for a file of this kind.
+/// The row `opener` gets on the Open with list for a file of this kind.
 ///
 /// `None` for an application whose desktop entry has no file name worth
 /// writing down, which cannot happen for anything the catalogue scanned off
 /// the disk — but a row that could be chosen and then not recorded would be a
 /// row that lies about what it did.
-pub fn handler_row(mime: &'static str, app: &App) -> Option<Handler> {
+///
+/// The shell's own Extract always has one, and the name it is recorded under is
+/// an entry this project ships. That is what makes it choosable *back*: a
+/// `mimeapps.list` names desktop entries and nothing else, so an answer with no
+/// entry to its name could be displaced and never returned to.
+pub fn handler_row(mime: &'static str, opener: Opener<'_>) -> Option<Handler> {
     Some(Handler {
-        name: app.name.clone(),
-        icon: app.icon.clone(),
-        id: app.path.file_name().and_then(OsStr::to_str)?.to_string(),
+        name: opener.name().to_string(),
+        icon: opener.icon().map(str::to_string),
+        // The one line the two kinds of opener genuinely differ on. Everything
+        // above is a question [`Opener`] answers for both.
+        id: match opener {
+            Opener::Extract => crate::archive::ENTRY.to_string(),
+            Opener::App(app) => app.path.file_name().and_then(OsStr::to_str)?.to_string(),
+        },
         mime,
     })
 }
@@ -1772,17 +1888,56 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
-/// The application the user has set as the default for `mime`, if it is one
-/// this machine actually has.
-fn preferred<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Option<&'a App> {
+/// What the user has set as the default for `mime`, if it is something this
+/// machine can actually answer with.
+///
+/// Their own choice first, in the order the mime-apps specification gives the
+/// files — so a line they wrote in their own `mimeapps.list` outranks anything
+/// a package dropped beside the desktop entries. An entry naming a program that
+/// is not installed is stepped over, which is what the list being in preference
+/// order is for.
+///
+/// Where nobody has said anything at all, an archive still has an answer: the
+/// shell's own Extract, which is what makes it the default without a line
+/// having to be written anywhere or a package having to be installed. Every
+/// other type falls through to [`ranked`] as it always has.
+fn preferred<'a>(mime: &str, categories: &'a [Category], aside: &'a [App]) -> Option<Opener<'a>> {
     for list in mimeapps_files() {
         let Ok(raw) = std::fs::read_to_string(&list) else {
             continue;
         };
-        for id in defaults(&raw, mime) {
-            if let Some(app) = entry_named(&id, categories, aside) {
-                return Some(app);
-            }
+        if let Some(chosen) = chosen_among(&defaults(&raw, mime), categories, aside) {
+            return Some(chosen);
+        }
+    }
+    crate::archive::opens(mime).then_some(Opener::Extract)
+}
+
+/// Which of `ids` this machine can answer with — the names one
+/// `mimeapps.list` gives for a type, in the preference order it gives them.
+///
+/// A function of its arguments and nothing else, split out of [`preferred`] so
+/// that the rule can be exercised without the developer's own `mimeapps.list`
+/// deciding the answer. See [`crate::files`]'s tests for the same split and the
+/// same reason.
+///
+/// An entry naming a program that is not installed is stepped over, which is
+/// what the list being in preference order is for. The shell's own Extract is
+/// the exception and is recognised by name *before* the catalogue is asked: the
+/// desktop entry standing for it may not be installed — a session running out
+/// of a source tree has installed nothing anywhere — and the user's choice has
+/// to hold either way.
+fn chosen_among<'a>(
+    ids: &[String],
+    categories: &'a [Category],
+    aside: &'a [App],
+) -> Option<Opener<'a>> {
+    for id in ids {
+        if is_the_extractor(id) {
+            return Some(Opener::Extract);
+        }
+        if let Some(app) = entry_named(id, categories, aside) {
+            return Some(Opener::App(app));
         }
     }
     None
@@ -2699,7 +2854,7 @@ mod tests {
 
         // Every application that opens the type, each of them once: a default
         // the user has set heads the list rather than appearing twice in it.
-        let names: Vec<&str> = offered.iter().map(|app| app.name.as_str()).collect();
+        let names: Vec<&str> = offered.iter().copied().map(Opener::name).collect();
         let mut once = names.clone();
         once.sort();
         once.dedup();
@@ -2709,7 +2864,7 @@ mod tests {
         let opening = opening(&song.path, song.mime, &categories, &[]).unwrap();
         assert_eq!(opening.name, names[0]);
         assert!(opening.command.ends_with("'/home/x/a.flac'"));
-        assert_eq!(opening.icon, offered[0].icon);
+        assert_eq!(opening.icon.as_deref(), offered[0].icon());
 
         // And nothing at all for a type nothing installed claims, which is what
         // greys the Open with row out.
@@ -2826,6 +2981,87 @@ mod tests {
         assert_eq!(lines[group.unwrap() - 2], "image/jpeg=gwenview.desktop");
     }
 
+    /// An archive opens in the shell's own Extract without anybody having said
+    /// so, and Extract stays on the list after somebody has said otherwise.
+    ///
+    /// The second half is the one that matters. Choosing Ark for `.zip` writes
+    /// a line into the user's `mimeapps.list`, and a list that then dropped
+    /// Extract would be a choice that can be made and never unmade — the Open
+    /// with list is the only way back to it.
+    ///
+    /// Not asserted against the head of the list, which is this machine's own
+    /// `mimeapps.list` to decide: the property here is that Extract is *on* it,
+    /// and that holds whichever way that file reads. The rule that puts it
+    /// first is [`chosen_among`]'s, tested below without a disk.
+    #[test]
+    fn an_archive_is_always_offered_the_shells_own_extract() {
+        let categories = catalogue(vec![filed(
+            app("Ark", "org.kde.ark.desktop", "ark", &["application/zip"]),
+            &["Utility", "Archiving"],
+        )]);
+        let offered = handlers("application/zip", &categories, &[]);
+        assert!(
+            offered.iter().copied().any(Opener::is_the_extractor),
+            "{:?}",
+            offered
+                .iter()
+                .copied()
+                .map(Opener::name)
+                .collect::<Vec<_>>()
+        );
+        // Once, like every other answer on this list.
+        assert_eq!(
+            offered
+                .iter()
+                .copied()
+                .filter(|opener| opener.is_the_extractor())
+                .count(),
+            1
+        );
+        // And it is never offered for something that is not an archive, where
+        // there would be nothing for it to unpack.
+        let songs = catalogue(vec![app("VLC", "vlc.desktop", "vlc", &["audio/flac"])]);
+        assert!(!handlers("audio/flac", &songs, &[])
+            .iter()
+            .copied()
+            .any(Opener::is_the_extractor));
+    }
+
+    /// What a `mimeapps.list` line means, without one on the disk to read.
+    #[test]
+    fn the_users_own_choice_outranks_the_shells_and_can_name_it_back() {
+        let categories = catalogue(vec![filed(
+            app("Ark", "org.kde.ark.desktop", "ark", &["application/zip"]),
+            &["Utility", "Archiving"],
+        )]);
+        let named = |ids: &[&str]| {
+            chosen_among(
+                &ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                &categories,
+                &[],
+            )
+        };
+
+        // Somebody who picked Ark gets Ark.
+        assert_eq!(named(&["org.kde.ark.desktop"]).unwrap().name(), "Ark");
+        // Somebody who picked Extract back gets Extract — and gets it whether
+        // or not the entry standing for it was ever installed, which is the
+        // whole reason it is matched by name.
+        assert!(named(&[crate::archive::ENTRY]).unwrap().is_the_extractor());
+        assert!(chosen_among(&[crate::archive::ENTRY.to_string()], &[], &[])
+            .unwrap()
+            .is_the_extractor());
+        // A name this machine has not got is stepped over, which is what the
+        // list being in preference order is for.
+        assert_eq!(
+            named(&["gone.desktop", "org.kde.ark.desktop"])
+                .unwrap()
+                .name(),
+            "Ark"
+        );
+        assert!(named(&["gone.desktop"]).is_none());
+    }
+
     #[test]
     fn defaults_are_read_out_of_their_own_group_only() {
         let list = "[Default Applications]\nvideo/mp4=mpv.desktop\n\
@@ -2864,7 +3100,7 @@ mod tests {
 
         let found = handlers("image/png", &categories, &aside);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].name, "Pictures");
+        assert_eq!(found[0].name(), "Pictures");
 
         // By name, which is how the Open with list's press reaches it.
         assert!(entry_named("imagonsole.desktop", &categories, &aside).is_some());
@@ -2902,11 +3138,11 @@ mod tests {
 
         let found = handlers("video/x-matroska", &categories, &aside);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].name, "Videos");
+        assert_eq!(found[0].name(), "Videos");
 
         let found = handlers("image/png", &categories, &aside);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].name, "Pictures");
+        assert_eq!(found[0].name(), "Pictures");
 
         assert!(entry_named("videonsole.desktop", &categories, &aside).is_some());
         assert_eq!(every_application(&categories, &aside).len(), 2);

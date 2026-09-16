@@ -139,27 +139,59 @@ static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
 ///
 /// `named` is what the session was started with — see the shell's
 /// `--retroarch-helper`, which is how a helper that has not been installed
-/// anywhere can be driven for development. Everything else is a `PATH` walk,
-/// which is what "the package is installed" means on any machine.
+/// anywhere can be driven for development. Otherwise prefer a helper beside
+/// the shell executable, then walk `PATH`. This keeps a local build paired
+/// with its helper even when an older integration is installed system-wide.
 ///
 /// Called once, before the catalogue is built, because the answer decides
 /// whether there is a RetroArch row on the bar at all — and the row's mark has
 /// to be in the atlas with the rest rather than being asked for on the first
 /// frame that draws it.
 pub fn look_for_helper(named: Option<PathBuf>) -> Option<&'static Path> {
-    let found = FOUND.get_or_init(|| match named {
-        Some(named) if named.is_file() => Some(named),
-        Some(named) => {
-            tracing::warn!(at = %named.display(), "there is no helper there");
-            None
-        }
-        None => on_path(HELPER),
+    let found = FOUND.get_or_init(|| {
+        resolve_helper(named, std::env::current_exe().ok().as_deref(), || {
+            on_path(HELPER)
+        })
     });
     match found {
         Some(at) => tracing::info!(at = %at.display(), "the RetroArch integration is installed"),
         None => tracing::debug!("no RetroArch integration on this machine"),
     }
     found.as_deref()
+}
+
+fn resolve_helper(
+    named: Option<PathBuf>,
+    shell: Option<&Path>,
+    on_path: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(named) = named {
+        return if executable(&named) {
+            Some(named)
+        } else {
+            tracing::warn!(at = %named.display(), "there is no executable helper there");
+            None
+        };
+    }
+    shell
+        .and_then(Path::parent)
+        .map(|dir| dir.join(HELPER))
+        .filter(|at| executable(at))
+        .or_else(on_path)
+}
+
+fn executable(at: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(at).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+/// Where the integration is, for the one caller that has to run it itself.
+///
+/// [`offered`] is the question nearly everything asks; this is for the
+/// RetroAchievements client, which spawns the helper rather than going through
+/// the calls above it and so needs the path [`look_for_helper`] settled on.
+pub fn helper() -> Option<&'static Path> {
+    FOUND.get().and_then(|p| p.as_deref())
 }
 
 /// Whether this machine has the integration at all.
@@ -173,14 +205,10 @@ pub fn offered() -> bool {
 
 /// Where an executable of this name is, walking `PATH` as a shell does.
 fn on_path(program: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(program))
-        .find(|at| {
-            std::fs::metadata(at)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
+        .find(|at| executable(at))
 }
 
 // --- what the helper says ---------------------------------------------------
@@ -2034,7 +2062,7 @@ impl RetroArch {
 pub fn folder_row() -> Entry {
     let comment = match crate::settings::roms_folder() {
         Some(at) => crate::screenshot::abbreviated(&at),
-        None => "One folder per console — psp, nes, snes".to_string(),
+        None => "One folder per console, e.g. psp, nes, etc.".to_string(),
     };
     Entry::Folder(apps::Folder {
         title: "Games folder".to_string(),
@@ -2094,11 +2122,11 @@ impl Piece {
 /// Under the data directory rather than the cache, and that is the whole of the
 /// difference between these and the ones fetched from libretro. A cache is a
 /// copy of something that can be had again: deleting
-/// `linexinbar/retroarch-art` costs a download. This is a choice somebody made,
+/// `lxb/retroarch-art` costs a download. This is a choice somebody made,
 /// and there is nowhere on the internet to fetch it back from.
 ///
 /// ```text
-/// $XDG_DATA_HOME/linexinbar/game-art/
+/// $XDG_DATA_HOME/lxb/game-art/
 ///     <console>/<the game's own file name>.cover.png
 ///     <console>/<the game's own file name>.background.jpg
 /// ```
@@ -2126,7 +2154,7 @@ pub fn kept_in() -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".local/share"))
         })?;
-    Some(data.join("linexinbar").join("game-art"))
+    Some(data.join("lxb").join("game-art"))
 }
 
 /// The directory one console's chosen pictures are kept in.
@@ -3640,6 +3668,40 @@ pub fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
 mod tests {
     use super::*;
     use crate::pads::{At, Control, Mapping, Pad};
+
+    #[test]
+    fn local_helper_precedes_path_but_not_explicit_override() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("lxb-helper-resolution-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sibling = dir.join(HELPER);
+        let explicit = dir.join("custom-helper");
+        for at in [&sibling, &explicit] {
+            std::fs::write(at, "fixture").unwrap();
+            std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let shell = dir.join("lxb-desktop");
+        let fallback = || Some(PathBuf::from("/installed/lxb-retroarch"));
+        assert_eq!(
+            resolve_helper(None, Some(&shell), fallback),
+            Some(sibling.clone())
+        );
+        assert_eq!(
+            resolve_helper(Some(explicit.clone()), Some(&shell), fallback),
+            Some(explicit)
+        );
+        assert_eq!(
+            resolve_helper(Some(dir.join("missing")), Some(&shell), fallback),
+            None
+        );
+        std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(resolve_helper(None, Some(&shell), fallback), fallback());
+        std::fs::remove_file(&sibling).unwrap();
+        assert_eq!(resolve_helper(None, Some(&shell), fallback), fallback());
+        assert_eq!(resolve_helper(None, None, || None), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// The controller Steam Input puts in front of a game, as this machine
     /// really reports it: an Xbox pad's buttons and axes, and a hat for the

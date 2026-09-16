@@ -10,9 +10,43 @@ pub const COLUMN: &str = "trophies";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
+    RetroConfigure,
+    RetroGame(u32, String),
+    RetroAchievement(u32, u32),
+    RetroStatus(u32, String),
     SteamGame(u32),
     SteamAchievement(u32, String),
     Status(u32, &'static str),
+}
+
+/// The machine a game is for, as the column groups by it.
+///
+/// A name and the mark that goes with it, together because they are one answer
+/// and a folder needs both: a column of consoles with no marks is a list, and a
+/// column of marks with no names is a puzzle. The mark is a name the shell's
+/// atlas knows — `lxb:console-nes` — supplied by whichever half of the column
+/// the row came from rather than looked up here, because the table of consoles
+/// belongs to the RetroArch package and this shell deliberately keeps no copy
+/// of it. See [`Sort::Platform`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Platform {
+    pub name: String,
+    pub mark: String,
+}
+
+/// What Valve's half of the column is called where it is a machine among
+/// machines. Its own name and not "Valve" or "PC": it is the name on the
+/// category the games come from, and the one the person chose it by.
+pub const STEAM_PLATFORM: &str = "Steam";
+
+impl Platform {
+    /// Valve's half, as a machine.
+    pub fn steam() -> Self {
+        Self {
+            name: STEAM_PLATFORM.to_string(),
+            mark: crate::icons::CATEGORY_STEAM.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +57,44 @@ pub struct Row {
     pub entries: Option<Vec<Entry>>,
     /// Section label attached to its achievements, never a cursor destination.
     pub section: Option<String>,
+    /// The shape this row's picture is — the width of it over its height —
+    /// where that is not the shape of the column.
+    ///
+    /// `None` for every Steam row, because Valve publishes one cover shape and
+    /// the column is already cut to it. A RetroAchievements row carries one
+    /// because its picture is a photograph of a box, and the boxes are not the
+    /// same shape: a PlayStation jewel case is very nearly square, a UMD case
+    /// is half again as tall as it is wide, and one card shape for the two of
+    /// them is a card neither picture can fill. Measured off the pictures
+    /// themselves rather than tabled — see [`crate::retroarch::shelf_shape`],
+    /// which is where a ROM shelf gets the same answer.
+    ///
+    /// It decides the card's shape and nothing else. The room a row is given
+    /// belongs to the column, so a shape that cannot fill that room is drawn
+    /// smaller inside it and no row ever moves: see `ui::card_of`.
+    pub shape: Option<f32>,
+    /// Whether there is a copy of this game on this disk to be played, where
+    /// this row is the one that knows.
+    ///
+    /// `None` for a Steam row, whose own library answers — that answer changes
+    /// while the shell is running, and a download finishing is a game moving
+    /// to the top of [`Sort::InstalledFirst`]. A RetroAchievements row knows
+    /// when it is built and never changes its mind: a ROM found in the chosen
+    /// folder is here, and a game the account has unlocked something in
+    /// somewhere else is not — there is nothing on this machine to start.
+    ///
+    /// `None` too for every row that is not a game and is never sorted: an
+    /// achievement, a status line, the Configure invitation.
+    pub installed: Option<bool>,
+    /// The machine this game is for, where this row is a game.
+    ///
+    /// Set by whichever half of the column built the row — Steam for a Steam
+    /// row, the console for a RetroAchievements one — and `None` for every row
+    /// that is not a game. It is what [`Sort::Platform`] groups by, and a game
+    /// whose console this machine cannot name carries `None` as well: those are
+    /// gathered under one folder that says so, rather than given a name nobody
+    /// wrote down.
+    pub platform: Option<Platform>,
 }
 impl Row {
     pub fn game(&self) -> Option<u32> {
@@ -56,12 +128,23 @@ pub fn section(entries: &[Entry], selected: usize) -> Option<&str> {
 pub enum Position {
     Trophy(Key),
     Index(String),
+    Platform(String),
     Search(crate::apps::Role),
 }
 impl Position {
     pub fn of(entry: &Entry) -> Option<Self> {
         match entry {
             Entry::Trophy(row) => Some(Self::Trophy(row.key.clone())),
+            // The two kinds of folder this column has are told apart by which
+            // half of them holds the thing that does not move. A platform's
+            // folder is *named* after the platform and says how many games are
+            // on it underneath, so the name is the identity. A letter's is
+            // named by the count — "12 games", with the letter as its mark — so
+            // its name changes the moment somebody types in the search field,
+            // and the mark is what stays put.
+            Entry::Folder(folder) if folder.comment.is_some() => {
+                Some(Self::Platform(folder.title.clone()))
+            }
             Entry::Folder(folder) => Some(Self::Index(
                 folder.icon.clone().unwrap_or_else(|| folder.title.clone()),
             )),
@@ -85,8 +168,6 @@ type Restored = (BTreeMap<u32, Progress>, BTreeMap<u32, Snapshot>);
 #[derive(Default)]
 pub struct Trophies {
     account: Option<u64>,
-    sort: lxb_steam::library::Sort,
-    search: String,
     serial: u64,
     pages: BTreeMap<u32, Page>,
     watching: BTreeSet<u32>,
@@ -100,76 +181,13 @@ pub struct Trophies {
 }
 impl Trophies {
     pub fn new() -> Self {
-        Self {
-            sort: crate::settings::trophies_sort().unwrap_or_default(),
-            ..Self::default()
-        }
-    }
-
-    pub fn sort(&self) -> lxb_steam::library::Sort {
-        self.sort
-    }
-    pub fn set_sort(&mut self, sort: lxb_steam::library::Sort) -> bool {
-        if self.sort == sort {
-            return false;
-        }
-        self.sort = sort;
-        true
-    }
-    pub fn set_search(&mut self, query: &str) -> bool {
-        if self.search == query {
-            return false;
-        }
-        self.search = query.to_owned();
-        true
-    }
-
-    pub fn library_rows(&self, games: &[lxb_steam::Game]) -> Vec<Entry> {
-        if self.account.is_none() || games.is_empty() {
-            return Vec::new();
-        }
-        let needle = lxb_steam::library::sought(&self.search);
-        let matching = lxb_steam::library::sorted(
-            games
-                .iter()
-                .filter(|game| needle.as_ref().is_none_or(|q| game.matches(q)))
-                .cloned()
-                .collect(),
-        );
-        let mut rows = Vec::new();
-        crate::apps::head(
-            &mut rows,
-            crate::apps::Searched::Trophies,
-            &self.search,
-            matching.len(),
-            games.len(),
-        );
-        if matching.is_empty() {
-            return rows;
-        }
-        let listing = self.rows(&matching, self.sort);
-        let by_app: BTreeMap<_, _> = listing
-            .iter()
-            .filter_map(|entry| {
-                let Entry::Trophy(row) = entry else {
-                    return None;
-                };
-                Some((row.game()?, entry))
-            })
-            .collect();
-        let matching: Vec<_> = matching.iter().collect();
-        rows.push(crate::steam::Steam::alphabetical(&matching, |game| {
-            by_app[&game.app_id].clone()
-        }));
-        rows.extend(listing);
-        rows
+        Self::default()
     }
 
     pub fn account(&mut self, account: Option<u64>) {
         if self.account != account {
             self.account = account;
             self.pages.clear();
-            self.search.clear();
             self.watching.clear();
             self.progress.clear();
             self.library.clear();
@@ -482,6 +500,9 @@ impl Trophies {
                                 entries.push(Entry::Trophy(Row {
                                     key,
                                     section: Some(section.clone()),
+                                    shape: None,
+                                    installed: None,
+                                    platform: None,
                                     picture,
                                     entries: None,
                                     facts: Facts {
@@ -515,6 +536,9 @@ impl Trophies {
                 }
                 Entry::Trophy(Row {
                     section: None,
+                    shape: None,
+                    installed: None,
+                    platform: Some(Platform::steam()),
                     key: Key::SteamGame(app),
                     picture: None,
                     entries: Some(entries),
@@ -533,6 +557,9 @@ impl Trophies {
 fn status(app: u32, key: &'static str, title: &str, comment: &str) -> Entry {
     Entry::Trophy(Row {
         section: None,
+        shape: None,
+        installed: None,
+        platform: None,
         key: Key::Status(app, key),
         picture: None,
         entries: None,
@@ -691,7 +718,7 @@ mod tests {
     }
     #[test]
     fn trophy_library_has_search_and_a_filtered_alphabetical_index() {
-        let mut store = Trophies {
+        let store = Trophies {
             account: Some(1),
             ..Default::default()
         };
@@ -700,8 +727,20 @@ mod tests {
             lxb_steam::Game::invented(2, "Portal 2".into(), true),
             lxb_steam::Game::invented(3, "112 Operator".into(), false),
         ];
-        store.set_sort(lxb_steam::library::Sort::NameAscending);
-        let rows = store.library_rows(&games);
+        let mut browser = Browser {
+            sort: Sort::NameAscending,
+            search: String::new(),
+        };
+        let rows = browser.rows(
+            store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+            None,
+            |id| {
+                games
+                    .iter()
+                    .find(|g| g.app_id == id)
+                    .map(|game| game.installed)
+            },
+        );
         assert_eq!(crate::apps::head_rows(&rows), 2);
         assert_eq!(rows[0].title(), "Search");
         assert_eq!(rows[1].title(), "Alphabetical");
@@ -745,8 +784,17 @@ mod tests {
             2,
             "navigation starts at the first game"
         );
-        assert!(store.set_search("PORTAL 2"));
-        let matched = store.library_rows(&games);
+        browser.search = "PORTAL 2".into();
+        let matched = browser.rows(
+            store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+            None,
+            |id| {
+                games
+                    .iter()
+                    .find(|g| g.app_id == id)
+                    .map(|game| game.installed)
+            },
+        );
         assert_eq!(
             matched
                 .iter()
@@ -766,11 +814,32 @@ mod tests {
             index.entries().unwrap()[0].entries().unwrap()[0].title(),
             "Portal 2"
         );
-        store.set_search("not in this library");
-        let empty = store.library_rows(&games);
+        browser.search = "not in this library".into();
+        let empty = browser.rows(
+            store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+            None,
+            |id| {
+                games
+                    .iter()
+                    .find(|g| g.app_id == id)
+                    .map(|game| game.installed)
+            },
+        );
         assert!(empty.iter().all(|e| matches!(e, Entry::Search(_))));
-        store.set_search("");
-        assert_eq!(store.library_rows(&games).len(), rows.len());
+        browser.search = "".into();
+        assert_eq!(
+            browser
+                .rows(
+                    store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+                    None,
+                    |id| games
+                        .iter()
+                        .find(|g| g.app_id == id)
+                        .map(|game| game.installed)
+                )
+                .len(),
+            rows.len()
+        );
         // Also confirm the initially selected result is reachable through the cursor.
         let lattice = crate::model::Lattice::new(vec![crate::apps::Category {
             id: COLUMN,
@@ -784,6 +853,7 @@ mod tests {
     #[test]
     fn refresh_preserves_the_full_alphabetical_path_and_filtered_paths_close() {
         use crate::model::{Cursor, Lattice};
+        let mut browser = Browser::default();
         let mut store = Trophies {
             account: Some(1),
             ..Default::default()
@@ -807,7 +877,16 @@ mod tests {
             id: COLUMN,
             title: "Trophies",
             icon: crate::icons::CATEGORY_TROPHIES,
-            entries: store.library_rows(&games),
+            entries: browser.rows(
+                store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+                None,
+                |id| {
+                    games
+                        .iter()
+                        .find(|g| g.app_id == id)
+                        .map(|game| game.installed)
+                },
+            ),
         }]);
         let mut cursor = Cursor::for_model(&lattice);
         cursor.point_at_row(1, &lattice); // Alphabetical
@@ -828,8 +907,17 @@ mod tests {
             .unwrap()
             .achievements
             .swap(0, 1);
-        store.set_sort(lxb_steam::library::Sort::NameDescending);
-        lattice.categories[0].entries = store.library_rows(&games);
+        browser.sort = Sort::NameDescending;
+        lattice.categories[0].entries = browser.rows(
+            store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+            None,
+            |id| {
+                games
+                    .iter()
+                    .find(|g| g.app_id == id)
+                    .map(|game| game.installed)
+            },
+        );
         cursor.keep_on_trophy(&lattice, &selected);
         cursor.keep_in_bounds(&lattice);
         assert_eq!(cursor.trophy_selection(&lattice), Some(selected.clone()));
@@ -838,8 +926,17 @@ mod tests {
             .opened_rows(&lattice)
             .iter()
             .any(|entry| matches!(entry, Entry::Trophy(row) if row.game() == Some(2))));
-        store.set_search("Alpha");
-        lattice.categories[0].entries = store.library_rows(&games);
+        browser.search = "Alpha".into();
+        lattice.categories[0].entries = browser.rows(
+            store.rows(&games, lxb_steam::library::Sort::InstalledFirst),
+            None,
+            |id| {
+                games
+                    .iter()
+                    .find(|g| g.app_id == id)
+                    .map(|game| game.installed)
+            },
+        );
         cursor.keep_on_trophy(&lattice, &selected);
         cursor.keep_in_bounds(&lattice);
         assert_eq!(
@@ -1150,6 +1247,9 @@ mod tests {
         let game = |app, children| {
             Entry::Trophy(Row {
                 section: None,
+                shape: None,
+                installed: None,
+                platform: None,
                 key: Key::SteamGame(app),
                 picture: None,
                 entries: Some(children),
@@ -1253,5 +1353,310 @@ mod tests {
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         assert!(valid_icon(bytes.get_ref()));
+    }
+}
+
+/// What order the Trophies column is listed in.
+///
+/// Its own three rather than the Steam library's eight, and the difference is
+/// the whole point of the type. The other five — recently played, play time
+/// either way round, size either way round — are answers Valve's account keeps
+/// about Valve's games. Nothing else in this column has them: a
+/// RetroAchievements game is a set somebody has unlocked something in, and the
+/// site records no size, no play time and no date for it. Offering an order
+/// that silently files half the column at the bottom is the shell saying it
+/// can do something it cannot, which is the one thing greying a row out exists
+/// to avoid — and here there is no library that could ever answer, so there is
+/// nothing to grey.
+///
+/// The keys are Steam's own, so a settings file written before this — and the
+/// Steam column's own row, which still offers all eight — go on meaning what
+/// they said.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Everything there is a copy of on this disk, then everything else, each
+    /// half by name. See [`Row::installed`], which is what "a copy" means for
+    /// a row that is not Valve's.
+    #[default]
+    InstalledFirst,
+    /// Straight down the alphabet, on this disk or not.
+    NameAscending,
+    NameDescending,
+    /// One folder per machine, and the games inside each by name.
+    ///
+    /// The only order here that changes the *shape* of the column rather than
+    /// the order of its rows, and it is the one this column most needed: a list
+    /// holding a Steam library, a PlayStation and a Game Boy is three
+    /// collections sharing a screen, and the RetroArch category has always
+    /// shown one machine's games as a column of their own. This is that idea a
+    /// level further in.
+    ///
+    /// **Steam is always first** and the machines follow it by name. Not a
+    /// judgement about the machines: it is the one that is not a console, it is
+    /// the one whose games this shell can start, and a heading that moved about
+    /// between accounts would be a list somebody has to read before they can
+    /// use it.
+    Platform,
+}
+
+/// Every order the column offers, in the one place that decides what its Sort
+/// list looks like.
+pub const SORTS: &[Sort] = &[
+    Sort::InstalledFirst,
+    Sort::NameAscending,
+    Sort::NameDescending,
+    Sort::Platform,
+];
+
+impl Sort {
+    /// What the row that chooses it says. The Steam column's words for the
+    /// three it shares, because they are the same three orders.
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::InstalledFirst => "Installed first",
+            Sort::NameAscending => "Name (A to Z)",
+            Sort::NameDescending => "Name (Z to A)",
+            Sort::Platform => "Platform",
+        }
+    }
+
+    /// What it is called in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Sort::InstalledFirst => "installed-first",
+            Sort::NameAscending => "name",
+            Sort::NameDescending => "name-reversed",
+            Sort::Platform => "platform",
+        }
+    }
+
+    /// The order of that name, or `None` for a file naming one this column does
+    /// not offer — a hand-edited typo, a setting from a later version, or one
+    /// of the five this column used to borrow from the Steam library and no
+    /// longer does. All three are the same answer: leave the file alone and
+    /// come up in the order the column has always come up in.
+    pub fn from_key(key: &str) -> Option<Sort> {
+        SORTS.iter().copied().find(|sort| sort.key() == key)
+    }
+}
+
+/// What a game with no machine anybody here can name is filed under.
+///
+/// A label rather than a name: the sweep asks RetroAchievements about every
+/// console number it could have, and the site hosts a few dozen this package
+/// has no folder name or drawing for. A game on one of those is still that
+/// account's game — see `retroachievements`, where it is listed with no console
+/// on its row rather than left out — and under this order it needs somewhere to
+/// stand. Naming the folder after a console nobody wrote down is the one thing
+/// that must not happen.
+const OTHER_PLATFORM: &str = "Other consoles";
+
+/// The games gathered into one folder per machine, Steam first.
+///
+/// The order the folders come in is the whole of what is decided here, because
+/// the games inside them arrive sorted by name already. Steam is pinned to the
+/// top — see [`Sort::Platform`] — the machines follow it by name, and the games
+/// nothing could name are last under [`OTHER_PLATFORM`], which is where a
+/// catch-all belongs whatever it is called.
+///
+/// A row that is not a game keeps its place in the list rather than being filed
+/// anywhere: there are none in this column by the time this runs, and a row
+/// quietly disappearing because it did not fit the grouping is worse than one
+/// standing where it always did.
+fn shelved(games: Vec<Entry>) -> Vec<Entry> {
+    // Insertion order is the games' order, so the first game on a machine
+    // decides nothing but where its folder's mark comes from.
+    let mut shelves: Vec<(Option<Platform>, Vec<Entry>)> = Vec::new();
+    let mut loose = Vec::new();
+    for game in games {
+        let Entry::Trophy(row) = &game else {
+            loose.push(game);
+            continue;
+        };
+        let platform = row.platform.clone();
+        match shelves
+            .iter_mut()
+            .find(|(on, _)| on.as_ref().map(|p| &p.name) == platform.as_ref().map(|p| &p.name))
+        {
+            Some((_, on)) => on.push(game),
+            None => shelves.push((platform, vec![game])),
+        }
+    }
+    shelves.sort_by(|(a, _), (b, _)| {
+        let rank = |on: &Option<Platform>| match on {
+            Some(p) if p.name == STEAM_PLATFORM => 0,
+            Some(_) => 1,
+            None => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
+            let name = |on: &Option<Platform>| {
+                on.as_ref().map_or(String::new(), |p| p.name.to_lowercase())
+            };
+            name(a).cmp(&name(b))
+        })
+    });
+    loose.extend(shelves.into_iter().map(|(on, games)| {
+        Entry::Folder(crate::apps::Folder {
+            title: on
+                .as_ref()
+                .map_or_else(|| OTHER_PLATFORM.to_string(), |p| p.name.clone()),
+            // The count, and it is what tells this folder from a letter's —
+            // see [`Position::of`], which reads the difference.
+            comment: Some(format!(
+                "{} {}",
+                games.len(),
+                if games.len() == 1 { "game" } else { "games" }
+            )),
+            icon: Some(
+                on.as_ref()
+                    .map(|p| p.mark.clone())
+                    .filter(|mark| crate::icons::shaped(mark))
+                    .unwrap_or_else(|| crate::retroarch::mark().to_string()),
+            ),
+            entries: games,
+            place: None,
+            chosen: false,
+            over_the_list: false,
+            person: None,
+            portrait: None,
+        })
+    }));
+    loose
+}
+
+/// Browsing belongs to the category, not to either account provider.
+pub struct Browser {
+    pub sort: Sort,
+    pub search: String,
+}
+impl Default for Browser {
+    fn default() -> Self {
+        Self {
+            sort: crate::settings::trophies_sort().unwrap_or_default(),
+            search: String::new(),
+        }
+    }
+}
+impl Browser {
+    pub fn rows(
+        &self,
+        mut games: Vec<Entry>,
+        invitation: Option<Entry>,
+        steam: impl Fn(u32) -> Option<bool>,
+    ) -> Vec<Entry> {
+        let total = games.len();
+        let needle = lxb_steam::library::sought(&self.search);
+        games.retain(|g| {
+            needle
+                .as_ref()
+                .is_none_or(|n| g.title().to_lowercase().contains(n))
+        });
+        // Whether there is a copy of this on the disk, asked of whichever half
+        // of the column knows. A Steam row's own library answers, because that
+        // answer changes while the shell is running — a download finishing is
+        // a game moving to the top of this list; every other row was built
+        // knowing, and says so.
+        //
+        // **This used to answer `true` for everything that was not Valve's**,
+        // which put every RetroAchievements game in the installed half whether
+        // or not there was a ROM within reach: a game the account had played
+        // years ago on another machine was filed above a Steam game sitting on
+        // this disk, under an order whose whole promise is that what is at the
+        // top can be played.
+        let installed = |entry: &Entry| -> bool {
+            match entry {
+                Entry::Trophy(row) => row
+                    .game()
+                    .and_then(&steam)
+                    .or(row.installed)
+                    .unwrap_or(false),
+                _ => true,
+            }
+        };
+        let names = |a: &Entry, b: &Entry| {
+            a.title()
+                .trim()
+                .to_lowercase()
+                .cmp(&b.title().trim().to_lowercase())
+        };
+        // Index always uses installed-first alphabetical ordering, as Steam does.
+        games.sort_by(|a, b| installed(b).cmp(&installed(a)).then_with(|| names(a, b)));
+        let mut letters: BTreeMap<Option<char>, Vec<Entry>> = BTreeMap::new();
+        for game in &games {
+            let letter = game
+                .title()
+                .trim()
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase())
+                .filter(char::is_ascii_uppercase);
+            letters.entry(letter).or_default().push(game.clone());
+        }
+        let folder = |title: String, icon: String, entries: Vec<Entry>, over_the_list: bool| {
+            Entry::Folder(crate::apps::Folder {
+                title,
+                comment: None,
+                icon: Some(icon),
+                entries,
+                place: None,
+                chosen: false,
+                over_the_list,
+                person: None,
+                portrait: None,
+            })
+        };
+        let index = folder(
+            "Alphabetical".into(),
+            crate::icons::INDEX_MARK.into(),
+            letters
+                .into_iter()
+                .map(|(letter, games)| {
+                    folder(
+                        format!(
+                            "{} {}",
+                            games.len(),
+                            if games.len() == 1 { "game" } else { "games" }
+                        ),
+                        crate::icons::letter_mark(letter.unwrap_or('#'))
+                            .unwrap_or(crate::icons::CATEGORY_TROPHIES)
+                            .into(),
+                        games,
+                        false,
+                    )
+                })
+                .collect(),
+            true,
+        );
+        games.sort_by(|a, b| {
+            match self.sort {
+                // A platform's own games are listed by name inside it; which
+                // platform comes first is decided below, over the folders.
+                Sort::InstalledFirst => installed(b).cmp(&installed(a)),
+                Sort::NameAscending | Sort::Platform => names(a, b),
+                Sort::NameDescending => names(b, a),
+            }
+            .then_with(|| names(a, b))
+        });
+        if self.sort == Sort::Platform {
+            games = shelved(games);
+        }
+        let mut rows = Vec::new();
+        if total > 0 {
+            crate::apps::head(
+                &mut rows,
+                crate::apps::Searched::Trophies,
+                &self.search,
+                games.len(),
+                total,
+            );
+            if !games.is_empty() {
+                rows.push(index);
+            }
+        }
+        if let Some(invitation) = invitation {
+            rows.push(invitation);
+        }
+        rows.extend(games);
+        rows
     }
 }

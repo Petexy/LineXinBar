@@ -52,5 +52,29 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let source = root.join("third_party/lxb-rcheevos");
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed=src/achievement_hash.c");
+    let mut build = cc::Build::new();
+    build
+        .include(source.join("include"))
+        .flag_if_supported("-std=gnu99");
+    for file in [
+        "rc_compat.c",
+        "rc_util.c",
+        "rhash/hash.c",
+        "rhash/hash_rom.c",
+        "rhash/hash_disc.c",
+        "rhash/hash_zip.c",
+        "rhash/hash_encrypted.c",
+        "rhash/aes.c",
+        "rhash/md5.c",
+        "rhash/cdreader.c",
+    ] {
+        build.file(source.join("src").join(file));
+    }
+    build
+        .file("src/achievement_hash.c")
+        .compile("lxb_achievement_hash");
     ExitCode::SUCCESS
 }

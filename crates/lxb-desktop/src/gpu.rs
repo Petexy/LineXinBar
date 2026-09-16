@@ -464,6 +464,25 @@ const UI_FONT: &str = "Roboto";
 const UI_FONT_REGULAR: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-Regular.ttf");
 const UI_FONT_BOLD: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-Bold.ttf");
 
+/// And a third, fixed-width, for the one run the shell draws that is not a
+/// label: what a package manager said, in the terminal frame of Settings >
+/// Updates. A terminal lays its output out in columns — pacman's tables,
+/// a line of dashes under a heading, `(3/12)` counting down the left —
+/// and a proportional face turns every one of them into a ragged edge.
+/// See [`Text::mono`]. Roboto's own monospace, so it sits beside the other
+/// two as one family.
+const MONO_FONT: &str = "Roboto Mono";
+const MONO_FONT_REGULAR: &[u8] = include_bytes!("../../../font/RobotoMono/RobotoMono-Regular.ttf");
+
+/// How wide one character of [`MONO_FONT`] is, as a share of its size.
+///
+/// A fixed-width face has one advance for every glyph, and this is Roboto
+/// Mono's: 600 of its 1000 units. It is what lets the terminal frame be
+/// sized from a column count without shaping anything — see
+/// [`crate::ui::terminal_text_size`] — and it is held to the face by a test
+/// below, so the day the font is swapped the number is caught with it.
+pub const MONO_ADVANCE: f32 = 0.6;
+
 /// The characters the start screen's corner is written in, and the cells they
 /// are measured into.
 ///
@@ -596,7 +615,7 @@ fn letter_name(letter: char) -> Option<&'static str> {
 /// may be in an alphabet Roboto has never heard of.
 fn shell_faces() -> FontSystem {
     let mut db = glyphon::fontdb::Database::new();
-    for face in [UI_FONT_REGULAR, UI_FONT_BOLD] {
+    for face in [UI_FONT_REGULAR, UI_FONT_BOLD, MONO_FONT_REGULAR] {
         db.load_font_data(face.to_vec());
     }
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
@@ -809,6 +828,8 @@ struct TextKey {
     /// box are shaped to a different string depending on which end the ellipsis
     /// takes the place of.
     cut: Cut,
+    /// And the face, which is the shaping.
+    mono: bool,
 }
 
 impl TextKey {
@@ -822,6 +843,7 @@ impl TextKey {
             align: text.align,
             lines: text.lines.max(1),
             cut: text.cut,
+            mono: text.mono,
         }
     }
 }
@@ -1009,6 +1031,9 @@ pub struct Text {
     pub lines: u8,
     /// Which end is given up where the run will not fit. See [`Cut`].
     pub cut: Cut,
+    /// Set in the fixed-width face rather than the shell's own. See
+    /// [`MONO_FONT`]: for a line of a terminal's output and nothing else.
+    pub mono: bool,
 }
 
 impl Default for Text {
@@ -1026,6 +1051,7 @@ impl Default for Text {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         }
     }
 }
@@ -2097,7 +2123,7 @@ impl Gpu {
         // The system's faces stay loaded underneath the shell's own, because
         // they are the fallback chain: Roboto covers no CJK, and an
         // application whose title is in Japanese still has to have a title.
-        for face in [UI_FONT_REGULAR, UI_FONT_BOLD] {
+        for face in [UI_FONT_REGULAR, UI_FONT_BOLD, MONO_FONT_REGULAR] {
             font_system.db_mut().load_font_data(face.to_vec());
         }
         let swash_cache = SwashCache::new();
@@ -3684,7 +3710,7 @@ fn lay_out(
         Cut::Head => glyphon::cosmic_text::Ellipsize::Start(allowed),
     });
     let attrs = Attrs::new()
-        .family(Family::Name(UI_FONT))
+        .family(Family::Name(if text.mono { MONO_FONT } else { UI_FONT }))
         .weight(if text.bold {
             Weight::BOLD
         } else {
@@ -4672,6 +4698,40 @@ mod tests {
         }
     }
 
+    /// The fixed-width face is fixed-width at exactly [`MONO_ADVANCE`]: every
+    /// character of a terminal line — a wide M, a narrow i, a space, a box
+    /// drawing dash — advances the same distance, and it is the distance the
+    /// terminal frame is laid out from.
+    #[test]
+    fn the_fixed_width_face_advances_by_the_number_the_frame_is_sized_from() {
+        let mut font_system = shell_fonts();
+        let size = 100.0;
+        let content = "M i | — 0 (3/12) upgrading… [####] 100%";
+        let mut buffer = TextBuffer::new(&mut font_system, Metrics::new(size, size * 1.25));
+        buffer.set_size(None, None);
+        let attrs = Attrs::new()
+            .family(Family::Name(MONO_FONT))
+            .weight(Weight::NORMAL);
+        buffer.set_text(content, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut font_system, false);
+        let run = buffer.layout_runs().next().expect("one line");
+        assert!(!run.glyphs.is_empty());
+        for glyph in run.glyphs {
+            assert!(
+                glyph.glyph_id != 0,
+                "{:?} has no glyph in the fixed-width face",
+                &content[glyph.start..glyph.end]
+            );
+            assert!(
+                (glyph.w - MONO_ADVANCE * size).abs() < 0.5,
+                "{:?} advances {} at {size}, and the frame counts on {}",
+                &content[glyph.start..glyph.end],
+                glyph.w,
+                MONO_ADVANCE * size
+            );
+        }
+    }
+
     fn label(content: &str, max_width: f32) -> Text {
         Text {
             content: content.to_string(),
@@ -4686,6 +4746,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         }
     }
 

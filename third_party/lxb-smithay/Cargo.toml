@@ -12,7 +12,11 @@
 [package]
 edition = "2021"
 rust-version = "1.80.1"
-name = "smithay"
+# Renamed from upstream's `smithay` so nothing in this tree — a lock file,
+# `cargo tree`, a vendored archive — can be read as the published crate. This
+# copy is not it: see LINEXINBAR-PATCH.md. The library it builds is still
+# called `smithay`, so `use smithay::` means the same thing it always did.
+name = "lxb-smithay"
 version = "0.7.0"
 authors = [
     "Victor Berger <victor.berger@m4x.org>",

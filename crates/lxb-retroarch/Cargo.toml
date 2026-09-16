@@ -31,3 +31,6 @@ ureq = "3"
 # A core is published zipped, and this is the `inflate` behind `zip.rs`. The
 # same crate the shell decodes every PNG with, so it costs this tree nothing.
 flate2 = "1"
+
+[build-dependencies]
+cc = "1"

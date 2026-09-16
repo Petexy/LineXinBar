@@ -158,18 +158,29 @@ pub const CATEGORY_IMAGES: &str = "lxb:category-images";
 /// that the bar has one way of saying it rather than three.
 pub const CATEGORY_FILES: &str = "lxb:category-files";
 
-/// The marks the file explorer's own rows wear: a folder, a file, a volume,
-/// and the user's own folder at the head of it all.
+/// The marks the file explorer's own rows wear: a folder, a file, an archive, a
+/// volume, and the user's own folder at the head of it all.
 ///
-/// Four objects rather than a table of one per file type. What a `.pdf` is, is
+/// Five objects rather than a table of one per file type. What a `.pdf` is, is
 /// written on the row in words the user can read; a cabinet of half-recognised
 /// drawings under that would be the same information told worse, and told
 /// wrongly the moment somebody keeps a format nothing has heard of. Where the
 /// shell *does* already know a file — a song, a film, a photograph — it keeps
 /// that shelf's own mark instead, so one file has one drawing wherever it is
 /// being looked at from. See file-page.svg.
+///
+/// [`FILE_ARCHIVE`] was the fifth, and it is the same rule rather than an
+/// exception to it: the shell knows what an archive is because it opens one
+/// itself — see [`crate::archive`] — so a `.tar.gz` drawn as a page would be
+/// the one row on the column whose mark says less than the shell knows. It is
+/// the box [`EXTRACT`] empties, shut, and it is drawn seen a little from above
+/// for the reason [`FILE_DRIVE`] is: flat-on with a lid seam across it, a
+/// closed box is a mouse. What wears it is exactly what Extract
+/// opens and is read off that list rather than from a second copy of it, so a
+/// row can never promise a box the press cannot open.
 pub const FILE_FOLDER: &str = "lxb:file-folder";
 pub const FILE_PAGE: &str = "lxb:file-page";
+pub const FILE_ARCHIVE: &str = "lxb:file-archive";
 pub const FILE_DRIVE: &str = "lxb:file-drive";
 pub const FILE_HOME: &str = "lxb:file-home";
 
@@ -185,6 +196,12 @@ pub const FILE_HOME: &str = "lxb:file-home";
 /// reason every other column glyph is: a coloured application icon comes out
 /// muddy through an atlas that tints what it samples, and this shell's own
 /// hand is what makes eleven columns look like one row.
+///
+/// [`CATEGORY_TROPHIES`] is a cup, and it is a *body* — which it had to be
+/// redrawn to become. It shipped as an outline on a 64-unit grid, the only
+/// glyph in the set that was either, and a material computed from a shape has
+/// nothing to work with in a 5-unit stroke: it came out as bent tubing beside
+/// a gamepad made of water. See the drawing, which carries the whole of it.
 pub const CATEGORY_TROPHIES: &str = "lxb:category-trophies";
 pub const CATEGORY_STEAM: &str = "lxb:category-steam";
 pub const STEAM: &str = "lxb:steam";
@@ -232,6 +249,47 @@ pub const LOGO: &str = "lxb:logo";
 /// responsible for. [`SWATCH`] is drawn white on purpose — the atlas
 /// multiplies a quad's colour into the texel, so one drawing serves every
 /// colour a list of them can hold.
+///
+/// Settings > Updates comes first, because its page is the first row of that
+/// column, and its five marks are **one arrow in five enclosures**.
+///
+/// The arrow is the same in all of them and it rises, which is what every
+/// other system draws: Adwaita's `software-update-available` is an arrow
+/// rising inside a notched circle, Breeze's `system-software-update` the same
+/// arrow inside a cycle, Tela's the arrow under an arc. The enclosure is not
+/// decoration — a bare arrow rising off a line is the *upload* mark, which is
+/// what it means in every file manager there is, and shutting it inside
+/// something is the whole of what turns it into an update.
+///
+/// So the enclosure is what each row is about, and each of those is the object
+/// the rest of the world uses for it too:
+///
+/// - [`SETTING_UPDATES`] — a disc. The update badge itself, at the head of the
+///   page. Solid, and so the heaviest mark in the Settings column: this is the
+///   one page there somebody has to be able to *find*.
+/// - [`SETTING_UPDATE_ALL`] — a cycle of two arrows round it, meaning the
+///   whole round rather than one part. Deliberately close to [`REFRESH`] and
+///   deliberately not it: that mark is two bare arcs with nothing inside them
+///   and means *ask again*.
+/// - [`SETTING_UPDATE_SYSTEM`] — a display on a stand, with the arrow standing
+///   in its screen. A monitor is what this shell already draws when it means
+///   the computer itself — see category-system.svg, which says so.
+/// - [`SETTING_UPDATE_APPS`] — three of the tiles an application is drawn as
+///   on the bar, with the arrow in the fourth place.
+/// - [`SETTING_UPDATE_FIRMWARE`] — a chip, with the arrow standing in its die.
+///   A chip is the one object that means firmware everywhere it is drawn, and
+///   the arrow is what separates it from [`SETTING_SYSTEM`], whose window is
+///   empty and which stands over the System page rather than this one.
+///
+/// This is the second set of five. The first wore a bare rising arrow for the
+/// page, three of them for Update everything, a package cube, the same tiles
+/// and a memory module; it was thrown out for saying *upload*, and for two
+/// marks nobody could name. The drawings carry the whole of each argument.
+pub const SETTING_UPDATES: &str = "lxb:setting-updates";
+pub const SETTING_UPDATE_ALL: &str = "lxb:setting-update-all";
+pub const SETTING_UPDATE_SYSTEM: &str = "lxb:setting-update-system";
+pub const SETTING_UPDATE_APPS: &str = "lxb:setting-update-apps";
+pub const SETTING_UPDATE_FIRMWARE: &str = "lxb:setting-update-firmware";
 pub const SETTING_APPEARANCE: &str = "lxb:setting-appearance";
 pub const SETTING_ACCENT: &str = "lxb:setting-accent";
 pub const SETTING_THEME: &str = "lxb:setting-theme";
@@ -643,6 +701,35 @@ pub const PASTE: &str = "lxb:paste";
 /// rather than recognise.
 pub const RENAME: &str = "lxb:rename";
 
+/// The shell's own answer to a press on an archive, under the name *Extract* —
+/// see [`crate::archive`].
+///
+/// It is drawn three times and always means one thing: on the Open with list,
+/// where it stands among installed programs and is the only row there wearing a
+/// mark of the shell's instead of an application's own icon; on the panel that
+/// asks where the archive should be unpacked; and at the head of every column
+/// of the picker that answers *somewhere else*, in the place [`PASTE`] holds
+/// for the two journeys that carry a file.
+///
+/// A box with something leaving it, which is what every desktop draws for this
+/// — and drawn nothing like [`PASTE`] on purpose, because the two stand in the
+/// same head row one journey apart and a clipboard is exactly the wrong thing
+/// to say about an archive: nothing is being put down here, something is coming
+/// out.
+pub const EXTRACT: &str = "lxb:extract";
+
+/// The row on a file's menu, a folder's, and the menu over a marked set that
+/// makes an archive of what the menu is about — see [`crate::archive::pack`].
+///
+/// [`FILE_ARCHIVE`]'s sealed carton with an arrow going down into it through
+/// the front, so the row wears the mark of what it makes: press it and a row
+/// wearing that box appears beside the one that was pressed. It is not
+/// [`EXTRACT`] read backwards — that would be the open carton with the arrow
+/// going in, which is [`CATEGORY_SOFTWARE`], the mark of a column — and it is
+/// not the carton with [`NEW_FOLDER`]'s cross cut into it either, which was
+/// drawn first and is a first-aid kit. The drawing's own note says why.
+pub const COMPRESS: &str = "lxb:compress";
+
 /// The row at the head of a folder's column that makes a new folder in it.
 ///
 /// A folder with a cross cut through it, which is what every file manager
@@ -820,7 +907,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 141] = [
+pub const BUILTIN: [(&str, &str); 149] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -901,9 +988,27 @@ pub const BUILTIN: [(&str, &str); 141] = [
     // And the rows the file explorer under it is made of.
     (FILE_FOLDER, include_str!("glyphs/file-folder.svg")),
     (FILE_PAGE, include_str!("glyphs/file-page.svg")),
+    (FILE_ARCHIVE, include_str!("glyphs/file-archive.svg")),
     (FILE_DRIVE, include_str!("glyphs/file-drive.svg")),
     (FILE_HOME, include_str!("glyphs/file-home.svg")),
     // The Settings column's own rows, and the marks its lists are made of.
+    (SETTING_UPDATES, include_str!("glyphs/setting-updates.svg")),
+    (
+        SETTING_UPDATE_ALL,
+        include_str!("glyphs/setting-update-all.svg"),
+    ),
+    (
+        SETTING_UPDATE_SYSTEM,
+        include_str!("glyphs/setting-update-system.svg"),
+    ),
+    (
+        SETTING_UPDATE_APPS,
+        include_str!("glyphs/setting-update-apps.svg"),
+    ),
+    (
+        SETTING_UPDATE_FIRMWARE,
+        include_str!("glyphs/setting-update-firmware.svg"),
+    ),
     (
         SETTING_APPEARANCE,
         include_str!("glyphs/setting-appearance.svg"),
@@ -1077,6 +1182,8 @@ pub const BUILTIN: [(&str, &str); 141] = [
     (MOVE, include_str!("glyphs/move.svg")),
     (PASTE, include_str!("glyphs/paste.svg")),
     (RENAME, include_str!("glyphs/rename.svg")),
+    (EXTRACT, include_str!("glyphs/extract.svg")),
+    (COMPRESS, include_str!("glyphs/compress.svg")),
     (NEW_FOLDER, include_str!("glyphs/new-folder.svg")),
     (TRASH_EMPTY, include_str!("glyphs/trash-empty.svg")),
     (SELECT_MULTIPLE, include_str!("glyphs/select-multiple.svg")),
@@ -2662,7 +2769,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            141,
+            149,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2675,9 +2782,14 @@ pub(crate) mod tests {
              an arrow coming down into it that Software wears and the head of \
              the small machine Waydroid runs among them — the two subcategories \
              Multimedia is divided into and the one under Graphics, the two \
-             folders that stand for System's Files with the folder, page, drum \
+             folders that stand for System's Files with the folder, page, lidded \
+             carton, drum \
              and house its own rows are drawn with, the \
-             fifty-two marks the Settings column is drawn from — the brush at \
+             fifty-seven marks the Settings column is drawn from — the one \
+             rising arrow of its Updates page in each of the five things it \
+             updates, a disc at the head of the page, a cycle of two arrows \
+             for the row that does the whole of it, and a screen, three \
+             application tiles and a chip's die for the three parts, the brush at \
              the head of its Theme page, and under it the wave for the \
              wallpaper's own material and four of the shell's marks in one \
              cell for the material of the marks, the small window a video \
@@ -2708,13 +2820,16 @@ pub(crate) mod tests {
              the context menu's bin, play mark, ellipsis, sort bars \
              and camera, its two sheets and its sheet with an arrow leaving \
              it with the clipboard the folder they are carried to is chosen \
-             under and the pencil a name is changed with, the folder with a \
+             under and the pencil a name is changed with, the box with \
+             something leaving it that an archive is unpacked by and the lidded \
+             one with something going into it that makes one, the folder with a \
              cross through it at the head of a listing and the bin with its \
              lid off at the head of the trash, the plus a row that makes one \
              more of something wears, the magnifier at the \
              head of a shelf with the \
              struck-through one that empties it, the padlock on the panel \
-             that asks for a password, and the Steam column with the mark every \
+             that asks for a password, the two-handled cup the Trophies \
+             column is headed by, and the Steam column with the mark every \
              row that came out of it wears, the cycle that asks for the library \
              again and the door its account is left by, and the shell's own \
              fennec at the head of the System information panel"
@@ -2817,8 +2932,14 @@ pub(crate) mod tests {
                 CATEGORY_FILES,
                 FILE_FOLDER,
                 FILE_PAGE,
+                FILE_ARCHIVE,
                 FILE_DRIVE,
                 FILE_HOME,
+                SETTING_UPDATES,
+                SETTING_UPDATE_ALL,
+                SETTING_UPDATE_SYSTEM,
+                SETTING_UPDATE_APPS,
+                SETTING_UPDATE_FIRMWARE,
                 SETTING_APPEARANCE,
                 SETTING_ACCENT,
                 SETTING_THEME,
@@ -2895,6 +3016,8 @@ pub(crate) mod tests {
                 MOVE,
                 PASTE,
                 RENAME,
+                EXTRACT,
+                COMPRESS,
                 NEW_FOLDER,
                 TRASH_EMPTY,
                 SELECT_MULTIPLE,

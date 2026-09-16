@@ -2594,19 +2594,12 @@ impl Steam {
     }
 
     /// The Trophies column has its own order and search, separate from Steam.
-    pub fn trophy_sort(&self) -> lxb_steam::library::Sort {
-        self.trophies.sort()
-    }
-    pub fn set_trophy_sort(&mut self, sort: lxb_steam::library::Sort) -> bool {
-        self.trophies.set_sort(sort)
-    }
-    pub fn set_trophy_search(&mut self, query: &str) -> bool {
-        self.trophies.set_search(query)
-    }
-
-    /// The same account library presented as searchable achievement pages.
-    pub fn trophy_rows(&self) -> Vec<crate::apps::Entry> {
-        self.trophies.library_rows(&self.games)
+    pub fn trophy_games(&self) -> Vec<crate::apps::Entry> {
+        if !self.signed_in() {
+            return Vec::new();
+        }
+        self.trophies
+            .rows(&self.games, lxb_steam::library::Sort::InstalledFirst)
     }
 
     pub fn watch_trophies(&mut self, games: BTreeSet<u32>, keys: &[crate::trophies::Key]) -> bool {
@@ -4412,6 +4405,47 @@ mod tests {
                 .any(|line| matches!(line, dialog::Line::Note(note) if note.contains("someone"))),
             "the panel does not say whose password it wants"
         );
+    }
+
+    #[test]
+    fn login_fields_keep_the_keyboard_dismissed_while_typing() {
+        let mut steam = Steam::settled();
+        let mut osk = crate::keyboard::Osk::default();
+        osk.set_controller_in_hand(true);
+        steam.with_password();
+        let panel = steam.panel().unwrap();
+        assert!(panel.lines.iter().any(
+            |l| matches!(l,dialog::Line::Note(text) if text=="Enter your Steam account name.")
+        ));
+        assert!(osk.offer_shell_field(panel.typing));
+        // First physical key through the grab: input redraws before the board closes.
+        osk.set_controller_in_hand(false);
+        assert_eq!(steam.type_into(Stroke::Char('s')), Typed::Into);
+        osk.offer_shell_field(steam.panel().unwrap().typing);
+        osk.close();
+        for c in "omeone".chars() {
+            assert_eq!(steam.type_into(Stroke::Char(c)), Typed::Into);
+            osk.offer_shell_field(steam.panel().unwrap().typing);
+            assert!(!osk.is_open());
+        }
+        steam.submit();
+        let panel = steam.panel().unwrap();
+        assert!(panel.lines.iter().any(|l|matches!(l,dialog::Line::Note(text) if text.contains("password") && text.contains("someone"))));
+        osk.offer_shell_field(panel.typing);
+        assert!(!osk.is_open());
+        for c in "private".chars() {
+            steam.type_into(Stroke::Char(c));
+            osk.offer_shell_field(steam.panel().unwrap().typing);
+            assert!(!osk.is_open());
+        }
+        assert!(steam
+            .panel()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|l| matches!(l, dialog::Line::Secret { typed: 7 })));
+        steam.cancel();
+        osk.offer_shell_field(false);
     }
 
     /// An empty account name is not an answer: the panel stays where it is
@@ -6477,21 +6511,29 @@ mod tests {
     /// is the way into everything including the letters.
     #[test]
     fn trophies_sort_and_search_are_independent_of_steam() {
+        use crate::trophies::Sort as Trophies;
         use lxb_steam::library::Sort;
         let mut steam = library(&[(1, "Alpha", false), (2, "Zulu", true)]);
         steam.trophies.account(Some(1));
+        let mut browser = crate::trophies::Browser {
+            sort: Trophies::NameDescending,
+            search: String::new(),
+        };
         steam.set_sort(Sort::NameAscending);
-        steam.set_trophy_sort(Sort::NameDescending);
-        assert_eq!(steam.rows()[2].title(), "Alpha");
-        assert_eq!(steam.trophy_rows()[2].title(), "Zulu");
+        let rows = |browser: &crate::trophies::Browser, steam: &Steam| {
+            browser.rows(steam.trophy_games(), None, |id| {
+                steam.game(id).map(|game| game.installed)
+            })
+        };
+        assert_eq!(rows(&browser, &steam)[2].title(), "Zulu");
         steam.set_search("Alpha");
-        assert_eq!(steam.trophy_rows().len(), 4);
-        steam.set_trophy_search("Zulu");
+        assert_eq!(rows(&browser, &steam).len(), 4);
+        browser.search = "Zulu".into();
         assert_eq!(steam.rows().last().unwrap().title(), "Alpha");
-        assert_eq!(steam.trophy_rows().last().unwrap().title(), "Zulu");
+        assert_eq!(rows(&browser, &steam).last().unwrap().title(), "Zulu");
         steam.set_sort(Sort::InstalledFirst);
-        assert_eq!(steam.trophy_sort(), Sort::NameDescending);
-        steam.set_trophy_sort(Sort::NameAscending);
+        assert_eq!(browser.sort, Trophies::NameDescending);
+        browser.sort = Trophies::NameAscending;
         assert_eq!(steam.sort(), Sort::InstalledFirst);
     }
 

@@ -1,0 +1,29 @@
+#!/bin/sh
+# A user and a system installation, each with one update. Asks before it
+# applies unless told `-y`, as the real one — and the coordinator says `-y`.
+# The shell's own RetroArch check asks `flatpak info` too.
+printf 'flatpak %s\n' "$*" >> "${LXB_FIXTURE_LOG:-${HOME:-/tmp}/fixture-calls.log}"
+case "$1" in
+--installations) printf '/var/lib/flatpak\n' ;;
+list) printf 'user\nsystem\n' ;;
+remote-ls) printf 'app/org.example.Player/x86_64/stable\t1.2.0\nruntime/org.freedesktop.Platform/x86_64/24.08\t24.08.14\n' ;;
+update)
+    scope=
+    yes=
+    for arg in "$@"; do
+        case "$arg" in
+        -y|--assumeyes|--noninteractive) yes=1 ;;
+        --user|--system|--installation=*) scope="${arg#--}" ;;
+        esac
+    done
+    printf 'Looking for updates…\n\n        ID                          Branch   Remote   Download\n'
+    printf ' 1. [-] org.example.Player          stable   flathub  < 14.2 MB\n\n'
+    if [ -z "$yes" ]; then
+        printf 'Proceed with these changes to the %s installation? [Y/n]: ' "$scope"
+        read -t "${LXB_FIXTURE_WAIT:-$(cat "${HOME:-/tmp}/fixture-wait" 2>/dev/null || echo 3)}" -r a || a=y
+    fi
+    sleep 1
+    printf 'Updating 1/1… ████████████████████ 100%%  14.2 MB/s\nUpdates complete.\n'
+    ;;
+*) exit 1 ;;
+esac

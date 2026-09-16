@@ -161,7 +161,7 @@ build_deb() {
 # The compositor first: the desktop package declares a versioned dependency on
 # it, and it is the half a display manager installs on its own.
 build_deb compositor lxb-compositor control-compositor.in lxb
-build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal
+build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal lxb-updates
 # And the optional integration, which depends on the shell above for the reason
 # the shell depends on the compositor: what the two agree about is a protocol,
 # and a helper out of step with the shell beside it is refused rather than half

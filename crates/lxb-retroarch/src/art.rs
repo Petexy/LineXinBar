@@ -38,7 +38,7 @@
 //! ## What is on this disk afterwards
 //!
 //! ```text
-//! $XDG_CACHE_HOME/linexinbar/retroarch-art/
+//! $XDG_CACHE_HOME/lxb/retroarch-art/
 //!     .shelves/<System Name>.list        the names, one per line
 //!     <System Name>/Named_Boxarts/<Game Name>.png
 //!     <System Name>/Named_Snaps/<Game Name>.png
@@ -301,7 +301,7 @@ pub fn cache() -> Option<PathBuf> {
                 .filter(|home| home.is_absolute())
                 .map(|home| home.join(".cache"))
         })
-        .map(|cache| cache.join("linexinbar").join("retroarch-art"))
+        .map(|cache| cache.join("lxb").join("retroarch-art"))
 }
 
 /// Where one picture is, or would be.

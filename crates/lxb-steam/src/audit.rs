@@ -176,7 +176,7 @@ fn trim(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(path, format!("{keep}\n"))
 }
 
-/// `$XDG_STATE_HOME/linexinbar/steam-actions.log`.
+/// `$XDG_STATE_HOME/lxb/steam-actions.log`.
 ///
 /// The state directory, and the choice is the point of it. Not the cache, which
 /// is for what can be fetched again — this cannot, it is a record of what

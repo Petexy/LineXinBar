@@ -4,7 +4,7 @@ Architecture: @ARCH@
 Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
 Section: x11
 Priority: optional
-Depends: @SHLIB_DEPENDS@, lxb-compositor (= @VERSION@-1), dbus,
+Depends: @SHLIB_DEPENDS@, lxb-compositor (= @VERSION@-1), dbus, fwupd, polkitd | policykit-1, pkexec | policykit-1,
  libwayland-client0, libwayland-egl1, libegl1, libxkbcommon0
 Recommends: network-manager, wireplumber, pulseaudio-utils, hicolor-icon-theme,
  sudo, pipewire, xdg-desktop-portal

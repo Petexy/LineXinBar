@@ -1194,6 +1194,13 @@ fn home() -> Option<PathBuf> {
 /// being looked at from. What is left is this table: the types somebody
 /// actually has in a folder, with the marks kept deliberately few. A page is
 /// the honest drawing for a file whose only distinguishing feature is its name.
+///
+/// An archive is the one thing in that remainder with a mark of its own, and it
+/// is here on the same rule the three shelved kinds are: the shell *knows* what
+/// one is, because it opens one itself. Which types those are is
+/// [`crate::archive::opens`]'s list and not a second copy of it kept here — a
+/// file drawn as a box that then turned out to have nothing that could open it
+/// would be a row promising something the press cannot deliver.
 pub fn described(path: &Path) -> (&'static str, &'static str) {
     if let Some(kind) = crate::media::kind_of(path) {
         return (crate::media::mime_of(path).unwrap_or(OCTETS), kind.glyph());
@@ -1208,7 +1215,12 @@ pub fn described(path: &Path) -> (&'static str, &'static str) {
         .find(|(name, _)| *name == extension)
         .map(|(_, mime)| *mime)
         .unwrap_or(OCTETS);
-    (mime, crate::icons::FILE_PAGE)
+    let glyph = if crate::archive::opens(mime) {
+        crate::icons::FILE_ARCHIVE
+    } else {
+        crate::icons::FILE_PAGE
+    };
+    (mime, glyph)
 }
 
 /// What a file nothing recognises is: some bytes. Named rather than written out
@@ -1262,14 +1274,31 @@ const TYPES: &[(&str, &str)] = &[
     ("doc", "application/msword"),
     ("rtf", "application/rtf"),
     // Archives and images of disks.
+    //
+    // A tarball whose compression is folded into one extension is named as the
+    // compression it wears, which is what `foo.tar.gz` already comes out as:
+    // `Path::extension` gives `gz` and nothing here sees the `.tar` in the
+    // middle. So `foo.tgz` and `foo.tar.gz` are one type, as they should be —
+    // and what tells the two shapes apart when it matters is the whole name,
+    // which is [`crate::archive::unpack`]'s question rather than this one's.
     ("zip", "application/zip"),
     ("tar", "application/x-tar"),
     ("gz", "application/gzip"),
+    ("tgz", "application/gzip"),
     ("bz2", "application/x-bzip2"),
+    ("tbz", "application/x-bzip2"),
+    ("tbz2", "application/x-bzip2"),
     ("xz", "application/x-xz"),
+    ("txz", "application/x-xz"),
+    ("lzma", "application/x-lzma"),
     ("zst", "application/zstd"),
+    ("tzst", "application/zstd"),
+    ("lz4", "application/x-lz4"),
+    ("lz", "application/x-lzip"),
+    ("tlz", "application/x-lzip"),
     ("7z", "application/x-7z-compressed"),
     ("rar", "application/vnd.rar"),
+    ("cab", "application/vnd.ms-cab-compressed"),
     ("iso", "application/x-cd-image"),
     ("img", "application/x-raw-disk-image"),
     // What a distribution is made of.
@@ -1296,6 +1325,22 @@ const TYPES: &[(&str, &str)] = &[
     ("woff", "font/woff"),
     ("woff2", "font/woff2"),
 ];
+
+/// Whether any file this shell lists can be described as being of this type.
+///
+/// Asked by [`crate::archive`]'s tests, which claim a list of types and must
+/// not claim one the table above never produces: a handler offered for a type
+/// no row can carry is an offer nothing could ever test. Here rather than
+/// there because the table is here, and because a second copy of it kept
+/// somewhere else is a second copy to keep in step.
+///
+/// Only under test. Nothing the shell does while it is running needs to ask
+/// this — the type of a file is [`described`]'s answer, and the question here
+/// is about the table itself.
+#[cfg(test)]
+pub fn names_a_type(mime: &str) -> bool {
+    TYPES.iter().any(|(_, named)| *named == mime)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1325,6 +1370,49 @@ mod tests {
     /// column opens in.
     fn shown(at: &Path) -> Shown {
         listing(at, "", How::plain(), Shows::Everything)
+    }
+
+    /// An archive is drawn as the box it is, and everything the shell has no
+    /// opinion about is still a page.
+    ///
+    /// The two halves of one rule: a mark is for a kind the shell can actually
+    /// do something with. A song keeps its shelf's mark because there is a
+    /// shelf; an archive gets the carton because there is an Extract; a `.pdf`
+    /// gets the page, because what it is, is written on the row in words.
+    #[test]
+    fn an_archive_wears_the_box_and_a_document_wears_the_page() {
+        let mark = |name: &str| described(Path::new(name)).1;
+        assert_eq!(mark("/x/holiday.tar.gz"), crate::icons::FILE_ARCHIVE);
+        assert_eq!(mark("/x/photos.ZIP"), crate::icons::FILE_ARCHIVE);
+        assert_eq!(mark("/x/linux.pkg.tar.zst"), crate::icons::FILE_ARCHIVE);
+        assert_eq!(mark("/x/disc.iso"), crate::icons::FILE_ARCHIVE);
+
+        assert_eq!(mark("/x/notes.pdf"), crate::icons::FILE_PAGE);
+        assert_eq!(mark("/x/thing"), crate::icons::FILE_PAGE);
+        // A raw disk image is not a box of files and nothing here unpacks one.
+        assert_eq!(mark("/x/card.img"), crate::icons::FILE_PAGE);
+        // And the three the shelves already know keep their own marks.
+        assert_eq!(mark("/x/song.flac"), crate::media::Kind::Audio.glyph());
+    }
+
+    /// Every type drawn as a box has something behind the press, and every type
+    /// Extract opens is drawn as one. The row and the press must not be able to
+    /// disagree about what a file is.
+    #[test]
+    fn the_box_and_the_press_are_the_same_list() {
+        for (extension, mime) in TYPES {
+            let drawn = described(Path::new(&format!("/x/thing.{extension}"))).1;
+            assert_eq!(
+                drawn == crate::icons::FILE_ARCHIVE,
+                crate::archive::opens(mime),
+                "{extension} is drawn {drawn} and Extract {} open it",
+                if crate::archive::opens(mime) {
+                    "does"
+                } else {
+                    "does not"
+                }
+            );
+        }
     }
 
     /// A column opened to choose a wallpaper lists the folders to keep walking

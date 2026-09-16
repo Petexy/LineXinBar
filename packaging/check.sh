@@ -142,9 +142,40 @@ stage="$work/stage"
 "$PACKAGING_DIR/install.sh" --destdir "$work/retroarch" --component retroarch
 
 package_note "checking the staged desktop and session payload"
-for binary in lxb lxb-desktop lxb-session; do
+for binary in lxb lxb-desktop lxb-updates lxb-session; do
     [[ -x "$stage/usr/bin/$binary" ]] || package_die "staged binary is missing: $binary"
 done
+
+# Updates authenticate against one narrowly bound action, and the panel says
+# "Install updates" because polkit reads that action's own description — not
+# because the shell recognised a command line and dressed it up. A package that
+# ships the helper without the action leaves polkit with nothing to describe,
+# which is the dialog full of command line the whole revision exists to remove,
+# so a missing or unbound policy is a packaging failure and not a warning.
+package_note "checking the updates polkit action is staged and bound"
+policy="$work/desktop/usr/share/polkit-1/actions/org.linexinbar.updates.policy"
+[[ -f "$policy" ]] \
+    || package_die "the desktop component does not stage the updates polkit action"
+grep -q 'id="org.linexinbar.updates.install"' "$policy" \
+    || package_die "the updates policy does not declare org.linexinbar.updates.install"
+# Bound to the installed helper and its first argument. Unbound, the action
+# would authorize any pkexec call that named it.
+grep -q '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/lxb-updates</annotate>' "$policy" \
+    || package_die "the updates policy is not bound to the installed helper path"
+grep -q '<annotate key="org.freedesktop.policykit.exec.argv1">privileged-job</annotate>' "$policy" \
+    || package_die "the updates policy is not bound to the privileged-job argument"
+grep -q '@HELPER@' "$policy" \
+    && package_die "the updates policy still carries its @HELPER@ placeholder"
+# Administrator authentication, and no KEEP: a cached authorization would let a
+# second job install without asking.
+grep -q 'auth_admin_keep' "$policy" \
+    && package_die "the updates policy caches its authorization with auth_admin_keep"
+grep -q '<allow_active>auth_admin</allow_active>' "$policy" \
+    || package_die "the updates policy does not require administrator authentication"
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$policy" \
+        || package_die "the updates policy is not well-formed XML"
+fi
 
 package_note "checking the three components partition the payload"
 # The compositor is a package of its own so a display manager can depend on a
@@ -181,13 +212,13 @@ fi
     || package_die "the compositor component does not stage lxb"
 [[ -d "$work/compositor/usr/share/icons/Bibata-Modern-Classic/cursors" ]] \
     || package_die "the compositor component does not stage the cursor theme it draws with"
-for intruder in lxb-desktop lxb-portal lxb-session; do
+for intruder in lxb-desktop lxb-portal lxb-updates lxb-session; do
     [[ ! -e "$work/compositor/usr/bin/$intruder" ]] \
         || package_die "the compositor component stages $intruder, which belongs to the desktop"
 done
 [[ ! -e "$work/desktop/usr/bin/lxb" ]] \
     || package_die "the desktop component stages the compositor it is supposed to depend on"
-for expected in lxb-desktop lxb-portal lxb-session; do
+for expected in lxb-desktop lxb-portal lxb-updates lxb-session; do
     [[ -x "$work/desktop/usr/bin/$expected" ]] \
         || package_die "the desktop component does not stage $expected"
 done
@@ -253,6 +284,23 @@ grep -qx 'export XDG_CURRENT_DESKTOP=LineXinBar' "$PACKAGING_DIR/files/lxb-sessi
     || package_die "the session no longer sets the desktop name the defaults are keyed to"
 if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$handler"
+fi
+
+# Being what opens an archive, which is one file and one thing it has to say.
+# The shell makes Extract the default for itself and needs nothing staged to do
+# it; what this entry is for is the two things the shell cannot do alone —
+# giving the choice a name to be recorded and unrecorded under on the Open with
+# list, and answering `xdg-open` on a `.zip` from outside the session. An entry
+# that has been staged without claiming the types is an entry the Open with list
+# can name and nothing else on the machine will ever reach.
+extractor="$stage/usr/share/applications/linexinbar-extract.desktop"
+[[ -f "$extractor" ]] || package_die "the archive handler was not staged"
+grep -q '^MimeType=.*application/zip;' "$extractor" \
+    || package_die "the archive handler does not claim application/zip"
+grep -qx 'Exec=lxb-desktop --extract %f' "$extractor" \
+    || package_die "the archive handler no longer runs the shell's own extractor"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate "$extractor"
 fi
 
 # The two device nodes the shell opens itself. Neither is granted to anybody by

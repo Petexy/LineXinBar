@@ -22,6 +22,8 @@
   alsa-lib,
   alsa-utils,
   ffmpeg,
+  fwupd,
+  polkit,
   ddcutil,
   pipewire,
   src ? ../..,
@@ -83,13 +85,15 @@ let
     pulseaudio
     alsa-utils
     ddcutil
+    fwupd
+    polkit
   ];
   # `lxb-retroarch` is deliberately not in this list: it links nothing that
   # needs a driver runpath or a wrapper, and it looks for `flatpak` on the PATH
   # of the session that started it rather than on one baked in here — a helper
   # wrapped with this package's own PATH would be one that could not see the
   # flatpak the user installed.
-  binaries = if compositorOnly then [ "lxb" ] else [ "lxb" "lxb-desktop" "lxb-portal" ];
+  binaries = if compositorOnly then [ "lxb" ] else [ "lxb" "lxb-desktop" "lxb-portal" "lxb-updates" ];
   crates = if compositorOnly then [ "-p" "lxb-compositor" ] else [ "--workspace" ];
 in
 rustPlatform.buildRustPackage {
@@ -147,6 +151,8 @@ rustPlatform.buildRustPackage {
       "$out/share/licenses/$pname/GPL-3.0-only.txt"
     install -Dm0644 font/Roboto/LICENSE.txt \
       "$out/share/licenses/$pname/Roboto-Apache-2.0.txt"
+    install -Dm0644 font/RobotoMono/OFL.txt \
+      "$out/share/licenses/$pname/RobotoMono-OFL-1.1.txt"
     install -Dm0644 docs/configuration.md \
       "$out/share/doc/$pname/configuration.md"
     install -Dm0644 examples/config.toml \
@@ -181,7 +187,20 @@ rustPlatform.buildRustPackage {
     install -Dm0644 share/applications/linexinbar-mimeapps.list \
       "$out/share/applications/linexinbar-mimeapps.list"
 
+    # The entry standing for the shell's own Extract, which is what opens an
+    # archive in this session. Not a program — the shell answers the press
+    # itself — but the machine has to have something to name as the handler for
+    # the choice to be recordable, and this is also what `xdg-open` on a `.zip`
+    # reaches. See crates/lxb-desktop/src/archive.rs.
+    install -Dm0644 share/applications/linexinbar-extract.desktop \
+      "$out/share/applications/linexinbar-extract.desktop"
+
     install -Dm0644 README.md "$out/share/doc/$pname/README.md"
+    install -Dm0644 packaging/files/org.linexinbar.updates.policy.in \
+      "$out/share/polkit-1/actions/org.linexinbar.updates.policy"
+    substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.updates.policy" \
+      --replace-fail '@HELPER@' "$out/bin/lxb-updates"
+    install -Dm0644 docs/updates.md "$out/share/doc/$pname/updates.md"
 
     # The RetroArch integration's marks. Its binary is installed by
     # cargoInstallHook with the rest of the workspace's; these are what the
@@ -210,6 +229,11 @@ rustPlatform.buildRustPackage {
     substituteInPlace "$out/share/applications/linexinbar-files.desktop" \
       --replace-fail "Exec=lxb-desktop " "Exec=$out/bin/lxb-desktop " \
       --replace-fail "TryExec=lxb-desktop" "TryExec=$out/bin/lxb-desktop"
+    # And for the archive handler, which is started the same way and by the
+    # same kind of caller.
+    substituteInPlace "$out/share/applications/linexinbar-extract.desktop" \
+      --replace-fail "Exec=lxb-desktop " "Exec=$out/bin/lxb-desktop " \
+      --replace-fail "TryExec=lxb-desktop" "TryExec=$out/bin/lxb-desktop"
   '';
 
   postFixup = ''
@@ -233,7 +257,7 @@ rustPlatform.buildRustPackage {
       then "Wayland compositor for LineXinBar, usable on its own"
       else "Multi-display Wayland desktop with a console-style shell";
     homepage = "https://github.com/Petexy/LineXinBar";
-    license = with lib.licenses; [ gpl3Only asl20 mit ];
+    license = with lib.licenses; [ gpl3Only asl20 ofl mit ];
     mainProgram = "lxb";
     platforms = lib.platforms.linux;
   };

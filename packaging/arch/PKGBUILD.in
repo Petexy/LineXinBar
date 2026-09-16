@@ -18,11 +18,14 @@ pkgrel=1
 pkgdesc='Multi-display Wayland desktop with a console-style shell'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Petexy/LineXinBar'
-license=('GPL-3.0-only' 'Apache-2.0' 'MIT')
+license=('GPL-3.0-only' 'Apache-2.0' 'OFL-1.1' 'MIT')
 # The union of both packages' runtime needs. Split packages take their own
 # `depends` from the `package_*` functions below; this one is what makepkg
 # resolves before building, and every entry is needed to build either half.
 depends=(
+    'fwupd'
+    'polkit'
+    'pacman-contrib'
     'alsa-lib'
     'dbus'
     'ffmpeg'
@@ -100,10 +103,16 @@ _linexinbar_licenses() {
         "$pkgdir/usr/share/licenses/$1/GPL-3.0-only.txt"
     install -Dm0644 font/Roboto/LICENSE.txt \
         "$pkgdir/usr/share/licenses/$1/Roboto-Apache-2.0.txt"
+    install -Dm0644 font/RobotoMono/OFL.txt \
+        "$pkgdir/usr/share/licenses/$1/RobotoMono-OFL-1.1.txt"
     # Smithay is in this tree rather than pulled from crates.io, and MIT asks
     # for its notice to travel with the binary it is linked into.
-    install -Dm0644 third_party/smithay/LICENSE.txt \
+    install -Dm0644 third_party/lxb-smithay/LICENSE.txt \
         "$pkgdir/usr/share/licenses/$1/Smithay-MIT.txt"
+    # And rcheevos, which is compiled into the RetroArch helper rather than
+    # linked from a crate, under the same terms and the same obligation.
+    install -Dm0644 third_party/lxb-rcheevos/LICENSE \
+        "$pkgdir/usr/share/licenses/$1/rcheevos-MIT.txt"
 }
 
 package_lxb-compositor() {
@@ -151,6 +160,9 @@ package_lxb-desktop() {
         "lxb-compositor=$pkgver-$pkgrel"
         'alsa-lib'
         'dbus'
+        'fwupd'
+        'polkit'
+        'pacman-contrib'
         # libavcodec, libavformat, libavutil and libswscale: a wallpaper of the
         # user's own, under Settings > Appearance > Theme > Wallpaper.
         'ffmpeg'

@@ -3674,7 +3674,7 @@ pub mod offline {
                     let home = std::env::var_os("HOME").map(PathBuf::from)?;
                     Some(home.join(".cache"))
                 })?;
-            Some(cache.join("linexinbar").join("steam-offline-was-ours"))
+            Some(cache.join("lxb").join("steam-offline-was-ours"))
         }
     }
 
@@ -3684,10 +3684,19 @@ pub mod offline {
 
         /// A layout with one account in the client's list and one name in its
         /// registry — the shape read off this machine on 2026-09-02.
+        ///
+        /// A layout of its own per call, and the counter is what makes it so:
+        /// the name and the mode were the whole of the path, so the two tests
+        /// that both ask for `("someone", "0")` shared one directory and ran in
+        /// parallel in it. One of them writes the field; the other asserts it is
+        /// not written — so the suite failed about once in a while, in the test
+        /// that had done nothing wrong.
         fn a_client(name: &str, offline: &str) -> (std::path::PathBuf, Options) {
+            static NTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let root = std::env::temp_dir().join(format!(
-                "lxb-offline-{name}-{offline}-{}",
-                std::process::id()
+                "lxb-offline-{name}-{offline}-{}-{}",
+                std::process::id(),
+                NTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("config")).unwrap();

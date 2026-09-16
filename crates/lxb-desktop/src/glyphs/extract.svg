@@ -1,0 +1,61 @@
+<!--
+  The shell's own Extract: an open carton with an arrow coming up out of it.
+
+  category-software.svg's carton exactly — the same body, the same two flaps,
+  the same mouth cut down from above the top edge — with the arrow turned round
+  and stood deeper in the opening. That is the whole drawing and it is
+  deliberate: the two marks are a pair, and the pair is the statement. A store
+  is something arriving from outside and going into the box; an archive is the
+  box, and what a press on one asks for is the contents coming back out. One
+  object, two directions.
+
+  Reusing a body already in the set is what this set does where two rows are
+  about one thing — new-folder.svg is file-folder.svg with a cross pierced
+  through it, trash-empty.svg is uninstall.svg's bin with the lid taken off —
+  and it is not the bent rule do-not-disturb.svg records. That one is two
+  unrelated meanings that happen to share a moon. This is the same meaning read
+  backwards.
+
+  **It was drawn as a closed box with an arrow over it first, and that is the
+  eject symbol.** A solid slab with a triangle above it is an instruction about
+  a disc, and the eye reads it before it reads anything else — a seam across the
+  slab does not save it, it makes the slab a slot. What keeps this one clear is
+  that the carton is *open*: the mouth runs off the top of the body, the flaps
+  are folded outwards, and the arrow stands in the opening with air on every
+  side, so the shader beads a wall round the arrow as well as round the mouth
+  and the arrow is visibly inside the box rather than painted on the front of
+  it.
+
+  The arrow's head clears the carton's top edge entirely — it is above the body,
+  not over the mouth — which is what says the contents are leaving. Its foot
+  stops three units short of the mouth's floor, so the shaft does not run into
+  the bottom of the cut and take a crevice there.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="carton" x="6.2" y="16" width="19.6" height="11.6" rx="2"/>
+    <path id="flap-left" d="M8.84 16.24L6.56 18.76L2.55 15.15L4.83 12.62Z"/>
+    <path id="flap-right" d="M23.16 16.24L25.44 18.76L29.45 15.15L27.17 12.62Z"/>
+    <rect id="mouth" x="9.2" y="12.6" width="13.6" height="12" rx="1.4"/>
+    <path id="arrow" d="M16 4.6L21 12.4H17.6V21.6H14.4V12.4H11Z"/>
+    <g id="bead">
+      <use href="#carton"/>
+      <use href="#flap-left"/>
+      <use href="#flap-right"/>
+      <use href="#arrow"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#mouth" fill="#000000"/>
+      <use href="#arrow" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

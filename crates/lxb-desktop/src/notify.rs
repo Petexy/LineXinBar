@@ -1014,6 +1014,43 @@ impl Center {
         })
     }
 
+    pub fn announce_update(
+        &mut self,
+        summary: &str,
+        body: &str,
+        action: &str,
+        silent: bool,
+    ) -> (u32, bool) {
+        let quiet = self.quiet;
+        self.quiet |= silent;
+        // Down, and never through zero: zero is what a program passes to mean
+        // "a new one", so it is not a number an announcement may have.
+        let id = self.ours;
+        self.ours = self.ours.saturating_sub(1).max(1);
+        let raised = self.arrived(Notification {
+            id,
+            app: "LineXinBar".to_string(),
+            app_icon: crate::icons::SETTING_UPDATES.to_string(),
+            image_path: None,
+            image: None,
+            image_key: None,
+            desktop_entry: None,
+            summary: summary.to_string(),
+            body: body.to_string(),
+            actions: vec![("default".into(), action.into())],
+            urgency: Urgency::Normal,
+            // Kept, not transient. What this says is the answer to something
+            // the user pressed and may well have walked away from — the whole
+            // reason it is announced rather than drawn on the row is that they
+            // are not necessarily looking at the row — so it has to be there
+            // to be found behind the bell.
+            transient: false,
+            arrived: Instant::now(),
+        });
+        self.quiet = quiet;
+        (id, raised)
+    }
+
     /// Take everything the bus has said and file it.
     pub fn collect(&mut self, service: &Service) -> Arrivals {
         let mut arrivals = Arrivals::default();

@@ -1,0 +1,31 @@
+[Desktop Entry]
+Type=Application
+Name=Extract
+GenericName=Archive Extractor
+Comment=Unpack an archive into the folder it is in
+# Not a program somebody installed: the shell answers a press on an archive
+# itself, because what a press on one means is "give me what is inside" and the
+# only part of that the shell cannot work out is where it should go — so it
+# asks. See crates/lxb-desktop/src/archive.rs.
+#
+# This entry exists so that the machine has something to *name* as the handler
+# for an archive. A choice made on the shell's Open with list is written into
+# the user's `mimeapps.list` as a desktop entry name and nothing else, so an
+# answer with no entry to its name could be displaced by another program and
+# never chosen back.
+#
+# `--extract` is what it runs when something outside the shell reaches it —
+# `xdg-open` on a `.zip`, a browser finishing a download. Nothing is asked
+# there: that caller wanted a file opened and there is no screen to put a
+# question on, so the archive is unpacked where it stands. Nothing is written
+# over doing it. `%f` and not `%U`: this opens a file on this disk.
+Exec=lxb-desktop --extract %f
+TryExec=lxb-desktop
+Terminal=false
+# There is no Extract application to put in a menu — it is the shell answering
+# for itself — and a row for it on the bar beside the real applications would be
+# the shell offering itself as a program to start.
+NoDisplay=true
+MimeType=application/zip;application/x-tar;application/gzip;application/x-bzip2;application/x-xz;application/zstd;application/x-lz4;application/x-lzip;application/x-lzma;application/x-7z-compressed;application/vnd.rar;application/vnd.ms-cab-compressed;application/x-cd-image;
+Categories=Utility;Archiving;FileTools;
+Keywords=archive;extract;unpack;unzip;untar;

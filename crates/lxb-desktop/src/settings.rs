@@ -66,6 +66,9 @@ use lxb_protocol::wallpaper;
 /// the next without reading their titles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
+    /// A source update or a maintenance view. The shell dispatches this to the
+    /// detached update coordinator; it is not a persisted setting.
+    Update(UpdateValue),
     /// Set the accent to the palette of this name — one of [`theme::ACCENTS`].
     Accent(&'static str),
     /// Draw one half of the shell — the wallpaper, or every mark it makes — in
@@ -313,6 +316,16 @@ pub enum Setting {
         display: &'static str,
         value: DisplayValue,
     },
+}
+
+/// An update source is named explicitly, independently of launcher categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateValue {
+    Everything,
+    Source(lxb_updates::SourceId),
+    Check,
+    History,
+    Preferences,
 }
 
 /// One thing that can be changed about Steam.
@@ -1858,17 +1871,17 @@ pub fn set_show_hidden(on: bool) -> bool {
 static STEAM_SORT: Mutex<Option<String>> = Mutex::new(None);
 static TROPHIES_SORT: Mutex<Option<String>> = Mutex::new(None);
 
-pub fn remember_trophies_sort(sort: lxb_steam::library::Sort) {
+pub fn remember_trophies_sort(sort: crate::trophies::Sort) {
     *TROPHIES_SORT.lock().unwrap() = Some(sort.key().to_string());
     save(&stored());
 }
 
-pub fn trophies_sort() -> Option<lxb_steam::library::Sort> {
+pub fn trophies_sort() -> Option<crate::trophies::Sort> {
     TROPHIES_SORT
         .lock()
         .unwrap()
         .as_deref()
-        .and_then(lxb_steam::library::Sort::from_key)
+        .and_then(crate::trophies::Sort::from_key)
 }
 
 /// Write down that the Steam column is listed in this order from now on.
@@ -2839,6 +2852,16 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 
 /// The rows of the Settings column, in the order they appear under it.
 ///
+/// Updates stands in front of everything, and it is the one row here that is
+/// there for a reason none of the others share: it is not a setting. Every
+/// other page in this column is a question about how the machine should
+/// behave, and a question keeps — somebody who does not answer it today is no
+/// worse off tomorrow. This page is four presses that stop being worth making
+/// the longer they are left, and a machine that is behind is behind in a way
+/// the user cannot see from anywhere else in the shell. So it is put where a
+/// thing that has to be *found* goes, which is first, and not sorted in among
+/// the settings by how much of the machine it touches.
+///
 /// The picture before the sound, which is the order a console has always put
 /// them in and the order the two are noticed in. Appearance stands in front of
 /// both because it is the shell describing itself rather than the machine.
@@ -2871,6 +2894,7 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// go looking for.
 pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
     vec![
+        updates(),
         appearance(),
         display(),
         sounds(),
@@ -2945,6 +2969,84 @@ fn carry_over_listings(worn: &mut [Entry], fresh: &mut [Entry]) {
         } else {
             carry_over_listings(&mut same.entries, &mut folder.entries);
         }
+    }
+}
+
+/// Source-specific update actions. Discovery stays on the worker; drawing this
+/// page only reads its last snapshot and never starts a package manager.
+fn updates() -> Entry {
+    folder(
+        "Updates",
+        "Bringing this machine up to date",
+        icons::SETTING_UPDATES,
+        update_entries(&crate::updates::rows(), crate::updates::overall()),
+    )
+}
+
+/// The rows of the Updates page: the one press most people make, a press a
+/// source for the ones who want one thing and not the others, the list of
+/// what is waiting, and the two pages nobody needs until they do.
+///
+/// Every note under a press is the *state* of what it would press — "4
+/// updates", "Up to date", "Could not check" — because that is what the
+/// person reading down this page is asking, and it is the answer a console
+/// puts next to its update row. `overall` is that answer for the whole
+/// machine, under the first row, once anything has been checked.
+///
+/// There is no "Check for updates" row, on purpose: every press here checks
+/// first and shows what it found with the way out first, so a row that only
+/// checked was a second way to do the same thing, on a page whose fault was
+/// having too many rows.
+///
+/// The list of what is waiting is a folder rather than a page of the panel,
+/// because it is a list: five hundred pending packages on a machine that has
+/// not been updated for a while are five hundred rows, scrolled with a held
+/// thumb like every other list in this shell — not fifty-nine pages turned
+/// one button at a time, which is what the panel made of them once. It is
+/// there only when something is waiting, so that a machine that is up to
+/// date does not offer a folder with nothing in it.
+fn update_entries(sources: &[crate::updates::Row], overall: Option<String>) -> Vec<Entry> {
+    let mut rows = vec![action(
+        "Update everything",
+        overall
+            .as_deref()
+            .unwrap_or("Check every source and install what is waiting"),
+        icons::SETTING_UPDATE_ALL,
+        Setting::Update(UpdateValue::Everything),
+    )];
+    for source in sources
+        .iter()
+        .filter(|s| s.id != lxb_updates::SourceId::Aur)
+    {
+        rows.push(action(
+            source.id.title(),
+            &source.note,
+            update_icon(source.id),
+            Setting::Update(UpdateValue::Source(source.id)),
+        ));
+    }
+    rows.push(action(
+        "Recent updates",
+        "Full output from the last three updates",
+        icons::SETTING_INFO,
+        Setting::Update(UpdateValue::History),
+    ));
+    rows.push(action(
+        "Update preferences",
+        "Daily checks",
+        icons::SETTING_SCHEDULE,
+        Setting::Update(UpdateValue::Preferences),
+    ));
+    rows
+}
+
+/// The mark an update source's row wears — see [`icons::SETTING_UPDATE_SYSTEM`]
+/// and its two siblings for what each enclosure means.
+fn update_icon(id: lxb_updates::SourceId) -> &'static str {
+    match id {
+        lxb_updates::SourceId::System => icons::SETTING_UPDATE_SYSTEM,
+        lxb_updates::SourceId::Firmware => icons::SETTING_UPDATE_FIRMWARE,
+        _ => icons::SETTING_UPDATE_APPS,
     }
 }
 
@@ -6923,7 +7025,7 @@ fn steam_after_a_game_switch() -> Entry {
 /// would then be two programs' settings in one list with nothing saying which
 /// was whose.
 fn retroarch() -> Entry {
-    let mut rows = Vec::new();
+    let mut rows = vec![crate::retroachievements::settings_row()];
     // The emulators first, one page each, because a person who came to this
     // page came about a game — and what a game looks like is the emulator
     // running it, not the frontend around it. A machine with no core yet has
@@ -8448,7 +8550,13 @@ pub fn preview(setting: Option<Setting>) {
         // highlights — but it is a setting like any other and is answered like
         // one, so that the day something else offers it there is no arm missing.
         Some(
-            Setting::Display { .. }
+            // Nor does an update row, and it is the one page in this tree
+            // where previewing is not a bad idea but a category mistake:
+            // there is no value to show. Highlighting one would have to *start*
+            // it, on a cursor walking down a list of four, which is how a
+            // machine gets its firmware rewritten by somebody who was reading.
+            Setting::Update(_)
+            | Setting::Display { .. }
             | Setting::StartMusic(_)
             | Setting::BatteryPercent(_)
             | Setting::ButtonHints(_)
@@ -8593,6 +8701,9 @@ fn order_after_moving(display: &str, place: u32) -> Option<Vec<String>> {
 
 fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
     match setting {
+        // Updates have their own job journal and preferences. Merely dispatching
+        // an action must not rewrite the desktop's general settings file.
+        Setting::Update(_) => return true,
         Setting::Accent(name) => {
             if !theme::commit_accent(name) {
                 tracing::warn!(accent = name, "no accent by that name");
@@ -9527,7 +9638,7 @@ struct Stored {
     /// is `Custom wallpaper`.
     ///
     /// The shell's own copy of what the user chose, under
-    /// `$XDG_DATA_HOME/linexinbar` — not the file they pressed. See
+    /// `$XDG_DATA_HOME/lxb/wallpaper` — not the file they pressed. See
     /// [`crate::paper::keep`]: a setting that named somebody's Downloads folder
     /// would be a wallpaper that disappeared the next time they tidied it.
     ///
@@ -10247,7 +10358,7 @@ const PREAMBLE: &str = "\
 #
 # wallpaper-file: the picture or film standing behind everything, where
 # theme-wallpaper says Custom wallpaper. It is the shell's own copy of what was
-# chosen, under $XDG_DATA_HOME/linexinbar, so that moving or deleting the
+# chosen, under $XDG_DATA_HOME/lxb/wallpaper, so that moving or deleting the
 # original does not take the wallpaper with it — choose the file again from
 # Settings > Appearance > Theme > Wallpaper > Custom wallpaper to replace it. A
 # film is drawn without its sound, which is not a setting: nothing in this shell
@@ -11071,7 +11182,7 @@ mod tests {
     /// The Display subcategory's row of that name, owned — reading a comment
     /// off a borrow of a freshly built catalogue reads into a temporary.
     fn display_row(title: &str) -> Entry {
-        column()[1]
+        row(&column(), "Display")
             .entries()
             .expect("Display opens a column")
             .iter()
@@ -11121,7 +11232,7 @@ mod tests {
             ],
             || {
                 let column = column();
-                assert_eq!(column[1].title(), "Display");
+                assert_eq!(row(&column, "Display").title(), "Display");
 
                 let hdr = hdr_row();
                 assert_eq!(hdr.title(), "HDR");
@@ -11420,7 +11531,7 @@ mod tests {
     fn the_colour_in_force_is_the_one_the_shell_draws_with() {
         theme::with_accent("Blue", || {
             let column = column();
-            let colours = column[0].entries().unwrap()[0].entries().unwrap().to_vec();
+            let colours = under(under(&column, "Appearance"), "Accent color").to_vec();
 
             let chosen: Vec<&Entry> = colours.iter().filter(|entry| entry.chosen()).collect();
             assert_eq!(chosen.len(), 1, "exactly one value can be in force");
@@ -11833,7 +11944,7 @@ mod tests {
     fn choosing_a_colour_sets_that_colour() {
         theme::with_accent("Purple", || {
             let column = column();
-            let colours = column[0].entries().unwrap()[0].entries().unwrap().to_vec();
+            let colours = under(under(&column, "Appearance"), "Accent color").to_vec();
 
             for entry in &colours {
                 let Entry::Choice(choice) = entry else {
@@ -12013,13 +12124,10 @@ mod tests {
                 steam_sort(),
                 Some(lxb_steam::library::Sort::RecentlyPlayedFirst)
             );
+            assert_eq!(trophies_sort(), Some(crate::trophies::Sort::NameDescending));
             assert_eq!(
-                trophies_sort(),
-                Some(lxb_steam::library::Sort::NameDescending)
-            );
-            assert_eq!(
-                crate::trophies::Trophies::new().sort(),
-                lxb_steam::library::Sort::NameDescending
+                crate::trophies::Browser::default().sort,
+                crate::trophies::Sort::NameDescending
             );
         });
         assert!(body.contains("[media-sort]"), "{body}");
@@ -12056,6 +12164,26 @@ mod tests {
             // must not quietly delete a choice made by a later version of the
             // shell than this one.
             assert_eq!(stored().steam_sort.as_deref(), Some("by vibes"));
+
+            // And one of the five orders the Trophies column used to borrow
+            // from the Steam library reads the same way: the column comes up in
+            // the order it has always come up in, and the word stays in the
+            // file until somebody chooses something in its place.
+            adopt(Stored {
+                trophies_sort: Some("last-played".to_string()),
+                ..Stored::default()
+            });
+            assert_eq!(trophies_sort(), None);
+            assert_eq!(
+                crate::trophies::Browser::default().sort,
+                crate::trophies::Sort::InstalledFirst
+            );
+            assert_eq!(stored().trophies_sort.as_deref(), Some("last-played"));
+            assert_eq!(
+                lxb_steam::library::Sort::from_key("last-played"),
+                Some(lxb_steam::library::Sort::RecentlyPlayedFirst),
+                "and the Steam column, which still offers it, goes on reading it"
+            );
         });
 
         // A file cut down to nothing still parses, and says nothing.
@@ -12877,7 +13005,7 @@ hdr-peak-brightness = 600
             ],
             || {
                 let column = column();
-                let display = column[1].entries().expect("Display opens a column");
+                let display = under(&column, "Display");
                 assert_eq!(
                     display.iter().map(Entry::title).collect::<Vec<_>>(),
                     [
@@ -16025,6 +16153,7 @@ hdr = true
         assert_eq!(
             titles,
             vec![
+                "RetroAchievements",
                 "Aspect ratio",
                 "Video driver",
                 "Whole-number scaling",
@@ -16034,7 +16163,7 @@ hdr = true
             ]
         );
 
-        let aspect = &rows[0];
+        let aspect = &rows[1];
         assert_eq!(
             aspect.comment(),
             Some("As the console had it"),
@@ -16515,6 +16644,209 @@ hdr = true
             .iter()
             .find(|entry| entry.title() == title)
             .unwrap_or_else(|| panic!("{title} is not on this page: {:?}", titles(entries)))
+    }
+
+    // --- Settings > Updates -------------------------------------------------
+
+    /// Updates is the first row of the Settings column, and it is in front of
+    /// every setting rather than sorted in among them — see [`column`], where
+    /// the whole order is argued.
+    ///
+    /// Asserted as a position rather than as an index, for the reason every
+    /// other order in this file is: the shape of the column changes with the
+    /// machine — a battery row appears, a Games page is built or not — and a
+    /// test written against a number is a test that passes for the wrong
+    /// reason the first time something moves.
+    #[test]
+    fn updates_stands_in_front_of_every_setting() {
+        let column = column();
+        let titles = titles(&column);
+        assert_eq!(
+            titles.first(),
+            Some(&"Updates"),
+            "the machine being out of date is the one thing here that is not a \
+             question that keeps: {titles:?}"
+        );
+
+        // And it says what is inside it, the way every other subcategory in
+        // this column does — see
+        // [`the_two_connection_rows_say_what_is_inside_them`], which is where
+        // that rule was settled.
+        assert_eq!(
+            row(&column, "Updates").comment(),
+            Some("Bringing this machine up to date")
+        );
+    }
+
+    #[test]
+    fn update_sources_are_explicit_and_have_stable_action_identities() {
+        use lxb_updates::SourceId as Id;
+        let sources: Vec<_> = [Id::System, Id::Flatpak, Id::Aur, Id::Snap, Id::Firmware]
+            .into_iter()
+            .map(|id| crate::updates::Row {
+                id,
+                note: "Up to date".into(),
+                items: vec![],
+            })
+            .collect();
+        let page = update_entries(&sources, None);
+        // AUR is in the sources this came from and has no row: the shell no
+        // longer builds packages, and a row that could only ever refuse is
+        // worse than no row. Everything else keeps its own press.
+        assert_eq!(
+            titles(&page),
+            [
+                "Update everything",
+                "Update the system",
+                "Update Flatpaks",
+                "Update Snaps",
+                "Update firmware",
+                "Recent updates",
+                "Update preferences"
+            ]
+        );
+        assert_eq!(
+            row(&page, "Update everything").comment(),
+            Some("Check every source and install what is waiting")
+        );
+        let shown: Vec<_> = sources.iter().filter(|s| s.id != Id::Aur).collect();
+        for (entry, source) in page.iter().skip(1).zip(&shown) {
+            assert_eq!(
+                entry.setting(),
+                Some(Setting::Update(UpdateValue::Source(source.id)))
+            );
+            let Entry::Choice(choice) = entry else {
+                panic!("An update must be an action")
+            };
+            assert!(choice.acts);
+            assert!(!choice.chosen);
+        }
+        let absent = update_entries(&[], None);
+        assert!(!titles(&absent).contains(&"Update Flatpaks"));
+    }
+
+    /// What is waiting is a count under each row, and nothing more. The
+    /// packages themselves are in Full output, which is the one home for
+    /// anything technical: a second copy in the column was the same list
+    /// twice, and a row that duplicates another row goes. The note under
+    /// the first row is the whole machine's state once it has been checked.
+    #[test]
+    fn a_source_row_says_its_count_and_never_lists_its_packages() {
+        use lxb_updates::SourceId as Id;
+        let item = |name: &str, detail: &str| lxb_updates::Item {
+            name: name.into(),
+            detail: detail.into(),
+        };
+        let sources = vec![
+            crate::updates::Row {
+                id: Id::System,
+                note: "2 updates".into(),
+                items: vec![
+                    item("linux", "6.17.3-1 → 6.17.4-1"),
+                    item("mesa", "25.2.4-1 → 25.2.5-1"),
+                ],
+            },
+            crate::updates::Row {
+                id: Id::Flatpak,
+                note: "Up to date".into(),
+                items: vec![],
+            },
+            crate::updates::Row {
+                id: Id::Firmware,
+                note: "1 device update".into(),
+                items: vec![item("Samsung SSD 990 PRO", "nvme · 4B2QJXD7 → 5B2QJXD7")],
+            },
+        ];
+        let page = update_entries(&sources, Some("3 updates available".into()));
+        assert_eq!(
+            row(&page, "Update everything").comment(),
+            Some("3 updates available")
+        );
+        // Each source answers the question before it is pressed.
+        assert_eq!(row(&page, "Update the system").comment(), Some("2 updates"));
+        assert_eq!(row(&page, "Update Flatpaks").comment(), Some("Up to date"));
+        assert_eq!(
+            row(&page, "Update firmware").comment(),
+            Some("1 device update")
+        );
+        // No package name anywhere in the column, at any depth.
+        assert!(!titles(&page).contains(&"Available updates"));
+        fn names(entries: &[Entry]) -> Vec<String> {
+            entries
+                .iter()
+                .flat_map(|entry| {
+                    let mut found = vec![entry.title().to_string()];
+                    if let Entry::Folder(folder) = entry {
+                        found.extend(names(&folder.entries));
+                    }
+                    found
+                })
+                .collect()
+        }
+        let every = names(&page);
+        for package in ["linux", "mesa", "Samsung SSD 990 PRO"] {
+            assert!(
+                !every.iter().any(|title| title == package),
+                "{package} belongs in Full output, not the column: {every:?}"
+            );
+        }
+        // Recent updates is where the last three transcripts are read from.
+        assert_eq!(
+            row(&page, "Recent updates").setting(),
+            Some(Setting::Update(UpdateValue::History))
+        );
+    }
+
+    #[test]
+    fn dispatching_updates_does_not_persist_general_settings() {
+        assert!(apply_with(Setting::Update(UpdateValue::Check), |_| panic!(
+            "Updates must not write general settings"
+        )));
+    }
+
+    /// Walking over an update row must not start one.
+    ///
+    /// The one page in this tree where previewing is not a bad idea but a
+    /// category mistake — there is no value to show, so a preview could only
+    /// be the act itself, run four times by somebody reading down a list. What
+    /// a highlight here does is what leaving a list of values does: put the
+    /// accent back.
+    ///
+    /// Holds [`LOCK`] like every other test here that reads [`stored`]: what
+    /// that function reports is the whole module's state, and the suite runs in
+    /// parallel — a screen another test reported would otherwise turn up in
+    /// this one's snapshot and be read as this press having done something.
+    #[test]
+    fn walking_over_an_update_row_starts_nothing() {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let saved = take_settings();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            theme::with_accent("Purple", || {
+                let before = stored();
+                for part in [
+                    UpdateValue::Everything,
+                    UpdateValue::Source(lxb_updates::SourceId::System),
+                    UpdateValue::Source(lxb_updates::SourceId::Flatpak),
+                    UpdateValue::Source(lxb_updates::SourceId::Firmware),
+                ] {
+                    preview(Some(Setting::Update(part)));
+                    theme::animate(1.0);
+                    assert_eq!(theme::accent().name, "Purple", "{part:?}");
+                    assert_eq!(
+                        theme::theme().accent.rgb(),
+                        theme::PURPLE.accent.rgb(),
+                        "{part:?} is not a colour and must not paint one"
+                    );
+                    assert_eq!(stored(), before, "{part:?} was carried out on a highlight");
+                }
+            });
+        }));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     // --- Settings > Input ---------------------------------------------------

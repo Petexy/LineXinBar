@@ -1,0 +1,15 @@
+#!/bin/sh
+# Nothing pending after an upgrade. The upgrade itself is never reached: a
+# root step runs only a root-owned executable, and this one is refused before
+# pkexec is asked.
+#
+# -Qm still answers, because a foreign package is a fact about the machine and
+# the coordinator may ask; it no longer discovers anything to update, since the
+# shell does not build locally built packages at all.
+printf 'pacman %s\n' "$*" >> "${LXB_FIXTURE_LOG:-${HOME:-/tmp}/fixture-calls.log}"
+case "$1" in
+-Qm) printf 'lxb-fixture-git 1.0-1\nparu 2.1.0-1\n' ;;
+-Qu) exit 1 ;;
+-Syu) printf 'FIXTURE: a root step reached the fake pacman; this must never happen\n' >&2; exit 99 ;;
+*) exit 0 ;;
+esac

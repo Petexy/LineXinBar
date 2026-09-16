@@ -1,0 +1,48 @@
+<!--
+  The head of Settings > Updates: the update badge — an arrow rising inside a
+  disc.
+
+  Drawn against what every other system shows, because this is a mark the user
+  arrives already knowing. Adwaita's software-update-available is an arrow
+  rising inside a notched circle; Breeze's system-software-update is the same
+  arrow inside a ring; Tela's is the arrow under an arc; the machine this was
+  written on carries its own updater whose mark is a cycle inside a shield.
+  Every one of them is **an arrow rising, shut inside something**.
+
+  The enclosure is not decoration, it is the whole difference. A bare arrow
+  rising off a line is the *upload* mark — that is what it means in every file
+  manager and every browser — and the first drawing of this row was exactly
+  that, which is why it was thrown out. Close the arrow inside a disc and it
+  stops being something leaving and becomes something this machine is being
+  brought up to.
+
+  The arrow is an opening rather than a body laid on the disc, so the shader
+  finds the wall of the disc arriving from the other side of it and rings the
+  arrow in displaced water — the effect glyph-language-water-bead calls the
+  whole reason the set was redrawn, got here for nothing.
+
+  It is drawn solid rather than as a ring, which makes it the heaviest mark in
+  the Settings column. That is the right weight for the row it heads: this is
+  the one page in that column somebody has to *find* rather than go looking
+  for, which is the same argument that puts it first.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="disc" cx="16" cy="16" r="13"/>
+    <path id="arrow" d="M16 9L21.4 15H18V23H14V15H10.6Z"/>
+    <g id="bead"><use href="#disc"/></g>
+    <g id="holes"><use href="#arrow"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

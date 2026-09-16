@@ -1,0 +1,4 @@
+#!/bin/sh
+# Four repository updates, as pacman-contrib's checkupdates lists them.
+printf 'checkupdates %s\n' "$*" >> "${LXB_FIXTURE_LOG:-${HOME:-/tmp}/fixture-calls.log}"
+printf 'linux 6.17.3-1 -> 6.17.4-1\nmesa 25.2.4-1 -> 25.2.5-1\nsystemd 258.1-1 -> 258.2-1\nvulkan-radeon 25.2.4-1 -> 25.2.5-1\n'

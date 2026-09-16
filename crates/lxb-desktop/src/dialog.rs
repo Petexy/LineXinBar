@@ -109,6 +109,31 @@ pub enum Line {
     /// rather than implied by a gap, because two of these panels are a list of
     /// facts and a list is easier to read against a rule than against air.
     Rule,
+    /// What a program said, as the terminal it said it on: a dark well with
+    /// the lines in it, left-aligned in the fixed-width face, exactly the
+    /// width of the terminal they were written to.
+    ///
+    /// The one line of the panel that is not the shell's own words. Every
+    /// other kind here is a label or a sentence the shell wrote and knows the
+    /// length of; this is a transcript somebody else wrote, thousands of lines
+    /// of it, laid out in columns that only a fixed-width face keeps. So it
+    /// is drawn as its own object — the panel widens for it, see
+    /// [`crate::ui::dialog_rect`] — and it is never wrapped, cut or centred:
+    /// a line that fit the terminal fits the frame, because the frame is
+    /// [`lxb_updates::COLUMNS`] of the same width.
+    ///
+    /// The caller hands over the *window* — the lines to show, top to bottom
+    /// — and says in the foot where in the whole that window is. The frame is
+    /// `rows` tall whether or not there are lines to fill it, so a transcript
+    /// that has only just started does not draw a panel that grows a line at
+    /// a time under the reader.
+    Terminal {
+        lines: Vec<String>,
+        rows: usize,
+        /// Where the window is in the whole, and how to move it, along the
+        /// frame's foot: "Lines 121–140 of 300 · Left and Right to scroll".
+        foot: String,
+    },
 }
 
 impl Line {
@@ -212,11 +237,52 @@ impl Dialog {
         self.buttons.animate(dt)
     }
 
+    /// Step into a further column of answers in place of the ones on the
+    /// panel, once the button that asked for it has been seen to go down,
+    /// opening on answer `start` — see [`Menu::descend_selecting`].
+    ///
+    /// For the one panel whose answers include a *value*: the kind of archive
+    /// the Compress panel makes. The list of kinds takes the buttons' place
+    /// under the same lines, so the panel grows by the difference rather than
+    /// a second panel being raised over the first, and Back steps out to the
+    /// answers it came from. The answers still never scroll — see
+    /// [`Self::ask`] — which is what the window is widened for: a further
+    /// list that is longer than the one it replaces is drawn whole.
+    pub fn descend(&mut self, buttons: Vec<Entry>, start: usize) -> bool {
+        let rows = buttons.len().max(self.buttons.entries().len());
+        if !self.buttons.descend_selecting(None, buttons, start) {
+            return false;
+        }
+        self.buttons.set_window(rows);
+        true
+    }
+
+    /// Step back out to the answers a further column was reached from, once
+    /// the answer just pressed has been seen to go down, with `buttons`
+    /// written on them — see [`Menu::back_after_press`].
+    pub fn back_after_press(&mut self, buttons: Vec<Entry>) {
+        self.buttons.back_after_press(buttons);
+    }
+
+    /// Step back out to the answers a further column was reached from, now.
+    /// `false` when the panel is showing the answers it opened with, which is
+    /// what tells the caller that Back means closing it.
+    pub fn back(&mut self) -> bool {
+        self.buttons.back()
+    }
+
     /// Put it away. Returns whether it was open, so a caller can tell a
     /// dismissal from a press that has to go on to mean something else.
     pub fn close(&mut self) -> bool {
         self.wait = 0.0;
         self.buttons.close()
+    }
+
+    /// Put it away once the answer just pressed has been seen to go down —
+    /// see [`Menu::close_after_press`], and the one button that wants it.
+    pub fn close_after_press(&mut self) -> bool {
+        self.wait = 0.0;
+        self.buttons.close_after_press()
     }
 
     /// Whether it is taking input.

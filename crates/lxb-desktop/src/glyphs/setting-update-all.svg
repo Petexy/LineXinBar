@@ -1,0 +1,57 @@
+<!--
+  Update everything: the arrow rising inside the cycle.
+
+  The page's own arrow — setting-updates.svg — with the disc round it opened
+  out into two arrows chasing each other. That is Breeze's
+  system-software-update symbolic exactly, and it is the mark the machine this
+  was written on already carries for its own updater: a cycle, meaning the
+  whole round rather than one part of it.
+
+  So the two marks say what they are against each other. The disc is *an update
+  is here*; the cycle is *go round the lot*. Everything else on the page wears
+  the part it is about with the same arrow standing in it.
+
+  It is deliberately close to refresh.svg and deliberately not it. That mark is
+  two bare arcs chasing with nothing inside them and it means *ask again* — the
+  Steam library, fetched a second time. This one has the update arrow shut
+  inside it, which is the difference between asking for what is there again and
+  taking what is newer.
+
+  The geometry is the fiddly part and it was computed rather than drawn. Each
+  arm is a 140-degree arc of a band 2.6 units thick on a mid-radius of 9.9,
+  with a head whose base is radial and runs from 7.3 out to 12.5 — so the head,
+  and not the band, is the widest thing in the cell, and it is what the margin
+  was measured against. The two arms are one drawing turned half a revolution,
+  the way refresh.svg is built, which leaves a 40-degree gap at each end: a
+  closed ring says nothing about direction, and direction is what a cycle is.
+
+  Inside, the arrow clears the band by better than three units and the heads'
+  inner corners by four, so the field reads three bodies and the shader walls
+  each rather than closing the gaps into creases. The first version of this
+  drawing put the heads at the top and bottom, where the upper head's inner
+  corner came within a unit of the arrow's own point and the two ran together.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- One arm: an arc of the ring, with a head on the end of it. The second
+         is this one turned half a revolution, the way refresh.svg is built. -->
+    <g id="arm">
+      <path d="M6.70 12.61A9.9 9.9 0 0 1 25.30 12.61"
+            fill="none" stroke="#ffffff" stroke-width="2.6"
+            stroke-linecap="butt"/>
+      <path d="M22.86 13.50L27.75 11.72L25.89 16.35Z"/>
+    </g>
+    <path id="arrow" d="M16 10.6L19.1 15.2H17.35V21.2H14.65V15.2H12.9Z"/>
+    <g id="bead">
+      <use href="#arm"/>
+      <use href="#arm" transform="rotate(180 16 16)"/>
+      <use href="#arrow"/>
+    </g>
+  </defs>
+
+  <use href="#bead" fill="#ffffff"/>
+</svg>

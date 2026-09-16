@@ -1628,6 +1628,55 @@ pub trait SlotLookup {
     }
 }
 
+/// The mount round a card of `aspect` drawn `height` tall: the same width of
+/// glass on all four sides. See [`CARD_MOUNT`].
+///
+/// Solved rather than measured, because the border is a share of the picture
+/// and the picture is what is left of the card once the border is taken off it.
+/// With `c` the share and `s` the picture's shorter side as a multiple of its
+/// height — 1 for anything wide, the aspect itself for anything tall — the
+/// border `m` satisfies `m = c·s·(height − 2m)`, and this is that rearranged.
+///
+/// Taking the aspect rather than reading it off a [`Cards`] because a column
+/// has one shape and a row may have its own: a Trophies column holds a Steam
+/// cover, a PlayStation jewel case and a UMD case at once. See [`card_fit`].
+fn card_mount(aspect: f32, height: f32) -> f32 {
+    let shorter = aspect.min(1.0);
+    CARD_MOUNT * shorter * height / (1.0 + 2.0 * CARD_MOUNT * shorter)
+}
+
+/// How wide a card of `aspect` is for every unit of its height.
+///
+/// A card's width is *linear* in its height — the mount is a fixed share of it
+/// — which is the whole reason [`card_fit`] can be solved rather than searched
+/// for.
+fn card_unit(aspect: f32) -> f32 {
+    let mount = card_mount(aspect, 1.0);
+    (1.0 - mount * 2.0) * aspect + mount * 2.0
+}
+
+/// The card one row draws: its own shape, as large as the room the column gives
+/// every row.
+///
+/// `room_h` is that room's height and the column's own shape is what makes it a
+/// box — the same box every row of the column gets, whatever is in it. A row
+/// whose picture is the column's shape fills the box exactly, which is every
+/// row of every column that existed before this. A taller one keeps the full
+/// height and stands narrower; a wider or squarer one is held to the width and
+/// stands shorter.
+///
+/// Held to the *column's* box rather than given room of its own because the
+/// rows have to stand in the same places whatever shape they are: the pitch of
+/// a column is one number — see [`Cards::spacing`] — and the labels are at one
+/// x, so a card that could grow past either would be a shelf that re-laid
+/// itself out around a cover that had just arrived.
+fn card_fit(shape: f32, column: f32, room_h: f32) -> (f32, f32) {
+    let room_w = room_h * card_unit(column);
+    let unit = card_unit(shape);
+    let height = room_h.min(room_w / unit);
+    (height * unit, height)
+}
+
 /// The cards a column of pictures is drawn on: their shape, and how tall they
 /// stand chosen and unchosen.
 ///
@@ -1662,20 +1711,6 @@ impl Cards {
         }
     }
 
-    /// The mount round a card drawn `height` tall: the same width of glass on
-    /// all four sides. See [`CARD_MOUNT`].
-    ///
-    /// Solved rather than measured, because the border is a share of the
-    /// picture and the picture is what is left of the card once the border is
-    /// taken off it. With `c` the share and `s` the picture's shorter side as a
-    /// multiple of its height — 1 for anything wide, the aspect itself for
-    /// anything tall — the border `m` satisfies `m = c·s·(height − 2m)`, and
-    /// this is that rearranged.
-    fn mount(&self, height: f32) -> f32 {
-        let shorter = self.aspect.min(1.0);
-        CARD_MOUNT * shorter * height / (1.0 + 2.0 * CARD_MOUNT * shorter)
-    }
-
     /// How wide a card drawn `height` tall is: its picture, plus that mount
     /// either side of it.
     ///
@@ -1685,8 +1720,7 @@ impl Cards {
     /// picture's own aspect — is what leaves the border wider on one pair of
     /// sides than the other.
     fn width(&self, height: f32) -> f32 {
-        let mount = self.mount(height);
-        (height - mount * 2.0) * self.aspect + mount * 2.0
+        height * card_unit(self.aspect)
     }
 
     /// The clear glass between two unchosen cards. See [`CARD_AIR`].
@@ -1758,7 +1792,12 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 // A settings column is rows, searched or not.
                 Searched::Layouts => return None,
             },
-            Entry::Trophy(row) if row.game().is_some() => return Some(Cards::of(COVER_ASPECT)),
+            Entry::Trophy(row)
+                if row.game().is_some()
+                    || matches!(row.key, crate::trophies::Key::RetroGame(..)) =>
+            {
+                return Some(Cards::of(COVER_ASPECT))
+            }
             Entry::Game(_) => return Some(Cards::of(COVER_ASPECT)),
             // A console's games are covers on the same terms, and on the same
             // card whether or not the picture on it has arrived: libretro
@@ -2196,6 +2235,7 @@ pub fn build(
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -2240,6 +2280,7 @@ pub fn build(
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -2347,6 +2388,7 @@ pub fn build(
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
 
@@ -2450,7 +2492,7 @@ pub fn build(
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
             let achievement = matches!(entry, Entry::Trophy(row)
-                if matches!(row.key, crate::trophies::Key::SteamAchievement(..)));
+                if matches!(row.key, crate::trophies::Key::SteamAchievement(..) | crate::trophies::Key::RetroAchievement(..)));
             // A value set on a scale is drawn as the scale, in the room the
             // icon would have had — and the scale is a tall capsule where an
             // icon is a small square, so the light behind it and the glass
@@ -2463,9 +2505,18 @@ pub fn build(
             // The card a picture stands on, when this column is one of
             // pictures. It exists whether or not the picture has arrived, so
             // nothing moves when one does.
+            // The shape this row's own picture is, where it is not the
+            // column's. A Trophies column is the one place two providers'
+            // pictures stand in the same list, and the boxes they are
+            // photographs of are not the same shape — see
+            // [`crate::trophies::Row::shape`].
+            let shape = match entry {
+                Entry::Trophy(row) => row.shape.filter(|s| s.is_finite() && *s > 0.0),
+                _ => None,
+            };
             let card = cards.map(|cards| {
-                let h = lerp(cards.height, cards.focused, focus) * scale * near;
-                let w = cards.width(h);
+                let room = lerp(cards.height, cards.focused, focus) * scale * near;
+                let (w, h) = card_fit(shape.unwrap_or(cards.aspect), cards.aspect, room);
                 [x - w / 2.0, y - h / 2.0, w, h]
             });
 
@@ -2591,7 +2642,10 @@ pub fn build(
                 // Steam's own cover, which is to a game exactly what a frame
                 // is to a film: the thing the row is, rather than a mark
                 // standing in for it.
-                Entry::Trophy(row) => row.game().and_then(|app| slots.cover(app)),
+                Entry::Trophy(row) => row
+                    .game()
+                    .and_then(|app| slots.cover(app))
+                    .or_else(|| row.picture.as_deref().and_then(|at| slots.thumbnail(at))),
                 Entry::Game(game) => slots.cover(game.app_id),
                 // And one of somebody's own games, whose cover is a file this
                 // shell fetched into its own cache — so it is asked for by path
@@ -2619,7 +2673,8 @@ pub fn build(
                 // Anything else — a portrait photograph in a column of films —
                 // is fitted inside that room and centred, and shows more glass
                 // on the two sides it does not reach.
-                let mount = cards.map_or(0.0, |cards| cards.mount(ch));
+                let mount =
+                    cards.map_or(0.0, |cards| card_mount(shape.unwrap_or(cards.aspect), ch));
                 let (room_w, room_h) = (cw - mount * 2.0, ch - mount * 2.0);
                 // Fitted rather than filled: a photograph cropped to the
                 // card's shape is a photograph with its subject cut off, and
@@ -2658,10 +2713,24 @@ pub fn build(
             // not a column of pictures either — it is a list of accounts, one of
             // which may have no photograph at all — so the face goes in the hole
             // the figure would have had and the rows stay rows.
-            let preview = entry
-                .file()
-                .map(|file| file.path.as_path())
-                .or_else(|| entry.portrait())
+            //
+            // And only where the row has no card. A column of cards puts the
+            // row's picture *on* the card, above, and the same picture in the
+            // hole as well is a box with a smaller copy of itself printed on
+            // its front — which is what every RetroAchievements game wore for
+            // a day: its cover moved onto a card when the column became one of
+            // covers, and the hole went on being filled from the same file.
+            // An achievement, in the plain column that opens out of a game,
+            // has no card and keeps its mark here.
+            let preview = card
+                .is_none()
+                .then(|| {
+                    entry
+                        .file()
+                        .map(|file| file.path.as_path())
+                        .or_else(|| entry.portrait())
+                })
+                .flatten()
                 .and_then(|at| slots.thumbnail(at))
                 .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
             if let Some(thumb) = preview {
@@ -2798,6 +2867,7 @@ pub fn build(
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
                 if let Some(comment) = comment {
                     texts.push(Text {
@@ -2813,6 +2883,7 @@ pub fn build(
                         halo: 0.0,
                         lines: 1,
                         cut: Cut::Tail,
+                        mono: false,
                     });
                 }
                 // And the same thing the second line just said, as a picture.
@@ -2853,6 +2924,7 @@ pub fn build(
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
         }
@@ -3018,6 +3090,7 @@ pub fn build(
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
 
@@ -3690,12 +3763,23 @@ fn build_pick_columns(scene: &mut Scene, view: &TransferView, width: f32, height
                 PickRow {
                     at: [x, y],
                     near,
-                    title: row.title(),
+                    // The head row says what *this* journey does with the
+                    // folder — Paste for the two that carry something, Extract
+                    // for the one that empties a box into it — so all three of
+                    // its lines come off the column rather than off the row.
+                    // See [`crate::transfer::Kind`].
+                    title: match row {
+                        Row::Paste => column.kind.answer(),
+                        other => other.title(),
+                    },
                     note: match row {
                         Row::Paste => Some(column.paste),
                         other => other.note(),
                     },
-                    glyph: row.glyph(),
+                    glyph: match row {
+                        Row::Paste => column.kind.glyph(),
+                        other => other.glyph(),
+                    },
                     preview: None,
                     selected,
                     alpha,
@@ -3845,6 +3929,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         if let Some(note) = row.note {
             scene.texts.push(Text {
@@ -3860,6 +3945,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
         return;
@@ -3878,6 +3964,7 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 }
 
@@ -4378,6 +4465,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
     // The day, on the clock's own line and pushed to the far side of the
     // column. Sharing the line keeps the header two rows tall — the sidebar is
@@ -4398,6 +4486,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
     // What is left in the battery, under the day and on the same line as the
@@ -4474,6 +4563,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
                 cluster = figures_x;
             }
@@ -4500,6 +4590,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
     if let Some(screen) = view.screen {
         texts.push(Text {
@@ -4515,6 +4606,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -4818,6 +4910,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
             continue;
         }
@@ -4840,6 +4933,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -4887,6 +4981,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -6356,6 +6451,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
     if turn_head > 0.0 {
@@ -6372,6 +6468,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
     // --- the status, which is a button ------------------------------------
@@ -6444,6 +6541,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
     // What the person being talked to is doing, which is the same line about
@@ -6462,6 +6560,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
     // The rule under the head, on the header's own horizontal measure — the
@@ -6646,6 +6745,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             halo: 0.0,
             lines: laid.lines.max(1),
             cut: Cut::Tail,
+            mono: false,
         });
         // Why it did not go, on the line the column reserved for it under the
         // bubble — see [`friends_message_height`]. Across the *body* rather
@@ -6668,6 +6768,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -6699,6 +6800,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
                 halo: 0.0,
                 lines: 2,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -6742,6 +6844,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         leaf.texts.push(Text {
             content: "Try again".to_string(),
@@ -6759,6 +6862,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -6781,6 +6885,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -6846,6 +6951,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
         // is looking at the end of what they are writing; a field that kept its
         // beginning would hide the word being typed.
         cut: Cut::Head,
+        mono: false,
     });
 
     // --- and why a message cannot be sent, where it cannot ------------------
@@ -6863,6 +6969,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             halo: 0.0,
             lines: 2,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -6944,6 +7051,7 @@ fn friends_list_leaf(
             // that sentence is for.
             lines: 4,
             cut: Cut::Tail,
+            mono: false,
         });
         return leaf;
     }
@@ -6966,6 +7074,7 @@ fn friends_list_leaf(
             halo: 0.0,
             lines: 2,
             cut: Cut::Tail,
+            mono: false,
         });
         return leaf;
     }
@@ -7049,6 +7158,7 @@ fn friends_list_leaf(
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
             crate::friends::Line::Person(person) => {
@@ -7158,6 +7268,7 @@ fn friends_list_leaf(
                         halo: 0.0,
                         lines: 1,
                         cut: Cut::Tail,
+                        mono: false,
                     });
                     name_w = (bead_x - FRIENDS_CHIP_PADDING * scale - name_x).max(0.0);
                 }
@@ -7185,6 +7296,7 @@ fn friends_list_leaf(
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
                 // What they are doing, in the ink that can be read where the
                 // row actually is.
@@ -7219,6 +7331,7 @@ fn friends_list_leaf(
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
         }
@@ -7476,6 +7589,7 @@ fn push_power_dialog(
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     let label_size = 22.0 * scale;
@@ -7522,6 +7636,7 @@ fn push_power_dialog(
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -7550,6 +7665,9 @@ fn push_power_dialog(
 /// on one of these — and no wider, because the menu is a note attached to an
 /// object on screen and must not read as a screen of its own.
 const CONTEXT_WIDTH: f32 = 440.0;
+/// The bold Configure RetroAchievements label needs about 311 reference pixels.
+/// Twelve extra pixels leave 315 for the label, retaining normal icon/panel padding.
+pub const TROPHIES_EXTRA_WIDTH: f32 = 12.0;
 /// What the announcement panels ask for on top of it — see [`Menu::widen`].
 ///
 /// They are the exception the width was written against: their rows carry
@@ -8681,6 +8799,7 @@ fn mixer_row(
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     // The speaker says which way the track runs and whether the sound is on at
@@ -8869,6 +8988,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             // user pressed the row to read.
             lines: menu.title_lines(),
             cut: Cut::Tail,
+            mono: false,
         });
         inside.quads.push(Quad {
             x: panel_x + GUIDE_MARGIN * scale,
@@ -9238,6 +9358,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
                 // to hold more of it would be opening out for nothing.
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
 
@@ -9254,6 +9375,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             halo: 0.0,
             lines: label_lines,
             cut: Cut::Tail,
+            mono: false,
         });
         if let Some(detail) = &entry.detail {
             // The whole of it, wrapped into however many lines the row has
@@ -9287,6 +9409,7 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
                 halo: 0.0,
                 lines: lines_in(detail_grown, CONTEXT_DETAIL_LINE * scale),
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -9354,6 +9477,13 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
 /// the shell draws is one line with an ellipsis where the rest would have been,
 /// so width is the only thing standing between a name and being cut in half.
 const DIALOG_WIDTH: f32 = 680.0;
+/// And the width it takes when there is a terminal on it — see
+/// [`Line::Terminal`]. Wider by more than half again, because what is on it
+/// is eighty columns of a fixed-width face, and eighty columns squeezed into
+/// the width a sentence gets would be a face too small to read from a sofa.
+/// The frame's text is sized from this and the column count, so the one
+/// number decides both how wide the panel is and how large the letters are.
+const DIALOG_TERMINAL_WIDTH: f32 = 1080.0;
 /// One answer, on the context menu's row height so the two columns of pressable
 /// things are the same size.
 const DIALOG_BUTTON: f32 = CONTEXT_ROW;
@@ -9411,6 +9541,50 @@ const WAITING_LIGHT: f32 = 12.0;
 const WAITING_LIGHT_GAP: f32 = 14.0;
 /// How long one full pass of that row takes, in seconds.
 const WAITING_CYCLE: f32 = 1.4;
+/// How far the terminal frame's writing stands in from the well's edge, in
+/// reference pixels, and the space above and below the well.
+const TERMINAL_INSET: f32 = 14.0;
+const TERMINAL_PADDING: f32 = 8.0;
+/// The leading of a terminal row, as a share of the face's size. A little
+/// tighter than the shell's prose: a transcript is read down a column, and
+/// the rows of a terminal are packed.
+const TERMINAL_LEADING: f32 = 1.3;
+/// The share of the frame's face the line along its foot is set at.
+const TERMINAL_FOOT: f32 = 0.85;
+/// How high the terminal frame's foot band is, as a share of a row: the
+/// hairline, with a little air above it so the last row does not sit on
+/// it, and the line of writing under it.
+const TERMINAL_FOOT_BAND: f32 = 1.4;
+
+/// How large the terminal frame's face is, in reference pixels: what fits
+/// exactly [`lxb_updates::COLUMNS`] characters of the fixed-width face across
+/// the frame's inner width on a panel [`DIALOG_TERMINAL_WIDTH`] wide.
+///
+/// Arithmetic rather than shaping, which is what a fixed-width face makes
+/// possible — every character advances [`crate::gpu::MONO_ADVANCE`] of the
+/// size — and what lets the panel's height be known before anything is
+/// drawn, as every other line's is.
+pub fn terminal_text_size() -> f32 {
+    let inner = DIALOG_TERMINAL_WIDTH - GUIDE_MARGIN * 2.0 - TERMINAL_INSET * 2.0;
+    // A column of slack: sized to fit eighty columns to the pixel, the
+    // layout's rounding put the eightieth over the edge and an ellipsis in
+    // its place. Photographed 2026-09-15.
+    inner / ((lxb_updates::COLUMNS as f32 + 1.0) * crate::gpu::MONO_ADVANCE)
+}
+
+/// How tall one row of the terminal frame is, in reference pixels.
+fn terminal_row() -> f32 {
+    terminal_text_size() * TERMINAL_LEADING
+}
+
+/// How tall a terminal frame of `rows` is altogether, foot and padding
+/// included, in reference pixels.
+fn terminal_height(rows: usize) -> f32 {
+    TERMINAL_PADDING * 2.0
+        + TERMINAL_INSET * 2.0
+        + terminal_row() * (rows as f32 + TERMINAL_FOOT_BAND)
+}
+
 /// How wide the groove is where the panel counts something up.
 ///
 /// Wider than the one under a game's row, which shares its line with the row's
@@ -9450,7 +9624,16 @@ fn dialog_line_height(line: &Line) -> f32 {
         // [`Line::Progress`], where the reason is.
         Line::Progress(_) => DIALOG_WAITING,
         Line::Rule => DIALOG_RULE,
+        Line::Terminal { rows, .. } => terminal_height(*rows),
     }
+}
+
+/// Whether the panel has a terminal on it, and so takes the wider width.
+fn dialog_has_terminal(dialog: &Dialog) -> bool {
+    dialog
+        .lines()
+        .iter()
+        .any(|line| matches!(line, Line::Terminal { .. }))
 }
 
 /// Everything on the panel, in settled display coordinates, worked out in one
@@ -9491,7 +9674,12 @@ fn dialog_body_height(dialog: &Dialog) -> f32 {
 pub fn dialog_rect(width: f32, height: f32, dialog: &Dialog) -> [f32; 4] {
     let scale = guide_scale(height);
     let inset = PANEL_INSET * scale;
-    let panel_w = (DIALOG_WIDTH * scale).min((width - inset * 2.0).max(0.0));
+    let wanted = if dialog_has_terminal(dialog) {
+        DIALOG_TERMINAL_WIDTH
+    } else {
+        DIALOG_WIDTH
+    };
+    let panel_w = (wanted * scale).min((width - inset * 2.0).max(0.0));
     // Never more than half the display given away: a panel squeezed into a
     // sliver above the keyboard is worse than one the keyboard overlaps, and a
     // very short screen would otherwise leave nothing at all.
@@ -9716,6 +9904,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
             Line::Note(text) => {
@@ -9733,6 +9922,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
             // The label and the value are one row read across, so they sit on
@@ -9758,6 +9948,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
                 inside.texts.push(Text {
                     content: value.clone(),
@@ -9772,6 +9963,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
             // A field being typed into: a well sunk into the panel, with one
@@ -9901,6 +10093,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 });
             }
             // The sign-in code, on a white card.
@@ -10018,6 +10211,107 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     ..Quad::default()
                 });
             }
+            // A terminal: a dark well sunk into the panel, the way the
+            // password's is and for the same reason — it is a hole in the
+            // glass that something else writes into, not a control — with
+            // the lines laid down it in the fixed-width face, each on its
+            // own row, and where the window is written along the foot.
+            //
+            // Dark rather than the glass's tint, and more opaque than any
+            // other well: a transcript is read against black on every
+            // terminal there is, and eighty columns of small type over a
+            // wallpaper would be eighty columns nobody can read.
+            Line::Terminal { lines, rows, foot } => {
+                let padding = TERMINAL_PADDING * scale;
+                let well = [*lx, ly + padding, *lw, (lh - padding * 2.0).max(0.0)];
+                let radius = 10.0 * scale;
+                inside.quads.push(Quad {
+                    x: well[0],
+                    y: well[1],
+                    w: well[2],
+                    h: well[3],
+                    slot: SOLID_SLOT,
+                    color: theme.glass.a(0.86),
+                    radius,
+                    ..Quad::default()
+                });
+                inside.quads.push(Quad {
+                    x: well[0],
+                    y: well[1],
+                    w: well[2],
+                    h: well[3],
+                    slot: SOLID_SLOT,
+                    color: theme.accent_soft.a(0.22),
+                    radius,
+                    border: (1.0 * scale).max(1.0),
+                    ..Quad::default()
+                });
+
+                // The face is sized from the panel's *reference* width, so
+                // that a line of eighty columns lands exactly across the
+                // frame; on a display too narrow for the full panel the
+                // frame is narrower and the line is cut at its edge rather
+                // than shrunk, which is what a terminal does too.
+                let size = terminal_text_size() * scale;
+                let row = terminal_row() * scale;
+                let inset = TERMINAL_INSET * scale;
+                let left = well[0] + inset;
+                let top = well[1] + inset;
+                let width = (well[2] - inset * 2.0).max(0.0);
+                for (index, line) in lines.iter().take(*rows).enumerate() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    inside.texts.push(Text {
+                        content: line.clone(),
+                        x: left,
+                        y: top + index as f32 * row + (row - size) * 0.5 - size * 0.12,
+                        size,
+                        color: theme.text.a(0.9),
+                        bold: false,
+                        max_width: width,
+                        align: TextAlign::Left,
+                        clip: None,
+                        halo: 0.0,
+                        lines: 1,
+                        cut: Cut::Tail,
+                        mono: true,
+                    });
+                }
+                // The foot: a hairline under the rows, and the line along it
+                // in the same face, dimmer and smaller — a status line, as a
+                // terminal's own would be.
+                let foot_top = top + *rows as f32 * row;
+                let foot_h = row * TERMINAL_FOOT_BAND;
+                let rule_h = (1.0 * scale).max(1.0);
+                let air = row * (TERMINAL_FOOT_BAND - 1.0) * 0.5;
+                inside.quads.push(Quad {
+                    x: left,
+                    y: foot_top + air,
+                    w: width,
+                    h: rule_h,
+                    slot: SOLID_SLOT,
+                    color: theme.accent_soft.a(0.18),
+                    ..Quad::default()
+                });
+                let foot_size = size * TERMINAL_FOOT;
+                inside.texts.push(Text {
+                    content: foot.clone(),
+                    x: left,
+                    y: foot_top + air + rule_h + (foot_h - air - foot_size) * 0.5
+                        - foot_size * 0.12,
+                    size: foot_size,
+                    color: theme.text_soft.a(0.62),
+                    bold: false,
+                    max_width: width,
+                    align: TextAlign::Left,
+                    clip: None,
+                    halo: 0.0,
+                    lines: 1,
+                    cut: Cut::Tail,
+                    mono: true,
+                });
+            }
         }
     }
 
@@ -10103,6 +10397,29 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             ..Quad::default()
         });
 
+        // A mark on the chip, where the answer carries one: the tick on the
+        // value in force, on the one panel whose answers include a value —
+        // see [`Dialog::descend`]. At the left inside the chip with the label
+        // still centred on it, because the label is the answer and the mark
+        // is a badge saying "this one" about it — the same tick a menu row
+        // wears beside the value it is set to, in the same material, one press
+        // away.
+        if let Some(slot) = button.glyph.and_then(|name| view.slots.glyph(name)) {
+            let glyph = chip[3] * CONTEXT_GLYPH;
+            inside.quads.push(shaded(
+                Quad {
+                    x: chip[0] + label_padding,
+                    y: chip[1] + (chip[3] - glyph) * 0.5,
+                    w: glyph,
+                    h: glyph,
+                    slot,
+                    color: [1.0, 1.0, 1.0, if button.enabled { 0.9 } else { 0.35 }],
+                    ..Quad::default()
+                },
+                button.glyph,
+            ));
+        }
+
         let label_size = 23.0 * scale;
         inside.texts.push(Text {
             content: button.label.clone(),
@@ -10117,6 +10434,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -10470,6 +10788,7 @@ pub fn build_keyboard(view: KeyboardView, width: f32, height: f32) -> Scene {
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -10617,6 +10936,7 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
             at += label * 0.6 + gap;
         }
@@ -10653,6 +10973,7 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     Scene { quads, texts }
@@ -10758,6 +11079,7 @@ fn legend_row(
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         at = ends - word - size.step;
     }
@@ -12422,6 +12744,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
             halo: TOAST_HALO * alpha,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         if has_body {
             // Up to two lines of it, and the card has grown for the second —
@@ -12446,6 +12769,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
                 halo: TOAST_BODY_HALO * alpha,
                 lines: card.body_lines.clamp(1, TOAST_BODY_LINES),
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -12655,6 +12979,7 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
         halo: TOAST_HALO * alpha,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     // The bar, and the reading on the end of it. Room is kept for the number
@@ -12690,6 +13015,7 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
             halo: TOAST_HALO * alpha,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 }
@@ -12884,6 +13210,7 @@ pub fn build_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     // The ring, round the icon it is waiting on.
@@ -12990,6 +13317,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
                 halo: LAUNCH_NAME_HALO * arrived * view.fade,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
     }
@@ -13066,6 +13394,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
             halo: LAUNCH_NAME_HALO * arrived * view.fade,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
     }
 
@@ -13149,6 +13478,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
             halo: LAUNCH_NAME_HALO * arrived * view.fade,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         at += glyph + gap + room + gap * LAUNCH_HINT_STEP;
     }
@@ -13775,6 +14105,7 @@ pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     // A rule under it and another over the foot, so the columns are plainly a
@@ -13827,6 +14158,7 @@ pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
         // standing in — and gives up the beginning, which on this machine is
         // the same handful of characters as every other path on it.
         cut: Cut::Head,
+        mono: false,
     });
 
     // The legend, laid out from its right-hand end leftwards so the last pair
@@ -13887,6 +14219,7 @@ pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
         halo: 0.0,
         lines: 1,
         cut: Cut::Tail,
+        mono: false,
     });
 
     // The contents ride out on the panel's own growth, so nothing inside moves
@@ -13974,6 +14307,7 @@ fn picker_columns(scene: &mut Scene, view: &PickerView, width: f32, height: f32,
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             });
         }
 
@@ -16908,7 +17242,7 @@ mod tests {
                 .filter(|quad| quad.slot == THUMB_SLOT)
                 .max_by(|a, b| a.h.total_cmp(&b.h))
                 .expect("a library draws a cover on every row");
-            let mount = Cards::of(COVER_ASPECT).mount(tile[3]);
+            let mount = card_mount(COVER_ASPECT, tile[3]);
             for (name, drawn, want) in [
                 ("left", cover.x, tile[0] + mount),
                 ("top", cover.y, tile[1] + mount),
@@ -18826,6 +19160,9 @@ mod tests {
             },
             picture: Some(Path::new("/tmp/steam-achievement.jpg").into()),
             entries: None,
+            shape: None,
+            installed: None,
+            platform: None,
         });
         let lattice = shelved_games(vec![row]);
         for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
@@ -18875,6 +19212,60 @@ mod tests {
         }
     }
 
+    /// A RetroAchievements game's box art is its card, and its card alone. The
+    /// same file used to be drawn a second time in the hole the row's mark
+    /// would have had — a box with a smaller copy of itself printed on its
+    /// front — because an achievement's mark goes in that hole and a game's
+    /// row answered the same question with the same picture.
+    #[test]
+    fn a_retro_game_wears_its_box_art_once() {
+        let row = Entry::Trophy(crate::trophies::Row {
+            section: None,
+            key: crate::trophies::Key::RetroGame(11, String::new()),
+            facts: crate::apps::Facts {
+                title: "Tekken 3".into(),
+                comment: "RetroAchievements · PlayStation · 6 / 81 unlocked".into(),
+                icon: icons::CATEGORY_TROPHIES.into(),
+                about: crate::apps::About::Listed(vec![]),
+            },
+            picture: Some(Path::new("/tmp/tekken-3.png").into()),
+            entries: None,
+            shape: Some(0.97),
+            installed: Some(true),
+            platform: None,
+        });
+        let lattice = shelved_games(vec![row]);
+        for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let arrived = opened(&lattice, width, height, &Pictures(0.97));
+            let drawn: Vec<_> = arrived
+                .quads
+                .iter()
+                .filter(|q| q.slot == THUMB_SLOT)
+                .collect();
+            assert_eq!(
+                drawn.len(),
+                1,
+                "one picture on the row at {width}x{height}, not a small one inside a large one"
+            );
+            // And it is the card-sized one, at the picture's own shape — not
+            // the mark-sized square the hole would have held.
+            let art = drawn[0];
+            let cards = Cards::of(COVER_ASPECT);
+            let scale = guide_scale(height);
+            let (_, card_h) = card_fit(0.97, cards.aspect, cards.focused * scale);
+            assert!(
+                art.h > card_h * 0.8,
+                "the art fills the card ({}) rather than the hole ({})",
+                art.h,
+                card_h
+            );
+            assert!(
+                (art.w / art.h - 0.97).abs() < 0.01,
+                "at the shape of the box it is a photograph of"
+            );
+        }
+    }
+
     fn trophy_sections_fixture() -> Lattice {
         let mut lattice = shelved_games(
             (0..14)
@@ -18897,6 +19288,9 @@ mod tests {
                         },
                         picture: None,
                         entries: None,
+                        shape: None,
+                        installed: None,
+                        platform: None,
                     })
                 })
                 .collect(),
@@ -19232,7 +19626,7 @@ mod tests {
             .max_by(|a, b| a.h.total_cmp(&b.h))
             .expect("a cover");
         let height = cards.focused * scale;
-        let mount = cards.mount(height);
+        let mount = card_mount(cards.aspect, height);
         assert!(
             (cover.h - (height - mount * 2.0)).abs() < 0.5,
             "inside the card's mount: {} of {height}",
@@ -19290,6 +19684,60 @@ mod tests {
         );
     }
 
+    /// A row of its own shape fills its card, and never grows out of the room
+    /// every row of the column gets.
+    ///
+    /// This is the Trophies column's problem and only its: it is the one list
+    /// in the shell where two providers' pictures stand together, so there is
+    /// no single shape to cut the column to. A PlayStation jewel case is very
+    /// nearly square, a UMD case is half again as tall as it is wide, and a
+    /// Steam capsule is neither — and what was on screen before this was a
+    /// square RetroAchievements mark adrift in the middle of a tall card.
+    ///
+    /// The column keeps one pitch and one place for its labels, so the room is
+    /// fixed and the card is the largest rectangle of the row's own shape that
+    /// fits it. Nothing moves when a cover arrives; the card it lands on is
+    /// simply the shape of it.
+    #[test]
+    fn a_row_of_its_own_shape_fills_its_card_inside_the_columns_room() {
+        // What libretro's covers for these actually measure.
+        const JEWEL_CASE: f32 = 1.00;
+        const UMD: f32 = 0.58;
+        const ROOM: f32 = 287.0;
+        let (room_w, room_h) = card_fit(COVER_ASPECT, COVER_ASPECT, ROOM);
+        assert!(
+            (room_h - ROOM).abs() < 0.001 && (room_w - Cards::of(COVER_ASPECT).width(ROOM)).abs() < 0.001,
+            "a row at the column's own shape is the column's card exactly, as every row was before this"
+        );
+
+        for shape in [JEWEL_CASE, UMD, COVER_ASPECT, 2.0, 0.4] {
+            let (w, h) = card_fit(shape, COVER_ASPECT, ROOM);
+            // The picture inside it, which is what the mount is measured from.
+            let mount = card_mount(shape, h);
+            let (picture_w, picture_h) = (w - mount * 2.0, h - mount * 2.0);
+            assert!(
+                (picture_w / picture_h - shape).abs() < 0.002,
+                "{shape}: the picture fills the card, so the mount is even the whole way round"
+            );
+            assert!(
+                w <= room_w + 0.001 && h <= room_h + 0.001,
+                "{shape}: a card may not grow out of the room, or it would reach the labels"
+            );
+            assert!(
+                (w - room_w).abs() < 0.001 || (h - room_h).abs() < 0.001,
+                "{shape}: and it fills that room in one direction, or it is smaller than it needs to be"
+            );
+        }
+
+        // A taller box keeps the full height and stands narrower; a squarer one
+        // is held to the width and stands shorter. Both weigh less than a card
+        // that fills the room, and neither is ever bigger than one.
+        let (umd_w, umd_h) = card_fit(UMD, COVER_ASPECT, ROOM);
+        assert!((umd_h - room_h).abs() < 0.001 && umd_w < room_w);
+        let (jewel_w, jewel_h) = card_fit(JEWEL_CASE, COVER_ASPECT, ROOM);
+        assert!((jewel_w - room_w).abs() < 0.001 && jewel_h < room_h);
+    }
+
     /// And it is drawn on a card the shape of that console's boxes.
     ///
     /// The bug this is here for was on screen: a Nintendo DS shelf, whose cases
@@ -19344,7 +19792,7 @@ mod tests {
             .max_by(|a, b| a.h.total_cmp(&b.h))
             .expect("a shelf draws a cover on every row");
         let height = cards.focused * guide_scale(1080.0);
-        let mount = cards.mount(height);
+        let mount = card_mount(cards.aspect, height);
         for (edge, drawn, want) in [
             ("height", cover.h, height - mount * 2.0),
             ("width", cover.w, cards.width(height) - mount * 2.0),
@@ -19564,7 +20012,7 @@ mod tests {
         let cards = Cards::of(CARD_ASPECT);
         let height = CARD_HEIGHT_FOCUSED * scale;
         assert!(
-            (card.h - (height - cards.mount(height) * 2.0)).abs() < 0.5,
+            (card.h - (height - card_mount(cards.aspect, height) * 2.0)).abs() < 0.5,
             "inside the card's mount: {}",
             card.h
         );
@@ -22072,6 +22520,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         };
         let beside = Text {
             content: "Start screen".to_string(),
@@ -22086,6 +22535,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         };
 
         let mut scene = Scene {
@@ -23958,6 +24408,7 @@ mod tests {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 },
                 Text {
                     content: "clear of it".into(),
@@ -23972,6 +24423,7 @@ mod tests {
                     halo: 0.0,
                     lines: 1,
                     cut: Cut::Tail,
+                    mono: false,
                 },
             ],
         };
@@ -24333,6 +24785,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         };
         let survives = |arrived: f32, y: f32| {
             let mut scene = Scene::default();
@@ -24627,6 +25080,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         covered.hide_text_behind(panel);
         assert!(covered.texts.is_empty());
@@ -27143,6 +27597,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         };
         let behind = || Scene {
             quads: Vec::new(),
@@ -27806,6 +28261,7 @@ mod tests {
                 halo: 0.0,
                 lines: 1,
                 cut: Cut::Tail,
+                mono: false,
             }],
         };
         recede_behind_transfer(&mut scene, 1600.0, 900.0, 1.0);
@@ -28136,6 +28592,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         hide_text_under_guide_download(&mut scene, 1920.0, 1080.0, 1.0);
         assert!(scene.texts.is_empty(), "wholly behind it, so wholly gone");
@@ -28155,6 +28612,7 @@ mod tests {
             halo: 0.0,
             lines: 1,
             cut: Cut::Tail,
+            mono: false,
         });
         hide_text_under_guide_download(&mut none, 1920.0, 1080.0, 0.0);
         assert_eq!(none.texts.len(), 1);

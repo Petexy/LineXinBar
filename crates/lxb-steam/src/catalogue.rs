@@ -197,7 +197,7 @@ fn now() -> u64 {
         .unwrap_or_default()
 }
 
-/// `$XDG_CACHE_HOME/linexinbar/steam-library.json`.
+/// `$XDG_CACHE_HOME/lxb/steam-library.json`.
 ///
 /// The cache directory, and that is the whole statement of what this is: losing
 /// it costs one network read. The credential is in the *data* directory,
@@ -211,7 +211,7 @@ fn path() -> Option<PathBuf> {
             let home = std::env::var_os("HOME").map(PathBuf::from)?;
             Some(home.join(".cache"))
         })?;
-    Some(cache.join("linexinbar").join("steam-library.json"))
+    Some(cache.join("lxb").join("steam-library.json"))
 }
 
 #[cfg(test)]

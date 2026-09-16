@@ -1,0 +1,48 @@
+<!--
+  Update the system: the machine, with the update arrow standing in its screen.
+
+  A display on a stand is what this shell already draws when it means the
+  computer itself rather than one part of it — category-system.svg says so in
+  as many words — and a computer with the update arrow in it is what every
+  other system shows for a system update. Breeze and Tela both draw that arrow
+  and nothing else; this puts it where the picture goes, which is what says
+  *this machine* rather than *an update*.
+
+  It is deliberately not the chip setting-system.svg wears. That mark is the
+  machine's innards, at the head of the panel that lists what it is built out
+  of, and it is worn on this same page by the firmware row — which really is a
+  chip. A monitor and a chip are how those two rows tell each other apart, and
+  they are the same two objects the rest of the world uses for them.
+
+  The bezel, neck, foot and screen are setting-refresh.svg's, outline for
+  outline, including the scale that brings the whole object inside its own
+  shadow. The screen is cut before the arrow is laid in it: painted the other
+  way round the hole takes the arrow with it, which is a monitor showing
+  nothing and looks exactly like a monitor meant to show nothing.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="bezel" d="M4.2 3h23.6A3.2 3.2 0 0 1 31 6.2v14.1a3.2 3.2 0 0 1-3.2 3.2H4.2A3.2 3.2 0 0 1 1 20.3V6.2A3.2 3.2 0 0 1 4.2 3z"/>
+    <rect id="pane" x="4.2" y="6" width="23.6" height="14.7" rx="0.45"/>
+    <path id="arrow" d="M16 8.4L20.2 13.4H17.5V18.4H14.5V13.4H11.8Z"/>
+    <path id="neck" d="M13.4 22.4h5.2v3.8h-5.2z"/>
+    <path id="foot" d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"/>
+    <g id="bead"><use href="#bezel"/><use href="#neck"/><use href="#foot"/><use href="#arrow"/></g>
+    <g id="holes"><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#arrow" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g transform="translate(16 16) scale(0.8667) translate(-16 -16)">
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

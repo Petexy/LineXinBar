@@ -2688,6 +2688,7 @@ impl Entry {
     /// and not about its kind. See [`head_rows`].
     pub fn over_the_list(&self) -> bool {
         match self {
+            Entry::Trophy(row) if row.key == crate::trophies::Key::RetroConfigure => true,
             Entry::Search(_)
             | Entry::Pick(_)
             | Entry::Make(_)
@@ -2979,7 +2980,13 @@ impl Entry {
     /// panel rather than starting a process. See `Shell::start_selection`.
     pub fn facts(&self) -> Option<&Facts> {
         match self {
-            Entry::Trophy(row) if matches!(row.key, crate::trophies::Key::SteamAchievement(..)) => {
+            Entry::Trophy(row)
+                if matches!(
+                    row.key,
+                    crate::trophies::Key::SteamAchievement(..)
+                        | crate::trophies::Key::RetroAchievement(..)
+                ) =>
+            {
                 Some(&row.facts)
             }
             Entry::Facts(facts) => Some(facts),

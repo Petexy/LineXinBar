@@ -1,0 +1,56 @@
+<!--
+  The archive's carton with an arrow going down into it, cut through the front,
+  on the row that makes a new archive out of whatever the menu was raised over.
+
+  file-archive.svg exactly — the same lid face standing on the same body, with
+  the same crevice between them — so the row reads as being about *that* kind
+  of row: press it and one of those appears beside the thing that was pressed.
+  What the row does to it is said by the arrow, and the arrow is pierced
+  through the front the way new-folder.svg's cross is pierced through the
+  folder's pocket: cut out rather than laid on top, because a body standing on
+  the front would catch a crevice of its own, and the mark is 27 px across on
+  a menu.
+
+  **The first drawing was that carton with new-folder.svg's cross in it, and it
+  is a first-aid kit.** A box with a cross on its front is the medicine chest
+  before it is anything else — the eye reads it the way it reads the mouse
+  file-archive.svg records, before it reads anything else — and no adjustment
+  of the cross saves it. The folder gets away with the cross because a folder
+  is not a box.
+
+  Not the open carton either. category-software.svg and extract.svg are that
+  carton with something going in and something coming out, and a third arrow
+  standing in a third open mouth would make the Software column's own mark the
+  mark of this row — a store and an archive are not one meaning read two ways.
+  What this row makes is the sealed box the file rows wear, so it is drawn as
+  that box with the contents going in through the front.
+
+  The arrow is on the centre of the front face and not of the whole mark: the
+  lid is a face above it, and the cut belongs to the body — exactly as the
+  folder's cross is cut into the pocket and not the tab. The shaft is 2.6 units
+  wide and the head 9, which is what keeps a shaft at 27 px: at 2.3 the shaft
+  thinned to a dot and the mark was a box with a triangle in it.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="lid" d="M8.4 6.8H23.6a1.5 1.5 0 0 1 1.34 0.83L27.4 14.2H4.6L7.06 7.63
+                      A1.5 1.5 0 0 1 8.4 6.8Z"/>
+    <rect id="front" x="4.6" y="13.4" width="22.8" height="14.0" rx="1.6"/>
+    <path id="arrow" d="M14.7 15.4h2.6v4.5h3.2L16 25.4L9.5 19.9h3.2z"/>
+    <g id="bead"><use href="#lid"/><use href="#front"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#front" fill="#000000" stroke="#000000" stroke-width="0.85" stroke-linejoin="round"/>
+      <use href="#front" fill="#ffffff"/>
+      <use href="#arrow" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

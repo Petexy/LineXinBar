@@ -1,0 +1,33 @@
+#!/bin/sh
+# A stand-in for fwupdmgr: three devices, one of them eligible, and an
+# installation that asks before it writes unless told `-y`, as the real
+# one — and the coordinator says `-y`. It then asks for a password with
+# echo off, which the real fwupdmgr never does (it asks polkit): that is
+# the stand-in for the one prompt an unattended run still has, an AUR
+# helper's sudo, whose fake here the harness cannot reach because AUR waits
+# on a system step no fake can pass. See ../README.md.
+printf 'fwupdmgr %s\n' "$*" >> "${LXB_FIXTURE_LOG:-${HOME:-/tmp}/fixture-calls.log}"
+case "$1" in
+refresh) printf '{}\n' ;;
+get-devices|get-updates) cat "${0%/*}/devices.json" ;;
+update)
+    yes=
+    for arg in "$@"; do
+        case "$arg" in -y|--assume-yes) yes=1 ;; esac
+    done
+    printf 'Decompressing…          [***************************************]\n'
+    printf 'Authenticating…         [***************************************]\n'
+    printf 'Samsung SSD 990 PRO 4B2QJXD7 -> 5B2QJXD7\n'
+    if [ -z "$yes" ]; then
+        printf 'Perform operation? [Y|n]: '
+        read -t "${LXB_FIXTURE_WAIT:-$(cat "${HOME:-/tmp}/fixture-wait" 2>/dev/null || echo 3)}" -r answer || answer=y
+    fi
+    stty -echo 2>/dev/null
+    printf 'Password: '
+    read -t "${LXB_FIXTURE_WAIT:-$(cat "${HOME:-/tmp}/fixture-wait" 2>/dev/null || echo 3)}" -r secret || secret=
+    stty echo 2>/dev/null
+    printf '\nWriting…                [***************************************]\n'
+    printf 'Successfully installed firmware\n'
+    ;;
+*) exit 1 ;;
+esac
