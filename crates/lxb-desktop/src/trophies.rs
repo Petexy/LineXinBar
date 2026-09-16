@@ -317,8 +317,12 @@ impl Trophies {
             });
             if page.loading && now.duration_since(page.asked) > Duration::from_secs(45) {
                 page.loading = false;
-                page.error =
-                    Some("Steam took too long. Go back and reopen this game to retry.".into());
+                page.error = Some(
+                    crate::i18n::text(
+                        "shell-steam-took-too-long-go-back-and-reopen-this-game-to-retry",
+                    )
+                    .into(),
+                );
                 changed = true;
             }
             let refresh = page.request == 0
@@ -415,15 +419,11 @@ impl Trophies {
                 let page = self.pages.get(&app);
                 let snapshot = page.and_then(|p| p.snapshot.as_ref());
                 let comment = match self.progress.get(&app) {
-                    Some(p) if p.total == 0 => "Steam · No achievements".into(),
-                    Some(p) => format!("Steam · {} / {} unlocked", p.unlocked, p.total),
+                    Some(p) if p.total == 0 => crate::i18n::text("shell-steam-no-achievements").into(),
+                    Some(p) => crate::message!("steam-achievements-unlocked", "unlocked" => p.unlocked, "total" => p.total),
                     None => match snapshot {
-                        Some(s) => format!(
-                            "Steam · {} / {} unlocked",
-                            s.achievements.iter().filter(|a| a.achieved).count(),
-                            s.achievements.len()
-                        ),
-                        None => "Steam · Achievement counts pending".into(),
+                        Some(s) => crate::message!("steam-achievements-unlocked", "unlocked" => s.achievements.iter().filter(|a| a.achieved).count(), "total" => s.achievements.len()),
+                        None => crate::i18n::text("shell-steam-achievement-counts-pending").into(),
                     },
                 };
                 let mut entries = Vec::new();
@@ -432,15 +432,15 @@ impl Trophies {
                         entries.push(status(
                             app,
                             "empty",
-                            "No achievements",
-                            "Steam lists no achievements for this game.",
+                            crate::i18n::text("shell-no-achievements"),
+                            crate::i18n::text("shell-steam-lists-no-achievements-for-this-game"),
                         ));
                     } else if let Some(error) = page.and_then(|p| p.error.as_ref()) {
                         entries.push(status(
                             app,
                             "error",
-                            "Achievements unavailable",
-                            &format!("{error} Go back and reopen to retry."),
+                            crate::i18n::text("shell-achievements-unavailable"),
+                            &crate::message!("trophies-error-retry", "error" => error),
                         ));
                     }
                 }
@@ -449,13 +449,13 @@ impl Trophies {
                         entries.push(status(
                             app,
                             "empty",
-                            "No achievements",
-                            "Steam lists no achievements for this game.",
+                            crate::i18n::text("shell-no-achievements"),
+                            crate::i18n::text("shell-steam-lists-no-achievements-for-this-game"),
                         ));
                     } else {
                         for (unlocked, hidden, label) in [
-                            (true, false, "Unlocked"),
-                            (false, false, "Locked"),
+                            (true, false, crate::i18n::text("shell-unlocked")),
+                            (false, false, crate::i18n::text("shell-locked")),
                             (false, true, "Hidden"),
                         ] {
                             let group: Vec<_> = snapshot
@@ -476,24 +476,24 @@ impl Trophies {
                                 let description = achievement.description.as_deref().unwrap_or("");
                                 let state = if achievement.achieved {
                                     unlocked_at(achievement.unlocktime)
-                                        .unwrap_or_else(|| "Unlocked".into())
+                                        .unwrap_or_else(|| crate::i18n::text("shell-unlocked").into())
                                 } else {
-                                    "Locked".into()
+                                    crate::i18n::text("shell-locked").into()
                                 };
                                 let key = Key::SteamAchievement(app, achievement.apiname.clone());
                                 let picture = self
                                     .icon_for(&key)
                                     .and_then(|key| self.pictures.ready.get(&key).cloned());
                                 let mut details = vec![
-                                    ("Achievement".into(), title.into()),
-                                    ("Description".into(), description.into()),
-                                    ("Status".into(), state.clone()),
+                                    (crate::i18n::text("shell-achievement").into(), title.into()),
+                                    (crate::i18n::text("shell-description").into(), description.into()),
+                                    (crate::i18n::text("shell-status").into(), state.clone()),
                                 ];
                                 if let Some(percent) =
                                     snapshot.percentages.get(&achievement.apiname)
                                 {
                                     details.push((
-                                        "Players unlocked".into(),
+                                        crate::i18n::text("shell-players-unlocked").into(),
                                         format!("{percent:.1}%"),
                                     ));
                                 }
@@ -507,12 +507,12 @@ impl Trophies {
                                     entries: None,
                                     facts: Facts {
                                         title: if concealed {
-                                            "Hidden achievement".into()
+                                            crate::i18n::text("shell-hidden-achievement").into()
                                         } else {
                                             title.into()
                                         },
                                         comment: if concealed {
-                                            "Press to reveal details".into()
+                                            crate::i18n::text("shell-press-to-reveal-details").into()
                                         } else if description.is_empty() {
                                             state
                                         } else {
@@ -530,8 +530,8 @@ impl Trophies {
                     entries.push(status(
                         app,
                         "loading",
-                        "Loading achievements…",
-                        "Asking Steam for this game's achievements",
+                        crate::i18n::text("shell-loading-achievements"),
+                        crate::i18n::text("shell-asking-steam-for-this-game-s-achievements"),
                     ));
                 }
                 Entry::Trophy(Row {
@@ -583,14 +583,9 @@ fn unlocked_at(seconds: u64) -> Option<String> {
         return None;
     }
     let tm = unsafe { tm.assume_init() };
-    Some(format!(
-        "Unlocked {:04}-{:02}-{:02} {:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min
-    ))
+    Some(
+        crate::message!("achievement-unlocked-at", "year" => format!("{:04}", tm.tm_year + 1900), "month" => format!("{:02}", tm.tm_mon + 1), "day" => format!("{:02}", tm.tm_mday), "hour" => format!("{:02}", tm.tm_hour), "minute" => format!("{:02}", tm.tm_min)),
+    )
 }
 
 type ImageKey = (u32, String);
@@ -1413,10 +1408,10 @@ impl Sort {
     /// three it shares, because they are the same three orders.
     pub fn label(self) -> &'static str {
         match self {
-            Sort::InstalledFirst => "Installed first",
-            Sort::NameAscending => "Name (A to Z)",
-            Sort::NameDescending => "Name (Z to A)",
-            Sort::Platform => "Platform",
+            Sort::InstalledFirst => crate::i18n::text("shell-installed-first"),
+            Sort::NameAscending => crate::i18n::text("shell-name-a-to-z"),
+            Sort::NameDescending => crate::i18n::text("shell-name-z-to-a"),
+            Sort::Platform => crate::i18n::text("shell-platform"),
         }
     }
 
@@ -1497,16 +1492,16 @@ fn shelved(games: Vec<Entry>) -> Vec<Entry> {
     });
     loose.extend(shelves.into_iter().map(|(on, games)| {
         Entry::Folder(crate::apps::Folder {
-            title: on
-                .as_ref()
-                .map_or_else(|| OTHER_PLATFORM.to_string(), |p| p.name.clone()),
+            title_message: None,
+            comment_message: None,
+            identity: None,
+            title: on.as_ref().map_or_else(
+                || crate::i18n::builtin(OTHER_PLATFORM).to_string(),
+                |p| p.name.clone(),
+            ),
             // The count, and it is what tells this folder from a letter's —
             // see [`Position::of`], which reads the difference.
-            comment: Some(format!(
-                "{} {}",
-                games.len(),
-                if games.len() == 1 { "game" } else { "games" }
-            )),
+            comment: Some(crate::message!("count-games", "count" => games.len())),
             icon: Some(
                 on.as_ref()
                     .map(|p| p.mark.clone())
@@ -1594,6 +1589,9 @@ impl Browser {
         }
         let folder = |title: String, icon: String, entries: Vec<Entry>, over_the_list: bool| {
             Entry::Folder(crate::apps::Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title,
                 comment: None,
                 icon: Some(icon),
@@ -1606,17 +1604,13 @@ impl Browser {
             })
         };
         let index = folder(
-            "Alphabetical".into(),
+            crate::i18n::text("shell-alphabetical").into(),
             crate::icons::INDEX_MARK.into(),
             letters
                 .into_iter()
                 .map(|(letter, games)| {
                     folder(
-                        format!(
-                            "{} {}",
-                            games.len(),
-                            if games.len() == 1 { "game" } else { "games" }
-                        ),
+                        crate::message!("count-games", "count" => games.len()),
                         crate::icons::letter_mark(letter.unwrap_or('#'))
                             .unwrap_or(crate::icons::CATEGORY_TROPHIES)
                             .into(),

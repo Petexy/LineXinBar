@@ -133,14 +133,14 @@ impl Continent {
 
     pub fn title(self) -> &'static str {
         match self {
-            Continent::Africa => "Africa",
-            Continent::Antarctica => "Antarctica",
-            Continent::Asia => "Asia",
-            Continent::Europe => "Europe",
-            Continent::NorthAmerica => "North America",
-            Continent::Oceania => "Oceania",
-            Continent::SouthAmerica => "South America",
-            Continent::Other => "Other",
+            Continent::Africa => crate::i18n::text("shell-africa"),
+            Continent::Antarctica => crate::i18n::text("shell-antarctica"),
+            Continent::Asia => crate::i18n::text("shell-asia"),
+            Continent::Europe => crate::i18n::text("shell-europe"),
+            Continent::NorthAmerica => crate::i18n::text("shell-north-america"),
+            Continent::Oceania => crate::i18n::text("shell-oceania"),
+            Continent::SouthAmerica => crate::i18n::text("shell-south-america"),
+            Continent::Other => crate::i18n::text("shell-other"),
         }
     }
 }
@@ -181,18 +181,20 @@ impl Registry {
     /// group that is not a continent holds exactly one country that is not one
     /// either — see [`NOWHERE`].
     pub fn countries_in(&self, continent: Continent) -> Vec<Country> {
-        let mut seen: BTreeMap<String, String> = BTreeMap::new();
+        // Keyed by the collating form of the name, not the name: "Åland" and
+        // "Łotwa" are read as A and L by the people looking for them, and
+        // byte order would put both after Z.
+        let mut seen: BTreeMap<crate::i18n::SortKey, Country> = BTreeMap::new();
         for layout in &self.layouts {
             for code in self.codes_of(layout) {
                 if place_of(&code) != continent {
                     continue;
                 }
-                seen.insert(country_name(&code), code);
+                let name = country_name(&code);
+                seen.insert(crate::i18n::sort_key(&name), Country { code, name });
             }
         }
-        seen.into_iter()
-            .map(|(name, code)| Country { code, name })
-            .collect()
+        seen.into_values().collect()
     }
 
     /// Every arrangement one country claims, in the registry's own order.
@@ -257,7 +259,9 @@ impl Registry {
             // is true of Braille is that no country has it.
             [] => NO_COUNTRY.to_string(),
             [only] => format!("{} · {}", place_of(only).title(), country_name(only)),
-            many => format!("{} countries", many.len()),
+            many => {
+                crate::message!("count-countries", "count" => many.len())
+            }
         }
     }
 
@@ -465,12 +469,12 @@ fn countries_of(item: roxmltree::Node) -> Vec<String> {
 /// than no row at all.
 pub fn country_name(code: &str) -> String {
     if code == NOWHERE {
-        return NO_COUNTRY.to_string();
+        return crate::i18n::builtin(NO_COUNTRY).to_string();
     }
     COUNTRIES
         .iter()
         .find(|(known, _, _)| *known == code)
-        .map(|(_, name, _)| name.to_string())
+        .map(|(_, name, _)| crate::i18n::builtin(name).to_string())
         .unwrap_or_else(|| code.to_string())
 }
 
@@ -807,6 +811,52 @@ mod tests {
         Registry {
             layouts: parse(FIXTURE).expect("the fixture parses"),
         }
+    }
+
+    /// A country is named in the shell's language and listed where somebody
+    /// reading that language would look for it: "Łotwa" after "Luksemburg"
+    /// and before "Malta", not after every Z; "Åland" among the As.
+    #[test]
+    fn countries_are_named_and_ordered_in_the_shells_language() {
+        let names = |codes: &[&str]| -> Vec<String> {
+            let mut seen: std::collections::BTreeMap<crate::i18n::SortKey, String> =
+                std::collections::BTreeMap::new();
+            for code in codes {
+                let name = country_name(code);
+                seen.insert(crate::i18n::sort_key(&name), name);
+            }
+            seen.into_values().collect()
+        };
+        assert_eq!(
+            names(&["ZA", "AX", "AL", "LV", "LT", "LU", "MT"]),
+            [
+                "Åland Islands",
+                "Albania",
+                "Latvia",
+                "Lithuania",
+                "Luxembourg",
+                "Malta",
+                "South Africa"
+            ]
+        );
+        crate::i18n::set(crate::i18n::Language::Polish);
+        assert_eq!(country_name("PL"), "Polska");
+        assert_eq!(country_name(NOWHERE), "Bez kraju");
+        assert_eq!(
+            names(&["ZA", "AX", "AL", "LV", "LT", "LU", "MT", "BA", "BW"]),
+            [
+                "Albania",
+                "Bośnia i Hercegowina",
+                "Botswana",
+                "Litwa",
+                "Luksemburg",
+                "Łotwa",
+                "Malta",
+                "Republika Południowej Afryki",
+                "Wyspy Alandzkie"
+            ]
+        );
+        crate::i18n::set(crate::i18n::Language::English);
     }
 
     /// A layout and each of its variants is one row, and the base layout comes

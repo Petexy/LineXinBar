@@ -384,7 +384,7 @@ impl Notification {
         match self.body.lines().find(|line| !line.trim().is_empty()) {
             Some(line) => line,
             None if !self.app.is_empty() => &self.app,
-            None => "Notification",
+            None => crate::i18n::text("shell-notification"),
         }
     }
 }

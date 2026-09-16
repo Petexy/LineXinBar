@@ -296,27 +296,67 @@ pub fn words_for(task: &str) -> Option<Words> {
         // The game's own content arriving, which is the one of these that is a
         // download in the sense the rest of the shell means it — and the one
         // that was reported. Valve: "Downloading content (%1$s%)".
-        "DownloadingDepots" => ("Downloading content", None, true),
+        "DownloadingDepots" => (crate::i18n::text("shell-downloading-content"), None, true),
         // Not the game: items it needs from the Workshop. A card saying
         // "Downloading <game>" over a game already on the disk would be a card
         // about the wrong thing.
-        "DownloadingWorkshop" => ("Downloading workshop items", Some(PREPARING), true),
-        "ProcessingShaderCache" => ("Processing shaders", Some(PREPARING), true),
+        "DownloadingWorkshop" => (
+            crate::i18n::text("shell-downloading-workshop-items"),
+            Some(PREPARING),
+            true,
+        ),
+        "ProcessingShaderCache" => (
+            crate::i18n::text("shell-processing-shaders"),
+            Some(PREPARING),
+            true,
+        ),
         // Valve puts the script's name where the others put a percentage. The
         // name of a Visual C++ redistributable is not what somebody waiting for
         // a game needs, so this one says only what is happening.
-        "RunningInstallScript" => ("Running the game's installer", Some(PREPARING), false),
-        "SynchronizingCloud" => ("Syncing saved games", Some(PREPARING), false),
-        "VerifyingFiles" => ("Checking the game's files", Some(CHECKING), false),
-        "UpdatingDRM" => ("Updating the game's files", Some(PREPARING), false),
-        "GettingLegacyKey" => ("Getting the product key", Some(PREPARING), false),
-        "ConnectingToSteam" => ("Connecting to Steam", Some(PREPARING), false),
+        "RunningInstallScript" => (
+            crate::i18n::text("shell-running-the-game-s-installer"),
+            Some(PREPARING),
+            false,
+        ),
+        "SynchronizingCloud" => (
+            crate::i18n::text("shell-syncing-saved-games"),
+            Some(PREPARING),
+            false,
+        ),
+        "VerifyingFiles" => (
+            crate::i18n::text("shell-checking-the-game-s-files"),
+            Some(CHECKING),
+            false,
+        ),
+        "UpdatingDRM" => (
+            crate::i18n::text("shell-updating-the-game-s-files"),
+            Some(PREPARING),
+            false,
+        ),
+        "GettingLegacyKey" => (
+            crate::i18n::text("shell-getting-the-product-key"),
+            Some(PREPARING),
+            false,
+        ),
+        "ConnectingToSteam" => (
+            crate::i18n::text("shell-connecting-to-steam"),
+            Some(PREPARING),
+            false,
+        ),
         // The step every launch begins on: the client asking Steam what it
         // knows about the game, which is how it finds out there is an update.
-        "UpdatingAppInfo" => ("Checking for an update", Some(CHECKING), false),
+        "UpdatingAppInfo" => (
+            crate::i18n::text("shell-checking-for-an-update"),
+            Some(CHECKING),
+            false,
+        ),
         // A game set to start at a time of its own. Valve counts this one down
         // as a percentage, which is why it is here at all.
-        "DelayLaunch" => ("Waiting to start", Some(PREPARING), true),
+        "DelayLaunch" => (
+            crate::i18n::text("shell-waiting-to-start"),
+            Some(PREPARING),
+            true,
+        ),
         _ => return None,
     };
     Some(Words { line, verb, counts })

@@ -269,14 +269,17 @@ fn nothing_installed(family: Family) -> String {
         Family::Tar => ("tar archive", "libarchive"),
         Family::Zip => ("zip file", "libarchive"),
         Family::SevenZip => ("7z archive", "7zip"),
-        Family::Rar => ("RAR archive", "unar"),
+        Family::Rar => (crate::i18n::text("shell-rar-archive"), "unar"),
         Family::Container => ("file", "libarchive"),
         // Unreachable in practice — the coat and the program are one line of
         // [`COATS`] — but a compression whose tool has been removed from the
         // machine is still a sentence somebody has to be able to read.
-        Family::Compressed => ("compressed file", "the program that made it"),
+        Family::Compressed => (
+            "compressed file",
+            crate::i18n::text("label-the-program-that-made-it"),
+        ),
     };
-    format!("Nothing on this machine unpacks a {what}. Install {install}.")
+    crate::message!("archive-no-unpacker", "what" => what, "install" => install)
 }
 
 /// How the archive at `path` would be unpacked, or what to say about why it
@@ -286,7 +289,8 @@ fn plan(path: &Path) -> io::Result<Plan> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| io::Error::other("that is not a file"))?;
-    let family = family(path).ok_or_else(|| io::Error::other("this is not an archive"))?;
+    let family = family(path)
+        .ok_or_else(|| io::Error::other(crate::i18n::text("label-this-is-not-an-archive")))?;
     let unpacked = unpacked_name(&name);
 
     let ladder: &[&str] = match family {
@@ -360,7 +364,9 @@ fn make_staging(into: &Path) -> io::Result<PathBuf> {
             Err(err) => return Err(err),
         }
     }
-    Err(io::Error::other("there was nowhere to unpack it"))
+    Err(io::Error::other(crate::i18n::text(
+        "label-there-was-nowhere-to-unpack-it",
+    )))
 }
 
 /// How many names are tried before giving up — [`crate::transfer::free_name`]'s
@@ -424,7 +430,9 @@ fn run(plan: &Plan, archive: &Path, staging: &Path) -> io::Result<()> {
                         .arg(format!("{}/", staging.display()));
                 }
                 other => {
-                    return Err(io::Error::other(format!("{other} was never taught to")));
+                    return Err(io::Error::other(
+                        crate::message!("archive-program-unknown", "program" => other),
+                    ));
                 }
             }
         }
@@ -476,8 +484,12 @@ fn complaint(program: &str, output: &std::process::Output) -> String {
         .or_else(|| also.lines().map(str::trim).rfind(|line| !line.is_empty()));
     let Some(line) = last else {
         return match output.status.code() {
-            Some(code) => format!("{program} gave up ({code})"),
-            None => format!("{program} was stopped"),
+            Some(code) => {
+                crate::message!("archive-program-gave-up", "program" => program, "code" => code)
+            }
+            None => {
+                crate::message!("archive-program-stopped", "program" => program)
+            }
         };
     };
     // Its own name off the front. Every one of these prefixes what it says with
@@ -643,7 +655,8 @@ pub fn writable() -> Vec<Format> {
 /// libarchive, because it is the one package that answers every row of the
 /// list but the last — the same answer [`nothing_installed`] gives for a tar.
 pub fn nothing_writes() -> String {
-    "Nothing on this machine makes an archive. Install libarchive.".to_string()
+    crate::i18n::text("shell-nothing-on-this-machine-makes-an-archive-install-libarchive")
+        .to_string()
 }
 
 /// Make an archive of `members` — every one of them standing in `from` — as
@@ -669,7 +682,9 @@ pub fn pack(
     format: Format,
 ) -> io::Result<PathBuf> {
     if members.is_empty() {
-        return Err(io::Error::other("there is nothing to put in it"));
+        return Err(io::Error::other(crate::i18n::text(
+            "label-there-is-nothing-to-put-in-it",
+        )));
     }
     let program = format
         .writer()
@@ -717,7 +732,7 @@ fn free_archive(into: &Path, name: &str, format: Format) -> io::Result<PathBuf> 
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "there is no free name left in that folder",
+        crate::i18n::text("label-there-is-no-free-name-left-in-that-folder"),
     ))
 }
 
@@ -749,7 +764,9 @@ fn staging_file(into: &Path, format: Format) -> io::Result<PathBuf> {
             Err(err) => return Err(err),
         }
     }
-    Err(io::Error::other("there was nowhere to write it"))
+    Err(io::Error::other(crate::i18n::text(
+        "label-there-was-nowhere-to-write-it",
+    )))
 }
 
 /// Run the program that writes `format`, and turn what it says about a
@@ -819,7 +836,9 @@ fn write(
                 .args(members);
         }
         other => {
-            return Err(io::Error::other(format!("{other} was never taught to")));
+            return Err(io::Error::other(
+                crate::message!("archive-program-unknown", "program" => other),
+            ));
         }
     }
     let output = command.output()?;

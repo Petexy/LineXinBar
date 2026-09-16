@@ -205,19 +205,19 @@ impl Kind {
     /// What the row calls it, or nothing at all where it did not say.
     pub fn title(self) -> Option<&'static str> {
         match self {
-            Kind::Headset => Some("Headset"),
-            Kind::Headphones => Some("Headphones"),
-            Kind::Speaker => Some("Speaker"),
-            Kind::Controller => Some("Game controller"),
-            Kind::Keyboard => Some("Keyboard"),
-            Kind::Mouse => Some("Mouse"),
-            Kind::Tablet => Some("Tablet"),
-            Kind::Phone => Some("Phone"),
-            Kind::Computer => Some("Computer"),
-            Kind::Watch => Some("Watch"),
-            Kind::Printer => Some("Printer"),
-            Kind::Camera => Some("Camera"),
-            Kind::Display => Some("Display"),
+            Kind::Headset => Some(crate::i18n::text("label-headset")),
+            Kind::Headphones => Some(crate::i18n::text("label-headphones")),
+            Kind::Speaker => Some(crate::i18n::text("label-speaker")),
+            Kind::Controller => Some(crate::i18n::text("label-game-controller")),
+            Kind::Keyboard => Some(crate::i18n::text("shell-keyboard")),
+            Kind::Mouse => Some(crate::i18n::text("shell-mouse")),
+            Kind::Tablet => Some(crate::i18n::text("label-tablet")),
+            Kind::Phone => Some(crate::i18n::text("label-phone")),
+            Kind::Computer => Some(crate::i18n::text("label-computer")),
+            Kind::Watch => Some(crate::i18n::text("label-watch")),
+            Kind::Printer => Some(crate::i18n::text("label-printer")),
+            Kind::Camera => Some(crate::i18n::text("label-camera")),
+            Kind::Display => Some(crate::i18n::text("shell-display")),
             Kind::Unknown => None,
         }
     }
@@ -242,10 +242,10 @@ impl Doing {
     /// What the row says while it is happening.
     pub fn title(self) -> &'static str {
         match self {
-            Doing::Pairing => "Pairing…",
-            Doing::Connecting => "Connecting…",
-            Doing::Disconnecting => "Disconnecting…",
-            Doing::Forgetting => "Removing…",
+            Doing::Pairing => crate::i18n::text("label-pairing"),
+            Doing::Connecting => crate::i18n::text("shell-connecting"),
+            Doing::Disconnecting => crate::i18n::text("label-disconnecting"),
+            Doing::Forgetting => crate::i18n::text("shell-removing"),
         }
     }
 }
@@ -1060,10 +1060,10 @@ fn unanswered() -> Refused {
 pub fn fault(text: &str) -> Option<&'static str> {
     let name = text.trim();
     if name.is_empty() {
-        return Some("A name cannot be empty.");
+        return Some(crate::i18n::text("label-a-name-cannot-be-empty"));
     }
     if name.chars().count() > LONGEST_NAME {
-        return Some("That name is too long to be sent.");
+        return Some(crate::i18n::text("label-that-name-is-too-long-to-be-sent"));
     }
     None
 }

@@ -111,9 +111,9 @@ impl For {
     fn accept(self) -> Option<&'static str> {
         match self {
             For::OneFile => None,
-            For::ManyFiles => Some("Open"),
-            For::AFolder => Some("Use this folder"),
-            For::ANewFile => Some("Save here"),
+            For::ManyFiles => Some(crate::i18n::text("shell-open")),
+            For::AFolder => Some(crate::i18n::text("shell-use-this-folder")),
+            For::ANewFile => Some(crate::i18n::text("shell-save-here")),
         }
     }
 
@@ -121,10 +121,10 @@ impl For {
     /// of its own.
     fn asking(self) -> &'static str {
         match self {
-            For::OneFile => "wants a file",
-            For::ManyFiles => "wants some files",
-            For::AFolder => "wants a folder",
-            For::ANewFile => "wants somewhere to save",
+            For::OneFile => crate::i18n::text("label-wants-a-file"),
+            For::ManyFiles => crate::i18n::text("label-wants-some-files"),
+            For::AFolder => crate::i18n::text("label-wants-a-folder"),
+            For::ANewFile => crate::i18n::text("label-wants-somewhere-to-save"),
         }
     }
 }
@@ -590,7 +590,7 @@ impl Picker {
     /// than a sentence beginning with a blank.
     pub fn heading(&self) -> String {
         let named = match self.asked.app_id.trim() {
-            "" => "An application".to_string(),
+            "" => crate::i18n::text("shell-an-application").to_string(),
             // The reverse-DNS spelling is written for a machine to match on.
             // What is left after the last dot is the part anybody recognises.
             named => crate::app_id_name(named).unwrap_or_else(|| named.to_string()),
@@ -615,7 +615,7 @@ impl Picker {
     pub fn showing(&self) -> &str {
         match self.kind.and_then(|index| self.asked.kinds.get(index)) {
             Some(kind) => &kind.name,
-            None => "Everything",
+            None => crate::i18n::text("shell-everything"),
         }
     }
 
@@ -964,28 +964,28 @@ impl Picker {
             For::OneFile => Act::Nothing,
             For::ManyFiles => {
                 if self.ticked.is_empty() {
-                    return Act::Blocked("Nothing has been chosen yet");
+                    return Act::Blocked(crate::i18n::text("shell-nothing-has-been-chosen-yet"));
                 }
                 Act::Answer(self.ticked.clone())
             }
             For::AFolder => match self.levels[level].at.as_deref() {
                 Some(at) => Act::Answer(vec![at.to_path_buf()]),
                 // The disks are not a folder anybody can be given.
-                None => Act::Blocked("Step into one of these first"),
+                None => Act::Blocked(crate::i18n::text("shell-step-into-one-of-these-first")),
             },
             For::ANewFile => {
                 let Some(at) = self.levels[level].at.as_deref() else {
-                    return Act::Blocked("Step into a folder first");
+                    return Act::Blocked(crate::i18n::text("shell-step-into-a-folder-first"));
                 };
                 let name = self.name.trim();
                 if name.is_empty() {
-                    return Act::Blocked("It needs a name first");
+                    return Act::Blocked(crate::i18n::text("shell-it-needs-a-name-first"));
                 }
                 // A name with a separator in it is a path, and a path is
                 // somewhere other than the folder the user walked to. The two
                 // that are not names at all go the same way.
                 if name.contains('/') || name == "." || name == ".." {
-                    return Act::Blocked("That is not a name");
+                    return Act::Blocked(crate::i18n::text("shell-that-is-not-a-name"));
                 }
                 Act::Answer(vec![at.join(name)])
             }
@@ -1119,11 +1119,13 @@ impl Picker {
             Row::NewFolder => Face {
                 title: match self.typing_in(level) {
                     Some(Field::NewFolder) => format!("{}|", self.making),
-                    _ => "New folder".to_string(),
+                    _ => crate::i18n::text("shell-new-folder").to_string(),
                 },
                 note: Some(match self.typing_in(level) {
-                    Some(Field::NewFolder) => "What to call it".to_string(),
-                    _ => "Make one here".to_string(),
+                    Some(Field::NewFolder) => {
+                        crate::i18n::text("shell-what-to-call-it").to_string()
+                    }
+                    _ => crate::i18n::text("shell-make-one-here").to_string(),
                 }),
                 glyph: crate::icons::NEW_FOLDER,
                 quiet: false,
@@ -1136,10 +1138,10 @@ impl Picker {
                     // has been typed so far with a bar after it, rather than a
                     // separate control that appears over the row.
                     (Some(Field::Name), name) => format!("{name}|"),
-                    (_, "") => "Untitled".to_string(),
+                    (_, "") => crate::i18n::text("shell-untitled").to_string(),
                     (_, name) => name.to_string(),
                 },
-                note: Some("What to call it".to_string()),
+                note: Some(crate::i18n::text("shell-what-to-call-it").to_string()),
                 glyph: crate::icons::RENAME,
                 quiet: self.typing_in(level) != Some(Field::Name) && self.name.trim().is_empty(),
                 ticked: false,
@@ -1148,7 +1150,12 @@ impl Picker {
             Row::Answer => {
                 let answer = self.answer_in(level);
                 let title = match self.asked.accept.trim() {
-                    "" => self.asked.purpose.accept().unwrap_or("Choose").to_string(),
+                    "" => self
+                        .asked
+                        .purpose
+                        .accept()
+                        .unwrap_or(crate::i18n::text("shell-choose"))
+                        .to_string(),
                     // The application's own word, which is the one thing on
                     // this panel it gets to write. It is drawn and nothing
                     // more: it names no command and reaches nothing.
@@ -1173,7 +1180,7 @@ impl Picker {
             Row::Search => Face {
                 title: match (self.typing_in(level), self.levels[level].query.as_str()) {
                     (Some(Field::Search), query) => format!("{query}|"),
-                    (_, "") => "Search".to_string(),
+                    (_, "") => crate::i18n::text("shell-search").to_string(),
                     (_, query) => query.to_string(),
                 },
                 note: Some(self.searched(level)),
@@ -1183,8 +1190,8 @@ impl Picker {
                 preview: None,
             },
             Row::Clear => Face {
-                title: "Clear".to_string(),
-                note: Some("Show everything again".to_string()),
+                title: crate::i18n::text("shell-clear").to_string(),
+                note: Some(crate::i18n::text("shell-show-everything-again").to_string()),
                 glyph: crate::icons::SEARCH_CLEAR,
                 quiet: false,
                 ticked: false,
@@ -1238,14 +1245,13 @@ impl Picker {
     /// What the row that ends column `level` says under itself.
     fn answering(&self, level: usize) -> String {
         match self.asked.purpose {
-            For::ManyFiles => match self.ticked() {
-                1 => "1 file chosen".to_string(),
-                many => format!("{many} files chosen"),
-            },
+            For::ManyFiles => crate::message!("count-files-chosen", "count" => self.ticked()),
             For::AFolder | For::ANewFile => {
                 match self.levels[level].at.as_deref().and_then(Path::file_name) {
-                    Some(name) => format!("In {}", name.to_string_lossy()),
-                    None => "In this folder".to_string(),
+                    Some(name) => {
+                        crate::message!("picker-in-folder", "name" => name.to_string_lossy().into_owned())
+                    }
+                    None => crate::i18n::text("shell-in-this-folder").to_string(),
                 }
             }
             For::OneFile => String::new(),
@@ -1258,8 +1264,10 @@ impl Picker {
         let level = &self.levels[level];
         let listed = level.rows.iter().filter(|row| row.path().is_some()).count();
         match level.query.is_empty() {
-            true => "Narrow this folder".to_string(),
-            false => format!("{listed} found"),
+            true => crate::i18n::text("shell-narrow-this-folder").to_string(),
+            false => {
+                crate::message!("count-found", "count" => listed)
+            }
         }
     }
 
@@ -1295,7 +1303,7 @@ impl Picker {
             speed: 0.0,
             query: String::new(),
             orders: found.orders,
-            title: "This machine".to_string(),
+            title: crate::i18n::text("shell-this-machine").to_string(),
         }
     }
 

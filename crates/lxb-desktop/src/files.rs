@@ -79,7 +79,9 @@ const MOST: usize = 10_000;
 /// Here rather than where the row is built, because opening it writes the note
 /// back — one path for every place, and this is what the Files row's own note
 /// is when the place it stands for is the list of disks.
-pub const WHAT_FILES_ARE: &str = "Your folder, this machine, and anything plugged in";
+pub fn what_files_are() -> &'static str {
+    crate::i18n::text("shell-your-folder-this-machine-and-anything-plugged-in")
+}
 
 /// What a row of the explorer stands for on the disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +293,14 @@ pub struct Item {
     pub glyph: &'static str,
 }
 
+impl Item {
+    pub fn refresh_language(&mut self) {
+        if let Ok(facts) = std::fs::symlink_metadata(&self.path) {
+            self.note = facts_note(facts.len(), facts.modified().ok());
+        }
+    }
+}
+
 /// What one look at a place came back with.
 pub struct Shown {
     /// The rows for the column, the field at the head of them included.
@@ -317,7 +327,7 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
     let mut places = Vec::new();
     if let Some(home) = home() {
         places.push(place(
-            "Home",
+            crate::i18n::text("shell-home"),
             &home,
             crate::icons::FILE_HOME,
             Some(crate::screenshot::abbreviated(&home)),
@@ -325,7 +335,7 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
         ));
     }
     places.push(place(
-        "Root",
+        crate::i18n::text("shell-root"),
         Path::new("/"),
         crate::icons::FILE_DRIVE,
         None,
@@ -372,7 +382,7 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
         }
     }
     Shown {
-        note: WHAT_FILES_ARE.to_string(),
+        note: what_files_are().to_string(),
         rows,
         orders: crate::media::Orders::default(),
     }
@@ -392,11 +402,14 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
 fn trash_row() -> Entry {
     let items = crate::trash::listing().len();
     Entry::Folder(Folder {
-        title: "Trash".to_string(),
+        title_message: Some("shell-trash"),
+        comment_message: None,
+        identity: None,
+        title: crate::i18n::text("shell-trash").to_string(),
         comment: Some(match items {
-            0 => "Empty".to_string(),
-            1 => "1 item".to_string(),
-            items => format!("{items} items"),
+            0 => crate::i18n::text("shell-empty").to_string(),
+            1 => crate::message!("count-items", "count" => 1),
+            items => crate::message!("count-items", "count" => items),
         }),
         // The bin, which is the mark the rest of the shell already wears for
         // taking something off this machine — see [`crate::icons::UNINSTALL`].
@@ -541,6 +554,9 @@ fn place(
 ) -> Entry {
     let note = room(at).or(fallback);
     Entry::Folder(Folder {
+        title_message: crate::i18n::message_id(title),
+        comment_message: None,
+        identity: None,
         title: title.to_string(),
         comment: note,
         icon: Some(glyph.to_string()),
@@ -584,7 +600,7 @@ pub fn listing(at: &Path, query: &str, how: How, shows: Shows) -> Shown {
     let Ok(reading) = std::fs::read_dir(at) else {
         return Shown {
             rows: Vec::new(),
-            note: "This cannot be opened".to_string(),
+            note: crate::i18n::text("shell-this-cannot-be-opened").to_string(),
             orders: crate::media::Orders::default(),
         };
     };
@@ -657,6 +673,9 @@ pub fn listing(at: &Path, query: &str, how: How, shows: Shows) -> Shown {
 
         let entry = if leads_to_a_folder {
             Entry::Folder(Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: name.to_string(),
                 // What is *in* it is not asked: that is one `readdir` per row,
                 // and a folder of a thousand folders would read a thousand
@@ -841,26 +860,21 @@ fn matched(name: &str, query: &str) -> bool {
 /// same breath rather than in the log. A folder listed to [`MOST`] and quietly
 /// cut off is a folder the shell is lying about.
 fn note((folders, files): (usize, usize), left_out: usize) -> String {
-    let plural = |count: usize, one: &str, many: &str| {
-        if count == 1 {
-            format!("{count} {one}")
-        } else {
-            format!("{count} {many}")
-        }
-    };
     let counted = match (folders, files) {
-        (0, 0) => "Empty".to_string(),
-        (0, files) => plural(files, "file", "files"),
-        (folders, 0) => plural(folders, "folder", "folders"),
+        (0, 0) => crate::i18n::text("shell-empty").to_string(),
+        (0, files) => crate::message!("count-files", "count" => files),
+        (folders, 0) => crate::message!("count-folders", "count" => folders),
         (folders, files) => format!(
             "{}, {}",
-            plural(folders, "folder", "folders"),
-            plural(files, "file", "files")
+            crate::message!("count-folders", "count" => folders),
+            crate::message!("count-files", "count" => files)
         ),
     };
     match left_out {
         0 => counted,
-        left_out => format!("{counted}, {left_out} more not shown"),
+        left_out => {
+            crate::message!("folder-more-not-shown", "counted" => counted, "count" => left_out)
+        }
     }
 }
 
@@ -891,8 +905,11 @@ fn date(when: SystemTime) -> Option<String> {
     if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
         return None;
     }
-    let month = crate::MONTHS.get(tm.tm_mon.clamp(0, 11) as usize)?;
-    Some(format!("{} {month} {}", tm.tm_mday, tm.tm_year + 1900))
+    crate::i18n::date(
+        tm.tm_mday as u32,
+        tm.tm_mon.clamp(0, 11) as usize,
+        tm.tm_year + 1900,
+    )
 }
 
 /// How much room is left on the filesystem `at` is on.
@@ -919,11 +936,9 @@ pub fn room(at: &Path) -> Option<String> {
     if whole == 0 {
         return None;
     }
-    Some(format!(
-        "{} free of {}",
-        crate::appinfo::human_size(free),
-        crate::appinfo::human_size(whole)
-    ))
+    Some(
+        crate::message!("disk-free-of", "free" => crate::appinfo::human_size(free), "whole" => crate::appinfo::human_size(whole)),
+    )
 }
 
 /// One mounted filesystem, as `/proc/mounts` gives it.

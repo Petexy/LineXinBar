@@ -318,12 +318,12 @@ impl Item {
         match self {
             // Never "Resume Celeste": the card beside the column already says
             // what is being resumed, in far more detail than a label can.
-            Item::Resume => "Resume".to_string(),
+            Item::Resume => crate::i18n::text("shell-resume").to_string(),
             Item::Close => match target {
-                Some(target) => format!("Close {target}"),
-                None => "Close".to_string(),
+                Some(target) => crate::message!("close-target", "target" => target),
+                None => crate::i18n::text("shell-close").to_string(),
             },
-            Item::StartScreen => "Start screen".to_string(),
+            Item::StartScreen => crate::i18n::text("shell-start-screen").to_string(),
             // Drawn as a glyph or as a track, so there is nothing to write.
             Item::Power
             | Item::Volume
@@ -462,11 +462,11 @@ const POWER_ITEMS: &[PowerItem] = &[
 impl PowerItem {
     pub fn label(self) -> &'static str {
         match self {
-            PowerItem::Suspend => "Suspend System",
-            PowerItem::Shutdown => "Turn Off System",
-            PowerItem::Restart => "Restart System",
-            PowerItem::LogOut => "Log Out",
-            PowerItem::Cancel => "Cancel",
+            PowerItem::Suspend => crate::i18n::text("shell-suspend-system"),
+            PowerItem::Shutdown => crate::i18n::text("shell-turn-off-system"),
+            PowerItem::Restart => crate::i18n::text("shell-restart-system"),
+            PowerItem::LogOut => crate::i18n::text("shell-log-out"),
+            PowerItem::Cancel => crate::i18n::text("shell-cancel"),
         }
     }
 

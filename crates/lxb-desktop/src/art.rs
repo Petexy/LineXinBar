@@ -584,8 +584,11 @@ fn work(queue: &Queue, send: &Sender<(u32, Piece, Result<Answer, Missing>)>) {
 /// after that. One truncated write left a game without a cover for the life of
 /// the machine, and nothing on screen or in the log said why.
 fn produce(job: &Job, cdn: &Cdn, steam_cache: Option<&Caches>) -> Result<Answer, Missing> {
-    let ours = ours(job.app_id, job.piece, job.published.as_deref())
-        .ok_or_else(|| Missing::Unreachable("there is nowhere to cache pictures".to_string()))?;
+    let ours = ours(job.app_id, job.piece, job.published.as_deref()).ok_or_else(|| {
+        Missing::Unreachable(
+            crate::i18n::text("label-there-is-nowhere-to-cache-pictures").to_string(),
+        )
+    })?;
 
     // The cached copies, nearest first: Valve's own, then this shell's.
     let cached: Vec<PathBuf> = steam_cache
@@ -676,7 +679,11 @@ fn readable(path: &Path) -> Option<Vec<u8>> {
 
 /// Decode one file into whatever the piece it is asks for.
 fn turn_into_a_picture(piece: Piece, path: PathBuf, bytes: &[u8]) -> Result<Answer, Missing> {
-    let undecodable = || Missing::Unreachable(format!("{} could not be decoded", path.display()));
+    let undecodable = || {
+        Missing::Unreachable(
+            crate::message!("picture-could-not-be-decoded", "file" => path.display().to_string()),
+        )
+    };
     match piece {
         Piece::Cover => {
             let picture = cover(bytes).ok_or_else(undecodable)?;

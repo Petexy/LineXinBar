@@ -621,6 +621,93 @@ fn shell_faces() -> FontSystem {
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }
 
+/// Break dialog prose using the same face, size, and shaping as the renderer.
+/// Called when dialog content changes, never in the frame loop. Keeping complete
+/// sentences in catalogs lets translators choose their own word order.
+pub fn wrap_dialog_note(content: &str) -> Vec<String> {
+    thread_local! {
+        static FONTS: std::cell::RefCell<FontSystem> = std::cell::RefCell::new(shell_faces());
+    }
+    if content.is_empty() {
+        return vec![String::new()];
+    }
+    FONTS.with(|fonts| {
+        let mut fonts = fonts.borrow_mut();
+        let mut buffer = TextBuffer::new(&mut fonts, Metrics::new(21.0, 26.25));
+        buffer.set_size(Some(crate::ui::dialog_note_width()), None);
+        buffer.set_text(
+            content,
+            &Attrs::new().family(Family::Name(UI_FONT)),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut fonts, false);
+        let runs: Vec<_> = buffer.layout_runs().collect();
+        if runs.len() <= 1 {
+            return vec![content.to_owned()];
+        }
+        runs.into_iter()
+            .map(|run| {
+                let start = run
+                    .glyphs
+                    .iter()
+                    .map(|glyph| glyph.start)
+                    .min()
+                    .unwrap_or(0);
+                let end = run.glyphs.iter().map(|glyph| glyph.end).max().unwrap_or(0);
+                run.text.get(start..end).unwrap_or("").trim().to_owned()
+            })
+            .collect()
+    })
+}
+
+/// How wide one line of dialog text comes out at `size`, in the shell's face.
+///
+/// For the two halves of a [`crate::dialog::Line::Field`], so that a label
+/// longer than its share of the line — every language but English writes
+/// "System software" longer — can take the room a short answer leaves rather
+/// than lose its tail. Memoised, because the layout asks every frame and a
+/// panel's labels are a handful of strings; the memo is emptied rather than
+/// grown without bound, since answers carry addresses and sizes that change.
+pub fn dialog_text_width(content: &str, size: f32) -> f32 {
+    thread_local! {
+        static FONTS: std::cell::RefCell<FontSystem> = std::cell::RefCell::new(shell_faces());
+        static MEMO: std::cell::RefCell<std::collections::HashMap<(String, u32), f32>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    if content.is_empty() || size <= 0.0 {
+        return 0.0;
+    }
+    let key = (content.to_owned(), size.to_bits());
+    if let Some(width) = MEMO.with(|memo| memo.borrow().get(&key).copied()) {
+        return width;
+    }
+    let width = FONTS.with(|fonts| {
+        let mut fonts = fonts.borrow_mut();
+        let mut buffer = TextBuffer::new(&mut fonts, Metrics::new(size, size * 1.25));
+        buffer.set_size(None, None);
+        buffer.set_text(
+            content,
+            &Attrs::new().family(Family::Name(UI_FONT)),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut fonts, false);
+        buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0_f32, f32::max)
+    });
+    MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= 256 {
+            memo.clear();
+        }
+        memo.insert(key, width);
+    });
+    width
+}
+
 /// Shape a run of the shell's own type on its own line and answer with the
 /// glyphs it came out as.
 ///
@@ -4533,6 +4620,32 @@ mod tests {
     /// The shell's own two faces and nothing else, so what a run measures is
     /// the same on any machine — the system's fonts differ from one to the
     /// next, and a test that shaped with them would be measuring the machine.
+    #[test]
+    fn polish_glyphs_and_wrapped_dialog_prose_keep_every_word() {
+        let mut fonts = shell_faces();
+        assert!(shaped_run(&mut fonts, "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", 21.0).is_some());
+        crate::i18n::set(crate::i18n::Language::Polish);
+        let paragraph = "Wybierz język interfejsu. Zmiana zostanie zastosowana od razu na wszystkich ekranach. Nazwy plików, urządzeń oraz wpisany tekst pozostaną bez zmian. Zażółć gęślą jaźń.";
+        let lines = wrap_dialog_note(paragraph);
+        assert!(lines.len() > 1);
+        assert_eq!(
+            lines.join(" ").split_whitespace().collect::<Vec<_>>(),
+            paragraph.split_whitespace().collect::<Vec<_>>()
+        );
+        for line in lines {
+            let glyphs = shaped_run(&mut fonts, &line, 21.0).unwrap();
+            let width = glyphs
+                .iter()
+                .map(|glyph| glyph.x + glyph.w)
+                .fold(0.0, f32::max);
+            assert!(
+                width <= crate::ui::dialog_note_width() + 1.0,
+                "line too wide: {line}"
+            );
+        }
+        crate::i18n::set(crate::i18n::Language::English);
+    }
+
     fn shell_fonts() -> FontSystem {
         shell_faces()
     }

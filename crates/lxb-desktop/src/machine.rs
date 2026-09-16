@@ -15,7 +15,7 @@
 //! it. That one starts a package manager and takes long enough to drop frames;
 //! this one starts nothing at all.
 //!
-//! Nothing is invented. A value the machine will not give is [`UNKNOWN`] rather
+//! Nothing is invented. A value the machine will not give is [`unknown`] rather
 //! than something guessed from a value beside it, and the one row that is not
 //! always there is the one the machine may genuinely not have — a rolling
 //! release has no version to give, and a page showing it an empty one would be
@@ -29,7 +29,9 @@ use std::path::Path;
 /// could give, and for the same reason: a panel of facts has to be able to say
 /// that it does not know one without the row disappearing, because a row that
 /// vanished would take the question with it.
-const UNKNOWN: &str = "Unknown";
+fn unknown() -> String {
+    crate::i18n::text("shell-unknown").to_string()
+}
 
 /// Everything the panel says, in the order it says it.
 ///
@@ -79,32 +81,33 @@ impl Facts {
             // is better read with the version doubled than not named at all.
             name: os_release(&release, "NAME")
                 .or_else(|| os_release(&release, "PRETTY_NAME"))
-                .unwrap_or_else(|| UNKNOWN.to_string()),
+                .unwrap_or_else(unknown),
             version: os_release(&release, "VERSION_ID"),
             // The one number here that is not read from anywhere: it is
             // compiled in, and `build.rs` refuses the build when it has drifted
             // from the `VERSION` file at the root of the checkout. Written the
             // way a console writes it, because that is what this row is.
-            software: format!("Version {}", env!("CARGO_PKG_VERSION")),
-            address: address().unwrap_or_else(|| "Not connected".to_string()),
-            kernel: kernel().unwrap_or_else(|| UNKNOWN.to_string()),
+            software: crate::message!("software-version", "version" => env!("CARGO_PKG_VERSION")),
+            address: address()
+                .unwrap_or_else(|| crate::i18n::text("shell-not-connected").to_string()),
+            kernel: kernel().unwrap_or_else(unknown),
             processor: read_and("/proc/cpuinfo", processor),
             graphics: graphics
                 .as_deref()
                 .map(adapter)
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| UNKNOWN.to_string()),
+                .unwrap_or_else(unknown),
             memory: read_and("/proc/meminfo", memory),
             // The filesystem the system is on, not the one the user's files are
             // on: this page is about the machine, and where a separate `/home`
             // has got to is a question the file explorer answers, standing in
             // the folder it is asked about.
-            disk: crate::files::room(Path::new("/")).unwrap_or_else(|| UNKNOWN.to_string()),
+            disk: crate::files::room(Path::new("/")).unwrap_or_else(unknown),
         }
     }
 }
 
-/// Read a file the kernel writes and hand it to `parse`, or answer [`UNKNOWN`].
+/// Read a file the kernel writes and hand it to `parse`, or answer [`unknown`].
 ///
 /// One helper for the two `/proc` files, so that a machine without one of them
 /// — a container with a trimmed `/proc`, or a kernel this shell has not met —
@@ -115,7 +118,7 @@ fn read_and(path: &str, parse: impl Fn(&str) -> Option<String>) -> String {
         .ok()
         .as_deref()
         .and_then(parse)
-        .unwrap_or_else(|| UNKNOWN.to_string())
+        .unwrap_or_else(unknown)
 }
 
 /// One value out of `os-release`, unquoted.
@@ -301,11 +304,9 @@ fn memory(meminfo: &str) -> Option<String> {
     if total == 0 {
         return None;
     }
-    Some(format!(
-        "{} free of {}",
-        crate::appinfo::human_size(free),
-        crate::appinfo::human_size(total)
-    ))
+    Some(
+        crate::message!("disk-free-of", "free" => crate::appinfo::human_size(free), "whole" => crate::appinfo::human_size(total)),
+    )
 }
 
 /// The address this machine answers on.

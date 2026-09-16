@@ -265,9 +265,8 @@ impl Marks {
     /// What the head row of the column says under itself.
     pub fn note(&self) -> String {
         match self.len() {
-            0 => "Nothing selected".to_string(),
-            1 => "1 selected".to_string(),
-            many => format!("{many} selected"),
+            0 => crate::i18n::text("shell-nothing-selected").to_string(),
+            count => crate::message!("count-selected", "count" => count),
         }
     }
 }
@@ -310,7 +309,7 @@ fn marked_path(entry: &Entry) -> Option<&Path> {
 pub fn how_many(count: usize, only: &str) -> String {
     match count {
         1 => only.to_string(),
-        count => format!("{count} things"),
+        count => crate::message!("count-things", "count" => count),
     }
 }
 
@@ -324,15 +323,7 @@ pub fn what_they_are(files: usize, folders: usize) -> String {
     if files + folders < 2 || files == 0 || folders == 0 {
         return String::new();
     }
-    let some = |count: usize, one: &str, more: &str| match count {
-        1 => format!("1 {one}"),
-        count => format!("{count} {more}"),
-    };
-    format!(
-        "{} and {}",
-        some(files, "file", "files"),
-        some(folders, "folder", "folders")
-    )
+    crate::message!("count-files-and-folders", "files" => files, "folders" => folders)
 }
 
 #[cfg(test)]
@@ -353,6 +344,9 @@ mod tests {
 
     fn folder(name: &str) -> Entry {
         Entry::Folder(Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: name.to_string(),
             comment: Some("3 files".to_string()),
             icon: Some(crate::icons::FILE_FOLDER.to_string()),

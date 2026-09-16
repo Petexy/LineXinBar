@@ -491,7 +491,7 @@ pub fn human_size(bytes: u64) -> String {
             // both read at a glance, where `9 MiB` throws away a tenth of the
             // answer and `247.3 MiB` is three digits nobody asked for.
             return if value < 10.0 {
-                format!("{value:.1} {unit}")
+                crate::i18n::decimal(format!("{value:.1} {unit}"))
             } else {
                 format!("{} {unit}", value.round() as u64)
             };

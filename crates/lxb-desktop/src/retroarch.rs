@@ -654,7 +654,9 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     let mut child = match command.stdin(Stdio::null()).stdout(Stdio::piped()).spawn() {
         Ok(child) => child,
         Err(err) => {
-            let _ = back.send(Heard::Broken(format!("{HELPER} could not be run: {err}")));
+            let _ = back.send(Heard::Broken(
+                crate::message!("retroarch-helper-could-not-run", "helper" => HELPER, "error" => err.to_string()),
+            ));
             return;
         }
     };
@@ -692,8 +694,12 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     let status = child.wait();
     if !said && ask.must_answer() {
         let why = match status {
-            Ok(status) => format!("{HELPER} answered nothing ({status})"),
-            Err(err) => format!("{HELPER} could not be waited for: {err}"),
+            Ok(status) => {
+                crate::message!("retroarch-helper-answered-nothing", "helper" => HELPER, "status" => status.to_string())
+            }
+            Err(err) => {
+                crate::message!("retroarch-helper-could-not-be-waited-for", "helper" => HELPER, "error" => err.to_string())
+            }
         };
         let _ = back.send(Heard::Broken(why));
     }
@@ -848,9 +854,11 @@ impl Fetching {
         if self.core.is_empty() {
             return self.note.clone();
         }
-        let getting = "Getting your games ready";
+        let getting = crate::i18n::text("shell-getting-your-games-ready");
         match (self.of, self.progress) {
-            (of, _) if of > 1 => format!("{getting} — {} of {of}", self.at),
+            (of, _) if of > 1 => {
+                crate::message!("retroarch-getting-progress", "getting" => getting, "at" => self.at, "of" => of)
+            }
             (_, Some(done)) => format!("{getting} — {}%", (done * 100.0).round() as u32),
             _ => getting.to_string(),
         }
@@ -879,10 +887,12 @@ impl Pictures {
     /// would be a row nobody can read — what somebody is owed is that the
     /// pictures are coming and how far along they are.
     pub fn sentence(&self) -> String {
-        let getting = "Getting the pictures";
+        let getting = crate::i18n::text("shell-getting-the-pictures");
         match self.of {
             0 => getting.to_string(),
-            of => format!("{getting} — {} of {of}", self.at.max(1).min(of)),
+            of => {
+                crate::message!("retroarch-getting-progress", "getting" => getting, "at" => self.at.max(1).min(of), "of" => of)
+            }
         }
     }
 }
@@ -988,7 +998,9 @@ impl RetroArch {
             return;
         };
         if inner.ask.send(ask).is_err() {
-            inner.broken = Some("the RetroArch integration stopped answering".to_string());
+            inner.broken = Some(
+                crate::i18n::text("label-the-retroarch-integration-stopped-answering").to_string(),
+            );
         }
     }
 
@@ -1072,7 +1084,7 @@ impl RetroArch {
         if let Some(inner) = self.inner.as_mut() {
             inner.installing = Some(Installing {
                 progress: None,
-                note: "Installing RetroArch".to_string(),
+                note: crate::i18n::text("shell-installing-retroarch").to_string(),
                 removing: false,
                 ended: None,
             });
@@ -1089,7 +1101,7 @@ impl RetroArch {
         if let Some(inner) = self.inner.as_mut() {
             inner.installing = Some(Installing {
                 progress: None,
-                note: "Removing RetroArch".to_string(),
+                note: crate::i18n::text("shell-removing-retroarch").to_string(),
                 removing: true,
                 ended: None,
             });
@@ -1147,7 +1159,7 @@ impl RetroArch {
                 progress: None,
                 at: 0,
                 of,
-                note: "Getting ready".to_string(),
+                note: crate::i18n::text("shell-getting-ready").to_string(),
                 ended: None,
             });
         }
@@ -1305,9 +1317,10 @@ impl RetroArch {
         while let Ok(heard) = inner.heard.try_recv() {
             match heard {
                 Heard::Probed(probe) if !probe.usable() => {
-                    inner.broken = Some(format!(
-                        "the RetroArch integration speaks version {} and this shell speaks {PROTOCOL}",
-                        probe.protocol
+                    inner.broken = Some(crate::message!(
+                        "retroarch-helper-version-mismatch",
+                        "theirs" => probe.protocol,
+                        "ours" => PROTOCOL
                     ));
                     change.rows = true;
                 }
@@ -1642,10 +1655,9 @@ impl RetroArch {
         match &inner.found {
             Found::Asking => Press::Waiting,
             Found::Absent { flatpak: true } => Press::Install,
-            Found::Absent { flatpak: false } => Press::Cannot(
-                "RetroArch is not installed, and this machine has no flatpak to install it with."
-                    .to_string(),
-            ),
+            Found::Absent { flatpak: false } => {
+                Press::Cannot(crate::i18n::text("retroarch-no-flatpak").to_string())
+            }
             Found::Here(_) if crate::settings::roms_folder().is_none() => Press::Folder,
             Found::Here(_) => Press::Enter,
         }
@@ -1667,13 +1679,15 @@ impl RetroArch {
             return Some(fetching.sentence());
         }
         if inner.broken.is_some() {
-            return Some("Not working on this machine".to_string());
+            return Some(crate::i18n::text("shell-not-working-on-this-machine").to_string());
         }
         Some(match &inner.found {
-            Found::Asking => "Looking for RetroArch".to_string(),
-            Found::Absent { flatpak: true } => "Press to download it".to_string(),
+            Found::Asking => crate::i18n::text("shell-looking-for-retroarch").to_string(),
+            Found::Absent { flatpak: true } => {
+                crate::i18n::text("shell-press-to-download-it").to_string()
+            }
             Found::Absent { flatpak: false } => {
-                "It cannot be downloaded on this machine".to_string()
+                crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string()
             }
             Found::Here(_) => self.library_note(inner),
         })
@@ -1715,21 +1729,21 @@ impl RetroArch {
     /// folder.
     fn library_note(&self, inner: &Inner) -> String {
         if crate::settings::roms_folder().is_none() {
-            return "Choose where your games are".to_string();
+            return crate::i18n::text("shell-choose-where-your-games-are").to_string();
         }
         if inner.unreadable.is_some() {
             // What the filesystem actually said is in the log — see
             // [`RetroArch::poll`]. A row is read by somebody standing in front
             // of a television, and "Permission denied (os error 13)" is a
             // sentence for whoever is reading the log afterwards.
-            return "That folder cannot be read".to_string();
+            return crate::i18n::text("shell-that-folder-cannot-be-read").to_string();
         }
         if inner.reading && inner.consoles.is_empty() {
-            return "Looking through your games".to_string();
+            return crate::i18n::text("shell-looking-through-your-games").to_string();
         }
         let consoles = inner.consoles.len();
         if consoles == 0 {
-            return "No games in that folder yet".to_string();
+            return crate::i18n::text("shell-no-games-in-that-folder-yet").to_string();
         }
         // Ahead of the count, and only while it is happening: a collection
         // whose covers are coming down is a column changing under somebody's
@@ -1743,11 +1757,7 @@ impl RetroArch {
             .iter()
             .map(|console| console.roms.len())
             .sum();
-        format!(
-            "{games} {} on {consoles} {}",
-            plural(games, "game", "games"),
-            plural(consoles, "console", "consoles")
-        )
+        crate::message!("games-on-consoles", "games" => games, "consoles" => consoles)
     }
 
     /// The RetroArch column: the consoles in somebody's folder, and — until
@@ -1812,17 +1822,14 @@ impl RetroArch {
         // — which is exactly what it is waiting on.
         let ready = console.core.as_ref().filter(|_| !console.incomplete);
         let comment = match (ready, console.wanted.first()) {
-            (Some(_), _) => format!("{games} {}", plural(games, "game", "games")),
-            (None, Some(_)) => format!(
-                "{games} {} — needs a download",
-                plural(games, "game", "games")
-            ),
-            (None, None) => format!(
-                "{games} {} — nothing here can play them",
-                plural(games, "game", "games")
-            ),
+            (Some(_), _) => crate::message!("count-games", "count" => games),
+            (None, Some(_)) => crate::message!("games-need-download", "games" => games),
+            (None, None) => crate::message!("games-no-emulator", "games" => games),
         };
         Entry::Folder(apps::Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: console.title.clone(),
             comment: Some(comment),
             // The machine's own mark, which is the whole reason this column is
@@ -1880,6 +1887,9 @@ impl RetroArch {
         let pictures = pictures_for(chosen, rom);
         if let Some((_, piece)) = picking.filter(|(at, _)| *at == Path::new(&rom.path)) {
             return Entry::Folder(apps::Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: rom.title.clone(),
                 // What the walk is for, under the name of the game it is for,
                 // so somebody several folders deep can still read which of the
@@ -1941,8 +1951,12 @@ impl RetroArch {
             // starting the game — see `Shell::rom_would_not_start`.
             note: match (&start, console.wanted.first()) {
                 (Some(_), _) => console.title.clone(),
-                (None, Some(_)) => format!("{} — needs a download", console.title),
-                (None, None) => format!("{} — nothing here can play it", console.title),
+                (None, Some(_)) => {
+                    crate::message!("retroarch-console-needs-download", "console" => console.title.as_str())
+                }
+                (None, None) => {
+                    crate::message!("retroarch-console-no-emulator", "console" => console.title.as_str())
+                }
             },
             start,
             // The pictures: the ones somebody chose for this game, and
@@ -2062,10 +2076,13 @@ impl RetroArch {
 pub fn folder_row() -> Entry {
     let comment = match crate::settings::roms_folder() {
         Some(at) => crate::screenshot::abbreviated(&at),
-        None => "One folder per console, e.g. psp, nes, etc.".to_string(),
+        None => crate::i18n::text("shell-one-folder-per-console-e-g-psp-nes-etc").to_string(),
     };
     Entry::Folder(apps::Folder {
-        title: "Games folder".to_string(),
+        title_message: Some("shell-games-folder"),
+        comment_message: None,
+        identity: None,
+        title: crate::i18n::text("shell-games-folder").to_string(),
         comment: Some(comment),
         icon: Some(icons::FILE_FOLDER.to_string()),
         entries: Vec::new(),
@@ -2111,8 +2128,8 @@ impl Piece {
     /// What it is called on the panel the picker is walked from.
     pub fn about(self) -> &'static str {
         match self {
-            Piece::Cover => "A cover for this game",
-            Piece::Background => "A background for this game",
+            Piece::Cover => crate::i18n::text("shell-a-cover-for-this-game"),
+            Piece::Background => crate::i18n::text("shell-a-background-for-this-game"),
         }
     }
 }
@@ -2201,11 +2218,16 @@ pub fn keep_picture(
     source: &Path,
 ) -> std::io::Result<PathBuf> {
     let missing = |why: &str| std::io::Error::new(std::io::ErrorKind::NotFound, why.to_string());
-    let directory = kept_for(console).ok_or_else(|| missing("there is nowhere to keep it"))?;
+    let directory = kept_for(console)
+        .ok_or_else(|| missing(crate::i18n::text("label-there-is-nowhere-to-keep-it")))?;
     let game = rom
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| missing("that game has no name to keep it under"))?;
+        .ok_or_else(|| {
+            missing(crate::i18n::text(
+                "label-that-game-has-no-name-to-keep-it-under",
+            ))
+        })?;
     let extension = source
         .extension()
         .and_then(|end| end.to_str())
@@ -2810,11 +2832,18 @@ pub fn bios_row(wanted: &[Firmware]) -> Option<Entry> {
     // folder`, which describes where this shell is about to put things and is
     // no use at all to somebody wondering what they are supposed to have.
     let comment = match (here, first.worth_saying()) {
-        (true, _) => "Added — choose another folder to replace it".to_string(),
+        (true, _) => {
+            crate::i18n::text("shell-added-choose-another-folder-to-replace-it").to_string()
+        }
         (false, true) => first.note.clone(),
-        (false, false) => "Not added — choose the folder yours is in".to_string(),
+        (false, false) => {
+            crate::i18n::text("shell-not-added-choose-the-folder-yours-is-in").to_string()
+        }
     };
     Some(Entry::Folder(apps::Folder {
+        title_message: None,
+        comment_message: None,
+        identity: None,
         title: bios_row_title(&first.console),
         comment: Some(comment),
         icon: Some(icons::FILE_FOLDER.to_string()),
@@ -3262,10 +3291,16 @@ pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::E
         Press::Cannot(_) => return rows,
         Press::Install => {
             rows.push(
-                menu::Entry::new(menu::Command::InstallRetroArch, "Download RetroArch")
-                    .glyph(icons::LAUNCH),
+                menu::Entry::new(
+                    menu::Command::InstallRetroArch,
+                    crate::i18n::text("shell-download-retroarch"),
+                )
+                .glyph(icons::LAUNCH),
             );
-            rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+            rows.push(
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel"))
+                    .group(1),
+            );
             return rows;
         }
         Press::Folder | Press::Enter => {}
@@ -3273,27 +3308,34 @@ pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::E
 
     if folder_set {
         rows.push(
-            menu::Entry::new(menu::Command::RetroArchRescan, "Look for new games")
-                .glyph(icons::REFRESH),
+            menu::Entry::new(
+                menu::Command::RetroArchRescan,
+                crate::i18n::text("shell-look-for-new-games"),
+            )
+            .glyph(icons::REFRESH),
         );
     }
     // Only where there is something to fetch. A row that would answer "there
     // is nothing missing" is a row the user pressed for nothing, and the
     // count is what makes it worth pressing.
     if missing > 0 {
-        let label = match missing {
-            1 => "Get the missing emulator".to_string(),
-            many => format!("Get {many} missing emulators"),
-        };
+        let label = crate::message!("retroarch-get-missing-emulators", "count" => missing);
         rows.push(menu::Entry::new(menu::Command::RetroArchCores, label));
     }
     rows.push(
-        menu::Entry::new(menu::Command::ChooseRomsFolder, "Games folder").glyph(icons::FILE_FOLDER),
+        menu::Entry::new(
+            menu::Command::ChooseRomsFolder,
+            crate::i18n::text("shell-games-folder"),
+        )
+        .glyph(icons::FILE_FOLDER),
     );
     rows.push(
-        menu::Entry::new(menu::Command::RetroArchOpen, "Open RetroArch")
-            .glyph(icons::LAUNCH)
-            .group(1),
+        menu::Entry::new(
+            menu::Command::RetroArchOpen,
+            crate::i18n::text("shell-open-retroarch"),
+        )
+        .glyph(icons::LAUNCH)
+        .group(1),
     );
     // Below the rule with RetroArch's own interface, because it is about the
     // program rather than about this machine's collection — and last of the
@@ -3301,11 +3343,14 @@ pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::E
     // takes is spelt out in a panel before anything happens; see
     // `Shell::offer_to_remove_retroarch`.
     rows.push(
-        menu::Entry::new(menu::Command::RemoveRetroArch, "Remove RetroArch")
-            .glyph(icons::UNINSTALL)
-            .group(1),
+        menu::Entry::new(
+            menu::Command::RemoveRetroArch,
+            crate::i18n::text("shell-remove-retroarch"),
+        )
+        .glyph(icons::UNINSTALL)
+        .group(1),
     );
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -3328,10 +3373,16 @@ pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::E
 /// going to take them. The press asks for the page and waits for it; see
 /// `Shell::open_core_settings`.
 pub fn console_menu_rows(fetching: bool, emulated: bool) -> Vec<menu::Entry> {
-    let artwork = menu::Entry::new(menu::Command::RetroArchConsoleArt, "Get the artwork again")
-        .glyph(icons::REFRESH);
-    let settings = menu::Entry::new(menu::Command::RetroArchCoreSettings, "Emulator settings")
-        .glyph(icons::CATEGORY_SETTINGS);
+    let artwork = menu::Entry::new(
+        menu::Command::RetroArchConsoleArt,
+        crate::i18n::text("shell-get-the-artwork-again"),
+    )
+    .glyph(icons::REFRESH);
+    let settings = menu::Entry::new(
+        menu::Command::RetroArchCoreSettings,
+        crate::i18n::text("shell-emulator-settings"),
+    )
+    .glyph(icons::CATEGORY_SETTINGS);
     vec![
         if fetching {
             artwork.disabled()
@@ -3350,7 +3401,7 @@ pub fn console_menu_rows(fetching: bool, emulated: bool) -> Vec<menu::Entry> {
         } else {
             settings.disabled()
         },
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -3656,6 +3707,7 @@ pub fn shell_command(argv: &[String]) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 pub fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 {
         one

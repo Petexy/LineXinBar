@@ -722,7 +722,7 @@ pub fn keep(source: &Path) -> std::io::Result<PathBuf> {
     let directory = kept_in().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "there is no home directory to keep a wallpaper in",
+            crate::i18n::text("label-there-is-no-home-directory-to-keep-a-wallpaper-in"),
         )
     })?;
     std::fs::create_dir_all(&directory)?;

@@ -14,6 +14,14 @@ The shell keeps its own file beside this one — see
 It is written by the shell rather than read from it, and is not part of
 `config.toml`.
 
+## Shell language
+
+Choose Settings → Language to apply and save the shell language immediately.
+The preference is `language = "en"`, `"pl"`, or `"system"` in `shell.toml`.
+Existing configurations default to English. Keyboard layouts and application
+languages are independent. See [Shell languages](localization.md) for locale
+resolution and the translator workflow.
+
 ## `[general]`
 
 | Key             | Type              | Default            | Meaning |

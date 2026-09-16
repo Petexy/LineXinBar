@@ -148,8 +148,8 @@ impl Person {
     /// they are here.
     pub fn note(&self) -> String {
         let kind = match self.admin {
-            true => "Administrator",
-            false => "Standard",
+            true => crate::i18n::text("shell-administrator"),
+            false => crate::i18n::text("shell-standard"),
         };
         let mut note = format!("{} — {kind}", self.name);
         // "You" rather than "Signed in" for the account this session is: they
@@ -260,23 +260,24 @@ pub enum Field {
 impl Field {
     pub fn title(self) -> &'static str {
         match self {
-            Field::Name => "Name",
-            Field::Username => "Username",
-            Field::Password => "Password",
-            Field::Confirm => "Confirm password",
+            Field::Name => crate::i18n::text("shell-name"),
+            Field::Username => crate::i18n::text("shell-username"),
+            Field::Password => crate::i18n::text("shell-password"),
+            Field::Confirm => crate::i18n::text("shell-confirm-password"),
         }
     }
 
     /// What to type, for somebody looking at an empty field on a television.
     pub fn note(self) -> &'static str {
         match self {
-            Field::Name => "What this person is called, as it appears on screen.",
-            Field::Username => {
-                "What they log in as: lower-case letters, digits, - and _, \
-                 starting with a letter."
+            Field::Name => {
+                crate::i18n::text("shell-what-this-person-is-called-as-it-appears-on-screen")
             }
-            Field::Password => "What they type to log in.",
-            Field::Confirm => "The same password again, so a mistyped one cannot lock them out.",
+            Field::Username => crate::i18n::text("users-username-rules"),
+            Field::Password => crate::i18n::text("shell-what-they-type-to-log-in"),
+            Field::Confirm => crate::i18n::text(
+                "shell-the-same-password-again-so-a-mistyped-one-cannot-lock-them-out",
+            ),
         }
     }
 
@@ -513,7 +514,9 @@ pub fn fault(whose: Whose, field: Field, text: &str) -> Option<&'static str> {
                 .unwrap_or(false);
             match matches {
                 true => None,
-                false => Some("That is not the same as the password above."),
+                false => Some(crate::i18n::text(
+                    "shell-that-is-not-the-same-as-the-password-above",
+                )),
             }
         }
     }
@@ -525,12 +528,14 @@ fn fault_in_real_name(text: &str) -> Option<&'static str> {
     // the name it logs in as, which is what a great many accounts on a great
     // many machines are.
     if text.chars().count() > LONGEST_REAL_NAME {
-        return Some("That name is too long.");
+        return Some(crate::i18n::text("shell-that-name-is-too-long"));
     }
     // The one character that cannot be in it: `/etc/passwd` is a colon-
     // separated file, and a name with one in it would end the field early.
     if text.contains(':') || text.contains('\n') {
-        return Some("A name cannot contain a colon or a line break.");
+        return Some(crate::i18n::text(
+            "shell-a-name-cannot-contain-a-colon-or-a-line-break",
+        ));
     }
     None
 }
@@ -553,10 +558,14 @@ fn fault_in_name_among(
 ) -> Option<&'static str> {
     let text = text.trim();
     if text.is_empty() {
-        return Some("A user name is needed: it is what they log in as.");
+        return Some(crate::i18n::text(
+            "shell-a-user-name-is-needed-it-is-what-they-log-in-as",
+        ));
     }
     if text.chars().count() > LONGEST_NAME {
-        return Some("A user name can be at most 32 characters.");
+        return Some(crate::i18n::text(
+            "shell-a-user-name-can-be-at-most-32-characters",
+        ));
     }
     // The portable rule, which is what every tool on the machine will accept
     // and rather narrower than what some of them would. A name outside it is
@@ -565,10 +574,14 @@ fn fault_in_name_among(
     let mut characters = text.chars();
     let first = characters.next()?;
     if !first.is_ascii_lowercase() && first != '_' {
-        return Some("A user name has to start with a lower-case letter or _.");
+        return Some(crate::i18n::text(
+            "shell-a-user-name-has-to-start-with-a-lower-case-letter-or",
+        ));
     }
     if !characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-        return Some("Only lower-case letters, digits, - and _ are allowed.");
+        return Some(crate::i18n::text(
+            "shell-only-lower-case-letters-digits-and-are-allowed",
+        ));
     }
     // Taken, and by somebody else. Asked of the machine rather than of the
     // listing, because the listing holds only the people: `root`, `daemon` and
@@ -577,7 +590,9 @@ fn fault_in_name_among(
     if let Some(uid) = taken(text) {
         let yours = matches!(whose, Whose::Existing(existing) if existing == uid);
         if !yours {
-            return Some("Somebody on this machine already has that user name.");
+            return Some(crate::i18n::text(
+                "shell-somebody-on-this-machine-already-has-that-user-name",
+            ));
         }
     }
     None
@@ -609,9 +624,13 @@ fn fault_in_rename(whose: Whose, text: &str) -> Option<&'static str> {
         return None;
     }
     match person.you {
-        true => Some("You cannot be renamed while you are signed in."),
+        true => Some(crate::i18n::text(
+            "shell-you-cannot-be-renamed-while-you-are-signed-in",
+        )),
         false => match person.here {
-            true => Some("They are signed in, and cannot be renamed until they sign out."),
+            true => Some(crate::i18n::text(
+                "shell-they-are-signed-in-and-cannot-be-renamed-until-they-sign-out",
+            )),
             false => None,
         },
     }
@@ -623,7 +642,7 @@ fn fault_in_password(whose: Whose, text: &str) -> Option<&'static str> {
     // there is nothing to leave alone.
     if text.is_empty() {
         return match whose {
-            Whose::New => Some("A new account needs a password."),
+            Whose::New => Some(crate::i18n::text("shell-a-new-account-needs-a-password")),
             Whose::Existing(_) => None,
         };
     }
@@ -639,7 +658,7 @@ fn fault_in_password(whose: Whose, text: &str) -> Option<&'static str> {
     // line — it is simply not all there, and a password that is silently cut is
     // one nobody can log in with.
     if text.len() > 255 {
-        return Some("That password is too long.");
+        return Some(crate::i18n::text("shell-that-password-is-too-long"));
     }
     None
 }
@@ -712,7 +731,9 @@ pub fn fault_in_form_for(whose: Whose) -> Option<&'static str> {
             .flatten()
             .unwrap_or(false);
         if !same {
-            return Some("The two passwords are not the same.");
+            return Some(crate::i18n::text(
+                "shell-the-two-passwords-are-not-the-same",
+            ));
         }
     }
     // A picture that has gone between being chosen and being saved. Worth
@@ -721,7 +742,9 @@ pub fn fault_in_form_for(whose: Whose) -> Option<&'static str> {
     if draft.chose_picture {
         if let Some(picture) = draft.picture.as_deref() {
             if !picture.is_file() {
-                return Some("The picture that was chosen is no longer there.");
+                return Some(crate::i18n::text(
+                    "shell-the-picture-that-was-chosen-is-no-longer-there",
+                ));
             }
         }
     }
@@ -1080,8 +1103,10 @@ impl Worker {
     fn carry_out(&mut self, ask: Ask) -> Result<(), Trouble> {
         let bus = self.bus.as_ref().ok_or_else(|| {
             Trouble::new(
-                "There was nothing to ask",
-                "This session has no system bus, so no account service could be reached.",
+                crate::i18n::text("shell-there-was-nothing-to-ask"),
+                crate::i18n::text(
+                    "shell-this-session-has-no-system-bus-so-no-account-service-could-be-reached",
+                ),
             )
         })?;
         match ask {
@@ -1095,8 +1120,10 @@ impl Worker {
                 let _ = path;
                 let uid = i64::try_from(uid).map_err(|_| {
                     Trouble::new(
-                        "That account cannot be removed",
-                        "Its user id is larger than the account service will take.",
+                        crate::i18n::text("shell-that-account-cannot-be-removed"),
+                        crate::i18n::text(
+                            "shell-its-user-id-is-larger-than-the-account-service-will-take",
+                        ),
                     )
                 })?;
                 change::<_, ()>(
@@ -1106,7 +1133,12 @@ impl Worker {
                     "DeleteUser",
                     &(uid, files),
                 )
-                .map_err(|why| Trouble::new("The account could not be removed", why))
+                .map_err(|why| {
+                    Trouble::new(
+                        crate::i18n::text("shell-the-account-could-not-be-removed"),
+                        why,
+                    )
+                })
             }
         }
     }
@@ -1132,7 +1164,12 @@ fn create(bus: &zbus::blocking::Connection, made: Made) -> Result<(), Trouble> {
         "CreateUser",
         &(made.name.as_str(), made.real.as_str(), kind),
     )
-    .map_err(|why| Trouble::new("The account could not be created", why))?;
+    .map_err(|why| {
+        Trouble::new(
+            crate::i18n::text("shell-the-account-could-not-be-created"),
+            why,
+        )
+    })?;
     let path = path.as_str().to_string();
 
     // The password. A new account has one by construction — the form will not
@@ -1154,28 +1191,44 @@ fn create(bus: &zbus::blocking::Connection, made: Made) -> Result<(), Trouble> {
 fn save(bus: &zbus::blocking::Connection, made: Made) -> Result<(), Trouble> {
     let path = made.path.as_deref().ok_or_else(|| {
         Trouble::new(
-            "That account has gone",
-            "It was taken off this machine while the form was open.",
+            crate::i18n::text("shell-that-account-has-gone"),
+            crate::i18n::text("shell-it-was-taken-off-this-machine-while-the-form-was-open"),
         )
     })?;
     let was = made.was.as_ref();
     tracing::info!(name = made.name, "saving an account");
 
     if was.is_none_or(|was| was.real != made.real) {
-        change::<_, ()>(bus, path, USER_IFACE, "SetRealName", &(made.real.as_str(),))
-            .map_err(|why| Trouble::new("The name could not be changed", why))?;
+        change::<_, ()>(bus, path, USER_IFACE, "SetRealName", &(made.real.as_str(),)).map_err(
+            |why| {
+                Trouble::new(
+                    crate::i18n::text("shell-the-name-could-not-be-changed"),
+                    why,
+                )
+            },
+        )?;
     }
     if was.is_none_or(|was| was.name != made.name) {
-        change::<_, ()>(bus, path, USER_IFACE, "SetUserName", &(made.name.as_str(),))
-            .map_err(|why| Trouble::new("The user name could not be changed", why))?;
+        change::<_, ()>(bus, path, USER_IFACE, "SetUserName", &(made.name.as_str(),)).map_err(
+            |why| {
+                Trouble::new(
+                    crate::i18n::text("shell-the-user-name-could-not-be-changed"),
+                    why,
+                )
+            },
+        )?;
     }
     if was.is_none_or(|was| was.admin != made.admin) {
         let kind = match made.admin {
             true => ADMINISTRATOR,
             false => STANDARD,
         };
-        change::<_, ()>(bus, path, USER_IFACE, "SetAccountType", &(kind,))
-            .map_err(|why| Trouble::new("The account type could not be changed", why))?;
+        change::<_, ()>(bus, path, USER_IFACE, "SetAccountType", &(kind,)).map_err(|why| {
+            Trouble::new(
+                crate::i18n::text("shell-the-account-type-could-not-be-changed"),
+                why,
+            )
+        })?;
     }
     // An empty password is "leave it alone" on an account that already has one
     // — see [`fault_in_password`], which is where that is decided and said.
@@ -1200,17 +1253,24 @@ fn set_password(
     path: &str,
     password: &Secret,
 ) -> Result<(), Trouble> {
-    let hashed = password.as_text(crate::crypt::hash).flatten().ok_or_else(|| {
-        Trouble::new(
-            "The password could not be set",
-            "It could not be hashed: this machine would give the shell no randomness to salt it with.",
-        )
-    })?;
+    let hashed = password
+        .as_text(crate::crypt::hash)
+        .flatten()
+        .ok_or_else(|| {
+            Trouble::new(
+                crate::i18n::text("shell-the-password-could-not-be-set"),
+                crate::i18n::text("users-password-no-randomness"),
+            )
+        })?;
     // No hint. `accounts-daemon` puts one on the login screen for anybody to
     // read, and a hint typed on a form beside the password it is about is one
     // people fill in with the password.
-    change::<_, ()>(bus, path, USER_IFACE, "SetPassword", &(hashed.as_str(), ""))
-        .map_err(|why| Trouble::new("The password could not be set", why))
+    change::<_, ()>(bus, path, USER_IFACE, "SetPassword", &(hashed.as_str(), "")).map_err(|why| {
+        Trouble::new(
+            crate::i18n::text("shell-the-password-could-not-be-set"),
+            why,
+        )
+    })
 }
 
 /// Point the account at a picture, or take the one it has away.
@@ -1222,7 +1282,7 @@ fn write_picture(
     // The empty string is how `SetIconFile` is told there is to be no picture.
     let file = picture.and_then(Path::to_str).unwrap_or_default();
     change::<_, ()>(bus, path, USER_IFACE, "SetIconFile", &(file,))
-        .map_err(|why| Trouble::new("The avatar could not be set", why))
+        .map_err(|why| Trouble::new(crate::i18n::text("shell-the-avatar-could-not-be-set"), why))
 }
 
 fn list_users(bus: &zbus::blocking::Connection) -> Option<Vec<String>> {
@@ -1352,7 +1412,9 @@ where
         // `None` is only ever the answer to a call that said it wanted no
         // reply, and this one does not say that.
         Ok(Some(reply)) => Ok(reply),
-        Ok(None) => Err("The account service answered nothing at all.".to_string()),
+        Ok(None) => {
+            Err(crate::i18n::text("shell-the-account-service-answered-nothing-at-all").to_string())
+        }
         Err(err) => {
             tracing::warn!(path, interface, method, ?err, "the account service refused");
             let mut why = why(&err);
@@ -1447,8 +1509,12 @@ fn why(err: &zbus::Error) -> String {
         }
         let name = name.as_str();
         return match name.rsplit('.').next().filter(|tail| !tail.is_empty()) {
-            Some(tail) => format!("The account service answered {tail}."),
-            None => format!("The account service answered {name}."),
+            Some(tail) => {
+                crate::message!("account-service-answered", "answer" => tail)
+            }
+            None => {
+                crate::message!("account-service-answered", "answer" => name)
+            }
         };
     }
     format!("{err}")

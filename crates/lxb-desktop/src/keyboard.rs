@@ -911,7 +911,10 @@ pub fn row_spans(row: usize) -> Vec<(Key, f32)> {
         }
         1 => {
             keys.extend(caps_in(row).into_iter().map(|cap| (Key::Char(cap), 1.0)));
-            keys.push((Key::Named("Back", Stroke::BACKSPACE), 2.0));
+            keys.push((
+                Key::Named(crate::i18n::text("shell-back"), Stroke::BACKSPACE),
+                2.0,
+            ));
         }
         2 => {
             keys.push((Key::Named("Tab", Stroke::TAB), 1.5));

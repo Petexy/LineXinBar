@@ -627,17 +627,17 @@ fn ago(when: std::time::SystemTime) -> String {
         // A clock that has gone backwards — a machine that has just picked up
         // the time from the network, which is every first boot. Not worth a
         // sentence; it is a library from this session either way.
-        return "just now".to_string();
+        return crate::i18n::text("shell-just-now").to_string();
     };
     let minutes = since.as_secs() / 60;
     match minutes {
-        0 => "just now".to_string(),
-        1 => "a minute ago".to_string(),
-        2..=59 => format!("{minutes} minutes ago"),
-        60..=119 => "an hour ago".to_string(),
-        120..=1439 => format!("{} hours ago", minutes / 60),
-        1440..=2879 => "yesterday".to_string(),
-        _ => format!("{} days ago", minutes / 1440),
+        0 => crate::i18n::text("shell-just-now").to_string(),
+        1 => crate::i18n::text("shell-a-minute-ago").to_string(),
+        2..=59 => crate::message!("time-minutes-ago", "count" => minutes),
+        60..=119 => crate::i18n::text("shell-an-hour-ago").to_string(),
+        120..=1439 => crate::message!("time-hours-ago", "count" => minutes / 60),
+        1440..=2879 => crate::i18n::text("time-yesterday").to_string(),
+        _ => crate::message!("time-days-ago", "count" => minutes / 1440),
     }
 }
 
@@ -664,12 +664,10 @@ impl Preflight {
     pub fn room_said(&self) -> Option<String> {
         let most = self.room.iter().filter_map(|room| room.free).max()?;
         Some(match self.room.len() {
-            0 | 1 => format!("{} free on this machine.", lxb_steam::library::said(most)),
-            _ => format!(
-                "{} free on the largest of {} Steam libraries.",
-                lxb_steam::library::said(most),
-                self.room.len()
-            ),
+            0 | 1 => crate::message!("steam-free-on-this-machine", "free" => format_size(most)),
+            libraries => {
+                crate::message!("steam-free-on-largest-library", "free" => format_size(most), "count" => libraries)
+            }
         })
     }
 }
@@ -734,24 +732,24 @@ impl Fetching {
     /// one thing only this half can say: nothing on the disk carries it.
     pub fn said(&self) -> String {
         let so_far = match (self.fraction(), self.total) {
-            (None, _) => "Installing…".to_string(),
+            (None, _) => crate::i18n::text("shell-installing").to_string(),
             // How far, and of what — except that the two now come from
             // different places, and the client knows how far before the
             // manifest has been written at all. Measured: a percentage was in
             // hand a whole second before the file first named a size. Saying
             // "of 0 B" there would be the row inventing the half it has not got.
-            (Some(share), 0) => format!("Installing… {:.0}%", share * 100.0),
-            (Some(share), total) => format!(
-                "Installing… {:.0}% of {}",
-                share * 100.0,
-                lxb_steam::library::said(total)
-            ),
+            (Some(share), 0) => {
+                crate::message!("steam-installing-percent", "percent" => format!("{:.0}", share * 100.0))
+            }
+            (Some(share), total) => {
+                crate::message!("steam-installing-percent-of", "percent" => format!("{:.0}", share * 100.0), "size" => format_size(total))
+            }
         };
         // The size and the rate are the same kind of number and are written the
         // same way, which is what lets them share a line without reading as two
         // different measurements.
         let so_far = match self.per_second() {
-            Some(rate) => format!("{so_far} · {}/s", lxb_steam::library::said(rate)),
+            Some(rate) => format!("{so_far} · {}/s", format_size(rate)),
             None => so_far,
         };
         match self.stuck {
@@ -760,7 +758,7 @@ impl Fetching {
             // that goes on looking like something is happening. What to do
             // about it is in the menu — Steam's own downloads list — and this
             // is the line that sends somebody there.
-            true => format!("{so_far} — not moving"),
+            true => crate::message!("steam-not-moving", "progress" => so_far),
             false => so_far,
         }
     }
@@ -867,10 +865,62 @@ pub struct Coming {
     pub a_download: bool,
 }
 
+/// Format typed library facts at the shell boundary; wire values and game
+/// names remain untouched. Keep size conventions consistent with Steam.
+pub fn format_size(bytes: u64) -> String {
+    crate::i18n::decimal(lxb_steam::library::said(bytes))
+}
+
+pub fn friend_doing(friend: &lxb_steam::Person) -> &str {
+    match (&friend.game, friend.app_id) {
+        (Some(game), _) => game,
+        (None, Some(_)) => crate::i18n::builtin("In game"),
+        (None, None) => crate::i18n::builtin(friend.presence.said()),
+    }
+}
+
+fn game_progress_note(game: &Game, state: &str) -> String {
+    match game.fraction() {
+        Some(share) => crate::message!("steam-game-progress", "state" => state,
+            "percent" => format!("{:.0}", share * 100.0),
+            "size" => format_size(game.to_download)),
+        None => state.to_owned(),
+    }
+}
+
+fn game_note(game: &Game) -> String {
+    use lxb_steam::library::Standing;
+    if !matches!(game.standing, Standing::NotInstalled | Standing::Ready) {
+        return game_progress_note(game, crate::i18n::builtin(game.standing.said()));
+    }
+    if !game.installed {
+        return crate::i18n::text("integration-not-installed").to_owned();
+    }
+    let installed = crate::i18n::text("integration-installed");
+    match (game.size_on_disk, game.playtime_minutes) {
+        (0, _) => installed.to_owned(),
+        (size, 0) => format!("{installed} · {}", format_size(size)),
+        (size, minutes) => {
+            let played = if minutes < 60 {
+                crate::message!("steam-playtime-minutes", "minutes" => minutes)
+            } else {
+                let hours = f64::from(minutes) / 60.0;
+                let number = if hours < 10.0 {
+                    format!("{hours:.1}")
+                } else {
+                    format!("{hours:.0}")
+                };
+                crate::message!("steam-playtime-hours", "hours" => crate::i18n::decimal(number))
+            };
+            crate::message!("steam-installed-played", "size" => format_size(size), "played" => played)
+        }
+    }
+}
+
 impl Coming {
     /// What the card's one line says.
     pub fn said(&self) -> String {
-        format!("{} {}", self.verb, self.name)
+        format!("{} {}", crate::i18n::builtin(self.verb), self.name)
     }
 }
 
@@ -1401,7 +1451,8 @@ impl Steam {
                         Word::History {
                             with: steam_id,
                             request,
-                            said: Err("Steam is not answering. Try again.".to_string()),
+                            said: Err(crate::i18n::text("shell-steam-is-not-answering-try-again")
+                                .to_string()),
                         },
                     );
                 }
@@ -1433,7 +1484,9 @@ impl Steam {
                             Word::Sent {
                                 with: steam_id,
                                 request,
-                                said: Err("Steam would not take it".to_string()),
+                                said: Err(
+                                    crate::i18n::text("shell-steam-would-not-take-it").to_string()
+                                ),
                             },
                         );
                     }
@@ -1555,27 +1608,27 @@ impl Steam {
 
         let backend = lxb_steam::backend::Backend::chosen();
         values.push((
-            "Client".to_string(),
+            crate::i18n::text("shell-client").to_string(),
             match backend.as_ref().and_then(|backend| backend.client.as_ref()) {
                 Some(lxb_steam::client::Where::Native(path)) => {
-                    format!("native — {}", path.display())
+                    crate::message!("steam-client-native", "path" => path.display().to_string())
                 }
                 Some(lxb_steam::client::Where::Flatpak) => "Flatpak".to_string(),
-                None => "none on this machine".to_string(),
+                None => crate::i18n::text("shell-none-on-this-machine").to_string(),
             },
         ));
         values.push((
-            "Steam directory".to_string(),
+            crate::i18n::text("shell-steam-directory").to_string(),
             match backend.as_ref() {
                 Some(backend) => under_home(backend.root()),
-                None => "nothing Steam-shaped found".to_string(),
+                None => crate::i18n::text("shell-nothing-steam-shaped-found").to_string(),
             },
         ));
         values.push((
-            "Driven by this session".to_string(),
+            crate::i18n::text("shell-driven-by-this-session").to_string(),
             match self.driving {
-                true => "yes".to_string(),
-                false => "no".to_string(),
+                true => crate::i18n::text("shell-yes").to_lowercase(),
+                false => crate::i18n::text("shell-no").to_lowercase(),
             },
         ));
 
@@ -1592,23 +1645,24 @@ impl Steam {
         // cannot be removed on the shell's own authority; it can be shown, and
         // the button beside this line is how it goes.
         values.push((
-            "Debugging interface".to_string(),
+            crate::i18n::text("shell-debugging-interface").to_string(),
             match backend.as_ref() {
-                Some(backend) => lxb_steam::webui::exposure(backend.root())
-                    .said()
-                    .to_string(),
+                Some(backend) => {
+                    crate::i18n::builtin(lxb_steam::webui::exposure(backend.root()).said())
+                        .to_string()
+                }
                 // Nothing to look at and nothing that could open: no client and
                 // no directory means no marker and nothing to start from one.
-                None => "no client to expose".to_string(),
+                None => crate::i18n::text("shell-no-client-to-expose").to_string(),
             },
         ));
 
         values.push((
-            "Account".to_string(),
+            crate::i18n::text("shell-account").to_string(),
             match (self.account.as_deref(), self.steam_id) {
                 (Some(account), Some(id)) => format!("{account} (…{})", id % 10_000),
                 (Some(account), None) => account.to_string(),
-                (None, _) => "nobody signed in".to_string(),
+                (None, _) => crate::i18n::text("shell-nobody-signed-in").to_string(),
             },
         ));
         values.push((
@@ -1619,13 +1673,13 @@ impl Steam {
             self.reach
                 .said()
                 .map(str::to_string)
-                .unwrap_or_else(|| "answering".to_string()),
+                .unwrap_or_else(|| crate::i18n::text("steam-answering").to_string()),
         ));
         values.push((
-            "Library".to_string(),
+            crate::i18n::text("shell-library").to_string(),
             match self.library_as_of {
-                Some(when) => format!("{} games, {}", self.games.len(), ago(when)),
-                None => format!("{} games", self.games.len()),
+                Some(when) => crate::message!("steam-library-read", "count" => self.games.len(), "when" => ago(when)),
+                None => crate::message!("count-games", "count" => self.games.len()),
             },
         ));
 
@@ -1635,17 +1689,17 @@ impl Steam {
         let moving: Vec<String> = self
             .fetching
             .keys()
-            .map(|app_id| format!("fetching {app_id}"))
+            .map(|app_id| crate::message!("steam-fetching-app", "app" => *app_id))
             .chain(
                 self.removing
                     .iter()
-                    .map(|app_id| format!("removing {app_id}")),
+                    .map(|app_id| crate::message!("steam-removing-app", "app" => *app_id)),
             )
             .collect();
         values.push((
-            "In flight".to_string(),
+            crate::i18n::text("shell-in-flight").to_string(),
             match moving.is_empty() {
-                true => "nothing".to_string(),
+                true => crate::i18n::text("steam-nothing-in-flight").to_string(),
                 false => moving.join(", "),
             },
         ));
@@ -1654,13 +1708,13 @@ impl Steam {
         // about somebody's disk this shell is in a position to do anything
         // about — the button beside this panel throws it away.
         values.push((
-            "Artwork cache".to_string(),
+            crate::i18n::text("shell-artwork-cache").to_string(),
             match crate::art::cache_room() {
-                Some((0, _)) => "empty".to_string(),
+                Some((0, _)) => crate::i18n::text("steam-cache-empty").to_string(),
                 Some((bytes, files)) => {
-                    format!("{} in {files} files", lxb_steam::library::said(bytes))
+                    crate::message!("steam-size-in-files", "size" => format_size(bytes), "count" => files)
                 }
-                None => "nowhere to keep one".to_string(),
+                None => crate::i18n::text("shell-nowhere-to-keep-one").to_string(),
             },
         ));
 
@@ -1671,7 +1725,10 @@ impl Steam {
             // Short, because the panel gives a value one line and cuts what
             // runs past it. "Nothing has been asked of Valve's client" is the
             // sentence this means and it does not fit beside its own label.
-            values.push(("Lately".to_string(), "nothing yet".to_string()));
+            values.push((
+                crate::i18n::text("shell-lately").to_string(),
+                crate::i18n::text("shell-nothing-yet").to_string(),
+            ));
         }
         for entry in lately.iter().rev().take(LATELY_SHOWN) {
             values.push((ago(entry.at), format!("{}: {}", entry.what, entry.how)));
@@ -1727,11 +1784,16 @@ impl Steam {
     /// somebody looking at a column with a game missing from it should be able
     /// to see that the column is from this morning.
     pub fn standing(&self) -> Option<String> {
-        let said = self.reach.said()?.to_string();
+        let said = match &self.reach {
+            lxb_steam::Reach::Restoring => {
+                crate::i18n::text("shell-connecting-to-steam").to_owned()
+            }
+            other => other.said()?.to_owned(),
+        };
         let Some(read_at) = self.library_as_of else {
             return Some(said);
         };
-        Some(format!("{said} · library from {}", ago(read_at)))
+        Some(crate::message!("steam-library-from", "said" => said, "when" => ago(read_at)))
     }
 
     pub fn signed_in(&self) -> bool {
@@ -2735,6 +2797,9 @@ impl Steam {
                 // for "not a letter" since long before this shell.
                 let heading = letter.unwrap_or('#');
                 crate::apps::Entry::Folder(crate::apps::Folder {
+                    title_message: None,
+                    comment_message: None,
+                    identity: None,
                     // What the row has to say, now that the letter is the mark
                     // and not the words: how far this heading goes. A letter is
                     // the one row in the shell whose title is a quantity, and it
@@ -2763,8 +2828,14 @@ impl Steam {
             .collect();
 
         crate::apps::Entry::Folder(crate::apps::Folder {
-            title: "Alphabetical".to_string(),
-            comment: Some("Every game in the library, by its first letter".to_string()),
+            title_message: Some("shell-alphabetical"),
+            comment_message: None,
+            identity: None,
+            title: crate::i18n::text("shell-alphabetical").to_string(),
+            comment: Some(
+                crate::i18n::text("shell-every-game-in-the-library-by-its-first-letter")
+                    .to_string(),
+            ),
             // The alphabet itself, named by its two ends and cut from the same
             // face as the headings behind the row — see
             // [`crate::icons::INDEX_MARK`]. The Steam mark stood here first,
@@ -2822,16 +2893,20 @@ impl Steam {
         };
         let quietly_updating = quietly.is_some();
         let note = match (removing, fetching) {
-            (true, _) => "Removing…".to_string(),
+            (true, _) => crate::i18n::text("shell-removing").to_string(),
             (false, Some(so_far)) => so_far.said(),
             // And while one is on its way up, the answer to "why is nothing
             // happening" has changed: something is.
             (false, None) if waiting_for_steam && self.client_waking => {
-                "Starting Steam…".to_string()
+                crate::i18n::text("shell-starting-steam").to_string()
             }
-            (false, None) if waiting_for_steam => game.note_waiting_for_steam(),
-            (false, None) if let Some(standing) = quietly => game.note_working(standing),
-            (false, None) => game.note(),
+            (false, None) if waiting_for_steam => {
+                game_progress_note(game, crate::i18n::text("steam-waiting"))
+            }
+            (false, None) if let Some(standing) = quietly => {
+                crate::i18n::builtin(standing.said()).to_owned()
+            }
+            (false, None) => game_note(game),
         };
         // And the same fact as a bar. Read from whichever of the two said the
         // sentence above, so the picture and the words on one row can never be
@@ -2942,7 +3017,7 @@ impl Steam {
         if self.client.client_needs_setting_up() {
             self.client.set_up_the_client();
             let step = lxb_steam::setup::Step {
-                said: "Getting Steam ready".to_string(),
+                said: crate::i18n::text("shell-getting-steam-ready").to_string(),
                 percent: None,
             };
             self.setting_up = Some(step.clone());
@@ -2990,7 +3065,7 @@ impl Steam {
     pub fn set_up_again(&mut self) {
         self.client.set_up_the_client();
         let step = lxb_steam::setup::Step {
-            said: "Getting Steam ready".to_string(),
+            said: crate::i18n::text("shell-getting-steam-ready").to_string(),
             percent: None,
         };
         self.setting_up = Some(step.clone());
@@ -3288,13 +3363,21 @@ impl Steam {
     /// client is needs what the client says out loud, and nothing secret.
     pub fn play(&mut self, app_id: u32) -> Result<(), String> {
         let Some(steam_id) = self.steam_id else {
-            return Err("This session is not signed in to Steam.".to_string());
+            return Err(
+                crate::i18n::text("shell-this-session-is-not-signed-in-to-steam").to_string(),
+            );
         };
         let Some(where_it_is) = lxb_steam::client::Where::find() else {
-            return Err("There is no Steam client installed on this machine.".to_string());
+            return Err(crate::i18n::text(
+                "shell-there-is-no-steam-client-installed-on-this-machine",
+            )
+            .to_string());
         };
         let Some(options) = lxb_steam::client::Options::for_client(&where_it_is) else {
-            return Err("Steam's directories could not be found on this machine.".to_string());
+            return Err(crate::i18n::text(
+                "shell-steam-s-directories-could-not-be-found-on-this-machine",
+            )
+            .to_string());
         };
         let proven = lxb_steam::client::prove_and_deliver(
             &where_it_is,
@@ -3302,7 +3385,9 @@ impl Steam {
             steam_id as u32,
             &format!("steam://rungameid/{app_id}"),
         )
-        .map_err(|refusal| format!("Steam would not start this game: {refusal}"))?;
+        .map_err(
+            |refusal| crate::message!("steam-refused-launch", "refusal" => refusal.to_string()),
+        )?;
         tracing::info!(
             app_id,
             client = ?proven.pid,
@@ -3735,7 +3820,7 @@ impl Steam {
     fn named(&self, app_id: u32) -> String {
         self.game(app_id)
             .map(|game| game.name.clone())
-            .unwrap_or_else(|| format!("App {app_id}"))
+            .unwrap_or_else(|| crate::message!("steam-app-number", "app" => app_id))
     }
 
     /// Which word goes in front of the name, for a download this session
@@ -3799,11 +3884,14 @@ impl Steam {
                 // sink holds is overwritten when the client has encrypted it.
                 if secret.hand_to(&mut password).is_err() {
                     self.signing_in = Some(Stage::Failed(
-                        "That password could not be handed over.".to_string(),
+                        crate::i18n::text("shell-that-password-could-not-be-handed-over")
+                            .to_string(),
                     ));
                     return;
                 }
-                self.signing_in = Some(Stage::Waiting("Signing in.".to_string()));
+                self.signing_in = Some(Stage::Waiting(
+                    crate::i18n::text("shell-signing-in").to_string(),
+                ));
                 self.client.sign_in_with_password(account, password);
             }
             Stage::Code {
@@ -3870,19 +3958,24 @@ impl Steam {
         let stage = self.signing_in.as_ref()?;
         let heading = dialog::Line::Heading(
             match stage {
-                Stage::LibraryUnavailable(_) => "Steam library",
+                Stage::LibraryUnavailable(_) => crate::i18n::text("shell-steam-library"),
                 // Named for what is happening rather than for what it is on
                 // the way to. Somebody who pressed "Sign in to Steam" and got a
                 // four-minute wait under that heading would reasonably think
                 // the wait *was* the sign-in, and that Steam was being slow
                 // about their account. It is not their account: it is Steam
                 // arriving on the machine.
-                Stage::FirstSetup(_) | Stage::SetupFailed(_) => "Setting up Steam",
-                _ => "Sign in to Steam",
+                Stage::FirstSetup(_) | Stage::SetupFailed(_) => {
+                    crate::i18n::text("shell-setting-up-steam")
+                }
+                _ => crate::i18n::text("shell-sign-in-to-steam"),
             }
             .to_string(),
         );
-        let cancel = menu::Entry::new(menu::Command::SteamCancel, "Cancel");
+        let cancel = menu::Entry::new(
+            menu::Command::SteamCancel,
+            crate::i18n::text("shell-cancel"),
+        );
 
         let panel = match stage {
             Stage::FirstSetup(step) => Panel {
@@ -3902,9 +3995,14 @@ impl Steam {
                     // screenshot reading "Steam has to install itself on this
                     // machine before you can …".
                     dialog::Line::Note(
-                        "Steam has to install itself before you can sign in.".to_string(),
+                        crate::i18n::text(
+                            "shell-steam-has-to-install-itself-before-you-can-sign-in",
+                        )
+                        .to_string(),
                     ),
-                    dialog::Line::Note("This only happens once.".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-this-only-happens-once").to_string(),
+                    ),
                     dialog::Line::Note(match step.percent {
                         Some(percent) => format!("{}  ·  {percent}%", step.said),
                         None => step.said.clone(),
@@ -3925,7 +4023,7 @@ impl Steam {
                 // what Back does on this panel too.
                 buttons: vec![menu::Entry::new(
                     menu::Command::SteamSetupInBackground,
-                    "Carry on in the background",
+                    crate::i18n::text("shell-carry-on-in-the-background"),
                 )],
                 start: 0,
                 typing: false,
@@ -3933,8 +4031,11 @@ impl Steam {
             Stage::SetupFailed(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamSetUpAgain, "Try again"),
-                    menu::Entry::new(menu::Command::SteamCancel, "Close"),
+                    menu::Entry::new(
+                        menu::Command::SteamSetUpAgain,
+                        crate::i18n::text("shell-try-again"),
+                    ),
+                    menu::Entry::new(menu::Command::SteamCancel, crate::i18n::text("shell-close")),
                 ],
                 start: 0,
                 typing: false,
@@ -3943,16 +4044,21 @@ impl Steam {
                 lines: vec![
                     heading,
                     dialog::Line::Note(
-                        "Your library appears on the start screen as a column of its own."
-                            .to_string(),
+                        crate::i18n::text(
+                            "shell-your-library-appears-on-the-start-screen-as-a-column-of-its-own",
+                        )
+                        .to_string(),
                     ),
                     dialog::Line::Rule,
                 ],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamWithQr, "Scan a code with your phone"),
+                    menu::Entry::new(
+                        menu::Command::SteamWithQr,
+                        crate::i18n::text("shell-scan-a-code-with-your-phone"),
+                    ),
                     menu::Entry::new(
                         menu::Command::SteamWithPassword,
-                        "Type an account name and password",
+                        crate::i18n::text("shell-type-an-account-name-and-password"),
                     ),
                     cancel.group(1),
                 ],
@@ -3965,8 +4071,11 @@ impl Steam {
                 lines: vec![
                     heading,
                     dialog::Line::Note(match code {
-                        Some(_) => "Scan this in the Steam app on your phone.".to_string(),
-                        None => "Asking Steam for a code.".to_string(),
+                        Some(_) => {
+                            crate::i18n::text("shell-scan-this-in-the-steam-app-on-your-phone")
+                                .to_string()
+                        }
+                        None => crate::i18n::text("shell-asking-steam-for-a-code").to_string(),
                     }),
                     match code {
                         Some(code) => dialog::Line::Qr(code.clone()),
@@ -3984,25 +4093,33 @@ impl Steam {
             Stage::Account(typed) => Panel {
                 lines: vec![
                     heading,
-                    dialog::Line::Note("Enter your Steam account name.".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-enter-your-steam-account-name").to_string(),
+                    ),
                     dialog::Line::Entry(typed.clone()),
                     dialog::Line::Rule,
                 ],
-                buttons: vec![menu::Entry::new(menu::Command::SteamSubmit, "Next"), cancel],
+                buttons: vec![
+                    menu::Entry::new(menu::Command::SteamSubmit, crate::i18n::text("shell-next")),
+                    cancel,
+                ],
                 start: 0,
                 typing: true,
             },
             Stage::Password { account, secret } => Panel {
                 lines: vec![
                     heading,
-                    dialog::Line::Note(format!("Enter the password for {account}.")),
+                    dialog::Line::Note(crate::message!("enter-password-for", "name" => account)),
                     dialog::Line::Secret {
                         typed: secret.typed(),
                     },
                     dialog::Line::Rule,
                 ],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamSubmit, "Sign in"),
+                    menu::Entry::new(
+                        menu::Command::SteamSubmit,
+                        crate::i18n::text("shell-sign-in"),
+                    ),
                     cancel,
                 ],
                 start: 0,
@@ -4019,7 +4136,10 @@ impl Steam {
                     dialog::Line::Rule,
                 ],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamSubmit, "Confirm"),
+                    menu::Entry::new(
+                        menu::Command::SteamSubmit,
+                        crate::i18n::text("shell-confirm"),
+                    ),
                     cancel,
                 ],
                 start: 0,
@@ -4039,7 +4159,10 @@ impl Steam {
             Stage::Failed(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamSignIn, "Try again"),
+                    menu::Entry::new(
+                        menu::Command::SteamSignIn,
+                        crate::i18n::text("shell-try-again"),
+                    ),
                     cancel,
                 ],
                 // On trying again: the panel is only ever here because
@@ -4050,8 +4173,11 @@ impl Steam {
             Stage::LibraryUnavailable(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
                 buttons: vec![
-                    menu::Entry::new(menu::Command::SteamRefresh, "Try again"),
-                    menu::Entry::new(menu::Command::SteamCancel, "Close"),
+                    menu::Entry::new(
+                        menu::Command::SteamRefresh,
+                        crate::i18n::text("shell-try-again"),
+                    ),
+                    menu::Entry::new(menu::Command::SteamCancel, crate::i18n::text("shell-close")),
                 ],
                 start: 0,
                 typing: false,
@@ -4063,10 +4189,7 @@ impl Steam {
 
 /// How many games a letter of the index holds, as its row says it.
 fn counted(games: usize) -> String {
-    match games {
-        1 => "1 game".to_string(),
-        games => format!("{games} games"),
-    }
+    crate::message!("count-games", "count" => games)
 }
 
 /// One frame of the sign-in panel.
@@ -4080,6 +4203,24 @@ pub struct Panel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn polish_library_notes_translate_states_without_changing_names() {
+        use crate::i18n::{self, Language};
+        use lxb_steam::library::{Game, Standing};
+        i18n::set(Language::Polish);
+        let mut game = Game::invented(12, "Installed".into(), true);
+        game.standing = Standing::Ready;
+        game.size_on_disk = 1500;
+        game.playtime_minutes = 90;
+        assert!(super::game_note(&game).contains("Zainstalowane"));
+        assert!(super::game_note(&game).contains("1,5 godz."));
+        assert_eq!(game.name, "Installed");
+        game.standing = Standing::Validating;
+        assert_eq!(super::game_note(&game), "Sprawdzanie plików");
+        i18n::set(Language::English);
+        assert_eq!(super::game_note(&game), game.note());
+    }
+
     use super::*;
     use crate::keyboard::Stroke;
     use std::path::PathBuf;
@@ -6620,7 +6761,7 @@ mod tests {
         assert!(steam.set_search("   "));
         let rows = steam.rows();
         assert_eq!(rows[3].title(), "The Witness");
-        assert_eq!(rows[0].comment(), Some("1 of 1 games matches"));
+        assert_eq!(rows[0].comment(), Some("1 of 1 game matches"));
     }
 
     /// A search that finds nothing keeps the two rows that say why. A column

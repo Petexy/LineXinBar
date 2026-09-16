@@ -203,11 +203,11 @@ impl Security {
     /// What the row says it is.
     pub fn title(self) -> &'static str {
         match self {
-            Security::Open => "Open",
+            Security::Open => crate::i18n::text("security-open"),
             Security::Wep => "WEP",
             Security::Personal => "WPA2",
             Security::Modern => "WPA3",
-            Security::Enterprise => "Enterprise",
+            Security::Enterprise => crate::i18n::text("label-enterprise"),
         }
     }
 
@@ -353,20 +353,20 @@ impl Field {
     /// is the other half of the same answer.
     pub fn title(self) -> &'static str {
         match self {
-            Field::Address => "Address",
-            Field::Router => "Router",
-            Field::Dns => "DNS servers",
+            Field::Address => crate::i18n::text("shell-address"),
+            Field::Router => crate::i18n::text("shell-router"),
+            Field::Dns => crate::i18n::text("label-dns-servers"),
         }
     }
 
     /// What to type, for somebody looking at an empty field on a television.
     pub fn note(self) -> &'static str {
         match self {
-            Field::Address => {
-                "This machine's address and the size of the network, as 192.168.1.50/24."
+            Field::Address => crate::i18n::text("network-address-help"),
+            Field::Router => {
+                crate::i18n::text("label-the-address-of-the-router-this-network-goes-out-th")
             }
-            Field::Router => "The address of the router this network goes out through.",
-            Field::Dns => "The name servers to ask, separated by commas.",
+            Field::Dns => crate::i18n::text("label-the-name-servers-to-ask-separated-by-commas"),
         }
     }
 }
@@ -2138,18 +2138,20 @@ fn trouble_of(state: u32, reason: u32, kind: Kind, carrier: Option<bool>) -> Opt
     // The cable outranks everything. A socket with nothing in it has one fact
     // about it and every other explanation is downstream of that one.
     if kind == Kind::Wired && carrier == Some(false) {
-        return Some("No cable".to_string());
+        return Some(crate::i18n::text("shell-no-cable").to_string());
     }
     match (state, reason) {
         (STATE_FAILED, REASON_NO_SECRETS) | (STATE_NEED_AUTH, REASON_NO_SECRETS) => {
-            Some("The password was not accepted".to_string())
+            Some(crate::i18n::text("label-the-password-was-not-accepted").to_string())
         }
-        (STATE_FAILED, _) => Some("Could not connect".to_string()),
+        (STATE_FAILED, _) => Some(crate::i18n::text("shell-could-not-connect").to_string()),
         (STATE_UNAVAILABLE, _) if kind == Kind::Wireless => {
-            Some("The wireless radio is off".to_string())
+            Some(crate::i18n::text("label-the-wireless-radio-is-off").to_string())
         }
-        (STATE_UNAVAILABLE, _) => Some("Not ready".to_string()),
-        (STATE_UNMANAGED, _) => Some("Something else is in charge of it".to_string()),
+        (STATE_UNAVAILABLE, _) => Some(crate::i18n::text("shell-not-ready").to_string()),
+        (STATE_UNMANAGED, _) => {
+            Some(crate::i18n::text("label-something-else-is-in-charge-of-it").to_string())
+        }
         _ => None,
     }
 }
@@ -2264,7 +2266,9 @@ pub fn fault(field: Field, text: &str) -> Option<&'static str> {
         },
         Field::Router => match text.parse::<std::net::Ipv4Addr>() {
             Ok(_) => None,
-            Err(_) => Some("That is not an address. Type it as 192.168.1.1."),
+            Err(_) => Some(crate::i18n::text(
+                "label-that-is-not-an-address-type-it-as-192-168-1-1",
+            )),
         },
         Field::Dns => {
             let named = text
@@ -2272,7 +2276,9 @@ pub fn fault(field: Field, text: &str) -> Option<&'static str> {
                 .filter(|part| !part.trim().is_empty());
             match named.count() == servers_of(text).len() {
                 true => None,
-                false => Some("Those are not all addresses. Separate them with commas."),
+                false => Some(crate::i18n::text(
+                    "label-those-are-not-all-addresses-separate-them-with-com",
+                )),
             }
         }
     }

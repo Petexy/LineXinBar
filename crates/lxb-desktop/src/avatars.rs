@@ -283,8 +283,11 @@ fn work(queue: &Queue, send: &Sender<Made>) {
 
 /// Find one picture and turn it into what the GPU takes.
 fn produce(job: &Job, cdn: &Cdn) -> Result<(PathBuf, Picture), Missing> {
-    let ours = ours(job)
-        .ok_or_else(|| Missing::Unreachable("there is nowhere to cache pictures".to_string()))?;
+    let ours = ours(job).ok_or_else(|| {
+        Missing::Unreachable(
+            crate::i18n::text("label-there-is-nowhere-to-cache-pictures").to_string(),
+        )
+    })?;
 
     // The copy on this disk, if the last session fetched it. A file that is
     // there and will not decode is thrown away rather than stepped over: it is
@@ -307,8 +310,11 @@ fn produce(job: &Job, cdn: &Cdn) -> Result<(PathBuf, Picture), Missing> {
     }
 
     let bytes = cdn.get(&url_of(job))?;
-    let picture = square(&bytes)
-        .ok_or_else(|| Missing::Unreachable(format!("{} could not be decoded", job.hash)))?;
+    let picture = square(&bytes).ok_or_else(|| {
+        Missing::Unreachable(
+            crate::message!("picture-could-not-be-decoded", "file" => job.hash.as_str()),
+        )
+    })?;
     // Written down only once it is known to be a picture, for the reason above.
     store(&ours, &bytes);
     Ok((ours, picture))

@@ -66,6 +66,8 @@ use lxb_protocol::wallpaper;
 /// the next without reading their titles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
+    /// The shell interface language, independent of keyboard and system locale.
+    Language(crate::i18n::Language),
     /// A source update or a maintenance view. The shell dispatches this to the
     /// detached update coordinator; it is not a persisted setting.
     Update(UpdateValue),
@@ -666,9 +668,9 @@ impl Typing {
     pub fn note(self) -> &'static str {
         match self {
             Typing::Network { field, .. } => field.note(),
-            Typing::BluetoothName { .. } => {
-                "What other devices call this machine when they look for it."
-            }
+            Typing::BluetoothName { .. } => crate::i18n::text(
+                "shell-what-other-devices-call-this-machine-when-they-look-for-it",
+            ),
             Typing::User { field, .. } => field.note(),
         }
     }
@@ -750,9 +752,9 @@ impl Startup {
     /// What the row above the three says.
     fn title(self) -> &'static str {
         match self {
-            Startup::On => "On",
-            Startup::Off => "Off",
-            Startup::Restore => "As it was left",
+            Startup::On => crate::i18n::text("shell-on"),
+            Startup::Off => crate::i18n::text("shell-off"),
+            Startup::Restore => crate::i18n::text("shell-as-it-was-left"),
         }
     }
 }
@@ -801,9 +803,9 @@ impl Schedule {
     /// What the row is titled with.
     fn title(self) -> &'static str {
         match self {
-            Schedule::AllDay => "All day",
-            Schedule::SunsetToSunrise => "Sunset to sunrise",
-            Schedule::Hours => "Custom hours",
+            Schedule::AllDay => crate::i18n::text("shell-all-day"),
+            Schedule::SunsetToSunrise => crate::i18n::text("shell-sunset-to-sunrise"),
+            Schedule::Hours => crate::i18n::text("shell-custom-hours"),
         }
     }
 }
@@ -863,14 +865,16 @@ impl Orientation {
     /// and how far from where the display started.
     pub fn title(self) -> &'static str {
         match self {
-            Orientation::Landscape => "0° Rotation",
-            Orientation::Portrait => "90° Rotation",
-            Orientation::LandscapeFlipped => "180° Rotation",
-            Orientation::PortraitFlipped => "270° Rotation",
-            Orientation::Mirrored => "Mirrored",
-            Orientation::MirroredPortrait => "Mirrored, 90° rotation",
-            Orientation::MirroredFlipped => "Mirrored, 180° rotation",
-            Orientation::MirroredPortraitFlipped => "Mirrored, 270° rotation",
+            Orientation::Landscape => crate::i18n::text("shell-0-rotation"),
+            Orientation::Portrait => crate::i18n::text("shell-90-rotation"),
+            Orientation::LandscapeFlipped => crate::i18n::text("shell-180-rotation"),
+            Orientation::PortraitFlipped => crate::i18n::text("shell-270-rotation"),
+            Orientation::Mirrored => crate::i18n::text("shell-mirrored"),
+            Orientation::MirroredPortrait => crate::i18n::text("shell-mirrored-90-rotation"),
+            Orientation::MirroredFlipped => crate::i18n::text("shell-mirrored-180-rotation"),
+            Orientation::MirroredPortraitFlipped => {
+                crate::i18n::text("shell-mirrored-270-rotation")
+            }
         }
     }
 
@@ -899,14 +903,22 @@ impl Orientation {
     /// turned clockwise.
     fn note(self) -> &'static str {
         match self {
-            Orientation::Landscape => "Landscape, the way the display is built",
-            Orientation::Portrait => "Portrait, for a screen turned clockwise",
-            Orientation::LandscapeFlipped => "Landscape, for a screen hung upside down",
-            Orientation::PortraitFlipped => "Portrait, for a screen turned the other way",
+            Orientation::Landscape => {
+                crate::i18n::text("shell-landscape-the-way-the-display-is-built")
+            }
+            Orientation::Portrait => {
+                crate::i18n::text("shell-portrait-for-a-screen-turned-clockwise")
+            }
+            Orientation::LandscapeFlipped => {
+                crate::i18n::text("shell-landscape-for-a-screen-hung-upside-down")
+            }
+            Orientation::PortraitFlipped => {
+                crate::i18n::text("shell-portrait-for-a-screen-turned-the-other-way")
+            }
             // Not offered, and so never the title of a row that has a line
             // under it. Named for the row above the list, which prints the
             // title alone.
-            _ => "Mirrored about a vertical axis",
+            _ => crate::i18n::text("shell-mirrored-about-a-vertical-axis"),
         }
     }
 
@@ -2024,8 +2036,8 @@ impl Picking {
     /// it would mean.
     pub fn note(self) -> &'static str {
         match self {
-            Picking::RomsFolder => "Look for games in this folder",
-            Picking::Firmware => "Copy the BIOS out of this folder",
+            Picking::RomsFolder => crate::i18n::text("shell-look-for-games-in-this-folder"),
+            Picking::Firmware => crate::i18n::text("shell-copy-the-bios-out-of-this-folder"),
         }
     }
 }
@@ -2896,6 +2908,7 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
     vec![
         updates(),
         appearance(),
+        language(),
         display(),
         sounds(),
         network(),
@@ -2905,6 +2918,30 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         users(),
         system(bar),
     ]
+}
+
+fn language() -> Entry {
+    use crate::i18n::{self, Language};
+    folder(
+        i18n::text("language-title"),
+        i18n::text("language-description"),
+        icons::SETTING_LANGUAGE,
+        Language::ALL
+            .into_iter()
+            .map(|language| {
+                value(
+                    language.name(),
+                    Some(i18n::text(if language == Language::System {
+                        "language-system-description"
+                    } else {
+                        "language-choice-description"
+                    })),
+                    language == i18n::preference(),
+                    Setting::Language(language),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Replace the Settings column in a catalogue with a freshly built one.
@@ -2945,8 +2982,8 @@ pub fn refresh(categories: &mut [Category]) {
 /// choosing a picture.
 ///
 /// The same lift [`crate::apps::carried_media`] does for the shelves when the
-/// catalogue is rescanned, and for the same reason. Matched by title, because
-/// that is what a row of this tree is: the shape of the page can change between
+/// catalogue is rescanned, and for the same reason. Matched by stable identity:
+/// changing the language must not lose a listing. The position is not stable: the shape of the page can change between
 /// two rebuilds — a battery row appears, a network goes — and the position of a
 /// row cannot be relied on where the position is the thing that moved.
 ///
@@ -2958,10 +2995,13 @@ fn carry_over_listings(worn: &mut [Entry], fresh: &mut [Entry]) {
         let Entry::Folder(folder) = entry else {
             continue;
         };
-        let Some(Entry::Folder(same)) = worn
-            .iter_mut()
-            .find(|worn| worn.title() == folder.title.as_str())
-        else {
+        let Some(Entry::Folder(same)) = worn.iter_mut().find(|worn| {
+            matches!(worn, Entry::Folder(other) if match (&other.identity, &folder.identity) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => other.place == folder.place && other.title == folder.title,
+                _ => false,
+            })
+        }) else {
             continue;
         };
         if folder.place.is_some() {
@@ -2976,8 +3016,8 @@ fn carry_over_listings(worn: &mut [Entry], fresh: &mut [Entry]) {
 /// page only reads its last snapshot and never starts a package manager.
 fn updates() -> Entry {
     folder(
-        "Updates",
-        "Bringing this machine up to date",
+        crate::i18n::text("shell-updates"),
+        crate::i18n::text("shell-bringing-this-machine-up-to-date"),
         icons::SETTING_UPDATES,
         update_entries(&crate::updates::rows(), crate::updates::overall()),
     )
@@ -3007,10 +3047,10 @@ fn updates() -> Entry {
 /// date does not offer a folder with nothing in it.
 fn update_entries(sources: &[crate::updates::Row], overall: Option<String>) -> Vec<Entry> {
     let mut rows = vec![action(
-        "Update everything",
-        overall
-            .as_deref()
-            .unwrap_or("Check every source and install what is waiting"),
+        crate::i18n::text("shell-update-everything"),
+        overall.as_deref().unwrap_or(crate::i18n::text(
+            "shell-check-every-source-and-install-what-is-waiting",
+        )),
         icons::SETTING_UPDATE_ALL,
         Setting::Update(UpdateValue::Everything),
     )];
@@ -3019,21 +3059,21 @@ fn update_entries(sources: &[crate::updates::Row], overall: Option<String>) -> V
         .filter(|s| s.id != lxb_updates::SourceId::Aur)
     {
         rows.push(action(
-            source.id.title(),
+            crate::i18n::builtin(source.id.title()),
             &source.note,
             update_icon(source.id),
             Setting::Update(UpdateValue::Source(source.id)),
         ));
     }
     rows.push(action(
-        "Recent updates",
-        "Full output from the last three updates",
+        crate::i18n::text("shell-recent-updates"),
+        crate::i18n::text("shell-full-output-from-the-last-three-updates"),
         icons::SETTING_INFO,
         Setting::Update(UpdateValue::History),
     ));
     rows.push(action(
-        "Update preferences",
-        "Daily checks",
+        crate::i18n::text("shell-update-preferences"),
+        crate::i18n::text("shell-daily-checks"),
         icons::SETTING_SCHEDULE,
         Setting::Update(UpdateValue::Preferences),
     ));
@@ -3068,8 +3108,8 @@ fn appearance() -> Entry {
         rows.push(battery_percent_switch(charge));
     }
     folder(
-        "Appearance",
-        "How the shell looks",
+        crate::i18n::text("shell-appearance"),
+        crate::i18n::text("shell-how-the-shell-looks"),
         icons::SETTING_APPEARANCE,
         rows,
     )
@@ -3089,12 +3129,22 @@ fn appearance() -> Entry {
 fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
     let on = battery_percent();
     folder(
-        "Battery percentage",
-        "Write the charge out beside the clock",
+        crate::i18n::text("shell-battery-percentage"),
+        crate::i18n::text("shell-write-the-charge-out-beside-the-clock"),
         crate::ui::battery_glyph(charge),
         vec![
-            value("Off", None, !on, Setting::BatteryPercent(false)),
-            value("On", None, on, Setting::BatteryPercent(true)),
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                Setting::BatteryPercent(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                Setting::BatteryPercent(true),
+            ),
         ],
     )
 }
@@ -3112,8 +3162,8 @@ fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
 /// The wallpaper first: it is the whole screen, and it is the expensive half.
 fn theme_row() -> Entry {
     folder(
-        "Theme",
-        "What the shell is made of",
+        crate::i18n::text("shell-theme"),
+        crate::i18n::text("shell-what-the-shell-is-made-of"),
         icons::SETTING_THEME,
         theme::PARTS.iter().copied().map(material_row).collect(),
     )
@@ -3155,16 +3205,16 @@ fn material_row(part: theme::Part) -> Entry {
     let in_force = theme::applied_style(part).name();
     let (comment, icon, of_default, of_simple) = match part {
         theme::Part::Wallpaper => (
-            "The picture behind everything",
+            crate::i18n::text("shell-the-picture-behind-everything"),
             icons::SETTING_WALLPAPER,
-            "A band of water, lit as three sheets",
-            "Fine ribbons, for a machine with little to spare",
+            crate::i18n::text("shell-a-band-of-water-lit-as-three-sheets"),
+            crate::i18n::text("shell-fine-ribbons-for-a-machine-with-little-to-spare"),
         ),
         theme::Part::Icons => (
-            "Every mark the shell draws",
+            crate::i18n::text("shell-every-mark-the-shell-draws"),
             icons::SETTING_ICONS,
-            "Every mark a bead of water",
-            "Flat shapes, for a machine with little to spare",
+            crate::i18n::text("shell-every-mark-a-bead-of-water"),
+            crate::i18n::text("shell-flat-shapes-for-a-machine-with-little-to-spare"),
         ),
     };
     folder(
@@ -3176,7 +3226,7 @@ fn material_row(part: theme::Part) -> Entry {
             .map(|name| match wallpaper::style(name) {
                 wallpaper::Style::Custom => custom_wallpaper_row(*name == in_force),
                 style => material_value(
-                    name,
+                    crate::i18n::builtin(name),
                     match style {
                         wallpaper::Style::Simple => of_simple,
                         _ => of_default,
@@ -3217,9 +3267,9 @@ fn custom_wallpaper_row(chosen: bool) -> Entry {
                 .and_then(std::ffi::OsStr::to_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "A picture or a film of your own".to_string());
+        .unwrap_or_else(|| crate::i18n::text("shell-a-picture-or-a-film-of-your-own").to_string());
     let Entry::Folder(mut inner) = folder(
-        wallpaper::CUSTOM,
+        crate::i18n::builtin(wallpaper::CUSTOM),
         &comment,
         // The mark of a picture, which is the mark every photograph on this bar
         // already wears — a wallpaper of somebody's own is one of those rather
@@ -3251,14 +3301,14 @@ fn custom_wallpaper_row(chosen: bool) -> Entry {
 fn accent_colour() -> Entry {
     let in_force = theme::accent().name;
     folder(
-        "Accent color",
-        "The colour of being chosen",
+        crate::i18n::text("shell-accent-color"),
+        crate::i18n::text("shell-the-colour-of-being-chosen"),
         icons::SETTING_ACCENT,
         theme::ACCENTS
             .iter()
             .map(|accent| {
                 swatch(
-                    accent.name,
+                    crate::i18n::builtin(accent.name),
                     accent.theme.accent,
                     accent.name == in_force,
                     Setting::Accent(accent.name),
@@ -3283,8 +3333,8 @@ fn accent_colour() -> Entry {
 /// has.
 fn display() -> Entry {
     folder(
-        "Display",
-        "How the picture reaches the screen",
+        crate::i18n::text("shell-display"),
+        crate::i18n::text("shell-how-the-picture-reaches-the-screen"),
         icons::SETTING_DISPLAY,
         vec![
             resolution(),
@@ -3318,8 +3368,8 @@ fn oled_protection() -> Entry {
     let screens = support();
     if !screen_rest_available() || screens.is_empty() {
         return folder(
-            "OLED protection",
-            "Rest a screen nobody is watching",
+            crate::i18n::text("shell-oled-protection"),
+            crate::i18n::text("shell-rest-a-screen-nobody-is-watching"),
             icons::SETTING_SCREEN_REST,
             vec![nothing_can_be_rested()],
         );
@@ -3328,14 +3378,14 @@ fn oled_protection() -> Entry {
         // One screen, so there is no screen to choose — and the page above it
         // says which screen it is and what the switch is set to.
         [(name, _)] => folder(
-            "OLED protection",
+            crate::i18n::text("shell-oled-protection"),
             &format!("{name} — {}", resting_of(name)),
             icons::SETTING_SCREEN_REST,
             oled_protection_controls(name),
         ),
         _ => folder(
-            "OLED protection",
-            "Rest a screen nobody is watching",
+            crate::i18n::text("shell-oled-protection"),
+            crate::i18n::text("shell-rest-a-screen-nobody-is-watching"),
             icons::SETTING_SCREEN_REST,
             screens
                 .iter()
@@ -3369,26 +3419,26 @@ fn oled_protection_controls(name: &str) -> Vec<Entry> {
 /// What one screen's switch is set to, in the few words a row's comment has.
 fn resting_of(display: &str) -> String {
     match oled_protection_for(display) {
-        true => "On".to_string(),
-        false => "Off".to_string(),
+        true => crate::i18n::text("shell-on").to_string(),
+        false => crate::i18n::text("shell-off").to_string(),
     }
 }
 
 /// The switch itself, on or off.
 fn oled_protection_switch(display: &'static str, on: bool) -> Entry {
     folder(
-        "OLED protection",
-        "Fade this screen to black while another screen is being used",
+        crate::i18n::text("shell-oled-protection"),
+        crate::i18n::text("shell-fade-this-screen-to-black-while-another-screen-is-being-used"),
         icons::SETTING_SCREEN_REST,
         vec![
             value(
-                "Off",
+                crate::i18n::text("shell-off"),
                 None,
                 !on,
                 setting(display, DisplayValue::OledProtection(false)),
             ),
             value(
-                "On",
+                crate::i18n::text("shell-on"),
                 None,
                 on,
                 setting(display, DisplayValue::OledProtection(true)),
@@ -3400,9 +3450,8 @@ fn oled_protection_switch(display: &'static str, on: bool) -> Entry {
 /// The row that stands in for the screen list when no screen can be rested.
 fn nothing_can_be_rested() -> Entry {
     reading(
-        "No display can be rested",
-        "The black is drawn over the whole of a display, cursor and all, so it \
-         is the compositor's to draw: this session's has never heard of it",
+        crate::i18n::text("shell-no-display-can-be-rested"),
+        crate::i18n::text("oled-needs-the-compositor"),
     )
 }
 
@@ -3431,8 +3480,8 @@ fn resolution() -> Entry {
         // Never empty, as the HDR page is never empty: a subcategory the bar
         // refuses to step into is a row that does nothing when pressed.
         [] => folder(
-            "Resolution",
-            "How many pixels the picture is",
+            crate::i18n::text("shell-resolution"),
+            crate::i18n::text("shell-how-many-pixels-the-picture-is"),
             icons::SETTING_RESOLUTION,
             vec![nothing_reports_modes()],
         ),
@@ -3440,14 +3489,14 @@ fn resolution() -> Entry {
         // of the list, and the row above them says which screen they belong to
         // and what it is showing.
         [(name, modes)] => folder(
-            "Resolution",
+            crate::i18n::text("shell-resolution"),
             &format!("{name} — {}", running_size(modes)),
             icons::SETTING_RESOLUTION,
             size_values(name, modes),
         ),
         _ => folder(
-            "Resolution",
-            "How many pixels the picture is",
+            crate::i18n::text("shell-resolution"),
+            crate::i18n::text("shell-how-many-pixels-the-picture-is"),
             icons::SETTING_RESOLUTION,
             listed
                 .iter()
@@ -3484,20 +3533,20 @@ fn refresh_rate() -> Entry {
 
     match listed.as_slice() {
         [] => folder(
-            "Refresh rate",
-            "How often the picture is redrawn",
+            crate::i18n::text("shell-refresh-rate"),
+            crate::i18n::text("shell-how-often-the-picture-is-redrawn"),
             icons::SETTING_REFRESH,
             vec![nothing_reports_modes()],
         ),
         [(name, modes)] => folder(
-            "Refresh rate",
+            crate::i18n::text("shell-refresh-rate"),
             &format!("{name} — {}", running_rate(name, modes)),
             icons::SETTING_REFRESH,
             rate_values(name, modes),
         ),
         _ => folder(
-            "Refresh rate",
-            "How often the picture is redrawn",
+            crate::i18n::text("shell-refresh-rate"),
+            crate::i18n::text("shell-how-often-the-picture-is-redrawn"),
             icons::SETTING_REFRESH,
             listed
                 .iter()
@@ -3535,20 +3584,20 @@ fn orientation() -> Entry {
 
     match listed.as_slice() {
         [] => folder(
-            "Orientation",
-            "Which way up the picture is",
+            crate::i18n::text("shell-orientation"),
+            crate::i18n::text("shell-which-way-up-the-picture-is"),
             icons::SETTING_ORIENTATION,
             vec![nothing_can_be_turned()],
         ),
         [(name, turn)] => folder(
-            "Orientation",
+            crate::i18n::text("shell-orientation"),
             &format!("{name} — {}", turn.title()),
             icons::SETTING_ORIENTATION,
             turn_values(name, *turn),
         ),
         _ => folder(
-            "Orientation",
-            "Which way up the picture is",
+            crate::i18n::text("shell-orientation"),
+            crate::i18n::text("shell-which-way-up-the-picture-is"),
             icons::SETTING_ORIENTATION,
             listed
                 .iter()
@@ -3595,9 +3644,8 @@ fn turn_values(name: &str, turned: Orientation) -> Vec<Entry> {
 /// The row that stands in for the screen list when nothing can be turned.
 fn nothing_can_be_turned() -> Entry {
     reading(
-        "No display can be turned",
-        "Nothing here owns its own picture: the session is running inside \
-         another compositor, which owns which way up its window is",
+        crate::i18n::text("shell-no-display-can-be-turned"),
+        crate::i18n::text("orientation-nested-session"),
     )
 }
 
@@ -3630,20 +3678,20 @@ fn display_order() -> Entry {
 
     match listed.as_slice() {
         [] => folder(
-            "Display order",
-            "Which screen comes first",
+            crate::i18n::text("shell-display-order"),
+            crate::i18n::text("shell-which-screen-comes-first"),
             icons::SETTING_ORDER,
             vec![nothing_can_be_arranged()],
         ),
         [(only, _)] => folder(
-            "Display order",
-            &format!("{only} — the only screen"),
+            crate::i18n::text("shell-display-order"),
+            &crate::message!("only-screen", "name" => only),
             icons::SETTING_ORDER,
             vec![one_screen_is_the_whole_arrangement()],
         ),
         _ => folder(
-            "Display order",
-            "Which screen comes first",
+            crate::i18n::text("shell-display-order"),
+            crate::i18n::text("shell-which-screen-comes-first"),
             icons::SETTING_ORDER,
             listed
                 .iter()
@@ -3679,8 +3727,8 @@ fn place_values(name: &str, standing: u32, order: &[String]) -> Vec<Entry> {
         .map(|(place, holder)| {
             let here = place as u32 == standing;
             let note = match here {
-                true => "Where this screen is now".to_string(),
-                false => format!("Trades places with {holder}"),
+                true => crate::i18n::text("shell-where-this-screen-is-now").to_string(),
+                false => crate::message!("swap-displays", "name" => holder),
             };
             value(
                 &place_title(place),
@@ -3698,16 +3746,14 @@ fn place_values(name: &str, standing: u32, order: &[String]) -> Vec<Entry> {
 /// setting and the file all count places from zero, because they are indices
 /// into a list. Nobody calls their leftmost monitor the zeroth one.
 fn place_title(place: usize) -> String {
-    format!("Display {}", place + 1)
+    crate::message!("display-number", "number" => (place + 1).to_string())
 }
 
 /// The row that stands in for the screen list when nothing has a place.
 fn nothing_can_be_arranged() -> Entry {
     reading(
-        "No display can be moved",
-        "Nothing here has a place to change: the session is running inside \
-         another compositor, or every screen is set to show the same region, \
-         and neither has a first screen to be",
+        crate::i18n::text("shell-no-display-can-be-moved"),
+        crate::i18n::text("placement-nested-or-mirrored"),
     )
 }
 
@@ -3715,9 +3761,8 @@ fn nothing_can_be_arranged() -> Entry {
 /// whole of the order it is in.
 fn one_screen_is_the_whole_arrangement() -> Entry {
     reading(
-        "Only one display",
-        "An order is something two screens have. This one is the whole \
-         arrangement, and there is nowhere else in it to stand",
+        crate::i18n::text("shell-only-one-display"),
+        crate::i18n::text("display-order-needs-two-screens"),
     )
 }
 
@@ -3769,7 +3814,7 @@ fn rate_values(name: &str, modes: &[Offered]) -> Vec<Entry> {
                 // Only the display's own rate has anything to add. The rest are
                 // a number of hertz, which the title already is, and a comment
                 // restating it is noise on every row.
-                preferred.then_some("What this display asks for"),
+                preferred.then_some(crate::i18n::text("shell-what-this-display-asks-for")),
                 running
                     == Some(Mode {
                         resolution: showing,
@@ -3793,7 +3838,9 @@ fn rate_values(name: &str, modes: &[Offered]) -> Vec<Entry> {
 fn rate_titles(rates: &[(u32, bool)]) -> Vec<String> {
     let short: Vec<String> = rates
         .iter()
-        .map(|(refresh, _)| hertz(*refresh).unwrap_or_else(|| "Unreported".to_string()))
+        .map(|(refresh, _)| {
+            hertz(*refresh).unwrap_or_else(|| crate::i18n::text("shell-unreported").to_string())
+        })
         .collect();
     short
         .iter()
@@ -3892,7 +3939,7 @@ fn offered_rates(display: &str, modes: &[Offered]) -> Vec<(u32, bool)> {
 fn running_size(modes: &[Offered]) -> String {
     match running(modes) {
         Some(mode) => pixels(mode.resolution),
-        None => format!("{} sizes to choose from", sizes(modes).len()),
+        None => crate::message!("count-sizes", "count" => sizes(modes).len()),
     }
 }
 
@@ -3903,7 +3950,7 @@ fn running_size(modes: &[Offered]) -> String {
 /// a reason it never gives.
 fn running_rate(display: &str, modes: &[Offered]) -> String {
     let Some(size) = size_shown(display, modes) else {
-        return "No refresh rate reported".to_string();
+        return crate::i18n::text("shell-no-refresh-rate-reported").to_string();
     };
     // The rate has to be the display's *at that size*: a screen that has been
     // asked for a size it is not on yet is not running any of the rates this
@@ -3912,17 +3959,20 @@ fn running_rate(display: &str, modes: &[Offered]) -> String {
         .filter(|mode| mode.resolution == size)
         .and_then(|mode| hertz(mode.refresh));
     match running {
-        Some(rate) => format!("{rate} at {}", pixels(size)),
-        None => format!("{} rates at {}", rates_at(modes, size).len(), pixels(size)),
+        Some(rate) => {
+            crate::message!("display-rate-at", "rate" => rate, "size" => pixels(size))
+        }
+        None => {
+            crate::message!("display-rates-at", "count" => rates_at(modes, size).len(), "size" => pixels(size))
+        }
     }
 }
 
 /// The row that stands in for a screen list with no screen to list.
 fn nothing_reports_modes() -> Entry {
     reading(
-        "No display reports its modes",
-        "Nothing here owns a connector: the session is running inside another \
-         compositor, which owns the size of its window",
+        crate::i18n::text("shell-no-display-reports-its-modes"),
+        crate::i18n::text("resolution-nested-session"),
     )
 }
 
@@ -3947,10 +3997,10 @@ fn fastest_at(modes: &[Offered], resolution: Resolution) -> String {
         .iter()
         .any(|offered| offered.preferred && offered.mode.resolution == resolution);
     match (fastest.and_then(hertz), native) {
-        (Some(rate), true) => format!("Up to {rate}, and what this display asks for"),
-        (Some(rate), false) => format!("Up to {rate}"),
-        (None, true) => "What this display asks for".to_string(),
-        (None, false) => "No refresh rate reported".to_string(),
+        (Some(rate), true) => crate::message!("rate-recommended", "rate" => rate.as_str()),
+        (Some(rate), false) => crate::message!("rate-up-to", "rate" => rate.as_str()),
+        (None, true) => crate::i18n::text("shell-what-this-display-asks-for").to_string(),
+        (None, false) => crate::i18n::text("shell-no-refresh-rate-reported").to_string(),
     }
 }
 
@@ -3994,20 +4044,20 @@ fn night_light() -> Entry {
 
     match capable.as_slice() {
         [] => folder(
-            "Night light",
-            "Blue light filter",
+            crate::i18n::text("shell-night-light"),
+            crate::i18n::text("shell-blue-light-filter"),
             icons::SETTING_NIGHT_LIGHT,
             vec![nothing_can_be_warmed()],
         ),
         [(name, support)] => folder(
-            "Night light",
+            crate::i18n::text("shell-night-light"),
             &format!("{name} — {}", warmth_of(name, *support)),
             icons::SETTING_NIGHT_LIGHT,
             night_light_controls(name),
         ),
         _ => folder(
-            "Night light",
-            "Blue light filter",
+            crate::i18n::text("shell-night-light"),
+            crate::i18n::text("shell-blue-light-filter"),
             icons::SETTING_NIGHT_LIGHT,
             capable
                 .iter()
@@ -4064,13 +4114,13 @@ fn night_light_controls(name: &str) -> Vec<Entry> {
 fn warmth_of(display: &str, support: Support) -> String {
     let night = night_light_for(display);
     if !night.enabled {
-        return "Off".to_string();
+        return crate::i18n::text("shell-off").to_string();
     }
     let kelvin = format!("{} K", night.temperature);
     let Some(now) = local_time() else {
         // No clock is no schedule being kept — see `night_light_now` — so
         // saying when it turns on would be saying something untrue.
-        return format!("On, {kelvin}");
+        return crate::message!("night-on", "kelvin" => kelvin.as_str());
     };
     let sun = sun_today();
     let burning = night.burning_at(now.minute_of_day(), sun);
@@ -4081,27 +4131,37 @@ fn warmth_of(display: &str, support: Support) -> String {
         return format!("{}, {kelvin}", schedule_of(night, sun));
     }
     match (burning, night.next_edge(now.minute_of_day(), sun)) {
-        (true, Some(off)) => format!("On until {}, {kelvin}", clock_title(off)),
-        (true, None) => format!("On, {kelvin}"),
-        (false, Some(on)) => format!("On at {}, {kelvin}", clock_title(on)),
+        (true, Some(off)) => {
+            crate::message!("night-until", "time" => clock_title(off), "kelvin" => kelvin.as_str())
+        }
+        (true, None) => crate::message!("night-on", "kelvin" => kelvin.as_str()),
+        (false, Some(on)) => {
+            crate::message!("night-at", "time" => clock_title(on), "kelvin" => kelvin.as_str())
+        }
         // Switched on, not burning, and nothing will change that today: the
         // midnight sun, which is the one case with an answer of its own.
-        (false, None) => format!("Off while the sun is up, {kelvin}"),
+        (false, None) => crate::message!("night-daylight", "kelvin" => kelvin.as_str()),
     }
 }
 
 /// The hours a schedule keeps, said without any claim about now.
 fn schedule_of(night: NightLight, sun: Option<crate::sun::Sun>) -> String {
     match night.schedule {
-        Schedule::AllDay => "On".to_string(),
-        Schedule::Hours => format!("{} to {}", hour_title(night.from), hour_title(night.until)),
+        Schedule::AllDay => crate::i18n::text("shell-on").to_string(),
+        Schedule::Hours => {
+            crate::message!("time-range", "from" => hour_title(night.from), "until" => hour_title(night.until))
+        }
         Schedule::SunsetToSunrise => match sun {
             Some(crate::sun::Sun::Daily { sunrise, sunset }) => {
-                format!("{} to {}", clock_title(sunset), clock_title(sunrise))
+                crate::message!("time-range", "from" => clock_title(sunset), "until" => clock_title(sunrise))
             }
-            Some(crate::sun::Sun::NeverRises) => "The sun does not rise today".to_string(),
-            Some(crate::sun::Sun::NeverSets) => "The sun does not set today".to_string(),
-            None => "No location to work the sun out from".to_string(),
+            Some(crate::sun::Sun::NeverRises) => {
+                crate::i18n::text("shell-the-sun-does-not-rise-today").to_string()
+            }
+            Some(crate::sun::Sun::NeverSets) => {
+                crate::i18n::text("shell-the-sun-does-not-set-today").to_string()
+            }
+            None => crate::i18n::text("shell-no-location-to-work-the-sun-out-from").to_string(),
         },
     }
 }
@@ -4109,9 +4169,8 @@ fn schedule_of(night: NightLight, sun: Option<crate::sun::Sun>) -> String {
 /// The row that stands in for the screen list when no picture can be warmed.
 fn nothing_can_be_warmed() -> Entry {
     reading(
-        "No display can be warmed",
-        "Nothing here owns a colour ramp: the session is running inside \
-         another compositor, which owns what its window is tinted with",
+        crate::i18n::text("shell-no-display-can-be-warmed"),
+        crate::i18n::text("night-light-nested-session"),
     )
 }
 
@@ -4120,18 +4179,18 @@ fn nothing_can_be_warmed() -> Entry {
 fn night_light_switch(display: &'static str, night: NightLight) -> Entry {
     let on = night.enabled;
     folder(
-        "Night light",
-        "Take the blue out of the picture",
+        crate::i18n::text("shell-night-light"),
+        crate::i18n::text("shell-take-the-blue-out-of-the-picture"),
         icons::SETTING_NIGHT_LIGHT,
         vec![
             value(
-                "Off",
+                crate::i18n::text("shell-off"),
                 None,
                 !on,
                 setting(display, DisplayValue::NightLight(false)),
             ),
             value(
-                "On",
+                crate::i18n::text("shell-on"),
                 None,
                 on,
                 setting(display, DisplayValue::NightLight(true)),
@@ -4166,7 +4225,7 @@ fn night_light_temperature(display: &'static str, night: NightLight) -> Entry {
     };
     let span = (NEUTRAL_KELVIN - WARMEST_ON_THE_BAR) as f32;
     folder(
-        "Color temperature",
+        crate::i18n::text("shell-color-temperature"),
         &format!("{kelvin} K — {}", warmth_note(kelvin).to_lowercase()),
         icons::SETTING_APPEARANCE,
         vec![Entry::Bar(crate::apps::Bar {
@@ -4217,14 +4276,14 @@ pub const WARMEST_ON_THE_BAR: u16 = 2000;
 /// at all" there would be saying the setting had not taken.
 fn warmth_note(kelvin: u16) -> &'static str {
     match kelvin {
-        0..=2200 => "Candlelight, and as far as this goes",
-        2201..=2900 => "A filament bulb",
-        2901..=3600 => "Distinctly warm, like a lamp",
-        3601..=4400 => "An ordinary evening",
-        4401..=5200 => "Warm, and still easy to read by",
-        5201..=6000 => "A little off daylight",
-        6001..=6499 => "Barely warm: the gentlest this goes",
-        _ => "Daylight: no warming at all",
+        0..=2200 => crate::i18n::text("shell-candlelight-and-as-far-as-this-goes"),
+        2201..=2900 => crate::i18n::text("shell-a-filament-bulb"),
+        2901..=3600 => crate::i18n::text("shell-distinctly-warm-like-a-lamp"),
+        3601..=4400 => crate::i18n::text("shell-an-ordinary-evening"),
+        4401..=5200 => crate::i18n::text("shell-warm-and-still-easy-to-read-by"),
+        5201..=6000 => crate::i18n::text("shell-a-little-off-daylight"),
+        6001..=6499 => crate::i18n::text("shell-barely-warm-the-gentlest-this-goes"),
+        _ => crate::i18n::text("shell-daylight-no-warming-at-all"),
     }
 }
 
@@ -4274,13 +4333,17 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
     let mut values = vec![
         value(
             Schedule::AllDay.title(),
-            Some("On for as long as the switch above is"),
+            Some(crate::i18n::text(
+                "shell-on-for-as-long-as-the-switch-above-is",
+            )),
             night.schedule == Schedule::AllDay,
             setting(display, DisplayValue::NightLightSchedule(Schedule::AllDay)),
         ),
         value(
             Schedule::Hours.title(),
-            Some("Between two hours of your own, set on the page behind this one"),
+            Some(crate::i18n::text(
+                "shell-between-two-hours-of-your-own-set-on-the-page-behind-this-one",
+            )),
             night.schedule == Schedule::Hours,
             setting(display, DisplayValue::NightLightSchedule(Schedule::Hours)),
         ),
@@ -4291,19 +4354,16 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
         Some(at) => value(
             Schedule::SunsetToSunrise.title(),
             Some(&match sun {
-                Some(crate::sun::Sun::Daily { sunrise, sunset }) => format!(
-                    "{} to {} today, at {}",
-                    clock_title(sunset),
-                    clock_title(sunrise),
-                    at.name
-                ),
+                Some(crate::sun::Sun::Daily { sunrise, sunset }) => {
+                    crate::message!("night-sunset-to-sunrise", "from" => clock_title(sunset), "until" => clock_title(sunrise), "place" => at.name.as_str())
+                }
                 Some(crate::sun::Sun::NeverRises) => {
-                    format!("The sun does not rise at {} today", at.name)
+                    crate::message!("sun-no-rise", "place" => at.name.as_str())
                 }
                 Some(crate::sun::Sun::NeverSets) => {
-                    format!("The sun does not set at {} today", at.name)
+                    crate::message!("sun-no-set", "place" => at.name.as_str())
                 }
-                None => format!("Worked out for {}", at.name),
+                None => crate::message!("sun-place", "place" => at.name.as_str()),
             }),
             night.schedule == Schedule::SunsetToSunrise,
             setting(
@@ -4313,13 +4373,13 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
         ),
         None => reading(
             Schedule::SunsetToSunrise.title(),
-            "This machine's time zone names no place, so there is no sunset here to follow",
+            crate::i18n::text("night-time-zone-names-no-place"),
         ),
     };
     values.insert(1, sun_row);
 
     folder(
-        "Schedule",
+        crate::i18n::text("shell-schedule"),
         &schedule_of(night, sun),
         icons::SETTING_SCHEDULE,
         values,
@@ -4333,8 +4393,8 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
 /// being kept — see [`night_light_controls`].
 fn night_light_from(display: &'static str, night: NightLight) -> Entry {
     folder(
-        "From",
-        &format!("Comes on at {}", hour_title(night.from)),
+        crate::i18n::text("shell-from"),
+        &crate::message!("night-start", "time" => hour_title(night.from)),
         icons::SETTING_SCHEDULE,
         HOURS
             .iter()
@@ -4357,8 +4417,8 @@ fn night_light_from(display: &'static str, night: NightLight) -> Entry {
 /// none of one and there is no way to look at the row and tell which.
 fn night_light_until(display: &'static str, night: NightLight) -> Entry {
     folder(
-        "Until",
-        &format!("Goes off at {}", hour_title(night.until)),
+        crate::i18n::text("shell-until"),
+        &crate::message!("night-stop", "time" => hour_title(night.until)),
         icons::SETTING_SCHEDULE,
         HOURS
             .iter()
@@ -4393,8 +4453,8 @@ fn hour_title(hour: u8) -> String {
 fn window_length(from: u8, until: u8) -> String {
     let hours = (24 + until as i16 - from as i16) % 24;
     match hours {
-        1 => "One hour of night light".to_string(),
-        hours => format!("{hours} hours of night light"),
+        1 => crate::i18n::text("shell-one-hour-of-night-light").to_string(),
+        hours => crate::message!("count-hours", "count" => hours),
     }
 }
 
@@ -4427,7 +4487,7 @@ fn high_dynamic_range() -> Entry {
         // the only place left to say it.
         [] => folder(
             "HDR",
-            "High dynamic range",
+            crate::i18n::text("shell-high-dynamic-range"),
             icons::SETTING_HDR,
             vec![nothing_supports_hdr()],
         ),
@@ -4445,7 +4505,7 @@ fn high_dynamic_range() -> Entry {
         ),
         _ => folder(
             "HDR",
-            "High dynamic range",
+            crate::i18n::text("shell-high-dynamic-range"),
             icons::SETTING_HDR,
             capable
                 .iter()
@@ -4484,18 +4544,21 @@ fn controls(name: &str, support: Support) -> Vec<Entry> {
 fn state_of(support: Support) -> String {
     let peak = match support.peak {
         0 => String::new(),
-        peak => format!(", peak {peak} cd/m²"),
+        peak => crate::message!("hdr-peak", "peak" => peak.to_string()),
     };
-    let state = if support.active { "In HDR" } else { "Ready" };
+    let state = if support.active {
+        crate::i18n::text("shell-in-hdr")
+    } else {
+        crate::i18n::text("shell-ready")
+    };
     format!("{state}{peak}")
 }
 
 /// The row that stands in for the screen list when there is no screen to list.
 fn nothing_supports_hdr() -> Entry {
     reading(
-        "No display supports HDR",
-        "No connected display reports HDR, or the driver has no colour \
-         pipeline to feed it",
+        crate::i18n::text("shell-no-display-supports-hdr"),
+        crate::i18n::text("hdr-no-display-or-pipeline"),
     )
 }
 
@@ -4503,11 +4566,21 @@ fn hdr_switch(display: &'static str, settings: Hdr) -> Entry {
     let on = settings.enabled;
     folder(
         "HDR",
-        "Send the picture as BT.2020 and PQ",
+        crate::i18n::text("shell-send-the-picture-as-bt-2020-and-pq"),
         icons::SETTING_HDR,
         vec![
-            value("Off", None, !on, setting(display, DisplayValue::Hdr(false))),
-            value("On", None, on, setting(display, DisplayValue::Hdr(true))),
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                setting(display, DisplayValue::Hdr(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                setting(display, DisplayValue::Hdr(true)),
+            ),
         ],
     )
 }
@@ -4522,15 +4595,15 @@ fn hdr_switch(display: &'static str, settings: Hdr) -> Entry {
 fn sdr_brightness(display: &'static str, settings: Hdr) -> Entry {
     let in_force = settings.sdr_brightness;
     folder(
-        "SDR brightness",
-        "How bright plain white is",
+        crate::i18n::text("shell-sdr-brightness"),
+        crate::i18n::text("shell-how-bright-plain-white-is"),
         icons::BRIGHTNESS,
         SDR_BRIGHTNESS
             .iter()
             .map(|(nits, note)| {
                 value(
                     &format!("{nits} cd/m²"),
-                    Some(note),
+                    Some(crate::i18n::builtin(note)),
                     *nits == in_force,
                     setting(display, DisplayValue::SdrBrightness(*nits)),
                 )
@@ -4569,30 +4642,30 @@ const SDR_BRIGHTNESS: &[(u16, &str)] = &[
 fn srgb_intensity(display: &'static str, settings: Hdr, support: Support) -> Entry {
     if !support.gamut {
         return folder(
-            "sRGB color intensity",
-            "Not available on this display",
+            crate::i18n::text("shell-srgb-color-intensity"),
+            crate::i18n::text("shell-not-available-on-this-display"),
             icons::SETTING_APPEARANCE,
             // One line. A row's comment is drawn at a fixed height and the
             // second line of a long one is cut off, so the whole of the
             // explanation cannot live here — the rest of it is in the manual.
             vec![reading(
-                "Fixed at its most saturated",
-                "No degamma stage in this driver; brightness is unaffected",
+                crate::i18n::text("shell-fixed-at-its-most-saturated"),
+                crate::i18n::text("shell-no-degamma-stage-in-this-driver-brightness-is-unaffected"),
             )],
         );
     }
 
     let in_force = settings.srgb_intensity;
     folder(
-        "sRGB color intensity",
-        "How saturated sRGB colour is made",
+        crate::i18n::text("shell-srgb-color-intensity"),
+        crate::i18n::text("shell-how-saturated-srgb-colour-is-made"),
         icons::SETTING_APPEARANCE,
         SRGB_INTENSITY
             .iter()
             .map(|(percent, note)| {
                 value(
                     &format!("{percent}%"),
-                    Some(note),
+                    Some(crate::i18n::builtin(note)),
                     *percent == in_force,
                     setting(display, DisplayValue::SrgbIntensity(*percent)),
                 )
@@ -4613,10 +4686,10 @@ const SRGB_INTENSITY: &[(u8, &str)] = &[
 fn peak_brightness(display: &'static str, settings: Hdr, support: Support) -> Entry {
     let in_force = settings.peak_brightness;
     let mut values = vec![value(
-        "Display default",
+        crate::i18n::text("shell-display-default"),
         Some(&match support.peak {
-            0 => "Whatever the display says it can do".to_string(),
-            peak => format!("What this display reports: {peak} cd/m²"),
+            0 => crate::i18n::text("shell-whatever-the-display-says-it-can-do").to_string(),
+            peak => crate::message!("hdr-reported", "peak" => peak.to_string()),
         }),
         in_force == 0,
         setting(display, DisplayValue::PeakBrightness(0)),
@@ -4624,14 +4697,14 @@ fn peak_brightness(display: &'static str, settings: Hdr, support: Support) -> En
     values.extend(PEAK_BRIGHTNESS.iter().map(|(nits, note)| {
         value(
             &format!("{nits} cd/m²"),
-            Some(note),
+            Some(crate::i18n::builtin(note)),
             *nits == in_force,
             setting(display, DisplayValue::PeakBrightness(*nits)),
         )
     }));
     folder(
-        "Peak brightness",
-        "The brightest the display is told to expect",
+        crate::i18n::text("shell-peak-brightness"),
+        crate::i18n::text("shell-the-brightest-the-display-is-told-to-expect"),
         icons::BRIGHTNESS,
         values,
     )
@@ -4681,8 +4754,8 @@ const PEAK_BRIGHTNESS: &[(u16, &str)] = &[
 /// [`icons::SETTING_MICROPHONE`].
 fn sounds() -> Entry {
     folder(
-        "Sounds",
-        "The machine's sound, and the shell's own",
+        crate::i18n::text("shell-sounds"),
+        crate::i18n::text("shell-the-machine-s-sound-and-the-shell-s-own"),
         icons::VOLUME,
         vec![
             device_page(Direction::Output),
@@ -4710,8 +4783,11 @@ fn device_page(direction: Direction) -> Entry {
     let listed = DEVICES.lock().unwrap();
     let devices = listed.of(direction);
     let (title, icon) = match direction {
-        Direction::Output => ("Output device", icons::VOLUME),
-        Direction::Input => ("Input device", icons::SETTING_MICROPHONE),
+        Direction::Output => (crate::i18n::text("shell-output-device"), icons::VOLUME),
+        Direction::Input => (
+            crate::i18n::text("shell-input-device"),
+            icons::SETTING_MICROPHONE,
+        ),
     };
     let comment = match devices.iter().find(|device| device.default) {
         Some(device) => match &device.profile {
@@ -4723,8 +4799,12 @@ fn device_page(direction: Direction) -> Entry {
         // input somewhere else. Both are answered by what is inside rather than
         // by a comment that would have to guess.
         None => match direction {
-            Direction::Output => "Where everything on the machine plays".to_string(),
-            Direction::Input => "What everything on the machine records from".to_string(),
+            Direction::Output => {
+                crate::i18n::text("shell-where-everything-on-the-machine-plays").to_string()
+            }
+            Direction::Input => {
+                crate::i18n::text("shell-what-everything-on-the-machine-records-from").to_string()
+            }
         },
     };
     // Never an empty column: the bar refuses to step into one, so a machine
@@ -4760,20 +4840,19 @@ fn device_page(direction: Direction) -> Entry {
 /// page to set. The first is about the hardware, the second about the session,
 /// and a user is entitled to know which they are looking at.
 fn nothing_to_choose(direction: Direction, server: bool) -> Entry {
-    let thing = match direction {
+    let kind = match direction {
         Direction::Output => "output",
         Direction::Input => "input",
     };
     if !server {
         return reading(
-            "No sound server is running",
-            "Without PipeWire or PulseAudio nothing decides this for the \
-             machine; each program opens the sound card itself",
+            crate::i18n::text("shell-no-sound-server-is-running"),
+            crate::i18n::text("sound-no-server-explanation"),
         );
     }
     reading(
-        &format!("No {thing} device"),
-        &format!("The sound server lists no {thing} on this machine"),
+        &crate::message!("sound-no-device", "kind" => kind),
+        &crate::message!("sound-server-lists-none", "kind" => kind),
     )
 }
 
@@ -4799,12 +4878,22 @@ fn nothing_to_choose(direction: Direction, server: bool) -> Entry {
 fn start_music_switch() -> Entry {
     let on = start_music();
     folder(
-        "Start music",
-        "The music the start screen plays",
+        crate::i18n::text("shell-start-music"),
+        crate::i18n::text("shell-the-music-the-start-screen-plays"),
         icons::CATEGORY_MUSIC,
         vec![
-            value("Off", None, !on, Setting::StartMusic(false)),
-            value("On", None, on, Setting::StartMusic(true)),
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                Setting::StartMusic(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                Setting::StartMusic(true),
+            ),
         ],
     )
 }
@@ -4845,8 +4934,8 @@ fn network() -> Entry {
         rows.push(nothing_to_connect_with(listing.manager));
     }
     folder(
-        "Network",
-        "The socket in the back of the machine, and the air around it",
+        crate::i18n::text("shell-network"),
+        crate::i18n::text("shell-the-socket-in-the-back-of-the-machine-and-the-air-around-it"),
         icons::SETTING_NETWORK,
         rows,
     )
@@ -4864,15 +4953,13 @@ fn network() -> Entry {
 fn nothing_to_connect_with(manager: bool) -> Entry {
     if !manager {
         return reading(
-            "No network manager is running",
-            "Without NetworkManager nothing here decides what this machine is \
-             on; whatever configured the network did so outside this session",
+            crate::i18n::text("shell-no-network-manager-is-running"),
+            crate::i18n::text("network-no-manager-explanation"),
         );
     }
     reading(
-        "No network hardware",
-        "The network manager lists neither a wired socket nor a wireless radio \
-         on this machine",
+        crate::i18n::text("shell-no-network-hardware"),
+        crate::i18n::text("network-no-hardware-explanation"),
     )
 }
 
@@ -4901,7 +4988,7 @@ fn wireless(listing: &crate::network::Listing, radios: &[&crate::network::Device
                     wireless_controls(listing, radio),
                 )
             }));
-            "The wireless radios in this machine".to_string()
+            crate::i18n::text("shell-the-wireless-radios-in-this-machine").to_string()
         }
     };
     folder("Wi-Fi", &note, icons::SETTING_WIFI, rows)
@@ -4917,24 +5004,28 @@ fn wireless(listing: &crate::network::Listing, radios: &[&crate::network::Device
 fn radio_switch(listing: &crate::network::Listing) -> Entry {
     if !listing.radio_switchable {
         return reading(
-            "Wi-Fi is off at the machine",
-            "A switch on this machine has the wireless radio off; nothing in \
-             software can turn it back on",
+            crate::i18n::text("shell-wi-fi-is-off-at-the-machine"),
+            crate::i18n::text("network-wireless-hard-blocked"),
         );
     }
     let on = listing.radio;
     folder(
         "Wi-Fi",
-        "Whether the wireless radio is on",
+        crate::i18n::text("shell-whether-the-wireless-radio-is-on"),
         icons::SETTING_WIFI,
         vec![
             value(
-                "Off",
+                crate::i18n::text("shell-off"),
                 None,
                 !on,
                 Setting::Network(NetworkValue::Radio(false)),
             ),
-            value("On", None, on, Setting::Network(NetworkValue::Radio(true))),
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                Setting::Network(NetworkValue::Radio(true)),
+            ),
         ],
     )
 }
@@ -4996,9 +5087,8 @@ fn networks_page(listing: &crate::network::Listing, radio: &crate::network::Devi
     let networks = listing.networks_of(&radio.path);
     let rows = match networks.is_empty() {
         true => vec![reading(
-            "Nothing in range",
-            "The radio is on and hearing nothing. Networks appear here as they \
-             are found.",
+            crate::i18n::text("shell-nothing-in-range"),
+            crate::i18n::text("network-nothing-in-range-yet"),
         )],
         false => networks
             .iter()
@@ -5006,7 +5096,7 @@ fn networks_page(listing: &crate::network::Listing, radio: &crate::network::Devi
             .collect(),
     };
     folder(
-        "Networks",
+        crate::i18n::text("shell-networks"),
         &networks_note(radio, networks),
         icons::SETTING_WIFI,
         rows,
@@ -5022,9 +5112,8 @@ fn networks_note(radio: &crate::network::Device, networks: &[crate::network::Net
         return format!("{} — {}%", joined.ssid, joined.strength);
     }
     match networks.len() {
-        0 => "Nothing in range".to_string(),
-        1 => "1 network in range".to_string(),
-        many => format!("{many} networks in range"),
+        0 => crate::i18n::text("shell-nothing-in-range").to_string(),
+        many => crate::message!("count-networks", "count" => many),
     }
 }
 
@@ -5072,11 +5161,7 @@ fn network_row(
     if network.security == Security::Enterprise {
         return reading(
             &network.ssid,
-            &format!(
-                "{}% — this network needs a user name and a certificate, which \
-                 have to be set up outside this shell",
-                network.strength
-            ),
+            &crate::message!("network-enterprise-note", "strength" => network.strength),
         );
     }
     // Whether or not a profile can be read for the device. It used to want one,
@@ -5131,8 +5216,8 @@ fn joined_network(
     let mut rows = vec![ip_address(radio, &network.ssid)];
     rows.extend(dns_page(radio, &network.ssid));
     rows.push(action(
-        "Disconnect",
-        "Come off this network, and keep it saved",
+        crate::i18n::text("shell-disconnect"),
+        crate::i18n::text("shell-come-off-this-network-and-keep-it-saved"),
         icons::SETTING_DISCONNECT,
         Setting::Network(NetworkValue::Leave { device }),
     ));
@@ -5165,8 +5250,8 @@ fn saved_network(device: &'static str, network: &crate::network::Network) -> Ent
     let ssid = intern(&network.ssid);
     let rows = vec![
         action(
-            "Connect",
-            "Join this network again",
+            crate::i18n::text("shell-connect"),
+            crate::i18n::text("shell-join-this-network-again"),
             icons::SETTING_CONNECT,
             Setting::Network(NetworkValue::Join { device, ssid }),
         ),
@@ -5197,8 +5282,8 @@ fn saved_network(device: &'static str, network: &crate::network::Network) -> Ent
 /// saved network as it is of a program.
 fn forget(device: &'static str, ssid: &'static str) -> Entry {
     action(
-        "Forget",
-        "Remove this network: the password will be asked for again",
+        crate::i18n::text("shell-forget"),
+        crate::i18n::text("shell-remove-this-network-the-password-will-be-asked-for-again"),
         icons::UNINSTALL,
         Setting::Network(NetworkValue::Forget { device, ssid }),
     )
@@ -5213,14 +5298,16 @@ fn forget(device: &'static str, ssid: &'static str) -> Entry {
 /// unsaved secured one asks for a password first.
 fn network_note_of(network: &crate::network::Network) -> String {
     let what = if network.joined {
-        "Connected"
+        crate::i18n::text("shell-connected")
     } else if network.saved {
-        "Saved"
+        crate::i18n::text("shell-saved")
     } else {
         network.security.title()
     };
     match band_of(network.frequency) {
-        Some(band) => format!("{what} — {}% at {band}", network.strength),
+        Some(band) => {
+            crate::message!("network-strength-band", "what" => what, "strength" => network.strength, "band" => band)
+        }
         None => format!("{what} — {}%", network.strength),
     }
 }
@@ -5261,19 +5348,18 @@ fn ip_address(device: &crate::network::Device, whose: &str) -> Entry {
     let ipv4 = &device.ipv4;
     if device.profile.is_none() {
         return folder(
-            "IP address",
-            "Nothing to configure yet",
+            crate::i18n::text("shell-ip-address"),
+            crate::i18n::text("shell-nothing-to-configure-yet"),
             icons::SETTING_ADDRESS,
             vec![reading(
-                "No connection to configure",
-                "An address belongs to a saved connection rather than to the \
-                 socket; connect this interface once and it can be set here",
+                crate::i18n::text("shell-no-connection-to-configure"),
+                crate::i18n::text("network-address-needs-a-connection"),
             )],
         );
     }
     let mut rows = vec![value(
-        "Automatic",
-        Some("Asked for from the network"),
+        crate::i18n::text("shell-automatic"),
+        Some(crate::i18n::text("shell-asked-for-from-the-network")),
         ipv4.automatic,
         Setting::Network(NetworkValue::Addressing {
             device: name,
@@ -5285,8 +5371,8 @@ fn ip_address(device: &crate::network::Device, whose: &str) -> Entry {
     // [`crate::network::Ipv4::can_pin`].
     rows.push(match ipv4.can_pin {
         true => value(
-            "Manual",
-            Some("Pinned, and kept across reboots"),
+            crate::i18n::text("shell-manual"),
+            Some(crate::i18n::text("shell-pinned-and-kept-across-reboots")),
             !ipv4.automatic,
             Setting::Network(NetworkValue::Addressing {
                 device: name,
@@ -5294,9 +5380,8 @@ fn ip_address(device: &crate::network::Device, whose: &str) -> Entry {
             }),
         ),
         false => reading(
-            "Manual",
-            "There is no address to pin yet: connect this interface, and the \
-             one it is given can be kept",
+            crate::i18n::text("shell-manual"),
+            crate::i18n::text("network-no-address-to-pin"),
         ),
     });
     if !ipv4.automatic {
@@ -5313,19 +5398,24 @@ fn ip_address(device: &crate::network::Device, whose: &str) -> Entry {
             whose,
         ));
     }
-    folder("IP address", &ip_note(ipv4), icons::SETTING_ADDRESS, rows)
+    folder(
+        crate::i18n::text("shell-ip-address"),
+        &ip_note(ipv4),
+        icons::SETTING_ADDRESS,
+        rows,
+    )
 }
 
 /// What the row above the addressing says, so the usual question is answered
 /// without stepping in.
 fn ip_note(ipv4: &crate::network::Ipv4) -> String {
     match (ipv4.automatic, ipv4.address.as_deref()) {
-        (true, _) => "Automatic — asked for from the network".to_string(),
-        (false, Some(address)) => format!("Manual — {address}"),
+        (true, _) => crate::i18n::text("shell-automatic-asked-for-from-the-network").to_string(),
+        (false, Some(address)) => crate::message!("manual-address", "address" => address),
         // A manual profile always has an address; this is the moment between
         // the method being written and the address arriving, and it is worth a
         // word rather than an empty line.
-        (false, None) => "Manual — no address set".to_string(),
+        (false, None) => crate::i18n::text("shell-manual-no-address-set").to_string(),
     }
 }
 
@@ -5350,8 +5440,8 @@ fn dns_page(device: &crate::network::Device, whose: &str) -> Option<Entry> {
     let mut rows = Vec::new();
     if ipv4.automatic {
         rows.push(value(
-            "Automatic",
-            Some("Whatever the network offers"),
+            crate::i18n::text("shell-automatic"),
+            Some(crate::i18n::text("shell-whatever-the-network-offers")),
             ipv4.dns_automatic,
             Setting::Network(NetworkValue::Dns {
                 device: name,
@@ -5359,8 +5449,8 @@ fn dns_page(device: &crate::network::Device, whose: &str) -> Option<Entry> {
             }),
         ));
         rows.push(value(
-            "Manual",
-            Some("Only the ones named below"),
+            crate::i18n::text("shell-manual"),
+            Some(crate::i18n::text("shell-only-the-ones-named-below")),
             !ipv4.dns_automatic,
             Setting::Network(NetworkValue::Dns {
                 device: name,
@@ -5369,9 +5459,8 @@ fn dns_page(device: &crate::network::Device, whose: &str) -> Option<Entry> {
         ));
     } else {
         rows.push(reading(
-            "Always manual here",
-            "A pinned address runs no DHCP, so there is nothing to take name \
-             servers from",
+            crate::i18n::text("shell-always-manual-here"),
+            crate::i18n::text("network-pinned-address-no-dhcp"),
         ));
     }
     if !ipv4.automatic || !ipv4.dns_automatic {
@@ -5393,10 +5482,10 @@ fn dns_page(device: &crate::network::Device, whose: &str) -> Option<Entry> {
 
 fn dns_note(ipv4: &crate::network::Ipv4) -> String {
     if ipv4.automatic && ipv4.dns_automatic {
-        return "Automatic — whatever the network offers".to_string();
+        return crate::i18n::text("shell-automatic-whatever-the-network-offers").to_string();
     }
     match ipv4.dns.as_slice() {
-        [] => "None set".to_string(),
+        [] => crate::i18n::text("shell-none-set").to_string(),
         named => named.join(", "),
     }
 }
@@ -5418,7 +5507,7 @@ fn typed(
         whose: whose.to_string(),
         comment: match value {
             Some(value) => value.to_string(),
-            None => "Not set".to_string(),
+            None => crate::i18n::text("shell-not-set").to_string(),
         },
         icon: icons::SETTING_TYPED.to_string(),
         value: value.unwrap_or_default().to_string(),
@@ -5434,14 +5523,14 @@ fn typed(
 fn wired(sockets: &[&crate::network::Device]) -> Entry {
     match sockets {
         [only] => folder(
-            "Wired",
+            crate::i18n::text("shell-wired"),
             &device_note(only),
             icons::SETTING_ETHERNET,
             wired_controls(only),
         ),
         many => folder(
-            "Wired",
-            "The sockets in the back of the machine",
+            crate::i18n::text("shell-wired"),
+            crate::i18n::text("shell-the-sockets-in-the-back-of-the-machine"),
             icons::SETTING_ETHERNET,
             many.iter()
                 .map(|socket| {
@@ -5497,26 +5586,25 @@ fn whose_connection(device: &crate::network::Device) -> String {
 fn wired_switch(socket: &crate::network::Device) -> Entry {
     if socket.carrier == Some(false) {
         return reading(
-            "No cable",
-            "Nothing is plugged into this socket, so there is no connection to \
-             turn on",
+            crate::i18n::text("shell-no-cable"),
+            crate::i18n::text("network-socket-unplugged"),
         );
     }
     let device = intern(&socket.path);
     let up = socket.up();
     folder(
-        "Connection",
-        "Whether this socket is connected",
+        crate::i18n::text("shell-connection"),
+        crate::i18n::text("shell-whether-this-socket-is-connected"),
         icons::SETTING_ETHERNET,
         vec![
             value(
-                "Off",
+                crate::i18n::text("shell-off"),
                 None,
                 !up,
                 Setting::Network(NetworkValue::Wire { device, up: false }),
             ),
             value(
-                "On",
+                crate::i18n::text("shell-on"),
                 None,
                 up,
                 Setting::Network(NetworkValue::Wire { device, up: true }),
@@ -5535,9 +5623,15 @@ fn wired_switch(socket: &crate::network::Device) -> Entry {
 /// the System page makes with [`system_information`], one level in.
 fn connection_information(device: &crate::network::Device) -> Option<Entry> {
     let address = device.address.as_deref()?;
-    let mut values = vec![("IP address".to_string(), address.to_string())];
+    let mut values = vec![(
+        crate::i18n::text("shell-ip-address").to_string(),
+        address.to_string(),
+    )];
     if let Some(gateway) = device.gateway.as_deref() {
-        values.push(("Router".to_string(), gateway.to_string()));
+        values.push((
+            crate::i18n::text("shell-router").to_string(),
+            gateway.to_string(),
+        ));
     }
     match device.nameservers.as_slice() {
         [] => {}
@@ -5546,15 +5640,24 @@ fn connection_information(device: &crate::network::Device) -> Option<Entry> {
         // three separate facts.
         servers => values.push(("DNS".to_string(), servers.join(", "))),
     }
-    values.push(("Interface".to_string(), device.interface.clone()));
+    values.push((
+        crate::i18n::text("shell-interface").to_string(),
+        device.interface.clone(),
+    ));
     if let Some(hardware) = device.hardware.as_deref() {
-        values.push(("Hardware address".to_string(), hardware.to_string()));
+        values.push((
+            crate::i18n::text("shell-hardware-address").to_string(),
+            hardware.to_string(),
+        ));
     }
     if device.speed > 0 {
-        values.push(("Link speed".to_string(), format!("{} Mb/s", device.speed)));
+        values.push((
+            crate::i18n::text("shell-link-speed").to_string(),
+            format!("{} Mb/s", device.speed),
+        ));
     }
     Some(Entry::Facts(crate::apps::Facts {
-        title: "Connection information".to_string(),
+        title: crate::i18n::text("shell-connection-information").to_string(),
         comment: device.interface.clone(),
         icon: icons::SETTING_INFO.to_string(),
         about: crate::apps::About::Listed(values),
@@ -5571,12 +5674,12 @@ fn device_note(device: &crate::network::Device) -> String {
         Link::Up => match (device.connection.as_deref(), device.speed) {
             (Some(connection), 0) => connection.to_string(),
             (Some(connection), speed) => format!("{connection} — {speed} Mb/s"),
-            (None, _) => "Connected".to_string(),
+            (None, _) => crate::i18n::text("shell-connected").to_string(),
         },
-        Link::Working => "Connecting…".to_string(),
-        Link::Idle => "Not connected".to_string(),
-        Link::Failed => "Could not connect".to_string(),
-        Link::Unavailable => "Not ready".to_string(),
+        Link::Working => crate::i18n::text("shell-connecting").to_string(),
+        Link::Idle => crate::i18n::text("shell-not-connected").to_string(),
+        Link::Failed => crate::i18n::text("shell-could-not-connect").to_string(),
+        Link::Unavailable => crate::i18n::text("shell-not-ready").to_string(),
     }
 }
 
@@ -5642,7 +5745,9 @@ fn bluetooth() -> Entry {
     };
     folder(
         BLUETOOTH_PAGE,
-        "The devices this machine pairs with, and the controller it pairs from",
+        crate::i18n::text(
+            "shell-the-devices-this-machine-pairs-with-and-the-controller-it-pairs-from",
+        ),
         icons::SETTING_BLUETOOTH,
         rows,
     )
@@ -5684,15 +5789,13 @@ pub fn chosen_controller(
 fn no_bluetooth(manager: bool) -> Entry {
     if !manager {
         return reading(
-            "Bluetooth is not available",
-            "The Bluetooth service is not running, so nothing in this session \
-             is in charge of Bluetooth",
+            crate::i18n::text("shell-bluetooth-is-not-available"),
+            crate::i18n::text("bluetooth-no-service-explanation"),
         );
     }
     reading(
-        "Bluetooth is not available",
-        "There is no Bluetooth controller in this machine, so there is nothing \
-         to pair with",
+        crate::i18n::text("shell-bluetooth-is-not-available"),
+        crate::i18n::text("bluetooth-no-controller-explanation"),
     )
 }
 
@@ -5705,20 +5808,19 @@ fn no_bluetooth(manager: bool) -> Entry {
 fn power_switch(controller: &crate::bluetooth::Controller) -> Entry {
     if !controller.switchable {
         return reading(
-            "Bluetooth is off at the machine",
-            "A switch on this machine has the Bluetooth radio off; nothing in \
-             software can turn it back on",
+            crate::i18n::text("shell-bluetooth-is-off-at-the-machine"),
+            crate::i18n::text("bluetooth-hard-blocked"),
         );
     }
     let path = intern(&controller.path);
     let on = controller.powered;
     folder(
         "Bluetooth",
-        "Whether the Bluetooth radio is on",
+        crate::i18n::text("shell-whether-the-bluetooth-radio-is-on"),
         icons::SETTING_BLUETOOTH,
         vec![
             value(
-                "Off",
+                crate::i18n::text("shell-off"),
                 None,
                 !on,
                 Setting::Bluetooth(BluetoothValue::Power {
@@ -5727,7 +5829,7 @@ fn power_switch(controller: &crate::bluetooth::Controller) -> Entry {
                 }),
             ),
             value(
-                "On",
+                crate::i18n::text("shell-on"),
                 None,
                 on,
                 Setting::Bluetooth(BluetoothValue::Power {
@@ -5772,7 +5874,7 @@ fn devices_page(
     let mut rows = vec![search_page(devices)];
     rows.extend(known.iter().map(|device| device_row(device)));
     folder(
-        "Devices",
+        crate::i18n::text("shell-devices"),
         &devices_note(&known),
         icons::SETTING_BLUETOOTH,
         rows,
@@ -5785,9 +5887,8 @@ fn devices_note(known: &[&crate::bluetooth::Device]) -> String {
         return connected.name.clone();
     }
     match known.len() {
-        0 => "Nothing paired yet".to_string(),
-        1 => "1 device paired".to_string(),
-        many => format!("{many} devices paired"),
+        0 => crate::i18n::text("shell-nothing-paired-yet").to_string(),
+        many => crate::message!("count-devices", "count" => many),
     }
 }
 
@@ -5816,15 +5917,14 @@ fn search_page(devices: &[crate::bluetooth::Device]) -> Entry {
         .collect();
     let rows = match strangers.is_empty() {
         true => vec![reading(
-            "Looking for devices…",
-            "Nothing has answered yet. Most devices have to be put into \
-             pairing mode first.",
+            crate::i18n::text("shell-looking-for-devices"),
+            crate::i18n::text("bluetooth-nothing-answered-yet"),
         )],
         false => strangers.iter().map(|device| device_row(device)).collect(),
     };
     folder(
-        SEARCH_PAGE,
-        "Look for something new to pair with",
+        crate::i18n::builtin(SEARCH_PAGE),
+        crate::i18n::text("shell-look-for-something-new-to-pair-with"),
         icons::SEARCH,
         rows,
     )
@@ -5884,8 +5984,8 @@ fn connected_device(path: &'static str, device: &crate::bluetooth::Device) -> En
         vec![
             device_information(device),
             action(
-                "Disconnect",
-                "Come off this device, and keep it paired",
+                crate::i18n::text("shell-disconnect"),
+                crate::i18n::text("shell-come-off-this-device-and-keep-it-paired"),
                 icons::SETTING_DISCONNECT,
                 Setting::Bluetooth(BluetoothValue::Disconnect { device: path }),
             ),
@@ -5910,8 +6010,8 @@ fn paired_device(path: &'static str, device: &crate::bluetooth::Device) -> Entry
         icons::SETTING_BLUETOOTH,
         vec![
             action(
-                "Connect",
-                "Connect to this device again",
+                crate::i18n::text("shell-connect"),
+                crate::i18n::text("shell-connect-to-this-device-again"),
                 icons::SETTING_CONNECT,
                 Setting::Bluetooth(BluetoothValue::Connect { device: path }),
             ),
@@ -5936,8 +6036,8 @@ fn paired_device(path: &'static str, device: &crate::bluetooth::Device) -> Entry
 /// machine* in its third place: an application, a saved network, and a pairing.
 fn unpair(device: &'static str) -> Entry {
     action(
-        "Forget",
-        "Remove this pairing: the device will have to be paired with again",
+        crate::i18n::text("shell-forget"),
+        crate::i18n::text("shell-remove-this-pairing-the-device-will-have-to-be-paired-with-again"),
         icons::UNINSTALL,
         Setting::Bluetooth(BluetoothValue::Forget { device }),
     )
@@ -5960,19 +6060,22 @@ fn device_state(device: &crate::bluetooth::Device) -> String {
         return doing.title().to_string();
     }
     let what = match (device.connected, device.paired) {
-        (true, _) => "Connected",
-        (_, true) => "Paired",
+        (true, _) => crate::i18n::text("shell-connected"),
+        (_, true) => crate::i18n::text("shell-paired"),
         // Nothing to say about a device the machine has never met but what sort
         // of thing it says it is.
-        _ => device.kind.title().unwrap_or("Bluetooth device"),
+        _ => device
+            .kind
+            .title()
+            .unwrap_or(crate::i18n::text("shell-bluetooth-device")),
     };
     let then = match (device.connected, device.paired) {
         (true, _) => device
             .battery
-            .map(|left| format!("{left}% battery"))
+            .map(|left| crate::message!("battery-percent", "percent" => left.to_string()))
             .or_else(|| device.kind.title().map(str::to_lowercase)),
         (_, true) => match device.strength {
-            None => Some("not in range".to_string()),
+            None => Some(crate::i18n::text("shell-not-in-range").to_string()),
             Some(_) => device.kind.title().map(str::to_lowercase),
         },
         _ => nearness(device.strength).map(str::to_string),
@@ -5993,9 +6096,9 @@ fn device_state(device: &crate::bluetooth::Device) -> String {
 fn nearness(strength: Option<i16>) -> Option<&'static str> {
     let strength = strength?;
     Some(match strength {
-        strength if strength >= -60 => "close by",
+        strength if strength >= -60 => crate::i18n::text("shell-close-by"),
         strength if strength >= -75 => "nearby",
-        _ => "far away",
+        _ => crate::i18n::text("shell-far-away"),
     })
 }
 
@@ -6008,20 +6111,32 @@ fn nearness(strength: Option<i16>) -> Option<&'static str> {
 fn device_information(device: &crate::bluetooth::Device) -> Entry {
     let mut values = Vec::new();
     if let Some(kind) = device.kind.title() {
-        values.push(("Kind".to_string(), kind.to_string()));
+        values.push((
+            crate::i18n::text("shell-kind").to_string(),
+            kind.to_string(),
+        ));
     }
-    values.push(("Address".to_string(), device.address.clone()));
+    values.push((
+        crate::i18n::text("shell-address").to_string(),
+        device.address.clone(),
+    ));
     if let Some(battery) = device.battery {
-        values.push(("Battery".to_string(), format!("{battery}%")));
+        values.push((
+            crate::i18n::text("shell-battery").to_string(),
+            format!("{battery}%"),
+        ));
     }
     // The number itself, here and only here. A row has to say something a
     // person can act on; a panel of facts is where the reading behind it
     // belongs, exactly as the link speed is.
     if let Some(strength) = device.strength {
-        values.push(("Signal".to_string(), format!("{strength} dBm")));
+        values.push((
+            crate::i18n::text("shell-signal").to_string(),
+            format!("{strength} dBm"),
+        ));
     }
     Entry::Facts(crate::apps::Facts {
-        title: "Device information".to_string(),
+        title: crate::i18n::text("shell-device-information").to_string(),
         comment: device.address.clone(),
         icon: icons::SETTING_INFO.to_string(),
         about: crate::apps::About::Listed(values),
@@ -6050,12 +6165,15 @@ fn configuration(
     // A fact and not a setting, so a row that cannot be pressed rather than a
     // panel to open: it is one line, and a door in front of one line is a door
     // for its own sake. The information mark is the one [`reading`] carries.
-    rows.push(reading("Address", &controller.address));
+    rows.push(reading(
+        crate::i18n::text("shell-address"),
+        &controller.address,
+    ));
     rows.push(visibility(controller));
     rows.push(startup_row());
     folder(
-        "Configuration",
-        "What this machine is called over Bluetooth, and how it comes up",
+        crate::i18n::text("shell-configuration"),
+        crate::i18n::text("shell-what-this-machine-is-called-over-bluetooth-and-how-it-comes-up"),
         icons::SETTING_BLUETOOTH,
         rows,
     )
@@ -6088,7 +6206,7 @@ fn controller_choice(
         .enumerate()
         .map(|(index, controller)| {
             value(
-                &format!("Controller {}", index + 1),
+                &crate::message!("controller-number", "number" => (index + 1).to_string()),
                 Some(&controller_note(listing, controller)),
                 controller.path == chosen.path,
                 Setting::Bluetooth(BluetoothValue::Use {
@@ -6098,7 +6216,7 @@ fn controller_choice(
         })
         .collect();
     Some(folder(
-        "Controller",
+        crate::i18n::text("shell-controller"),
         &chosen.address,
         icons::SETTING_BLUETOOTH,
         rows,
@@ -6117,7 +6235,7 @@ fn controller_note(
     controller: &crate::bluetooth::Controller,
 ) -> String {
     let doing = if !controller.switchable {
-        "off at the machine".to_string()
+        crate::i18n::text("shell-off-at-the-machine").to_string()
     } else if !controller.powered {
         "off".to_string()
     } else if let Some(connected) = listing
@@ -6125,7 +6243,7 @@ fn controller_note(
         .iter()
         .find(|device| device.connected)
     {
-        format!("on {}", connected.name)
+        crate::message!("connected-on", "name" => connected.name.as_str())
     } else {
         "on".to_string()
     };
@@ -6147,7 +6265,7 @@ fn controller_note(
 /// [`crate::bluetooth::Bt::rename`].
 fn bluetooth_name(controller: &crate::bluetooth::Controller) -> Entry {
     Entry::Typed(crate::apps::Typed {
-        title: "Name".to_string(),
+        title: crate::i18n::text("shell-name").to_string(),
         // The panel this opens covers the trail that would say what it is the
         // name *of*. See [`crate::apps::Typed::whose`].
         whose: "Bluetooth".to_string(),
@@ -6174,23 +6292,25 @@ fn bluetooth_name(controller: &crate::bluetooth::Controller) -> Entry {
 fn visibility(controller: &crate::bluetooth::Controller) -> Entry {
     if !controller.powered {
         return reading(
-            "Visibility",
-            "Bluetooth is off, so nothing can find this machine",
+            crate::i18n::text("shell-visibility"),
+            crate::i18n::text("shell-bluetooth-is-off-so-nothing-can-find-this-machine"),
         );
     }
     let path = intern(&controller.path);
     let on = controller.discoverable;
     folder(
-        "Visibility",
+        crate::i18n::text("shell-visibility"),
         match on {
-            true => "Anything nearby can find this machine",
-            false => "Only devices this machine is paired with",
+            true => crate::i18n::text("shell-anything-nearby-can-find-this-machine"),
+            false => crate::i18n::text("shell-only-devices-this-machine-is-paired-with"),
         },
         icons::SETTING_BLUETOOTH,
         vec![
             value(
-                "Off",
-                Some("Only devices this machine is paired with"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-only-devices-this-machine-is-paired-with",
+                )),
                 !on,
                 Setting::Bluetooth(BluetoothValue::Visible {
                     controller: path,
@@ -6198,8 +6318,10 @@ fn visibility(controller: &crate::bluetooth::Controller) -> Entry {
                 }),
             ),
             value(
-                "On",
-                Some("Anything nearby can find this machine and ask to pair"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-anything-nearby-can-find-this-machine-and-ask-to-pair",
+                )),
                 on,
                 Setting::Bluetooth(BluetoothValue::Visible {
                     controller: path,
@@ -6222,25 +6344,29 @@ fn visibility(controller: &crate::bluetooth::Controller) -> Entry {
 fn startup_row() -> Entry {
     let now = bluetooth_startup();
     folder(
-        "On startup",
+        crate::i18n::text("shell-on-startup"),
         now.title(),
         icons::SETTING_BLUETOOTH,
         vec![
             value(
-                "Off",
-                Some("Bluetooth is off when the session starts"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-bluetooth-is-off-when-the-session-starts",
+                )),
                 now == Startup::Off,
                 Setting::Bluetooth(BluetoothValue::Startup(Startup::Off)),
             ),
             value(
-                "On",
-                Some("Bluetooth is on when the session starts"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-bluetooth-is-on-when-the-session-starts",
+                )),
                 now == Startup::On,
                 Setting::Bluetooth(BluetoothValue::Startup(Startup::On)),
             ),
             value(
-                "As it was left",
-                Some("However the last session left it"),
+                crate::i18n::text("shell-as-it-was-left"),
+                Some(crate::i18n::text("shell-however-the-last-session-left-it")),
                 now == Startup::Restore,
                 Setting::Bluetooth(BluetoothValue::Startup(Startup::Restore)),
             ),
@@ -6258,8 +6384,8 @@ fn startup_row() -> Entry {
 /// and the version of the kernel.
 fn input() -> Entry {
     folder(
-        "Input",
-        "The keyboard, and the controls in your hands",
+        crate::i18n::text("shell-input"),
+        crate::i18n::text("shell-the-keyboard-and-the-controls-in-your-hands"),
         icons::SETTING_INPUT,
         vec![keyboard(), mouse()],
     )
@@ -6281,8 +6407,8 @@ fn input() -> Entry {
 /// reading the column downwards meets the question before its consequence.
 fn keyboard() -> Entry {
     folder(
-        "Keyboard",
-        "What the keys say, and the board this shell draws",
+        crate::i18n::text("shell-keyboard"),
+        crate::i18n::text("shell-what-the-keys-say-and-the-board-this-shell-draws"),
         icons::SETTING_KEYS,
         vec![keyboard_layout_page(), on_screen_keyboard()],
     )
@@ -6305,8 +6431,8 @@ fn keyboard() -> Entry {
 /// the one that says what the value is.
 fn on_screen_keyboard() -> Entry {
     folder(
-        "On-screen keyboard",
-        "The board this shell types with",
+        crate::i18n::text("shell-on-screen-keyboard"),
+        crate::i18n::text("shell-the-board-this-shell-types-with"),
         icons::SETTING_KEYBOARD,
         vec![keyboard_display_page()],
     )
@@ -6334,8 +6460,8 @@ fn on_screen_keyboard() -> Entry {
 /// that is what somebody is looking for, and a console has one.
 fn mouse() -> Entry {
     folder(
-        "Mouse",
-        "The pointer, and what a wheel does",
+        crate::i18n::text("shell-mouse"),
+        crate::i18n::text("shell-the-pointer-and-what-a-wheel-does"),
         icons::SETTING_MOUSE,
         vec![
             cursor_speed(),
@@ -6368,12 +6494,15 @@ fn cursor_speed() -> Entry {
     };
     let span = f32::from(FASTEST_POINTER as i16 - SLOWEST_POINTER as i16);
     folder(
-        "Cursor speed",
+        crate::i18n::text("shell-cursor-speed"),
         &pointer_speed_note(speed),
         icons::SETTING_CURSOR_SPEED,
         vec![Entry::Bar(crate::apps::Bar {
             title: pointer_speed_note(speed),
-            comment: Some("How far the pointer travels for a movement of the hand".to_string()),
+            comment: Some(
+                crate::i18n::text("shell-how-far-the-pointer-travels-for-a-movement-of-the-hand")
+                    .to_string(),
+            ),
             fill: f32::from(speed as i16 - SLOWEST_POINTER as i16) / span,
             swatch: None,
             up: step(speed.saturating_add(POINTER_STEP)),
@@ -6394,7 +6523,7 @@ fn cursor_speed() -> Entry {
 /// libinput's.
 fn pointer_speed_note(speed: i8) -> String {
     if speed == 0 {
-        return "Default".to_string();
+        return crate::i18n::text("shell-default").to_string();
     }
     let span = f32::from(FASTEST_POINTER as i16 - SLOWEST_POINTER as i16);
     let along = f32::from(speed as i16 - SLOWEST_POINTER as i16) / span * 100.0;
@@ -6410,7 +6539,7 @@ fn pointer_speed_note(speed: i8) -> String {
 fn cursor_size() -> Entry {
     let size = pointer().size;
     folder(
-        "Cursor size",
+        crate::i18n::text("shell-cursor-size"),
         cursor_size_note(size),
         icons::SETTING_CURSOR_SIZE,
         CURSOR_SIZES
@@ -6418,7 +6547,7 @@ fn cursor_size() -> Entry {
             .map(|(offered, name)| {
                 value(
                     name,
-                    Some(&format!("{offered} pixels")),
+                    Some(&crate::message!("count-pixels", "count" => *offered)),
                     *offered == size,
                     Setting::Pointer(PointerValue::Size(*offered)),
                 )
@@ -6432,11 +6561,11 @@ fn cursor_size_note(size: u16) -> &'static str {
     CURSOR_SIZES
         .iter()
         .find(|(offered, _)| *offered == size)
-        .map(|(_, name)| *name)
+        .map(|(_, name)| crate::i18n::builtin(name))
         // A size out of a file this shell does not offer. It cannot reach the
         // page — [`nearest_cursor_size`] brings it to one of the four on the
         // way in — but the row says something honest if it ever does.
-        .unwrap_or("Its own size")
+        .unwrap_or(crate::i18n::text("shell-its-own-size"))
 }
 
 /// How far one movement of a wheel carries the content under it.
@@ -6455,12 +6584,14 @@ fn scrolling_speed() -> Entry {
     };
     let span = f32::from(FASTEST_SCROLL - SLOWEST_SCROLL);
     folder(
-        "Scrolling speed",
+        crate::i18n::text("shell-scrolling-speed"),
         &format!("{scroll}%"),
         icons::SETTING_SCROLL_SPEED,
         vec![Entry::Bar(crate::apps::Bar {
             title: format!("{scroll}%"),
-            comment: Some("How far one turn of a wheel carries the page".to_string()),
+            comment: Some(
+                crate::i18n::text("shell-how-far-one-turn-of-a-wheel-carries-the-page").to_string(),
+            ),
             fill: f32::from(scroll.saturating_sub(SLOWEST_SCROLL)) / span,
             swatch: None,
             up: step(scroll.saturating_add(SCROLL_STEP)),
@@ -6486,22 +6617,26 @@ fn scrolling_speed() -> Entry {
 fn scrolling_direction() -> Entry {
     let natural = pointer().natural;
     folder(
-        "Scrolling direction",
+        crate::i18n::text("shell-scrolling-direction"),
         match natural {
-            true => "The page follows your fingers",
-            false => "The view follows your fingers",
+            true => crate::i18n::text("shell-the-page-follows-your-fingers"),
+            false => crate::i18n::text("shell-the-view-follows-your-fingers"),
         },
         icons::SETTING_SCROLL_DIRECTION,
         vec![
             value(
-                "Standard",
-                Some("Rolling the wheel away moves the view down the page"),
+                crate::i18n::text("shell-standard"),
+                Some(crate::i18n::text(
+                    "shell-rolling-the-wheel-away-moves-the-view-down-the-page",
+                )),
                 !natural,
                 Setting::Pointer(PointerValue::Natural(false)),
             ),
             value(
-                "Natural",
-                Some("Rolling the wheel away moves the page itself away"),
+                crate::i18n::text("shell-natural"),
+                Some(crate::i18n::text(
+                    "shell-rolling-the-wheel-away-moves-the-page-itself-away",
+                )),
                 natural,
                 Setting::Pointer(PointerValue::Natural(true)),
             ),
@@ -6540,20 +6675,22 @@ fn keyboard_display_page() -> Entry {
     }
 
     let mut rows = vec![value(
-        FOCUSED_SCREEN,
-        Some("Wherever the bar is being driven from"),
+        crate::i18n::builtin(FOCUSED_SCREEN),
+        Some(crate::i18n::text(
+            "shell-wherever-the-bar-is-being-driven-from",
+        )),
         chosen.is_none(),
         Setting::KeyboardDisplay(None),
     )];
     rows.extend(screens.iter().map(|name| {
         drawn_value(
-            &format!("Only {name}"),
+            &crate::message!("only-display", "name" => name.as_str()),
             // A screen that is not plugged in says so, and nothing else says
             // anything: the row is a connector's name, which is what the
             // Display pages call the same screen, and a sentence under each one
             // explaining what DP-1 is would be the cable described back to
             // somebody who plugged it in.
-            (!here.contains(name)).then_some("Not plugged in just now"),
+            (!here.contains(name)).then_some(crate::i18n::text("shell-not-plugged-in-just-now")),
             icons::SETTING_DISPLAY,
             chosen.as_deref() == Some(name.as_str()),
             Setting::KeyboardDisplay(Some(intern(name))),
@@ -6561,7 +6698,7 @@ fn keyboard_display_page() -> Entry {
     }));
 
     folder(
-        "Default display",
+        crate::i18n::text("shell-default-display"),
         &keyboard_display_note(),
         icons::SETTING_DISPLAY,
         rows,
@@ -6581,7 +6718,7 @@ fn keyboard_display_page() -> Entry {
 /// [`crate::layouts`].
 fn keyboard_layout_page() -> Entry {
     folder(
-        "Keyboard layout",
+        crate::i18n::text("shell-keyboard-layout"),
         &keyboard_layout_note(),
         icons::SETTING_LAYOUT,
         layout_column(|| {
@@ -6608,8 +6745,8 @@ fn layout_column(browsing: impl FnOnce() -> Vec<Entry>) -> Vec<Entry> {
     // [`KEYBOARD_LAYOUT_AVAILABLE`].
     if !keyboard_layout_available() {
         return vec![reading(
-            "Not offered by this session",
-            "The compositor this shell is running on cannot be told a keyboard layout",
+            crate::i18n::text("shell-not-offered-by-this-session"),
+            crate::i18n::text("layout-compositor-cannot-be-told"),
         )];
     }
     let registry = layouts::registry();
@@ -6619,8 +6756,10 @@ fn layout_column(browsing: impl FnOnce() -> Vec<Entry>) -> Vec<Entry> {
     // row that does not answer when it is pressed.
     if registry.is_empty() {
         return vec![reading(
-            "No layouts on this machine",
-            "xkeyboard-config is not installed, so there is nothing to choose from",
+            crate::i18n::text("shell-no-layouts-on-this-machine"),
+            crate::i18n::text(
+                "shell-xkeyboard-config-is-not-installed-so-there-is-nothing-to-choose-from",
+            ),
         )];
     }
     let found = registry.search(&query);
@@ -6644,7 +6783,7 @@ fn continent_page(continent: layouts::Continent) -> Entry {
     let countries = layouts::registry().countries_in(continent);
     folder(
         continent.title(),
-        &plural(countries.len(), "country", "countries"),
+        &crate::message!("count-countries", "count" => countries.len()),
         icons::SETTING_REGION,
         layout_column(|| countries.iter().map(country_page).collect()),
     )
@@ -6655,7 +6794,7 @@ fn country_page(country: &layouts::Country) -> Entry {
     let held = layouts::registry().layouts_in(&country.code);
     folder(
         &country.name,
-        &plural(held.len(), "layout", "layouts"),
+        &crate::message!("count-layouts", "count" => held.len()),
         icons::SETTING_REGION,
         layout_column(|| {
             held.iter()
@@ -6693,15 +6832,6 @@ fn found_layout(layout: &layouts::Layout) -> Entry {
     layout_value(layout, Some(whereabouts))
 }
 
-/// "1 layout", "9 layouts" — the count a row that opens a column says under
-/// its title.
-fn plural(count: usize, one: &str, many: &str) -> String {
-    match count {
-        1 => format!("1 {one}"),
-        count => format!("{count} {many}"),
-    }
-}
-
 /// What the Keyboard layout row says under its title: the arrangement in force,
 /// by the name somebody chose it under.
 ///
@@ -6711,15 +6841,15 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 /// setting, and saying so is better than saying nothing.
 fn keyboard_layout_note() -> String {
     if !keyboard_layout_available() {
-        return "Not offered by this session".to_string();
+        return crate::i18n::text("shell-not-offered-by-this-session").to_string();
     }
     let Some(key) = keyboard_layout_in_force() else {
-        return "As this machine is configured".to_string();
+        return crate::i18n::text("shell-as-this-machine-is-configured").to_string();
     };
     let (layout, variant) = layouts::from_key(&key);
     match layouts::registry().find(&layout, &variant) {
         Some(found) => found.name.clone(),
-        None => format!("{key} — not a layout this machine has"),
+        None => crate::message!("layout-unavailable", "key" => key.as_str()),
     }
 }
 
@@ -6727,9 +6857,11 @@ fn keyboard_layout_note() -> String {
 /// comes up on, in the few words a comment has.
 fn keyboard_display_note() -> String {
     match keyboard_display() {
-        None => FOCUSED_SCREEN.to_string(),
-        Some(name) if screen_is_here(&name) => format!("Only {name}"),
-        Some(name) => format!("Only {name} — not plugged in just now"),
+        None => crate::i18n::builtin(FOCUSED_SCREEN).to_string(),
+        Some(name) if screen_is_here(&name) => {
+            crate::message!("only-display", "name" => name.as_str())
+        }
+        Some(name) => crate::message!("only-display-absent", "name" => name.as_str()),
     }
 }
 
@@ -6782,8 +6914,8 @@ fn games() -> Entry {
         rows.push(nothing_to_set_about_games());
     }
     folder(
-        "Games",
-        "Steam, and the games on this machine",
+        crate::i18n::text("shell-games"),
+        crate::i18n::text("shell-steam-and-the-games-on-this-machine"),
         icons::CATEGORY_GAMES,
         rows,
     )
@@ -6819,8 +6951,8 @@ fn steam() -> Entry {
     // the page lying — so the page says why instead of being empty.
     if !*STEAM_IN_THIS_SESSION.lock().unwrap() {
         rows = vec![reading(
-            "Steam is not in this session",
-            "It was started with --no-steam, so nothing here talks to Steam",
+            crate::i18n::text("shell-steam-is-not-in-this-session"),
+            crate::i18n::text("shell-it-was-started-with-no-steam-so-nothing-here-talks-to-steam"),
         )];
     }
     folder("Steam", steam_note(), icons::STEAM, rows)
@@ -6846,8 +6978,8 @@ fn steam() -> Entry {
 /// nothing behind it.
 fn steam_note() -> &'static str {
     match *STEAM_IN_THIS_SESSION.lock().unwrap() {
-        true => "How Steam works with the shell",
-        false => "Left out of this session",
+        true => crate::i18n::text("shell-how-steam-works-with-the-shell"),
+        false => crate::i18n::text("shell-left-out-of-this-session"),
     }
 }
 
@@ -6860,22 +6992,26 @@ fn steam_note() -> &'static str {
 fn steam_integration_switch() -> Entry {
     let on = steam_integration();
     folder(
-        "Integration",
+        crate::i18n::text("shell-integration"),
         match on {
-            true => "On — the library is a column of the bar",
-            false => "Off — Steam is an application like any other",
+            true => crate::i18n::text("shell-on-the-library-is-a-column-of-the-bar"),
+            false => crate::i18n::text("shell-off-steam-is-an-application-like-any-other"),
         },
         icons::CATEGORY_STEAM,
         vec![
             value(
-                "Off",
-                Some("Steam is an application like any other, with its own icon"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-steam-is-an-application-like-any-other-with-its-own-icon",
+                )),
                 !on,
                 Setting::Steam(SteamValue::Integration(false)),
             ),
             value(
-                "On",
-                Some("Sign in, and play your library from the bar"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-sign-in-and-play-your-library-from-the-bar",
+                )),
                 on,
                 Setting::Steam(SteamValue::Integration(true)),
             ),
@@ -6905,18 +7041,24 @@ fn steam_other_titles_page() -> Entry {
     let held = COMPATIBILITY.lock().unwrap().clone();
     let rows = match &held {
         None | Some(crate::steam::Compat::Asking) => vec![reading(
-            "Asking Steam",
-            "Valve's client is being asked which tools this account may use",
+            crate::i18n::text("shell-asking-steam"),
+            crate::i18n::text(
+                "shell-valve-s-client-is-being-asked-which-tools-this-account-may-use",
+            ),
         )],
-        Some(crate::steam::Compat::Unavailable(why)) => vec![reading("Not now", why)],
+        Some(crate::steam::Compat::Unavailable(why)) => {
+            vec![reading(crate::i18n::text("shell-not-now"), why)]
+        }
         Some(crate::steam::Compat::Said(said)) if said.tools.is_empty() => vec![reading(
-            "Steam offers none",
-            "This client lists no compatibility tools for this account",
+            crate::i18n::text("shell-steam-offers-none"),
+            crate::i18n::text("shell-this-client-lists-no-compatibility-tools-for-this-account"),
         )],
         Some(crate::steam::Compat::Said(said)) => {
             let mut rows = vec![value(
-                "None",
-                Some("Games Valve has not verified are not offered a tool"),
+                crate::i18n::text("shell-none"),
+                Some(crate::i18n::text(
+                    "shell-games-valve-has-not-verified-are-not-offered-a-tool",
+                )),
                 said.forced.is_none(),
                 Setting::Steam(SteamValue::OtherTitles(None)),
             )];
@@ -6935,7 +7077,7 @@ fn steam_other_titles_page() -> Entry {
         }
     };
     folder(
-        COMPATIBILITY_PAGE,
+        crate::i18n::builtin(COMPATIBILITY_PAGE),
         &steam_other_titles_note(&held),
         icons::SETTING_COMPATIBILITY,
         rows,
@@ -6952,11 +7094,12 @@ fn steam_other_titles_page() -> Entry {
 fn steam_other_titles_note(held: &Option<crate::steam::Compat>) -> String {
     match held {
         Some(crate::steam::Compat::Said(said)) => match said.forced_display() {
-            Some(tool) => format!("{tool}, from the next time Steam starts"),
-            None => "Games Valve has not verified are not offered a tool".to_string(),
+            Some(tool) => crate::message!("steam-tool-next-start", "tool" => tool),
+            None => crate::i18n::text("shell-games-valve-has-not-verified-are-not-offered-a-tool")
+                .to_string(),
         },
         Some(crate::steam::Compat::Unavailable(why)) => why.clone(),
-        _ => "What runs the games Valve has not verified".to_string(),
+        _ => crate::i18n::text("shell-what-runs-the-games-valve-has-not-verified").to_string(),
     }
 }
 
@@ -6965,22 +7108,28 @@ fn steam_other_titles_note(held: &Option<crate::steam::Compat>) -> String {
 fn steam_at_startup_switch() -> Entry {
     let on = steam_at_startup();
     folder(
-        "Start with the shell",
+        crate::i18n::text("shell-start-with-the-shell"),
         match on {
-            true => "Steam is started in the background as the session comes up",
-            false => "Steam is started when the first game is pressed",
+            true => crate::i18n::text(
+                "shell-steam-is-started-in-the-background-as-the-session-comes-up",
+            ),
+            false => crate::i18n::text("shell-steam-is-started-when-the-first-game-is-pressed"),
         },
         icons::LAUNCH,
         vec![
             value(
-                "Off",
-                Some("Steam starts when the first game is pressed"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-steam-starts-when-the-first-game-is-pressed",
+                )),
                 !on,
                 Setting::Steam(SteamValue::AtStartup(false)),
             ),
             value(
-                "On",
-                Some("The first game of the day starts as quickly as the second"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-the-first-game-of-the-day-starts-as-quickly-as-the-second",
+                )),
                 on,
                 Setting::Steam(SteamValue::AtStartup(true)),
             ),
@@ -6993,22 +7142,30 @@ fn steam_at_startup_switch() -> Entry {
 fn steam_after_a_game_switch() -> Entry {
     let on = steam_left_after_a_game();
     folder(
-        "Leave Steam running",
+        crate::i18n::text("shell-leave-steam-running"),
         match on {
-            true => "Steam stays up after a game, so the next one starts sooner",
-            false => "Steam is closed with the game, and the memory comes back",
+            true => {
+                crate::i18n::text("shell-steam-stays-up-after-a-game-so-the-next-one-starts-sooner")
+            }
+            false => {
+                crate::i18n::text("shell-steam-is-closed-with-the-game-and-the-memory-comes-back")
+            }
         },
         icons::SHUTDOWN,
         vec![
             value(
-                "Off",
-                Some("Steam is asked to close when the game, or the press, is over"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-steam-is-asked-to-close-when-the-game-or-the-press-is-over",
+                )),
                 !on,
                 Setting::Steam(SteamValue::AfterAGame(false)),
             ),
             value(
-                "On",
-                Some("The next game starts in a second or two rather than twenty"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-the-next-game-starts-in-a-second-or-two-rather-than-twenty",
+                )),
                 on,
                 Setting::Steam(SteamValue::AfterAGame(true)),
             ),
@@ -7044,7 +7201,7 @@ fn retroarch() -> Entry {
     rows.push(game_art());
     folder(
         RETROARCH_PAGE,
-        "Your own games, and how they are played",
+        crate::i18n::text("shell-your-own-games-and-how-they-are-played"),
         crate::retroarch::mark(),
         rows,
     )
@@ -7095,12 +7252,14 @@ fn core_page(core: &crate::retroarch::CoreOptions) -> Entry {
         let Some(bios) = bios else {
             return reading(
                 &core.display,
-                "Its settings are in RetroArch's own menu, with a game running",
+                crate::i18n::text(
+                    "shell-its-settings-are-in-retroarch-s-own-menu-with-a-game-running",
+                ),
             );
         };
         return folder(
             &core.display,
-            "Its BIOS. Everything else is in RetroArch's own menu",
+            crate::i18n::text("shell-its-bios-everything-else-is-in-retroarch-s-own-menu"),
             &crate::retroarch::mark_for_core(&core.core),
             vec![bios],
         );
@@ -7119,11 +7278,7 @@ fn core_page(core: &crate::retroarch::CoreOptions) -> Entry {
         }
         rows.push(folder(
             &group.title,
-            &format!(
-                "{} {}",
-                held.len(),
-                crate::retroarch::plural(held.len(), "setting", "settings")
-            ),
+            &crate::message!("count-settings", "count" => held.len()),
             icons::CATEGORY_GAMES,
             held.into_iter()
                 .map(|option| core_option_row(&core.display, option))
@@ -7152,12 +7307,8 @@ fn core_page(core: &crate::retroarch::CoreOptions) -> Entry {
             rows = rest;
         } else {
             rows.push(folder(
-                "Other",
-                &format!(
-                    "{} {}",
-                    rest.len(),
-                    crate::retroarch::plural(rest.len(), "setting", "settings")
-                ),
+                crate::i18n::text("shell-other"),
+                &crate::message!("count-settings", "count" => rest.len()),
                 icons::CATEGORY_GAMES,
                 rest,
             ));
@@ -7167,10 +7318,7 @@ fn core_page(core: &crate::retroarch::CoreOptions) -> Entry {
     let count = core.options.len();
     folder(
         &core.display,
-        &format!(
-            "{count} {}",
-            crate::retroarch::plural(count, "setting", "settings")
-        ),
+        &crate::message!("count-settings", "count" => count),
         // The console's own mark rather than RetroArch's. Four emulators under
         // one page all wearing the frontend's drawing is four rows told apart
         // only by reading them, and what somebody is looking for on this page
@@ -7269,16 +7417,16 @@ fn emulator_choice(
 /// configuration of a machine where nobody has ever touched this.
 fn aspect_ratio() -> Entry {
     emulator_choice(
-        "Aspect ratio",
+        crate::i18n::text("shell-aspect-ratio"),
         icons::SETTING_RESOLUTION,
         "aspect_ratio_index",
         "22",
         &[
-            ("22", "As the console had it"),
-            ("21", "Square pixels"),
+            ("22", crate::i18n::text("shell-as-the-console-had-it")),
+            ("21", crate::i18n::text("shell-square-pixels")),
             ("0", "4:3"),
             ("1", "16:9"),
-            ("24", "Fill the screen"),
+            ("24", crate::i18n::text("shell-fill-the-screen")),
         ],
     )
 }
@@ -7290,7 +7438,7 @@ fn aspect_ratio() -> Entry {
 /// one that is and the page would be saying something untrue.
 fn video_driver() -> Entry {
     emulator_choice(
-        "Video driver",
+        crate::i18n::text("shell-video-driver"),
         icons::SETTING_DISPLAY,
         "video_driver",
         "gl",
@@ -7298,7 +7446,7 @@ fn video_driver() -> Entry {
             ("gl", "OpenGL"),
             ("glcore", "OpenGL (core profile)"),
             ("vulkan", "Vulkan"),
-            ("sdl2", "Software"),
+            ("sdl2", crate::i18n::text("shell-software")),
         ],
     )
 }
@@ -7306,22 +7454,28 @@ fn video_driver() -> Entry {
 /// Whether a game is drawn at a whole multiple of its own size.
 fn integer_scale() -> Entry {
     emulator_choice(
-        "Whole-number scaling",
+        crate::i18n::text("shell-whole-number-scaling"),
         icons::SETTING_SCALE,
         "video_scale_integer",
         "false",
-        &[("false", "Off"), ("true", "On")],
+        &[
+            ("false", crate::i18n::text("shell-off")),
+            ("true", crate::i18n::text("shell-on")),
+        ],
     )
 }
 
 /// Whether a game waits for the screen.
 fn vertical_sync() -> Entry {
     emulator_choice(
-        "Wait for the screen",
+        crate::i18n::text("shell-wait-for-the-screen"),
         icons::SETTING_REFRESH,
         "video_vsync",
         "true",
-        &[("true", "On"), ("false", "Off")],
+        &[
+            ("true", crate::i18n::text("shell-on")),
+            ("false", crate::i18n::text("shell-off")),
+        ],
     )
 }
 
@@ -7344,7 +7498,9 @@ fn roms_path() -> Entry {
     // over, and a page whose only row could not be landed on would be a page
     // that cannot be used.
     row.over_the_list = false;
-    row.title = "ROMs path".to_string();
+    row.title = crate::i18n::text("shell-roms-path").to_string();
+    row.title_message = Some("shell-roms-path");
+    row.identity = Some("shell-roms-path".into());
     Entry::Folder(row)
 }
 
@@ -7361,8 +7517,8 @@ fn roms_path() -> Entry {
 /// row on this page that is a press rather than an answer — see [`action`].
 fn game_art() -> Entry {
     action(
-        "Get the artwork again",
-        "Look for a cover and a picture for every game, from libretro",
+        crate::i18n::text("shell-get-the-artwork-again"),
+        crate::i18n::text("shell-look-for-a-cover-and-a-picture-for-every-game-from-libretro"),
         icons::SETTING_WALLPAPER,
         Setting::EmulatorArt,
     )
@@ -7377,9 +7533,8 @@ fn game_art() -> Entry {
 /// would leave them wondering whether they had come to the wrong place.
 fn nothing_to_set_about_games() -> Entry {
     reading(
-        "Nothing to set here yet",
-        "The settings for Steam and the other games on this machine will be on \
-         this page",
+        crate::i18n::text("shell-nothing-to-set-here-yet"),
+        crate::i18n::text("games-page-placeholder"),
     )
 }
 
@@ -7402,8 +7557,8 @@ fn nothing_to_set_about_games() -> Entry {
 /// telephone with.
 fn system(bar: &[crate::apps::Column]) -> Entry {
     folder(
-        "System",
-        "How the machine behaves",
+        crate::i18n::text("shell-system"),
+        crate::i18n::text("shell-how-the-machine-behaves"),
         icons::SETTING_SYSTEM,
         vec![
             startup_category_page(bar),
@@ -7457,19 +7612,19 @@ fn startup_category_page(bar: &[crate::apps::Column]) -> Entry {
         // answer: the file is one the user is entitled to open.
         .unwrap_or(crate::apps::Column {
             id: "",
-            title: "Not on this machine",
+            title: crate::i18n::text("shell-not-on-this-machine"),
             icon: icons::CATEGORY_OTHER,
         });
 
     folder(
-        "Startup category",
-        named.title,
+        crate::i18n::text("shell-startup-category"),
+        named.display_title(),
         named.icon,
         columns
             .iter()
             .map(|column| {
                 drawn_value(
-                    column.title,
+                    column.display_title(),
                     startup_note(column, bar),
                     column.icon,
                     column.id == chosen,
@@ -7489,7 +7644,8 @@ fn startup_category_page(bar: &[crate::apps::Column]) -> Entry {
 /// a sentence under each one explaining what Multimedia is would be the bar
 /// described back to somebody who is looking at it.
 fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Option<&'static str> {
-    (!bar.iter().any(|had| had.id == column.id)).then_some("Not on this machine just now")
+    (!bar.iter().any(|had| had.id == column.id))
+        .then_some(crate::i18n::text("shell-not-on-this-machine-just-now"))
 }
 
 /// The legends, on or off.
@@ -7516,19 +7672,23 @@ fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Op
 fn button_hints_switch() -> Entry {
     let on = button_hints();
     folder(
-        "Button hints",
-        "What the buttons do, written where they are used",
+        crate::i18n::text("shell-button-hints"),
+        crate::i18n::text("shell-what-the-buttons-do-written-where-they-are-used"),
         icons::PAD_SOUTH,
         vec![
             value(
-                "Off",
-                Some("No screen says which button does what"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-no-screen-says-which-button-does-what",
+                )),
                 !on,
                 Setting::ButtonHints(false),
             ),
             value(
-                "On",
-                Some("A picture of each button, and the word for what it does"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-a-picture-of-each-button-and-the-word-for-what-it-does",
+                )),
                 on,
                 Setting::ButtonHints(true),
             ),
@@ -7556,7 +7716,7 @@ fn button_hints_switch() -> Entry {
 fn picture_in_picture_page() -> Entry {
     let pip = picture_in_picture();
     folder(
-        "Picture-in-Picture",
+        crate::i18n::text("shell-picture-in-picture"),
         &floating_summary(pip),
         icons::SETTING_PIP,
         vec![
@@ -7573,13 +7733,9 @@ fn picture_in_picture_page() -> Entry {
 /// that never floats would be describing something the user cannot see.
 fn floating_summary(pip: Pip) -> String {
     if !pip.floating {
-        return "Off".to_string();
+        return crate::i18n::text("shell-off").to_string();
     }
-    format!(
-        "On, {}, {}",
-        pip.size.title().to_lowercase(),
-        pip.place.title().to_lowercase()
-    )
+    crate::message!("pip-on-size-place", "size" => crate::i18n::builtin(pip.size.title()).to_lowercase(), "place" => crate::i18n::builtin(pip.place.title()).to_lowercase())
 }
 
 /// The switch itself, on or off.
@@ -7592,19 +7748,23 @@ fn floating_summary(pip: Pip) -> String {
 /// doing.
 fn picture_in_picture_switch(pip: Pip) -> Entry {
     folder(
-        "Picture-in-Picture",
-        "Float a browser's video window over everything else",
+        crate::i18n::text("shell-picture-in-picture"),
+        crate::i18n::text("shell-float-a-browser-s-video-window-over-everything-else"),
         icons::SETTING_PIP,
         vec![
             value(
-                "Off",
-                Some("Such a window fills the screen, like every other one"),
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "shell-such-a-window-fills-the-screen-like-every-other-one",
+                )),
                 !pip.floating,
                 Setting::PictureInPicture(PipValue::Floating(false)),
             ),
             value(
-                "On",
-                Some("It floats in a corner, over applications and over the guide"),
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-it-floats-in-a-corner-over-applications-and-over-the-guide",
+                )),
                 pip.floating,
                 Setting::PictureInPicture(PipValue::Floating(true)),
             ),
@@ -7626,18 +7786,18 @@ fn picture_in_picture_switch(pip: Pip) -> Entry {
 /// would be asking them the aspect ratio of their own video.
 fn picture_in_picture_size(pip: Pip) -> Entry {
     folder(
-        "Size",
-        pip.size.title(),
+        crate::i18n::text("shell-size"),
+        crate::i18n::builtin(pip.size.title()),
         icons::SETTING_PIP_SIZE,
         pip::Size::ALL
             .iter()
             .map(|size| {
                 value(
-                    size.title(),
+                    crate::i18n::builtin(size.title()),
                     Some(match size {
-                        pip::Size::Small => "A sixth of the screen across",
-                        pip::Size::Medium => "A quarter of it",
-                        pip::Size::Large => "A third of it",
+                        pip::Size::Small => crate::i18n::text("shell-a-sixth-of-the-screen-across"),
+                        pip::Size::Medium => crate::i18n::text("shell-a-quarter-of-it"),
+                        pip::Size::Large => crate::i18n::text("shell-a-third-of-it"),
                     }),
                     pip.size == *size,
                     Setting::PictureInPicture(PipValue::Size(*size)),
@@ -7664,14 +7824,14 @@ fn picture_in_picture_size(pip: Pip) -> Entry {
 /// the battery's is the first — and it moves for the same reason.
 fn picture_in_picture_place(pip: Pip) -> Entry {
     folder(
-        "Placement",
-        pip.place.title(),
+        crate::i18n::text("shell-placement"),
+        crate::i18n::builtin(pip.place.title()),
         corner_glyph(pip.place),
         pip::Place::ALL
             .iter()
             .map(|place| {
                 drawn_value(
-                    place.title(),
+                    crate::i18n::builtin(place.title()),
                     None,
                     corner_glyph(*place),
                     pip.place == *place,
@@ -7714,8 +7874,8 @@ fn corner_glyph(place: pip::Place) -> &'static str {
 /// at the moment it is asked. See [`crate::machine`].
 fn system_information() -> Entry {
     Entry::Facts(crate::apps::Facts {
-        title: "System information".to_string(),
-        comment: "What this machine is".to_string(),
+        title: crate::i18n::text("shell-system-information").to_string(),
+        comment: crate::i18n::text("shell-what-this-machine-is").to_string(),
         icon: icons::SETTING_INFO.to_string(),
         about: crate::apps::About::Machine,
     })
@@ -7748,7 +7908,7 @@ fn application_scale() -> Entry {
     };
     let span = (LARGEST_SCALE - NATURAL_SCALE) as f32;
     folder(
-        "Application scaling",
+        crate::i18n::text("shell-application-scaling"),
         &format!("{percent}% — {}", scale_note(percent).to_lowercase()),
         icons::SETTING_SCALE,
         vec![Entry::Bar(crate::apps::Bar {
@@ -7803,14 +7963,14 @@ const SCALE_STEP: u16 = 5;
 /// there would be saying the setting had not taken.
 fn scale_note(percent: u16) -> &'static str {
     match percent {
-        0..=100 => "Every application at its own size",
-        101..=115 => "A little larger than the application chose",
-        116..=135 => "Comfortable from an armchair",
-        136..=165 => "Half again as large",
-        166..=199 => "Large: made to be read across a room",
-        200..=249 => "Twice the size, and most windows still fit",
-        250..=299 => "Very large; some windows will run out of room",
-        _ => "As far as this goes, and further than most windows go",
+        0..=100 => crate::i18n::text("shell-every-application-at-its-own-size"),
+        101..=115 => crate::i18n::text("shell-a-little-larger-than-the-application-chose"),
+        116..=135 => crate::i18n::text("shell-comfortable-from-an-armchair"),
+        136..=165 => crate::i18n::text("shell-half-again-as-large"),
+        166..=199 => crate::i18n::text("shell-large-made-to-be-read-across-a-room"),
+        200..=249 => crate::i18n::text("shell-twice-the-size-and-most-windows-still-fit"),
+        250..=299 => crate::i18n::text("shell-very-large-some-windows-will-run-out-of-room"),
+        _ => crate::i18n::text("shell-as-far-as-this-goes-and-further-than-most-windows-go"),
     }
 }
 
@@ -7838,13 +7998,12 @@ fn users() -> Entry {
         // with no account service would have a row that silently did nothing.
         // The same bargain the Network page states, in the same words.
         return folder(
-            "Users",
-            "Who this machine is for",
+            crate::i18n::text("shell-users"),
+            crate::i18n::text("shell-who-this-machine-is-for"),
             icons::SETTING_USERS,
             vec![reading(
-                "No account service is running",
-                "Without accounts-daemon nothing here can read or change who has \
-                 an account on this machine; they are managed outside this session",
+                crate::i18n::text("shell-no-account-service-is-running"),
+                crate::i18n::text("users-no-service-explanation"),
             )],
         );
     }
@@ -7863,15 +8022,19 @@ fn users() -> Entry {
             .map(|person| person_row(person, &listing)),
     );
     rows.push(add_user_row(&listing));
-    folder("Users", &users_note(&listing), icons::SETTING_USERS, rows)
+    folder(
+        crate::i18n::text("shell-users"),
+        &users_note(&listing),
+        icons::SETTING_USERS,
+        rows,
+    )
 }
 
 /// What the Users row says before it is stepped into.
 fn users_note(listing: &crate::users::Listing) -> String {
     match listing.people.len() {
-        0 => "No accounts on this machine".to_string(),
-        1 => "1 account on this machine".to_string(),
-        many => format!("{many} accounts on this machine"),
+        0 => crate::i18n::text("shell-no-accounts-on-this-machine").to_string(),
+        many => crate::message!("count-accounts", "count" => many),
     }
 }
 
@@ -7899,8 +8062,8 @@ fn person_row(person: &crate::users::Person, listing: &crate::users::Listing) ->
 fn add_user_row(listing: &crate::users::Listing) -> Entry {
     let whose = crate::users::Whose::New;
     let Entry::Folder(mut inner) = folder(
-        "Add user",
-        "Make another account on this machine",
+        crate::i18n::text("shell-add-user"),
+        crate::i18n::text("shell-make-another-account-on-this-machine"),
         icons::SETTING_ADD_USER,
         form_rows(whose, None, listing),
     ) else {
@@ -7995,7 +8158,7 @@ fn form_rows(
 fn whose_form(person: Option<&crate::users::Person>) -> String {
     match person {
         Some(person) => person.title().to_string(),
-        None => "New account".to_string(),
+        None => crate::i18n::text("shell-new-account").to_string(),
     }
 }
 
@@ -8023,15 +8186,12 @@ fn username_row(
     use crate::users::Field;
     if let Some(person) = person.filter(|person| person.here) {
         let why = match person.you {
-            true => "you are signed in as it",
-            false => "they are signed in",
+            true => crate::i18n::text("shell-you-are-signed-in-as-it"),
+            false => crate::i18n::text("shell-they-are-signed-in"),
         };
         return reading_marked(
             Field::Username.title(),
-            &format!(
-                "{} — {why}, and Linux will not rename an account in use",
-                person.name
-            ),
+            &crate::message!("user-rename-refused", "name" => person.name.as_str(), "why" => why),
             icons::SETTING_USERNAME,
         );
     }
@@ -8050,7 +8210,7 @@ fn typed_user(
         comment: match value.trim().is_empty() {
             // A value nobody has set says so in words rather than leaving the
             // line blank, which reads as a row that failed to load.
-            true => "Not set".to_string(),
+            true => crate::i18n::text("shell-not-set").to_string(),
             false => value.trim().to_string(),
         },
         icon: match field {
@@ -8078,10 +8238,9 @@ fn password_row(
     whom: &str,
 ) -> Entry {
     let comment = match (typed, exists) {
-        (0, true) => "Unchanged".to_string(),
-        (0, false) => "Not set".to_string(),
-        (1, _) => "1 character".to_string(),
-        (typed, _) => format!("{typed} characters"),
+        (0, true) => crate::i18n::text("shell-unchanged").to_string(),
+        (0, false) => crate::i18n::text("shell-not-set").to_string(),
+        (typed, _) => crate::message!("count-characters", "count" => typed),
     };
     Entry::Typed(crate::apps::Typed {
         title: field.title().to_string(),
@@ -8120,30 +8279,33 @@ fn account_type_row(
     let sole = person.is_some_and(|person| listing.only_admin(person.uid));
     if sole {
         return reading_marked(
-            "Account type",
-            "Administrator — and the only one on this machine, so this cannot \
-             be changed. Make another administrator first.",
+            crate::i18n::text("shell-account-type"),
+            crate::i18n::text("users-only-administrator-type"),
             icons::SETTING_ACCOUNT_TYPE,
         );
     }
     let _ = whose;
     folder(
-        "Account type",
+        crate::i18n::text("shell-account-type"),
         match admin {
-            true => "Administrator",
-            false => "Standard",
+            true => crate::i18n::text("shell-administrator"),
+            false => crate::i18n::text("shell-standard"),
         },
         icons::SETTING_ACCOUNT_TYPE,
         vec![
             value(
-                "Standard",
-                Some("Can use this machine, and change their own settings"),
+                crate::i18n::text("shell-standard"),
+                Some(crate::i18n::text(
+                    "shell-can-use-this-machine-and-change-their-own-settings",
+                )),
                 !admin,
                 Setting::User(UserValue::Admin(false)),
             ),
             value(
-                "Administrator",
-                Some("Can also install software and manage the other accounts"),
+                crate::i18n::text("shell-administrator"),
+                Some(crate::i18n::text(
+                    "shell-can-also-install-software-and-manage-the-other-accounts",
+                )),
                 admin,
                 Setting::User(UserValue::Admin(true)),
             ),
@@ -8175,9 +8337,13 @@ fn avatar_row(picture: Option<&Path>) -> Entry {
         .and_then(|file| file.file_name())
         .and_then(std::ffi::OsStr::to_str)
         .map(str::to_string)
-        .unwrap_or_else(|| "None — the plain mark".to_string());
-    let Entry::Folder(mut inner) = folder("Avatar", &comment, icons::SETTING_AVATAR, Vec::new())
-    else {
+        .unwrap_or_else(|| crate::i18n::text("shell-none-the-plain-mark").to_string());
+    let Entry::Folder(mut inner) = folder(
+        crate::i18n::text("shell-avatar"),
+        &comment,
+        icons::SETTING_AVATAR,
+        Vec::new(),
+    ) else {
         unreachable!("folder builds a folder");
     };
     // The face itself on the row, once one has been chosen: the row is what the
@@ -8208,8 +8374,8 @@ fn avatar_row(picture: Option<&Path>) -> Entry {
 pub fn no_avatar_row() -> Option<Entry> {
     crate::users::form()?.picture?;
     let Entry::Choice(mut choice) = action(
-        "Use no avatar",
-        "Go back to the plain mark",
+        crate::i18n::text("shell-use-no-avatar"),
+        crate::i18n::text("shell-go-back-to-the-plain-mark"),
         icons::SETTING_PERSON,
         Setting::User(UserValue::DropPicture),
     ) else {
@@ -8243,21 +8409,23 @@ fn accept_row(
     listing: &crate::users::Listing,
 ) -> Entry {
     let title = match whose {
-        crate::users::Whose::New => "Accept and create",
-        crate::users::Whose::Existing(_) => "Save changes",
+        crate::users::Whose::New => crate::i18n::text("shell-accept-and-create"),
+        crate::users::Whose::Existing(_) => crate::i18n::text("shell-save-changes"),
     };
     if listing.working {
         return reading(
             title,
-            "Waiting for permission to change the accounts on this machine",
+            crate::i18n::text(
+                "shell-waiting-for-permission-to-change-the-accounts-on-this-machine",
+            ),
         );
     }
     if let Some(fault) = crate::users::fault_in_form_for(whose) {
         return reading(title, fault);
     }
     let note = match person {
-        Some(person) => format!("Save this to {}'s account", person.title()),
-        None => "Make the account on this machine".to_string(),
+        Some(person) => crate::message!("save-account", "name" => person.title()),
+        None => crate::i18n::text("shell-make-the-account-on-this-machine").to_string(),
     };
     // The shell's one tick, the same one a picker's answer row wears — see
     // [`crate::apps::Entry::Pick`], which is pressed to commit a walk exactly as
@@ -8291,30 +8459,30 @@ fn accept_row(
 fn removal_row(person: &crate::users::Person, listing: &crate::users::Listing) -> Entry {
     if person.you {
         return reading(
-            "Remove account",
-            "This is the account this session is running as; it cannot remove \
-             itself",
+            crate::i18n::text("shell-remove-account"),
+            crate::i18n::text("users-cannot-remove-self"),
         );
     }
     if person.here {
         return reading(
-            "Remove account",
-            "They are signed in on this machine. They have to sign out first.",
+            crate::i18n::text("shell-remove-account"),
+            crate::i18n::text(
+                "shell-they-are-signed-in-on-this-machine-they-have-to-sign-out-first",
+            ),
         );
     }
     if listing.only_admin(person.uid) {
         return reading(
-            "Remove account",
-            "The only administrator on this machine cannot be removed. Make \
-             another administrator first.",
+            crate::i18n::text("shell-remove-account"),
+            crate::i18n::text("users-only-administrator-remove"),
         );
     }
     action(
-        "Remove account",
+        crate::i18n::text("shell-remove-account"),
         // What the press costs, on the row: there is a panel between this and
         // the act, and it is the panel that asks about the files — but the row
         // has to say what it is before it is pressed all the same.
-        "Take this account off the machine",
+        crate::i18n::text("shell-take-this-account-off-the-machine"),
         icons::UNINSTALL,
         Setting::User(UserValue::Remove(person.uid)),
     )
@@ -8326,6 +8494,9 @@ fn setting(display: &'static str, value: DisplayValue) -> Setting {
 
 fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry {
     Entry::Folder(Folder {
+        title_message: crate::i18n::message_id(title),
+        comment_message: crate::i18n::message_id(comment),
+        identity: Some(crate::i18n::message_id(title).unwrap_or(title).to_string()),
         title: title.to_string(),
         comment: Some(comment.to_string()),
         icon: Some(icon.to_string()),
@@ -8613,7 +8784,8 @@ pub fn preview(setting: Option<Setting>) {
             // down a speed bar would change how fast the walk itself moves,
             // under the hand doing the walking. Two of the three are set on a
             // bar besides, which is not a row a cursor highlights.
-            | Setting::Pointer(_),
+            | Setting::Pointer(_)
+            | Setting::Language(_),
         )
         | None => {
             theme::restore_accent();
@@ -8701,6 +8873,7 @@ fn order_after_moving(display: &str, place: u32) -> Option<Vec<String>> {
 
 fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
     match setting {
+        Setting::Language(language) => crate::i18n::set(language),
         // Updates have their own job journal and preferences. Merely dispatching
         // an action must not rewrite the desktop's general settings file.
         Setting::Update(_) => return true,
@@ -9220,6 +9393,13 @@ fn adopt_theme(stored: &Stored) {
 ///
 /// Split from [`load`] so the file format can be exercised without one.
 fn adopt(stored: Stored) {
+    crate::i18n::set(
+        stored
+            .language
+            .as_deref()
+            .and_then(crate::i18n::Language::parse)
+            .unwrap_or(crate::i18n::Language::English),
+    );
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
     *TROPHIES_SORT.lock().unwrap() = stored.trophies_sort;
@@ -9616,6 +9796,7 @@ fn adopt(stored: Stored) {
 #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 struct Stored {
+    language: Option<String>,
     accent: Option<String>,
     /// Which material each half of the shell draws itself in — `Default` or
     /// `Simple`, one answer for the picture behind everything and one for every
@@ -10016,6 +10197,7 @@ fn stored() -> Stored {
     let playing = *START_MUSIC.lock().unwrap();
 
     Stored {
+        language: Some(crate::i18n::preference().key().to_string()),
         accent: Some(theme::accent().name.to_string()),
         // The applied ones, never a preview: this is written the moment a row is
         // pressed, and a file that recorded what the cursor happened to be
@@ -10343,6 +10525,10 @@ const PREAMBLE: &str = "\
 #
 # Editing this by hand is fine; the shell reads it once at startup and
 # rewrites it whenever a setting changes from the Settings column.
+#
+# language: en, pl, or system, chosen under Settings > Language.
+# Missing/unknown values use English. This changes the shell interface only,
+# not keyboard layout or system locale.
 #
 # accent: the colour of being chosen. One of the names the shell offers under
 # Settings > Appearance > Accent color. An unknown name is ignored.
@@ -10713,6 +10899,81 @@ mod tests {
     use super::*;
 
     use crate::system::Device;
+
+    #[test]
+    fn language_is_persisted_and_missing_or_unknown_preferences_use_english() {
+        with_battery(None, || {
+            use crate::i18n::{self, Language};
+            let mut written = String::new();
+            assert!(apply_with(Setting::Language(Language::Polish), |stored| {
+                written = toml::to_string(stored).unwrap();
+            }));
+            assert_eq!(i18n::preference(), Language::Polish);
+            assert!(written.contains("language = \"pl\""));
+            i18n::set(Language::English);
+            adopt(toml::from_str(&written).unwrap());
+            assert_eq!(i18n::preference(), Language::Polish);
+            for raw in ["", "language = \"unknown\""] {
+                adopt(toml::from_str(raw).unwrap());
+                assert_eq!(i18n::preference(), Language::English);
+            }
+        });
+    }
+
+    #[test]
+    fn language_changes_preserve_open_wallpaper_listings_and_native_names() {
+        use crate::i18n::{self, Language};
+        i18n::set(Language::English);
+        let mut old = vec![appearance()];
+        fn insert(rows: &mut [Entry]) -> bool {
+            for row in rows {
+                if let Entry::Folder(folder) = row {
+                    if folder.place.is_some() {
+                        folder.entries.push(Entry::Folder(Folder {
+                            title_message: None,
+                            comment_message: None,
+                            identity: None,
+                            title: "Settings".into(),
+                            comment: None,
+                            icon: None,
+                            entries: vec![],
+                            place: Some(crate::files::Place::Directory(
+                                std::path::PathBuf::from("/tmp/Settings"),
+                                crate::files::Shows::Scenery,
+                            )),
+                            chosen: false,
+                            over_the_list: false,
+                            person: None,
+                            portrait: None,
+                        }));
+                        return true;
+                    }
+                    if insert(&mut folder.entries) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        assert!(insert(&mut old));
+        i18n::set(Language::Polish);
+        let mut fresh = vec![appearance()];
+        carry_over_listings(&mut old, &mut fresh);
+        fn has_kept(rows: &[Entry]) -> bool {
+            rows.iter()
+                .any(|row| row.title() == "Settings" || row.entries().is_some_and(has_kept))
+        }
+        assert!(has_kept(&fresh));
+        assert_eq!(fresh[0].title(), "Wygląd");
+        let page = language();
+        let choices = page.entries().unwrap();
+        assert_eq!(
+            choices.iter().map(Entry::title).collect::<Vec<_>>(),
+            ["Domyślny systemowy", "English", "Polski"]
+        );
+        assert!(choices[2].chosen());
+        i18n::set(Language::English);
+    }
 
     /// The Settings column, built against a bar with every column the shell can
     /// have on it.

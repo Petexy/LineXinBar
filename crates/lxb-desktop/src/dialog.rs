@@ -169,6 +169,19 @@ pub struct Dialog {
     footer: f32,
 }
 
+fn wrap_notes(lines: Vec<Line>) -> Vec<Line> {
+    lines
+        .into_iter()
+        .flat_map(|line| match line {
+            Line::Note(text) => crate::gpu::wrap_dialog_note(&text)
+                .into_iter()
+                .map(Line::Note)
+                .collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
 impl Dialog {
     /// Raise the panel out of `anchor` — the control that was pressed to open
     /// it — saying `lines`, offering `buttons`, opening on button `start`.
@@ -195,7 +208,7 @@ impl Dialog {
             return false;
         }
         self.icon = icon;
-        self.lines = lines;
+        self.lines = wrap_notes(lines);
         self.wait = crate::menu::PRESS_TIME;
         true
     }
@@ -208,7 +221,7 @@ impl Dialog {
     pub fn wait(&mut self, anchor: [f32; 4], icon: Option<String>, lines: Vec<Line>) {
         self.buttons.open_waiting(anchor);
         self.icon = icon;
-        self.lines = lines;
+        self.lines = wrap_notes(lines);
         self.wait = crate::menu::PRESS_TIME;
     }
 
@@ -341,7 +354,7 @@ impl Dialog {
     /// panel keeps its place in its flight, and the row simply stops saying
     /// "Reading…"; replacing the whole panel would restart both.
     pub fn say(&mut self, lines: Vec<Line>) {
-        self.lines = lines;
+        self.lines = wrap_notes(lines);
     }
 }
 

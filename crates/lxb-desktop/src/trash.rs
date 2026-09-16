@@ -66,9 +66,12 @@ pub fn discard(path: &Path) -> io::Result<PathBuf> {
 /// tests. Reaching into the environment inside a test would also be reaching
 /// into it for every other test running beside it.
 fn discard_into(path: &Path, home: Option<PathBuf>) -> io::Result<PathBuf> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a path with no file name"))?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            crate::i18n::text("label-a-path-with-no-file-name"),
+        )
+    })?;
     let facts = std::fs::symlink_metadata(path)?;
     let trash = trash_for(path, facts.dev(), home)?;
 
@@ -126,7 +129,7 @@ fn discard_into(path: &Path, home: Option<PathBuf>) -> io::Result<PathBuf> {
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "the trash already holds a hundred files of this name",
+        crate::i18n::text("label-the-trash-already-holds-a-hundred-files-of-this-na"),
     ))
 }
 
@@ -162,7 +165,7 @@ fn trash_for(path: &Path, dev: u64, home: Option<PathBuf>) -> io::Result<Trash> 
     let top = top_directory(path, dev).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "no home trash, and no volume to make one on",
+            crate::i18n::text("label-no-home-trash-and-no-volume-to-make-one-on"),
         )
     })?;
     Ok(Trash {
@@ -369,9 +372,15 @@ impl Trashed {
             .unwrap_or_default();
         match (from.is_empty(), self.when()) {
             (true, None) => String::new(),
-            (true, Some(when)) => format!("Deleted {when}"),
-            (false, None) => format!("From {from}"),
-            (false, Some(when)) => format!("From {from} · deleted {when}"),
+            (true, Some(when)) => {
+                crate::message!("trash-deleted-when", "when" => when)
+            }
+            (false, None) => {
+                crate::message!("trash-from", "from" => from)
+            }
+            (false, Some(when)) => {
+                crate::message!("trash-from-deleted-when", "from" => from, "when" => when)
+            }
         }
     }
 
@@ -389,8 +398,7 @@ impl Trashed {
         let year: i32 = parts.next()?.parse().ok()?;
         let month: usize = parts.next()?.parse().ok()?;
         let day: u32 = parts.next()?.parse().ok()?;
-        let month = crate::MONTHS.get(month.checked_sub(1)?)?;
-        Some(format!("{day} {month} {year}"))
+        crate::i18n::date(day, month.checked_sub(1)?, year)
     }
 
     /// The mark the row is drawn with: the folder, or whatever the file's own
@@ -636,7 +644,7 @@ pub fn restore(item: &Trashed) -> io::Result<PathBuf> {
     let Some(folder) = item.from.parent() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "a trashed file with nowhere to go back to",
+            crate::i18n::text("label-a-trashed-file-with-nowhere-to-go-back-to"),
         ));
     };
     std::fs::create_dir_all(folder)?;

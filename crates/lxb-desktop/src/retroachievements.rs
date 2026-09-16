@@ -128,24 +128,26 @@ fn worker(
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null())
                     .spawn()
-                    .map_err(|_| "The RetroArch achievement helper could not be started")?,
+                    .map_err(|_| {
+                        crate::i18n::text(
+                            "shell-the-retroarch-achievement-helper-could-not-be-started",
+                        )
+                    })?,
             );
-            let input = child
-                .stdin
-                .take()
-                .ok_or("The achievement helper has no input")?;
+            let input = child.stdin.take().ok_or(crate::i18n::text(
+                "shell-the-achievement-helper-has-no-input",
+            ))?;
             let mut writer = input;
             serde_json::to_writer(&mut writer, &request)
-                .map_err(|_| "Could not send the achievement request")?;
+                .map_err(|_| crate::i18n::text("shell-could-not-send-the-achievement-request"))?;
             writer
                 .flush()
-                .map_err(|_| "Could not send the achievement request")?;
+                .map_err(|_| crate::i18n::text("shell-could-not-send-the-achievement-request"))?;
             drop(writer);
             wipe(&mut request);
-            let output = child
-                .stdout
-                .take()
-                .ok_or("The achievement helper has no output")?;
+            let output = child.stdout.take().ok_or(crate::i18n::text(
+                "shell-the-achievement-helper-has-no-output",
+            ))?;
             let (send, receive) = mpsc::channel();
             std::thread::spawn(move || {
                 for line in BufReader::new(output).lines().map_while(Result::ok) {
@@ -165,7 +167,10 @@ fn worker(
                 {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("Achievement request was cancelled or timed out".into());
+                    return Err(crate::i18n::text(
+                        "shell-achievement-request-was-cancelled-or-timed-out",
+                    )
+                    .into());
                 }
                 match receive.recv_timeout(Duration::from_millis(100)) {
                     Ok(mut line) => {
@@ -181,15 +186,16 @@ fn worker(
                     Err(_) => break,
                 }
             }
-            let status = child
-                .wait()
-                .map_err(|_| "The achievement helper stopped unexpectedly")?;
+            let status = child.wait().map_err(|_| {
+                crate::i18n::text("shell-the-achievement-helper-stopped-unexpectedly")
+            })?;
             if !status.success() || !done {
                 return Err(if status.code() == Some(2) && !done {
-                    "This RetroArch helper does not support achievements. Install matching LXB desktop and RetroArch integration versions."
+                    crate::i18n::text("retroachievements-helper-too-old")
                 } else {
-                    "The RetroArch achievement helper stopped before completing the request. Please try again."
-                }.into());
+                    crate::i18n::text("retroachievements-helper-stopped")
+                }
+                .into());
             }
             Ok(())
         })();
@@ -339,45 +345,69 @@ impl RetroAchievements {
         let mut buttons = Vec::new();
         match stage {
             Stage::Account(user) => {
-                lines.push(Line::Note("Enter your RetroAchievements username.".into()));
+                lines.push(Line::Note(
+                    crate::i18n::text("shell-enter-your-retroachievements-username").into(),
+                ));
                 lines.push(Line::Entry(user.clone()));
-                buttons.push(E::new(C::RetroAchievementsSubmit, "Next"));
+                buttons.push(E::new(
+                    C::RetroAchievementsSubmit,
+                    crate::i18n::text("shell-next"),
+                ));
             }
             Stage::Password(user, secret) => {
-                lines.push(Line::field("Username", user));
-                lines.push(Line::Note("Enter your RetroAchievements password.".into()));
+                lines.push(Line::field(crate::i18n::text("shell-username"), user));
+                lines.push(Line::Note(
+                    crate::i18n::text("shell-enter-your-retroachievements-password").into(),
+                ));
                 lines.push(Line::Secret {
                     typed: secret.typed(),
                 });
-                buttons.push(E::new(C::RetroAchievementsSubmit, "Sign in"));
-                buttons.push(E::new(C::RetroAchievementsBack, "Back"));
+                buttons.push(E::new(
+                    C::RetroAchievementsSubmit,
+                    crate::i18n::text("shell-sign-in"),
+                ));
+                buttons.push(E::new(
+                    C::RetroAchievementsBack,
+                    crate::i18n::text("shell-back"),
+                ));
             }
             Stage::Waiting => {
-                lines.push(Line::Note("Connecting your account…".into()));
+                lines.push(Line::Note(
+                    crate::i18n::text("shell-connecting-your-account").into(),
+                ));
                 lines.push(Line::Waiting);
             }
             Stage::Connected => {
                 lines.push(Line::field(
-                    "Signed in as",
+                    crate::i18n::text("shell-signed-in-as"),
                     self.user.as_deref().unwrap_or(""),
                 ));
                 lines.push(Line::Note(self.error.clone().unwrap_or_else(|| {
-                    "Achievements synchronize in the background".into()
+                    crate::i18n::text("shell-achievements-synchronize-in-the-background").into()
                 })));
-                buttons.push(E::new(C::RetroAchievementsChange, "Change account"));
-                buttons.push(E::new(C::RetroAchievementsLogout, "Sign out"));
+                buttons.push(E::new(
+                    C::RetroAchievementsChange,
+                    crate::i18n::text("shell-change-account"),
+                ));
+                buttons.push(E::new(
+                    C::RetroAchievementsLogout,
+                    crate::i18n::text("shell-sign-out"),
+                ));
             }
             Stage::Failed(why) => {
                 lines.push(Line::Note(why.clone()));
-                buttons.push(E::new(C::RetroAchievementsChange, "Try again"));
+                buttons.push(E::new(
+                    C::RetroAchievementsChange,
+                    crate::i18n::text("shell-try-again"),
+                ));
             }
         }
         buttons.push(E::new(
             C::RetroAchievementsCancel,
             if matches!(stage, Stage::Connected) {
-                "Done"
+                crate::i18n::text("shell-done")
             } else {
-                "Cancel"
+                crate::i18n::text("shell-cancel")
             },
         ));
         Some((lines, buttons))
@@ -438,8 +468,10 @@ impl RetroAchievements {
                         self.pages.clear();
                         self.requested.clear();
                         self.user = user;
-                        *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) =
-                            self.user.as_ref().map(|u| format!("Signed in as {u}"));
+                        *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) = self
+                            .user
+                            .as_ref()
+                            .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                         self.next = Instant::now();
                         changed = true;
                     }
@@ -454,8 +486,10 @@ impl RetroAchievements {
                 }
                 "library" => {
                     self.error = None;
-                    *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) =
-                        self.user.as_ref().map(|u| format!("Signed in as {u}"));
+                    *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) = self
+                        .user
+                        .as_ref()
+                        .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                     self.games = event["games"].as_array().cloned().unwrap_or_default();
                     changed = true;
                 }
@@ -470,8 +504,10 @@ impl RetroAchievements {
                 }
                 "collection" => {
                     self.error = None;
-                    *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) =
-                        self.user.as_ref().map(|u| format!("Signed in as {u}"));
+                    *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) = self
+                        .user
+                        .as_ref()
+                        .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                     self.collection = event["games"].as_array().cloned().unwrap_or_default();
                     changed = true;
                 }
@@ -533,7 +569,7 @@ impl RetroAchievements {
                 "error" => {
                     let why = event["message"]
                         .as_str()
-                        .unwrap_or("Achievements could not be loaded")
+                        .unwrap_or(crate::i18n::text("shell-achievements-could-not-be-loaded"))
                         .to_string();
                     self.error = Some(why.clone());
                     *ACCOUNT_NOTE.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.clone());
@@ -651,9 +687,9 @@ impl RetroAchievements {
         configuration_row(if let Some(user) = &self.user {
             self.error
                 .clone()
-                .unwrap_or_else(|| format!("Signed in as {user}"))
+                .unwrap_or_else(|| crate::message!("signed-in-as", "name" => user))
         } else {
-            "Sign in to see achievements from your RetroArch games".into()
+            crate::i18n::text("shell-sign-in-to-see-achievements-from-your-retroarch-games").into()
         })
     }
     /// The achievements of one game, as the rows that open out of it.
@@ -666,24 +702,28 @@ impl RetroAchievements {
     fn achievements(&self, id: u32, total: Option<u64>, issue: Option<&str>) -> Vec<Entry> {
         let Some(page) = self.pages.get(&id).filter(|_| id != 0) else {
             return if let Some(why) = issue {
-                vec![status(id, "Achievements unavailable", why)]
+                vec![status(
+                    id,
+                    crate::i18n::text("shell-achievements-unavailable"),
+                    why,
+                )]
             } else if total == Some(0) {
                 vec![status(
                     id,
-                    "No achievements",
-                    "This game has no official achievements",
+                    crate::i18n::text("shell-no-achievements"),
+                    crate::i18n::text("shell-this-game-has-no-official-achievements"),
                 )]
             } else {
                 vec![status(
                     id,
                     if self.error.is_some() {
-                        "Achievements unavailable"
+                        crate::i18n::text("shell-achievements-unavailable")
                     } else {
-                        "Loading achievements…"
+                        crate::i18n::text("shell-loading-achievements")
                     },
-                    self.error
-                        .as_deref()
-                        .unwrap_or("Asking RetroAchievements for this game's achievements"),
+                    self.error.as_deref().unwrap_or(crate::i18n::text(
+                        "shell-asking-retroachievements-for-this-game-s-achievements",
+                    )),
                 )]
             };
         };
@@ -691,8 +731,8 @@ impl RetroAchievements {
         if achievements.is_empty() {
             return vec![status(
                 id,
-                "No achievements",
-                "This game has no official achievements",
+                crate::i18n::text("shell-no-achievements"),
+                crate::i18n::text("shell-this-game-has-no-official-achievements"),
             )];
         }
         let unlocked = achievements
@@ -704,32 +744,32 @@ impl RetroAchievements {
             .iter()
             .map(|a| {
                 let state = if a["hardcore"] == true {
-                    "Unlocked · Hardcore"
+                    crate::i18n::text("shell-unlocked-hardcore")
                 } else if a["unlocked"] == true {
-                    "Unlocked"
+                    crate::i18n::text("shell-unlocked")
                 } else {
-                    "Locked"
+                    crate::i18n::text("shell-locked")
                 };
                 let description = a["description"].as_str().unwrap_or_default();
                 let points = a["points"].as_u64().unwrap_or(0);
                 Entry::Trophy(Row {
                     key: Key::RetroAchievement(id, a["id"].as_u64().unwrap_or(0) as u32),
                     facts: Facts {
-                        title: a["title"].as_str().unwrap_or("Achievement").into(),
-                        comment: format!("{description} · {points} points · {state}"),
+                        title: a["title"].as_str().unwrap_or(crate::i18n::text("shell-achievement")).into(),
+                        comment: crate::message!("achievement-summary", "description" => description, "points" => points, "state" => state),
                         icon: crate::icons::CATEGORY_TROPHIES.into(),
                         about: About::Listed(vec![
-                            ("Description".into(), description.into()),
-                            ("Points".into(), points.to_string()),
-                            ("Status".into(), state.into()),
+                            (crate::i18n::text("shell-description").into(), description.into()),
+                            (crate::i18n::text("shell-points").into(), points.to_string()),
+                            (crate::i18n::text("shell-status").into(), state.into()),
                         ]),
                     },
                     picture: a["picture"].as_str().map(PathBuf::from),
                     entries: None,
                     section: Some(if a["unlocked"] == true {
-                        format!("Unlocked ({unlocked})")
+                        crate::message!("achievements-unlocked-count", "count" => unlocked)
                     } else {
-                        format!("Locked ({locked})")
+                        crate::message!("achievements-locked-count", "count" => locked)
                     }),
                     shape: None,
                     installed: None,
@@ -761,16 +801,21 @@ impl RetroAchievements {
                 listed.insert(id);
             }
             let progress = match (game["unlocked"].as_u64(), game["total"].as_u64()) {
-                (Some(u), Some(t)) => format!("{u} / {t} unlocked"),
+                (Some(u), Some(t)) => {
+                    crate::message!("achievements-unlocked-of", "unlocked" => u, "total" => t)
+                }
                 _ => game["issue"]
                     .as_str()
-                    .unwrap_or("Loading achievement progress…")
+                    .unwrap_or(crate::i18n::text("shell-loading-achievement-progress"))
                     .into(),
             };
             rows.push(Entry::Trophy(Row {
                 key: Key::RetroGame(id, if id == 0 { path.into() } else { String::new() }),
                 facts: Facts {
-                    title: game["title"].as_str().unwrap_or("Game").into(),
+                    title: game["title"]
+                        .as_str()
+                        .unwrap_or(crate::i18n::text("shell-game"))
+                        .into(),
                     comment: format!("RetroAchievements · {console} · {progress}"),
                     icon: crate::icons::CATEGORY_TROPHIES.into(),
                     about: About::Listed(Vec::new()),
@@ -798,8 +843,10 @@ impl RetroAchievements {
                 continue;
             };
             let progress = match (game["unlocked"].as_u64(), game["total"].as_u64()) {
-                (Some(u), Some(t)) => format!("{u} / {t} unlocked"),
-                _ => "Loading achievement progress…".into(),
+                (Some(u), Some(t)) => {
+                    crate::message!("achievements-unlocked-of", "unlocked" => u, "total" => t)
+                }
+                _ => crate::i18n::text("shell-loading-achievement-progress").into(),
             };
             let console = game["console"].as_str().unwrap_or_default();
             rows.push(Entry::Trophy(Row {
@@ -886,7 +933,7 @@ pub fn settings_row() -> Entry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-            .unwrap_or_else(|| "Sign in to configure achievements".into()),
+            .unwrap_or_else(|| crate::i18n::text("shell-sign-in-to-configure-achievements").into()),
     );
     if let Entry::Trophy(r) = &mut row {
         r.facts.title = "RetroAchievements".into();
@@ -897,7 +944,7 @@ pub fn configuration_row(comment: String) -> Entry {
     Entry::Trophy(Row {
         key: Key::RetroConfigure,
         facts: Facts {
-            title: "Configure RetroAchievements".into(),
+            title: crate::i18n::text("shell-configure-retroachievements").into(),
             comment,
             icon: crate::icons::CATEGORY_TROPHIES.into(),
             about: About::Listed(Vec::new()),
@@ -1128,6 +1175,22 @@ mod tests {
     fn owned() -> Value {
         json!({"id":3186,"title":"Tekken 6","console":"PlayStation Portable","console_id":41,"total":65,"unlocked":4,"hardcore":4,"cover":"/art/tekken6.png","icon":"/icons/131219.png"})
     }
+    #[test]
+    fn polish_ui_does_not_translate_protocol_keys_or_game_titles() {
+        crate::i18n::set(crate::i18n::Language::Polish);
+        let (mut client, events) = client();
+        events
+            .send((0, json!({"event":"account","user":"Alice"})))
+            .unwrap();
+        events
+            .send((0, json!({"event":"collection","games":[owned()]})))
+            .unwrap();
+        assert!(client.poll(true, None, BTreeSet::new()));
+        assert_eq!(client.rows().len(), 1);
+        assert_eq!(client.rows()[0].title(), "Tekken 6");
+        crate::i18n::set(crate::i18n::Language::English);
+    }
+
     #[test]
     fn the_account_fills_the_column_with_no_rom_folder_at_all() {
         let (mut client, events) = client();

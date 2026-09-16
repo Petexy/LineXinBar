@@ -266,9 +266,9 @@ impl Listener {
         }
 
         let Some(path) = path_of(first) else {
-            return Err(zbus::fdo::Error::InvalidArgs(format!(
-                "{first} does not name a file on this machine"
-            )));
+            return Err(zbus::fdo::Error::InvalidArgs(
+                crate::message!("reveal-not-a-file", "path" => first),
+            ));
         };
         // Before it is handed on, because a path that is not there is the one
         // failure the caller can do something about — and because a walk that
@@ -282,16 +282,14 @@ impl Listener {
         // [`crate::files::listing`], which reads the link's own facts for the
         // row and follows it only to decide whether it leads to a folder.
         if std::fs::symlink_metadata(&path).is_err() {
-            return Err(zbus::fdo::Error::FileNotFound(format!(
-                "{} is not on this machine",
-                path.display()
-            )));
+            return Err(zbus::fdo::Error::FileNotFound(
+                crate::message!("reveal-not-on-this-machine", "path" => path.display().to_string()),
+            ));
         }
         let Some(asked) = how(&path) else {
-            return Err(zbus::fdo::Error::InvalidArgs(format!(
-                "{} cannot be shown",
-                path.display()
-            )));
+            return Err(zbus::fdo::Error::InvalidArgs(
+                crate::message!("reveal-cannot-be-shown", "path" => path.display().to_string()),
+            ));
         };
 
         tracing::info!(

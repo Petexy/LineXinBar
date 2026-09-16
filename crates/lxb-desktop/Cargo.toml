@@ -18,6 +18,8 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 toml.workspace = true
 clap.workspace = true
+fluent-bundle = "0.16"
+unic-langid = "0.9"
 
 # What the optional RetroArch integration says, and the only thing this shell
 # and that package have to agree about: one JSON record per line on the

@@ -346,7 +346,9 @@ impl Run {
             Ok(slot) => slot.clone(),
             // A worker that panicked will never answer, and a panel waiting on
             // it for ever is worse than being told it went wrong.
-            Err(_) => Some(Outcome::Failed("the removal did not finish".to_string())),
+            Err(_) => Some(Outcome::Failed(
+                crate::i18n::text("label-the-removal-did-not-finish").to_string(),
+            )),
         }
     }
 }
@@ -441,7 +443,9 @@ fn complaint(stderr: &[u8], stdout: &[u8]) -> String {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("the removal failed and said nothing");
+        .unwrap_or(crate::i18n::text(
+            "label-the-removal-failed-and-said-nothing",
+        ));
     let line = line
         .strip_prefix("error:")
         .or_else(|| line.strip_prefix("Error:"))

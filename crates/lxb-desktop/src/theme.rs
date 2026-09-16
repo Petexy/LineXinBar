@@ -735,8 +735,8 @@ impl Part {
     /// What Settings titles the row with.
     pub fn title(self) -> &'static str {
         match self {
-            Self::Wallpaper => "Wallpaper",
-            Self::Icons => "Icons",
+            Self::Wallpaper => crate::i18n::text("shell-wallpaper"),
+            Self::Icons => crate::i18n::text("shell-icons"),
         }
     }
 

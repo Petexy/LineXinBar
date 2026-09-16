@@ -2223,7 +2223,7 @@ pub fn build(
     // drawn, because there is then no bar to say it under.
     if lattice.is_empty() {
         texts.push(Text {
-            content: "No applications found".to_string(),
+            content: crate::i18n::text("shell-no-applications-found").to_string(),
             x: cross_x,
             y: height - 72.0 * scale,
             size: 24.0 * scale,
@@ -3075,7 +3075,7 @@ pub fn build(
             let label_size = CATEGORY_LABEL * scale * row_near;
             let box_w = category_spacing * 1.7;
             texts.push(Text {
-                content: category.title.to_string(),
+                content: category.display_title().to_string(),
                 x: x - box_w / 2.0,
                 y: cross_y
                     + (CATEGORY_ICON_FOCUSED * CATEGORY_DISC / 2.0 + CATEGORY_LABEL_ABOVE)
@@ -4574,7 +4574,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     texts.push(Text {
         content: match view.app {
             Some(app) => app.to_string(),
-            None => "Nothing is running".to_string(),
+            None => crate::i18n::text("shell-nothing-is-running").to_string(),
         },
         x: sidebar_x + text_x,
         y: second_line,
@@ -4594,7 +4594,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     });
     if let Some(screen) = view.screen {
         texts.push(Text {
-            content: format!("Screen {screen}"),
+            content: crate::message!("screen-number", "screen" => screen.to_string()),
             x: sidebar_x + text_x,
             y: second_line + subtitle_size * 1.45,
             size: subtitle_size,
@@ -6179,8 +6179,16 @@ fn friends_hints(view: &FriendsView) -> Vec<Hint> {
     // The list: take a row, or get out. Two acts because there are two.
     if view.friends.talking_to().is_none() {
         return vec![
-            one("Select", icons::PAD_SOUTH, icons::KEY_ENTER),
-            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+            one(
+                crate::i18n::text("shell-select"),
+                icons::PAD_SOUTH,
+                icons::KEY_ENTER,
+            ),
+            one(
+                crate::i18n::text("shell-back"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
         ];
     }
     // A conversation names what the light is standing on, because there are
@@ -6189,16 +6197,40 @@ fn friends_hints(view: &FriendsView) -> Vec<Hint> {
     let composing = view.friends.composing();
     let mut hints = match (composing, view.friends.talking()) {
         (true, _) => vec![
-            one("Send", icons::PAD_SOUTH, icons::KEY_ENTER),
-            one("Done", icons::PAD_EAST, icons::KEY_ESCAPE),
+            one(
+                crate::i18n::text("shell-send"),
+                icons::PAD_SOUTH,
+                icons::KEY_ENTER,
+            ),
+            one(
+                crate::i18n::text("shell-done"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
         ],
         (false, crate::friends::Talking::Compose) => vec![
-            one("Write", icons::PAD_SOUTH, icons::KEY_ENTER),
-            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+            one(
+                crate::i18n::text("shell-write"),
+                icons::PAD_SOUTH,
+                icons::KEY_ENTER,
+            ),
+            one(
+                crate::i18n::text("shell-back"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
         ],
         (false, crate::friends::Talking::Again) => vec![
-            one("Try again", icons::PAD_SOUTH, icons::KEY_ENTER),
-            one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+            one(
+                crate::i18n::text("shell-try-again"),
+                icons::PAD_SOUTH,
+                icons::KEY_ENTER,
+            ),
+            one(
+                crate::i18n::text("shell-back"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
         ],
         (false, crate::friends::Talking::Message(mark)) => {
             // Only a message that did not go can be acted on. Everything else
@@ -6207,10 +6239,22 @@ fn friends_hints(view: &FriendsView) -> Vec<Hint> {
             let failed = matches!(mark, lxb_steam::chat::Mark::Pending(_));
             match failed {
                 true => vec![
-                    one("Send again", icons::PAD_SOUTH, icons::KEY_ENTER),
-                    one("Back", icons::PAD_EAST, icons::KEY_ESCAPE),
+                    one(
+                        crate::i18n::text("shell-send-again"),
+                        icons::PAD_SOUTH,
+                        icons::KEY_ENTER,
+                    ),
+                    one(
+                        crate::i18n::text("shell-back"),
+                        icons::PAD_EAST,
+                        icons::KEY_ESCAPE,
+                    ),
                 ],
-                false => vec![one("Back", icons::PAD_EAST, icons::KEY_ESCAPE)],
+                false => vec![one(
+                    crate::i18n::text("shell-back"),
+                    icons::PAD_EAST,
+                    icons::KEY_ESCAPE,
+                )],
             }
         }
     };
@@ -6219,7 +6263,11 @@ fn friends_hints(view: &FriendsView) -> Vec<Hint> {
         crate::friends::Talking::Message(lxb_steam::chat::Mark::Pending(_))
     ) && !composing
     {
-        hints.push(one("Delete", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+        hints.push(one(
+            crate::i18n::text("shell-delete"),
+            icons::PAD_NORTH,
+            icons::MOUSE_RIGHT,
+        ));
     }
     hints
 }
@@ -6422,7 +6470,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
     // account name they signed in with. A shell that greeted people by their
     // login would be greeting them by the one name their friends never see.
     let (name, status) = match view.roster.me.as_ref() {
-        Some(me) => (me.name.clone(), me.doing().to_string()),
+        Some(me) => (me.name.clone(), crate::steam::friend_doing(me).to_string()),
         // Signed out, or signed in and waiting on Steam's first answer. Both
         // are the same thing to read: the panel is about Steam and says so.
         None => ("Steam".to_string(), String::new()),
@@ -6433,7 +6481,10 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
     // which is `talking_to_name`: taking it away would leave the head of an
     // open conversation with nobody's name on it.
     let (their_name, their_doing) = match view.talking_to {
-        Some(friend) => (friend.name.clone(), friend.doing().to_string()),
+        Some(friend) => (
+            friend.name.clone(),
+            crate::steam::friend_doing(friend).to_string(),
+        ),
         None => (view.talking_to_name.to_string(), String::new()),
     };
     let name_y = panel_y + margin + face * FRIENDS_HEAD_NAME_AT - name_size * 0.5;
@@ -6779,12 +6830,14 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
     // --- what the column says when it has nothing in it --------------------
     if laid_out.is_empty() {
         let said = match view.conversation.map(|it| it.history()) {
-            Some(lxb_steam::chat::History::Asking(_)) | None => "Reading the conversation…",
+            Some(lxb_steam::chat::History::Asking(_)) | None => {
+                crate::i18n::text("shell-reading-the-conversation")
+            }
             Some(lxb_steam::chat::History::Failed(_)) => "",
             // Read, and there was nothing in it. Said out loud rather than left
             // blank, because a blank column and a column that has not arrived
             // look exactly alike and only one of them is finished.
-            Some(_) => "Nothing has been said yet. Say something.",
+            Some(_) => crate::i18n::text("shell-nothing-has-been-said-yet-say-something"),
         };
         if !said.is_empty() {
             leaf.texts.push(Text {
@@ -6847,7 +6900,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             mono: false,
         });
         leaf.texts.push(Text {
-            content: "Try again".to_string(),
+            content: crate::i18n::text("shell-try-again").to_string(),
             x: ax + FRIENDS_CHIP_PADDING * scale,
             y: ay
                 + FRIENDS_CHIP_PADDING * scale
@@ -6873,7 +6926,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
     // message jump every time it came and went.
     if view.typing {
         leaf.texts.push(Text {
-            content: format!("{} is typing…", view.talking_to_name),
+            content: crate::message!("friend-typing", "name" => view.talking_to_name),
             x: body_x,
             y: body_y + body_h + (GUIDE_MARGIN * scale - FRIENDS_TYPING_ROW * scale) * 0.5,
             size: FRIENDS_TYPING * scale,
@@ -6926,7 +6979,7 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
     // shaper put the last letter — a rectangle would have to be measured, which
     // is the one thing the layout cannot do.
     let written = match (draft.is_empty(), composing) {
-        (true, false) => "Write a message".to_string(),
+        (true, false) => crate::i18n::text("shell-write-a-message").to_string(),
         (true, true) => "|".to_string(),
         (false, true) => format!("{draft}|"),
         (false, false) => draft.to_string(),
@@ -7062,7 +7115,7 @@ fn friends_list_leaf(
             // Two states with one sentence, because they read the same and
             // neither is a failure: an account whose friends Steam has not sent
             // yet, and an account with none.
-            content: "No friends to show yet.".to_string(),
+            content: crate::i18n::text("shell-no-friends-to-show-yet").to_string(),
             x: body_x,
             y: body_y + body_h * 0.30,
             size: FRIENDS_ROW_NAME * scale,
@@ -7146,7 +7199,10 @@ fn friends_list_leaf(
         match lines[index] {
             crate::friends::Line::Heading(band, count) => {
                 body.texts.push(Text {
-                    content: format!("{}  —  {count}", band.said().to_uppercase()),
+                    content: format!(
+                        "{}  —  {count}",
+                        crate::i18n::builtin(band.said()).to_uppercase()
+                    ),
                     x: lx,
                     y: ly + lh * 0.5 - FRIENDS_HEADING_SIZE * scale * 0.62,
                     size: FRIENDS_HEADING_SIZE * scale,
@@ -7319,7 +7375,7 @@ fn friends_list_leaf(
                     theme.text_soft.a(0.78 * ink)
                 };
                 body.texts.push(Text {
-                    content: friend.doing().to_string(),
+                    content: crate::steam::friend_doing(friend).to_string(),
                     x: name_x,
                     y: chip[1] + chip[3] * FRIENDS_ROW_DOING_AT - doing_size * 0.5,
                     size: doing_size,
@@ -7577,7 +7633,7 @@ fn push_power_dialog(
     let mut inside = Scene::default();
     let title_size = 26.0 * scale;
     inside.texts.push(Text {
-        content: "Power".to_string(),
+        content: crate::i18n::text("shell-power").to_string(),
         x: panel_x,
         y: panel_y + (title_h - title_size) * 0.5,
         size: title_size,
@@ -9506,10 +9562,32 @@ const DIALOG_RULE: f32 = 24.0;
 /// by this shell and is two words — `Disk space`, `System software` — while an
 /// answer is written by the machine and can be `Some Card (SOMEDRV CHIP)`. An
 /// even split spends room on the half that never needs it and takes the end off
-/// the half that does. Every name the shell writes still fits inside this, and
-/// nothing on the right moves: the answer is set against the right-hand edge,
-/// so widening its box only lets a long one start further left.
+/// the half that does. Every name the shell writes in English fits inside this,
+/// and nothing on the right moves: the answer is set against the right-hand
+/// edge, so widening its box only lets a long one start further left.
+///
+/// A share, not a wall. A name written longer — "Oprogramowanie systemowe" for
+/// "System software" — takes what a short answer leaves, and only that: the
+/// answer is never cut to make room for the name, because the answer is the
+/// half the machine wrote and the half somebody opened the panel to read. See
+/// [`field_label_width`].
 const FIELD_LABEL_SHARE: f32 = 0.42;
+/// The least room kept between a name and its answer when the name grows.
+const FIELD_GAP: f32 = 0.5;
+
+/// How much of `inner` the name of a field is given, at text size `size`.
+fn field_label_width(label: &str, value: &str, inner: f32, size: f32) -> f32 {
+    let share = inner * FIELD_LABEL_SHARE;
+    let label_needs = crate::gpu::dialog_text_width(label, size);
+    if label_needs <= share {
+        return share;
+    }
+    let value_needs = crate::gpu::dialog_text_width(value, size) + size * FIELD_GAP;
+    if label_needs + value_needs > inner {
+        return share;
+    }
+    label_needs
+}
 /// The mark one typed character is drawn as, and how far apart they sit.
 const SECRET_MARK: f32 = 10.0;
 const SECRET_MARK_GAP: f32 = 8.0;
@@ -9607,6 +9685,10 @@ const DIALOG_CONTENT_IN: f32 = 0.45;
 /// thing hiding it can be seen — see [`Scene::dim_text_behind`].
 pub const DIALOG_PANEL_IN: f32 = 0.25;
 /// How tall one line of the panel is, in reference pixels.
+pub fn dialog_note_width() -> f32 {
+    DIALOG_WIDTH - GUIDE_MARGIN * 2.0
+}
+
 fn dialog_line_height(line: &Line) -> f32 {
     match line {
         Line::Heading(_) => DIALOG_HEADING,
@@ -9934,7 +10016,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                 let size = 21.0 * scale;
                 let y = ly + (lh - size) * 0.5 - size * 0.12;
                 let inner = (lw - label_padding * 2.0).max(0.0);
-                let label_w = inner * FIELD_LABEL_SHARE;
+                let label_w = field_label_width(label, value, inner, size);
                 inside.texts.push(Text {
                     content: label.clone(),
                     x: lx + label_padding,
@@ -11122,13 +11204,21 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
         label,
         glyph: if pad { on_a_pad } else { otherwise },
     };
-    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_ENTER)];
+    let mut hints = vec![one(
+        crate::i18n::text("shell-select"),
+        icons::PAD_SOUTH,
+        icons::KEY_ENTER,
+    )];
     if options {
         // The picker's own pair, said the same way — including its keyboard
         // half being a mouse rather than a key. See [`picker_hints`], where the
         // reason is written down: no key printed on a keyboard says "menu" to
         // as many people as the right button does.
-        hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+        hints.push(one(
+            crate::i18n::text("shell-options"),
+            icons::PAD_NORTH,
+            icons::MOUSE_RIGHT,
+        ));
     }
     // Who is on Steam. Between the acts and the way out, which is where it
     // belongs: it is another screen of the shell's rather than something done
@@ -11139,12 +11229,20 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
     // that had just been given a job of its own was the one button on the
     // screen nothing named.
     if friends {
-        hints.push(one("Friends", icons::PAD_WEST, icons::KEY_SHIFT));
+        hints.push(one(
+            crate::i18n::text("shell-friends"),
+            icons::PAD_WEST,
+            icons::KEY_SHIFT,
+        ));
     }
     // The button in the middle of the pad, and on a keyboard the one this shell
     // is reached by — see `action_for_keysym`, and the compositor's own
     // binding, which is what holds `Super` back from whatever is running.
-    hints.push(one("Guide", icons::PAD_GUIDE, icons::KEY_SUPER));
+    hints.push(one(
+        crate::i18n::text("shell-guide"),
+        icons::PAD_GUIDE,
+        icons::KEY_SUPER,
+    ));
     hints
 }
 
@@ -11174,18 +11272,34 @@ fn guide_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
         label,
         glyph: if pad { on_a_pad } else { otherwise },
     };
-    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_ENTER)];
+    let mut hints = vec![one(
+        crate::i18n::text("shell-select"),
+        icons::PAD_SOUTH,
+        icons::KEY_ENTER,
+    )];
     if options {
-        hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
+        hints.push(one(
+            crate::i18n::text("shell-options"),
+            icons::PAD_NORTH,
+            icons::MOUSE_RIGHT,
+        ));
     }
     // Who is on Steam, which this menu is one of the two doors into — see
     // `Shell::toggle_friends`, which answers the button from here exactly as it
     // does from the bar. On the same terms as the start screen's: only where
     // there is an account for the panel to be about.
     if friends {
-        hints.push(one("Friends", icons::PAD_WEST, icons::KEY_SHIFT));
+        hints.push(one(
+            crate::i18n::text("shell-friends"),
+            icons::PAD_WEST,
+            icons::KEY_SHIFT,
+        ));
     }
-    hints.push(one("Back", icons::PAD_EAST, icons::KEY_ESCAPE));
+    hints.push(one(
+        crate::i18n::text("shell-back"),
+        icons::PAD_EAST,
+        icons::KEY_ESCAPE,
+    ));
     hints
 }
 
@@ -13428,13 +13542,16 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         // screen, and it is what the press honestly does: the game starts now,
         // with the shaders that are already compiled, and Steam goes on
         // compiling the rest while it runs.
-        .map(|(slot, named)| (slot, named, "Skip"))
+        .map(|(slot, named)| (slot, named, crate::i18n::text("shell-skip")))
         .into_iter()
         // "Back", not "Not now". The user's correction, and it is about what
         // the press honestly does: an update carries on either way — Steam's
         // queue is Steam's own — and "not now" says it has been put off. All
         // this leaves is the screen.
-        .chain(view.back.map(|(slot, named)| (slot, named, "Back")))
+        .chain(
+            view.back
+                .map(|(slot, named)| (slot, named, crate::i18n::text("shell-back"))),
+        )
         .collect();
     let size = LAUNCH_DOING * scale;
     let glyph = PICKER_HINT_GLYPH * scale;
@@ -13527,13 +13644,13 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
 /// would be the shell saying the one thing already said largest.
 fn launch_caption(doing: crate::launch::Doing) -> &'static str {
     match doing {
-        crate::launch::Doing::Steam => "Launching Steam",
-        crate::launch::Doing::Game => "Starting the game",
+        crate::launch::Doing::Steam => crate::i18n::text("shell-launching-steam"),
+        crate::launch::Doing::Game => crate::i18n::text("shell-starting-the-game"),
         // Only where the download has not said how far it has got — the
         // client writes the manifest when it takes the request and before it
         // knows the size. See [`LaunchView::said`], which is what this stands
         // in for.
-        crate::launch::Doing::Fetching => "Updating the game",
+        crate::launch::Doing::Fetching => crate::i18n::text("shell-updating-the-game"),
     }
 }
 
@@ -13628,9 +13745,17 @@ fn picker_hints(approves: bool, pad: bool) -> Vec<Hint> {
         label,
         glyph: if pad { on_a_pad } else { otherwise },
     };
-    let mut hints = vec![one("Select", icons::PAD_SOUTH, icons::KEY_SPACE)];
+    let mut hints = vec![one(
+        crate::i18n::text("shell-select"),
+        icons::PAD_SOUTH,
+        icons::KEY_SPACE,
+    )];
     if approves {
-        hints.push(one("Approve", icons::PAD_START, icons::KEY_ENTER));
+        hints.push(one(
+            crate::i18n::text("shell-approve"),
+            icons::PAD_START,
+            icons::KEY_ENTER,
+        ));
     }
     // Between the acts and the way out, because it is neither: it is where the
     // *other* answers live — how the column is ordered, and which kinds of file
@@ -13643,8 +13768,16 @@ fn picker_hints(approves: bool, pad: bool) -> Vec<Hint> {
     // this legend leaves the keyboard. A menu is raised with the right button
     // by anybody holding a pointer, and no key printed on a keyboard says the
     // same thing to as many people. See `icons::MOUSE_RIGHT`.
-    hints.push(one("Options", icons::PAD_NORTH, icons::MOUSE_RIGHT));
-    hints.push(one("Cancel", icons::PAD_EAST, icons::KEY_ESCAPE));
+    hints.push(one(
+        crate::i18n::text("shell-options"),
+        icons::PAD_NORTH,
+        icons::MOUSE_RIGHT,
+    ));
+    hints.push(one(
+        crate::i18n::text("shell-cancel"),
+        icons::PAD_EAST,
+        icons::KEY_ESCAPE,
+    ));
     hints
 }
 /// Where the cross falls inside the panel's body: the column being stood in,
@@ -14195,16 +14328,16 @@ pub fn build_picker(view: PickerView, width: f32, height: f32) -> Scene {
         // it has to be readable from wherever in the walk the user is standing.
         Some((name, typing)) => {
             let shown = match name.trim() {
-                "" => "Untitled".to_string(),
+                "" => crate::i18n::text("shell-untitled").to_string(),
                 name => name.to_string(),
             };
             match typing {
                 // The caret, drawn as the bar's own fields draw one.
-                true => format!("Saving as  {shown}|"),
-                false => format!("Saving as  {shown}"),
+                true => crate::message!("saving-as-typing", "name" => shown),
+                false => crate::message!("saving-as", "name" => shown),
             }
         }
-        None => format!("Showing  {}", view.showing),
+        None => crate::message!("showing-name", "name" => view.showing),
     };
     inside.texts.push(Text {
         content: showing,
@@ -14398,6 +14531,38 @@ fn picker_columns(scene: &mut Scene, view: &PickerView, width: f32, height: f32,
 
 #[cfg(test)]
 mod tests {
+    /// A field's name keeps to its share while it fits, grows into what a
+    /// short answer leaves when it does not, and never takes from an answer
+    /// that needs the room itself.
+    #[test]
+    fn a_long_field_name_takes_only_the_room_a_short_answer_leaves() {
+        use super::*;
+        let inner = 440.0;
+        let size = 21.0;
+        let share = inner * FIELD_LABEL_SHARE;
+        // English, as the share was sized for: exactly the share.
+        assert_eq!(
+            field_label_width("System software", "Version 0.9.0", inner, size),
+            share
+        );
+        // Polish, longer than the share, against a short answer: what it needs.
+        let grown = field_label_width("Oprogramowanie systemowe", "Wersja 0.9.0", inner, size);
+        assert!(grown > share, "{grown} should exceed {share}");
+        let answer = crate::gpu::dialog_text_width("Wersja 0.9.0", size) + size * FIELD_GAP;
+        assert!(grown + answer <= inner);
+        // The same name against an answer that fills the line: back to the
+        // share, because the answer is the half the panel was opened for.
+        assert_eq!(
+            field_label_width(
+                "Oprogramowanie systemowe",
+                "AMD Radeon RX 9060 XT (RADV GFX1200) with a very long tail",
+                inner,
+                size
+            ),
+            share
+        );
+    }
+
     /// A download is drawn as a reading: a groove, the part of it that has
     /// arrived, and nothing on the end.
     ///
@@ -14942,6 +15107,9 @@ mod tests {
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
         Entry::Folder(Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: title.into(),
             comment: None,
             icon: Some("folder".into()),

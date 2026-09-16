@@ -83,6 +83,51 @@ impl App {
     }
 }
 
+/// Refresh translated desktop metadata in place so selections, open folders,
+/// search input, and running operations retain their identities.
+pub fn refresh_app_language(app: &mut App) {
+    if let Some(fresh) = App::from_file(&app.path) {
+        app.name = fresh.name;
+        app.comment = fresh.comment;
+        app.keywords = fresh.keywords;
+    }
+}
+
+pub fn refresh_language(categories: &mut [Category]) {
+    fn entries(rows: &mut [Entry]) {
+        for row in rows {
+            match row {
+                Entry::App(app) => refresh_app_language(app),
+                Entry::File(file) => file.refresh_language(),
+                Entry::Trashed(item) => item.note = item.describe(),
+                Entry::Search(search) => {
+                    search.note = match search.role {
+                        Role::Field => {
+                            Search::field(search.of, &search.query, search.matched, search.found)
+                                .note
+                        }
+                        Role::Clear => Search::clear(search.of, &search.query, search.found).note,
+                    };
+                }
+                Entry::Sweep(sweep) => *sweep = Sweep::new(sweep.items),
+                Entry::Folder(folder) => {
+                    if let Some(key) = folder.title_message {
+                        folder.title = crate::i18n::text(key).to_owned();
+                    }
+                    if let Some(key) = folder.comment_message {
+                        folder.comment = Some(crate::i18n::text(key).to_owned());
+                    }
+                    entries(&mut folder.entries);
+                }
+                _ => {}
+            }
+        }
+    }
+    for category in categories {
+        entries(&mut category.entries);
+    }
+}
+
 /// Whether two window names are the same application's.
 ///
 /// Loose in two directions, because the same application is spelled
@@ -423,8 +468,10 @@ impl Service {
         Service {
             comment: match (account.as_deref(), standing) {
                 (Some(_), Some(standing)) => standing,
-                (Some(account), None) => format!("Signed in as {account}"),
-                (None, _) => "Sign in to play your Steam library here".to_string(),
+                (Some(account), None) => crate::message!("steam-signed-in", "name" => account),
+                (None, _) => {
+                    crate::i18n::text("shell-sign-in-to-play-your-steam-library-here").to_string()
+                }
             },
             account,
         }
@@ -711,10 +758,7 @@ pub struct Sweep {
 
 impl Sweep {
     pub fn new(items: usize) -> Self {
-        let note = match items {
-            1 => "1 item".to_string(),
-            items => format!("{items} items"),
-        };
+        let note = crate::message!("count-items", "count" => items);
         Self { items, note }
     }
 
@@ -781,6 +825,8 @@ pub struct Search {
     /// far. The two are never inconsistent with each other, only with the
     /// future.
     note: String,
+    matched: usize,
+    found: usize,
     pub role: Role,
 }
 
@@ -830,21 +876,21 @@ impl Searched {
 
     /// What a list of what it holds is called, in a sentence: "audio files",
     /// "images", "items".
-    fn plural(self) -> &'static str {
+    fn token(self) -> &'static str {
         match self {
-            Searched::Shelf(kind) => kind.plural(),
+            Searched::Shelf(kind) => kind.token(),
             // Not "files": what a folder holds is folders as well, and a field
             // saying "3 of 40 files match" over a column of directories would
             // be counting something the user cannot see.
-            Searched::Folder => "items",
+            Searched::Folder => "item",
             // What the account owns, which is what the count is of: a library
             // of six hundred games says "4 of 600 games match" whether or not
             // any of them is on this machine's disk.
-            Searched::Library | Searched::Trophies => "games",
+            Searched::Library | Searched::Trophies => "game",
             // What the machine has, which is what the count is of: a page
             // saying "3 of 598 layouts match" is counting every arrangement
             // xkeyboard-config on this machine describes.
-            Searched::Layouts => "layouts",
+            Searched::Layouts => "layout",
         }
     }
 }
@@ -869,20 +915,28 @@ impl Search {
             query: query.to_string(),
             note: if query.is_empty() {
                 match of {
-                    Searched::Shelf(kind) => format!("Search {} by name", kind.plural()),
-                    Searched::Folder => "Search this folder by name".to_string(),
+                    Searched::Shelf(kind) => {
+                        crate::message!("search-by-name", "what" => kind.token())
+                    }
+                    Searched::Folder => {
+                        crate::i18n::text("shell-search-this-folder-by-name").to_string()
+                    }
                     Searched::Library | Searched::Trophies => {
-                        "Search this library by name".to_string()
+                        crate::i18n::text("shell-search-this-library-by-name").to_string()
                     }
                     // Not "this list": the field searches every arrangement on
                     // the machine from wherever it is typed into, and one that
                     // said "this list" over the continents would be promising
                     // to narrow six words.
-                    Searched::Layouts => "Search every keyboard layout".to_string(),
+                    Searched::Layouts => {
+                        crate::i18n::text("shell-search-every-keyboard-layout").to_string()
+                    }
                 }
             } else {
-                crate::media::search_note(of.plural(), matched, found)
+                crate::media::search_note(of.token(), matched, found)
             },
+            matched,
+            found,
             role: Role::Field,
         }
     }
@@ -892,7 +946,9 @@ impl Search {
         Search {
             of,
             query: query.to_string(),
-            note: format!("Show all {found} {}", of.plural()),
+            note: crate::message!("search-show-all", "count" => found, "what" => of.token()),
+            matched: found,
+            found,
             role: Role::Clear,
         }
     }
@@ -904,8 +960,8 @@ impl Search {
     /// empty, which is exactly when there is nothing else for the row to be.
     fn label(&self) -> &str {
         match self.role {
-            Role::Clear => "Clear search",
-            Role::Field if self.query.is_empty() => "Search",
+            Role::Clear => crate::i18n::text("shell-clear-search"),
+            Role::Field if self.query.is_empty() => crate::i18n::text("shell-search"),
             Role::Field => &self.query,
         }
     }
@@ -921,6 +977,10 @@ impl Search {
 /// A subcategory: a column of its own, stepped into from the row that names it.
 #[derive(Debug, Clone)]
 pub struct Folder {
+    pub title_message: Option<&'static str>,
+    pub comment_message: Option<&'static str>,
+    /// Stable key for shell-owned folders; filesystem folders use their path.
+    pub identity: Option<String>,
     pub title: String,
     pub comment: Option<String>,
     /// One of the shell's own glyphs, and looked up as one — without the
@@ -1145,6 +1205,27 @@ pub struct Column {
     pub icon: &'static str,
 }
 
+impl Column {
+    pub fn display_title(self) -> &'static str {
+        match self.id {
+            "settings" => crate::i18n::text("shell-settings"),
+            "system" => crate::i18n::text("shell-system"),
+            "multimedia" => crate::i18n::text("shell-multimedia"),
+            "graphics" => crate::i18n::text("shell-graphics"),
+            "internet" => crate::i18n::text("shell-internet"),
+            "office" => crate::i18n::text("shell-office"),
+            "games" => crate::i18n::text("shell-games"),
+            "software" => crate::i18n::text("shell-software"),
+            "development" => crate::i18n::text("shell-development"),
+            "education" => crate::i18n::text("shell-education-science"),
+            "utilities" => crate::i18n::text("shell-utilities"),
+            "other" => crate::i18n::text("shell-other"),
+            "trophies" => crate::i18n::text("shell-trophies"),
+            _ => self.title,
+        }
+    }
+}
+
 /// Every column the shell can put on a bar, in bar order.
 ///
 /// Not what *this* machine has — that is the bar, and it is what the page is
@@ -1362,7 +1443,7 @@ pub fn shelf_of(entry: &Entry) -> Option<crate::media::Kind> {
     }
     SHELVES
         .iter()
-        .find(|(_, title, _)| *title == folder.title)
+        .find(|(_, title, _)| folder.identity.as_deref().unwrap_or(&folder.title) == *title)
         .map(|(_, _, kind)| *kind)
 }
 
@@ -1374,7 +1455,7 @@ pub fn shelf_title(kind: crate::media::Kind) -> &'static str {
     SHELVES
         .iter()
         .find(|(_, _, own)| *own == kind)
-        .map(|(_, title, _)| *title)
+        .map(|(_, title, _)| crate::i18n::builtin(title))
         .unwrap_or_default()
 }
 
@@ -1405,6 +1486,9 @@ fn subcategories(id: &str) -> Vec<Entry> {
         .filter(|(column, ..)| *column == id)
         .map(|(_, title, kind)| {
             Entry::Folder(Folder {
+                title_message: crate::i18n::message_id(crate::i18n::builtin(title)),
+                comment_message: None,
+                identity: Some(title.to_string()),
                 title: title.to_string(),
                 // What an empty shelf says while the walk is still on its first
                 // pass, which is what these rows are on the first frame of
@@ -1436,8 +1520,11 @@ fn subcategories(id: &str) -> Vec<Entry> {
 /// so the answer is not built here; see [`crate::files::volumes`].
 fn files_row() -> Entry {
     Entry::Folder(Folder {
-        title: "Files".to_string(),
-        comment: Some("Your folder, this machine, and anything plugged in".to_string()),
+        title_message: Some("shell-files"),
+        comment_message: None,
+        identity: None,
+        title: crate::i18n::text("shell-files").to_string(),
+        comment: Some(crate::files::what_files_are().to_string()),
         icon: Some(crate::icons::CATEGORY_FILES.to_string()),
         entries: Vec::new(),
         place: Some(crate::files::Place::Volumes(
@@ -1677,6 +1764,7 @@ pub fn shelve_media(categories: &mut Vec<Category>, made: crate::media::Made) ->
         });
     if let Some(folder) = found {
         folder.comment = Some(made.note);
+        folder.comment_message = None;
         hung.worn = std::mem::replace(&mut folder.entries, made.rows);
     }
     hung
@@ -2565,7 +2653,10 @@ impl Entry {
             Entry::App(app) => &app.name,
             Entry::Media(file) => &file.title,
             Entry::File(file) => &file.name,
-            Entry::Folder(folder) => &folder.title,
+            Entry::Folder(folder) => folder
+                .title_message
+                .map(crate::i18n::text)
+                .unwrap_or(&folder.title),
             Entry::Choice(choice) => &choice.title,
             Entry::Bar(bar) => &bar.title,
             Entry::Search(search) => search.label(),
@@ -2573,10 +2664,10 @@ impl Entry {
             Entry::RetroArch(_) => "RetroArch",
             Entry::Game(game) => &game.name,
             Entry::Rom(rom) => &rom.name,
-            Entry::Pick(_) => "Select folder",
-            Entry::Make(_) => "New folder",
-            Entry::Sweep(_) => "Empty trash",
-            Entry::Done(_) => "Done",
+            Entry::Pick(_) => crate::i18n::text("shell-select-folder"),
+            Entry::Make(_) => crate::i18n::text("shell-new-folder"),
+            Entry::Sweep(_) => crate::i18n::text("shell-empty-trash"),
+            Entry::Done(_) => crate::i18n::text("shell-done"),
             // What it was called before it was deleted, which is not what it
             // is filed as: two files of one name are `holiday.mp4` and
             // `holiday.mp4.2` in `files/`, and a column showing the second one
@@ -2599,7 +2690,10 @@ impl Entry {
             // it is in cannot say: the folder is the column the user is
             // standing in and is on the screen already.
             Entry::File(file) => Some(file.note.as_str()).filter(|note| !note.is_empty()),
-            Entry::Folder(folder) => folder.comment.as_deref(),
+            Entry::Folder(folder) => folder
+                .comment_message
+                .map(crate::i18n::text)
+                .or(folder.comment.as_deref()),
             Entry::Choice(choice) => choice.comment.as_deref(),
             Entry::Bar(bar) => bar.comment.as_deref(),
             Entry::Search(search) => Some(&search.note),
@@ -2610,7 +2704,7 @@ impl Entry {
             Entry::Pick(pick) => Some(&pick.comment),
             // Where it will go, said plainly, because the row is a press away
             // from a keyboard and somebody standing on it has not read a menu.
-            Entry::Make(_) => Some("Make a folder in this one"),
+            Entry::Make(_) => Some(crate::i18n::text("shell-make-a-folder-in-this-one")),
             Entry::Sweep(sweep) => Some(sweep.note()),
             Entry::Done(done) => Some(done.note()),
             // Where it came from and when it went — see
@@ -3028,6 +3122,10 @@ pub fn walk<'a>(entries: &'a [Entry], visit: &mut impl FnMut(&'a Entry)) {
 }
 
 impl Category {
+    pub fn display_title(&self) -> &'static str {
+        self.named().display_title()
+    }
+
     /// Whether there is anything anywhere in this column that a press would
     /// start — an application, or one of the user's own files — subcategories
     /// included.
@@ -3066,9 +3164,9 @@ impl Category {
 
     pub fn empty_note(&self) -> &'static str {
         if self.id == SHELL_SETTINGS.0 {
-            "LineXinBar's own settings will live here"
+            crate::i18n::text("shell-linexinbar-s-own-settings-will-live-here")
         } else {
-            "No applications in this category"
+            crate::i18n::text("shell-no-applications-in-this-category")
         }
     }
 }
@@ -3128,30 +3226,12 @@ fn current_desktops() -> Vec<String> {
 /// Prefer a plain `Name`; localisation is left to the user's locale only when
 /// an exact match exists, since partial matching tends to pick the wrong one.
 fn localised(fields: &BTreeMap<String, String>, key: &str) -> Option<String> {
-    if let Some(locale) = current_locale() {
+    for locale in crate::i18n::desktop_locales() {
         if let Some(value) = fields.get(&format!("{key}[{locale}]")) {
             return Some(value.clone());
         }
-        // `pt_BR` also matches a bare `pt` entry.
-        if let Some((lang, _)) = locale.split_once('_') {
-            if let Some(value) = fields.get(&format!("{key}[{lang}]")) {
-                return Some(value.clone());
-            }
-        }
     }
     fields.get(key).cloned()
-}
-
-fn current_locale() -> Option<String> {
-    for var in ["LC_MESSAGES", "LC_ALL", "LANG"] {
-        if let Ok(value) = std::env::var(var) {
-            let value = value.split('.').next().unwrap_or("").to_string();
-            if !value.is_empty() && value != "C" && value != "POSIX" {
-                return Some(value);
-            }
-        }
-    }
-    None
 }
 
 /// Remove `%f`, `%U`, ... from an `Exec` line.
@@ -4059,6 +4139,9 @@ mod tests {
         let picking = crate::files::Shows::Folders(crate::settings::Picking::RomsFolder);
         let walking = |shows| {
             Entry::Folder(Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: "Home".to_string(),
                 comment: None,
                 icon: None,
@@ -4087,6 +4170,9 @@ mod tests {
         // has to stop: Settings > Games > RetroArch is not a column of
         // somebody's disk.
         let page = Entry::Folder(Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: "RetroArch".to_string(),
             comment: None,
             icon: None,
@@ -4121,6 +4207,9 @@ mod tests {
     fn the_picker_never_opens_on_the_row_that_answers_it() {
         let rows = place_rows(
             vec![Entry::Folder(Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: "psp".to_string(),
                 comment: None,
                 icon: None,
@@ -4381,6 +4470,45 @@ mod tests {
         assert!(parse("[Desktop Entry]\nType=Application\nName=X\n").is_none());
     }
 
+    #[test]
+    fn language_refresh_keeps_search_data_and_desktop_fallbacks() {
+        use crate::i18n::{self, Language};
+        let metadata = fields(&[
+            ("Name", "Original"),
+            ("Name[pl]", "Polska nazwa"),
+            ("Comment", "Original comment"),
+        ]);
+        i18n::set(Language::English);
+        assert_eq!(localised(&metadata, "Name").as_deref(), Some("Original"));
+        let mut rows = vec![Category {
+            id: "test",
+            title: "Test",
+            icon: "",
+            entries: vec![Entry::Search(Search::field(
+                Searched::Folder,
+                "Settings",
+                2,
+                12,
+            ))],
+        }];
+        let before = rows[0].entries[0].comment().unwrap().to_owned();
+        i18n::set(Language::Polish);
+        refresh_language(&mut rows);
+        assert_eq!(
+            localised(&metadata, "Name").as_deref(),
+            Some("Polska nazwa")
+        );
+        assert_eq!(
+            localised(&metadata, "Comment").as_deref(),
+            Some("Original comment")
+        );
+        let search = rows[0].entries[0].search().unwrap();
+        assert_eq!(search.query, "Settings");
+        assert_eq!((search.matched, search.found), (2, 12));
+        assert_ne!(search.note, before);
+        i18n::set(Language::English);
+    }
+
     fn fields(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
@@ -4468,6 +4596,9 @@ mod tests {
             title: "Games",
             icon: "applications-games",
             entries: vec![Entry::Folder(Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: "Emulators".into(),
                 comment: None,
                 icon: None,
@@ -4486,6 +4617,9 @@ mod tests {
 
         let hollow = Category {
             entries: vec![Entry::Folder(Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: "Emulators".into(),
                 comment: None,
                 icon: None,

@@ -117,19 +117,13 @@ impl Kind {
         }
     }
 
-    /// What a list of these is called, in a sentence.
-    pub fn plural(self) -> &'static str {
+    /// The word the catalogs select a noun phrase by — "3 audio files",
+    /// "3 pliki dźwiękowe" — so that each language declines it with the
+    /// count in its own way rather than having a plural pasted in.
+    pub fn token(self) -> &'static str {
         match self {
-            Kind::Audio => "audio files",
-            Kind::Video => "video files",
-            Kind::Image => "images",
-        }
-    }
-
-    fn singular(self) -> &'static str {
-        match self {
-            Kind::Audio => "audio file",
-            Kind::Video => "video file",
+            Kind::Audio => "audio",
+            Kind::Video => "video",
             Kind::Image => "image",
         }
     }
@@ -414,15 +408,15 @@ impl Sort {
     /// What the row that chooses it says.
     pub fn label(self) -> &'static str {
         match self {
-            Sort::NameAscending => "Name (A to Z)",
-            Sort::NameDescending => "Name (Z to A)",
-            Sort::LargestFirst => "Size (largest first)",
-            Sort::SmallestFirst => "Size (smallest first)",
+            Sort::NameAscending => crate::i18n::text("shell-name-a-to-z"),
+            Sort::NameDescending => crate::i18n::text("shell-name-z-to-a"),
+            Sort::LargestFirst => crate::i18n::text("shell-size-largest-first"),
+            Sort::SmallestFirst => crate::i18n::text("shell-size-smallest-first"),
             Sort::Type => "Type",
-            Sort::NewestFirst => "Created (newest first)",
-            Sort::OldestFirst => "Created (oldest first)",
-            Sort::LastChangedFirst => "Modified (newest first)",
-            Sort::LongestUntouchedFirst => "Modified (oldest first)",
+            Sort::NewestFirst => crate::i18n::text("shell-created-newest-first"),
+            Sort::OldestFirst => crate::i18n::text("shell-created-oldest-first"),
+            Sort::LastChangedFirst => crate::i18n::text("shell-modified-newest-first"),
+            Sort::LongestUntouchedFirst => crate::i18n::text("shell-modified-oldest-first"),
         }
     }
 
@@ -741,7 +735,7 @@ impl Shelves {
             note: if query.is_empty() {
                 note(kind, found, self.settled)
             } else {
-                search_note(kind.plural(), matched, found)
+                search_note(kind.token(), matched, found)
             },
             orders: Orders {
                 created: shelf.iter().any(|file| file.created.is_some()),
@@ -1084,16 +1078,12 @@ fn shelf_index(kind: Kind) -> usize {
 /// while the walk was still in its first minute would be telling the user
 /// something untrue about their own disk.
 pub fn note(kind: Kind, found: usize, settled: bool) -> String {
-    let what = if found == 1 {
-        kind.singular()
-    } else {
-        kind.plural()
-    };
+    let what = kind.token();
     match (found, settled) {
-        (0, false) => "Looking through your home folder".to_string(),
-        (0, true) => format!("No {} in your home folder", kind.plural()),
-        (_, false) => format!("{found} {what} so far"),
-        (_, true) => format!("{found} {what} in your home folder"),
+        (0, false) => crate::i18n::text("shell-looking-through-your-home-folder").to_string(),
+        (0, true) => crate::message!("media-none-in-home", "what" => what),
+        (_, false) => crate::message!("media-found-so-far", "count" => found, "what" => what),
+        (_, true) => crate::message!("media-found-in-home", "count" => found, "what" => what),
     }
 }
 
@@ -1110,15 +1100,16 @@ pub fn note(kind: Kind, found: usize, settled: bool) -> String {
 /// and a search is a question about the shelf as it stands, which is answered
 /// the same way whether or not the walk has more to find. What is still coming
 /// arrives in this column exactly as it arrives in an unsearched one.
-pub fn search_note(plural: &str, matched: usize, found: usize) -> String {
-    let of_all = format!("of {found} {plural}");
+pub fn search_note(what: &str, matched: usize, found: usize) -> String {
     match matched {
-        0 => format!("No {plural} match"),
+        0 => crate::message!("search-none-match", "what" => what),
         // The verb has to agree with the count, and the count is the user's
         // rather than ours: a collection with exactly one Beatles track in it
-        // is a common enough answer to be worth writing the sentence for.
-        1 => format!("1 {of_all} matches"),
-        _ => format!("{matched} {of_all} match"),
+        // is a common enough answer to be worth writing the sentence for. The
+        // catalog does the agreeing, in whichever way its language agrees.
+        _ => {
+            crate::message!("search-matched", "matched" => matched, "found" => found, "what" => what)
+        }
     }
 }
 
@@ -2405,15 +2396,15 @@ mod tests {
     #[test]
     fn a_searched_shelf_says_how_much_of_itself_it_is_showing() {
         assert_eq!(
-            search_note(Kind::Audio.plural(), 12, 3400),
+            search_note(Kind::Audio.token(), 12, 3400),
             "12 of 3400 audio files match"
         );
         assert_eq!(
-            search_note(Kind::Video.plural(), 1, 20),
+            search_note(Kind::Video.token(), 1, 20),
             "1 of 20 video files matches"
         );
         assert_eq!(
-            search_note(Kind::Image.plural(), 0, 250_000),
+            search_note(Kind::Image.token(), 0, 250_000),
             "No images match"
         );
     }

@@ -95,11 +95,11 @@ impl Kind {
     /// anything: what would arrive is not what was picked up.
     pub fn answer(self) -> &'static str {
         match self {
-            Kind::Copy | Kind::Move => "Paste",
-            Kind::Extract => "Extract",
+            Kind::Copy | Kind::Move => crate::i18n::text("shell-paste"),
+            Kind::Extract => crate::i18n::text("shell-extract"),
             // Never drawn: the one picker of this kind comes back closed. It
             // has a word all the same, for the reason every arm here has one.
-            Kind::Compress => "Compress",
+            Kind::Compress => crate::i18n::text("shell-compress"),
         }
     }
 
@@ -116,20 +116,31 @@ impl Kind {
     /// the folder the column is of.
     pub fn note(self) -> &'static str {
         match self {
-            Kind::Copy => "Copy here",
-            Kind::Move => "Move here",
-            Kind::Extract => "Unpack it here",
-            Kind::Compress => "Make it here",
+            Kind::Copy => crate::i18n::text("shell-copy-here"),
+            Kind::Move => crate::i18n::text("shell-move-here"),
+            Kind::Extract => crate::i18n::text("shell-unpack-it-here"),
+            Kind::Compress => crate::i18n::text("shell-make-it-here"),
+        }
+    }
+
+    /// The word the catalogs select a verb form by, so that "3 of the 5
+    /// things you are copying" and its Polish can each inflect it themselves.
+    pub fn token(self) -> &'static str {
+        match self {
+            Kind::Copy => "copy",
+            Kind::Move => "move",
+            Kind::Extract => "extract",
+            Kind::Compress => "compress",
         }
     }
 
     /// How it is spoken of in a sentence on a panel — "Copying", "Moving".
     pub fn doing(self) -> &'static str {
         match self {
-            Kind::Copy => "Copying",
-            Kind::Move => "Moving",
-            Kind::Extract => "Unpacking",
-            Kind::Compress => "Compressing",
+            Kind::Copy => crate::i18n::text("shell-copying"),
+            Kind::Move => crate::i18n::text("shell-moving"),
+            Kind::Extract => crate::i18n::text("shell-unpacking"),
+            Kind::Compress => crate::i18n::text("shell-compressing"),
         }
     }
 }
@@ -242,7 +253,7 @@ impl Row {
     /// row is in itself, and it is the ordinary case.
     pub fn title(&self) -> &str {
         match self {
-            Row::Paste => "Paste",
+            Row::Paste => crate::i18n::text("shell-paste"),
             Row::Folder { name, .. } | Row::File { name, .. } => name,
         }
     }
@@ -891,7 +902,9 @@ pub fn ready(kind: Kind, sources: &[Source], into: &Path) -> Ready {
         // rather than about the folder being full, and "one of them cannot be
         // put inside itself" would leave the user to work out which.
         if into == source.path || into.starts_with(&source.path) {
-            return Ready::Refused(format!("{} cannot be put inside itself.", source.name));
+            return Ready::Refused(
+                crate::message!("transfer-inside-itself", "name" => source.name.as_str()),
+            );
         }
     }
     let mut taken: Option<Taken> = None;
@@ -953,9 +966,9 @@ fn blocked(kind: Kind, sources: &[Source], into: &Path) -> Option<&'static str> 
         .any(|source| source.folder && (into == source.path || into.starts_with(&source.path)))
     {
         return Some(if one {
-            "It cannot be put inside itself"
+            crate::i18n::text("shell-it-cannot-be-put-inside-itself")
         } else {
-            "One of them cannot be put inside itself"
+            crate::i18n::text("shell-one-of-them-cannot-be-put-inside-itself")
         });
     }
     // Asked of the first, and true of all of them: everything in a set was
@@ -966,9 +979,9 @@ fn blocked(kind: Kind, sources: &[Source], into: &Path) -> Option<&'static str> 
             .is_some_and(|source| already_there(source, into))
     {
         return Some(if one {
-            "It is already here"
+            crate::i18n::text("shell-it-is-already-here")
         } else {
-            "They are already here"
+            crate::i18n::text("shell-they-are-already-here")
         });
     }
     None
@@ -1056,7 +1069,9 @@ impl Run {
                 (_, 0) => match last {
                     Some(at) => Outcome::Done(at),
                     // Unreachable: a picker with nothing in it never opens.
-                    None => Outcome::Failed("there was nothing to carry".to_string()),
+                    None => Outcome::Failed(
+                        crate::i18n::text("label-there-was-nothing-to-carry").to_string(),
+                    ),
                 },
                 (0, _) => Outcome::Failed(why),
                 (carried, failed) => Outcome::Partly {
@@ -1110,7 +1125,9 @@ impl Run {
             Ok(slot) => slot.clone(),
             // A worker that panicked will never answer, and a panel waiting on
             // it for ever is worse than being told it went wrong.
-            Err(_) => Some(Outcome::Failed("the transfer did not finish".to_string())),
+            Err(_) => Some(Outcome::Failed(
+                crate::i18n::text("label-the-transfer-did-not-finish").to_string(),
+            )),
         }
     }
 }
@@ -1196,7 +1213,7 @@ pub fn free_name(into: &Path, name: &str) -> io::Result<PathBuf> {
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "there is no free name left in that folder",
+        crate::i18n::text("label-there-is-no-free-name-left-in-that-folder"),
     ))
 }
 
@@ -1291,7 +1308,7 @@ pub fn said(err: &io::Error) -> String {
     let mut letters = written.chars();
     let sentence = match letters.next() {
         Some(first) => first.to_uppercase().collect::<String>() + letters.as_str(),
-        None => "It did not work".to_string(),
+        None => crate::i18n::text("shell-it-did-not-work").to_string(),
     };
     format!("{sentence}.")
 }

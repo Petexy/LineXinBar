@@ -76,7 +76,7 @@ pub fn rows() -> Vec<Row> {
             .into_iter()
             .map(|id| Row {
                 id,
-                note: "Not checked yet".into(),
+                note: crate::i18n::text("shell-not-checked-yet").into(),
                 items: vec![],
             })
             .collect();
@@ -225,10 +225,7 @@ impl Default for Updates {
                 .or_else(|| lxb_updates::process::find("lxb-updates"));
             for work in work {
                 let result = match helper.as_deref() {
-                    None => Err(
-                        "The lxb-updates helper is missing. Install the matching desktop package."
-                            .into(),
-                    ),
+                    None => Err(crate::i18n::text("updates-helper-missing").into()),
                     Some(helper) => match work {
                         Work::Request(request) => lxb_updates::service::request(helper, &request)
                             .map_err(|e| e.to_string()),
@@ -304,7 +301,7 @@ impl Updates {
             self.pending += 1;
             self.awaiting |= action;
         } else {
-            self.error = Some("The update client worker stopped".into());
+            self.error = Some(crate::i18n::text("shell-the-update-client-worker-stopped").into());
         }
     }
     pub fn press(&mut self, action: UpdateValue) {
@@ -543,23 +540,13 @@ impl Updates {
         let top = self.scroll.top(rows.len(), TERMINAL_ROWS);
         let shown: Vec<String> = rows.iter().skip(top).take(TERMINAL_ROWS).cloned().collect();
         let foot = if rows.is_empty() {
-            "Nothing said yet".to_owned()
+            crate::i18n::text("shell-nothing-said-yet").to_owned()
         } else if rows.len() <= TERMINAL_ROWS {
-            format!("{} lines", rows.len())
+            crate::message!("count-lines", "count" => rows.len())
         } else if self.scroll == Scroll::Following {
-            format!(
-                "Lines {}–{} of {} · following · Left to look back",
-                top + 1,
-                rows.len(),
-                rows.len()
-            )
+            crate::message!("terminal-lines-following", "from" => top + 1, "to" => rows.len(), "total" => rows.len())
         } else {
-            format!(
-                "Lines {}–{} of {} · Left and Right to scroll",
-                top + 1,
-                (top + TERMINAL_ROWS).min(rows.len()),
-                rows.len()
-            )
+            crate::message!("terminal-lines-scroll", "from" => top + 1, "to" => (top + TERMINAL_ROWS).min(rows.len()), "total" => rows.len())
         };
         Line::Terminal {
             lines: shown,
@@ -835,24 +822,28 @@ impl Updates {
         use menu::{Command as C, Entry as E};
         let mut lines = vec![Line::Heading(
             match self.view {
-                View::Job => "Updates",
-                View::Output => "Full output",
-                View::History => "Recent updates",
-                View::Preferences => "Update preferences",
+                View::Job => crate::i18n::text("shell-updates"),
+                View::Output => crate::i18n::text("shell-full-output"),
+                View::History => crate::i18n::text("shell-recent-updates"),
+                View::Preferences => crate::i18n::text("shell-update-preferences"),
             }
             .into(),
         )];
         let mut buttons = vec![];
         if self.awaiting {
-            lines.push(Line::Note("One moment…".into()));
+            lines.push(Line::Note(crate::i18n::text("shell-one-moment").into()));
             lines.push(Line::Waiting);
-            buttons.push(E::new(C::Dismiss, "Close"));
+            buttons.push(E::new(C::Dismiss, crate::i18n::text("shell-close")));
             return (lines, buttons);
         }
         if let Some(error) = &self.error {
-            lines.push(Line::Note("Could not complete the request.".into()));
+            lines.push(Line::Note(
+                crate::i18n::text("shell-could-not-complete-the-request").into(),
+            ));
             match self.view {
-                View::Job => lines.push(Line::Note("Open Details for the reason.".into())),
+                View::Job => lines.push(Line::Note(
+                    crate::i18n::text("shell-open-details-for-the-reason").into(),
+                )),
                 View::Output => {}
                 View::History | View::Preferences => {
                     lines.extend(wrap(error, WIDTH).into_iter().map(Line::Note));
@@ -861,33 +852,36 @@ impl Updates {
         }
         // The way out, worded for what leaving does: a review is declined,
         // a job is left to carry on, a result is closed.
-        let mut leaving = "Close";
+        let mut leaving = crate::i18n::text("shell-close");
         match self.view {
             View::Preferences => {
                 lines.extend(
-                    wrap(
-                        "Look for updates once a day while Settings is open. Nothing is installed without you.",
-                        WIDTH,
-                    )
-                    .into_iter()
-                    .map(Line::Note),
+                    wrap(crate::i18n::text("updates-daily-checks-explanation"), WIDTH)
+                        .into_iter()
+                        .map(Line::Note),
                 );
                 lines.push(Line::field(
-                    "Daily checks",
-                    if self.daily { "On" } else { "Off" },
+                    crate::i18n::text("shell-daily-checks"),
+                    if self.daily {
+                        crate::i18n::text("shell-on")
+                    } else {
+                        crate::i18n::text("shell-off")
+                    },
                 ));
                 buttons.push(E::new(
                     C::UpdateDaily,
                     if self.daily {
-                        "Turn off daily checks"
+                        crate::i18n::text("shell-turn-off-daily-checks")
                     } else {
-                        "Turn on daily checks"
+                        crate::i18n::text("shell-turn-on-daily-checks")
                     },
                 ));
             }
             View::History => {
                 if self.history.is_empty() {
-                    lines.push(Line::Note("No recent updates.".into()));
+                    lines.push(Line::Note(
+                        crate::i18n::text("shell-no-recent-updates").into(),
+                    ));
                 }
                 for attempt in self.history.iter().rev().take(3) {
                     buttons.push(E::new(
@@ -903,36 +897,46 @@ impl Updates {
             View::Output => {
                 lines.push(self.terminal());
                 if self.scroll != Scroll::Following {
-                    buttons.push(E::new(C::UpdateLive, "Latest output"));
+                    buttons.push(E::new(
+                        C::UpdateLive,
+                        crate::i18n::text("shell-latest-output"),
+                    ));
                 }
                 if self.snapshot.phase == Phase::Running
                     && self.output_job == Some(self.snapshot.job)
                 {
-                    buttons.push(E::new(C::UpdateRespond, "Respond"));
+                    buttons.push(E::new(C::UpdateRespond, crate::i18n::text("shell-respond")));
                 }
-                buttons.push(E::new(C::UpdateOutputBack, "Back"));
+                buttons.push(E::new(C::UpdateOutputBack, crate::i18n::text("shell-back")));
                 if self.snapshot.busy() {
-                    leaving = "Run in background";
+                    leaving = crate::i18n::text("shell-run-in-background");
                 }
             }
             View::Job => match self.snapshot.phase {
                 Phase::Checking => {
-                    lines.push(Line::Note("Checking for updates…".into()));
+                    lines.push(Line::Note(
+                        crate::i18n::text("shell-checking-for-updates").into(),
+                    ));
                     lines.push(Line::Waiting);
-                    buttons.push(E::new(C::UpdateCancelCheck, "Cancel"));
-                    leaving = "Run in background";
+                    buttons.push(E::new(
+                        C::UpdateCancelCheck,
+                        crate::i18n::text("shell-cancel"),
+                    ));
+                    leaving = crate::i18n::text("shell-run-in-background");
                 }
                 Phase::Running => {
                     self.running(&mut lines, &mut buttons);
-                    leaving = "Run in background";
+                    leaving = crate::i18n::text("shell-run-in-background");
                 }
                 Phase::Restarting => {
-                    lines.push(Line::Note("Restarting…".into()));
+                    lines.push(Line::Note(
+                        crate::i18n::text("shell-restarting-ellipsis").into(),
+                    ));
                     lines.push(Line::Waiting);
                 }
                 Phase::Reviewing => {
                     if self.review(&mut lines, &mut buttons) {
-                        leaving = "Not now";
+                        leaving = crate::i18n::text("shell-not-now");
                     }
                 }
                 _ => self.outcome(&mut lines, &mut buttons),
@@ -950,7 +954,10 @@ impl Updates {
         let tally = Tally::of(self.selected());
         lines.push(Line::Note(tally.headline()));
         for source in self.selected() {
-            lines.push(Line::field(source.id.name(), summary(source)));
+            lines.push(Line::field(
+                crate::i18n::builtin(source.id.name()),
+                summary(source),
+            ));
         }
         // What stands in the way, before the button that would ignore it.
         lines.extend(warnings(&self.snapshot.notices));
@@ -963,18 +970,30 @@ impl Updates {
         if installable {
             if tally.stale {
                 lines.push(Line::Note(
-                    "The package manager refreshes its list when it runs.".into(),
+                    crate::i18n::text("shell-the-package-manager-refreshes-its-list-when-it-runs")
+                        .into(),
                 ));
             }
             if self.restart_expected() {
-                lines.push(Line::Note("A restart may be needed afterwards.".into()));
+                lines.push(Line::Note(
+                    crate::i18n::text("shell-a-restart-may-be-needed-afterwards").into(),
+                ));
             }
-            buttons.push(E::new(C::UpdateInstall, "Update now"));
+            buttons.push(E::new(
+                C::UpdateInstall,
+                crate::i18n::text("shell-update-now"),
+            ));
         }
         if staged && !self.snapshot.busy() {
-            buttons.push(E::new(C::UpdateRestart, "Restart to finish updates"));
+            buttons.push(E::new(
+                C::UpdateRestart,
+                crate::i18n::text("shell-restart-to-finish-updates"),
+            ));
         }
-        buttons.push(E::new(C::UpdateOutput, "Full output"));
+        buttons.push(E::new(
+            C::UpdateOutput,
+            crate::i18n::text("shell-full-output"),
+        ));
         installable
     }
 
@@ -997,12 +1016,17 @@ impl Updates {
     fn running(&self, lines: &mut Vec<Line>, buttons: &mut Vec<menu::Entry>) {
         use menu::{Command as C, Entry as E};
         if self.snapshot.active.is_none() && self.snapshot.output.is_empty() {
-            lines.push(Line::Note("Preparing your updates…".into()));
+            lines.push(Line::Note(
+                crate::i18n::text("shell-preparing-your-updates").into(),
+            ));
             lines.push(Line::Waiting);
             lines.push(Line::Note(
-                "You may be asked to authorize this update.".into(),
+                crate::i18n::text("shell-you-may-be-asked-to-authorize-this-update").into(),
             ));
-            buttons.push(E::new(C::UpdateOutput, "Full output"));
+            buttons.push(E::new(
+                C::UpdateOutput,
+                crate::i18n::text("shell-full-output"),
+            ));
             return;
         }
         // Which source this output belongs to, and how far along the list
@@ -1013,12 +1037,12 @@ impl Updates {
             let selected = &self.snapshot.selected;
             let at = selected.iter().position(|id| *id == active);
             lines.push(Line::field(
-                "Updating",
+                crate::i18n::text("shell-updating"),
                 match at {
                     Some(at) if selected.len() > 1 => {
-                        format!("{}, {} of {}", active.name(), at + 1, selected.len())
+                        crate::message!("updates-source-progress", "source" => crate::i18n::builtin(active.name()), "at" => at + 1, "of" => selected.len())
                     }
-                    _ => active.name().to_owned(),
+                    _ => crate::i18n::builtin(active.name()).to_owned(),
                 },
             ));
         }
@@ -1044,16 +1068,16 @@ impl Updates {
             said(lines, 2);
             lines.push(Line::Note(
                 if lxb_updates::prompt::password(&self.snapshot) {
-                    "Type the password it asks for."
+                    crate::i18n::text("shell-type-the-password-it-asks-for")
                 } else {
-                    "Type the answer it asks for."
+                    crate::i18n::text("shell-type-the-answer-it-asks-for")
                 }
                 .into(),
             ));
             lines.push(Line::Secret {
                 typed: self.typed.typed(),
             });
-            buttons.push(E::new(C::UpdateSubmit, "Send"));
+            buttons.push(E::new(C::UpdateSubmit, crate::i18n::text("shell-send")));
             return;
         }
         // The bar where there is something to count, and the lights where
@@ -1062,11 +1086,11 @@ impl Updates {
         match self.progress() {
             Some((done, total)) => {
                 let percent = (done * 100 / total) as u8;
-                lines.push(Line::Note(format!("{done} of {total}  ·  {percent}%")));
+                lines.push(Line::Note(crate::message!("updates-progress", "done" => done, "total" => total, "percent" => percent)));
                 lines.push(Line::Progress(percent));
             }
             None => {
-                lines.push(Line::Note("Working…".into()));
+                lines.push(Line::Note(crate::i18n::text("shell-working").into()));
                 lines.push(Line::Waiting);
             }
         }
@@ -1079,19 +1103,22 @@ impl Updates {
             said(lines, 2);
         } else if self.snapshot.protected {
             lines.push(Line::Note(
-                "Sleep and shutdown are paused while updating.".into(),
+                crate::i18n::text("shell-sleep-and-shutdown-are-paused-while-updating").into(),
             ));
         }
         // A question with two answers gets the two answers; anything else a
         // tool asks — a number to pick a provider by, an answer this panel
         // does not recognise as a question — gets the field.
         if self.asking_yes_or_no() {
-            buttons.push(E::new(C::UpdateYes, "Yes"));
-            buttons.push(E::new(C::UpdateNo, "No"));
+            buttons.push(E::new(C::UpdateYes, crate::i18n::text("shell-yes")));
+            buttons.push(E::new(C::UpdateNo, crate::i18n::text("shell-no")));
         } else if question {
-            buttons.push(E::new(C::UpdateRespond, "Respond"));
+            buttons.push(E::new(C::UpdateRespond, crate::i18n::text("shell-respond")));
         }
-        buttons.push(E::new(C::UpdateOutput, "Full output"));
+        buttons.push(E::new(
+            C::UpdateOutput,
+            crate::i18n::text("shell-full-output"),
+        ));
     }
 
     /// What became of the job: a sentence, a word a source, and the restart
@@ -1104,7 +1131,10 @@ impl Updates {
                 .map(Line::Note),
         );
         for result in &self.snapshot.results {
-            lines.push(Line::field(result.source.name(), outcome_word(result)));
+            lines.push(Line::field(
+                crate::i18n::builtin(result.source.name()),
+                outcome_word(result),
+            ));
         }
         // Anything that happened to the job but not to a package: a log that
         // could not be written, authority that could not be given back. The
@@ -1113,8 +1143,13 @@ impl Updates {
         lines.extend(warnings(&self.snapshot.notices));
         let staged = self.snapshot.restart.is_some() && !self.snapshot.busy();
         if staged {
-            lines.push(Line::Note("Restart to finish installing them.".into()));
-            buttons.push(E::new(C::UpdateRestart, "Restart now"));
+            lines.push(Line::Note(
+                crate::i18n::text("shell-restart-to-finish-installing-them").into(),
+            ));
+            buttons.push(E::new(
+                C::UpdateRestart,
+                crate::i18n::text("shell-restart-now"),
+            ));
         } else if self.snapshot.phase == Phase::Completed
             && self
                 .snapshot
@@ -1122,11 +1157,19 @@ impl Updates {
                 .iter()
                 .any(|r| r.success && r.source == SourceId::System)
         {
-            lines.push(Line::Note("A restart may be needed.".into()));
+            lines.push(Line::Note(
+                crate::i18n::text("shell-a-restart-may-be-needed").into(),
+            ));
         }
-        buttons.push(E::new(C::UpdateOutput, "Full output"));
+        buttons.push(E::new(
+            C::UpdateOutput,
+            crate::i18n::text("shell-full-output"),
+        ));
         if self.snapshot.phase != Phase::Idle {
-            buttons.push(E::new(C::UpdateCheck, "Check again"));
+            buttons.push(E::new(
+                C::UpdateCheck,
+                crate::i18n::text("shell-check-again"),
+            ));
         }
     }
 }
@@ -1228,12 +1271,11 @@ impl Tally {
     }
     fn headline(&self) -> String {
         match self.counted {
-            _ if self.unchecked => "Not checked yet".into(),
-            0 if self.ready_uncounted => "Ready to update".into(),
-            0 if self.stale => "Nothing new since the last refresh".into(),
-            0 => "Everything is up to date".into(),
-            1 => "1 update available".into(),
-            n => format!("{n} updates available"),
+            _ if self.unchecked => crate::i18n::text("shell-not-checked-yet").into(),
+            0 if self.ready_uncounted => crate::i18n::text("shell-ready-to-update").into(),
+            0 if self.stale => crate::i18n::text("shell-nothing-new-since-the-last-refresh").into(),
+            0 => crate::i18n::text("shell-everything-is-up-to-date").into(),
+            n => crate::message!("count-updates-available", "count" => n),
         }
     }
 }
@@ -1251,28 +1293,29 @@ const WIDTH: usize = 46;
 /// counts things, not lines — see [`lxb_updates::listing`].
 fn summary(source: &Source) -> String {
     let mut line = if source.error.is_some() {
-        "Could not check".to_owned()
+        crate::i18n::text("shell-could-not-check").to_owned()
     } else if !source.executable {
         first_segment(&source.note).to_owned()
     } else if source.checked.is_none() {
-        "Not checked yet".to_owned()
+        crate::i18n::text("shell-not-checked-yet").to_owned()
     } else if !source.listed {
-        "Ready to update".to_owned()
+        crate::i18n::text("shell-ready-to-update").to_owned()
     } else {
         match (source.id, source.items.len()) {
             // Not "up to date": the devices fwupd may not touch from here
             // are the excluded ones beside it, and they may well have some.
-            (SourceId::Firmware, 0) => "No device updates".to_owned(),
-            (_, 0) if !source.fresh => "None since the last refresh".to_owned(),
-            (_, 0) => "Up to date".to_owned(),
-            (SourceId::Firmware, 1) => "1 device update".to_owned(),
-            (SourceId::Firmware, n) => format!("{n} device updates"),
-            (_, 1) => "1 update".to_owned(),
-            (_, n) => format!("{n} updates"),
+            (SourceId::Firmware, 0) => crate::i18n::text("shell-no-device-updates").to_owned(),
+            (_, 0) if !source.fresh => {
+                crate::i18n::text("shell-none-since-the-last-refresh").to_owned()
+            }
+            (_, 0) => crate::i18n::text("shell-up-to-date").to_owned(),
+            (SourceId::Firmware, n) => crate::message!("count-device-updates", "count" => n),
+            (_, n) => crate::message!("count-updates", "count" => n),
         }
     };
     if !source.excluded.is_empty() {
-        line.push_str(&format!(" · {} excluded", source.excluded.len()));
+        line.push_str(" · ");
+        line.push_str(&crate::message!("count-excluded", "count" => source.excluded.len()));
     }
     line
 }
@@ -1284,7 +1327,7 @@ fn outcome_word(result: &lxb_updates::ResultEntry) -> String {
     if result.success || result.note.starts_with("Deferred") || result.note.starts_with("Skipped") {
         first_segment(&result.note).to_owned()
     } else {
-        "Failed".to_owned()
+        crate::i18n::text("shell-failed").to_owned()
     }
 }
 
@@ -1395,33 +1438,37 @@ fn history_date(at: u64) -> String {
 
 fn phase_name(phase: &Phase) -> &'static str {
     match phase {
-        Phase::Idle => "Not checked",
-        Phase::Checking => "Checking",
-        Phase::Reviewing => "Reviewed",
-        Phase::Running => "Running",
-        Phase::Completed => "Completed",
-        Phase::Partial => "Needs attention",
-        Phase::Failed => "Failed",
-        Phase::Interrupted => "Interrupted",
-        Phase::Cancelled => "Cancelled",
-        Phase::Restarting => "Restarting",
-        Phase::AwaitingVerification => "Restarted, unverified",
+        Phase::Idle => crate::i18n::text("shell-not-checked"),
+        Phase::Checking => crate::i18n::text("shell-checking"),
+        Phase::Reviewing => crate::i18n::text("shell-reviewed"),
+        Phase::Running => crate::i18n::text("shell-running"),
+        Phase::Completed => crate::i18n::text("shell-completed"),
+        Phase::Partial => crate::i18n::text("shell-needs-attention"),
+        Phase::Failed => crate::i18n::text("shell-failed"),
+        Phase::Interrupted => crate::i18n::text("shell-interrupted"),
+        Phase::Cancelled => crate::i18n::text("shell-cancelled"),
+        Phase::Restarting => crate::i18n::text("shell-restarting"),
+        Phase::AwaitingVerification => crate::i18n::text("shell-restarted-unverified"),
     }
 }
 
 fn phase_note(phase: &Phase) -> &'static str {
     match phase {
-        Phase::Idle => "Not checked yet.",
-        Phase::Checking => "Checking for updates…",
-        Phase::Reviewing => "Ready.",
-        Phase::Running => "Updating…",
-        Phase::Completed => "Updates installed.",
-        Phase::Partial => "Some updates need attention.",
-        Phase::Failed => "The updates could not be installed.",
-        Phase::Interrupted => "The last update was interrupted before it finished.",
-        Phase::Cancelled => "Check cancelled. Nothing was installed.",
-        Phase::Restarting => "Restarting…",
-        Phase::AwaitingVerification => "The machine restarted. Check again to confirm.",
+        Phase::Idle => crate::i18n::text("shell-not-checked-yet-full-stop"),
+        Phase::Checking => crate::i18n::text("shell-checking-for-updates"),
+        Phase::Reviewing => crate::i18n::text("shell-ready-full-stop"),
+        Phase::Running => crate::i18n::text("shell-updating-ellipsis"),
+        Phase::Completed => crate::i18n::text("shell-updates-installed-full-stop"),
+        Phase::Partial => crate::i18n::text("shell-some-updates-need-attention"),
+        Phase::Failed => crate::i18n::text("shell-the-updates-could-not-be-installed"),
+        Phase::Interrupted => {
+            crate::i18n::text("shell-the-last-update-was-interrupted-before-it-finished")
+        }
+        Phase::Cancelled => crate::i18n::text("shell-check-cancelled-nothing-was-installed"),
+        Phase::Restarting => crate::i18n::text("shell-restarting-ellipsis"),
+        Phase::AwaitingVerification => {
+            crate::i18n::text("shell-the-machine-restarted-check-again-to-confirm")
+        }
     }
 }
 
@@ -1464,27 +1511,27 @@ impl crate::Shell {
                 continue;
             }
             let title = if event.attention {
-                "Updates need your attention"
+                crate::i18n::text("shell-updates-need-your-attention")
             } else if event.restart.is_some()
                 && !matches!(event.phase, Phase::Failed | Phase::Interrupted)
             {
-                "Restart to finish updating"
+                crate::i18n::text("shell-restart-to-finish-updating")
             } else if event.phase == Phase::Completed {
-                "Updates installed"
+                crate::i18n::text("shell-updates-installed")
             } else {
-                "Some updates couldn't be installed"
+                crate::i18n::text("shell-some-updates-couldn-t-be-installed")
             };
             let action = if event.attention {
-                "Review prompt"
+                crate::i18n::text("shell-review-prompt")
             } else if event.restart.is_some() {
-                "Review restart"
+                crate::i18n::text("shell-review-restart")
             } else {
-                "View output"
+                crate::i18n::text("shell-view-output")
             };
             let visible = self.updates.shows_job(event.job);
             let (id, raised) = self.notifications.announce_update(
                 title,
-                "Open Updates to see the result.",
+                crate::i18n::text("shell-open-updates-to-see-the-result"),
                 action,
                 visible || event.delivered,
             );

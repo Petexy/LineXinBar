@@ -295,6 +295,15 @@ pub const SETTING_ACCENT: &str = "lxb:setting-accent";
 pub const SETTING_THEME: &str = "lxb:setting-theme";
 pub const SETTING_WALLPAPER: &str = "lxb:setting-wallpaper";
 pub const SETTING_ICONS: &str = "lxb:setting-icons";
+/// Settings > Language: a speech bubble with a letter cut through it.
+///
+/// The two marks that might have said "language" are both spoken for — a
+/// globe is [`CATEGORY_INTERNET`], a flag is [`SETTING_LAYOUT`], whose
+/// question is whose keyboard this is — and a bubble with a letter in it is
+/// what every set draws for the language a thing speaks. It is also a
+/// silhouette the head of the Settings column has not got: a slab with a tail,
+/// between a palette and a screen.
+pub const SETTING_LANGUAGE: &str = "lxb:setting-language";
 pub const SETTING_DISPLAY: &str = "lxb:setting-display";
 pub const SETTING_RESOLUTION: &str = "lxb:setting-resolution";
 pub const SETTING_REFRESH: &str = "lxb:setting-refresh";
@@ -907,7 +916,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 149] = [
+pub const BUILTIN: [(&str, &str); 150] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -1020,6 +1029,10 @@ pub const BUILTIN: [(&str, &str); 149] = [
         include_str!("glyphs/setting-wallpaper.svg"),
     ),
     (SETTING_ICONS, include_str!("glyphs/setting-icons.svg")),
+    (
+        SETTING_LANGUAGE,
+        include_str!("glyphs/setting-language.svg"),
+    ),
     (SETTING_DISPLAY, include_str!("glyphs/setting-display.svg")),
     (
         SETTING_RESOLUTION,
@@ -2769,7 +2782,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            149,
+            150,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2785,14 +2798,15 @@ pub(crate) mod tests {
              folders that stand for System's Files with the folder, page, lidded \
              carton, drum \
              and house its own rows are drawn with, the \
-             fifty-seven marks the Settings column is drawn from — the one \
+             fifty-eight marks the Settings column is drawn from — the one \
              rising arrow of its Updates page in each of the five things it \
              updates, a disc at the head of the page, a cycle of two arrows \
              for the row that does the whole of it, and a screen, three \
              application tiles and a chip's die for the three parts, the brush at \
              the head of its Theme page, and under it the wave for the \
              wallpaper's own material and four of the shell's marks in one \
-             cell for the material of the marks, the small window a video \
+             cell for the material of the marks, the speech bubble with a \
+             letter cut through it that Language wears, the small window a video \
              floats in with the two sizes it is offered at and the four \
              corners of a screen it can be put in, the keyboard the Input \
              column is headed by with that same board inside a screen for its \
@@ -2945,6 +2959,7 @@ pub(crate) mod tests {
                 SETTING_THEME,
                 SETTING_WALLPAPER,
                 SETTING_ICONS,
+                SETTING_LANGUAGE,
                 SETTING_DISPLAY,
                 SETTING_RESOLUTION,
                 SETTING_REFRESH,

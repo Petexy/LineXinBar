@@ -43,6 +43,7 @@ mod files;
 mod friends;
 mod gpu;
 mod guide;
+mod i18n;
 mod icons;
 mod keyboard;
 mod launch;
@@ -1016,7 +1017,7 @@ fn main() -> anyhow::Result<()> {
         // now.
         apps::offer_retroarch(
             &mut categories,
-            Some("Looking for RetroArch".to_string()),
+            Some(crate::i18n::text("shell-looking-for-retroarch").to_string()),
             None,
         );
     }
@@ -3131,7 +3132,9 @@ impl SightLost {
     /// What the log says about it.
     fn why(self) -> &'static str {
         match self {
-            SightLost::NeverCame => "Steam never opened the window it was asked for",
+            SightLost::NeverCame => {
+                crate::i18n::text("shell-steam-never-opened-the-window-it-was-asked-for")
+            }
             SightLost::Gone => "the window Steam was asked for has gone",
         }
     }
@@ -3282,7 +3285,7 @@ const UNTIL_A_WINDOW_IS_A_QUESTION: std::time::Duration =
 /// is one line at the call site now, and what follows from it is here.
 fn what_a_message_may_say(body: String, asleep: bool) -> String {
     match asleep {
-        true => "A message arrived while the screen was off.".to_string(),
+        true => crate::i18n::text("shell-a-message-arrived-while-the-screen-was-off").to_string(),
         false => body,
     }
 }
@@ -3297,7 +3300,7 @@ fn why_nothing_can_be_said(steam: &steam::Steam, with: u64) -> Option<String> {
         Ok(_) => None,
         // The empty field has already said this by being empty.
         Err(lxb_steam::chat::Refused::Empty) => None,
-        Err(refused) => Some(refused.said().to_string()),
+        Err(refused) => Some(crate::i18n::builtin(refused.said()).to_string()),
     }
 }
 
@@ -5091,7 +5094,7 @@ impl Shell {
             // always leads home.
             if let Some(panel) = panel {
                 cards.push(ui::Card {
-                    title: "Start screen".to_string(),
+                    title: crate::i18n::text("shell-start-screen").to_string(),
                     width: panel.width.max(16) as f32,
                     height: panel.height.max(9) as f32,
                     start: true,
@@ -8335,6 +8338,9 @@ impl Shell {
                         return;
                     }
                     settings::apply(setting);
+                    if matches!(setting, settings::Setting::Language(_)) {
+                        self.refresh_language();
+                    }
                     // A sound device is the sound server's to carry out, as a
                     // display setting is the compositor's, and it is handed
                     // over here for the same reason: `settings` records what
@@ -9689,7 +9695,7 @@ impl Shell {
         let entries = status_rows(now);
         if self.context_menu.open_at(
             anchor,
-            Some(menu::Title::new("Status")),
+            Some(menu::Title::new(crate::i18n::text("shell-status"))),
             entries,
             ui::context_menu_rows_that_fit(height),
         ) {
@@ -9728,13 +9734,19 @@ impl Shell {
     /// the panel says so where an empty list is drawn.
     fn why_there_are_no_friends(&self) -> Option<&'static str> {
         if !settings::steam_integration() {
-            return Some("Steam is switched off in Settings > Games > Steam.");
+            return Some(crate::i18n::text(
+                "shell-steam-is-switched-off-in-settings-games-steam",
+            ));
         }
         if self.steam.account().is_none() {
-            return Some("Sign in to Steam to see who is online.");
+            return Some(crate::i18n::text(
+                "shell-sign-in-to-steam-to-see-who-is-online",
+            ));
         }
         if self.is_offline_on_steam() {
-            return Some("You are offline on Steam. Choose a status above to come back.");
+            return Some(crate::i18n::text(
+                "shell-you-are-offline-on-steam-choose-a-status-above-to-come-back",
+            ));
         }
         None
     }
@@ -10119,7 +10131,7 @@ impl Shell {
             .find(|friend| friend.steam_id == from);
         let name = them
             .map(|friend| friend.name.clone())
-            .unwrap_or_else(|| "A friend".to_string());
+            .unwrap_or_else(|| crate::i18n::text("shell-a-friend").to_string());
         let face = them.and_then(|friend| friend.avatar.clone());
         let asleep =
             !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
@@ -10242,7 +10254,9 @@ impl Shell {
             self.menu_is_the_floating_windows() || self.file_question_is_open(),
         );
         if closes && self.context_menu.close() {
-            tracing::debug!("an application is in front of the bar, so the menu over it was put away");
+            tracing::debug!(
+                "an application is in front of the bar, so the menu over it was put away"
+            );
             self.needs_redraw = true;
         }
     }
@@ -10288,21 +10302,26 @@ impl Shell {
         }) {
             return Some((
                 ui::launch_origin(panel.width as f32, panel.height as f32),
-                Some("Trophies".into()),
+                Some(crate::i18n::text("shell-trophies").into()),
                 {
-                    let mut rows =
-                        vec![menu::Entry::new(menu::Command::TrophiesSort, "Sort")
-                            .glyph(icons::SORT)];
+                    let mut rows = vec![menu::Entry::new(
+                        menu::Command::TrophiesSort,
+                        crate::i18n::text("shell-sort"),
+                    )
+                    .glyph(icons::SORT)];
                     if retroarch::offered() {
                         rows.push(
                             menu::Entry::new(
                                 menu::Command::RetroAchievementsConfigure,
-                                "Configure RetroAchievements",
+                                crate::i18n::text("shell-configure-retroachievements"),
                             )
                             .glyph(icons::CATEGORY_TROPHIES),
                         );
                     }
-                    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+                    rows.push(
+                        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel"))
+                            .group(1),
+                    );
                     rows
                 },
             ));
@@ -10412,7 +10431,8 @@ impl Shell {
             vec![
                 menu::Entry::new(menu::Command::OpenTheShelfApp, app.name.clone())
                     .glyph(icons::LAUNCH),
-                menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel"))
+                    .group(1),
             ],
         ))
     }
@@ -10450,8 +10470,11 @@ impl Shell {
             anchor,
             Some(app.name.clone()),
             vec![
-                menu::Entry::new(menu::Command::Information, "Information")
-                    .glyph(icons::SETTING_INFO),
+                menu::Entry::new(
+                    menu::Command::Information,
+                    crate::i18n::text("shell-information"),
+                )
+                .glyph(icons::SETTING_INFO),
                 // Grave, even though this row removes nothing by itself and
                 // only asks. Where it leads is what the highlight has to say:
                 // a row that looked like Information and Launch until the
@@ -10459,13 +10482,16 @@ impl Shell {
                 // the one moment the user was still choosing whether to go
                 // there. The button that answers is stronger again — it is
                 // `destructive`, in the shell's fixed red.
-                menu::Entry::new(menu::Command::Uninstall, "Uninstall")
-                    .glyph(icons::UNINSTALL)
-                    .grave(),
-                menu::Entry::new(menu::Command::Launch, "Launch")
+                menu::Entry::new(
+                    menu::Command::Uninstall,
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .glyph(icons::UNINSTALL)
+                .grave(),
+                menu::Entry::new(menu::Command::Launch, crate::i18n::text("label-launch"))
                     .glyph(icons::LAUNCH)
                     .group(1),
-                menu::Entry::new(menu::Command::Dismiss, "Close").group(1),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-close")).group(1),
             ],
         ))
     }
@@ -11474,7 +11500,7 @@ impl Shell {
                 // the shell draws is a single line with an ellipsis where the
                 // rest would have been, and the name is the half that must not
                 // be the half that gets cut.
-                dialog::Line::Note("Do you want to delete".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-do-you-want-to-delete").to_string()),
                 dialog::Line::Heading(format!("{name}?")),
                 // A folder says what a folder means, because the name on the
                 // heading stands for however many things the user cannot see.
@@ -11484,15 +11510,17 @@ impl Shell {
                 // sentence has to carry is that the press takes the contents
                 // too, and that the trash is where they go.
                 dialog::Line::Note(if folder {
-                    "It will be moved to the trash with everything in it.".to_string()
+                    crate::i18n::text("shell-it-will-be-moved-to-the-trash-with-everything-in-it")
+                        .to_string()
                 } else {
-                    "It will be moved to the trash.".to_string()
+                    crate::i18n::text("shell-it-will-be-moved-to-the-trash").to_string()
                 }),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmDelete, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(menu::Command::ConfirmDelete, crate::i18n::text("shell-yes"))
+                    .grave(),
             ],
             // On No, which is the row it is standing on as well as the row it
             // is drawn first — see the uninstall question, which this follows.
@@ -11568,10 +11596,15 @@ impl Shell {
                     Some(file.glyph.clone()),
                     vec![
                         dialog::Line::Heading(file.name.clone()),
-                        dialog::Line::Note("This could not be deleted.".to_string()),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-this-could-not-be-deleted").to_string(),
+                        ),
                         dialog::Line::Rule,
                     ],
-                    vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+                    vec![menu::Entry::new(
+                        menu::Command::Dismiss,
+                        crate::i18n::text("shell-close"),
+                    )],
                     0,
                 );
             }
@@ -11603,27 +11636,30 @@ impl Shell {
         self.removal_plan = None;
         self.deleting = None;
         self.purging = None;
-        let counted = match items {
-            1 => "1 item".to_string(),
-            items => format!("{items} items"),
-        };
+        let counted = crate::message!("count-items", "count" => items);
         self.dialog.ask(
             from,
             Some(icons::TRASH_EMPTY.to_string()),
             vec![
-                dialog::Line::Note("Do you want to empty the trash?".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-do-you-want-to-empty-the-trash").to_string(),
+                ),
                 dialog::Line::Heading(counted),
                 // The one sentence that has to be on this panel. Everywhere
                 // else in the shell that something is destroyed, the trash is
                 // named as where it went; here there is nowhere further down,
                 // and a person who has learnt that Delete is reversible has to
                 // be told that this is the press where that stops being true.
-                dialog::Line::Note("This cannot be undone.".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-this-cannot-be-undone").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmEmptyTrash, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::ConfirmEmptyTrash,
+                    crate::i18n::text("shell-yes"),
+                )
+                .grave(),
             ],
             0,
         );
@@ -11654,10 +11690,7 @@ impl Shell {
             from,
             icons::TRASH_EMPTY,
             vec![
-                dialog::Line::Heading(match left {
-                    1 => "1 item is still in the trash".to_string(),
-                    left => format!("{left} items are still in the trash"),
-                }),
+                dialog::Line::Heading(crate::message!("trash-items-still-there", "count" => left)),
                 dialog::Line::Note(transfer::said(&err)),
             ],
         );
@@ -11702,10 +11735,9 @@ impl Shell {
                     from,
                     item.glyph(),
                     vec![
-                        dialog::Line::Note(format!(
-                            "Something called {} was already there, so it went back as",
-                            item.name
-                        )),
+                        dialog::Line::Note(
+                            crate::message!("restore-renamed-note", "name" => item.name.as_str()),
+                        ),
                         dialog::Line::Heading(name.to_string()),
                     ],
                 );
@@ -11743,14 +11775,15 @@ impl Shell {
             from,
             Some(glyph.to_string()),
             vec![
-                dialog::Line::Note("Do you want to delete".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-do-you-want-to-delete").to_string()),
                 dialog::Line::Heading(format!("{name}?")),
-                dialog::Line::Note("This cannot be undone.".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-this-cannot-be-undone").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmPurge, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(menu::Command::ConfirmPurge, crate::i18n::text("shell-yes"))
+                    .grave(),
             ],
             0,
         );
@@ -12063,9 +12096,11 @@ impl Shell {
                 origin,
                 glyph,
                 vec![
-                    dialog::Line::Note("Something called".to_string()),
+                    dialog::Line::Note(crate::i18n::text("shell-something-called").to_string()),
                     dialog::Line::Heading(name),
-                    dialog::Line::Note("is already in that folder.".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-is-already-in-that-folder").to_string(),
+                    ),
                     dialog::Line::Rule,
                 ],
             );
@@ -12439,16 +12474,19 @@ impl Shell {
         self.removal_plan = None;
         self.deleting = None;
         let mut lines = vec![
-            dialog::Line::Note("Do you want to delete".to_string()),
+            dialog::Line::Note(crate::i18n::text("shell-do-you-want-to-delete").to_string()),
             dialog::Line::Heading(format!("{named}?")),
         ];
         if !made_of.is_empty() {
             lines.push(dialog::Line::Note(made_of));
         }
         lines.push(dialog::Line::Note(if any_folder {
-            "They will be moved to the trash, folders and everything in them.".to_string()
+            crate::i18n::text(
+                "shell-they-will-be-moved-to-the-trash-folders-and-everything-in-them",
+            )
+            .to_string()
         } else {
-            "They will be moved to the trash.".to_string()
+            crate::i18n::text("shell-they-will-be-moved-to-the-trash").to_string()
         }));
         lines.push(dialog::Line::Rule);
         self.dialog.ask(
@@ -12456,8 +12494,12 @@ impl Shell {
             Some(icons::SELECT_MULTIPLE.to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmDeleteMarked, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::ConfirmDeleteMarked,
+                    crate::i18n::text("shell-yes"),
+                )
+                .grave(),
             ],
             // On No, which is where every question that destroys something in
             // this shell opens.
@@ -12516,8 +12558,10 @@ impl Shell {
             from,
             icons::SELECT_MULTIPLE,
             vec![
-                dialog::Line::Heading(format!("{failed} of them are still there")),
-                dialog::Line::Note(format!("{gone} of the {} were deleted.", picked.len())),
+                dialog::Line::Heading(crate::message!("count-still-there", "count" => failed)),
+                dialog::Line::Note(
+                    crate::message!("deleted-of-total", "gone" => gone, "total" => picked.len()),
+                ),
                 dialog::Line::Note(why),
                 dialog::Line::Rule,
             ],
@@ -12563,8 +12607,10 @@ impl Shell {
             from,
             icons::SELECT_MULTIPLE,
             vec![
-                dialog::Line::Heading(format!("{failed} of them are still in the trash")),
-                dialog::Line::Note(format!("{back} of the {} were put back.", picked.len())),
+                dialog::Line::Heading(crate::message!("count-still-in-trash", "count" => failed)),
+                dialog::Line::Note(
+                    crate::message!("restored-of-total", "back" => back, "total" => picked.len()),
+                ),
                 dialog::Line::Note(why),
                 dialog::Line::Rule,
             ],
@@ -12588,14 +12634,20 @@ impl Shell {
             from,
             Some(icons::SELECT_MULTIPLE.to_string()),
             vec![
-                dialog::Line::Note("Do you want to delete".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-do-you-want-to-delete").to_string()),
                 dialog::Line::Heading(format!("{named}?")),
-                dialog::Line::Note("They will be gone for good.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-they-will-be-gone-for-good").to_string(),
+                ),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmPurgeMarked, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::ConfirmPurgeMarked,
+                    crate::i18n::text("shell-yes"),
+                )
+                .grave(),
             ],
             0,
         );
@@ -12619,8 +12671,10 @@ impl Shell {
             from,
             icons::SELECT_MULTIPLE,
             vec![
-                dialog::Line::Heading(format!("{left} of them are still there")),
-                dialog::Line::Note(format!("{gone} of the {} were deleted.", picked.len())),
+                dialog::Line::Heading(crate::message!("count-still-there", "count" => left)),
+                dialog::Line::Note(
+                    crate::message!("deleted-of-total", "gone" => gone, "total" => picked.len()),
+                ),
                 dialog::Line::Note(transfer::said(&err)),
                 dialog::Line::Rule,
             ],
@@ -12975,13 +13029,21 @@ impl Shell {
             Some(icons::EXTRACT.to_string()),
             vec![
                 dialog::Line::Heading(name),
-                dialog::Line::Note("Where should this be unpacked?".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-where-should-this-be-unpacked").to_string(),
+                ),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::ExtractHere, "Extract here"),
-                menu::Entry::new(menu::Command::ExtractInto, "Choose a folder"),
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(
+                    menu::Command::ExtractHere,
+                    crate::i18n::text("shell-extract-here"),
+                ),
+                menu::Entry::new(
+                    menu::Command::ExtractInto,
+                    crate::i18n::text("shell-choose-a-folder"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
             ],
             0,
         );
@@ -13488,7 +13550,7 @@ impl Shell {
         let source = carrying.picker.carried();
         let glyph = source.glyph.to_string();
         let from = carrying.from;
-        let doing = carrying.picker.kind().doing().to_lowercase();
+        let kind = carrying.picker.kind().token();
         let into = carrying
             .picker
             .here()
@@ -13499,11 +13561,13 @@ impl Shell {
         // set where only one of them clashes: the name is what the question is
         // about, so the name is what the panel is headed with.
         let lines = if taken.count == 1 {
-            let there = if taken.folder { "A folder" } else { "A file" };
+            let there = if taken.folder { "folder" } else { "file" };
             vec![
-                dialog::Line::Note(format!("{there} called")),
+                dialog::Line::Note(crate::message!("clash-one-called", "kind" => there)),
                 dialog::Line::Heading(taken.name.clone()),
-                dialog::Line::Note("is already in that folder.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-is-already-in-that-folder").to_string(),
+                ),
                 dialog::Line::Rule,
             ]
         } else {
@@ -13511,12 +13575,9 @@ impl Shell {
             // names on a panel with three buttons under it would be a list
             // nobody can answer one line at a time. See [`transfer::Taken`].
             vec![
-                dialog::Line::Note(format!(
-                    "{} of the {} things you are",
-                    taken.count,
-                    carrying.picker.sources().len()
-                )),
-                dialog::Line::Note(format!("{doing} are already in")),
+                dialog::Line::Note(
+                    crate::message!("clash-many", "count" => taken.count, "total" => carrying.picker.sources().len(), "kind" => kind),
+                ),
                 dialog::Line::Heading(into),
                 dialog::Line::Rule,
             ]
@@ -13526,9 +13587,16 @@ impl Shell {
             Some(glyph),
             lines,
             vec![
-                menu::Entry::new(menu::Command::KeepBothFiles, "Keep both"),
-                menu::Entry::new(menu::Command::ReplaceFile, "Replace").grave(),
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(
+                    menu::Command::KeepBothFiles,
+                    crate::i18n::text("shell-keep-both"),
+                ),
+                menu::Entry::new(
+                    menu::Command::ReplaceFile,
+                    crate::i18n::text("label-replace"),
+                )
+                .grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
             ],
             // On the answer that cannot destroy anything, which is also the one
             // drawn first — the same rule the two questions that remove things
@@ -13832,7 +13900,9 @@ impl Shell {
             // The thread went without answering, which is a copy nobody can
             // say anything about. Treated as a failure rather than as nothing,
             // because the row is about to be rebuilt either way.
-            Err(TryRecvError::Disconnected) => Err("the copy did not finish".to_string()),
+            Err(TryRecvError::Disconnected) => {
+                Err(crate::i18n::text("label-the-copy-did-not-finish").to_string())
+            }
         };
         let Some(keeping) = self.keeping_picture.take() else {
             return;
@@ -13847,7 +13917,9 @@ impl Shell {
             Err(why) => {
                 tracing::warn!(%why, game = ?keeping.what.rom, "the picture was not kept");
                 self.say_about_retroarch(vec![
-                    dialog::Line::Heading("The picture was not kept".to_string()),
+                    dialog::Line::Heading(
+                        crate::i18n::text("shell-the-picture-was-not-kept").to_string(),
+                    ),
                     dialog::Line::Note(why),
                 ]);
             }
@@ -13915,16 +13987,13 @@ impl Shell {
             } => {
                 self.forget_what_moved(carrying);
                 self.reread_the_open_folder();
-                let doing = carrying.picker.kind().doing().to_lowercase();
+                let kind = carrying.picker.kind().token();
                 self.say_about_the_transfer(
                     carrying.from,
                     carried.glyph,
                     vec![
-                        dialog::Line::Heading(format!("{failed} of them stayed where they were")),
-                        dialog::Line::Note(format!(
-                            "{through} of the {} finished {doing}.",
-                            through + failed
-                        )),
+                        dialog::Line::Heading(crate::message!("count-stayed", "count" => failed)),
+                        dialog::Line::Note(crate::message!("transfer-finished-of-total", "done" => through, "total" => through + failed, "kind" => kind)),
                         dialog::Line::Note(why),
                         dialog::Line::Rule,
                     ],
@@ -13994,7 +14063,10 @@ impl Shell {
             from,
             Some(glyph.to_string()),
             lines,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
             0,
         );
     }
@@ -14156,7 +14228,7 @@ impl Shell {
         // what the machine is playing, and the shell is the one thing on the
         // list that is certainly there — it is the thing drawing the list.
         entries.push(
-            menu::Entry::new(menu::Command::MuteShell, "System")
+            menu::Entry::new(menu::Command::MuteShell, crate::i18n::text("shell-system"))
                 .icon(icons::CATEGORY_SYSTEM)
                 .level(settings::sound())
                 .group(1),
@@ -14435,7 +14507,7 @@ impl Shell {
         self.compat_menu = None;
         if self.context_menu.open_selecting(
             anchor,
-            Some(menu::Title::new("Notifications")),
+            Some(menu::Title::new(crate::i18n::text("shell-notifications"))),
             entries,
             ui::mixer_rows_that_fit(height),
             1,
@@ -14555,9 +14627,12 @@ impl Shell {
                 }),
         );
         entries.push(
-            menu::Entry::new(menu::Command::DismissNotification(id), "Dismiss")
-                .glyph(icons::UNINSTALL)
-                .group(1),
+            menu::Entry::new(
+                menu::Command::DismissNotification(id),
+                crate::i18n::text("label-dismiss"),
+            )
+            .glyph(icons::UNINSTALL)
+            .group(1),
         );
         let height = self.focused_size().map_or(1080.0, |(_, height)| height);
         self.measure_rows(&mut entries, height);
@@ -15881,8 +15956,10 @@ impl Shell {
             menu::Command::PickKind(kind) => self.show_picker_kind(kind),
             menu::Command::PickKinds => {
                 let rows = self.picker_kind_rows();
-                self.context_menu
-                    .descend(Some(menu::Title::new("Types")), rows);
+                self.context_menu.descend(
+                    Some(menu::Title::new(crate::i18n::text("label-types"))),
+                    rows,
+                );
             }
             menu::Command::SelectMultiple => self.begin_marking(),
             menu::Command::SelectAll => self.mark_them_all(),
@@ -16121,8 +16198,10 @@ impl Shell {
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
             menu::Command::TrophiesSort => {
                 let entries = trophies_sort_rows(self.trophy_browser.sort);
-                self.context_menu
-                    .descend(Some(menu::Title::new("Trophies")), entries);
+                self.context_menu.descend(
+                    Some(menu::Title::new(crate::i18n::text("shell-trophies"))),
+                    entries,
+                );
             }
             menu::Command::TrophiesSortBy(sort) => {
                 if self.trophy_browser.sort != sort {
@@ -16185,7 +16264,10 @@ impl Shell {
             from,
             icon,
             lines,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
             0,
         );
     }
@@ -16231,7 +16313,10 @@ impl Shell {
             from,
             Some(icon),
             lines,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
             0,
         );
         if raised {
@@ -16263,7 +16348,10 @@ impl Shell {
         let mut buttons = vec![
             // No mark on it: a panel's buttons are drawn as words and nothing
             // else, unlike a menu's rows.
-            menu::Entry::new(menu::Command::SteamForgetArtwork, "Clear artwork cache"),
+            menu::Entry::new(
+                menu::Command::SteamForgetArtwork,
+                crate::i18n::text("shell-clear-artwork-cache"),
+            ),
         ];
         // Only when there is one to take away, because a button that did
         // nothing would be worse than no button: the line above it says the
@@ -16274,10 +16362,13 @@ impl Shell {
         if self.steam.interface_can_be_shut() {
             buttons.push(menu::Entry::new(
                 menu::Command::SteamShutTheInterface,
-                "Close the interface",
+                crate::i18n::text("shell-close-the-interface"),
             ));
         }
-        buttons.push(menu::Entry::new(menu::Command::Dismiss, "Close"));
+        buttons.push(menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-close"),
+        ));
         let close = buttons.len() - 1;
         // Its own panel rather than [`Self::show_facts`], for one reason: it
         // has something to *do*. Every other panel of values is read and
@@ -16352,13 +16443,19 @@ impl Shell {
                 // with an ellipsis where the rest would have been, and the name
                 // of the application is the half of this question that must not
                 // be the half that gets cut.
-                dialog::Line::Note("Do you want to uninstall the".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-do-you-want-to-uninstall-the").to_string(),
+                ),
                 dialog::Line::Heading(format!("{}?", app.name)),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ConfirmUninstall, "Yes").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::ConfirmUninstall,
+                    crate::i18n::text("shell-yes"),
+                )
+                .grave(),
             ],
             // On No, and No is drawn first. A confirmation whose default answer
             // destroys something is not a confirmation — and one that puts that
@@ -16395,7 +16492,7 @@ impl Shell {
         // frames where it has not. Put it up first and then look: the usual
         // case is that the answer is already in and this panel is replaced
         // before it has grown far enough to read.
-        self.say_working("Checking…");
+        self.say_working(crate::i18n::text("label-checking"));
         self.advance_uninstall();
     }
 
@@ -16424,7 +16521,7 @@ impl Shell {
             true
         };
         if started {
-            self.say_working("Removing… this can take a moment.");
+            self.say_working(crate::i18n::text("shell-removing-this-can-take-a-moment"));
             self.dismiss_password_board();
         }
     }
@@ -16506,9 +16603,8 @@ impl Shell {
                     vec![
                         dialog::Line::Heading(app.name.clone()),
                         dialog::Line::Note(
-                            "LineXinBar cannot tell what installed this, so it".to_string(),
+                            crate::i18n::text("uninstall-unknown-origin").to_string(),
                         ),
-                        dialog::Line::Note("cannot remove it.".to_string()),
                         dialog::Line::Rule,
                     ],
                 );
@@ -16519,14 +16615,13 @@ impl Shell {
                     &app,
                     vec![
                         dialog::Line::Heading(app.name.clone()),
-                        dialog::Line::Note("You do not have permission to remove".to_string()),
-                        dialog::Line::Note("applications on this system.".to_string()),
+                        dialog::Line::Note(crate::i18n::text("uninstall-forbidden").to_string()),
                         dialog::Line::Rule,
                     ],
                 );
             }
             Step::AskPassword { retry } => self.ask_for_password(&app, retry),
-            Step::Removing => self.say_working("Removing…"),
+            Step::Removing => self.say_working(crate::i18n::text("shell-removing")),
             Step::Removed => {
                 self.finish_uninstall();
                 // The tile has to go with it. Everything on the bar is built
@@ -16538,7 +16633,7 @@ impl Shell {
                     &app,
                     vec![
                         dialog::Line::Heading(app.name.clone()),
-                        dialog::Line::Note("has been removed.".to_string()),
+                        dialog::Line::Note(crate::i18n::text("shell-has-been-removed").to_string()),
                         dialog::Line::Rule,
                     ],
                 );
@@ -16548,7 +16643,9 @@ impl Shell {
                 self.say_and_acknowledge(
                     &app,
                     vec![
-                        dialog::Line::Heading(format!("Could not remove {}", app.name)),
+                        dialog::Line::Heading(
+                            crate::message!("could-not-remove-name", "name" => app.name.as_str()),
+                        ),
                         dialog::Line::Note(why),
                         dialog::Line::Rule,
                     ],
@@ -16629,18 +16726,24 @@ impl Shell {
             from,
             app.icon.clone(),
             vec![
-                dialog::Line::Heading(format!("Removing {}", app.name)),
+                dialog::Line::Heading(
+                    crate::message!("removing-name", "name" => app.name.as_str()),
+                ),
                 dialog::Line::Note(if retry {
-                    "That password was not accepted. Try again.".to_string()
+                    crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
                 } else {
-                    "Enter your password to allow this.".to_string()
+                    crate::i18n::text("shell-enter-your-password-to-allow-this").to_string()
                 }),
                 dialog::Line::Secret { typed },
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
-                menu::Entry::new(menu::Command::SubmitPassword, "Uninstall").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                menu::Entry::new(
+                    menu::Command::SubmitPassword,
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .grave(),
             ],
             // Cancel first and standing on it, exactly as the question was:
             // the button that destroys something is never the one already
@@ -16891,12 +16994,12 @@ impl Shell {
                         .as_ref()
                         .is_some_and(|s| s.request.action_id == lxb_updates::INSTALL_ACTION)
                     {
-                        "Continue"
+                        crate::i18n::text("shell-continue")
                     } else {
-                        "Authenticate"
+                        crate::i18n::text("label-authenticate")
                     },
                 ),
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
             ],
             authentication_answer_under_the_thumb(self.app_running()),
         );
@@ -16987,8 +17090,9 @@ impl Shell {
                 let request = state.request.clone();
                 state.session = polkit::Session::start(&request.user, &request.cookie);
                 state.password = secret::Secret::default();
-                state.note = complaint
-                    .unwrap_or_else(|| "That password was not accepted. Try again.".to_string());
+                state.note = complaint.unwrap_or_else(|| {
+                    crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
+                });
                 state.asked = false;
                 state.answered = false;
                 self.refresh_authentication_panel();
@@ -17021,7 +17125,7 @@ impl Shell {
             state.session.answer(std::mem::take(&mut state.password));
             state.asked = false;
             state.answered = true;
-            state.note = "Checking…".to_string();
+            state.note = crate::i18n::text("label-checking").to_string();
             true
         };
         if handed {
@@ -17116,9 +17220,8 @@ impl Shell {
     fn say_authentication_failed(&mut self, said: Option<String>) {
         let from = self.dialog_origin();
         let mut lines = vec![
-            dialog::Line::Heading("Authentication failed".to_string()),
-            dialog::Line::Note("This machine could not be asked to check".to_string()),
-            dialog::Line::Note("your password.".to_string()),
+            dialog::Line::Heading(crate::i18n::text("shell-authentication-failed").to_string()),
+            dialog::Line::Note(crate::i18n::text("password-could-not-be-checked").to_string()),
         ];
         if let Some(said) = said {
             lines.push(dialog::Line::Note(said));
@@ -17988,8 +18091,10 @@ impl Shell {
             vec![
                 dialog::Line::Heading(name.to_string()),
                 dialog::Line::Note(
-                    "There is no Steam client installed on this machine to run it with."
-                        .to_string(),
+                    crate::i18n::text(
+                        "shell-there-is-no-steam-client-installed-on-this-machine-to-run-it-with",
+                    )
+                    .to_string(),
                 ),
                 dialog::Line::Rule,
             ],
@@ -18008,8 +18113,12 @@ impl Shell {
             Some(icons::STEAM.to_string()),
             vec![
                 dialog::Line::Heading(name.to_string()),
-                dialog::Line::Note("Steam is still setting itself up.".to_string()),
-                dialog::Line::Note("Try again once it has finished.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-steam-is-still-setting-itself-up").to_string(),
+                ),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-try-again-once-it-has-finished").to_string(),
+                ),
                 dialog::Line::Rule,
             ],
             vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
@@ -18075,7 +18184,9 @@ impl Shell {
             Some(icons::STEAM.to_string()),
             vec![
                 dialog::Line::Heading("Steam".to_string()),
-                dialog::Line::Note("Steam would not take that request.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-steam-would-not-take-that-request").to_string(),
+                ),
                 dialog::Line::Note(why.to_string()),
                 dialog::Line::Rule,
             ],
@@ -18214,12 +18325,16 @@ impl Shell {
             vec![
                 dialog::Line::Heading(name),
                 dialog::Line::Note(note),
-                dialog::Line::Note("It stays in the library.".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-it-stays-in-the-library").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Keep It"),
-                menu::Entry::new(menu::Command::SteamUninstallNow(app_id), "Uninstall").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-keep-it")),
+                menu::Entry::new(
+                    menu::Command::SteamUninstallNow(app_id),
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .grave(),
             ],
             // Standing on the row that changes nothing, because this is the
             // press that cannot be taken back: the one that lands by accident
@@ -18260,7 +18375,9 @@ impl Shell {
                 Some(icons::STEAM.to_string()),
                 vec![
                     dialog::Line::Heading(game.name.clone()),
-                    dialog::Line::Note("This game is being removed.".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-this-game-is-being-removed").to_string(),
+                    ),
                     dialog::Line::Rule,
                 ],
                 vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
@@ -18289,7 +18406,7 @@ impl Shell {
                 ],
                 vec![
                     menu::Entry::new(menu::Command::SteamDo(doing), action),
-                    menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                    menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
                 ],
                 0,
             );
@@ -18304,7 +18421,7 @@ impl Shell {
                 .steam
                 .fetching(game.app_id)
                 .map(|so_far| so_far.said())
-                .unwrap_or_else(|| "Installing…".to_string());
+                .unwrap_or_else(|| crate::i18n::text("shell-installing").to_string());
             let from = self.dialog_origin();
             self.dialog.ask(
                 from,
@@ -18318,15 +18435,22 @@ impl Shell {
                     // Said plainly, because it is the whole of what the press
                     // costs: there is no resuming a download here, so what has
                     // arrived is of no use to a later one and goes with it.
-                    dialog::Line::Note("Stopping removes what arrived.".to_string()),
-                    dialog::Line::Note("Installing again starts over.".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-stopping-removes-what-arrived").to_string(),
+                    ),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-installing-again-starts-over").to_string(),
+                    ),
                     dialog::Line::Rule,
                 ],
                 vec![
-                    menu::Entry::new(menu::Command::Dismiss, "Keep Installing"),
+                    menu::Entry::new(
+                        menu::Command::Dismiss,
+                        crate::i18n::text("shell-keep-installing"),
+                    ),
                     menu::Entry::new(
                         menu::Command::SteamStopInstalling(game.app_id),
-                        "Stop Installing",
+                        crate::i18n::text("shell-stop-installing"),
                     ),
                 ],
                 0,
@@ -18367,7 +18491,9 @@ impl Shell {
         let preflight = self.steam.preflight();
         let mut lines = vec![
             dialog::Line::Heading(game.name.clone()),
-            dialog::Line::Note("This game is not on this machine.".to_string()),
+            dialog::Line::Note(
+                crate::i18n::text("shell-this-game-is-not-on-this-machine").to_string(),
+            ),
         ];
         if let Some(room) = preflight.room_said() {
             lines.push(dialog::Line::Note(room));
@@ -18376,9 +18502,11 @@ impl Shell {
             // Not a refusal — Steam queues downloads perfectly well — but it is
             // the difference between a press that starts something now and one
             // that starts something in an hour, and nothing said so.
-            Some(first) => lines.push(dialog::Line::Note(format!("{first} is downloading first."))),
+            Some(first) => lines.push(dialog::Line::Note(
+                crate::message!("steam-downloading-first", "name" => first),
+            )),
             None => lines.push(dialog::Line::Note(
-                "Steam chooses the size and folder.".to_string(),
+                crate::i18n::text("shell-steam-chooses-the-size-and-folder").to_string(),
             )),
         }
         lines.push(dialog::Line::Rule);
@@ -18389,8 +18517,11 @@ impl Shell {
             Some(icons::STEAM.to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::SteamInstall(game.app_id), "Install"),
-                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                menu::Entry::new(
+                    menu::Command::SteamInstall(game.app_id),
+                    crate::i18n::text("shell-install"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
             ],
             0,
         );
@@ -18428,12 +18559,15 @@ impl Shell {
             vec![
                 dialog::Line::Heading(game.name.clone()),
                 dialog::Line::Note(what_is_outstanding(game.standing).to_string()),
-                dialog::Line::Note("Steam is not running.".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-steam-is-not-running").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::SteamStartClient(game.app_id), "Start Steam"),
-                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                menu::Entry::new(
+                    menu::Command::SteamStartClient(game.app_id),
+                    crate::i18n::text("shell-start-steam"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
             ],
             0,
         );
@@ -19349,7 +19483,7 @@ impl Shell {
             .steam
             .game(app_id)
             .map(|game| game.name.clone())
-            .unwrap_or_else(|| "This game".to_string());
+            .unwrap_or_else(|| crate::i18n::text("shell-this-game").to_string());
         if !self.steam.has_client() {
             return self.say_no_steam_client(&name);
         }
@@ -19701,7 +19835,9 @@ impl Shell {
         }
         // A press still waiting on a report from the client is not waiting any
         // more, exactly as it is not when the client stops to ask.
-        self.stop_waiting_for_steam("Valve's client would not start the game");
+        self.stop_waiting_for_steam(crate::i18n::text(
+            "shell-valve-s-client-would-not-start-the-game",
+        ));
         let needs_an_update = self
             .steam
             .game(app_id)
@@ -19806,25 +19942,28 @@ impl Shell {
         self.osk.dismiss_at_once();
         let notes = match needs_an_update {
             true => [
-                "Steam would not start this game.",
-                "It has an update to fetch first.",
+                crate::i18n::text("shell-steam-would-not-start-this-game"),
+                crate::i18n::text("shell-it-has-an-update-to-fetch-first"),
             ],
             false => [
-                "Steam would not start this game.",
-                "Opening Steam will say why.",
+                crate::i18n::text("shell-steam-would-not-start-this-game"),
+                crate::i18n::text("shell-opening-steam-will-say-why"),
             ],
         };
         let mut choices = vec![menu::Entry::new(
             menu::Command::SteamPlayAgain(app_id),
-            "Try Again",
+            crate::i18n::text("shell-try-again"),
         )];
         if self.steam.has_client() {
             choices.push(menu::Entry::new(
                 menu::Command::SteamDo(lxb_steam::Doing::BigPicture),
-                "Open Steam",
+                crate::i18n::text("shell-open-steam"),
             ));
         }
-        choices.push(menu::Entry::new(menu::Command::Dismiss, "Cancel"));
+        choices.push(menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-cancel"),
+        ));
         self.dialog.ask(
             from,
             Some(icons::STEAM.to_string()),
@@ -19887,7 +20026,9 @@ impl Shell {
         // A press that was still waiting on a report from the client is not
         // waiting any more: the client answered by asking. Without this the
         // gate swallows the next press.
-        self.stop_waiting_for_steam("Valve's client stopped this launch to ask something");
+        self.stop_waiting_for_steam(crate::i18n::text(
+            "shell-valve-s-client-stopped-this-launch-to-ask-something",
+        ));
         // This game's watch, and no other. The client has said what it stopped
         // on and there is nothing left for that thread to report; another
         // display's game may still be opening, and its watch is not this
@@ -19921,7 +20062,7 @@ impl Shell {
             .steam
             .game(app_id)
             .map(|game| game.name.clone())
-            .unwrap_or_else(|| "This game".to_string());
+            .unwrap_or_else(|| crate::i18n::text("shell-this-game").to_string());
         let asked = LaunchQuestion {
             app_id,
             name,
@@ -20150,7 +20291,10 @@ impl Shell {
         tracing::warn!(app_id = waiting.app_id, %why, "the game was not started");
         let lines = vec![
             dialog::Line::Heading(waiting.name.clone()),
-            dialog::Line::Note("Steam could not be started, so this game cannot run.".to_string()),
+            dialog::Line::Note(
+                crate::i18n::text("shell-steam-could-not-be-started-so-this-game-cannot-run")
+                    .to_string(),
+            ),
             dialog::Line::Note(why.to_string()),
             dialog::Line::Rule,
         ];
@@ -20197,16 +20341,16 @@ impl Shell {
         // rather than what went wrong.
         let notes = match (before_the_client_was_up, asked_of_the_client) {
             (true, _) => [
-                "Steam did not finish starting in time.",
-                "It may still be starting, or still updating itself.",
+                crate::i18n::text("shell-steam-did-not-finish-starting-in-time"),
+                crate::i18n::text("shell-it-may-still-be-starting-or-still-updating-itself"),
             ],
             (false, Some(_)) => [
-                "Steam did not open its window.",
-                "It may still be starting, or it may have stopped.",
+                crate::i18n::text("shell-steam-did-not-open-its-window"),
+                crate::i18n::text("shell-it-may-still-be-starting-or-it-may-have-stopped"),
             ],
             (false, None) => [
-                "Steam did not open this game.",
-                "It may still be updating it, or it may have stopped.",
+                crate::i18n::text("shell-steam-did-not-open-this-game"),
+                crate::i18n::text("shell-it-may-still-be-updating-it-or-it-may-have-stopped"),
             ],
         };
         // Three answers rather than one, because "OK" is not one. Whoever is
@@ -20220,14 +20364,20 @@ impl Shell {
             Some(doing) => menu::Command::SteamDo(doing),
             None => menu::Command::SteamPlayAgain(app_id),
         };
-        let mut choices = vec![menu::Entry::new(again, "Try Again")];
+        let mut choices = vec![menu::Entry::new(
+            again,
+            crate::i18n::text("shell-try-again"),
+        )];
         if asked_of_the_client.is_none() && self.steam.has_client() {
             choices.push(menu::Entry::new(
                 menu::Command::SteamDo(lxb_steam::Doing::BigPicture),
-                "Open Steam",
+                crate::i18n::text("shell-open-steam"),
             ));
         }
-        choices.push(menu::Entry::new(menu::Command::Dismiss, "Cancel"));
+        choices.push(menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-cancel"),
+        ));
         self.dialog.ask(
             from,
             Some(icons::STEAM.to_string()),
@@ -20278,11 +20428,11 @@ impl Shell {
             vec![
                 menu::Entry::new(
                     menu::Command::SteamMoveClientHere(waiting.app_id),
-                    "Move Steam Here",
+                    crate::i18n::text("shell-move-steam-here"),
                 ),
-                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
             ],
-            // On "Not Now". This one takes something away from somebody who is
+            // On "Not now". This one takes something away from somebody who is
             // not in the room, so the answer it opens on is the one that does
             // not.
             1,
@@ -20328,23 +20478,29 @@ impl Shell {
             .unwrap_or_else(|| "Steam".to_string());
         let mut lines = vec![
             dialog::Line::Heading(account),
-            dialog::Line::Note("LineXinBar and Steam both forget this account.".to_string()),
+            dialog::Line::Note(
+                crate::i18n::text("shell-linexinbar-and-steam-both-forget-this-account")
+                    .to_string(),
+            ),
         ];
         let downloads = self.steam.downloads_under_way();
         if downloads > 0 {
             lines.push(dialog::Line::Note(match downloads {
-                1 => "A download is under way and stops.".to_string(),
-                many => format!("{many} downloads are under way and stop."),
+                1 => crate::i18n::text("shell-a-download-is-under-way-and-stops").to_string(),
+                many => crate::message!("count-downloads-stop", "count" => many),
             }));
         }
         lines.push(dialog::Line::Note(
-            "Steam will ask for a password next time.".to_string(),
+            crate::i18n::text("shell-steam-will-ask-for-a-password-next-time").to_string(),
         ));
         lines.push(dialog::Line::Rule);
 
         let choices = vec![
-            menu::Entry::new(menu::Command::SteamSignOutNow, "Sign Out"),
-            menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+            menu::Entry::new(
+                menu::Command::SteamSignOutNow,
+                crate::i18n::text("shell-sign-out"),
+            ),
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
         ];
         let from = self.dialog_origin();
         // On Cancel, the way every question that takes something away opens.
@@ -20372,10 +20528,7 @@ impl Shell {
             Some(icons::STEAM.to_string()),
             vec![
                 dialog::Line::Heading(name.to_string()),
-                dialog::Line::Note(
-                    "Steam starts this game, and it needs the account this shell is signed in to. Sign in to Steam first."
-                        .to_string(),
-                ),
+                dialog::Line::Note(crate::i18n::text("steam-game-needs-sign-in").to_string()),
                 dialog::Line::Rule,
             ],
             vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
@@ -20403,10 +20556,16 @@ impl Shell {
             vec![
                 dialog::Line::Heading(name.to_string()),
                 dialog::Line::Note(
-                    "Steam cannot be reached, and this game has an update waiting.".to_string(),
+                    crate::i18n::text(
+                        "shell-steam-cannot-be-reached-and-this-game-has-an-update-waiting",
+                    )
+                    .to_string(),
                 ),
                 dialog::Line::Note(
-                    "Only games that are fully up to date can be played offline.".to_string(),
+                    crate::i18n::text(
+                        "shell-only-games-that-are-fully-up-to-date-can-be-played-offline",
+                    )
+                    .to_string(),
                 ),
                 dialog::Line::Rule,
             ],
@@ -20741,14 +20900,22 @@ impl Shell {
                 from,
                 Some(retroarch::mark().to_string()),
                 vec![
-                    dialog::Line::Note("There is no artwork for".to_string()),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-there-is-no-artwork-for").to_string(),
+                    ),
                     dialog::Line::Heading(format!("{name}.")),
                     dialog::Line::Note(
-                        "Renaming it to what the game is called may find some.".to_string(),
+                        crate::i18n::text(
+                            "shell-renaming-it-to-what-the-game-is-called-may-find-some",
+                        )
+                        .to_string(),
                     ),
                     dialog::Line::Rule,
                 ],
-                vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+                vec![menu::Entry::new(
+                    menu::Command::Dismiss,
+                    crate::i18n::text("shell-close"),
+                )],
                 0,
             );
         }
@@ -20842,13 +21009,17 @@ impl Shell {
         // teach anybody: it is what the games need, it is coming, and there is
         // a button to go and do something else while it does.
         let far = match (fetching.of, fetching.progress) {
-            (of, _) if of > 1 => format!("{} of {of}", fetching.at),
+            (of, _) if of > 1 => {
+                crate::message!("progress-of", "at" => fetching.at, "of" => of)
+            }
             (_, Some(done)) => format!("{}%", (done * 100.0).round() as u32),
             _ => String::new(),
         };
         let mut lines = vec![
-            dialog::Line::Heading("Getting ready".to_string()),
-            dialog::Line::Note("Downloading what your games need.".to_string()),
+            dialog::Line::Heading(crate::i18n::text("shell-getting-ready").to_string()),
+            dialog::Line::Note(
+                crate::i18n::text("shell-downloading-what-your-games-need").to_string(),
+            ),
         ];
         if !far.is_empty() {
             lines.push(dialog::Line::Note(far));
@@ -20868,7 +21039,10 @@ impl Shell {
             from,
             Some(retroarch::mark().to_string()),
             lines,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Hide")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("label-hide"),
+            )],
             0,
         );
         self.retroarch_panel = true;
@@ -20891,9 +21065,11 @@ impl Shell {
             // would be the worst of the three things that could happen here.
             self.retroarch_play = None;
             self.say_about_retroarch(vec![
-                dialog::Line::Heading("Not ready yet".to_string()),
+                dialog::Line::Heading(crate::i18n::text("shell-not-ready-yet").to_string()),
                 dialog::Line::Note(note),
-                dialog::Line::Note("Press a game to try again.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-press-a-game-to-try-again").to_string(),
+                ),
             ]);
             return;
         }
@@ -20994,15 +21170,19 @@ impl Shell {
             // fits is about sixty characters, and a sentence written as one
             // `Note` would end in the middle of a word.
             vec![
-                dialog::Line::Note("RetroArch plays your own game files.".to_string()),
-                dialog::Line::Heading("Download it?".to_string()),
-                dialog::Line::Note("It is free, and nothing else on this".to_string()),
-                dialog::Line::Note("machine is changed.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-retroarch-plays-your-own-game-files").to_string(),
+                ),
+                dialog::Line::Heading(crate::i18n::text("shell-download-it").to_string()),
+                dialog::Line::Note(crate::i18n::text("retroarch-install-explanation").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::InstallRetroArch, "Yes"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::InstallRetroArch,
+                    crate::i18n::text("shell-yes"),
+                ),
             ],
             // On No, which is the answer drawn first: this one spends
             // somebody's line and their disk.
@@ -21034,17 +21214,21 @@ impl Shell {
             from,
             Some(retroarch::mark().to_string()),
             vec![
-                dialog::Line::Heading("Remove RetroArch?".to_string()),
-                dialog::Line::Note("Everything it kept goes with it: its".to_string()),
-                dialog::Line::Note("settings, the emulators this shell".to_string()),
-                dialog::Line::Note("downloaded, the saves, any BIOS you".to_string()),
-                dialog::Line::Note("chose, and where your games are.".to_string()),
-                dialog::Line::Note("The games themselves stay.".to_string()),
+                dialog::Line::Heading(
+                    crate::i18n::text("shell-remove-retroarch-question").to_string(),
+                ),
+                dialog::Line::Note(crate::i18n::text("retroarch-remove-explanation").to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-the-games-themselves-stay").to_string(),
+                ),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::ReallyRemoveRetroArch, "Remove"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(
+                    menu::Command::ReallyRemoveRetroArch,
+                    crate::i18n::text("shell-remove"),
+                ),
             ],
             // On No, for the reason the install offer opens on it: this one
             // spends something the user cannot get back without downloading it
@@ -21102,7 +21286,9 @@ impl Shell {
             tracing::warn!(%note, "RetroArch was not installed");
             self.say_about_retroarch(vec![
                 dialog::Line::Heading("RetroArch".to_string()),
-                dialog::Line::Note("It could not be downloaded.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-it-could-not-be-downloaded").to_string(),
+                ),
                 dialog::Line::Note(note),
             ]);
             return;
@@ -21133,7 +21319,7 @@ impl Shell {
             self.rebuild_retroarch();
             self.say_about_retroarch(vec![
                 dialog::Line::Heading("RetroArch".to_string()),
-                dialog::Line::Note("It could not be removed.".to_string()),
+                dialog::Line::Note(crate::i18n::text("shell-it-could-not-be-removed").to_string()),
                 dialog::Line::Note(note),
             ]);
             return;
@@ -21151,9 +21337,15 @@ impl Shell {
         self.retroarch_setup = false;
         self.rebuild_retroarch();
         self.say_about_retroarch(vec![
-            dialog::Line::Heading("RetroArch has been removed".to_string()),
-            dialog::Line::Note("Everything it kept has gone with it.".to_string()),
-            dialog::Line::Note("Your games are where they were.".to_string()),
+            dialog::Line::Heading(
+                crate::i18n::text("shell-retroarch-has-been-removed").to_string(),
+            ),
+            dialog::Line::Note(
+                crate::i18n::text("shell-everything-it-kept-has-gone-with-it").to_string(),
+            ),
+            dialog::Line::Note(
+                crate::i18n::text("shell-your-games-are-where-they-were").to_string(),
+            ),
         ]);
     }
 
@@ -21172,16 +21364,19 @@ impl Shell {
             from,
             Some(retroarch::mark().to_string()),
             vec![
-                dialog::Line::Heading("Where are your games?".to_string()),
-                dialog::Line::Note("Choose the folder you keep them in.".to_string()),
-                dialog::Line::Note("Inside it, keep each console's games".to_string()),
-                dialog::Line::Note("in a folder named after the console:".to_string()),
-                dialog::Line::Note("psp, nes, snes.".to_string()),
+                dialog::Line::Heading(crate::i18n::text("shell-where-are-your-games").to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-choose-the-folder-you-keep-them-in").to_string(),
+                ),
+                dialog::Line::Note(crate::i18n::text("rom-folders-explanation").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::ChooseRomsFolder, "Choose folder"),
-                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                menu::Entry::new(
+                    menu::Command::ChooseRomsFolder,
+                    crate::i18n::text("shell-choose-folder"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
             ],
             0,
         );
@@ -21563,14 +21758,10 @@ impl Shell {
         let console = wanted
             .first()
             .map(|missing| missing.console.clone())
-            .unwrap_or_else(|| "That console".to_string());
+            .unwrap_or_else(|| crate::i18n::text("shell-that-console").to_string());
         self.say_about_retroarch(vec![
-            dialog::Line::Heading(format!("{console} is ready")),
-            dialog::Line::Note(format!(
-                "{placed} {} copied where the emulator",
-                if placed == 1 { "file" } else { "files" }
-            )),
-            dialog::Line::Note("looks for them.".to_string()),
+            dialog::Line::Heading(crate::message!("retroarch-console-ready", "console" => console)),
+            dialog::Line::Note(crate::message!("bios-files-copied", "count" => placed)),
         ]);
     }
 
@@ -21599,11 +21790,12 @@ impl Shell {
         let console = missing
             .first()
             .map(|missing| missing.console.clone())
-            .unwrap_or_else(|| "That console".to_string());
+            .unwrap_or_else(|| crate::i18n::text("shell-that-console").to_string());
         let mut lines = vec![
-            dialog::Line::Heading("No BIOS in that folder".to_string()),
-            dialog::Line::Note(format!("Nothing in there is a file the {console}")),
-            dialog::Line::Note("can start from.".to_string()),
+            dialog::Line::Heading(crate::i18n::text("shell-no-bios-in-that-folder").to_string()),
+            dialog::Line::Note(
+                crate::message!("retroarch-no-bios-for-console", "console" => console),
+            ),
         ];
         lines.extend(
             missing
@@ -21612,7 +21804,9 @@ impl Shell {
                 .take(2)
                 .map(|missing| dialog::Line::Note(missing.note.clone())),
         );
-        lines.push(dialog::Line::Note("Look in another folder?".to_string()));
+        lines.push(dialog::Line::Note(
+            crate::i18n::text("shell-look-in-another-folder").to_string(),
+        ));
         lines.push(dialog::Line::Rule);
 
         let from = self.dialog_origin();
@@ -21621,8 +21815,14 @@ impl Shell {
             Some(retroarch::mark().to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::CancelBiosFolder, "Cancel"),
-                menu::Entry::new(menu::Command::ChooseBiosFolder, "Choose another"),
+                menu::Entry::new(
+                    menu::Command::CancelBiosFolder,
+                    crate::i18n::text("shell-cancel"),
+                ),
+                menu::Entry::new(
+                    menu::Command::ChooseBiosFolder,
+                    crate::i18n::text("shell-choose-another"),
+                ),
             ],
             // On looking again, for the reason the first panel opens on
             // "Choose folder": somebody is here because they want to play
@@ -21701,8 +21901,7 @@ impl Shell {
         if !self.retroarch.offers_cores() || rom.wanted.is_empty() {
             self.say_about_retroarch(vec![
                 dialog::Line::Heading(rom.name.clone()),
-                dialog::Line::Note(format!("{} games need something", rom.console)),
-                dialog::Line::Note("this machine has not got.".to_string()),
+                dialog::Line::Note(crate::message!("retroarch-console-games-need-more", "console" => rom.console.as_str())),
             ]);
             return;
         }
@@ -21714,14 +21913,13 @@ impl Shell {
             Some(retroarch::mark().to_string()),
             vec![
                 dialog::Line::Heading(rom.name.clone()),
-                dialog::Line::Note("Something is missing to play".to_string()),
-                dialog::Line::Note(format!("{} games.", rom.console)),
-                dialog::Line::Note("Download it and play?".to_string()),
+                dialog::Line::Note(crate::message!("retroarch-core-missing-for", "console" => rom.console.as_str())),
+                dialog::Line::Note(crate::i18n::text("shell-download-it-and-play").to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "No"),
-                menu::Entry::new(menu::Command::GetCore, "Yes"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(menu::Command::GetCore, crate::i18n::text("shell-yes")),
             ],
             // On Yes, unlike the install: what was pressed was a game, and the
             // answer that gets it played is the one the hand is already on.
@@ -21831,9 +22029,10 @@ impl Shell {
 
         let mut lines = vec![
             dialog::Line::Heading(rom.name.clone()),
-            dialog::Line::Note("It did not start.".to_string()),
-            dialog::Line::Note(format!("{} games may need the console's", rom.console)),
-            dialog::Line::Note("own BIOS, which cannot be downloaded.".to_string()),
+            dialog::Line::Note(crate::i18n::text("shell-it-did-not-start").to_string()),
+            dialog::Line::Note(
+                crate::message!("retroarch-console-may-need-bios", "console" => rom.console.as_str()),
+            ),
         ];
         // libretro's own sentence about the file, where it is one that names a
         // file: it very often says the region too, and it is the one line here
@@ -21846,7 +22045,7 @@ impl Shell {
                 .map(|missing| dialog::Line::Note(missing.note.clone())),
         );
         lines.push(dialog::Line::Note(
-            "Choose the folder your copy is in?".to_string(),
+            crate::i18n::text("shell-choose-the-folder-your-copy-is-in").to_string(),
         ));
         lines.push(dialog::Line::Rule);
 
@@ -21856,8 +22055,11 @@ impl Shell {
             Some(retroarch::mark().to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Not Now"),
-                menu::Entry::new(menu::Command::ChooseBiosFolder, "Choose folder"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+                menu::Entry::new(
+                    menu::Command::ChooseBiosFolder,
+                    crate::i18n::text("shell-choose-folder"),
+                ),
             ],
             // On the answer that gets the game played, for the reason the core
             // offer is: what was pressed was a game.
@@ -21887,7 +22089,10 @@ impl Shell {
             from,
             Some(retroarch::mark().to_string()),
             said,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
             0,
         );
     }
@@ -22065,12 +22270,20 @@ impl Shell {
                 from,
                 Some(icons::CATEGORY_TROPHIES.into()),
                 vec![
-                    dialog::Line::Heading("Configure RetroAchievements?".into()),
-                    dialog::Line::Note("Sign in to track achievements in supported games.".into()),
+                    dialog::Line::Heading(
+                        crate::i18n::text("shell-configure-retroachievements-question").into(),
+                    ),
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-sign-in-to-track-achievements-in-supported-games")
+                            .into(),
+                    ),
                 ],
                 vec![
-                    menu::Entry::new(menu::Command::RetroAchievementsConfigure, "Configure"),
-                    menu::Entry::new(menu::Command::Dismiss, "Not now"),
+                    menu::Entry::new(
+                        menu::Command::RetroAchievementsConfigure,
+                        crate::i18n::text("label-configure"),
+                    ),
+                    menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
                 ],
                 0,
             );
@@ -22294,16 +22507,23 @@ impl Shell {
                 (
                     app_id,
                     vec![
-                        dialog::Line::Note(format!("This game has {what} first.")),
-                        dialog::Line::Note("Steam has to ask that itself.".to_string()),
+                        dialog::Line::Note(
+                            crate::message!("retroarch-game-needs-first", "what" => what),
+                        ),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-steam-has-to-ask-that-itself").to_string(),
+                        ),
                     ],
                     vec![
                         menu::Entry::new(
                             menu::Command::SteamInstallWithSteam(app_id),
-                            "Install with Steam",
+                            crate::i18n::text("shell-install-with-steam"),
                         )
                         .glyph(icons::LAUNCH),
-                        menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                        menu::Entry::new(
+                            menu::Command::Dismiss,
+                            crate::i18n::text("shell-not-now"),
+                        ),
                     ],
                 )
             }
@@ -22321,15 +22541,21 @@ impl Shell {
                     app_id,
                     vec![
                         dialog::Line::Note(why),
-                        dialog::Line::Note("Steam can still install it itself.".to_string()),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-steam-can-still-install-it-itself")
+                                .to_string(),
+                        ),
                     ],
                     vec![
                         menu::Entry::new(
                             menu::Command::SteamInstallWithSteam(app_id),
-                            "Install with Steam",
+                            crate::i18n::text("shell-install-with-steam"),
                         )
                         .glyph(icons::LAUNCH),
-                        menu::Entry::new(menu::Command::Dismiss, "Not Now"),
+                        menu::Entry::new(
+                            menu::Command::Dismiss,
+                            crate::i18n::text("shell-not-now"),
+                        ),
                     ],
                 )
             }
@@ -22342,10 +22568,15 @@ impl Shell {
                     app_id,
                     vec![
                         dialog::Line::Note(why),
-                        dialog::Line::Note("Nothing was left on the disk.".to_string()),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-nothing-was-left-on-the-disk").to_string(),
+                        ),
                     ],
                     vec![
-                        menu::Entry::new(menu::Command::SteamInstall(app_id), "Try Again"),
+                        menu::Entry::new(
+                            menu::Command::SteamInstall(app_id),
+                            crate::i18n::text("shell-try-again"),
+                        ),
                         menu::Entry::new(menu::Command::Dismiss, "OK"),
                     ],
                 )
@@ -22356,10 +22587,15 @@ impl Shell {
                     app_id,
                     vec![
                         dialog::Line::Note(why),
-                        dialog::Line::Note("It is still on the disk.".to_string()),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-it-is-still-on-the-disk").to_string(),
+                        ),
                     ],
                     vec![
-                        menu::Entry::new(menu::Command::SteamUninstallNow(app_id), "Try Again"),
+                        menu::Entry::new(
+                            menu::Command::SteamUninstallNow(app_id),
+                            crate::i18n::text("shell-try-again"),
+                        ),
                         menu::Entry::new(menu::Command::Dismiss, "OK"),
                     ],
                 )
@@ -22370,7 +22606,7 @@ impl Shell {
             .steam
             .game(app_id)
             .map(|game| game.name.clone())
-            .unwrap_or_else(|| format!("App {app_id}"));
+            .unwrap_or_else(|| crate::message!("steam-app-number", "app" => app_id));
         let from = self.dialog_origin();
         let mut said = vec![dialog::Line::Heading(name)];
         said.extend(lines);
@@ -25917,15 +26153,26 @@ impl Shell {
                         from,
                         Some(icons::SETTING_UPDATES.into()),
                         vec![
-                            dialog::Line::Heading("Please wait for updates".into()),
-                            dialog::Line::Note(
-                                "Your device needs to stay on while updating.".into(),
+                            dialog::Line::Heading(
+                                crate::i18n::text("shell-please-wait-for-updates").into(),
                             ),
-                            dialog::Line::Note("You can keep using it in the meantime.".into()),
+                            dialog::Line::Note(
+                                crate::i18n::text(
+                                    "shell-your-device-needs-to-stay-on-while-updating",
+                                )
+                                .into(),
+                            ),
+                            dialog::Line::Note(
+                                crate::i18n::text("shell-you-can-keep-using-it-in-the-meantime")
+                                    .into(),
+                            ),
                         ],
                         vec![
                             menu::Entry::new(menu::Command::Dismiss, "OK"),
-                            menu::Entry::new(menu::Command::UpdateOverview, "View updates"),
+                            menu::Entry::new(
+                                menu::Command::UpdateOverview,
+                                crate::i18n::text("shell-view-updates"),
+                            ),
                         ],
                         0,
                     );
@@ -26790,7 +27037,7 @@ impl Shell {
         self.compat_menu = None;
         self.context_menu.open_at(
             anchor,
-            Some(menu::Title::new("Showing")),
+            Some(menu::Title::new(crate::i18n::text("label-showing"))),
             rows,
             ui::context_menu_rows_that_fit(height),
         );
@@ -26821,7 +27068,7 @@ impl Shell {
         // called Everything is a control with nothing to choose between.
         if !picker.kinds().is_empty() {
             rows.push(
-                menu::Entry::new(menu::Command::PickKinds, "Types")
+                menu::Entry::new(menu::Command::PickKinds, crate::i18n::text("label-types"))
                     // A page, which is what the rows this narrows are made of.
                     // The typed-field mark was tried first and read as a text
                     // box: it is the mark for something being written into.
@@ -26833,7 +27080,7 @@ impl Shell {
         }
         let group = u8::from(!rows.is_empty());
         rows.push(
-            menu::Entry::new(menu::Command::Sort, "Sort")
+            menu::Entry::new(menu::Command::Sort, crate::i18n::text("shell-sort"))
                 .glyph(icons::SORT)
                 .group(group),
         );
@@ -26900,7 +27147,7 @@ impl Shell {
         }
 
         let application = match app_id.trim() {
-            "" => "An application".to_string(),
+            "" => crate::i18n::text("shell-an-application").to_string(),
             named => named.to_string(),
         };
         let mut rows = Vec::new();
@@ -26919,14 +27166,24 @@ impl Shell {
         }
         // In a band of its own, below the displays: it is the other kind of
         // answer, not one more screen.
-        rows.push(menu::Entry::new(menu::Command::RefuseShare, "Don't allow").group(1));
+        rows.push(
+            menu::Entry::new(
+                menu::Command::RefuseShare,
+                crate::i18n::text("shell-don-t-allow"),
+            )
+            .group(1),
+        );
 
         let lines = vec![
-            dialog::Line::Heading(format!("{application} wants to share your screen")),
+            dialog::Line::Heading(
+                crate::message!("screen-share-request", "application" => application),
+            ),
             // Short on purpose: the panel gives a note one line, and cuts what
             // runs past it. A warning the user cannot read to the end of is
             // not a warning.
-            dialog::Line::Note("It will see everything on that screen.".to_string()),
+            dialog::Line::Note(
+                crate::i18n::text("shell-it-will-see-everything-on-that-screen").to_string(),
+            ),
             dialog::Line::Rule,
         ];
 
@@ -27145,17 +27402,21 @@ impl Shell {
             // answers, and it is the one they cannot work out for themselves.
             Some(path) => vec![
                 dialog::Line::Heading(app),
-                dialog::Line::Note("The screenshot has been saved.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-the-screenshot-has-been-saved").to_string(),
+                ),
                 dialog::Line::Rule,
                 dialog::Line::field(
-                    "Saved in",
+                    crate::i18n::text("shell-saved-in"),
                     screenshot::abbreviated(path.parent().unwrap_or(path)),
                 ),
                 dialog::Line::Rule,
             ],
             None => vec![
                 dialog::Line::Heading(app),
-                dialog::Line::Note("The screenshot could not be saved.".to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-the-screenshot-could-not-be-saved").to_string(),
+                ),
                 dialog::Line::Rule,
             ],
         };
@@ -27163,7 +27424,10 @@ impl Shell {
             from,
             None,
             lines,
-            vec![menu::Entry::new(menu::Command::Dismiss, "Close")],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
             0,
         );
         self.needs_redraw = true;
@@ -28219,6 +28483,38 @@ impl Shell {
         self.needs_redraw = true;
     }
 
+    /// Reformat cached model rows without restarting helpers or clearing input.
+    /// The shared lattice serves all displays; the integration refresh paths
+    /// preserve selection by game identity and retain their search/sort state.
+    fn refresh_language(&mut self) {
+        let shifted = apps::offer_steam(
+            &mut self.lattice.categories,
+            self.steam.account().map(str::to_owned),
+            self.steam.standing(),
+        );
+        self.absorb(shifted);
+        self.shelve_games(self.steam.rows());
+        let shifted = apps::offer_retroarch(
+            &mut self.lattice.categories,
+            self.retroarch.note(),
+            self.retroarch.arriving(),
+        );
+        self.absorb(shifted);
+        let picking = self
+            .picking
+            .as_ref()
+            .map(|chosen| (chosen.rom.as_path(), chosen.piece));
+        let shifted =
+            apps::shelve_retroarch(&mut self.lattice.categories, self.retroarch.rows(picking));
+        self.absorb(shifted);
+        self.rebuild_settings();
+        apps::refresh_language(&mut self.lattice.categories);
+        for app in &mut self.lattice.aside {
+            apps::refresh_app_language(app);
+        }
+        self.needs_redraw = true;
+    }
+
     fn rebuild_settings(&mut self) {
         settings::refresh(&mut self.lattice.categories);
         let mut moved = false;
@@ -28274,7 +28570,7 @@ impl Shell {
                     .cursor
                     .opened_rows(&self.lattice)
                     .iter()
-                    .any(|row| row.title() == settings::COMPATIBILITY_PAGE)
+                    .any(|row| matches!(row, apps::Entry::Folder(folder) if folder.identity.as_deref() == Some("shell-compatibility-tool")))
         })
     }
 
@@ -28313,7 +28609,7 @@ impl Shell {
                     .cursor
                     .opened_rows(&self.lattice)
                     .iter()
-                    .any(|row| row.title() == settings::SEARCH_PAGE)
+                    .any(|row| matches!(row, apps::Entry::Folder(folder) if folder.identity.as_deref() == Some("shell-search-to-pair")))
         })
     }
 
@@ -28550,13 +28846,17 @@ impl Shell {
             return;
         };
         let lines = vec![
-            dialog::Line::Heading(format!("Remove {}?", person.title())),
-            dialog::Line::Note(format!(
-                "{} will no longer be able to sign in to this machine.",
-                person.title()
-            )),
+            dialog::Line::Heading(
+                crate::message!("remove-name-question", "name" => person.title()),
+            ),
+            dialog::Line::Note(
+                crate::message!("user-removed-cannot-sign-in", "name" => person.title()),
+            ),
             dialog::Line::Rule,
-            dialog::Line::field("Their files", person.home.display().to_string()),
+            dialog::Line::field(
+                crate::i18n::text("shell-their-files"),
+                person.home.display().to_string(),
+            ),
         ];
         self.removing_account = Some(uid);
         let from = self.dialog_origin();
@@ -28565,9 +28865,16 @@ impl Shell {
             Some(icons::UNINSTALL.to_string()),
             lines,
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
-                menu::Entry::new(menu::Command::RemoveAccountKeepingFiles, "Keep files"),
-                menu::Entry::new(menu::Command::RemoveAccountAndFiles, "Remove files").grave(),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                menu::Entry::new(
+                    menu::Command::RemoveAccountKeepingFiles,
+                    crate::i18n::text("shell-keep-files"),
+                ),
+                menu::Entry::new(
+                    menu::Command::RemoveAccountAndFiles,
+                    crate::i18n::text("shell-remove-files"),
+                )
+                .grave(),
             ],
             // On Cancel. Unlike the field panels, this one destroys something —
             // so the button under the user's thumb is the one that does
@@ -28753,22 +29060,22 @@ impl Shell {
             vec![
                 dialog::Line::Heading(ssid.to_string()),
                 dialog::Line::Note(if retry {
-                    "That password was not accepted. Try again.".to_string()
+                    crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
                 } else {
-                    "Enter this network's password.".to_string()
+                    crate::i18n::text("shell-enter-this-network-s-password").to_string()
                 }),
                 dialog::Line::Secret { typed },
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
                 // Not `grave`: joining a network destroys nothing, and the warm
                 // light is the shell's one mark of a choice there is no coming
                 // back from. Standing on Join, unlike the removal's question,
                 // for the same reason the other way round — this panel went up
                 // because the user pressed a network, so the button that
                 // finishes what they started is the one under their thumb.
-                menu::Entry::new(menu::Command::JoinNetwork, "Join"),
+                menu::Entry::new(menu::Command::JoinNetwork, crate::i18n::text("label-join")),
             ],
             1,
         );
@@ -28836,7 +29143,9 @@ impl Shell {
             .lines()
             .iter()
             .map(|line| match line {
-                dialog::Line::Note(_) => dialog::Line::Note("Joining…".to_string()),
+                dialog::Line::Note(_) => {
+                    dialog::Line::Note(crate::i18n::text("label-joining").to_string())
+                }
                 dialog::Line::Secret { .. } => dialog::Line::Secret { typed: 0 },
                 other => other.clone(),
             })
@@ -29203,8 +29512,11 @@ impl Shell {
             .unwrap_or_else(|| icons::STEAM.to_string());
         tracing::info!(app_id, name, "announcing a finished download");
         self.said_a_download_finished = Some(app_id);
-        self.notifications
-            .announce(name, "The download has finished.", &icon);
+        self.notifications.announce(
+            name,
+            crate::i18n::text("shell-the-download-has-finished"),
+            &icon,
+        );
         // No `Sounds::notified` here, and that is the whole point — see above.
         // The rest is what every other announcement does: the open panel is a
         // list of the very thing that has just changed, and the picture has to
@@ -29234,8 +29546,11 @@ impl Shell {
     /// lands at whatever moment the line happened to finish.
     fn say_steam_is_ready(&mut self) {
         tracing::info!("announcing that Steam has finished setting itself up");
-        self.notifications
-            .announce("Steam", "Steam is ready. Open it to sign in.", icons::STEAM);
+        self.notifications.announce(
+            "Steam",
+            crate::i18n::text("shell-steam-is-ready-open-it-to-sign-in"),
+            icons::STEAM,
+        );
         self.load_notification_icons();
         self.sync_notification_panel();
         self.needs_redraw = true;
@@ -29376,11 +29691,17 @@ impl Shell {
             self.open_guide();
         }
         let shown = wanted.question.shown();
-        let mut buttons = vec![menu::Entry::new(menu::Command::Dismiss, "Cancel")];
+        let mut buttons = vec![menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-cancel"),
+        )];
         if !shown {
             // Not `grave`: pairing destroys nothing, and the warm light is the
             // shell's one mark of a choice there is no coming back from.
-            buttons.push(menu::Entry::new(menu::Command::PairDevice, "Pair"));
+            buttons.push(menu::Entry::new(
+                menu::Command::PairDevice,
+                crate::i18n::text("label-pair"),
+            ));
         }
         // Standing on the button that finishes what the user started — unless
         // they did not start it. See [`bluetooth::Wanted::ours`]: a question
@@ -29425,34 +29746,41 @@ impl Shell {
         match &pairing.question {
             bluetooth::Question::Confirm { code } => {
                 lines.push(dialog::Line::Note(
-                    "Check that this code is showing on the device.".to_string(),
+                    crate::i18n::text("shell-check-that-this-code-is-showing-on-the-device")
+                        .to_string(),
                 ));
-                lines.push(dialog::Line::field("Code", code.clone()));
+                lines.push(dialog::Line::field(
+                    crate::i18n::text("label-code"),
+                    code.clone(),
+                ));
             }
             bluetooth::Question::Authorize => {
                 lines.push(dialog::Line::Note(
-                    "This device is asking to pair with the machine.".to_string(),
+                    crate::i18n::text("shell-this-device-is-asking-to-pair-with-the-machine")
+                        .to_string(),
                 ));
             }
             bluetooth::Question::Passkey => {
                 lines.push(dialog::Line::Note(
-                    "Enter the code showing on the device.".to_string(),
+                    crate::i18n::text("shell-enter-the-code-showing-on-the-device").to_string(),
                 ));
                 lines.push(dialog::Line::Entry(pairing.typed.clone()));
             }
             bluetooth::Question::Pin => {
                 lines.push(dialog::Line::Note(
-                    "Enter this device's PIN — it is usually printed on it, or \
-                     in what came with it."
-                        .to_string(),
+                    crate::i18n::text("bluetooth-enter-pin").to_string(),
                 ));
                 lines.push(dialog::Line::Entry(pairing.typed.clone()));
             }
             bluetooth::Question::Show { code } => {
                 lines.push(dialog::Line::Note(
-                    "Type this code on the device, and press enter there.".to_string(),
+                    crate::i18n::text("shell-type-this-code-on-the-device-and-press-enter-there")
+                        .to_string(),
                 ));
-                lines.push(dialog::Line::field("Code", code.clone()));
+                lines.push(dialog::Line::field(
+                    crate::i18n::text("label-code"),
+                    code.clone(),
+                ));
             }
         }
         lines.push(dialog::Line::Rule);
@@ -29509,7 +29837,9 @@ impl Shell {
             .lines()
             .iter()
             .map(|line| match line {
-                dialog::Line::Note(_) => dialog::Line::Note("Pairing…".to_string()),
+                dialog::Line::Note(_) => {
+                    dialog::Line::Note(crate::i18n::text("label-pairing").to_string())
+                }
                 dialog::Line::Entry(_) => dialog::Line::Entry(String::new()),
                 other => other.clone(),
             })
@@ -29638,8 +29968,8 @@ impl Shell {
             Some(row.icon.clone()),
             opening,
             vec![
-                menu::Entry::new(menu::Command::Dismiss, "Cancel"),
-                menu::Entry::new(menu::Command::SetValue, "Set"),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                menu::Entry::new(menu::Command::SetValue, crate::i18n::text("label-set")),
             ],
             // On Set: this panel went up because the user pressed the row, so
             // the button that finishes what they started is the one under their
@@ -29689,12 +30019,15 @@ impl Shell {
         // the buffer that is overwritten on drop, which is the whole of the care
         // this can take. A field that would not read back as text at all is one
         // nothing can be said about, and it is refused rather than passed on.
-        let fault = match &typing.text {
-            Written::Plain(text) => typing.about.fault(text),
-            Written::Hidden(secret) => secret
-                .as_text(|text| typing.about.fault(text))
-                .unwrap_or(Some("That cannot be used as a password.")),
-        };
+        let fault =
+            match &typing.text {
+                Written::Plain(text) => typing.about.fault(text),
+                Written::Hidden(secret) => secret
+                    .as_text(|text| typing.about.fault(text))
+                    .unwrap_or(Some(crate::i18n::text(
+                        "shell-that-cannot-be-used-as-a-password",
+                    ))),
+            };
         if let Some(fault) = fault {
             typing.fault = Some(fault);
             self.refresh_typing_field();
@@ -30146,8 +30479,11 @@ fn steam_service_menu_rows(
         // also the row that is actually pressed: a column that is a memory is
         // a column somebody wants made current.
         let (label, glyph) = match online {
-            true => ("Refresh the library", icons::REFRESH),
-            false => ("Try Steam again", icons::REFRESH),
+            true => (
+                crate::i18n::text("shell-refresh-the-library"),
+                icons::REFRESH,
+            ),
+            false => (crate::i18n::text("shell-try-steam-again"), icons::REFRESH),
         };
         rows.push(menu::Entry::new(menu::Command::SteamRefresh, label).glyph(glyph));
         rows.push(
@@ -30160,13 +30496,20 @@ fn steam_service_menu_rows(
             // because only the first half was true, and the user asked for the
             // second half rather than for a longer label. See
             // `lxb_steam::client::account::sign_out`.
-            menu::Entry::new(menu::Command::SteamSignOut, "Sign out")
-                .glyph(icons::SIGN_OUT)
-                .grave(),
+            menu::Entry::new(
+                menu::Command::SteamSignOut,
+                crate::i18n::text("shell-sign-out"),
+            )
+            .glyph(icons::SIGN_OUT)
+            .grave(),
         );
     } else {
         rows.push(
-            menu::Entry::new(menu::Command::SteamSignIn, "Sign in to Steam").glyph(icons::LAUNCH),
+            menu::Entry::new(
+                menu::Command::SteamSignIn,
+                crate::i18n::text("shell-sign-in-to-steam"),
+            )
+            .glyph(icons::LAUNCH),
         );
     }
     // Only where there is a library on the bar to be ordered. Nobody signed in
@@ -30174,7 +30517,7 @@ fn steam_service_menu_rows(
     // answer the user could not be shown.
     if has_column {
         rows.push(
-            menu::Entry::new(menu::Command::SteamSort, "Sort")
+            menu::Entry::new(menu::Command::SteamSort, crate::i18n::text("shell-sort"))
                 .glyph(icons::SORT)
                 .group(1),
         );
@@ -30190,7 +30533,13 @@ fn steam_service_menu_rows(
     // good deal of the client has no Big Picture screen at all.
     if has_client {
         for doing in [lxb_steam::Doing::BigPicture, lxb_steam::Doing::Open] {
-            rows.push(menu::Entry::new(menu::Command::SteamDo(doing), doing.label()).group(1));
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::SteamDo(doing),
+                    crate::i18n::builtin(doing.label()),
+                )
+                .group(1),
+            );
         }
     }
     // Offered whatever else is: it is the row for a session where something is
@@ -30199,11 +30548,14 @@ fn steam_service_menu_rows(
     // rows above it are missing. A panel that only appeared when everything
     // worked would be a panel nobody could reach when they needed it.
     rows.push(
-        menu::Entry::new(menu::Command::SteamDiagnostics, "Steam diagnostics")
-            .glyph(icons::SETTING_INFO)
-            .group(1),
+        menu::Entry::new(
+            menu::Command::SteamDiagnostics,
+            crate::i18n::text("shell-steam-diagnostics"),
+        )
+        .glyph(icons::SETTING_INFO)
+        .group(1),
     );
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -30241,7 +30593,10 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         // carries the row's answer, quiet stretch and all — see
         // `steam::Steam::row` — and this asks it.
         if game.standing.playable() && !game.updating {
-            rows.push(menu::Entry::new(menu::Command::Launch, "Play").glyph(icons::LAUNCH));
+            rows.push(
+                menu::Entry::new(menu::Command::Launch, crate::i18n::text("shell-play"))
+                    .glyph(icons::LAUNCH),
+            );
         }
         // Work Steam has begun and is not doing, because there is no Steam
         // running to do it. One row, and it is the only thing on this machine
@@ -30250,7 +30605,7 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         if game.waiting_for_steam {
             rows.push(menu::Entry::new(
                 menu::Command::SteamStartClient(game.app_id),
-                "Start Steam",
+                crate::i18n::text("shell-start-steam"),
             ));
         }
         // A download that has stopped is somebody else's to resume. Pausing and
@@ -30264,7 +30619,7 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
             rows.push(
                 menu::Entry::new(
                     menu::Command::SteamDo(lxb_steam::Doing::Downloads),
-                    lxb_steam::Doing::Downloads.label(),
+                    crate::i18n::builtin(lxb_steam::Doing::Downloads.label()),
                 )
                 .glyph(icons::LAUNCH),
             );
@@ -30275,7 +30630,7 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         if game.standing == Standing::Broken {
             rows.push(menu::Entry::new(
                 menu::Command::SteamDo(lxb_steam::Doing::Verify),
-                "Repair with Steam",
+                crate::i18n::text("shell-repair-with-steam"),
             ));
         }
         // Stopping is offered for anything with bytes on the disk that has not
@@ -30285,15 +30640,18 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
             rows.push(
                 menu::Entry::new(
                     menu::Command::SteamStopInstalling(game.app_id),
-                    "Stop and Delete",
+                    crate::i18n::text("shell-stop-and-delete"),
                 )
                 .grave(),
             );
         }
         if game.standing == Standing::NotInstalled {
             rows.push(
-                menu::Entry::new(menu::Command::SteamInstall(game.app_id), "Install")
-                    .glyph(icons::LAUNCH),
+                menu::Entry::new(
+                    menu::Command::SteamInstall(game.app_id),
+                    crate::i18n::text("shell-install"),
+                )
+                .glyph(icons::LAUNCH),
             );
         }
         // Verifying is the client's own window, and is named as such: unlike
@@ -30305,7 +30663,7 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         if game.standing.playable() && !game.updating {
             rows.push(menu::Entry::new(
                 menu::Command::SteamDo(lxb_steam::Doing::Verify),
-                lxb_steam::Doing::Verify.label(),
+                crate::i18n::builtin(lxb_steam::Doing::Verify.label()),
             ));
         }
         // Which Steam Play tool it runs under, which is a setting on the game
@@ -30315,7 +30673,7 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         // out of Valve's client and there is nowhere else to get it.
         rows.push(menu::Entry::new(
             menu::Command::SteamCompatibility(game.app_id),
-            "Compatibility",
+            crate::i18n::text("label-compatibility"),
         ));
         // Anything with a whole copy on the disk can be taken off it. Not a
         // part-built one: that is the row above, which promises to delete what
@@ -30328,18 +30686,21 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
         ) && !game.updating
         {
             rows.push(
-                menu::Entry::new(menu::Command::SteamUninstall(game.app_id), "Uninstall")
-                    .glyph(icons::UNINSTALL)
-                    .grave(),
+                menu::Entry::new(
+                    menu::Command::SteamUninstall(game.app_id),
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .glyph(icons::UNINSTALL)
+                .grave(),
             );
         }
     }
     rows.push(
-        menu::Entry::new(menu::Command::SteamSort, "Sort")
+        menu::Entry::new(menu::Command::SteamSort, crate::i18n::text("shell-sort"))
             .glyph(icons::SORT)
             .group(1),
     );
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -30366,14 +30727,14 @@ fn what_is_happening_to_it(game: &apps::Game) -> (String, lxb_steam::Doing, &'st
         // description of a broken copy, and Repair with Steam is still offered
         // over the row for somebody who wants the check without the game.
         Standing::Broken => (
-            "Some of this game's files are missing.".to_string(),
+            crate::i18n::text("shell-some-of-this-game-s-files-are-missing").to_string(),
             lxb_steam::Doing::Verify,
-            "Repair with Steam",
+            crate::i18n::text("shell-repair-with-steam"),
         ),
         Standing::Paused => (
-            "Steam has paused this download.".to_string(),
+            crate::i18n::text("shell-steam-has-paused-this-download").to_string(),
             lxb_steam::Doing::Downloads,
-            lxb_steam::Doing::Downloads.label(),
+            crate::i18n::builtin(lxb_steam::Doing::Downloads.label()),
         ),
         // Everything else on this path is work Steam is in the middle of, and
         // the row it was pressed on already says which and how far. Said in its
@@ -30383,7 +30744,7 @@ fn what_is_happening_to_it(game: &apps::Game) -> (String, lxb_steam::Doing, &'st
         _ => (
             game.note.clone(),
             lxb_steam::Doing::Downloads,
-            lxb_steam::Doing::Downloads.label(),
+            crate::i18n::builtin(lxb_steam::Doing::Downloads.label()),
         ),
     }
 }
@@ -30598,10 +30959,10 @@ struct Underway {
 fn what_is_outstanding(standing: lxb_steam::library::Standing) -> &'static str {
     use lxb_steam::library::Standing;
     match standing {
-        Standing::Updating => "This game has an update waiting.",
-        Standing::Validating => "Steam was checking this game's files.",
-        Standing::Uninstalling => "Steam was removing this game.",
-        _ => "This download has not finished.",
+        Standing::Updating => crate::i18n::text("shell-this-game-has-an-update-waiting"),
+        Standing::Validating => crate::i18n::text("shell-steam-was-checking-this-game-s-files"),
+        Standing::Uninstalling => crate::i18n::text("shell-steam-was-removing-this-game"),
+        _ => crate::i18n::text("shell-this-download-has-not-finished"),
     }
 }
 
@@ -30622,7 +30983,11 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
             // Named for the wait rather than for the client: Valve's client
             // being started is what this is most of the time, and it is not
             // what somebody who pressed Compatibility is waiting for.
-            menu::Entry::new(menu::Command::Dismiss, "Asking Steam…").reading(),
+            menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-asking-steam-ellipsis"),
+            )
+            .reading(),
         ),
         Some(steam::Compat::Unavailable(why)) => {
             rows.push(menu::Entry::new(menu::Command::Dismiss, why.clone()).reading())
@@ -30631,7 +30996,11 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
         // this machine needs no tool to run on it — so it says what is true
         // rather than what went wrong.
         Some(steam::Compat::Said(said)) if said.tools.is_empty() => rows.push(
-            menu::Entry::new(menu::Command::Dismiss, "Steam offers no tools for this").reading(),
+            menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-steam-offers-no-tools-for-this"),
+            )
+            .reading(),
         ),
         Some(steam::Compat::Said(said)) => {
             // The row that takes a choice back, first and ticked when nothing
@@ -30641,7 +31010,7 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
             rows.push(chosen_when(
                 menu::Entry::new(
                     menu::Command::SteamRunUnder { app_id, tool: None },
-                    "Steam's choice",
+                    crate::i18n::text("shell-steam-s-choice"),
                 ),
                 said.forced.is_none(),
             ));
@@ -30659,7 +31028,7 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
             }));
         }
     }
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -30683,7 +31052,10 @@ fn status_rows(now: lxb_steam::Presence) -> Vec<menu::Entry> {
         .iter()
         .map(|status| {
             chosen_when(
-                menu::Entry::new(menu::Command::SteamStatus(*status), status.said()),
+                menu::Entry::new(
+                    menu::Command::SteamStatus(*status),
+                    crate::i18n::builtin(status.said()),
+                ),
                 *status == now,
             )
         })
@@ -30711,12 +31083,15 @@ fn trophies_sort_rows(now: trophies::Sort) -> Vec<menu::Entry> {
         .iter()
         .map(|sort| {
             chosen_when(
-                menu::Entry::new(menu::Command::TrophiesSortBy(*sort), sort.label()),
+                menu::Entry::new(
+                    menu::Command::TrophiesSortBy(*sort),
+                    crate::i18n::builtin(sort.label()),
+                ),
                 *sort == now,
             )
         })
         .collect();
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -30735,7 +31110,10 @@ fn steam_sort_rows(
     let mut rows: Vec<menu::Entry> = lxb_steam::library::SORTS
         .iter()
         .map(|sort| {
-            let row = menu::Entry::new(menu::Command::SteamSortBy(*sort), sort.label());
+            let row = menu::Entry::new(
+                menu::Command::SteamSortBy(*sort),
+                crate::i18n::builtin(sort.label()),
+            );
             let row = if *sort == now {
                 row.glyph(icons::CHOSEN)
             } else {
@@ -30748,7 +31126,7 @@ fn steam_sort_rows(
             }
         })
         .collect();
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -30841,13 +31219,15 @@ mod steam_game_menu_tests {
     fn a_download_that_has_stopped_moving_offers_steams_own_list() {
         let mut game = doing(lxb_steam::library::Standing::Downloading, true);
         assert!(
-            !labels(&game).contains(&lxb_steam::Doing::Downloads.label().to_string()),
+            !labels(&game)
+                .contains(&crate::i18n::builtin(lxb_steam::Doing::Downloads.label()).to_string()),
             "a download that is moving does not need somebody sent anywhere"
         );
 
         game.stuck = true;
         assert!(
-            labels(&game).contains(&lxb_steam::Doing::Downloads.label().to_string()),
+            labels(&game)
+                .contains(&crate::i18n::builtin(lxb_steam::Doing::Downloads.label()).to_string()),
             "a download nothing is arriving for offers nowhere to look at it"
         );
         // And it is still a download: stopping it and deleting what arrived is
@@ -31578,7 +31958,10 @@ mod steam_game_menu_tests {
             "the panel says what the row a finger's width away says"
         );
         assert_eq!(doing_this, lxb_steam::Doing::Downloads);
-        assert_eq!(action, lxb_steam::Doing::Downloads.label());
+        assert_eq!(
+            action,
+            crate::i18n::builtin(lxb_steam::Doing::Downloads.label())
+        );
 
         // The one that really is a broken copy still is.
         let (said, doing_this, action) = what_is_happening_to_it(&doing(Standing::Broken, true));
@@ -31984,8 +32367,12 @@ impl Compressing {
         }
         let what = self.file_name();
         match self.sources.len() {
-            1 => format!("{what} will be made beside it."),
-            _ => format!("{what} will be made beside them."),
+            1 => {
+                crate::message!("archive-made-beside-it", "name" => what)
+            }
+            _ => {
+                crate::message!("archive-made-beside-them", "name" => what)
+            }
         }
     }
 
@@ -32005,17 +32392,17 @@ impl Compressing {
     fn fault_in_name(&self) -> Option<String> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Some("It needs a name.".to_string());
+            return Some(crate::i18n::text("shell-it-needs-a-name").to_string());
         }
         if name == "." || name == ".." {
-            return Some("That cannot be a name.".to_string());
+            return Some(crate::i18n::text("shell-that-cannot-be-a-name").to_string());
         }
         if name.contains('/') {
-            return Some("A name cannot have a slash in it.".to_string());
+            return Some(crate::i18n::text("shell-a-name-cannot-have-a-slash-in-it").to_string());
         }
         let wanted = self.file_name();
         if std::fs::symlink_metadata(self.into.join(&wanted)).is_ok() {
-            return Some(format!("Something called {wanted} is already here."));
+            return Some(crate::message!("name-already-here", "name" => wanted));
         }
         None
     }
@@ -32050,11 +32437,15 @@ impl Compressing {
         vec![
             menu::Entry::new(
                 menu::Command::CompressFormat,
-                format!("Format: {}", self.format.suffix()),
+                crate::message!("archive-format", "format" => self.format.suffix()),
             )
             .holds(),
-            menu::Entry::new(menu::Command::ConfirmCompress, "Compress").holds(),
-            menu::Entry::new(menu::Command::Dismiss, "Cancel"),
+            menu::Entry::new(
+                menu::Command::ConfirmCompress,
+                crate::i18n::text("shell-compress"),
+            )
+            .holds(),
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
         ]
     }
 
@@ -32109,7 +32500,7 @@ fn suggested_archive_name(sources: &[transfer::Source], into: &Path) -> String {
             .map(|name| name.to_string_lossy().into_owned()),
     };
     stem.filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "Archive".to_string())
+        .unwrap_or_else(|| crate::i18n::text("label-archive").to_string())
 }
 
 /// The game a picture is being chosen for, and which of its two pictures.
@@ -32141,11 +32532,11 @@ struct Kept {
 /// [`Shell::inside_a_folder`]. Unlike the other two, `carriable` decides
 /// whether the rows are *there*, not whether they are lit.
 fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry> {
-    let delete = menu::Entry::new(menu::Command::Delete, "Delete")
+    let delete = menu::Entry::new(menu::Command::Delete, crate::i18n::text("shell-delete"))
         .glyph(icons::UNINSTALL)
         .grave();
     let mut rows = vec![
-        menu::Entry::new(menu::Command::Open, "Open").glyph(icons::LAUNCH),
+        menu::Entry::new(menu::Command::Open, crate::i18n::text("shell-open")).glyph(icons::LAUNCH),
         // Never greyed, and it used to be — the row went dead whenever nothing
         // installed said it handled the type, on the argument that there was
         // then nothing to choose *between*. That argument was answered by
@@ -32153,7 +32544,11 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
         // whatever the type is, and it is the row a file with no extension
         // exists to reach. A file nothing declares is exactly the file somebody
         // needs this for, so it was dead in the one case it was wanted.
-        menu::Entry::new(menu::Command::OpenWith, "Open with").glyph(icons::OPEN_WITH),
+        menu::Entry::new(
+            menu::Command::OpenWith,
+            crate::i18n::text("shell-open-with"),
+        )
+        .glyph(icons::OPEN_WITH),
         // Grave, for the reason Uninstall is: the row asks rather than
         // deletes, but it is the step towards losing the file, and the warmth
         // has to be under the highlight while that is still the user's choice
@@ -32165,14 +32560,15 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
         // as well as in a folder, unlike the two above it: a song has a name
         // wherever it is being looked at from, and there is no column to open a
         // picker in only because there is nowhere to walk to.
-        menu::Entry::new(menu::Command::Rename, "Rename").glyph(icons::RENAME),
+        menu::Entry::new(menu::Command::Rename, crate::i18n::text("shell-rename"))
+            .glyph(icons::RENAME),
         // The band break: everything above acts on the file, and neither of
         // these two does — one is about the column and the other is about the
         // menu.
-        menu::Entry::new(menu::Command::Sort, "Sort")
+        menu::Entry::new(menu::Command::Sort, crate::i18n::text("shell-sort"))
             .glyph(icons::SORT)
             .group(1),
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ];
     if carriable {
         // Both of these are placed against Sort rather than against the ends of
@@ -32213,8 +32609,16 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
         rows.splice(
             3..3,
             [
-                transfer_row(menu::Command::Copy, "Copy", icons::COPY),
-                transfer_row(menu::Command::Move, "Move", icons::MOVE),
+                transfer_row(
+                    menu::Command::Copy,
+                    crate::i18n::text("shell-copy"),
+                    icons::COPY,
+                ),
+                transfer_row(
+                    menu::Command::Move,
+                    crate::i18n::text("shell-move"),
+                    icons::MOVE,
+                ),
             ],
         );
     }
@@ -32237,7 +32641,7 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
 /// rather than sometimes, unlike on a file's menu — a folder row only ever
 /// stands *in* a listing, which is the one condition those two need.
 fn folder_rows(deletable: bool, hidden: bool) -> Vec<menu::Entry> {
-    let delete = menu::Entry::new(menu::Command::Delete, "Delete")
+    let delete = menu::Entry::new(menu::Command::Delete, crate::i18n::text("shell-delete"))
         .glyph(icons::UNINSTALL)
         .grave();
     vec![
@@ -32248,9 +32652,18 @@ fn folder_rows(deletable: bool, hidden: bool) -> Vec<menu::Entry> {
         // than being pushed under the hand by the rows somebody came here on
         // purpose for.
         if deletable { delete } else { delete.disabled() },
-        transfer_row(menu::Command::Copy, "Copy", icons::COPY),
-        transfer_row(menu::Command::Move, "Move", icons::MOVE),
-        menu::Entry::new(menu::Command::Rename, "Rename").glyph(icons::RENAME),
+        transfer_row(
+            menu::Command::Copy,
+            crate::i18n::text("shell-copy"),
+            icons::COPY,
+        ),
+        transfer_row(
+            menu::Command::Move,
+            crate::i18n::text("shell-move"),
+            icons::MOVE,
+        ),
+        menu::Entry::new(menu::Command::Rename, crate::i18n::text("shell-rename"))
+            .glyph(icons::RENAME),
         // Last of the rows that act on the folder, where a file's menu has it
         // and for its reason: it makes something new beside the folder.
         compress_row(),
@@ -32261,11 +32674,11 @@ fn folder_rows(deletable: bool, hidden: bool) -> Vec<menu::Entry> {
         // The band break: everything above acts on the folder, and neither of
         // these two does — one is about the column and the other is about the
         // menu.
-        menu::Entry::new(menu::Command::Sort, "Sort")
+        menu::Entry::new(menu::Command::Sort, crate::i18n::text("shell-sort"))
             .glyph(icons::SORT)
             .group(1),
         show_hidden_row(hidden),
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -32304,7 +32717,11 @@ fn kind_row(index: usize, name: &str, showing: bool) -> menu::Entry {
 /// a document a program does not admit to opening — and a chooser with no way
 /// past its own filter is a chooser that hides the file the user is looking at.
 fn everything_row(showing: bool) -> menu::Entry {
-    let row = menu::Entry::new(menu::Command::PickKind(None), "Everything").holds();
+    let row = menu::Entry::new(
+        menu::Command::PickKind(None),
+        crate::i18n::text("shell-everything"),
+    )
+    .holds();
     match showing {
         true => row.glyph(icons::CHOSEN),
         false => row,
@@ -32312,9 +32729,12 @@ fn everything_row(showing: bool) -> menu::Entry {
 }
 
 fn show_hidden_row(hidden: bool) -> menu::Entry {
-    let row = menu::Entry::new(menu::Command::ShowHidden, "Show hidden files")
-        .holds()
-        .group(1);
+    let row = menu::Entry::new(
+        menu::Command::ShowHidden,
+        crate::i18n::text("shell-show-hidden-files"),
+    )
+    .holds()
+    .group(1);
     if hidden {
         row.glyph(icons::CHOSEN)
     } else {
@@ -32332,7 +32752,8 @@ fn show_hidden_row(hidden: bool) -> menu::Entry {
 /// the press rather than by the row, because it is a handful of `stat`s down
 /// `PATH` and a menu is built on every raise.
 fn compress_row() -> menu::Entry {
-    menu::Entry::new(menu::Command::Compress, "Compress").glyph(icons::COMPRESS)
+    menu::Entry::new(menu::Command::Compress, crate::i18n::text("shell-compress"))
+        .glyph(icons::COMPRESS)
 }
 
 /// The row that turns the column into one being marked, with the row the menu
@@ -32342,7 +32763,11 @@ fn compress_row() -> menu::Entry {
 /// makes it findable: a person who has learnt it on a file finds it on a folder
 /// and in the trash without looking. See [`crate::marks`] for what it starts.
 fn select_multiple_row() -> menu::Entry {
-    menu::Entry::new(menu::Command::SelectMultiple, "Select multiple").glyph(icons::SELECT_MULTIPLE)
+    menu::Entry::new(
+        menu::Command::SelectMultiple,
+        crate::i18n::text("shell-select-multiple"),
+    )
+    .glyph(icons::SELECT_MULTIPLE)
 }
 
 /// The rows of the menu while a listing is being marked: what to do with the
@@ -32369,31 +32794,52 @@ fn marked_rows(picked: usize) -> Vec<menu::Entry> {
     let anything = picked > 0;
     let act = |row: menu::Entry| if anything { row } else { row.disabled() };
     vec![
-        act(menu::Entry::new(menu::Command::DeleteMarked, "Delete")
-            .glyph(icons::UNINSTALL)
-            .grave()),
-        act(transfer_row(menu::Command::CopyMarked, "Copy", icons::COPY)),
-        act(transfer_row(menu::Command::MoveMarked, "Move", icons::MOVE)),
-        act(menu::Entry::new(menu::Command::CompressMarked, "Compress").glyph(icons::COMPRESS)),
+        act(menu::Entry::new(
+            menu::Command::DeleteMarked,
+            crate::i18n::text("shell-delete"),
+        )
+        .glyph(icons::UNINSTALL)
+        .grave()),
+        act(transfer_row(
+            menu::Command::CopyMarked,
+            crate::i18n::text("shell-copy"),
+            icons::COPY,
+        )),
+        act(transfer_row(
+            menu::Command::MoveMarked,
+            crate::i18n::text("shell-move"),
+            icons::MOVE,
+        )),
+        act(menu::Entry::new(
+            menu::Command::CompressMarked,
+            crate::i18n::text("shell-compress"),
+        )
+        .glyph(icons::COMPRESS)),
         // The band break: above it is what to do with the set, below it is what
         // the set *is*. Neither of these two touches the disk.
         // Both hold the panel: what they change is the set the rows above are
         // about, so the answer is the ticks moving on the column behind and the
         // three acts going from greyed to lit. A panel that folded away would
         // take that with it before it could be read.
-        menu::Entry::new(menu::Command::SelectAll, "Select all")
-            .glyph(icons::SELECT_MULTIPLE)
-            .holds()
-            .group(1),
+        menu::Entry::new(
+            menu::Command::SelectAll,
+            crate::i18n::text("shell-select-all"),
+        )
+        .glyph(icons::SELECT_MULTIPLE)
+        .holds()
+        .group(1),
         // No mark of its own. The one in the set that would fit is the field's
         // own clear, which is a magnifying glass — it says "search" beside a
         // word that means the opposite of Select all, and a mark that argues
         // with its own label is worse than no mark. Cancel has none either, for
         // the same reason: some rows are a word.
-        act(menu::Entry::new(menu::Command::ClearMarks, "Clear"))
-            .holds()
-            .group(1),
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        act(menu::Entry::new(
+            menu::Command::ClearMarks,
+            crate::i18n::text("shell-clear"),
+        ))
+        .holds()
+        .group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -32409,21 +32855,32 @@ fn marked_trash_rows(picked: usize) -> Vec<menu::Entry> {
     let anything = picked > 0;
     let act = |row: menu::Entry| if anything { row } else { row.disabled() };
     vec![
-        act(menu::Entry::new(menu::Command::RestoreMarked, "Restore").glyph(icons::MOVE)),
-        act(
-            menu::Entry::new(menu::Command::PurgeMarked, "Delete permanently")
-                .glyph(icons::UNINSTALL)
-                .grave(),
-        ),
+        act(menu::Entry::new(
+            menu::Command::RestoreMarked,
+            crate::i18n::text("label-restore"),
+        )
+        .glyph(icons::MOVE)),
+        act(menu::Entry::new(
+            menu::Command::PurgeMarked,
+            crate::i18n::text("shell-delete-permanently"),
+        )
+        .glyph(icons::UNINSTALL)
+        .grave()),
         // Both hold the panel, for the reason they do in [`marked_rows`].
-        menu::Entry::new(menu::Command::SelectAll, "Select all")
-            .glyph(icons::SELECT_MULTIPLE)
-            .holds()
-            .group(1),
-        act(menu::Entry::new(menu::Command::ClearMarks, "Clear"))
-            .holds()
-            .group(1),
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(
+            menu::Command::SelectAll,
+            crate::i18n::text("shell-select-all"),
+        )
+        .glyph(icons::SELECT_MULTIPLE)
+        .holds()
+        .group(1),
+        act(menu::Entry::new(
+            menu::Command::ClearMarks,
+            crate::i18n::text("shell-clear"),
+        ))
+        .holds()
+        .group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -32438,10 +32895,14 @@ fn trashed_rows() -> Vec<menu::Entry> {
         // is a move, and the folder it goes back to is one the file named
         // itself. No question in front of it: it is the one act in this shell
         // that undoes a loss rather than causing one.
-        menu::Entry::new(menu::Command::Restore, "Restore").glyph(icons::MOVE),
-        menu::Entry::new(menu::Command::Purge, "Delete permanently")
-            .glyph(icons::UNINSTALL)
-            .grave(),
+        menu::Entry::new(menu::Command::Restore, crate::i18n::text("label-restore"))
+            .glyph(icons::MOVE),
+        menu::Entry::new(
+            menu::Command::Purge,
+            crate::i18n::text("shell-delete-permanently"),
+        )
+        .glyph(icons::UNINSTALL)
+        .grave(),
         // The same row a listing carries, in the same place: at the foot of
         // what acts. Putting a set of things back, or destroying a set of them,
         // is the one place in this shell where marking is most obviously wanted
@@ -32449,10 +32910,10 @@ fn trashed_rows() -> Vec<menu::Entry> {
         select_multiple_row(),
         // The band break, and the same two rows every column of files carries:
         // one is about the order the column is in, the other about the menu.
-        menu::Entry::new(menu::Command::Sort, "Sort")
+        menu::Entry::new(menu::Command::Sort, crate::i18n::text("shell-sort"))
             .glyph(icons::SORT)
             .group(1),
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -32470,16 +32931,23 @@ fn trashed_rows() -> Vec<menu::Entry> {
 /// machine plays the console. `own` is whether the cover and the background are
 /// pictures somebody chose, which decides what the two picture rows say.
 fn rom_rows(deletable: bool, fetching: bool, emulated: bool, own: [bool; 2]) -> Vec<menu::Entry> {
-    let artwork =
-        menu::Entry::new(menu::Command::RetroArchArt, "Get the artwork").glyph(icons::REFRESH);
-    let settings = menu::Entry::new(menu::Command::RetroArchCoreSettings, "Emulator settings")
-        .glyph(icons::CATEGORY_SETTINGS);
-    let delete = menu::Entry::new(menu::Command::Delete, "Delete")
+    let artwork = menu::Entry::new(
+        menu::Command::RetroArchArt,
+        crate::i18n::text("shell-get-the-artwork"),
+    )
+    .glyph(icons::REFRESH);
+    let settings = menu::Entry::new(
+        menu::Command::RetroArchCoreSettings,
+        crate::i18n::text("shell-emulator-settings"),
+    )
+    .glyph(icons::CATEGORY_SETTINGS);
+    let delete = menu::Entry::new(menu::Command::Delete, crate::i18n::text("shell-delete"))
         .glyph(icons::UNINSTALL)
         .grave()
         .group(1);
     vec![
-        menu::Entry::new(menu::Command::Launch, "Play").glyph(icons::LAUNCH),
+        menu::Entry::new(menu::Command::Launch, crate::i18n::text("shell-play"))
+            .glyph(icons::LAUNCH),
         if fetching {
             artwork.disabled()
         } else {
@@ -32510,11 +32978,11 @@ fn rom_rows(deletable: bool, fetching: bool, emulated: bool, own: [bool; 2]) -> 
         },
         // The band break: above it is what to do with the *game*, below it is
         // what to do to the file it is.
-        menu::Entry::new(menu::Command::Rename, "Rename")
+        menu::Entry::new(menu::Command::Rename, crate::i18n::text("shell-rename"))
             .glyph(icons::RENAME)
             .group(1),
         if deletable { delete } else { delete.disabled() },
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -32529,17 +32997,26 @@ fn rom_rows(deletable: bool, fetching: bool, emulated: bool, own: [bool; 2]) -> 
 fn picture_row(own: bool, piece: retroarch::Piece) -> menu::Entry {
     use retroarch::Piece;
     let (command, label) = match (own, piece) {
-        (false, Piece::Cover) => (menu::Command::RetroArchCover, "Choose a cover"),
-        (false, Piece::Background) => (menu::Command::RetroArchBackground, "Choose a background"),
+        (false, Piece::Cover) => (
+            menu::Command::RetroArchCover,
+            crate::i18n::text("shell-choose-a-cover"),
+        ),
+        (false, Piece::Background) => (
+            menu::Command::RetroArchBackground,
+            crate::i18n::text("shell-choose-a-background"),
+        ),
         // "Yours" rather than "the", because there are two and only one of them
         // can be taken away: the row goes back to whatever libretro published.
         // Short enough to fit the panel as well — "Remove the background you
         // chose" was a row that ended in an ellipsis, which is a label the user
         // has to guess the end of.
-        (true, Piece::Cover) => (menu::Command::RetroArchDropCover, "Remove your cover"),
+        (true, Piece::Cover) => (
+            menu::Command::RetroArchDropCover,
+            crate::i18n::text("shell-remove-your-cover"),
+        ),
         (true, Piece::Background) => (
             menu::Command::RetroArchDropBackground,
-            "Remove your background",
+            crate::i18n::text("shell-remove-your-background"),
         ),
     };
     let glyph = match piece {
@@ -32599,12 +33076,15 @@ fn open_with_rows(offering: &[media::Handler], chosen: usize) -> Vec<menu::Entry
     // wants. It is always there, including on the empty list a file with no
     // extension produces — which is the case it exists for.
     rows.push(
-        menu::Entry::new(menu::Command::OpenWithOther, "Other application")
-            .glyph(icons::OPEN_WITH)
-            .group(1),
+        menu::Entry::new(
+            menu::Command::OpenWithOther,
+            crate::i18n::text("shell-other-application"),
+        )
+        .glyph(icons::OPEN_WITH)
+        .group(1),
     );
     // And the way out does not hold, because leaving is what it is for.
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -32625,7 +33105,7 @@ fn open_with_rows(offering: &[media::Handler], chosen: usize) -> Vec<menu::Entry
 fn open_with_other_rows(offering: &[media::Handler], keeps: bool) -> Vec<menu::Entry> {
     let always = menu::Entry::new(
         menu::Command::OpenWithAlways,
-        "Always open this type with it",
+        crate::i18n::text("shell-always-open-this-type-with-it"),
     )
     .holds();
     let mut rows = vec![if keeps {
@@ -32643,7 +33123,7 @@ fn open_with_other_rows(offering: &[media::Handler], keeps: bool) -> Vec<menu::E
             // name it does not know — the empty one included.
             .icon(handler.icon.clone().unwrap_or_default())
     }));
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -32653,7 +33133,10 @@ fn sort_rows(now: media::Sort, knows: media::Orders) -> Vec<menu::Entry> {
     let mut rows: Vec<menu::Entry> = media::SORTS
         .iter()
         .map(|sort| {
-            let row = menu::Entry::new(menu::Command::SortBy(*sort), sort.label());
+            let row = menu::Entry::new(
+                menu::Command::SortBy(*sort),
+                crate::i18n::builtin(sort.label()),
+            );
             let row = if *sort == now {
                 row.glyph(icons::CHOSEN)
             } else {
@@ -32666,7 +33149,7 @@ fn sort_rows(now: media::Sort, knows: media::Orders) -> Vec<menu::Entry> {
             }
         })
         .collect();
-    rows.push(menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1));
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
 
@@ -32684,9 +33167,9 @@ fn sort_rows(now: media::Sort, knows: media::Orders) -> Vec<menu::Entry> {
 /// by an order of magnitude for anything that ships data alongside it.
 fn information_lines(app: &apps::App, facts: Option<&appinfo::Facts>) -> Vec<dialog::Line> {
     let known = |value: Option<String>| match (facts, value) {
-        (None, _) => "Reading…".to_string(),
+        (None, _) => crate::i18n::text("label-reading").to_string(),
         (Some(_), Some(value)) => value,
-        (Some(_), None) => "Unknown".to_string(),
+        (Some(_), None) => crate::i18n::text("shell-unknown").to_string(),
     };
     let mut lines = vec![dialog::Line::Heading(app.name.clone())];
     if let Some(comment) = app.comment.as_deref() {
@@ -32694,11 +33177,11 @@ fn information_lines(app: &apps::App, facts: Option<&appinfo::Facts>) -> Vec<dia
     }
     lines.push(dialog::Line::Rule);
     lines.push(dialog::Line::field(
-        "Version",
+        crate::i18n::text("label-version"),
         known(facts.and_then(|facts| facts.version.clone())),
     ));
     lines.push(dialog::Line::field(
-        "Size",
+        crate::i18n::text("shell-size"),
         known(facts.and_then(|facts| facts.size).map(appinfo::human_size)),
     ));
     lines.push(dialog::Line::Rule);
@@ -32723,26 +33206,47 @@ fn system_information_lines(facts: &machine::Facts) -> Vec<dialog::Line> {
     // eight under it. This says where the user is, which is what the heading of
     // a panel raised from a row two columns deep is for.
     let mut lines = vec![
-        dialog::Line::Heading("System information".to_string()),
+        dialog::Line::Heading(crate::i18n::text("shell-system-information").to_string()),
         dialog::Line::Rule,
-        dialog::Line::field("System name", facts.name.as_str()),
+        dialog::Line::field(crate::i18n::text("shell-system-name"), facts.name.as_str()),
     ];
     if let Some(version) = facts.version.as_deref() {
-        lines.push(dialog::Line::field("System version", version));
+        lines.push(dialog::Line::field(
+            crate::i18n::text("shell-system-version"),
+            version,
+        ));
     }
     // "System software" is the shell, not the system on the disk. The console
     // this page comes from called its own firmware that, and this is the same
     // thing in the same place: the software the user is looking at.
     lines.push(dialog::Line::field(
-        "System software",
+        crate::i18n::text("shell-system-software"),
         facts.software.as_str(),
     ));
-    lines.push(dialog::Line::field("IP address", facts.address.as_str()));
-    lines.push(dialog::Line::field("Kernel", facts.kernel.as_str()));
-    lines.push(dialog::Line::field("Processor", facts.processor.as_str()));
-    lines.push(dialog::Line::field("Graphics", facts.graphics.as_str()));
-    lines.push(dialog::Line::field("Memory", facts.memory.as_str()));
-    lines.push(dialog::Line::field("Disk space", facts.disk.as_str()));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("shell-ip-address"),
+        facts.address.as_str(),
+    ));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("label-kernel"),
+        facts.kernel.as_str(),
+    ));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("label-processor"),
+        facts.processor.as_str(),
+    ));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("shell-graphics"),
+        facts.graphics.as_str(),
+    ));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("label-memory"),
+        facts.memory.as_str(),
+    ));
+    lines.push(dialog::Line::field(
+        crate::i18n::text("shell-disk-space"),
+        facts.disk.as_str(),
+    ));
     lines.push(dialog::Line::Rule);
     lines
 }
@@ -32846,12 +33350,14 @@ fn update_authentication_lines(
         return authentication_lines(&request.message, note, typed);
     }
     let mut lines = authentication_lines("", note, typed);
-    lines[0] = dialog::Line::Heading("Install updates".into());
+    lines[0] = dialog::Line::Heading(crate::i18n::text("shell-install-updates").into());
     lines
 }
 
 fn authentication_lines(message: &str, note: &str, typed: usize) -> Vec<dialog::Line> {
-    let mut lines = vec![dialog::Line::Heading("Authentication needed".to_string())];
+    let mut lines = vec![dialog::Line::Heading(
+        crate::i18n::text("shell-authentication-needed").to_string(),
+    )];
     for line in wrapped(message, MESSAGE_WIDTH, MESSAGE_LINES) {
         lines.push(dialog::Line::Note(line));
     }
@@ -32869,12 +33375,12 @@ fn authentication_lines(message: &str, note: &str, typed: usize) -> Vec<dialog::
 fn waiting_note(request: &polkit::Request) -> String {
     if request.yourself {
         if request.action_id == lxb_updates::INSTALL_ACTION {
-            "Enter your password to install the selected updates.".into()
+            crate::i18n::text("shell-enter-your-password-to-install-the-selected-updates").into()
         } else {
-            "Enter your password to allow this.".to_string()
+            crate::i18n::text("shell-enter-your-password-to-allow-this").to_string()
         }
     } else {
-        format!("Enter the password for {}.", request.user)
+        crate::message!("enter-password-for", "name" => request.user.as_str())
     }
 }
 
@@ -33815,20 +34321,20 @@ fn key_repeats(keysym: Keysym, typing: bool) -> bool {
 fn pairing_words(outcome: &bluetooth::Outcome) -> (String, String) {
     match outcome.ending {
         bluetooth::Ending::Connected => (
-            format!("{} is connected", outcome.name),
-            "Paired with this machine.".to_string(),
+            crate::message!("device-connected", "name" => outcome.name.as_str()),
+            crate::i18n::text("shell-paired-with-this-machine").to_string(),
         ),
         // Bonded and not on. Neither of the other two sentences would be true,
         // and both would send the user to the wrong place: one says there is
         // nothing left to do, the other says to go and pair something they are
         // already paired with.
         bluetooth::Ending::Paired => (
-            format!("{} is paired", outcome.name),
-            "It did not connect.".to_string(),
+            crate::message!("device-paired", "name" => outcome.name.as_str()),
+            crate::i18n::text("shell-it-did-not-connect").to_string(),
         ),
         bluetooth::Ending::Failed => (
-            format!("{} would not pair", outcome.name),
-            "Nothing has been added to this machine.".to_string(),
+            crate::message!("device-would-not-pair", "name" => outcome.name.as_str()),
+            crate::i18n::text("shell-nothing-has-been-added-to-this-machine").to_string(),
         ),
     }
 }
@@ -33845,16 +34351,19 @@ fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
         // Alone, with no Clear All over it. A row that throws away nothing is
         // furniture, and the one thing this panel has to say when it is empty
         // is that it is empty.
-        return vec![
-            menu::Entry::new(menu::Command::Dismiss, "Nothing to read").glyph(icons::NOTIFICATIONS)
-        ];
+        return vec![menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-nothing-to-read"),
+        )
+        .glyph(icons::NOTIFICATIONS)];
     }
 
-    let mut entries = vec![
-        menu::Entry::new(menu::Command::DismissNotifications, "Clear All")
-            .glyph(icons::UNINSTALL)
-            .holds(),
-    ];
+    let mut entries = vec![menu::Entry::new(
+        menu::Command::DismissNotifications,
+        crate::i18n::text("shell-clear-all"),
+    )
+    .glyph(icons::UNINSTALL)
+    .holds()];
     entries.extend(list.iter().map(|held| {
         // A press opens it where there is something to open, and puts it away
         // where there is not. An announcement with no buttons has nothing
@@ -34525,11 +35034,14 @@ fn spring_rect(glide: &mut Glide, target: [f32; 4], dt: f32) -> [f32; 4] {
 /// is *disabled and still drawn* so the menu keeps its shape on every screen —
 /// is the kind of thing that is worth being able to assert.
 fn floating_menu_entries(before: Option<usize>, after: Option<usize>) -> Vec<menu::Entry> {
-    let move_next = menu::Entry::new(menu::Command::PipToNextDisplay, "Move to next display")
-        .glyph(icons::ARROW_RIGHT);
+    let move_next = menu::Entry::new(
+        menu::Command::PipToNextDisplay,
+        crate::i18n::text("shell-move-to-next-display"),
+    )
+    .glyph(icons::ARROW_RIGHT);
     let move_previous = menu::Entry::new(
         menu::Command::PipToPreviousDisplay,
-        "Move to previous display",
+        crate::i18n::text("shell-move-to-previous-display"),
     )
     .glyph(icons::ARROW_LEFT);
     vec![
@@ -34538,15 +35050,21 @@ fn floating_menu_entries(before: Option<usize>, after: Option<usize>) -> Vec<men
         // something came here to do, and on a pad Resize is the only way to
         // resize one at all — the stick alone moves it. See
         // [`Shell::move_or_resize_the_floating_window`].
-        menu::Entry::new(menu::Command::PipMove, "Move"),
-        menu::Entry::new(menu::Command::PipResize, "Resize"),
+        menu::Entry::new(menu::Command::PipMove, crate::i18n::text("shell-move")),
+        menu::Entry::new(menu::Command::PipResize, crate::i18n::text("label-resize")),
         // And the two that undo them, in the order they undo them by: back to
         // the size and the corner the Settings page asks for, or out of the
         // corner altogether. They sit with Move and Resize because all four are
         // the same question — how large this window is and where — and the two
         // below them are a different one.
-        menu::Entry::new(menu::Command::PipRealign, "Realign"),
-        menu::Entry::new(menu::Command::PipFullScreen, "Full screen"),
+        menu::Entry::new(
+            menu::Command::PipRealign,
+            crate::i18n::text("label-realign"),
+        ),
+        menu::Entry::new(
+            menu::Command::PipFullScreen,
+            crate::i18n::text("shell-full-screen"),
+        ),
         match after.is_some() {
             true => move_next,
             false => move_next.disabled(),
@@ -34555,10 +35073,10 @@ fn floating_menu_entries(before: Option<usize>, after: Option<usize>) -> Vec<men
             true => move_previous,
             false => move_previous.disabled(),
         },
-        menu::Entry::new(menu::Command::PipClose, "Close"),
+        menu::Entry::new(menu::Command::PipClose, crate::i18n::text("shell-close")),
         // Its own band: the seven above act on the window, and this one acts on
         // the menu. `B` does the same and is not discoverable.
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ]
 }
 
@@ -34576,11 +35094,14 @@ fn window_card_entries(
     after: Option<usize>,
     corners: bool,
 ) -> Vec<menu::Entry> {
-    let move_next = menu::Entry::new(menu::Command::MoveToNextDisplay, "Move to next display")
-        .glyph(icons::ARROW_RIGHT);
+    let move_next = menu::Entry::new(
+        menu::Command::MoveToNextDisplay,
+        crate::i18n::text("shell-move-to-next-display"),
+    )
+    .glyph(icons::ARROW_RIGHT);
     let move_previous = menu::Entry::new(
         menu::Command::MoveToPreviousDisplay,
-        "Move to previous display",
+        crate::i18n::text("shell-move-to-previous-display"),
     )
     .glyph(icons::ARROW_LEFT);
     // The row that sends this window to a corner, under the two moves and over
@@ -34595,8 +35116,11 @@ fn window_card_entries(
     // about this session's screens, which the user can see for themselves, and
     // this by a switch on a page, which they cannot.
     let float = corners.then(|| {
-        menu::Entry::new(menu::Command::FloatWindow, "Open as Picture-in-Picture")
-            .glyph(icons::SETTING_PIP)
+        menu::Entry::new(
+            menu::Command::FloatWindow,
+            crate::i18n::text("shell-open-as-picture-in-picture"),
+        )
+        .glyph(icons::SETTING_PIP)
     });
     [
         match after.is_some() {
@@ -34611,10 +35135,14 @@ fn window_card_entries(
     .into_iter()
     .chain(float)
     .chain([
-        menu::Entry::new(menu::Command::Screenshot, "Screenshot the app").glyph(icons::SCREENSHOT),
+        menu::Entry::new(
+            menu::Command::Screenshot,
+            crate::i18n::text("shell-screenshot-the-app"),
+        )
+        .glyph(icons::SCREENSHOT),
         // Its own band: the rows above act on the window, and this one acts on
         // the menu. `B` does the same and is not discoverable.
-        menu::Entry::new(menu::Command::Dismiss, "Cancel").group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ])
     .collect()
 }
@@ -34858,12 +35386,10 @@ fn local_time() -> Option<libc::tm> {
 /// The local wall clock, in the bar's corner format (`6/12 0:40`).
 fn wall_clock() -> Option<String> {
     let tm = local_time()?;
-    Some(format!(
-        "{}/{} {}:{:02}",
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min
+    Some(crate::message!("clock-corner",
+        "month" => (tm.tm_mon + 1).to_string(),
+        "day" => tm.tm_mday.to_string(),
+        "time" => format!("{}:{:02}", tm.tm_hour, tm.tm_min),
     ))
 }
 
@@ -34872,55 +35398,25 @@ fn wall_clock_face() -> Option<(String, String)> {
     local_time().as_ref().map(clock_face)
 }
 
-const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-/// Written out here rather than handed to `strftime`, which would answer in
-/// whatever locale the session happened to inherit while every other word in
-/// this shell is in English. A header reading "wtorek, 5 sierpnia" over
-/// "Nothing is running" looks like a bug, not like localisation — the day to
-/// translate this is the day the rest of it is translated too.
-///
-/// Both names are cut to three letters, which is what lets the day share the
-/// clock's line instead of taking one of its own. The sidebar's width is
-/// clamped while its type scales with the display, so the room beside the time
-/// is at its narrowest on a big screen — and "Wednesday, 28 September" printed
-/// straight through the time there. Three letters is the one form that fits at
-/// every size, and a header is a glance rather than a sentence.
+/// Compact, translator-controlled date labels; retain the shell's 24-hour clock.
 fn clock_face(tm: &libc::tm) -> (String, String) {
-    let short = |name: &str| name.chars().take(3).collect::<String>();
-    let weekday = WEEKDAYS
-        .get(tm.tm_wday.clamp(0, 6) as usize)
-        .copied()
-        .unwrap_or_default();
-    let month = MONTHS
-        .get(tm.tm_mon.clamp(0, 11) as usize)
-        .copied()
-        .unwrap_or_default();
+    let weekdays = [
+        "date-sun", "date-mon", "date-tue", "date-wed", "date-thu", "date-fri", "date-sat",
+    ];
+    let months = [
+        "date-jan", "date-feb", "date-mar", "date-apr", "date-may", "date-jun", "date-jul",
+        "date-aug", "date-sep", "date-oct", "date-nov", "date-dec",
+    ];
+    let mut args = fluent_bundle::FluentArgs::new();
+    args.set(
+        "weekday",
+        i18n::text(weekdays[tm.tm_wday.clamp(0, 6) as usize]),
+    );
+    args.set("month", i18n::text(months[tm.tm_mon.clamp(0, 11) as usize]));
+    args.set("day", tm.tm_mday.to_string());
     (
         format!("{}:{:02}", tm.tm_hour, tm.tm_min),
-        format!("{} {} {}", short(weekday), tm.tm_mday, short(month)),
+        i18n::format("date-short", &args),
     )
 }
 
@@ -41455,6 +41951,9 @@ mod bios_walk_tests {
 
     fn page(title: &str, rows: Vec<apps::Entry>) -> apps::Entry {
         apps::Entry::Folder(apps::Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: title.to_string(),
             comment: None,
             icon: None,
@@ -41469,6 +41968,9 @@ mod bios_walk_tests {
 
     fn asks(title: &str, about: settings::Picking) -> apps::Entry {
         apps::Entry::Folder(apps::Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: title.to_string(),
             comment: None,
             icon: None,

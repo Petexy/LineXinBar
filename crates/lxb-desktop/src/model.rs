@@ -327,6 +327,7 @@ fn read_into(
     // nobody asked twice. What a *search* has left of it is on the field
     // instead, which is the row that is doing the narrowing.
     folder.comment = Some(shown.note);
+    folder.comment_message = None;
     Some(shown.orders)
 }
 
@@ -2767,6 +2768,9 @@ mod tests {
     /// A row that opens a column of its own.
     fn folder(title: &str, entries: Vec<Entry>) -> Entry {
         Entry::Folder(crate::apps::Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: title.into(),
             comment: None,
             icon: None,
@@ -2919,6 +2923,9 @@ mod tests {
     fn places(first: &Path, second: &Path) -> Lattice {
         let place = |title: &str, at: &Path| {
             Entry::Folder(crate::apps::Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: title.into(),
                 comment: None,
                 icon: None,
@@ -3038,6 +3045,9 @@ mod tests {
                 title: "System",
                 icon: "system",
                 entries: vec![Entry::Folder(crate::apps::Folder {
+                    title_message: None,
+                    comment_message: None,
+                    identity: None,
                     title: "Files".into(),
                     comment: None,
                     icon: None,
@@ -3206,6 +3216,9 @@ mod tests {
     fn the_deepest_disk_holding_a_path_wins() {
         let disk = |at: &str| {
             Entry::Folder(crate::apps::Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
                 title: at.into(),
                 comment: None,
                 icon: None,
@@ -3762,6 +3775,9 @@ mod tests {
     /// The row a Steam library carries over its first game.
     fn index(games: Vec<Entry>) -> Entry {
         Entry::Folder(crate::apps::Folder {
+            title_message: None,
+            comment_message: None,
+            identity: None,
             title: "Alphabetical".into(),
             comment: None,
             icon: None,
@@ -4172,6 +4188,9 @@ mod tests {
                 title: "Multimedia",
                 icon: "multimedia",
                 entries: vec![Entry::Folder(crate::apps::Folder {
+                    title_message: None,
+                    comment_message: None,
+                    identity: None,
                     title: "Music".into(),
                     comment: None,
                     icon: Some("music".into()),

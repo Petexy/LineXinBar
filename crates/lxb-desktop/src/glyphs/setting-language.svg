@@ -1,0 +1,53 @@
+<!--
+  Settings > Language: a speech bubble with a letter in it.
+
+  What the row asks is which language the shell speaks, and the two marks that
+  might otherwise have said so are both spoken for: a globe is
+  category-internet.svg, and a flag is setting-layout.svg, whose question is
+  whose keyboard this is. A bubble with a letter is the mark for language in
+  every set there has ever been, and it is one silhouette the Settings column
+  has not got — a slab with a tail, beside a palette, a disc and a screen.
+
+  The letter is cut out of the bubble rather than drawn on it, which is how
+  every mark at the head of this column carries its symbol (the arrow through
+  the Updates disc, the wells in the palette). A capital A, with a flat top for
+  the reason setting-keys.svg gives: an apex would close the counter to nothing
+  and the bevel would fill it in. Held open at two and a half units, it stands
+  as a small island inside the letter, which is what an engraved A has in the
+  middle of it.
+
+  The tail runs straight down off the left edge to a point, and the point is
+  turned rather than sharp because every corner in this set is. Two and a half
+  units of wall are left above and below the letter, more than the bevel is
+  deep at the smallest size a settings row is drawn at.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="bubble" d="M7.5 3.4
+                         H24.5
+                         A4.5 4.5 0 0 1 29 7.9
+                         V19.1
+                         A4.5 4.5 0 0 1 24.5 23.6
+                         H10.2
+                         L3.55 28.35
+                         A0.75 0.75 0 0 1 3 27.75
+                         V7.9
+                         A4.5 4.5 0 0 1 7.5 3.4 Z"/>
+    <g id="letter" fill="none" stroke="#000000" stroke-width="2.4"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.2 19.2 L13.4 7.8 H18.6 L21.8 19.2"/>
+      <path d="M11.6 15.4 H20.4"/>
+    </g>
+    <mask id="pierced">
+      <use href="#bubble" fill="#ffffff"/>
+      <use href="#letter"/>
+    </mask>
+  </defs>
+  <g mask="url(#pierced)">
+    <use href="#bubble" fill="#ffffff"/>
+  </g>
+</svg>
