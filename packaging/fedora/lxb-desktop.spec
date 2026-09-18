@@ -228,6 +228,7 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 %{_bindir}/lxb-portal
 %{_bindir}/lxb-updates
 %{_datadir}/polkit-1/actions/org.linexinbar.updates.policy
+%{_datadir}/polkit-1/actions/org.linexinbar.locale.policy
 %{_datadir}/doc/lxb-desktop/updates.md
 %{_bindir}/lxb-session
 %{_datadir}/wayland-sessions/lxb.desktop

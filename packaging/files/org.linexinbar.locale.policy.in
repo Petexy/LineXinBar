@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>LineXinBar</vendor>
+  <action id="org.linexinbar.locale.apply">
+    <description>Change the system language</description>
+    <description xml:lang="fr">Changer la langue du système</description>
+    <description xml:lang="es">Cambiar el idioma del sistema</description>
+    <description xml:lang="pl">Zmiana języka systemu</description>
+    <description xml:lang="de">Die Systemsprache ändern</description>
+    <description xml:lang="hi">सिस्टम की भाषा बदलें</description>
+    <description xml:lang="pt_BR">Alterar o idioma do sistema</description>
+    <description xml:lang="ru">Изменение языка системы</description>
+    <description xml:lang="zh_CN">更改系统语言</description>
+    <message>Authentication is required to change the language of this system.</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour changer la langue de ce système.</message>
+    <message xml:lang="es">Hace falta autenticarse para cambiar el idioma de este sistema.</message>
+    <message xml:lang="pl">Zmiana języka tego systemu wymaga uwierzytelnienia.</message>
+    <message xml:lang="de">Zum Ändern der Sprache dieses Systems ist eine Authentifizierung erforderlich.</message>
+    <message xml:lang="hi">इस सिस्टम की भाषा बदलने के लिए प्रमाणीकरण आवश्यक है।</message>
+    <message xml:lang="pt_BR">É necessária autenticação para alterar o idioma deste sistema.</message>
+    <message xml:lang="ru">Для изменения языка этой системы требуется аутентификация.</message>
+    <message xml:lang="zh_CN">更改此系统的语言需要进行身份验证。</message>
+    <icon_name>preferences-desktop-locale</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--apply-language</annotate>
+  </action>
+</policyconfig>

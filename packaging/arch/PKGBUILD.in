@@ -105,6 +105,10 @@ _linexinbar_licenses() {
         "$pkgdir/usr/share/licenses/$1/Roboto-Apache-2.0.txt"
     install -Dm0644 font/RobotoMono/OFL.txt \
         "$pkgdir/usr/share/licenses/$1/RobotoMono-OFL-1.1.txt"
+    install -Dm0644 font/NotoSansDevanagariUI/OFL.txt \
+        "$pkgdir/usr/share/licenses/$1/NotoSansDevanagariUI-OFL-1.1.txt"
+    install -Dm0644 font/NotoSansCJKsc/OFL.txt \
+        "$pkgdir/usr/share/licenses/$1/NotoSansCJKsc-OFL-1.1.txt"
     # Smithay is in this tree rather than pulled from crates.io, and MIT asks
     # for its notice to travel with the binary it is linked into.
     install -Dm0644 third_party/lxb-smithay/LICENSE.txt \

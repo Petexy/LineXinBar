@@ -177,6 +177,41 @@ if command -v xmllint >/dev/null 2>&1; then
         || package_die "the updates policy is not well-formed XML"
 fi
 
+# And the one that makes Settings > Language able to change a machine's
+# language rather than only the shell's. Without it the shell can set the
+# system locale and still be outranked by a LANG or an LC_ALL in
+# /etc/environment, which is the login screen coming up in the old language
+# with nothing on screen able to explain why.
+package_note "checking the language polkit action is staged and bound"
+policy="$work/desktop/usr/share/polkit-1/actions/org.linexinbar.locale.policy"
+[[ -f "$policy" ]] \
+    || package_die "the desktop component does not stage the language polkit action"
+grep -q 'id="org.linexinbar.locale.apply"' "$policy" \
+    || package_die "the language policy does not declare org.linexinbar.locale.apply"
+# Bound to the shell's own binary and to the one flag that makes it write a
+# language and exit. Unbound, the action would authorize running the whole
+# shell as root with any command line at all.
+grep -q '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/lxb-desktop</annotate>' "$policy" \
+    || package_die "the language policy is not bound to the installed shell path"
+grep -q '<annotate key="org.freedesktop.policykit.exec.argv1">--apply-language</annotate>' "$policy" \
+    || package_die "the language policy is not bound to the --apply-language argument"
+grep -q '@HELPER@' "$policy" \
+    && package_die "the language policy still carries its @HELPER@ placeholder"
+grep -q 'auth_admin_keep' "$policy" \
+    && package_die "the language policy caches its authorization with auth_admin_keep"
+grep -q '<allow_active>auth_admin</allow_active>' "$policy" \
+    || package_die "the language policy does not require administrator authentication"
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$policy" \
+        || package_die "the language policy is not well-formed XML"
+fi
+# The flag the action names has to be the flag the shell answers to. They are
+# three strings in three languages that must stay the same word, so the one in
+# the policy is read back against the one in the source.
+grep -q 'pub const APPLY_FLAG: &str = "--apply-language";' \
+    "$PROJECT_ROOT/crates/lxb-desktop/src/locale.rs" \
+    || package_die "the shell no longer names --apply-language as its privileged flag"
+
 package_note "checking the three components partition the payload"
 # The compositor is a package of its own so a display manager can depend on a
 # Wayland session without pulling in this project's shell, and the RetroArch

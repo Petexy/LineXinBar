@@ -10932,11 +10932,49 @@ const HINT_MARGIN: f32 = 26.0;
 /// Roughly how wide one character of the label is, as a share of its size.
 /// The shell cannot measure a text run before the GPU shapes it, and the chip
 /// behind the run has to be sized now; the estimate is generous, so the label
-/// sits in the chip rather than against its end.
-const HINT_ADVANCE: f32 = 0.58;
-/// What the hint says. Two glyphs and one word: it is a reminder for someone
-/// holding the controller, not documentation.
-const HINT_LABEL_TEXT: &str = "Keyboard";
+/// sits in the chip rather than against its end. See [`estimated_width`],
+/// which applies it and knows the one kind of character it is not generous
+/// for.
+///
+/// Generous, that is, since it was measured: the widest of the shell's own
+/// short words in Latin or Cyrillic is *Параметры* at 0.61 em a character,
+/// and at the 0.58 this used to be the Russian *Выбрать* — and the English
+/// *Remove* — were cut to an ellipsis in the room they were given.
+/// `gpu::tests::every_legend_word_fits_the_room_its_estimate_gives_it` holds
+/// every language's legend words to it.
+const HINT_ADVANCE: f32 = 0.66;
+
+/// Roughly how wide `label` will be at `size`, before the GPU has shaped it.
+///
+/// [`HINT_ADVANCE`] per character, except that a Han, kana, Hangul or
+/// fullwidth character is a full em wide: every one of them is drawn on a
+/// square, which is nearly twice the Latin estimate, and a two-character
+/// Chinese word given the room of two Latin letters was cut to an ellipsis on
+/// the start screen's legend. The estimate stays an estimate — a Devanagari
+/// word carries combining marks that advance nothing and is over-estimated —
+/// but it is now generous in every script the shell writes, which is all the
+/// callers ask of it: the room a word is given, and where the next one begins.
+fn estimated_width(label: &str, size: f32) -> f32 {
+    label
+        .chars()
+        .map(|c| {
+            let wide = matches!(c as u32,
+                0x1100..=0x115F // Hangul Jamo
+                | 0x2E80..=0x303E // CJK radicals, kana marks, CJK punctuation
+                | 0x3041..=0x33FF // kana, bopomofo, Hangul compatibility, enclosed CJK
+                | 0x3400..=0x4DBF // CJK extension A
+                | 0x4E00..=0x9FFF // CJK unified ideographs
+                | 0xA000..=0xA4CF // Yi
+                | 0xAC00..=0xD7A3 // Hangul syllables
+                | 0xF900..=0xFAFF // CJK compatibility ideographs
+                | 0xFE30..=0xFE4F // CJK compatibility forms
+                | 0xFF00..=0xFF60 // fullwidth forms
+                | 0xFFE0..=0xFFE6
+                | 0x20000..=0x3FFFD); // CJK extensions B onward
+            size * if wide { 1.0 } else { HINT_ADVANCE }
+        })
+        .sum()
+}
 
 /// Where the hint chip sits: the bottom-right corner, out of the way of
 /// anything an application is likely to have put in the middle.
@@ -10949,7 +10987,7 @@ pub fn keyboard_hint_rect(width: f32, height: f32) -> [f32; 4] {
         + HINT_GAP * 3.0 * scale
         // The "+" between the two buttons, at the label's size.
         + label * 0.6
-        + HINT_LABEL_TEXT.chars().count() as f32 * label * HINT_ADVANCE;
+        + estimated_width(crate::i18n::text("shell-keyboard"), label);
     let h = glyph + HINT_PADDING * 1.5 * scale;
     let margin = HINT_MARGIN * scale;
     [width - margin - w, height - margin - h, w, h]
@@ -11043,7 +11081,9 @@ pub fn build_keyboard_hint(view: HintView, width: f32, height: f32) -> Scene {
     }
 
     texts.push(Text {
-        content: HINT_LABEL_TEXT.to_string(),
+        // Two glyphs and one word: it is a reminder for someone holding the
+        // controller, not documentation.
+        content: crate::i18n::text("shell-keyboard").to_string(),
         x: at,
         y: middle - label * 0.66,
         size: label,
@@ -11089,15 +11129,19 @@ struct LegendSize {
     step: f32,
 }
 
-/// Roughly how wide one character of a legend is, as a share of its size.
+/// How wide a legend's word is given, before the GPU has shaped it.
 ///
-/// [`HINT_ADVANCE`]'s own estimate and it is here for the same reason: the
-/// shell cannot measure a run before the GPU shapes it, and this row is laid
-/// out from its right-hand end leftwards. Each word is set right-aligned in a
-/// box, so it lands exactly where it should whatever its true width — the
+/// [`estimated_width`], and it is used here for the same reason it exists:
+/// the shell cannot measure a run before the GPU shapes it, and this row is
+/// laid out from its right-hand end leftwards. Each word is set right-aligned
+/// in a box, so it lands exactly where it should whatever its true width — the
 /// estimate only decides how much air is left before the pair to its left,
-/// where there is nothing to collide with.
-const LEGEND_ADVANCE: f32 = 0.58;
+/// where there is nothing to collide with. The box has to be *at least* as
+/// wide as the word, though, or the layout cuts the word to an ellipsis: which
+/// is what the estimate knowing a full-width character from a Latin one is for.
+pub(crate) fn legend_word_width(label: &str, size: f32) -> f32 {
+    estimated_width(label, size)
+}
 
 /// Lay a legend out from `right` leftwards, centred on `middle`, and say where
 /// its left-hand end came out.
@@ -11144,7 +11188,7 @@ fn legend_row(
                 Some(hint.glyph),
             ));
         }
-        let word = hint.label.chars().count() as f32 * size.label * LEGEND_ADVANCE;
+        let word = legend_word_width(hint.label, size.label);
         let ends = at - size.glyph - size.gap;
         texts.push(Text {
             content: hint.label.to_string(),
@@ -13579,7 +13623,7 @@ fn build_game_launch(view: LaunchView, width: f32, height: f32) -> Scene {
         // GPU shapes it, and what the estimate is *for* is where the next pair
         // begins. It is an over-estimate for these two words, so the pairs part
         // rather than touch.
-        let room = word.chars().count() as f32 * size * LEGEND_ADVANCE;
+        let room = legend_word_width(word, size);
         scene.texts.push(Text {
             content: word.to_string(),
             x: at + glyph + gap,
@@ -18242,7 +18286,7 @@ mod tests {
                     "Appearance",
                     vec![
                         folder(
-                            "Accent color",
+                            "Accent colour",
                             vec![choice("Green", false), choice("Purple", true)],
                         ),
                         // A subcategory rather than a value, so a swatch on
@@ -18333,7 +18377,7 @@ mod tests {
                 .x
         };
         assert!(at("Settings") < at("Appearance"));
-        assert!(at("Appearance") < at("Accent color"));
+        assert!(at("Appearance") < at("Accent colour"));
     }
 
     /// A row hanging over the near edge is still a row. It is drawn where it
@@ -18448,13 +18492,13 @@ mod tests {
         let shown = |scene: &Scene, name: &str| scene.texts.iter().any(|text| text.content == name);
         assert!(shown(&scene, "Appearance"), "the row it was opened from");
         assert!(!shown(&scene, "plain"), "its neighbour is behind with it");
-        assert!(shown(&scene, "Accent color"), "the open column, in full");
+        assert!(shown(&scene, "Accent colour"), "the open column, in full");
         assert!(shown(&scene, "Wallpaper"), "every row of it");
 
         // A step further in and the same is true one column along, while the
         // column that has now fallen two back is off the screen entirely.
         let scene = build_with(&lattice, &walked(&lattice), 1920.0, 1080.0, true, &AllSlots);
-        assert!(shown(&scene, "Accent color"), "the row it was opened from");
+        assert!(shown(&scene, "Accent colour"), "the row it was opened from");
         assert!(
             !shown(&scene, "Wallpaper"),
             "its neighbour is behind with it"
@@ -18480,7 +18524,7 @@ mod tests {
         // stand.
         let paths = [
             (stepped(&lattice), "Appearance"),
-            (walked(&lattice), "Accent color"),
+            (walked(&lattice), "Accent colour"),
         ];
 
         for (width, height) in [
@@ -18646,7 +18690,7 @@ mod tests {
         // The labels go back with the icons they belong to — in size, in ink,
         // and in how close they stand to their own icon. A label that kept its
         // distance from one half the size has come away from its own name.
-        let (outer, inner) = (title("Appearance"), title("Accent color"));
+        let (outer, inner) = (title("Appearance"), title("Accent colour"));
         assert!((outer.size / (22.0 * one_back)).abs() - 1.0 < 0.01);
         assert!(outer.color[3] < inner.color[3]);
         assert!(((outer.x - behind[0]) / (inner.x - open[0]) - one_back).abs() < 0.01);
@@ -18933,7 +18977,7 @@ mod tests {
             id: "settings",
             title: "Settings",
             icon: "settings",
-            entries: vec![app("plain"), folder("Color temperature", vec![bar(0.4)])],
+            entries: vec![app("plain"), folder("Colour temperature", vec![bar(0.4)])],
         }]);
         // One step in is the whole path: the bar is the only row of the column
         // it opens onto, and there is nowhere further to go.
@@ -19015,7 +19059,7 @@ mod tests {
             id: "settings",
             title: "Settings",
             icon: "settings",
-            entries: vec![app("plain"), folder("Color temperature", vec![bar(fill)])],
+            entries: vec![app("plain"), folder("Colour temperature", vec![bar(fill)])],
         }]);
         let cursor = stepped(&lattice);
         let (width, height) = (1920.0, 1080.0);
@@ -19107,7 +19151,7 @@ mod tests {
             id: "settings",
             title: "Settings",
             icon: "settings",
-            entries: vec![app("plain"), folder("Color temperature", vec![bar(0.4)])],
+            entries: vec![app("plain"), folder("Colour temperature", vec![bar(0.4)])],
         }]);
         let cursor = stepped(&lattice);
         let (width, height) = (1920.0, 1080.0);

@@ -583,9 +583,20 @@ fn unlocked_at(seconds: u64) -> Option<String> {
         return None;
     }
     let tm = unsafe { tm.assume_init() };
-    Some(
-        crate::message!("achievement-unlocked-at", "year" => format!("{:04}", tm.tm_year + 1900), "month" => format!("{:02}", tm.tm_mon + 1), "day" => format!("{:02}", tm.tm_mday), "hour" => format!("{:02}", tm.tm_hour), "minute" => format!("{:02}", tm.tm_min)),
-    )
+    // The date in the order the language writes one and the time on the clock
+    // the session is set to, both built once in `i18n` so this row cannot
+    // drift from the rest of the shell's. See [`crate::i18n::date_in_figures`].
+    Some(crate::message!("achievement-unlocked-at",
+        "date" => crate::i18n::date_in_figures(
+            tm.tm_mday.clamp(1, 31) as u32,
+            (tm.tm_mon.clamp(0, 11) + 1) as u32,
+            tm.tm_year + 1900,
+        ),
+        "time" => crate::i18n::time_of_day(
+            tm.tm_hour.clamp(0, 23) as u32,
+            tm.tm_min.clamp(0, 59) as u32,
+        ),
+    ))
 }
 
 type ImageKey = (u32, String);

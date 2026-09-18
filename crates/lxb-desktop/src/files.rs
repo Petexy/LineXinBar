@@ -79,8 +79,11 @@ const MOST: usize = 10_000;
 /// Here rather than where the row is built, because opening it writes the note
 /// back — one path for every place, and this is what the Files row's own note
 /// is when the place it stands for is the list of disks.
+pub const WHAT_FILES_ARE: &str = "shell-your-folder-this-machine-and-anything-plugged-in";
+
+/// The same, in the language of the moment.
 pub fn what_files_are() -> &'static str {
-    crate::i18n::text("shell-your-folder-this-machine-and-anything-plugged-in")
+    crate::i18n::text(WHAT_FILES_ARE)
 }
 
 /// What a row of the explorer stands for on the disk.

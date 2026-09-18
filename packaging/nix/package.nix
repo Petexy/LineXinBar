@@ -153,6 +153,10 @@ rustPlatform.buildRustPackage {
       "$out/share/licenses/$pname/Roboto-Apache-2.0.txt"
     install -Dm0644 font/RobotoMono/OFL.txt \
       "$out/share/licenses/$pname/RobotoMono-OFL-1.1.txt"
+    install -Dm0644 font/NotoSansDevanagariUI/OFL.txt \
+      "$out/share/licenses/$pname/NotoSansDevanagariUI-OFL-1.1.txt"
+    install -Dm0644 font/NotoSansCJKsc/OFL.txt \
+      "$out/share/licenses/$pname/NotoSansCJKsc-OFL-1.1.txt"
     install -Dm0644 docs/configuration.md \
       "$out/share/doc/$pname/configuration.md"
     install -Dm0644 examples/config.toml \
@@ -200,6 +204,10 @@ rustPlatform.buildRustPackage {
       "$out/share/polkit-1/actions/org.linexinbar.updates.policy"
     substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.updates.policy" \
       --replace-fail '@HELPER@' "$out/bin/lxb-updates"
+    install -Dm0644 packaging/files/org.linexinbar.locale.policy.in \
+      "$out/share/polkit-1/actions/org.linexinbar.locale.policy"
+    substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.locale.policy" \
+      --replace-fail '@HELPER@' "$out/bin/lxb-desktop"
     install -Dm0644 docs/updates.md "$out/share/doc/$pname/updates.md"
 
     # The RetroArch integration's marks. Its binary is installed by

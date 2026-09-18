@@ -804,6 +804,9 @@ enum Ask {
     Search(Kind, String),
     /// This file is not on the disk any more — the user has just deleted it.
     Forget(PathBuf),
+    /// Build and send every shelf again, because the shell has changed
+    /// language and the words on them are the worker's to write.
+    SayAgain,
     /// This file is on the disk now — the session has just written it.
     ///
     /// The exact opposite of [`Ask::Forget`], and there for the same reason:
@@ -1027,6 +1030,19 @@ impl Library {
     /// just gone to the trash.
     pub fn forget_below(&mut self, folder: &Path) {
         self.ask(Ask::ForgetBelow(folder.to_path_buf()));
+    }
+
+    /// Say every shelf again, because the shell has changed language.
+    ///
+    /// What a shelf's row says — "177 audio files in your home folder" — and
+    /// the field at the head of its column are written by the worker as it
+    /// builds the shelf, in whichever language the shell speaks at that
+    /// moment. The shell keeps neither the count nor whether the walk has
+    /// settled, so it cannot re-say them itself; it asks for the shelves
+    /// again, and they come back down the path a walk's own findings take,
+    /// which is the path that keeps the cursor and the search where they are.
+    pub fn refresh_language(&mut self) {
+        self.ask(Ask::SayAgain);
     }
 
     /// Somebody has stepped into a shelf: look at the disk again soon.
@@ -1391,6 +1407,9 @@ impl Worker<'_> {
             // Answered by [`Worker::rest`], which is where waiting happens and
             // so the only place that can stop doing it.
             Ask::LookAgain => {}
+            // Nothing on the shelves has changed; what is said about them
+            // has. Every one is built again, in the language of the moment.
+            Ask::SayAgain => self.dirty = [true; 3],
             // Dropped here, on the way out of this function, which is the
             // whole point of it having been sent.
             Ask::Discard(rows) => drop(rows),

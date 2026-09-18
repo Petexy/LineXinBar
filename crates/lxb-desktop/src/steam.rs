@@ -4217,7 +4217,7 @@ mod tests {
         assert_eq!(game.name, "Installed");
         game.standing = Standing::Validating;
         assert_eq!(super::game_note(&game), "Sprawdzanie plików");
-        i18n::set(Language::English);
+        i18n::set(Language::British);
         assert_eq!(super::game_note(&game), game.note());
     }
 

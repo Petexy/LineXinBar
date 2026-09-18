@@ -1,9 +1,18 @@
 # Język powłoki. Nazwy języków są podawane w ich własnym języku.
 language-title = Język
-language-description = Język interfejsu powłoki
-language-system = Domyślny systemowy
-language-system-description = Używaj języka sesji, a w razie braku tłumaczenia — angielskiego
-language-choice-description = Zastosuj od razu w powłoce
+language-description = Język powłoki i systemu
+language-choice-description = Przełącza język powłoki i systemu
+language-in-use = Używany przez powłokę i system
+language-changing = Zmienianie języka systemu…
+language-in-use-no-service = Używany przez powłokę i to, co otwiera; ten komputer nie ma usługi ustawień regionalnych, która zapamiętałaby go na następne uruchomienie
+language-in-use-not-system = Używany przez powłokę i to, co otwiera; własne ustawienie systemu nie zostało zmienione. { $why }
+language-shell-only = Używany tylko przez powłokę. { $why }
+language-locale-not-installed = Ustawienia regionalne { $locale } nie są zainstalowane na tym komputerze.
+language-changed = Używany przez powłokę i system. Pełne zastosowanie może wymagać ponownego uruchomienia.
+language-not-everywhere = Używany przez powłokę i to, co otwiera. Wybierz go ponownie, aby zastosować go wszędzie.
+locale-service-answered = Usługa ustawień regionalnych odpowiedziała: { $answer }.
+polkit-holds-panel-never-asked = Ta sesja ma panel hasła polkit, a mimo to nie została o nie zapytana.
+polkit-not-this-sessions-agent = Ta powłoka nie jest agentem polkit tej sesji, więc polkitd nie przekazał jej pytania.
 
 # Ustawienia: tytuły stron, etykiety wierszy, wartości i opisy pod nimi.
 shell-a-band-of-water-lit-as-three-sheets = Wstęga wody z trzema warstwami światła
@@ -58,6 +67,11 @@ shell-cancel = Anuluj
 shell-candlelight-and-as-far-as-this-goes = Światło świecy — najcieplejsze ustawienie
 shell-check-every-source-and-install-what-is-waiting = Sprawdź wszystkie źródła i zainstaluj oczekujące aktualizacje
 shell-clear = Wyczyść
+shell-clock = Zegar
+# Dwa wiersze pod nim. Krótkie, bo obok każdego stoi bieżąca minuta zapisana
+# w ten sposób, a to cały potrzebny opis.
+shell-24-hour = 24-godzinny
+shell-12-hour = 12-godzinny
 shell-close = Zamknij
 shell-color-temperature = Temperatura barwowa
 shell-come-off-this-device-and-keep-it-paired = Rozłącz, zachowując parowanie
@@ -518,6 +532,17 @@ month-oct = października
 month-nov = listopada
 month-dec = grudnia
 
+# Data zapisana cyframi, dla wierszy bez miejsca na nazwę miesiąca.
+date-numeric = { PAD2($day) }.{ PAD2($month) }.{ $year }
+
+# Godzina — w tym z dwóch zegarów, który wskazuje Ustawienia > System > Zegar.
+# Oba rysuje róg ekranu startowego, więc wolno tu użyć tylko cyfr, dwukropka,
+# ukośnika, kropki, spacji i liter z clock-am oraz clock-pm.
+clock-24-hour = { $hour }:{ PAD2($minute) }
+clock-12-hour = { $hour }:{ PAD2($minute) } { $half }
+clock-am = AM
+clock-pm = PM
+
 # Wiersze Ustawień z nazwą lub liczbą.
 close-target = Zamknij { $target }
 screen-number = Ekran { $screen }
@@ -654,7 +679,7 @@ shell-steam-has-to-ask-that-itself = Steam musi wyświetlić to pytanie we włas
 shell-steam-is-not-running = Steam nie jest uruchomiony.
 shell-steam-is-ready-open-it-to-sign-in = Steam jest gotowy. Otwórz go, aby się zalogować.
 shell-steam-is-still-setting-itself-up = Steam nadal się konfiguruje.
-shell-steam-is-switched-off-in-settings-games-steam = Steam jest wyłączony w Ustawienia → Gry → Steam.
+shell-steam-is-switched-off-in-settings-games-steam = Steam jest wyłączony w Ustawienia > Gry > Steam.
 shell-steam-never-opened-the-window-it-was-asked-for = Steam nie otworzył żądanego okna
 shell-steam-offers-no-tools-for-this = Steam nie udostępnia narzędzi dla tej gry
 shell-steam-s-choice = Wybór Steam
@@ -1264,7 +1289,7 @@ count-settings = { $count ->
     [other] { $count } ustawienia
     }
 
-clock-corner = { $day }.{ $month } { $time }
+clock-corner = { PAD2($day) }.{ PAD2($month) } { $time }
 steam-waiting = Oczekiwanie na Steam
 steam-game-progress = { $state } · { $percent }% z { $size }
 steam-playtime-minutes = { $minutes } min
@@ -1544,7 +1569,7 @@ achievement-summary = { $description } · { $points ->
 achievements-unlocked-count = Odblokowane ({ $count })
 achievements-locked-count = Zablokowane ({ $count })
 achievements-unlocked-of = Odblokowano { $unlocked } / { $total }
-achievement-unlocked-at = Odblokowano { $day }.{ $month }.{ $year } { $hour }:{ $minute }
+achievement-unlocked-at = Odblokowano { $date } { $time }
 trophies-error-retry = { $error } Wróć i otwórz ponownie, aby spróbować jeszcze raz.
 
 # RetroArch.

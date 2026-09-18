@@ -856,7 +856,7 @@ mod tests {
                 "Wyspy Alandzkie"
             ]
         );
-        crate::i18n::set(crate::i18n::Language::English);
+        crate::i18n::set(crate::i18n::Language::British);
     }
 
     /// A layout and each of its variants is one row, and the base layout comes

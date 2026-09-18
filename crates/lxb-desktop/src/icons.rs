@@ -341,6 +341,13 @@ pub const SETTING_ORDER: &str = "lxb:setting-order";
 /// moon, because the row above them already says which setting these hours
 /// belong to and repeating it there would leave three identical marks down one
 /// column.
+///
+/// That face is the shell's clock and not the night light's, so Settings >
+/// System > Clock wears it too — the one page in this tree that is about the
+/// clock itself rather than about an hour of it. A second face cut for that
+/// row would be two drawings of one object, which is the thing this set does
+/// not do; see the head of this file. The night light keeps the *moon*, which
+/// is what is reserved here, and the hours keep borrowing the face.
 pub const SETTING_NIGHT_LIGHT: &str = "lxb:setting-night-light";
 pub const SETTING_SCHEDULE: &str = "lxb:setting-schedule";
 /// The device everything on the machine records from, under Settings > Sounds.
@@ -847,7 +854,7 @@ pub const LETTER_PREFIX: &str = "lxb:letter-";
 /// on purpose. These are cut from the bundled face at startup, one exact
 /// distance transform each, and drawn as marks — so the set is a fixed cost the
 /// shell pays once and not a way of turning any string into a picture. The
-/// corner's clock is the same argument with thirteen characters in it; see
+/// corner's clock is the same argument with seventeen characters in it; see
 /// `gpu::LETTER_SET`, which is deliberately still its own list because a clock
 /// and an index share no character but their material.
 ///

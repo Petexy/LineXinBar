@@ -1424,16 +1424,19 @@ where
             // only that sent somebody looking for a password panel that had
             // never been raised and never would be.
             if wanted_a_password(&err) && crate::polkit::asked_so_far() == asked {
-                why.push_str(match crate::polkit::holds_the_session() {
-                    // The shell *is* this session's panel and was still not
-                    // asked, which is not about this page at all: whatever
-                    // decided is between the daemon and polkitd.
-                    true => " This session holds polkit's password panel and was still never asked for one.",
-                    // And this one is, and covers both ways of getting here:
-                    // something else took the slot, and there being no session
-                    // to take one for.
-                    false => " This shell is not this session's polkit agent, so polkitd never gave it the question.",
-                });
+                why.push(' ');
+                why.push_str(crate::i18n::text(
+                    match crate::polkit::holds_the_session() {
+                        // The shell *is* this session's panel and was still not
+                        // asked, which is not about this page at all: whatever
+                        // decided is between the daemon and polkitd.
+                        true => "polkit-holds-panel-never-asked",
+                        // And this one is, and covers both ways of getting here:
+                        // something else took the slot, and there being no session
+                        // to take one for.
+                        false => "polkit-not-this-sessions-agent",
+                    },
+                ));
             }
             Err(why)
         }

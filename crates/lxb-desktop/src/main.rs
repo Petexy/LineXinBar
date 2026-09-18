@@ -48,6 +48,7 @@ mod icons;
 mod keyboard;
 mod launch;
 mod layouts;
+mod locale;
 mod machine;
 mod marks;
 mod media;
@@ -654,6 +655,19 @@ struct Cli {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     no_steam: std::primitive::bool,
 
+    /// Set the system language to this locale and exit.
+    ///
+    /// The privileged half of Settings > Language, started by polkit and by
+    /// nothing else: it writes the system locale through the locale service
+    /// and changes any of `LANG`, `LC_ALL`, `LC_MESSAGES` and `LANGUAGE` in
+    /// the machine's environment files that name another language, which are
+    /// root's and are what would otherwise keep the login screen in the old
+    /// one. Hidden because there is nothing here for a person to type: the
+    /// press in Settings is what asks for it, and the installed polkit action
+    /// is bound to this flag by name. See [`locale::apply_as_root`].
+    #[arg(long = "apply-language", hide = true, value_name = "LOCALE")]
+    apply_language: Option<String>,
+
     /// Perform actions at fixed times after start-up, as a comma-separated
     /// list of `seconds:action` (`--debug-actions 2:guide,3:right,4:launch`).
     /// Actions are `guide`, `keyboard`, `back`, `launch`, `submit`, `up`,
@@ -960,6 +974,15 @@ fn main() -> anyhow::Result<()> {
         return reveal::ask_the_session(named);
     }
 
+    // Nor this one, and least of all: one language written to the machine, by
+    // a process polkit started as root for that and nothing else. Before
+    // everything below because none of it may run as root — no settings are
+    // read, no catalogue is scanned, no compositor is looked for, and no
+    // window is opened. See [`locale::apply_as_root`].
+    if let Some(locale) = cli.apply_language.as_deref() {
+        return locale::apply_as_root(locale);
+    }
+
     // Nor this one: an archive, unpacked where it stands, and out. Before
     // everything below for the reason above — no settings are read, no
     // catalogue is scanned, no compositor is looked for — and it does not even
@@ -978,6 +1001,11 @@ fn main() -> anyhow::Result<()> {
     // so the shell has to know what it is set to before it builds the rows
     // that say so — and before the first frame is drawn in a colour.
     settings::load();
+    // And, before any thread exists, the session's locale: a chosen language
+    // is the language of every program this shell will open, and the one
+    // moment a variable can be added to the environment safely is now. See
+    // [`locale::prime`].
+    locale::prime();
     // And what the command line said about Steam, which outranks what the file
     // says: `--no-steam` is a session told to leave Steam alone, and the page
     // under Settings > Games has to be able to say so rather than offering a
@@ -1021,14 +1049,15 @@ fn main() -> anyhow::Result<()> {
             None,
         );
     }
-    // The photo viewer and the film player have no tiles. Each is reached from
-    // the menu over the shelf of files it is for — Graphics > Images and
-    // Multimedia > Video — because a console wants one row called Images
-    // rather than a row of pictures beside a row called Pictures, and one
-    // called Video rather than a row of films beside a row called Videos.
-    // What comes back is kept: they are still what a photograph and a film
-    // open in, and still on the Open with list. See
-    // [`apps::take_off_the_bar`].
+    // The photo viewer, the film player and the music player have no tiles.
+    // Each is reached from the menu over the shelf of files it is for —
+    // Graphics > Images, Multimedia > Video and Multimedia > Music — because a
+    // console wants one row called Images rather than a row of pictures beside
+    // a row called Pictures, one called Video rather than a row of films beside
+    // a row called Videos, and one called Music rather than a row of songs
+    // beside a row called Music twice over. What comes back is kept: they are
+    // still what a photograph, a film and a song open in, and still on the Open
+    // with list. See [`apps::take_off_the_bar`].
     let mut aside = Vec::new();
     for app_id in apps::ASIDE {
         aside.extend(apps::take_off_the_bar(&mut categories, app_id));
@@ -1240,6 +1269,7 @@ fn main() -> anyhow::Result<()> {
         bt: bluetooth::Bt::start(),
         users: users::Users::start(),
         users_seen: 0,
+        locale_seen: 0,
         avatar_stamps: HashMap::new(),
         removing_account: None,
         bluetooth_seen: 0,
@@ -3988,6 +4018,8 @@ struct Shell {
     /// Beside it, when each account's avatar was last written — see
     /// [`Shell::sync_users`], which is the only thing that reads either.
     users_seen: u64,
+    /// The last [`locale::published`] the Settings column was built against.
+    locale_seen: u64,
     /// When the picture at each avatar's path was last written.
     ///
     /// An avatar is the one thing the shell draws whose file changes underneath
@@ -5009,6 +5041,9 @@ impl Shell {
         // plus the account form, which is opened and thrown away by where the
         // cursor is standing rather than by anything a worker says.
         self.sync_users();
+        // And where the system stands on the language, which is one bus call
+        // answered under the row that made it.
+        self.sync_locale();
         // Which rows the column has. Set from the same answer the bars are
         // drawn from, so a control that goes away cannot leave a row behind.
         self.guide.set_bars(guide::Bars {
@@ -8338,7 +8373,12 @@ impl Shell {
                         return;
                     }
                     settings::apply(setting);
-                    if matches!(setting, settings::Setting::Language(_)) {
+                    if let settings::Setting::Language(language) = setting {
+                        // The system's language is the locale service's to
+                        // change, as a network is NetworkManager's: asked on
+                        // a thread, answered under the row when it answers.
+                        // The shell's own text changes now.
+                        locale::adopt(language);
                         self.refresh_language();
                     }
                     // A sound device is the sound server's to carry out, as a
@@ -17438,12 +17478,13 @@ impl Shell {
         if self.retroarch.note().is_some() {
             apps::hide_retroarch_client(&mut categories);
         }
-        // And the two applications this shell takes off its own bar, which a
+        // And the three applications this shell takes off its own bar, which a
         // scan has of course just found again. They are reached from the shelf
-        // of files each is for — Graphics > Images, Multimedia > Video — and a
-        // rebuild that left them on would put a Pictures tile beside the
-        // Pictures shelf and a Videos tile beside the Videos shelf, on a bar
-        // that had neither a moment earlier. See [`apps::take_off_the_bar`].
+        // of files each is for — Graphics > Images, Multimedia > Video,
+        // Multimedia > Music — and a rebuild that left them on would put a
+        // Pictures tile beside the Pictures shelf and a Videos tile beside the
+        // Videos shelf, on a bar that had neither a moment earlier. See
+        // [`apps::take_off_the_bar`].
         //
         // What comes back replaces what was held rather than being discarded,
         // because this is a fresh answer to the question the held list is: the
@@ -17457,8 +17498,8 @@ impl Shell {
         self.lattice.aside = aside;
         // Counted here rather than straight off the scan, so this line says the
         // same thing the one at startup does: what is on the bar, and not what
-        // the walk found before the shell had taken its own two rows off it and
-        // put its own one on.
+        // the walk found before the shell had taken its own rows off it and put
+        // its own one on.
         let total: usize = categories.iter().map(apps::Category::apps).sum();
         tracing::info!(
             categories = categories.len(),
@@ -28512,6 +28553,10 @@ impl Shell {
         for app in &mut self.lattice.aside {
             apps::refresh_app_language(app);
         }
+        // The three shelves say what they hold in the worker's words, and
+        // the worker is the only one who knows the count: it is asked to say
+        // them again, and they arrive as a walk's findings do.
+        self.media.refresh_language();
         self.needs_redraw = true;
     }
 
@@ -28677,6 +28722,19 @@ impl Shell {
             }
         }
         self.sync_user_form();
+    }
+
+    /// Rebuild the Language page when the locale service has answered.
+    ///
+    /// The same shape as [`Shell::sync_users`] with nothing to copy: the note
+    /// under the row is read off [`locale::note`] when the page is built.
+    fn sync_locale(&mut self) {
+        let published = locale::published();
+        if published != self.locale_seen {
+            self.locale_seen = published;
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
     }
 
     /// Throw away the drawn picture of any avatar that has been rewritten.
@@ -35383,13 +35441,20 @@ fn local_time() -> Option<libc::tm> {
     Some(tm)
 }
 
-/// The local wall clock, in the bar's corner format (`6/12 0:40`).
+/// The local wall clock, in the bar's corner format (`12/6 0:40`).
+///
+/// The order of the two numbers is the language's and the shape of the time is
+/// the Clock setting's — see `clock-corner` in the catalogs and
+/// [`i18n::time_of_day`]. Both come out of the corner's closed character set,
+/// which is what lets them be drawn in the same material as the marks beside
+/// them; `i18n::tests::every_clock_format_is_drawn_from_the_corners_set` is
+/// what holds every language and both clocks to it.
 fn wall_clock() -> Option<String> {
     let tm = local_time()?;
     Some(crate::message!("clock-corner",
         "month" => (tm.tm_mon + 1).to_string(),
         "day" => tm.tm_mday.to_string(),
-        "time" => format!("{}:{:02}", tm.tm_hour, tm.tm_min),
+        "time" => i18n::time_of_day(tm.tm_hour.clamp(0, 23) as u32, tm.tm_min.clamp(0, 59) as u32),
     ))
 }
 
@@ -35398,7 +35463,8 @@ fn wall_clock_face() -> Option<(String, String)> {
     local_time().as_ref().map(clock_face)
 }
 
-/// Compact, translator-controlled date labels; retain the shell's 24-hour clock.
+/// Compact, translator-controlled date labels, and the time on whichever
+/// clock Settings > System > Clock is set to.
 fn clock_face(tm: &libc::tm) -> (String, String) {
     let weekdays = [
         "date-sun", "date-mon", "date-tue", "date-wed", "date-thu", "date-fri", "date-sat",
@@ -35415,7 +35481,10 @@ fn clock_face(tm: &libc::tm) -> (String, String) {
     args.set("month", i18n::text(months[tm.tm_mon.clamp(0, 11) as usize]));
     args.set("day", tm.tm_mday.to_string());
     (
-        format!("{}:{:02}", tm.tm_hour, tm.tm_min),
+        i18n::time_of_day(
+            tm.tm_hour.clamp(0, 23) as u32,
+            tm.tm_min.clamp(0, 59) as u32,
+        ),
         i18n::format("date-short", &args),
     )
 }

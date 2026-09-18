@@ -4,7 +4,23 @@
   <vendor>LineXinBar</vendor>
   <action id="org.linexinbar.updates.install">
     <description>Install updates</description>
+    <description xml:lang="fr">Installer les mises à jour</description>
+    <description xml:lang="es">Instalar las actualizaciones</description>
+    <description xml:lang="pl">Instalacja aktualizacji</description>
+    <description xml:lang="de">Aktualisierungen installieren</description>
+    <description xml:lang="hi">अपडेट इंस्टॉल करें</description>
+    <description xml:lang="pt_BR">Instalar atualizações</description>
+    <description xml:lang="ru">Установка обновлений</description>
+    <description xml:lang="zh_CN">安装更新</description>
     <message>Authentication is required to install the selected updates.</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour installer les mises à jour sélectionnées.</message>
+    <message xml:lang="es">Hace falta autenticarse para instalar las actualizaciones seleccionadas.</message>
+    <message xml:lang="pl">Instalacja wybranych aktualizacji wymaga uwierzytelnienia.</message>
+    <message xml:lang="de">Zum Installieren der ausgewählten Aktualisierungen ist eine Authentifizierung erforderlich.</message>
+    <message xml:lang="hi">चुने गए अपडेट इंस्टॉल करने के लिए प्रमाणीकरण आवश्यक है।</message>
+    <message xml:lang="pt_BR">É necessária autenticação para instalar as atualizações selecionadas.</message>
+    <message xml:lang="ru">Для установки выбранных обновлений требуется аутентификация.</message>
+    <message xml:lang="zh_CN">安装所选更新需要进行身份验证。</message>
     <icon_name>system-software-update</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>

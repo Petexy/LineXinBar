@@ -119,6 +119,17 @@ stage_desktop() {
     local policy="$install_root/share/polkit-1/actions/org.linexinbar.updates.policy"
     install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.updates.policy.in" "$policy"
     sed -i "s|@HELPER@|$prefix/bin/lxb-updates|g" "$policy"
+
+    # The other narrowly bound action: the privileged half of Settings >
+    # Language. The system locale is the locale service's to write, but
+    # /etc/environment is nobody's daemon's, and a machine that has a language
+    # in it goes on telling the login screen that one whatever the locale
+    # service was told. This is what lets the shell put that right from the
+    # press instead of leaving somebody to edit the file — see
+    # crates/lxb-desktop/src/locale.rs, and the flag the action is bound to.
+    local locale_policy="$install_root/share/polkit-1/actions/org.linexinbar.locale.policy"
+    install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.locale.policy.in" "$locale_policy"
+    sed -i "s|@HELPER@|$prefix/bin/lxb-desktop|g" "$locale_policy"
     install -Dm0644 "$PROJECT_ROOT/docs/updates.md" "$install_root/share/doc/lxb-desktop/updates.md"
 
     install -Dm0755 "$PACKAGING_DIR/files/lxb-session" "$install_root/bin/lxb-session"

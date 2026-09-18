@@ -1396,6 +1396,10 @@ pub const PICTURES: &str = "imagonsole";
 /// and `videonsole` to the machine.
 pub const VIDEOS: &str = "videonsole";
 
+/// The music player's stable name, on the same terms again: **Music** to a
+/// person and `songonsole` to the machine.
+pub const MUSIC: &str = "songonsole";
+
 /// The applications this shell takes off its own bar.
 ///
 /// One list, walked by [`take_off_the_bar`]'s caller, so that adding a third is
@@ -1404,7 +1408,7 @@ pub const VIDEOS: &str = "videonsole";
 /// an application is taken off the bar *because* it is reached from a shelf,
 /// and one taken off with no shelf to reach it from would be installed and
 /// unreachable.
-pub const ASIDE: &[&str] = &[PICTURES, VIDEOS];
+pub const ASIDE: &[&str] = &[PICTURES, VIDEOS, MUSIC];
 
 /// The application set aside for one kind of the user's own files, if there is
 /// one.
@@ -1414,12 +1418,15 @@ pub const ASIDE: &[&str] = &[PICTURES, VIDEOS];
 /// and then has to be able to start it again from the shelf, and those two
 /// facts going out of step is an application nothing can reach.
 ///
-/// Music has none. When it gets one this is where it is said.
+/// All three shelves have one now. `None` is still what a machine answers where
+/// the package is not installed, and that is [`crate::Shell::shelf_app`]'s
+/// question rather than this one: this table says which application *would*
+/// answer for a kind of file, not that it is there.
 pub fn app_for_shelf(kind: crate::media::Kind) -> Option<&'static str> {
     match kind {
         crate::media::Kind::Image => Some(PICTURES),
         crate::media::Kind::Video => Some(VIDEOS),
-        crate::media::Kind::Audio => None,
+        crate::media::Kind::Audio => Some(MUSIC),
     }
 }
 
@@ -1521,7 +1528,7 @@ fn subcategories(id: &str) -> Vec<Entry> {
 fn files_row() -> Entry {
     Entry::Folder(Folder {
         title_message: Some("shell-files"),
-        comment_message: None,
+        comment_message: Some(crate::files::WHAT_FILES_ARE),
         identity: None,
         title: crate::i18n::text("shell-files").to_string(),
         comment: Some(crate::files::what_files_are().to_string()),
@@ -3574,8 +3581,7 @@ mod tests {
         }
     }
 
-    /// Both of them come off, and each stays what its own kind of file opens
-    /// in.
+    /// All three come off, and each stays what its own kind of file opens in.
     #[test]
     fn the_film_player_comes_off_the_bar_beside_the_photo_viewer() {
         let mut categories = assemble(vec![
@@ -3590,6 +3596,11 @@ mod tests {
                  Categories=AudioVideo;Video;Player;\nMimeType=video/x-matroska;\n",
             ),
             entry(
+                "songonsole.desktop",
+                "Name=Music\nExec=songonsole %f\nStartupWMClass=songonsole\n\
+                 Categories=AudioVideo;Audio;Player;Music;\nMimeType=audio/flac;\n",
+            ),
+            entry(
                 "vlc.desktop",
                 "Name=VLC\nExec=vlc\nCategories=AudioVideo;\n",
             ),
@@ -3600,13 +3611,17 @@ mod tests {
             aside.extend(take_off_the_bar(&mut categories, app_id));
         }
         let names: Vec<&str> = aside.iter().map(|app| app.name.as_str()).collect();
-        assert_eq!(names, ["Pictures", "Videos"]);
+        assert_eq!(names, ["Pictures", "Videos", "Music"]);
         assert!(
             aside[1]
                 .mime_types
                 .iter()
                 .any(|mime| mime == "video/x-matroska"),
             "and the player still knows what it opens"
+        );
+        assert!(
+            aside[2].mime_types.iter().any(|mime| mime == "audio/flac"),
+            "and so does the music player"
         );
 
         // Neither is on the bar any more, and what was never taken still is.
@@ -4470,6 +4485,41 @@ mod tests {
         assert!(parse("[Desktop Entry]\nType=Application\nName=X\n").is_none());
     }
 
+    /// A row on the bar is an application's own name, so a change of language
+    /// has to go back to the file it was read from.
+    #[test]
+    fn a_language_change_rereads_an_applications_own_name() {
+        use crate::i18n::{self, Language};
+        let scratch = std::env::temp_dir().join(format!("lxb-apps-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).expect("a scratch directory");
+        let file = scratch.join("probe.desktop");
+        std::fs::write(
+            &file,
+            "[Desktop Entry]\nType=Application\nName=Software Hub\nName[pl]=Centrum\nComment=A store\nComment[pl]=Sklep\nExec=probe\nCategories=System;\n",
+        )
+        .expect("a desktop entry");
+
+        i18n::set(Language::British);
+        let app = App::from_file(&file).expect("the entry parses");
+        assert_eq!(app.name, "Software Hub");
+        let mut rows = vec![Category {
+            id: "test",
+            title: "Test",
+            icon: "",
+            entries: vec![Entry::App(app)],
+        }];
+
+        i18n::set(Language::Polish);
+        refresh_language(&mut rows);
+        let Entry::App(after) = &rows[0].entries[0] else {
+            panic!("the row is still an application");
+        };
+        assert_eq!(after.name, "Centrum");
+        assert_eq!(after.comment.as_deref(), Some("Sklep"));
+        i18n::set(Language::British);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
     #[test]
     fn language_refresh_keeps_search_data_and_desktop_fallbacks() {
         use crate::i18n::{self, Language};
@@ -4478,7 +4528,7 @@ mod tests {
             ("Name[pl]", "Polska nazwa"),
             ("Comment", "Original comment"),
         ]);
-        i18n::set(Language::English);
+        i18n::set(Language::British);
         assert_eq!(localised(&metadata, "Name").as_deref(), Some("Original"));
         let mut rows = vec![Category {
             id: "test",
@@ -4506,7 +4556,32 @@ mod tests {
         assert_eq!(search.query, "Settings");
         assert_eq!((search.matched, search.found), (2, 12));
         assert_ne!(search.note, before);
-        i18n::set(Language::English);
+        i18n::set(Language::British);
+    }
+
+    /// A row the shell writes both lines of is re-said whole. The Files row
+    /// was relabelled and its comment left in English, because the comment
+    /// carried no key: "Pliki / Your folder, this machine, and anything
+    /// plugged in" on the user's own screen.
+    #[test]
+    fn language_refresh_says_both_lines_of_the_files_row() {
+        use crate::i18n::{self, Language};
+        i18n::set(Language::British);
+        let mut rows = vec![Category {
+            id: "test",
+            title: "Test",
+            icon: "",
+            entries: vec![files_row()],
+        }];
+        assert_eq!(rows[0].entries[0].title(), "Files");
+        i18n::set(Language::Polish);
+        refresh_language(&mut rows);
+        assert_eq!(rows[0].entries[0].title(), "Pliki");
+        assert_eq!(
+            rows[0].entries[0].comment(),
+            Some("Katalog domowy, komputer i podłączone urządzenia")
+        );
+        i18n::set(Language::British);
     }
 
     fn fields(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

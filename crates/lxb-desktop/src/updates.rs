@@ -1419,6 +1419,12 @@ fn fraction(line: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// When one run of the updater was started, as its row in the history says it.
+///
+/// The language's own order and the session's own clock, like every other date
+/// the user reads — see [`crate::i18n::date_in_figures`]. This is a row to be
+/// read rather than a field to be parsed, so there is nothing here that wants
+/// the sortable form the trash and a screenshot's name are written in.
 fn history_date(at: u64) -> String {
     let time = at as libc::time_t;
     let mut date = std::mem::MaybeUninit::<libc::tm>::uninit();
@@ -1427,12 +1433,16 @@ fn history_date(at: u64) -> String {
     }
     let date = unsafe { date.assume_init() };
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        date.tm_year + 1900,
-        date.tm_mon + 1,
-        date.tm_mday,
-        date.tm_hour,
-        date.tm_min
+        "{} {}",
+        crate::i18n::date_in_figures(
+            date.tm_mday.clamp(1, 31) as u32,
+            (date.tm_mon.clamp(0, 11) + 1) as u32,
+            date.tm_year + 1900,
+        ),
+        crate::i18n::time_of_day(
+            date.tm_hour.clamp(0, 23) as u32,
+            date.tm_min.clamp(0, 59) as u32,
+        ),
     )
 }
 

@@ -17,10 +17,21 @@ It is written by the shell rather than read from it, and is not part of
 ## Shell language
 
 Choose Settings → Language to apply and save the shell language immediately.
-The preference is `language = "en"`, `"pl"`, or `"system"` in `shell.toml`.
-Existing configurations default to English. Keyboard layouts and application
+The preference is `language = "de"`, `"en-GB"`, `"en-US"`, `"es"`, `"fr"`,
+`"hi"`, `"pl"`, `"pt-BR"`, `"ru"`, `"zh-CN"` or `"system"` in `shell.toml`. A bare `"en"`, which is what shells before the two Englishes were
+told apart wrote, is read as `"en-GB"`. Keyboard layouts and application
 languages are independent. See [Shell languages](localization.md) for locale
 resolution and the translator workflow.
+
+## The clock
+
+Choose Settings → System → Clock for the form every time of day in the session
+takes. The preference is `clock = "24-hour"` or `"12-hour"` in `shell.toml`; a
+missing or unrecognized value, or `"language"`, leaves the language to answer,
+which means `8:10 PM` under English (US) and हिन्दी and `20:10` under
+everything else. The
+login screen and any application built on lxb-toolkit read the same key. See
+[Shell languages](localization.md#the-clock).
 
 ## `[general]`
 

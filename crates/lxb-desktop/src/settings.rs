@@ -66,8 +66,15 @@ use lxb_protocol::wallpaper;
 /// the next without reading their titles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
-    /// The shell interface language, independent of keyboard and system locale.
+    /// The language of the shell and of the system: the catalogs the shell
+    /// draws from, and — through [`crate::locale`] — the locale every program
+    /// it opens starts in and the machine's own `/etc/locale.conf`.
     Language(crate::i18n::Language),
+    /// Which of the two clocks a time of day is written on, everywhere in the
+    /// session: the corner, the guide, this column's own schedules, the trash,
+    /// the updates history — and, through `shell.toml`, the login screen and
+    /// anything built on lxb-toolkit. See [`crate::i18n::Clock`].
+    Clock(crate::i18n::Clock),
     /// A source update or a maintenance view. The shell dispatches this to the
     /// detached update coordinator; it is not a persisted setting.
     Update(UpdateValue),
@@ -2766,12 +2773,27 @@ impl LocalTime {
     }
 }
 
-/// A minute of the day, as a row says it. The twenty-four hour clock, whatever
-/// the machine's own locale would print: it is the one form in which "21:00"
-/// cannot be the wrong one of two, and a schedule is exactly where that matters.
+/// A minute of the day, as a row says it: on the clock Settings > System >
+/// Clock is set to, like every other time in the shell.
+///
+/// It was the twenty-four hour clock whatever the machine said, on the
+/// argument that "21:00" cannot be the wrong one of two and a schedule is
+/// where that matters. That argument was about the *locale*, which nobody in
+/// this shell chose; it does not survive a row somebody pressed, and a page
+/// that answered "9:00 PM" everywhere else and "21:00" here would be the one
+/// screen ignoring the setting.
+///
+/// The hour keeps its leading zero on the twenty-four hour clock and loses it
+/// on the twelve, which is what each is written with — and the first of those
+/// is what makes a column of twenty-four hours line up under one another.
 fn clock_title(minute: u16) -> String {
     let minute = minute.min(MINUTES_IN_DAY - 1);
-    format!("{:02}:{:02}", minute / 60, minute % 60)
+    let (hour, minute) = (u32::from(minute / 60), u32::from(minute % 60));
+    if crate::i18n::twelve_hour() {
+        crate::i18n::time_of_day(hour, minute)
+    } else {
+        format!("{hour:02}:{minute:02}")
+    }
 }
 
 /// The last reading, and when it was taken.
@@ -2922,21 +2944,30 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
 
 fn language() -> Entry {
     use crate::i18n::{self, Language};
+    // The one in force is the language the catalogs are drawn from, which on
+    // a shell nobody has chosen one for is whichever the session speaks: the
+    // list has no "System default" row, because every row on it *sets* the
+    // system's language. See [`Language::CHOICES`].
+    let spoken = i18n::spoken();
     folder(
         i18n::text("language-title"),
         i18n::text("language-description"),
         icons::SETTING_LANGUAGE,
-        Language::ALL
+        Language::CHOICES
             .into_iter()
             .map(|language| {
+                // The state goes under the row: for the one in force, where
+                // the system stands on it — changing, refused, or the same —
+                // and for the others, what a press would do.
+                let note = if language == spoken {
+                    crate::locale::note()
+                } else {
+                    i18n::text("language-choice-description").to_string()
+                };
                 value(
                     language.name(),
-                    Some(i18n::text(if language == Language::System {
-                        "language-system-description"
-                    } else {
-                        "language-choice-description"
-                    })),
-                    language == i18n::preference(),
+                    Some(&note),
+                    language == spoken,
                     Setting::Language(language),
                 )
             })
@@ -7547,6 +7578,9 @@ fn nothing_to_set_about_games() -> Entry {
 /// the person in front of them who has to read it — nor anything the shell does
 /// to itself, which is what Appearance holds.
 ///
+/// The clock and the button hints follow, and they are the two rows here about
+/// how the shell *writes* rather than about what it runs — see [`clock_page`].
+///
 /// System information is under it and not above it, and that order is the one
 /// thing about this page worth arguing over. The page is a page of settings, so
 /// the setting comes first; the row that changes nothing is the one a user
@@ -7564,6 +7598,7 @@ fn system(bar: &[crate::apps::Column]) -> Entry {
             startup_category_page(bar),
             application_scale(),
             picture_in_picture_page(),
+            clock_page(),
             button_hints_switch(),
             system_information(),
         ],
@@ -7648,16 +7683,79 @@ fn startup_note(column: &crate::apps::Column, bar: &[crate::apps::Column]) -> Op
         .then_some(crate::i18n::text("shell-not-on-this-machine-just-now"))
 }
 
+/// Which of the two clocks the machine writes a time on.
+///
+/// On this page rather than under Language, although it is the question next
+/// to that one and falls back to it. What it changes is not the language the
+/// machine speaks but how this machine *writes* — the same kind of answer as
+/// how large applications draw themselves, two rows above it — and somebody
+/// who has already chosen their language and wants the other clock would have
+/// no reason to go back to a page they are done with. It is here, where the
+/// settings about how the shell behaves are.
+///
+/// **The rows are the two clocks, and neither of them is Off.** A clock is not
+/// a thing to be turned on: what is being chosen is which of two ways a time
+/// is written, and a switch reading "12-hour clock: Off" would leave somebody
+/// to work out that off means twenty-four. So the page is a list of two the
+/// way the startup category is a list of columns.
+///
+/// **Each row carries this minute, written its own way**, and the row above
+/// them carries it as it currently reads. That is the whole explanation the
+/// page needs and it is the only honest one: a sentence about AM and PM would
+/// be a description of what the user can simply be shown, and it would be
+/// wrong in whichever language got the sentence rather than the example.
+///
+/// Until one of them is pressed, nothing is chosen and the *language* answers
+/// — English (US) writes `8:10 PM`, everything else `20:10` — and the row
+/// that answer lands on is the one marked, exactly as the Language page marks
+/// the language a shell nobody has chosen one on happens to speak. See
+/// [`crate::i18n::Clock`].
+fn clock_page() -> Entry {
+    // This minute, so that what each row says is the answer rather than a
+    // description of one. A machine whose C library cannot say what time it is
+    // still has to be offered the choice, and ten past eight in the evening is
+    // the example: it is the one hour that reads differently on the two
+    // clocks in every one of their parts.
+    let (hour, minute) =
+        local_time().map_or((20, 10), |now| (u32::from(now.hour), u32::from(now.minute)));
+    let written = |clock| crate::i18n::time_of_day_on(clock, hour, minute);
+    let in_force = if crate::i18n::twelve_hour() {
+        crate::i18n::Clock::TwelveHour
+    } else {
+        crate::i18n::Clock::TwentyFourHour
+    };
+    folder(
+        crate::i18n::text("shell-clock"),
+        &written(in_force),
+        icons::SETTING_SCHEDULE,
+        crate::i18n::Clock::CHOICES
+            .into_iter()
+            .map(|clock| {
+                value(
+                    crate::i18n::text(match clock {
+                        crate::i18n::Clock::TwelveHour => "shell-12-hour",
+                        _ => "shell-24-hour",
+                    }),
+                    Some(&written(clock)),
+                    clock == in_force,
+                    Setting::Clock(clock),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// The legends, on or off.
 ///
 /// Off and On in that order and marked the way every other switch in this tree
 /// is — see [`battery_percent_switch`], which is the same question asked about
 /// the corner.
 ///
-/// After the two settings about applications and before the machine's own
-/// facts, which is the order this page keeps: it is a setting, so it comes
-/// above the row that changes nothing, and it is about the shell rather than
-/// about what the shell runs, so it comes below the two that are not.
+/// Under the clock and before the machine's own facts, which is the order this
+/// page keeps: it is a setting, so it comes above the row that changes
+/// nothing, and it is about the shell rather than about what the shell runs,
+/// so it comes below the two that are not. The clock is above it because a
+/// clock is read oftener than a legend and by more people.
 ///
 /// The rows say what a legend *is* rather than what the switch does, because
 /// somebody who has turned it off can no longer see the thing being described.
@@ -8785,7 +8883,11 @@ pub fn preview(setting: Option<Setting>) {
             // under the hand doing the walking. Two of the three are set on a
             // bar besides, which is not a row a cursor highlights.
             | Setting::Pointer(_)
-            | Setting::Language(_),
+            | Setting::Language(_)
+            // Nor the clock, and it has no need of one: each of its two rows
+            // carries this minute written in its own form, so what a press
+            // would do is on the row before it is pressed.
+            | Setting::Clock(_),
         )
         | None => {
             theme::restore_accent();
@@ -8874,6 +8976,15 @@ fn order_after_moving(display: &str, place: u32) -> Option<Vec<String>> {
 fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
     match setting {
         Setting::Language(language) => crate::i18n::set(language),
+        // Nothing to tell anybody, for the button hints' reason: every clock
+        // in the shell is written out of this value each time its screen is
+        // drawn, so the frame this row was pressed on is the frame the corner
+        // changes. The login screen and anything built on the toolkit take it
+        // out of `shell.toml`, which [`save`] writes as the row is pressed.
+        Setting::Clock(clock) => {
+            crate::i18n::set_clock(clock);
+            tracing::info!(clock = clock.key(), "the clock");
+        }
         // Updates have their own job journal and preferences. Merely dispatching
         // an action must not rewrite the desktop's general settings file.
         Setting::Update(_) => return true,
@@ -9393,12 +9504,26 @@ fn adopt_theme(stored: &Stored) {
 ///
 /// Split from [`load`] so the file format can be exercised without one.
 fn adopt(stored: Stored) {
+    // Nothing chosen, or a word this build has no catalog for, is a shell that
+    // follows the session — the language the machine was installed in — and
+    // touches nothing. See [`crate::i18n::Language::System`].
     crate::i18n::set(
         stored
             .language
             .as_deref()
             .and_then(crate::i18n::Language::parse)
-            .unwrap_or(crate::i18n::Language::English),
+            .unwrap_or(crate::i18n::Language::System),
+    );
+    // And a file that says nothing about the clock — every file written before
+    // there was a row for it — leaves the language to answer, which for every
+    // language but English (US) is the twenty-four hour clock those shells
+    // already wrote. See [`crate::i18n::Clock::FromLanguage`].
+    crate::i18n::set_clock(
+        stored
+            .clock
+            .as_deref()
+            .and_then(crate::i18n::Clock::parse)
+            .unwrap_or(crate::i18n::Clock::FromLanguage),
     );
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
@@ -9797,6 +9922,19 @@ fn adopt(stored: Stored) {
 #[serde(default, rename_all = "kebab-case")]
 struct Stored {
     language: Option<String>,
+    /// Which of the two clocks a time is written on — `24-hour`, `12-hour`,
+    /// or `language` for the shell that has not been asked. Beside the
+    /// language because it is the question next to it and falls back to it,
+    /// and session-wide like it.
+    ///
+    /// The second key here an application reads as well, after `button-hints`:
+    /// the login screen takes it out of the account's published look so the
+    /// clock over the password field is the one the account is set to, and
+    /// anything built on lxb-toolkit takes it out of this file. A word this
+    /// build has no clock for is read as `language`, which is the default and
+    /// is what every file written before this setting existed says by saying
+    /// nothing at all. See [`crate::i18n::Clock`].
+    clock: Option<String>,
     accent: Option<String>,
     /// Which material each half of the shell draws itself in — `Default` or
     /// `Simple`, one answer for the picture behind everything and one for every
@@ -10198,6 +10336,7 @@ fn stored() -> Stored {
 
     Stored {
         language: Some(crate::i18n::preference().key().to_string()),
+        clock: Some(crate::i18n::clock().key().to_string()),
         accent: Some(theme::accent().name.to_string()),
         // The applied ones, never a preview: this is written the moment a row is
         // pressed, and a file that recorded what the cursor happened to be
@@ -10526,12 +10665,22 @@ const PREAMBLE: &str = "\
 # Editing this by hand is fine; the shell reads it once at startup and
 # rewrites it whenever a setting changes from the Settings column.
 #
-# language: en, pl, or system, chosen under Settings > Language.
-# Missing/unknown values use English. This changes the shell interface only,
-# not keyboard layout or system locale.
+# language: en-GB, en-US, es, fr or pl, chosen under Settings > Language. One
+# chosen there also sets the system language, through systemd-localed, and the
+# locale of every program the shell opens. A missing or unknown value, or system,
+# means nothing was chosen: the shell follows the session's locale and changes
+# nothing. A bare en is what shells before the two Englishes were told apart
+# wrote, and is read as en-GB.
+#
+# clock: 24-hour or 12-hour, chosen under Settings > System > Clock. It is
+# every clock in the session — the corner, the guide, the schedules on this
+# column, the trash, the updates history — and the login screen and any
+# program built on lxb-toolkit read it from here too. A missing or unknown
+# value, or language, means nothing was chosen and the language answers:
+# en-US writes 8:10 PM and everything else 20:10.
 #
 # accent: the colour of being chosen. One of the names the shell offers under
-# Settings > Appearance > Accent color. An unknown name is ignored.
+# Settings > Appearance > Accent colour. An unknown name is ignored.
 #
 # theme-wallpaper and theme-icons: how much material each half of the shell is
 # drawn with — Default for its own look, or Simple for the plainer one a slow
@@ -10901,7 +11050,7 @@ mod tests {
     use crate::system::Device;
 
     #[test]
-    fn language_is_persisted_and_missing_or_unknown_preferences_use_english() {
+    fn language_is_persisted_and_missing_or_unknown_preferences_follow_the_session() {
         with_battery(None, || {
             use crate::i18n::{self, Language};
             let mut written = String::new();
@@ -10910,20 +11059,23 @@ mod tests {
             }));
             assert_eq!(i18n::preference(), Language::Polish);
             assert!(written.contains("language = \"pl\""));
-            i18n::set(Language::English);
+            i18n::set(Language::British);
             adopt(toml::from_str(&written).unwrap());
             assert_eq!(i18n::preference(), Language::Polish);
-            for raw in ["", "language = \"unknown\""] {
+            for raw in ["", "language = \"unknown\"", "language = \"system\""] {
                 adopt(toml::from_str(raw).unwrap());
-                assert_eq!(i18n::preference(), Language::English);
+                assert_eq!(i18n::preference(), Language::System);
+                // And speaks one of the two all the same.
+                assert!(Language::CHOICES.contains(&i18n::spoken()));
             }
+            i18n::set(Language::British);
         });
     }
 
     #[test]
     fn language_changes_preserve_open_wallpaper_listings_and_native_names() {
         use crate::i18n::{self, Language};
-        i18n::set(Language::English);
+        i18n::set(Language::British);
         let mut old = vec![appearance()];
         fn insert(rows: &mut [Entry]) -> bool {
             for row in rows {
@@ -10969,10 +11121,48 @@ mod tests {
         let choices = page.entries().unwrap();
         assert_eq!(
             choices.iter().map(Entry::title).collect::<Vec<_>>(),
-            ["Domyślny systemowy", "English", "Polski"]
+            [
+                "Deutsch",
+                "English (UK)",
+                "English (US)",
+                "Español",
+                "Français",
+                "Polski",
+                "Português (Brasil)",
+                "Русский",
+                "हिन्दी",
+                "简体中文",
+            ],
+            "each language names itself, and the list reads in the order those \
+             names sort in: each alphabet after the one before it"
         );
-        assert!(choices[2].chosen());
-        i18n::set(Language::English);
+        assert!(choices[5].chosen());
+        for other in [0, 1, 2, 3, 4, 6, 7, 8, 9] {
+            assert!(!choices[other].chosen());
+        }
+        // What a press would do, under the row it would do it to; and where
+        // the system stands, under the one in force.
+        assert_eq!(
+            choices[0].comment(),
+            Some("Przełącza język powłoki i systemu")
+        );
+        assert_eq!(choices[5].comment(), Some("Używany przez powłokę i system"));
+        i18n::set(Language::British);
+    }
+
+    #[test]
+    fn a_shell_with_no_language_chosen_marks_the_one_the_session_speaks() {
+        use crate::i18n::{self, Language};
+        i18n::set(Language::System);
+        let page = language();
+        let choices = page.entries().unwrap();
+        let marked: Vec<&str> = choices
+            .iter()
+            .filter(|row| row.chosen())
+            .map(Entry::title)
+            .collect();
+        assert_eq!(marked, [i18n::spoken().name()]);
+        i18n::set(Language::British);
     }
 
     /// The Settings column, built against a bar with every column the shell can
@@ -11520,7 +11710,7 @@ mod tests {
                         [
                             "HDR",
                             "SDR brightness",
-                            "sRGB color intensity",
+                            "sRGB colour intensity",
                             "Peak brightness",
                         ]
                     );
@@ -11559,7 +11749,7 @@ mod tests {
                 [
                     "HDR",
                     "SDR brightness",
-                    "sRGB color intensity",
+                    "sRGB colour intensity",
                     "Peak brightness",
                 ],
                 "the settings stand where the screen list would have"
@@ -11707,7 +11897,7 @@ mod tests {
         };
         with_displays(&[(FIRST, no_gamut), (SECOND, capable(PEAK))], || {
             let intensity = &controls_for(FIRST)[2];
-            assert_eq!(intensity.title(), "sRGB color intensity");
+            assert_eq!(intensity.title(), "sRGB colour intensity");
             assert_eq!(intensity.comment(), Some("Not available on this display"));
 
             let inside = intensity.entries().expect("it still opens");
@@ -11792,7 +11982,7 @@ mod tests {
     fn the_colour_in_force_is_the_one_the_shell_draws_with() {
         theme::with_accent("Blue", || {
             let column = column();
-            let colours = under(under(&column, "Appearance"), "Accent color").to_vec();
+            let colours = under(under(&column, "Appearance"), "Accent colour").to_vec();
 
             let chosen: Vec<&Entry> = colours.iter().filter(|entry| entry.chosen()).collect();
             assert_eq!(chosen.len(), 1, "exactly one value can be in force");
@@ -12205,7 +12395,7 @@ mod tests {
     fn choosing_a_colour_sets_that_colour() {
         theme::with_accent("Purple", || {
             let column = column();
-            let colours = under(under(&column, "Appearance"), "Accent color").to_vec();
+            let colours = under(under(&column, "Appearance"), "Accent colour").to_vec();
 
             for entry in &colours {
                 let Entry::Choice(choice) = entry else {
@@ -12555,7 +12745,7 @@ mod tests {
                     .iter()
                     .map(Entry::title)
                     .collect::<Vec<_>>(),
-                ["Accent color", "Theme"],
+                ["Accent colour", "Theme"],
                 "a machine with no battery is offered a battery setting",
             );
         });
@@ -12569,7 +12759,7 @@ mod tests {
                 let page = appearance_page();
                 assert_eq!(
                     page.iter().map(Entry::title).collect::<Vec<_>>(),
-                    ["Accent color", "Theme", "Battery percentage"],
+                    ["Accent colour", "Theme", "Battery percentage"],
                     "the accent first: it is the whole shell, and this is one mark",
                 );
                 // The row is drawn at the level the machine is actually at, so
@@ -12707,6 +12897,119 @@ mod tests {
                 |_| {},
             ));
             assert!(!button_hints());
+        });
+    }
+
+    /// The clock: two rows, each carrying this minute written its own way, and
+    /// the one in force marked whether or not anybody has chosen it.
+    ///
+    /// The last part is what makes the page honest before it has been pressed.
+    /// Nothing is chosen on a new machine, so the *language* answers — and a
+    /// page with neither row marked would leave somebody to guess which clock
+    /// their shell is already on. See [`crate::i18n::Clock::FromLanguage`].
+    #[test]
+    fn the_clock_page_marks_the_clock_in_force_even_before_it_is_chosen() {
+        with_displays(&[], || {
+            crate::i18n::set(crate::i18n::Language::British);
+            crate::i18n::set_clock(crate::i18n::Clock::FromLanguage);
+
+            let page = || {
+                system_page()
+                    .into_iter()
+                    .find(|entry| entry.title() == "Clock")
+                    .expect("the System page offers the clock")
+                    .entries()
+                    .expect("Clock opens onto its two values")
+                    .to_vec()
+            };
+            let rows = page();
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["24-hour", "12-hour"],
+                "two clocks, and neither of them is Off",
+            );
+            assert!(rows[0].chosen(), "English (UK) is already on this one");
+            assert!(!rows[1].chosen());
+
+            // Each row says what this minute would read as, which is the whole
+            // of the explanation the page gives.
+            let now = local_time().expect("this machine can read its own clock");
+            assert_eq!(
+                rows[0].comment(),
+                Some(
+                    crate::i18n::time_of_day_on(
+                        crate::i18n::Clock::TwentyFourHour,
+                        u32::from(now.hour),
+                        u32::from(now.minute),
+                    )
+                    .as_str()
+                )
+            );
+            assert!(
+                rows[1]
+                    .comment()
+                    .is_some_and(|written| written.ends_with("AM") || written.ends_with("PM")),
+                "and the other names its half of the day"
+            );
+
+            preview(rows[1].setting());
+            assert!(
+                !crate::i18n::twelve_hour(),
+                "highlighting the twelve-hour clock is not choosing it"
+            );
+
+            let mut persisted = None;
+            assert!(apply_with(
+                rows[1].setting().expect("the row sets something"),
+                |stored| persisted = stored.clock.clone(),
+            ));
+            assert!(crate::i18n::twelve_hour());
+            assert_eq!(
+                persisted.as_deref(),
+                Some("12-hour"),
+                "and it is written down"
+            );
+
+            let rows = page();
+            assert!(rows[1].chosen(), "the mark has moved with it");
+            assert!(!rows[0].chosen());
+
+            // It survives being written out and read back, and it outranks the
+            // language in both directions.
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("clock = \"12-hour\""), "{body}");
+            crate::i18n::set_clock(crate::i18n::Clock::FromLanguage);
+            adopt(toml::from_str(&body).unwrap());
+            assert!(
+                crate::i18n::twelve_hour(),
+                "and it comes back on the twelve"
+            );
+
+            crate::i18n::set(crate::i18n::Language::American);
+            assert!(apply_with(page()[0].setting().expect("a row"), |_| {}));
+            assert!(
+                !crate::i18n::twelve_hour(),
+                "an American shell told to write 20:10 writes 20:10"
+            );
+
+            // A file that says nothing about the clock leaves the language to
+            // answer, which is what every file written before this key existed
+            // says. The language has to be in the same file: a `Stored` with
+            // nothing in it is a shell that has chosen no language either.
+            assert_eq!(Stored::default().clock, None);
+            let said = |language: &str| Stored {
+                language: Some(language.to_string()),
+                ..Stored::default()
+            };
+            adopt(said("en-US"));
+            assert!(crate::i18n::twelve_hour(), "English (US) on its own clock");
+            adopt(said("en-GB"));
+            assert!(!crate::i18n::twelve_hour(), "English (UK) on its own");
+            adopt(said("pl"));
+            assert!(!crate::i18n::twelve_hour(), "and Polish on its own");
+
+            crate::i18n::set(crate::i18n::Language::British);
+            crate::i18n::set_clock(crate::i18n::Clock::FromLanguage);
         });
     }
 
@@ -14483,7 +14786,7 @@ hdr = true
 
     /// The bar inside the Color temperature row.
     fn temperature_bar(name: &str) -> crate::apps::Bar {
-        let row = night_row(name, "Color temperature");
+        let row = night_row(name, "Colour temperature");
         let inside = row.entries().expect("the row opens onto its bar");
         assert_eq!(inside.len(), 1, "a bar is the whole of its column");
         inside[0]
@@ -14826,7 +15129,7 @@ hdr = true
                     .collect::<Vec<_>>(),
                 [
                     "Night light",
-                    "Color temperature",
+                    "Colour temperature",
                     "Schedule",
                     "From",
                     "Until"
@@ -15158,7 +15461,7 @@ hdr = true
                     );
                 }
                 // And the three that are always there are always there.
-                for title in ["Night light", "Color temperature", "Schedule"] {
+                for title in ["Night light", "Colour temperature", "Schedule"] {
                     assert!(
                         night_row_if_any(FIRST, title).is_some(),
                         "{title} under {}",
@@ -15258,7 +15561,7 @@ hdr = true
         with_displays(&[(FIRST, warmable())], || {
             for title in [
                 "Night light",
-                "Color temperature",
+                "Colour temperature",
                 "Schedule",
                 "From",
                 "Until",
@@ -15298,12 +15601,12 @@ hdr = true
             }
             // The bar wears nothing at all: the track is the drawing, and the
             // name of the setting is on the row it was opened from.
-            let bar = night_row(FIRST, "Color temperature");
+            let bar = night_row(FIRST, "Colour temperature");
             assert_eq!(bar.entries().unwrap()[0].icon(), None);
             // And nothing here borrows the HDR badge.
             for title in [
                 "Night light",
-                "Color temperature",
+                "Colour temperature",
                 "Schedule",
                 "From",
                 "Until",
@@ -15821,6 +16124,7 @@ hdr = true
                     "Startup category",
                     "Application scaling",
                     "Picture-in-Picture",
+                    "Clock",
                     "Button hints",
                     "System information"
                 ],

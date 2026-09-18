@@ -474,6 +474,42 @@ const UI_FONT_BOLD: &[u8] = include_bytes!("../../../font/Roboto/static/Roboto-B
 const MONO_FONT: &str = "Roboto Mono";
 const MONO_FONT_REGULAR: &[u8] = include_bytes!("../../../font/RobotoMono/RobotoMono-Regular.ttf");
 
+/// The two alphabets Roboto has not got and the shell is written in.
+///
+/// Roboto carries Latin, Greek and Cyrillic, which is eight of the ten
+/// languages the shell speaks. Hindi is written in Devanagari and Chinese in
+/// Han, and a shell in either would draw every one of its own words as a row
+/// of empty boxes on a machine with no fonts installed — which is the machine
+/// [`UI_FONT`] is bundled for. So the two Noto faces travel with it, regular
+/// and bold, on the same argument: what the shell says has to draw wherever
+/// the shell runs. They are read *after* Roboto and *before* the machine's
+/// own fonts, so a Devanagari or a Han run is shaped in the face the layout
+/// was measured against rather than in whichever the machine happens to
+/// have; see [`shell_faces`] and [`Gpu::new`].
+///
+/// Devanagari is the whole block. Han is a subset — the 6,763 characters of
+/// GB 2312, cut by `scripts/subset-han-face.py`, because the whole face is
+/// twenty megabytes a weight and the standard's set is what a Chinese
+/// computer has meant by "the characters" for two decades — and `zh-CN.ftl`
+/// is held to it by `tests::every_catalog_word_is_drawn_by_a_bundled_face`.
+/// A name from elsewhere in a character outside the set draws from the
+/// machine's fonts, exactly as a Japanese title always has. See
+/// `font/*/README.md`.
+const UI_FONT_FALLBACKS: [&[u8]; 4] = [
+    include_bytes!("../../../font/NotoSansDevanagariUI/NotoSansDevanagariUI-Regular.ttf"),
+    include_bytes!("../../../font/NotoSansDevanagariUI/NotoSansDevanagariUI-Bold.ttf"),
+    include_bytes!("../../../font/NotoSansCJKsc/NotoSansCJKsc-Regular.ttf"),
+    include_bytes!("../../../font/NotoSansCJKsc/NotoSansCJKsc-Bold.ttf"),
+];
+
+/// Every face compiled into the shell, in the order a fallback walk reads
+/// them: the type, its monospace, then the two scripts it has not got.
+fn bundled_faces() -> impl Iterator<Item = &'static [u8]> {
+    [UI_FONT_REGULAR, UI_FONT_BOLD, MONO_FONT_REGULAR]
+        .into_iter()
+        .chain(UI_FONT_FALLBACKS)
+}
+
 /// How wide one character of [`MONO_FONT`] is, as a share of its size.
 ///
 /// A fixed-width face has one advance for every glyph, and this is Roboto
@@ -489,7 +525,7 @@ pub const MONO_ADVANCE: f32 = 0.6;
 /// The corner is the one place in this shell where *type* is drawn as the same
 /// material as the marks beside it — a bead of water, lit by the one lamp above
 /// the drawing — rather than as flat coverage through the text pipeline. It can
-/// be, because a clock is thirteen characters and not a language: each is cut
+/// be, because a clock is seventeen characters and not a language: each is cut
 /// out of the bundled face once at startup, measured into a signed distance
 /// field exactly as a glyph's shape is (see [`crate::icons::distance_field`]),
 /// and drawn as one quad per letter.
@@ -511,10 +547,31 @@ pub const MONO_ADVANCE: f32 = 0.6;
 /// character for a second thing the corner says is not the same as opening the
 /// set to an alphabet: three digits and a sign is still not a language.
 ///
+/// The fifteenth is the full stop, and it is the date's own separator in most
+/// of the languages the shell may speak — `16.09` where English writes `9/16`;
+/// see `clock-corner` in the catalogs. A language whose date needs a character
+/// this set has not got gets no clock at all, which is what the shell did in
+/// Polish for an afternoon. `i18n::tests::every_clock_format_is_drawn_from_the_corners_set`
+/// holds each catalog to the set.
+///
+/// The last three are `A`, `M` and `P`, and they are here on the per cent
+/// sign's argument rather than in spite of it: they write AM and PM, which is
+/// the second half of the *time itself* on the twelve-hour clock Settings >
+/// System > Clock offers. A corner that could not write them would be a corner
+/// that ignored the setting, or one that wrote `8:05` for two different hours
+/// of the day. Two marks of two letters each is not an alphabet — nothing else
+/// may be spelled with them, and a run with a fourth letter in it is still a
+/// run this corner draws nothing for.
+///
+/// They carry names of their own (`lxb:clock-a`, not `lxb:letter-a`) because
+/// the index already has an `A`, an `M` and a `P` and they are not the same
+/// cell: a heading is centred on the cap line in a wider box, and a clock's
+/// letters are centred on the run with its digits. See [`INDEX_BOX`].
+///
 /// The space is in the set for its *advance* and has no cell of its own —
 /// nothing to measure, and a field with no shape in it would fail the same test
 /// an empty glyph does.
-const LETTER_SET: [(char, &str); 14] = [
+const LETTER_SET: [(char, &str); 18] = [
     ('0', "lxb:letter-0"),
     ('1', "lxb:letter-1"),
     ('2', "lxb:letter-2"),
@@ -527,7 +584,11 @@ const LETTER_SET: [(char, &str); 14] = [
     ('9', "lxb:letter-9"),
     (':', "lxb:letter-colon"),
     ('/', "lxb:letter-slash"),
+    ('.', "lxb:letter-dot"),
     ('%', "lxb:letter-percent"),
+    ('A', "lxb:clock-a"),
+    ('M', "lxb:clock-m"),
+    ('P', "lxb:clock-p"),
     (' ', ""),
 ];
 
@@ -543,8 +604,9 @@ const LETTER_SET: [(char, &str); 14] = [
 ///
 /// An em covers every character in the set with margin to spare for the
 /// shadow — the tallest of them is the slash, which reaches from a little below
-/// the baseline to a little under the cap. The numbers are held to that by
-/// `every_letter_of_the_clock_is_a_shape_in_its_cell`.
+/// the baseline to a little under the cap, and the widest is the `M` of PM,
+/// which is still a good deal narrower than its own cell. The numbers are held
+/// to that by `every_letter_of_the_clock_is_a_shape_in_its_cell`.
 pub const LETTER_BOX: f32 = 1.0;
 pub const LETTER_MIDDLE: f32 = 0.35;
 
@@ -598,6 +660,14 @@ fn letter_field_size(box_ems: f32) -> f32 {
     (CELL * crate::icons::SDF_SUPERSAMPLE) as f32 / box_ems
 }
 
+/// Whether the corner can write this character at all: it is one of the set,
+/// the space included. A test's question — the corner itself answers a run
+/// with a character it has not got by drawing nothing, see `ui::build`.
+#[cfg(test)]
+pub fn corner_can_draw(letter: char) -> bool {
+    LETTER_SET.iter().any(|(c, _)| *c == letter)
+}
+
 /// Which cell one of the corner's characters is filed under, if it has one.
 fn letter_name(letter: char) -> Option<&'static str> {
     LETTER_SET
@@ -611,11 +681,12 @@ fn letter_name(letter: char) -> Option<&'static str> {
 ///
 /// For measuring rather than for drawing: what is wanted here is *this* type,
 /// and a system fallback chain would answer with whatever the machine has. The
-/// drawing side keeps the fallbacks — see [`Gpu::new`] — because a window title
-/// may be in an alphabet Roboto has never heard of.
+/// drawing side keeps the machine's fonts behind these — see [`Gpu::new`] —
+/// because a window title may be in an alphabet none of the bundled faces
+/// has heard of.
 fn shell_faces() -> FontSystem {
     let mut db = glyphon::fontdb::Database::new();
-    for face in [UI_FONT_REGULAR, UI_FONT_BOLD, MONO_FONT_REGULAR] {
+    for face in bundled_faces() {
         db.load_font_data(face.to_vec());
     }
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
@@ -2204,15 +2275,23 @@ impl Gpu {
         });
 
         // --- text --------------------------------------------------------
-        // `FontSystem::new` already scans and loads the system fonts; asking
-        // again would append every face a second time.
-        let mut font_system = FontSystem::new();
-        // The system's faces stay loaded underneath the shell's own, because
-        // they are the fallback chain: Roboto covers no CJK, and an
-        // application whose title is in Japanese still has to have a title.
-        for face in [UI_FONT_REGULAR, UI_FONT_BOLD, MONO_FONT_REGULAR] {
-            font_system.db_mut().load_font_data(face.to_vec());
+        // The shell's own faces first and the machine's after them. The order
+        // is the order a run with no glyph in Roboto is offered the rest of
+        // the database in, so a Devanagari or a Han word is shaped in the
+        // face the layout was measured against and not in whichever the
+        // machine has that happens to carry the script. The machine's fonts
+        // stay loaded underneath, because they are the rest of the fallback
+        // chain: an application whose title is in Japanese, or in a Han
+        // character outside the bundled subset, still has to have a title.
+        // The locale decides which of the CJK faces a Han run is offered
+        // first, which is the shell's language rather than the machine's.
+        let mut db = glyphon::fontdb::Database::new();
+        for face in bundled_faces() {
+            db.load_font_data(face.to_vec());
         }
+        db.load_system_fonts();
+        let font_system =
+            FontSystem::new_with_locale_and_db(crate::i18n::spoken().key().to_owned(), db);
         let swash_cache = SwashCache::new();
         let text_cache = Cache::new(&device);
         let mut text_atlas = TextAtlas::new(&device, &queue, &text_cache, format);
@@ -4643,11 +4722,127 @@ mod tests {
                 "line too wide: {line}"
             );
         }
-        crate::i18n::set(crate::i18n::Language::English);
+        crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// The same for French and Spanish: every letter they are written with is
+    /// one the bundled face has, and a paragraph of either wraps to the width
+    /// the dialog gives it without losing a word.
+    ///
+    /// Roboto carries Latin-1 Supplement and Latin Extended-A, so these are
+    /// the accents it has — but that is the sort of thing a font subset
+    /// silently loses, and `œ`, `ñ` and the two inverted marks Spanish opens a
+    /// question and an exclamation with are the ones to lose.
+    #[test]
+    fn french_and_spanish_glyphs_and_wrapped_prose_keep_every_word() {
+        let mut fonts = shell_faces();
+        assert!(shaped_run(&mut fonts, "àâäçéèêëîïôöùûüÿœÀÂÇÉÈÊÎÔÙÛŒ", 21.0).is_some());
+        assert!(shaped_run(&mut fonts, "áéíóúüñ¿¡ÁÉÍÓÚÜÑ", 21.0).is_some());
+
+        for (language, paragraph) in [
+            (
+                crate::i18n::Language::French,
+                "Choisissez la langue de l'interface. Le changement s'applique tout de suite sur chaque écran. Les noms de fichiers, d'appareils et le texte que vous avez saisi ne changent pas. Voix ambiguë d'un cœur qui au zéphyr préfère les jattes de kiwis.",
+            ),
+            (
+                crate::i18n::Language::Spanish,
+                "Elija el idioma de la interfaz. El cambio se aplica enseguida en todas las pantallas. Los nombres de archivos, de dispositivos y el texto que haya escrito no cambian. ¿Whisky bueno? ¡Excitad mi frágil pequeña vejez!",
+            ),
+        ] {
+            crate::i18n::set(language);
+            let lines = wrap_dialog_note(paragraph);
+            assert!(lines.len() > 1, "{language:?} wrapped onto one line");
+            assert_eq!(
+                lines.join(" ").split_whitespace().collect::<Vec<_>>(),
+                paragraph.split_whitespace().collect::<Vec<_>>(),
+                "{language:?} lost or gained a word in the wrap"
+            );
+            for line in lines {
+                let glyphs = shaped_run(&mut fonts, &line, 21.0).unwrap();
+                let width = glyphs
+                    .iter()
+                    .map(|glyph| glyph.x + glyph.w)
+                    .fold(0.0, f32::max);
+                assert!(
+                    width <= crate::ui::dialog_note_width() + 1.0,
+                    "{language:?} line too wide: {line}"
+                );
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
     }
 
     fn shell_fonts() -> FontSystem {
         shell_faces()
+    }
+
+    /// Every word of every catalog, drawn by a face the shell ships.
+    ///
+    /// This is the check that makes Hindi and Chinese real rather than two
+    /// more files: Roboto has no Devanagari and no Han, so before the two
+    /// Noto faces were bundled every sentence of either rasterised to a row
+    /// of empty boxes — and nothing else in the build, and no test that reads
+    /// strings rather than glyphs, would have said a word about it. The Han
+    /// face is a subset, so this is also the test that holds `zh-CN.ftl` to
+    /// GB 2312: a character outside it is a sentence to reword.
+    ///
+    /// Shaped from the catalog's *text* rather than through Fluent, with the
+    /// placeables cut out: a `{ $count }` is somebody else's characters.
+    #[test]
+    fn every_catalog_word_is_drawn_by_a_bundled_face() {
+        let mut fonts = shell_faces();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let mut catalogs = 0;
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "ftl") {
+                continue;
+            }
+            catalogs += 1;
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let source = std::fs::read_to_string(&path).unwrap();
+            for line in source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+            {
+                let value = line.split_once(" = ").map_or(line, |(_, value)| value);
+                // Placeables and selector heads are Fluent's, not the language's.
+                let mut words = String::new();
+                let mut depth = 0usize;
+                for c in value.chars() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth = depth.saturating_sub(1),
+                        _ if depth == 0 => words.push(c),
+                        _ => {}
+                    }
+                }
+                let words = words.trim_start_matches(['*', '[', ' ']).trim();
+                let words: String = words.chars().filter(|c| !c.is_whitespace()).collect();
+                if words.is_empty() {
+                    continue;
+                }
+                assert!(
+                    shaped_run(&mut fonts, &words, 21.0).is_some(),
+                    "{name}: {line:?} has a character no bundled face can draw"
+                );
+            }
+        }
+        assert!(catalogs >= 10, "{catalogs} catalogs read");
+        // And the language names, which are drawn in every language.
+        for language in crate::i18n::Language::CHOICES {
+            assert!(
+                shaped_run(&mut fonts, language.name(), 21.0).is_some(),
+                "{} cannot be drawn by a bundled face",
+                language.name()
+            );
+        }
+        // The check has teeth: a script none of the faces carries is reported
+        // as undrawable rather than passing quietly.
+        assert!(shaped_run(&mut fonts, "한글 ᚠᚢᚦ", 21.0).is_none());
+        // And the subset's rule: a character outside GB 2312 is outside the
+        // face, by design.
+        assert!(shaped_run(&mut fonts, "龘", 21.0).is_none());
     }
 
     /// Every character cut from the shell's own face — the corner's clock and an
@@ -4761,6 +4956,13 @@ mod tests {
             "12/31 23:59",
             "1/1 0:00",
             "9/9 9:09",
+            "16.9 20:10",
+            // And the twelve-hour clock, which is where the three letters
+            // meet the digits and each other.
+            "8/19 10:02 AM",
+            "12/31 11:59 PM",
+            "1/1 12:00 AM",
+            "31.12 23:59",
             "100%",
             "96%",
             "7%",
@@ -5010,6 +5212,44 @@ mod tests {
             reached.is_some_and(|reached| reached < title.len()),
             "the whole title was drawn after all"
         );
+    }
+
+    /// A legend's word is given the room the shell estimates for it before
+    /// the GPU has shaped it, and the estimate has to be enough in every
+    /// language — a box narrower than its word is a word cut to an ellipsis,
+    /// which is what the Chinese start screen said in its legend before the
+    /// estimate knew a full-width character from a Latin one.
+    #[test]
+    fn every_legend_word_fits_the_room_its_estimate_gives_it() {
+        let mut font_system = shell_fonts();
+        for language in crate::i18n::Language::CHOICES {
+            crate::i18n::set(language);
+            for id in [
+                "shell-select",
+                "shell-options",
+                "shell-friends",
+                "shell-guide",
+                "shell-back",
+                "shell-cancel",
+                "shell-choose",
+                "shell-keyboard",
+            ] {
+                let word = crate::i18n::text(id);
+                let room = crate::ui::legend_word_width(word, 18.0);
+                let mut pool = Vec::new();
+                shape_texts(&mut font_system, &mut pool, &[label(word, room)]);
+                let (_, buffer) = &pool[0];
+                let runs: Vec<_> = buffer.layout_runs().collect();
+                assert_eq!(runs.len(), 1, "{language:?} {id}: one line");
+                let reached = runs[0].glyphs.iter().map(|glyph| glyph.end).max();
+                assert_eq!(
+                    reached,
+                    Some(word.len()),
+                    "{language:?} {id}: {word:?} was cut in a box of {room}"
+                );
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
     }
 
     /// A path too long for its box gives up its *beginning*, not its end.

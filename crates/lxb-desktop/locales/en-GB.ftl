@@ -1,9 +1,21 @@
-# Shell language. Language names are endonyms supplied by the language registry.
+# Settings > Language. Language names are endonyms and are not translated.
+# Choosing a language sets the system language too (systemd-localed and the
+# locale of every program the shell opens); the notes say where that stands.
+# `why` is the locale service's own sentence, in its words.
 language-title = Language
-language-description = The language used by the shell
-language-system = System default
-language-system-description = Follow the session language, with English as a fallback
-language-choice-description = Apply immediately to the shell
+language-description = The language of the shell and the system
+language-choice-description = Switches the shell and the system language
+language-in-use = In use by the shell and the system
+language-changing = Changing the system language…
+language-in-use-no-service = In use by the shell and what it opens; this machine has no locale service to keep it for the next start
+language-in-use-not-system = In use by the shell and what it opens; the system's own setting was not changed. { $why }
+language-shell-only = In use by the shell only. { $why }
+language-locale-not-installed = The { $locale } locale is not installed on this machine.
+language-changed = In use by the shell and the system. A restart may be needed to apply it everywhere.
+language-not-everywhere = In use by the shell and what it opens. Choose it again to apply it everywhere.
+locale-service-answered = The locale service answered { $answer }.
+polkit-holds-panel-never-asked = This session holds polkit's password panel and was still never asked for one.
+polkit-not-this-sessions-agent = This shell is not this session's polkit agent, so polkitd never gave it the question.
 
 # Settings: page titles, row labels, values and the descriptions under them.
 shell-a-band-of-water-lit-as-three-sheets = A band of water, lit as three sheets
@@ -15,7 +27,7 @@ shell-a-picture-or-a-film-of-your-own = A picture or a film of your own
 shell-a-quarter-of-it = A quarter of it
 shell-a-sixth-of-the-screen-across = A sixth of the screen across
 shell-a-third-of-it = A third of it
-shell-accent-color = Accent color
+shell-accent-color = Accent colour
 shell-accept-and-create = Accept and create
 shell-account-type = Account type
 shell-add-user = Add user
@@ -58,8 +70,13 @@ shell-cancel = Cancel
 shell-candlelight-and-as-far-as-this-goes = Candlelight, and as far as this goes
 shell-check-every-source-and-install-what-is-waiting = Check every source and install what is waiting
 shell-clear = Clear
+shell-clock = Clock
+# The two rows under it. Kept short because the row beside each one carries
+# this minute written that way, which is the whole of the explanation.
+shell-24-hour = 24-hour
+shell-12-hour = 12-hour
 shell-close = Close
-shell-color-temperature = Color temperature
+shell-color-temperature = Colour temperature
 shell-come-off-this-device-and-keep-it-paired = Come off this device, and keep it paired
 shell-come-off-this-network-and-keep-it-saved = Come off this network, and keep it saved
 shell-comfortable-from-an-armchair = Comfortable from an armchair
@@ -498,7 +515,7 @@ users-only-administrator-type = Administrator — and the only one on this machi
 users-cannot-remove-self = This is the account this session is running as; it cannot remove itself
 users-only-administrator-remove = The only administrator on this machine cannot be removed. Make another administrator first.
 shell-xkeyboard-config-is-not-installed-so-there-is-nothing-to-choose-from = xkeyboard-config is not installed, so there is nothing to choose from
-shell-srgb-color-intensity = sRGB color intensity
+shell-srgb-color-intensity = sRGB colour intensity
 shell-0-rotation = 0° Rotation
 shell-90-rotation = 90° Rotation
 shell-180-rotation = 180° Rotation
@@ -517,6 +534,22 @@ month-sep = September
 month-oct = October
 month-nov = November
 month-dec = December
+
+# A date in figures, for the rows that have no room for a month's name: the
+# file list, the trash, the updates history. The order is the language's own —
+# the day first here, the month first as America writes it.
+date-numeric = { PAD2($day) }/{ PAD2($month) }/{ $year }
+
+# The time of day, in whichever of the two clocks Settings > System > Clock is
+# set to. Both are drawn in the start screen's corner, which is cut from a
+# closed set of characters, so a language may write them with digits, the
+# colon, the slash, the full stop, the space and the letters of clock-am and
+# clock-pm — and nothing else, or the corner draws no clock at all. See
+# `i18n::time_of_day` and `gpu::LETTER_SET`.
+clock-24-hour = { $hour }:{ PAD2($minute) }
+clock-12-hour = { $hour }:{ PAD2($minute) } { $half }
+clock-am = AM
+clock-pm = PM
 
 # Settings rows that carry a name or a number.
 close-target = Close { $target }
@@ -1224,7 +1257,7 @@ count-settings = { $count ->
    *[other] { $count } settings
     }
 
-clock-corner = { $month }/{ $day } { $time }
+clock-corner = { $day }/{ $month } { $time }
 steam-waiting = Waiting for Steam
 steam-game-progress = { $state } · { $percent }% of { $size }
 steam-playtime-minutes = { $minutes } min
@@ -1477,7 +1510,7 @@ achievement-summary = { $description } · { $points ->
 achievements-unlocked-count = Unlocked ({ $count })
 achievements-locked-count = Locked ({ $count })
 achievements-unlocked-of = { $unlocked } / { $total } unlocked
-achievement-unlocked-at = Unlocked { $year }-{ $month }-{ $day } { $hour }:{ $minute }
+achievement-unlocked-at = Unlocked { $date } { $time }
 trophies-error-retry = { $error } Go back and reopen to retry.
 
 # RetroArch.

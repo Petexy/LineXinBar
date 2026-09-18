@@ -2879,7 +2879,7 @@ mod tests {
                         folder(
                             "Appearance",
                             vec![folder(
-                                "Accent color",
+                                "Accent colour",
                                 vec![choice("Green", false), choice("Purple", true)],
                             )],
                         ),
@@ -3617,7 +3617,7 @@ mod tests {
         );
         assert_eq!(
             cursor.current_entry(&lattice).map(Entry::title),
-            Some("Accent color")
+            Some("Accent colour")
         );
 
         assert!(cursor.navigate(Action::Right, &lattice));
@@ -3636,7 +3636,7 @@ mod tests {
         assert!(cursor.navigate(Action::Left, &lattice));
         assert_eq!(
             cursor.current_entry(&lattice).map(Entry::title),
-            Some("Accent color")
+            Some("Accent colour")
         );
         assert!(cursor.navigate(Action::Left, &lattice));
         assert_eq!(
@@ -4901,7 +4901,7 @@ mod tests {
         cursor.navigate(Action::Down, &lattice);
         cursor.enter(&lattice);
 
-        // Accent color is the only row in Appearance.
+        // Accent colour is the only row in Appearance.
         assert!(!cursor.navigate(Action::Down, &lattice));
         assert!(!cursor.navigate(Action::Up, &lattice));
 

@@ -1188,7 +1188,7 @@ mod tests {
         assert!(client.poll(true, None, BTreeSet::new()));
         assert_eq!(client.rows().len(), 1);
         assert_eq!(client.rows()[0].title(), "Tekken 6");
-        crate::i18n::set(crate::i18n::Language::English);
+        crate::i18n::set(crate::i18n::Language::British);
     }
 
     #[test]
