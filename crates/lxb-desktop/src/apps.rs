@@ -508,6 +508,11 @@ pub struct Game {
     /// one answer, kept because the column's order and the cover's colour are
     /// drawn from them. See [`lxb_steam::library::Standing`].
     pub standing: lxb_steam::library::Standing,
+    /// Roughly how many ways this machine could start it, so the menu over the
+    /// row knows whether there is a choice to offer — see
+    /// [`lxb_steam::library::Game::ways_here`]. One, for everything that is
+    /// not a Steam game and for most that are.
+    pub ways: usize,
     /// Whether a download that says it is running has written nothing for an
     /// hour.
     ///
@@ -3396,6 +3401,7 @@ mod tests {
     /// One made-up title, as the shell holds it.
     fn game(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(Game {
+            ways: 1,
             progress: None,
             app_id,
             name: name.to_string(),

@@ -281,6 +281,15 @@ pub struct Steam {
     /// a compatibility tool; what cannot is the tick, because every choice made
     /// here is read back out of the client and written down again.
     compat: BTreeMap<lxb_steam::webui::Which, Compat>,
+    /// And every way each game can be started, for the games somebody has
+    /// opened that row of the menu on.
+    ///
+    /// Held beside the tools for the same reason and on the same terms: the
+    /// list is Valve's client's own answer, there is nowhere else to get it,
+    /// and a press may have to wait for the client to come up. Kept per game
+    /// rather than for the library, because it is asked about one game at a
+    /// time and most games are never asked about at all.
+    ways: BTreeMap<u32, Ways>,
     /// Which of those a press is in the middle of *changing*, so that a
     /// refusal can be told from a list that would not arrive.
     ///
@@ -989,6 +998,22 @@ pub enum Compat {
     Unavailable(String),
 }
 
+/// The same three answers about how one game can be started.
+///
+/// Its own type rather than [`Compat`] with a different payload, because the
+/// two are asked of different things and a menu that could be handed either
+/// would be a menu that had to ask which it was holding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ways {
+    /// Asked, and no answer yet. The client may be starting.
+    Asking,
+    /// What the client said. An empty list is a game with one way of starting,
+    /// which is most of a library and is not a failure.
+    Said(Vec<lxb_steam::webui::Way>),
+    /// It could not be asked, and this is what to tell whoever is waiting.
+    Unavailable(String),
+}
+
 /// What one pass over the worker's events changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Changed {
@@ -1040,6 +1065,9 @@ pub struct Changed {
     /// And a *choice* Valve's client would not take, which is a press that has
     /// to be answered rather than a list that failed to arrive.
     pub compat_refused: Option<String>,
+    /// Valve's client has said how one game can be started, so a menu waiting
+    /// for that list can be filled in.
+    pub ways: Option<u32>,
     /// The friends list is different, so the panel showing it has to be
     /// redrawn.
     ///
@@ -1128,6 +1156,7 @@ impl Changed {
             step,
             compat,
             compat_refused,
+            ways,
             friends,
             chat,
             messages,
@@ -1161,6 +1190,7 @@ impl Changed {
         self.step = step.or(self.step.take());
         self.compat = compat.or(self.compat.take());
         self.compat_refused = compat_refused.or(self.compat_refused.take());
+        self.ways = ways.or(self.ways.take());
     }
 }
 
@@ -1247,6 +1277,7 @@ impl Steam {
             // than an empty one held over from a session that had not looked.
             looked_at_valves_log: Instant::now() - WHAT_VALVE_IS_DOING,
             compat: BTreeMap::new(),
+            ways: BTreeMap::new(),
             forcing: std::collections::BTreeSet::new(),
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
@@ -1287,6 +1318,7 @@ impl Steam {
             // than an empty one held over from a session that had not looked.
             looked_at_valves_log: Instant::now() - WHAT_VALVE_IS_DOING,
             compat: BTreeMap::new(),
+            ways: BTreeMap::new(),
             forcing: std::collections::BTreeSet::new(),
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
@@ -2520,6 +2552,15 @@ impl Steam {
                 };
                 changed.compat = Some(which);
             }
+            Event::TheWays { app_id, ways } => {
+                self.ways.insert(app_id, Ways::Said(ways));
+                changed.ways = Some(app_id);
+            }
+            Event::TheWaysUnavailable { app_id, why } => {
+                tracing::warn!(app_id, %why, "Steam would not say how this game starts");
+                self.ways.insert(app_id, Ways::Unavailable(why));
+                changed.ways = Some(app_id);
+            }
             Event::SignedIn(account) => {
                 self.trophies.account(Some(account.steam_id));
                 let name = Some(account.name);
@@ -2929,6 +2970,7 @@ impl Steam {
             name: game.name.clone(),
             note,
             progress,
+            ways: game.ways_here(),
             // Neither a game on its way in nor one on its way out can be
             // started, and both are busy: one row state for the two of them,
             // because what the bar does about it is the same.
@@ -3331,9 +3373,27 @@ impl Steam {
 
     /// Ask the running client to start one game.
     ///
-    /// `rungameid` rather than `-applaunch`, because it is the one Steam
-    /// registers for the whole of its own library — a title, a non-Steam
-    /// shortcut, a tool — and it is what Steam's own shortcuts use.
+    /// **`steam://launch/<app>/dialog`**, and the word on the end is the whole
+    /// of how this shell reaches a game that can be started more than one way.
+    /// A game with two launch options — OpenFront's plain one and its
+    /// "Wayland workaround" — is a game where the client picks for itself
+    /// unless it is told to ask, and the one it picks is not always the one
+    /// that runs. `dialog` tells it to ask, the launch stops on
+    /// `ShowLaunchOption`, the watch sees it and the shell puts the question up
+    /// itself. See [`lxb_steam::webui::CHOOSING_HOW_TO_START`].
+    ///
+    /// **It costs nothing where there is nothing to ask.** Measured against a
+    /// live client on 2026-09-19: an app the client offers exactly one option
+    /// for (`228980`) went `CheckShaderDepotManifest` → … → `CreatingProcess`
+    /// with no question at all. The client does the gating, so this shell does
+    /// not have to count the options first — which would mean a round trip to
+    /// the client's interface on the thread that draws, for every press.
+    ///
+    /// It replaced `steam://rungameid/<app>`, which was chosen because it is
+    /// the one Steam registers for the whole of its own library — a title, a
+    /// non-Steam shortcut, a tool. Nothing is lost: both arrive at the same
+    /// `ExecuteSteamURL`, and what reaches here is always a plain app id,
+    /// because that is what [`Self::play`] takes and what the library holds.
     ///
     /// Nothing comes back. What says the game started is the game's own window
     /// arriving on the display, which is what the splash is already watching
@@ -3383,7 +3443,7 @@ impl Steam {
             &where_it_is,
             &options,
             steam_id as u32,
-            &format!("steam://rungameid/{app_id}"),
+            &format!("steam://launch/{app_id}/dialog"),
         )
         .map_err(
             |refusal| crate::message!("steam-refused-launch", "refusal" => refusal.to_string()),
@@ -3447,6 +3507,25 @@ impl Steam {
         }
         self.compat.insert(which, Compat::Asking);
         self.client.compatibility(which);
+    }
+
+    /// Ask how one game can be started, unless it has already been answered.
+    ///
+    /// Asked once per game per session, on the terms
+    /// [`Self::ask_about_compatibility`] keeps and for the same reason: the
+    /// list moves only when the game itself is updated, and a menu that paid a
+    /// round trip into the client every time it opened is a menu that waits.
+    pub fn ask_about_the_ways(&mut self, app_id: u32) {
+        if matches!(self.ways.get(&app_id), Some(Ways::Asking | Ways::Said(_))) {
+            return;
+        }
+        self.ways.insert(app_id, Ways::Asking);
+        self.client.ask_about_the_ways(app_id);
+    }
+
+    /// What Valve's client has said about how one game can be started.
+    pub fn ways(&self, app_id: u32) -> Option<&Ways> {
+        self.ways.get(&app_id)
     }
 
     /// Run it under this tool from now on, or under whatever Steam chooses.

@@ -3759,6 +3759,7 @@ mod tests {
     /// A row in somebody's Steam library.
     fn game(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(crate::apps::Game {
+            ways: 1,
             progress: None,
             app_id,
             name: name.into(),

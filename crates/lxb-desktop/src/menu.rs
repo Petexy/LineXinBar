@@ -806,6 +806,32 @@ pub enum Command {
         app_id: u32,
         tool: Option<&'static str>,
     },
+    /// Step into the list of ways this game can be started, to set which one
+    /// it uses from now on.
+    ///
+    /// Offered only for a game Valve's client offers more than one way of
+    /// starting — most do not — and it opens the same list the panel a stopped
+    /// launch puts up is built from. See [`Command::SteamStartsThisWay`].
+    SteamWays(u32),
+    /// Start it this way from now on, or go back to being asked, which is what
+    /// `None` is.
+    ///
+    /// The way is the launch option's own name rather than the number Valve
+    /// gave it or the label drawn on the row, for the reason
+    /// `settings::STEAM_LAUNCH_OPTION` gives — and borrowed for the life of
+    /// the session exactly as [`Command::SteamRunUnder`]'s tool is.
+    SteamStartsThisWay {
+        app_id: u32,
+        way: Option<&'static str>,
+    },
+    /// Turn on, or off, the row on the launch-option panel that says the way
+    /// chosen next should be remembered.
+    ///
+    /// A tick that holds the panel rather than a command that acts, on exactly
+    /// the terms [`Command::OpenWithAlways`] is: it changes nothing on its own,
+    /// what it changes is what the *next* press means, and so it can be
+    /// pressed twice with no consequence.
+    SteamRememberTheWay,
     /// Do one thing to the Steam title the menu is about — check it, hand its
     /// install over — or bring up the Steam client itself.
     ///

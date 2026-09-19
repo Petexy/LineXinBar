@@ -1233,6 +1233,8 @@ fn main() -> anyhow::Result<()> {
         removal_plan: None,
         uninstalling: None,
         compat_menu: None,
+        ways_menu: None,
+        remember_the_way: false,
         open_with: Vec::new(),
         open_with_chosen: 0,
         open_with_others: Vec::new(),
@@ -3794,6 +3796,20 @@ struct Shell {
     /// was asked from and nowhere else — a menu the user has since closed, or
     /// moved on to another game in, is not one to write a list over.
     compat_menu: Option<u32>,
+    /// And which Steam title the open menu is waiting for a list of *ways to
+    /// start* about. The twin of [`Shell::compat_menu`], held apart for the
+    /// same reason the two lists are: a menu waiting for one of them is not
+    /// waiting for the other.
+    ways_menu: Option<u32>,
+    /// Whether the launch-option panel on screen has its "remember" row ticked.
+    ///
+    /// Beside [`Shell::launch_question`] rather than inside it because it is
+    /// the shell's state and not the client's: the question came from Valve
+    /// and this is the one row on the panel that did not. Cleared with the
+    /// panel, so the next question opens untucked — a setting that stayed on
+    /// between two different games' questions would remember a choice nobody
+    /// asked to have remembered.
+    remember_the_way: bool,
     /// The applications the open Open with list is offering, in the order it is
     /// offering them: [`menu::Command::OpenWithHandler`] carries a position in
     /// this and nothing else. Rebuilt every time that list is raised and never
@@ -10244,6 +10260,7 @@ impl Shell {
         // from has gone must not write itself over this one. See
         // [`Shell::steam_said_what_runs_it`].
         self.compat_menu = None;
+        self.ways_menu = None;
         let trophies = entries
             .iter()
             .any(|entry| entry.command == menu::Command::TrophiesSort);
@@ -14204,6 +14221,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.ways_menu = None;
         if self
             .context_menu
             .open_at(anchor, None, entries, ui::mixer_rows_that_fit(height))
@@ -14545,6 +14563,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.ways_menu = None;
         if self.context_menu.open_selecting(
             anchor,
             Some(menu::Title::new(crate::i18n::text("shell-notifications"))),
@@ -14854,6 +14873,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.ways_menu = None;
         if self.context_menu.open_at(
             anchor,
             Some(menu::Title::new(FLOATING_WINDOW_TITLE.to_string())),
@@ -16277,6 +16297,9 @@ impl Shell {
             }
             menu::Command::SteamCompatibility(app_id) => self.offer_compatibility(app_id),
             menu::Command::SteamRunUnder { app_id, tool } => self.run_under(app_id, tool),
+            menu::Command::SteamWays(app_id) => self.offer_the_ways(app_id),
+            menu::Command::SteamStartsThisWay { app_id, way } => self.starts_this_way(app_id, way),
+            menu::Command::SteamRememberTheWay => self.toggle_remembering_the_way(),
             menu::Command::SteamDo(doing) => self.steam_do(doing),
             menu::Command::Placeholder(name) => tracing::info!(
                 command = name,
@@ -18310,6 +18333,107 @@ impl Shell {
         );
     }
 
+    /// Step into the list of ways this game can be started.
+    ///
+    /// The twin of [`Shell::offer_compatibility`] and built the same way, for
+    /// the same reason: the list is Valve's client's own answer and there is
+    /// nowhere else to get it, so the press may have to wait and the panel
+    /// says so until it lands. See [`Shell::steam_said_the_ways`].
+    fn offer_the_ways(&mut self, app_id: u32) {
+        self.steam.ask_about_the_ways(app_id);
+        let rows = steam_ways_rows(
+            app_id,
+            self.steam.ways(app_id),
+            settings::steam_launch_option(app_id).as_deref(),
+        );
+        let title = self
+            .steam
+            .game(app_id)
+            .map(|game| menu::Title::new(game.name.clone()));
+        if !self.context_menu.descend(title, rows) {
+            return;
+        }
+        self.ways_menu =
+            matches!(self.steam.ways(app_id), Some(steam::Ways::Asking)).then_some(app_id);
+        self.needs_redraw = true;
+    }
+
+    /// Start this game this way from now on, or go back to being asked.
+    ///
+    /// Nothing is asked first and nothing is put on the screen, exactly as
+    /// [`Shell::run_under`] does nothing: it is a setting on a game, it is
+    /// read the next time the game is started, and it is taken back by
+    /// pressing the row above it.
+    ///
+    /// **Written here and not sent to Valve.** Steam has a setting of its own
+    /// for this, kept in its web UI's storage under a key derived from the
+    /// option list; writing into that would be this shell reaching into the
+    /// client's private state through a hash nobody documents. What this
+    /// remembers instead is answered by the shell, on the panel Valve's
+    /// question already goes through — see [`Shell::steam_stopped_to_ask`].
+    fn starts_this_way(&mut self, app_id: u32, way: Option<&'static str>) {
+        tracing::info!(
+            app_id,
+            way = way.unwrap_or("whichever is asked for each time"),
+            "this game is to start this way from now on"
+        );
+        settings::remember_steam_launch_option(app_id, way.map(str::to_string));
+        // The tick has to move under the press, and the list it is drawn from
+        // has not changed — so the rows are rebuilt from what is already known
+        // rather than asked for again.
+        let rows = steam_ways_rows(
+            app_id,
+            self.steam.ways(app_id),
+            settings::steam_launch_option(app_id).as_deref(),
+        );
+        if self.context_menu.refresh(rows) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Turn the launch panel's "remember this" row on, or off.
+    ///
+    /// It acts on nothing by itself. What it changes is what the *next* press
+    /// on that panel means — see [`Command::SteamRememberTheWay`] — which is
+    /// why it holds the panel and why pressing it twice is harmless.
+    fn toggle_remembering_the_way(&mut self) {
+        self.remember_the_way = !self.remember_the_way;
+        tracing::info!(
+            remembering = self.remember_the_way,
+            "whether the way chosen next is to be remembered"
+        );
+        // The panel is standing and one of its rows has changed. Rebuilt from
+        // the question it is already showing, so the tick moves under the
+        // press without the panel folding and growing again.
+        if let Some(asked) = self.launch_question.as_ref() {
+            let rows = launch_question_rows(&asked.question, self.remember_the_way);
+            self.dialog.refresh(rows);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Valve's client has said how one game can be started.
+    ///
+    /// Only the panel that asked, and only while it is still up — the rule
+    /// [`Shell::steam_said_what_runs_it`] keeps, for the same reason.
+    fn steam_said_the_ways(&mut self, app_id: u32) {
+        if self.ways_menu != Some(app_id) || !self.context_menu.is_open() {
+            return;
+        }
+        self.ways_menu = None;
+        let rows = steam_ways_rows(
+            app_id,
+            self.steam.ways(app_id),
+            settings::steam_launch_option(app_id).as_deref(),
+        );
+        let title = self
+            .steam
+            .game(app_id)
+            .map(|game| menu::Title::new(game.name.clone()));
+        self.context_menu.replace(title, rows);
+        self.needs_redraw = true;
+    }
+
     /// Steam has said what one title — or every unverified title — runs under.
     ///
     /// Two things are waiting on it and neither is on the other's path: a
@@ -20028,18 +20152,31 @@ impl Shell {
     /// client had a dialog up, off the screen, asking whether to play anyway.
     /// The only way through it was to open Steam by hand and press the button.
     ///
-    /// So the loading screen comes down and **the client is given sight**. Not
-    /// one window of it: the question is asked on the client's main window,
-    /// whose title is the one title [`a_hidden_window_is_a_question`] refuses
-    /// to let through, and a rule that let *that* through on a guess would let
-    /// the storefront through with it.
+    /// Either way the loading screen comes down first, so that nothing arrives
+    /// behind a screen that owns the display. What goes up in its place is one
+    /// of two things.
     ///
-    /// Nothing is said, and that is deliberate. Valve's own dialog names the
-    /// game and states the question; a panel of this shell's in front of it
-    /// would be one more thing to dismiss before the person can reach the
-    /// button they need. And the shell does not answer it either — a save
-    /// conflict is somebody's progress, and this is the same rule that stops
-    /// the installer clicking through an agreement nobody read.
+    /// **The shell's own panel**, where this is a question
+    /// [`lxb_steam::webui::the_question`] has the words for: Valve owns every
+    /// word on it and this shell owns the buttons, because Valve's own dialog
+    /// for these is a desktop one and somebody holding a controller cannot
+    /// press it. See [`Self::put_the_question`]. The commonest of them by far
+    /// is which of a game's ways of starting is wanted — OpenFront, and
+    /// everything else that ships more than one launch option.
+    ///
+    /// **Sight of the client**, for the rest — an agreement to read, a key to
+    /// copy down, a choice between two saves that Valve shows with the date of
+    /// each. Not one window of it: the question is asked on the client's main
+    /// window, whose title is the one title [`a_hidden_window_is_a_question`]
+    /// refuses to let through, and a rule that let *that* through on a guess
+    /// would let the storefront through with it. Nothing is said over it,
+    /// deliberately: Valve's dialog already names the game and states the
+    /// question, and a panel of this shell's in front of it would be one more
+    /// thing to dismiss before the person can reach the button they need.
+    ///
+    /// The shell answers none of them itself. A save conflict is somebody's
+    /// progress and an agreement is somebody's to read; what this does is put
+    /// the question somewhere a controller can reach it.
     ///
     /// Sight is taken back the way it always is: [`Self::sync_steam_sight`]
     /// notices the window has gone. Answering the question starts the game,
@@ -20055,8 +20192,37 @@ impl Shell {
             app_id = asking.app_id,
             task = %asking.task,
             splash = ?waiting_on_it,
-            "letting Valve's client be seen so this launch can be answered"
+            ours = asking.question.is_some(),
+            "Valve's client has stopped this launch until somebody answers it"
         );
+        // A choice already made, before anything is taken down. The launch is
+        // answered where it stands: the loading screen stays up, the splash
+        // goes on counting, and the person who set this never sees that a
+        // question was asked at all — which is the whole of what remembering
+        // one is for.
+        //
+        // Matched on the option's own name rather than on the number or the
+        // label, for the reason `settings::STEAM_LAUNCH_OPTION` gives. A name
+        // the client no longer offers matches nothing and falls through to the
+        // panel, which is the right failure: the game has changed its ways of
+        // starting and nobody has chosen among the new ones yet.
+        let chosen = settings::steam_launch_option(asking.app_id);
+        if let Some((action_id, answer)) = the_remembered_way(asking, chosen.as_deref()) {
+            tracing::info!(
+                app_id = asking.app_id,
+                answer = %answer.label,
+                "this game is already set to start this way, so the launch is answered where it is"
+            );
+            self.steam.answer_the_launch(action_id, answer.carry);
+            // Watched again, because the watcher speaks once per launch and
+            // has now spent that on a question nobody saw. A launch can stop
+            // twice — on which way to start, and then on a save the cloud
+            // disagrees about — and the second one must not be the one nobody
+            // hears about. The same re-arming [`Self::answer_the_launch`] does
+            // for the same reason.
+            self.steam.watch_this_launch(asking.app_id);
+            return;
+        }
         self.osk.dismiss_at_once();
         // Before anything is put in its place, so neither the shell's own panel
         // nor Valve's window comes up behind a loading screen on its way out.
@@ -20156,18 +20322,16 @@ impl Shell {
             }
         }
         lines.push(dialog::Line::Rule);
-        let buttons = question
-            .answers
-            .iter()
-            .enumerate()
-            .map(|(at, answer)| {
-                menu::Entry::new(menu::Command::SteamLaunchAnswer(at), answer.label.clone())
-            })
-            .collect();
+        // A question opens with nothing to be remembered, whatever the last
+        // one was left on: the tick is about *this* game and this press.
+        self.remember_the_way = false;
+        let buttons = launch_question_rows(&question, self.remember_the_way);
         // On the first answer rather than on the refusal. Steam's own dialog
         // opens on the same one, and the refusal is the last row either way —
         // a panel that opened on Cancel would be a panel that reads as a
-        // warning about the press rather than a question about the game.
+        // warning about the press rather than a question about the game. The
+        // remember row stands under the ways, so the first row is an answer
+        // whether or not there is one.
         self.dialog
             .ask(from, Some(icons::STEAM.to_string()), lines, buttons, 0);
         self.launch_question = Some(LaunchQuestion {
@@ -20200,8 +20364,22 @@ impl Shell {
             app_id = asked.app_id,
             answer = %answer.label,
             carry = ?answer.carry,
+            remembering = self.remember_the_way,
             "answering the question Valve's client stopped this launch on"
         );
+        // Written before the answer goes, and only where this is a question
+        // that *can* be answered in advance: [`Answer::chooses`] is `None` on
+        // every question that is about this launch rather than about the game,
+        // so a cloud-save conflict cannot be remembered however the row was
+        // ticked. Cancel carries none either — somebody who backed out has
+        // chosen nothing to repeat.
+        if self.remember_the_way {
+            if let Some(way) = answer.chooses.clone() {
+                tracing::info!(app_id = asked.app_id, %way, "and remembering it for next time");
+                settings::remember_steam_launch_option(asked.app_id, Some(way));
+            }
+        }
+        self.remember_the_way = false;
         self.steam
             .answer_the_launch(asked.question.action_id, answer.carry.clone());
         if !matches!(answer.carry, lxb_steam::webui::Carry::Go(_)) {
@@ -20303,6 +20481,10 @@ impl Shell {
             why,
             "the launch question was not answered"
         );
+        // Nothing was chosen, so there is nothing to have remembered. The row
+        // is cleared here as well as where a question is answered, because a
+        // panel can leave without either: its display can be unplugged.
+        self.remember_the_way = false;
         self.steam
             .answer_the_launch(asked.question.action_id, lxb_steam::webui::Carry::Stop);
     }
@@ -20728,6 +20910,11 @@ impl Shell {
         // the same answer.
         if let Some(which) = changed.compat {
             self.steam_said_what_runs_it(which);
+        }
+        // The same again for a list of ways to start, which is the same shape
+        // of answer landing on the same kind of waiting menu.
+        if let Some(app_id) = changed.ways {
+            self.steam_said_the_ways(app_id);
         }
         // And a choice the client would not take. Its own panel because there
         // is nothing else to say it on: the menu was answered and put away on
@@ -27076,6 +27263,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.ways_menu = None;
         self.context_menu.open_at(
             anchor,
             Some(menu::Title::new(crate::i18n::text("label-showing"))),
@@ -30724,6 +30912,18 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
                 crate::i18n::builtin(lxb_steam::Doing::Verify.label()),
             ));
         }
+        // Which of its ways of starting it uses, for a game that has more
+        // than one. Beside Compatibility because it is the same kind of thing
+        // — a setting on the game whose list comes out of Valve's client —
+        // and offered only where there is a choice: the count comes off the
+        // library rather than out of the client, so that building a menu costs
+        // nothing. See [`lxb_steam::library::Game::ways_here`].
+        if game.ways > 1 {
+            rows.push(menu::Entry::new(
+                menu::Command::SteamWays(game.app_id),
+                crate::i18n::text("shell-launch-option"),
+            ));
+        }
         // Which Steam Play tool it runs under, which is a setting on the game
         // rather than something done to it — so it is offered whether or not
         // the game is on the disk, exactly as Steam's own properties window
@@ -31090,6 +31290,169 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
     rows
 }
 
+/// The answer a game's remembered way of starting picks out of a question, if
+/// one is remembered and is still on offer.
+///
+/// `None` for every question that is not about which way to start — those
+/// carry no [`lxb_steam::webui::Answer::chooses`] — and for a game nobody has
+/// chosen for. Also `None` when the remembered way is no longer among the
+/// answers, which is a game whose ways of starting have changed since somebody
+/// chose: the panel then comes back and asks, rather than a stale name
+/// silently picking whichever option now sits where it used to.
+///
+/// Free of `self` so the rule can be tested without a session, which is the
+/// half that decides whether somebody's game starts the way they said.
+fn the_remembered_way(
+    asking: &lxb_steam::Asking,
+    chosen: Option<&str>,
+) -> Option<(u32, lxb_steam::webui::Answer)> {
+    let question = asking.question.as_ref()?;
+    let chosen = chosen?;
+    let answer = question
+        .answers
+        .iter()
+        .find(|answer| answer.chooses.as_deref() == Some(chosen))?;
+    Some((question.action_id, answer.clone()))
+}
+
+/// The rows of a game's "how it starts" list: every way Valve's client offers,
+/// the one in force ticked.
+///
+/// Built like [`steam_compat_rows`] and reading the same three answers, because
+/// it is the same shape of question about the same game asked of the same
+/// client. The row that takes the choice back is first and ticked when nothing
+/// is remembered — Steam's own "ask me every time", said as a row, so that a
+/// list of ways with none of them chosen cannot leave a setting nobody can
+/// undo.
+fn steam_ways_rows(
+    app_id: u32,
+    known: Option<&steam::Ways>,
+    chosen: Option<&str>,
+) -> Vec<menu::Entry> {
+    let mut rows = Vec::new();
+    match known {
+        None | Some(steam::Ways::Asking) => rows.push(
+            menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-asking-steam-ellipsis"),
+            )
+            .reading(),
+        ),
+        Some(steam::Ways::Unavailable(why)) => {
+            rows.push(menu::Entry::new(menu::Command::Dismiss, why.clone()).reading())
+        }
+        // One way of starting is not a choice, and this row is only ever
+        // reached for a game the bar believed had more than one — so what it
+        // says is what is true now rather than what went wrong.
+        Some(steam::Ways::Said(ways)) if ways.len() < 2 => rows.push(
+            menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-this-game-starts-only-one-way"),
+            )
+            .reading(),
+        ),
+        Some(steam::Ways::Said(ways)) => {
+            rows.push(chosen_when(
+                menu::Entry::new(
+                    menu::Command::SteamStartsThisWay { app_id, way: None },
+                    crate::i18n::text("shell-ask-every-time"),
+                )
+                .holds(),
+                chosen.is_none(),
+            ));
+            rows.extend(ways.iter().map(|way| {
+                chosen_when(
+                    menu::Entry::new(
+                        menu::Command::SteamStartsThisWay {
+                            app_id,
+                            way: Some(settings::intern(&way.chooses)),
+                        },
+                        way.label.clone(),
+                    )
+                    .holds(),
+                    chosen == Some(way.chooses.as_str()),
+                )
+            }));
+        }
+    }
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
+    rows
+}
+
+/// The answers on the panel a stopped launch puts up, with the row that says
+/// whether the one chosen next is to be remembered.
+///
+/// **Under the ways and above the way out**, which is where the user asked for
+/// it on 2026-09-19: at the head it read as a fourth thing to choose between
+/// rather than as a switch about the ways below it. So the order down the
+/// panel is the ways, then what to do about them, then Cancel.
+///
+/// **And it is drawn off as well as on** — [`icons::UNCHOSEN`] where it is not
+/// ticked, which is the one place in this shell that draws an empty box. Every
+/// other list here answers "which one of these", where the tick is the only
+/// mark and a blank row is the rest of the answer; this row is a switch, and a
+/// switch with nothing beside it gives no sign that it is one.
+///
+/// It holds the panel, so landing on it costs a press and nothing else, and
+/// the panel opens on the first *way* — see
+/// [`Shell::show_the_launch_question`].
+///
+/// Only for the question that can be answered in advance. Every other question
+/// Valve stops a launch on is about this launch and this moment — a save that
+/// disagrees with the cloud is not a preference — and those get their answers
+/// and nothing else. [`lxb_steam::webui::Answer::chooses`] is what says which
+/// is which.
+fn launch_question_rows(
+    question: &lxb_steam::webui::Question,
+    remembering: bool,
+) -> Vec<menu::Entry> {
+    let mut rows: Vec<menu::Entry> = question
+        .answers
+        .iter()
+        .enumerate()
+        .map(|(at, answer)| {
+            menu::Entry::new(menu::Command::SteamLaunchAnswer(at), answer.label.clone())
+        })
+        .collect();
+    if question
+        .answers
+        .iter()
+        .any(|answer| answer.chooses.is_some())
+    {
+        // Before the refusal, which is the last answer of every question this
+        // shell draws. Cancel stays at the bottom, where a way out belongs.
+        let under_the_ways = question
+            .answers
+            .iter()
+            .position(|answer| matches!(answer.carry, lxb_steam::webui::Carry::Stop))
+            .unwrap_or(rows.len());
+        rows.insert(
+            under_the_ways,
+            ticked_when(
+                menu::Entry::new(
+                    menu::Command::SteamRememberTheWay,
+                    crate::i18n::text("shell-always-start-it-this-way"),
+                )
+                .holds(),
+                remembering,
+            ),
+        );
+    }
+    rows
+}
+
+/// A switch on a menu, drawn in both of its states.
+///
+/// Unlike [`chosen_when`], which marks one answer of several and leaves the
+/// rest bare: this is one thing being turned on and off, and the empty box is
+/// what says there is something here to turn. See [`icons::UNCHOSEN`].
+fn ticked_when(row: menu::Entry, ticked: bool) -> menu::Entry {
+    row.glyph(match ticked {
+        true => icons::CHOSEN,
+        false => icons::UNCHOSEN,
+    })
+}
+
 /// The rows of the friends panel's Status list: the statuses an account may be
 /// put into, the one it is in ticked.
 ///
@@ -31242,6 +31605,247 @@ mod chat_announcement_tests {
 mod steam_game_menu_tests {
     use super::*;
 
+    /// One question Valve's client stopped a launch on, for the rules below.
+    ///
+    /// The shape a real client produced on 2026-09-19: two ways of starting
+    /// which share a description and are told apart by the name filled into
+    /// it — see [`lxb_steam::webui::Answer::chooses`].
+    fn a_way_to_start() -> lxb_steam::Asking {
+        let go = |label: &str, index: &str, chooses: &str| lxb_steam::webui::Answer {
+            label: label.to_string(),
+            carry: lxb_steam::webui::Carry::Go(index.to_string()),
+            chooses: Some(chooses.to_string()),
+        };
+        lxb_steam::Asking {
+            request: 1,
+            app_id: 3560670,
+            task: lxb_steam::webui::CHOOSING_HOW_TO_START.to_string(),
+            question: Some(lxb_steam::webui::Question {
+                action_id: 4,
+                app_id: 3560670,
+                body: vec!["Make a selection to launch OpenFront".to_string()],
+                answers: vec![
+                    go("Play OpenFront", "0", "OpenFront"),
+                    go(
+                        "Play OpenFront (Wayland workaround)",
+                        "1",
+                        "OpenFront (Wayland workaround)",
+                    ),
+                    lxb_steam::webui::Answer {
+                        label: "Cancel".to_string(),
+                        carry: lxb_steam::webui::Carry::Stop,
+                        chooses: None,
+                    },
+                ],
+            }),
+        }
+    }
+
+    /// The game's own list of ways to start: the one in force ticked, and a
+    /// way back to being asked that is ticked when nothing is.
+    #[test]
+    fn the_ways_a_game_starts_tick_the_one_in_force() {
+        let way = |index: u32, label: &str, chooses: &str| lxb_steam::webui::Way {
+            index,
+            label: label.to_string(),
+            chooses: chooses.to_string(),
+        };
+        let said = steam::Ways::Said(vec![
+            way(0, "Play OpenFront", "OpenFront"),
+            way(
+                1,
+                "Play OpenFront (Wayland workaround)",
+                "OpenFront (Wayland workaround)",
+            ),
+        ]);
+
+        // Nobody has chosen: the tick is on the row that says so, which is
+        // first — a list of ways with none of them marked would be a setting
+        // nobody could tell the state of.
+        let asked = steam_ways_rows(3560670, Some(&said), None);
+        assert_eq!(
+            asked[0].command,
+            menu::Command::SteamStartsThisWay {
+                app_id: 3560670,
+                way: None
+            }
+        );
+        assert_eq!(asked[0].glyph, Some(icons::CHOSEN));
+        assert!(asked[1].glyph.is_none() && asked[2].glyph.is_none());
+
+        // One chosen: the tick moves to it, and off the row above.
+        let set = steam_ways_rows(3560670, Some(&said), Some("OpenFront (Wayland workaround)"));
+        assert!(set[0].glyph.is_none(), "it is not asking every time now");
+        assert!(set[1].glyph.is_none());
+        assert_eq!(set[2].glyph, Some(icons::CHOSEN));
+        assert_eq!(
+            set[2].command,
+            menu::Command::SteamStartsThisWay {
+                app_id: 3560670,
+                way: Some("OpenFront (Wayland workaround)")
+            },
+            "and the row carries the option's own name, not its place"
+        );
+        // Every row of the list holds the panel: the tick moving is the
+        // answer, and a panel that folded away would take it with it.
+        assert!(set[..3].iter().all(|row| row.holds));
+
+        // A choice for a way this game no longer offers leaves the list with
+        // no tick on any way — and none on "ask every time" either, because
+        // something *is* remembered. It is the honest drawing of a setting
+        // that has stopped applying; the next launch asks again.
+        let gone = steam_ways_rows(3560670, Some(&said), Some("OpenFront (Vulkan)"));
+        assert!(gone[..3].iter().all(|row| row.glyph.is_none()));
+
+        // A game with one way is not a choice, and says so rather than
+        // offering a list of one.
+        let only_one = steam::Ways::Said(vec![way(0, "Play OpenFront", "OpenFront")]);
+        let single = steam_ways_rows(3560670, Some(&only_one), None);
+        assert!(single[0].reading, "it is writing to read, not a control");
+
+        // And a list that has not arrived says it is being waited for rather
+        // than showing an empty one.
+        let waiting = steam_ways_rows(3560670, Some(&steam::Ways::Asking), None);
+        assert!(waiting[0].reading);
+        assert!(steam_ways_rows(3560670, None, None)[0].reading);
+    }
+
+    /// A game somebody has set a way of starting is started that way, without
+    /// being asked again — and the answer sent is the one they chose.
+    #[test]
+    fn a_remembered_way_answers_the_launch_without_a_panel() {
+        let asking = a_way_to_start();
+
+        let (action_id, answer) =
+            the_remembered_way(&asking, Some("OpenFront (Wayland workaround)")).expect("a choice");
+        assert_eq!(action_id, 4, "answered against the client's own launch");
+        assert_eq!(
+            answer.carry,
+            lxb_steam::webui::Carry::Go("1".to_string()),
+            "and with the number that option carries"
+        );
+
+        // Nobody has chosen, so the panel comes up. This is the ordinary case
+        // and it is the one that must not be answered from a file.
+        assert!(the_remembered_way(&asking, None).is_none());
+
+        // **A name the client no longer offers matches nothing.** The game has
+        // changed its ways of starting since somebody chose one, and the right
+        // failure is to ask again rather than to let a stale name pick
+        // whichever option now sits where it used to.
+        assert!(the_remembered_way(&asking, Some("OpenFront (Vulkan)")).is_none());
+
+        // And the way out is not a way to start: a panel answered with Cancel
+        // is somebody who chose nothing, so nothing can be remembered as it.
+        assert!(the_remembered_way(&asking, Some("Cancel")).is_none());
+    }
+
+    /// Only the question that is about the *game* may be answered in advance.
+    ///
+    /// The rule that keeps a remembered launch option from ever answering a
+    /// cloud-save conflict: those carry no `chooses`, whatever is in the
+    /// settings file and whatever the row was ticked to.
+    #[test]
+    fn a_question_about_this_launch_is_never_answered_from_a_file() {
+        let cloud = lxb_steam::Asking {
+            request: 1,
+            app_id: 3560670,
+            task: "SynchronizingCloud".to_string(),
+            question: Some(lxb_steam::webui::Question {
+                action_id: 4,
+                app_id: 3560670,
+                body: vec!["Cloud Out of Date".to_string()],
+                answers: vec![
+                    lxb_steam::webui::Answer {
+                        label: "Play anyway".to_string(),
+                        carry: lxb_steam::webui::Carry::Go("IgnoreCloud".to_string()),
+                        chooses: None,
+                    },
+                    lxb_steam::webui::Answer {
+                        label: "Cancel".to_string(),
+                        carry: lxb_steam::webui::Carry::Stop,
+                        chooses: None,
+                    },
+                ],
+            }),
+        };
+        for chosen in [None, Some("Play anyway"), Some("OpenFront")] {
+            assert!(
+                the_remembered_way(&cloud, chosen).is_none(),
+                "somebody's progress is not a preference"
+            );
+        }
+
+        // And a launch that stopped on something this shell has no panel for
+        // carries no question at all.
+        let unknown = lxb_steam::Asking {
+            question: None,
+            ..a_way_to_start()
+        };
+        assert!(the_remembered_way(&unknown, Some("OpenFront")).is_none());
+    }
+
+    /// The panel gains a row that is not an answer, it stands under the ways,
+    /// and the answers keep their own numbers.
+    ///
+    /// The half that would break silently: `SteamLaunchAnswer(at)` is a
+    /// position in the *question's* answers, so a row put among them must not
+    /// shift what those positions mean. It once would have — the rows and the
+    /// answers were the same list.
+    #[test]
+    fn the_remember_row_stands_under_the_ways_without_moving_them() {
+        let asking = a_way_to_start();
+        let question = asking.question.as_ref().expect("a question");
+
+        let rows = launch_question_rows(question, false);
+        assert_eq!(rows.len(), question.answers.len() + 1, "one row more");
+
+        // Under the two ways and above Cancel, which is where a way out
+        // belongs. At the head it read as a fourth thing to choose between.
+        assert_eq!(
+            rows.iter().map(|row| row.command).collect::<Vec<_>>(),
+            vec![
+                menu::Command::SteamLaunchAnswer(0),
+                menu::Command::SteamLaunchAnswer(1),
+                menu::Command::SteamRememberTheWay,
+                menu::Command::SteamLaunchAnswer(2),
+            ],
+            "the ways, then what to do about them, then the way out"
+        );
+        assert!(rows[2].holds, "it is a control on the panel, not a way off");
+
+        // **Drawn in both states**, which is what makes it read as a switch.
+        // Every other list in this shell leaves an unchosen row bare; this one
+        // cannot, or there is no sign it can be switched at all.
+        assert_eq!(rows[2].glyph, Some(icons::UNCHOSEN));
+        let ticked = launch_question_rows(question, true);
+        assert_eq!(ticked[2].glyph, Some(icons::CHOSEN));
+
+        // And nothing else moved when it was ticked.
+        assert_eq!(
+            ticked.iter().map(|row| row.command).collect::<Vec<_>>(),
+            rows.iter().map(|row| row.command).collect::<Vec<_>>()
+        );
+    }
+
+    /// And no such row on a question that cannot be answered in advance.
+    #[test]
+    fn only_a_question_about_the_game_offers_to_be_remembered() {
+        let cloud = lxb_steam::webui::Question {
+            action_id: 4,
+            app_id: 3560670,
+            body: vec!["Cloud Out of Date".to_string()],
+            answers: vec![lxb_steam::webui::Answer {
+                label: "Play anyway".to_string(),
+                carry: lxb_steam::webui::Carry::Go("IgnoreCloud".to_string()),
+                chooses: None,
+            }],
+        };
+        let rows = launch_question_rows(&cloud, true);
+        assert_eq!(rows.len(), 1, "the answer, and nothing to remember it by");
+        assert_eq!(rows[0].command, menu::Command::SteamLaunchAnswer(0));
+    }
+
     fn game(installed: bool, steam_client: bool) -> apps::Game {
         doing(
             match installed {
@@ -31254,6 +31858,7 @@ mod steam_game_menu_tests {
 
     fn doing(standing: lxb_steam::library::Standing, steam_client: bool) -> apps::Game {
         apps::Game {
+            ways: 1,
             progress: None,
             app_id: 7,
             name: "Fixture".to_string(),

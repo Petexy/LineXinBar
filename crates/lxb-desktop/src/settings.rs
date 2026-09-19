@@ -1369,6 +1369,53 @@ static INHERITED: Mutex<Hdr> = Mutex::new(Hdr {
 /// preference all the same.
 static MEDIA_SORT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
+/// Which way each Steam game is to be started, for the games somebody has
+/// chosen one for.
+///
+/// The value is the launch option's own name — `webui::Way::chooses` — and not
+/// the number Valve's client gave it. The number is made over whichever
+/// options the client decided to offer this machine on the day it was asked,
+/// so a game update that adds a way of starting would silently move everybody
+/// who had chosen one; the name survives that, and survives the row being
+/// written in another language. A name the client no longer offers is a choice
+/// that quietly stops applying, which is the right failure: the panel comes
+/// back and asks again.
+///
+/// Held here for the reason [`MEDIA_SORT`] is: everything in the settings file
+/// is built out of the live values at the moment it is written, so a setting
+/// held where the writer cannot see it is one that gets dropped the next time
+/// anything else changes.
+///
+/// Keyed by app id written out, because a settings file is text and a number
+/// is not a TOML key.
+static STEAM_LAUNCH_OPTION: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Remember that this game is to start this way from now on, or stop
+/// remembering and let it ask again.
+///
+/// `None` is the second of those, and it is how the tick is taken off: there
+/// is no third state where a game is remembered as "ask me", because that is
+/// what having no answer already means.
+pub fn remember_steam_launch_option(app_id: u32, chooses: Option<String>) {
+    {
+        let mut held = STEAM_LAUNCH_OPTION.lock().unwrap();
+        match chooses {
+            Some(way) => held.insert(app_id.to_string(), way),
+            None => held.remove(&app_id.to_string()),
+        };
+    }
+    save(&stored());
+}
+
+/// Which way this game is to be started, if somebody has said.
+pub fn steam_launch_option(app_id: u32) -> Option<String> {
+    STEAM_LAUNCH_OPTION
+        .lock()
+        .unwrap()
+        .get(&app_id.to_string())
+        .cloned()
+}
+
 /// What the file explorer's key in that table is called.
 ///
 /// The same table as the three shelves, because it is the same preference
@@ -9526,6 +9573,7 @@ fn adopt(stored: Stored) {
             .unwrap_or(crate::i18n::Clock::FromLanguage),
     );
     *MEDIA_SORT.lock().unwrap() = stored.media_sort;
+    *STEAM_LAUNCH_OPTION.lock().unwrap() = stored.steam_launch_option;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
     *TROPHIES_SORT.lock().unwrap() = stored.trophies_sort;
     // Whatever it says, without asking the disk whether the folder is still
@@ -10180,6 +10228,9 @@ struct Stored {
     /// than three keys because the shelves are a table in [`crate::apps`] and a
     /// fourth one should not need a field here.
     media_sort: BTreeMap<String, String>,
+    /// Which way each Steam game is to start — see [`STEAM_LAUNCH_OPTION`].
+    #[serde(default)]
+    steam_launch_option: BTreeMap<String, String>,
 }
 
 /// One display's section of the file.
@@ -10395,6 +10446,7 @@ fn stored() -> Stored {
         bluetooth_was_on: Some(bluetooth_was_on()),
         display,
         media_sort: MEDIA_SORT.lock().unwrap().clone(),
+        steam_launch_option: STEAM_LAUNCH_OPTION.lock().unwrap().clone(),
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
         trophies_sort: TROPHIES_SORT.lock().unwrap().clone(),
         // Written back out so that a file which named a place goes on naming

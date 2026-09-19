@@ -652,6 +652,19 @@ pub const SETTING_INFO: &str = "lxb:setting-info";
 pub const SWATCH: &str = "lxb:swatch";
 pub const CHOSEN: &str = "lxb:chosen";
 
+/// And the same badge with nothing in it, for the one kind of row where a mark
+/// has to be there to say it is off.
+///
+/// **Not offered to the lists that answer "which one of these".** There the
+/// tick is the only mark and every other row is blank, which is the shell's
+/// answer everywhere — see `open_with_other_rows`, where an empty box was
+/// deliberately not drawn. This is for a row that is a *switch*: "always start
+/// it this way" is not one of several answers, it is one thing being turned on
+/// and off, and a switch with nothing beside it when it is off gives no sign
+/// that it is a switch at all. Reported as confusing by the user on
+/// 2026-09-19, which is what the distinction is for.
+pub const UNCHOSEN: &str = "lxb:unchosen";
+
 /// The row that makes one more of something.
 ///
 /// The set has every verb for a thing that already exists and had none for
@@ -923,7 +936,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 150] = [
+pub const BUILTIN: [(&str, &str); 151] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -1192,6 +1205,7 @@ pub const BUILTIN: [(&str, &str); 150] = [
     (SETTING_INFO, include_str!("glyphs/setting-info.svg")),
     (SWATCH, include_str!("glyphs/swatch.svg")),
     (CHOSEN, include_str!("glyphs/chosen.svg")),
+    (UNCHOSEN, include_str!("glyphs/unchosen.svg")),
     (ADD, include_str!("glyphs/add.svg")),
     // The context menu's own rows.
     (UNINSTALL, include_str!("glyphs/uninstall.svg")),
@@ -2789,7 +2803,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            150,
+            151,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2852,8 +2866,9 @@ pub(crate) mod tests {
              that asks for a password, the two-handled cup the Trophies \
              column is headed by, and the Steam column with the mark every \
              row that came out of it wears, the cycle that asks for the library \
-             again and the door its account is left by, and the shell's own \
-             fennec at the head of the System information panel"
+             again and the door its account is left by, the empty ring beside \
+             the tick that a switch on a menu is drawn off with, and the \
+             shell's own fennec at the head of the System information panel"
         );
 
         for (name, drawing) in BUILTIN {
@@ -3029,6 +3044,7 @@ pub(crate) mod tests {
                 SETTING_INFO,
                 SWATCH,
                 CHOSEN,
+                UNCHOSEN,
                 ADD,
                 UNINSTALL,
                 LAUNCH,

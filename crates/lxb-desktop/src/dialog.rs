@@ -270,6 +270,21 @@ impl Dialog {
         true
     }
 
+    /// Redraw the answers of a panel that is already standing, keeping the
+    /// highlight where it is.
+    ///
+    /// For the one kind of row that is a control *on* a question rather than a
+    /// way off it: the tick that says the answer chosen next should be
+    /// remembered. Pressing it changes one glyph on one row, and the panel it
+    /// is on must not fold and grow back for that — the user is reading it.
+    ///
+    /// Not [`Self::ask`], which starts the growth again, and not
+    /// [`Self::descend`], which would put a second column on the stack for
+    /// what is the same question with a different mark on it.
+    pub fn refresh(&mut self, buttons: Vec<Entry>) -> bool {
+        self.buttons.refresh(buttons)
+    }
+
     /// Step back out to the answers a further column was reached from, once
     /// the answer just pressed has been seen to go down, with `buttons`
     /// written on them — see [`Menu::back_after_press`].

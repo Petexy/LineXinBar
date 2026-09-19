@@ -37,6 +37,10 @@ pub struct Launch {
     pub beta_key: Option<String>,
 }
 
+/// What Steam calls this machine's operating system in a launch entry's
+/// `oslist`, which is the word every Linux game's entries are marked with.
+const THIS_MACHINE: &str = "linux";
+
 /// One title in the account's library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
@@ -179,6 +183,31 @@ pub struct Game {
 }
 
 impl Game {
+    /// Roughly how many ways this machine could start it.
+    ///
+    /// **A hint and not the answer.** The list somebody chooses from is always
+    /// Valve's client's own — see [`crate::webui::the_ways_to_start`] —
+    /// because the client filters by things this does not look at: the branch
+    /// the account is on, the extra content it owns, the architecture. What
+    /// this is for is the question *before* that one, asked of every row of a
+    /// menu as it is built: is there anything here worth offering a choice
+    /// about? Offering the row on a game with one way of starting would be a
+    /// row that leads to "this game starts only one way" — and asking the
+    /// client about every game to avoid that would be a menu that waits.
+    ///
+    /// Counted the way the client counts here: an entry naming no operating
+    /// system is for all of them, and the rest have to say so. OpenFront has
+    /// four entries and two of them are this machine's.
+    pub fn ways_here(&self) -> usize {
+        self.launch
+            .iter()
+            .filter(|way| {
+                way.operating_systems
+                    .as_deref()
+                    .is_none_or(|on| on.trim().is_empty() || on.contains(THIS_MACHINE))
+            })
+            .count()
+    }
     fn new(app_id: u32, name: String, playtime_minutes: u32) -> Game {
         Game {
             order: sort_key(&name),
@@ -1745,6 +1774,54 @@ mod tests {
         let listed = owned(vec![protocol]);
 
         assert_eq!(listed[0].playtime_minutes, 0);
+    }
+
+    /// How many ways a game could be started *here*, which is the question the
+    /// menu asks of every row as it is built.
+    ///
+    /// OpenFront is the worked example and the numbers are its own, read out
+    /// of this machine's `appinfo.vdf` on 2026-09-19: four entries, two of
+    /// them locked to Windows and macOS. A Linux client offers the other two,
+    /// which is what makes it the one game in a library of 326 with a choice
+    /// to make.
+    #[test]
+    fn a_game_knows_roughly_how_many_ways_it_starts_here() {
+        let way = |on: Option<&str>| Launch {
+            executable: "OpenFront.sh".to_string(),
+            arguments: None,
+            working_dir: None,
+            kind: Some("default".to_string()),
+            operating_systems: on.map(str::to_string),
+            architecture: None,
+            beta_key: None,
+        };
+        let mut game = Game::new(3560670, "OpenFront".to_string(), 0);
+        game.launch = vec![
+            way(Some("windows")),
+            way(Some("macos")),
+            way(Some("linux")),
+            way(Some("linux")),
+        ];
+        assert_eq!(game.ways_here(), 2, "the two this machine is offered");
+
+        // An entry naming no operating system is for every one of them, which
+        // is how most games with a single way of starting are written.
+        let mut plain = Game::new(570, "Dota 2".to_string(), 0);
+        plain.launch = vec![way(None), way(Some(""))];
+        assert_eq!(plain.ways_here(), 2);
+
+        // A game with nothing to choose between, which is nearly all of them —
+        // and the answer that keeps the row off their menus.
+        let mut one = Game::new(570, "Dota 2".to_string(), 0);
+        one.launch = vec![way(Some("linux")), way(Some("windows"))];
+        assert_eq!(one.ways_here(), 1);
+        assert_eq!(Game::new(570, "Dota 2".to_string(), 0).ways_here(), 0);
+
+        // Steam writes several systems into one entry, and an entry this
+        // machine is named in is this machine's.
+        let mut both = Game::new(570, "Dota 2".to_string(), 0);
+        both.launch = vec![way(Some("windows,linux")), way(Some("macos"))];
+        assert_eq!(both.ways_here(), 1);
     }
 
     #[test]

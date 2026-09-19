@@ -1263,6 +1263,20 @@ pub struct Answer {
     /// Valve's own word for it, in the language the client is running in.
     pub label: String,
     pub carry: Carry,
+    /// What this answer would be remembered by, for the one question that can
+    /// be answered in advance — which of a game's ways of starting is wanted.
+    ///
+    /// The option's own name rather than [`Answer::label`] or the number the
+    /// client gave it, because it is the only one of the three that is stable.
+    /// The label is a sentence the client builds and translates; the number is
+    /// made over whichever options the client decided to offer this machine
+    /// today. Somebody who chose "OpenFront (Wayland workaround)" last week
+    /// chose *that*, and it is still that after a Steam update has renumbered
+    /// the list or a language change has rewritten the row. See [`Way`].
+    ///
+    /// `None` on every other question's answers: a cloud save conflict is not
+    /// a preference and must never be answered from a file.
+    pub chooses: Option<String>,
 }
 
 /// A question Valve's client has stopped a launch on, in words this shell can
@@ -1297,11 +1311,16 @@ pub struct Question {
 /// A table rather than a guess, transcribed from the client's own dispatch. It
 /// is deliberately **not** all of them: `ShowEula` is an agreement somebody has
 /// to read and this shell will not put an OK on it, `ShowCDKey` is a key to be
-/// read off the screen, `ShowLaunchOption` is a list that has to be built from
-/// the app, and `cloudconflict` is a choice between two saves that Valve shows
-/// with the date of each — asking somebody to pick one blind is worse than
-/// asking them to reach for a mouse once. Everything not here is answered the
-/// older way, by letting the client be seen.
+/// read off the screen, and `cloudconflict` is a choice between two saves that
+/// Valve shows with the date of each — asking somebody to pick one blind is
+/// worse than asking them to reach for a mouse once. Everything not here and
+/// not [`CHOOSING_HOW_TO_START`] is answered the older way, by letting the
+/// client be seen.
+///
+/// `ShowLaunchOption` was in that list of refusals until 2026-09-19 and is now
+/// the one question with a branch of its own rather than a row here, because
+/// its answers are the game's and have to be asked for. See
+/// [`how_it_can_be_started`].
 ///
 /// Each row is: the client's request, the detail under it where the detail is
 /// what decides, the heading token, the body tokens, and the answers.
@@ -1403,6 +1422,51 @@ pub const PROCESSING_SHADERS: &str = "ProcessingShaderCache";
 /// the screen.
 pub const SKIP_SHADERS: &str = "SkipShaders";
 
+/// The client's own name for the step that stops a launch to ask **which way
+/// the game is to be started**.
+///
+/// Its own branch rather than a row of [`known_questions`], because its
+/// answers are not words in a table. They are the game's own launch options,
+/// which are different for every game and are the client's to hand over — it
+/// answers with the ones it has already decided may be offered here, and it
+/// keeps each one's own number while it does.
+///
+/// OpenFront is the worked example, and it is also why nothing here reads the
+/// game's own `appinfo`. Its `config/launch` has four entries — `0` and `1`
+/// locked to Windows and macOS, `3` the plain Linux one and `4` the Wayland
+/// workaround — and what the client actually answered, asked on this machine,
+/// was **two options numbered 0 and 1**. The number is the client's own, made
+/// over the list it decided to offer, and it is neither the game's key nor
+/// anything a shell could work out for itself.
+///
+/// Reported from use 2026-09-19, and OpenFront is the game it was reported
+/// against: it ships two of them, and every launch of it stopped here. This
+/// machine's own `console_log.txt` has the whole exchange, and the press it
+/// begins with is this shell's own way of pressing Play:
+///
+/// ```text
+/// [17:55:50] ExecuteSteamURL: "steam://rungameid/3560670"
+/// [17:56:58] GameAction [AppID 3560670, ActionID 2] : LaunchApp changed task to ShowLaunchOption with ""
+/// [17:56:58] GameAction [AppID 3560670, ActionID 2] : LaunchApp waiting for user response to ShowLaunchOption ""
+/// [17:57:04] GameAction [AppID 3560670, ActionID 2] : LaunchApp continues with user response "1"
+/// ```
+///
+/// **The answer is the option's own index, written out** — Valve's own dialog
+/// sends `nIndex.toString()` and nothing else. Those six seconds are somebody
+/// reaching Valve's window with a mouse; without one the launch stays there,
+/// and the loading screen in front of it runs out of patience and says the
+/// game did not start.
+pub const CHOOSING_HOW_TO_START: &str = "ShowLaunchOption";
+
+/// Valve's own sentence for that question, whose `%1$s` is the game's name.
+///
+/// "Make a selection to launch %1$s". Its other two strings for this dialog
+/// are titles rather than sentences and are left where they are, for the
+/// reason [`Question::body`] gives: `#LaunchOptionsDialog_SelectHeader` is
+/// "Select Launch Option (2)", a window title with a count in it, and this
+/// panel is already headed with the game's name.
+const MAKE_A_SELECTION: &str = "#LaunchOptionsDialog_MakeSelection";
+
 /// One row of [`known_questions`].
 struct Asked {
     request: &'static str,
@@ -1424,9 +1488,16 @@ fn asked_about(request: &str, details: &str) -> Option<Asked> {
 /// The question a launch has stopped on, in the words Steam would have used.
 ///
 /// `Ok(None)` where the launch is not waiting on anybody, or is waiting on
-/// something not in [`known_questions`] — both are ordinary, and the second is
-/// answered by giving the client sight instead.
+/// something neither [`known_questions`] nor [`how_it_can_be_started`] has a
+/// panel for — both are ordinary, and the second is answered by giving the
+/// client sight instead.
 pub fn the_question(stopped: &Launching) -> Result<Option<Question>, Problem> {
+    // The one question whose answers are not a table. Asked first because the
+    // table below is keyed on the request and this request is not in it — a
+    // lookup that would only ever miss.
+    if stopped.task == CHOOSING_HOW_TO_START {
+        return how_it_can_be_started(stopped);
+    }
     let Some(asked) = asked_about(&stopped.task, &stopped.details) else {
         tracing::info!(
             task = %stopped.task,
@@ -1499,16 +1570,248 @@ pub fn the_question(stopped: &Launching) -> Result<Option<Question>, Problem> {
                 Some(word) => Carry::Go((*word).to_string()),
                 None => Carry::Stop,
             },
+            // Nothing here may be answered in advance — see [`Answer::chooses`].
+            chooses: None,
         })
         .collect();
     answers.push(Answer {
         label: said.next().unwrap_or_default(),
         carry: Carry::Stop,
+        chooses: None,
     });
     Ok(Some(Question {
         action_id: stopped.action_id,
         app_id: stopped.app_id,
         body,
+        answers,
+    }))
+}
+
+/// The ways this game can be started, as a question with one answer each.
+///
+/// **Valve owns these words too**, and the same way it owns the others. The
+/// options come from `SteamClient.Apps.GetLaunchOptionsForApp`, which is the
+/// call the client's own dialog makes, and each label is that option's
+/// description put through the client's localiser exactly as the client puts
+/// it — a description that looks like a token is localised, and one that does
+/// not is already a sentence somebody wrote in the game's own store page. Its
+/// argument is that option's game name, which is what Valve hands its own.
+///
+/// `Ok(None)` for a client that offers nothing to choose between, or that no
+/// longer has the words for its own question. Both mean the panel would be
+/// worse than Valve's window, and the older answer is still there.
+fn how_it_can_be_started(stopped: &Launching) -> Result<Option<Question>, Problem> {
+    let socket = context()?;
+    let said = evaluate(&socket, &ask_for_the_ways(stopped.app_id))?;
+    the_ways_it_can_start(stopped, &said)
+}
+
+/// The expression [`how_it_can_be_started`] runs in the client.
+///
+/// Its own function so it can be read, and so it can be run — against a stub
+/// of the three objects it reaches through, which is the only way to find out
+/// that a program built out of a `format!` is a program at all. The client
+/// answers a broken one with a syntax error and nothing else.
+///
+/// One round trip, because this only ever matters at the moment a launch has
+/// already stopped and somebody is watching a loading screen.
+///
+/// `LocalizeString` leaves Valve's positional arguments in the sentence — see
+/// [`fill_in`], which is the helper the client's own callers use and which is
+/// done on this side. A description that is not a token is handed back
+/// untouched, which is Valve's `LocalizeIfToken` and is what stops a plain
+/// "Play OpenFront" being thrown away for not being in the table.
+fn ask_for_the_ways(app_id: u32) -> String {
+    format!(
+        "(async () => {{ \
+           const app = {app}; \
+           const found = await SteamClient.Apps.GetLaunchOptionsForApp(app); \
+           const say = token => window.LocalizationManager.LocalizeString(token) ?? ''; \
+           return JSON.stringify({{ \
+             name: window.appStore?.GetAppOverviewByAppID?.(app)?.display_name ?? '', \
+             asked: say({sentence}), \
+             refuse: say({cancel}), \
+             ways: (found ?? []).map(one => {{ \
+               const wrote = String(one.strDescription ?? ''); \
+               return {{ index: Number(one.nIndex ?? 0), \
+                        said: wrote.startsWith('#') ? (say(wrote) || wrote) : wrote, \
+                        game: String(one.strGameName ?? '') }}; \
+             }}) }}); \
+         }})()",
+        app = app_id,
+        sentence = json_string(MAKE_A_SELECTION),
+        cancel = json_string(CANCEL),
+    )
+}
+
+/// One way a game can be started, as Valve's client offers it.
+///
+/// The list behind both halves of this: the panel a stopped launch puts up,
+/// and the row of the game's own menu that sets which way it starts from now
+/// on. One shape for both, because they are one question asked at two moments
+/// and a menu that disagreed with the panel would be a setting nobody could
+/// trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Way {
+    /// The client's own number for it, which is what an answer carries —
+    /// `ContinueGameAction(id, "1")`.
+    pub index: u32,
+    /// What to put on a row, in the language the client is running in.
+    pub label: String,
+    /// The option's own name, and the only part of this stable enough to
+    /// remember a choice by. See [`Answer::chooses`].
+    pub chooses: String,
+}
+
+/// Every way this game can be started here, asked of Valve's client.
+///
+/// For the menu rather than for a launch: nothing is waiting on an answer and
+/// no game is starting, so it is asked whenever somebody wants to *set* which
+/// way a game starts. An empty list is a game with nothing to choose between,
+/// which is most of a library — the client answers with one option for those,
+/// and one way is not a choice.
+pub fn the_ways_to_start(app_id: u32) -> Result<Vec<Way>, Problem> {
+    let socket = context()?;
+    let said = evaluate(&socket, &ask_for_the_ways(app_id))?;
+    Ok(what_the_client_offers(&said)?.ways)
+}
+
+/// What one answer to [`ask_for_the_ways`] comes to.
+///
+/// Its own function so the shapes a live client produces can be checked
+/// without one, exactly as [`what_the_client_is_launching`] is. The shape
+/// below was captured off a running client on 2026-09-19.
+fn what_the_client_offers(answer: &str) -> Result<Offered, Problem> {
+    #[derive(serde::Deserialize)]
+    struct Said {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        asked: String,
+        #[serde(default)]
+        refuse: String,
+        #[serde(default)]
+        ways: Vec<SaidWay>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SaidWay {
+        index: u32,
+        #[serde(default)]
+        said: String,
+        #[serde(default)]
+        game: String,
+    }
+    let said: Said =
+        serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))?;
+    let ways = said
+        .ways
+        .iter()
+        .map(|way| {
+            // The option's own words first, then the two names Valve would
+            // have had on the screen anyway. Both options of one game
+            // routinely carry the *same* description — `#Steam_LaunchOption_Game`,
+            // which localises to "Play %1$s" — and what tells them apart is
+            // the name filled into it, so that name is also what the choice is
+            // remembered by.
+            let label = [
+                fill_in(&way.said, &[&way.game]),
+                way.game.clone(),
+                said.name.clone(),
+            ]
+            .into_iter()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+            Way {
+                index: way.index,
+                label,
+                // The game's own name where the option has none, so that a
+                // choice is still remembered by *something* rather than by an
+                // empty string that would match every other nameless option.
+                chooses: match way.game.trim().is_empty() {
+                    true => said.name.clone(),
+                    false => way.game.clone(),
+                },
+            }
+        })
+        .collect();
+    Ok(Offered {
+        name: said.name,
+        asked: said.asked,
+        refuse: said.refuse,
+        ways,
+    })
+}
+
+/// Everything one answer to [`ask_for_the_ways`] carries: the ways, and the
+/// words the panel is built out of.
+struct Offered {
+    name: String,
+    asked: String,
+    refuse: String,
+    ways: Vec<Way>,
+}
+
+/// What one answer from [`how_it_can_be_started`] comes to, as a panel.
+fn the_ways_it_can_start(stopped: &Launching, answer: &str) -> Result<Option<Question>, Problem> {
+    let offered = what_the_client_offers(answer)?;
+
+    // Nothing to choose between. The client asked, so something is there to be
+    // answered, but not by this shell: a panel whose only row is the refusal
+    // is a panel that can only end the launch.
+    if offered.ways.is_empty() {
+        tracing::warn!(
+            app_id = stopped.app_id,
+            "the client stopped to ask how to start this game and then offered no way"
+        );
+        return Ok(None);
+    }
+    // Valve's own sentence, with the game's name in it. A client that has lost
+    // the token for its own question comes back with nothing, and a panel with
+    // a blank line and a blank button on it is worse than the window this is
+    // replacing — the same refusal [`the_question`] makes for the same reason.
+    let asking = fill_in(&offered.asked, &[&offered.name]);
+    if asking.trim().is_empty() || offered.refuse.trim().is_empty() {
+        tracing::warn!("Valve's client did not have the words for its own launch-option question");
+        return Ok(None);
+    }
+    // An option with nothing at all to call it. Rare, and Valve's own blank
+    // button — but a row somebody cannot read is a row they cannot choose, so
+    // the whole panel is refused and the client is shown instead.
+    if let Some(way) = offered.ways.iter().find(|way| way.label.trim().is_empty()) {
+        tracing::warn!(
+            app_id = stopped.app_id,
+            index = way.index,
+            "a launch option with nothing at all to call it"
+        );
+        return Ok(None);
+    }
+
+    let mut answers: Vec<Answer> = offered
+        .ways
+        .iter()
+        .map(|way| Answer {
+            // The number the client put on this option, written out, and
+            // that is the whole of the protocol here —
+            // `ContinueGameAction(id, "1")`. Taken from the option rather
+            // than counted off the panel because that is what Valve's own
+            // dialog sends, `nIndex.toString()`.
+            carry: Carry::Go(way.index.to_string()),
+            label: way.label.clone(),
+            chooses: Some(way.chooses.clone()),
+        })
+        .collect();
+    answers.push(Answer {
+        label: offered.refuse,
+        carry: Carry::Stop,
+        // The way out is not a way to start the game, so it is not one of the
+        // answers a choice can be remembered as. Somebody who cancels has
+        // chosen nothing.
+        chooses: None,
+    });
+    Ok(Some(Question {
+        action_id: stopped.action_id,
+        app_id: stopped.app_id,
+        body: vec![asking],
         answers,
     }))
 }
@@ -3286,6 +3589,169 @@ mod tests {
         assert!(asked_about("ShowEula", "").is_none());
         assert!(asked_about("ShowCDKey", "").is_none());
         assert!(asked_about("ProcessingInstallScript", "").is_none());
+    }
+
+    /// Which way to start the game, which is the one question built from the
+    /// game rather than from a table.
+    ///
+    /// Every shape here is the one OpenFront produced on this machine, whose
+    /// `console_log.txt` carries both halves of the exchange: the client
+    /// stopped on `ShowLaunchOption` and went on again when it was answered
+    /// `"1"`. The reported failure was that this shell had no panel for it, so
+    /// a press sat on a loading screen until somebody reached Valve's own
+    /// window with a mouse.
+    #[test]
+    fn the_way_a_game_starts_is_asked_with_the_clients_own_list() {
+        let stopped = Launching {
+            action_id: 2,
+            app_id: 3560670,
+            task: CHOOSING_HOW_TO_START.to_string(),
+            details: String::new(),
+            done: 0,
+            total: 0,
+            waiting_for_a_person: true,
+        };
+
+        // Captured off the running client on 2026-09-19, by evaluating the
+        // expression this module ships — see [`ask_for_the_ways`]. Every
+        // string below is Valve's.
+        let asked = the_ways_it_can_start(
+            &stopped,
+            r#"{"name":"OpenFront","asked":"Make a selection to launch %1$s",
+                "refuse":"Cancel",
+                "ways":[{"index":0,"said":"Play %1$s","game":"OpenFront"},
+                        {"index":1,"said":"Play %1$s",
+                         "game":"OpenFront (Wayland workaround)"}]}"#,
+        )
+        .unwrap()
+        .expect("a panel");
+
+        assert_eq!(asked.action_id, 2, "what an answer is sent against");
+        assert_eq!(asked.app_id, 3560670);
+        assert_eq!(asked.body, vec!["Make a selection to launch OpenFront"]);
+        // **The whole of what makes the rows tell each other apart.** Both
+        // options carry the same description — `#Steam_LaunchOption_Game`,
+        // which localises to "Play %1$s" — and what differs is `strGameName`,
+        // which is the argument Valve's own dialog hands its own localiser.
+        // Filling the placeholder from the *app's* name instead would put two
+        // rows reading "Play OpenFront" in front of somebody and make the
+        // panel useless.
+        assert_eq!(
+            asked
+                .answers
+                .iter()
+                .map(|answer| answer.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Play OpenFront",
+                "Play OpenFront (Wayland workaround)",
+                "Cancel"
+            ]
+        );
+        // **What a choice is remembered by**, which is the option's own name
+        // and not the label: both labels here come from one description
+        // token, so the half that differs is the only half worth keeping. See
+        // [`Answer::chooses`].
+        assert_eq!(
+            asked
+                .answers
+                .iter()
+                .map(|answer| answer.chooses.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("OpenFront".to_string()),
+                Some("OpenFront (Wayland workaround)".to_string()),
+                // The way out is not a way to start.
+                None,
+            ]
+        );
+
+        // And the answer is the index, written out. `"1"` is the word the
+        // client wrote down when somebody answered this by hand.
+        assert_eq!(
+            asked
+                .answers
+                .iter()
+                .map(|answer| answer.carry.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Carry::Go("0".to_string()),
+                Carry::Go("1".to_string()),
+                Carry::Stop
+            ],
+            "the refusal is last and always"
+        );
+
+        // What is sent is the number that came with the option, whatever row
+        // it landed on. The client seen on this machine numbers its own list
+        // from nought, so this shape is the one that has not been observed —
+        // and it is here because the answer starts somebody's game, and a
+        // panel that counted rows would be wrong silently.
+        let sparse = the_ways_it_can_start(
+            &stopped,
+            r#"{"name":"A Game","asked":"Make a selection to launch %1$s","refuse":"Cancel",
+                "ways":[{"index":2,"said":"DirectX 11","game":"A Game"},
+                        {"index":5,"said":"DirectX 12","game":"A Game"}]}"#,
+        )
+        .unwrap()
+        .expect("a panel");
+        assert_eq!(
+            sparse.answers[0].carry,
+            Carry::Go("2".to_string()),
+            "the first row is the client's option two"
+        );
+        assert_eq!(sparse.answers[1].carry, Carry::Go("5".to_string()));
+
+        // An option the game gave no words to is still a row somebody can aim
+        // at, headed with a name Valve would have shown anyway.
+        let nameless = the_ways_it_can_start(
+            &stopped,
+            r#"{"name":"OpenFront","asked":"Make a selection to launch %1$s","refuse":"Cancel",
+                "ways":[{"index":0,"said":"","game":"OpenFront"},
+                        {"index":1,"said":"  ","game":""}]}"#,
+        )
+        .unwrap()
+        .expect("a panel");
+        assert_eq!(nameless.answers[0].label, "OpenFront");
+        assert_eq!(
+            nameless.answers[1].label, "OpenFront",
+            "the game's own name"
+        );
+        // An option with no name of its own is remembered by the game's, which
+        // is something rather than an empty string — and an empty string would
+        // match every other nameless option there ever is.
+        assert_eq!(
+            nameless.answers[1].chooses.as_deref(),
+            Some("OpenFront"),
+            "a choice is remembered by something"
+        );
+
+        // A client that asked how to start a game and then offered no way to
+        // start it. There is nothing to put on a panel, and a panel whose only
+        // row ends the launch is worse than Valve's window.
+        assert!(the_ways_it_can_start(
+            &stopped,
+            r#"{"name":"OpenFront","asked":"Make a selection to launch %1$s","refuse":"Cancel",
+                "ways":[]}"#,
+        )
+        .unwrap()
+        .is_none());
+
+        // And a client that no longer has the words for its own question. The
+        // same refusal the table's questions make, for the same reason.
+        for lost in [
+            r#"{"name":"OpenFront","asked":"","refuse":"Cancel",
+                "ways":[{"index":0,"said":"Play","game":"OpenFront"}]}"#,
+            r#"{"name":"OpenFront","asked":"Make a selection to launch %1$s","refuse":"",
+                "ways":[{"index":0,"said":"Play","game":"OpenFront"}]}"#,
+        ] {
+            assert!(the_ways_it_can_start(&stopped, lost).unwrap().is_none());
+        }
+
+        // An answer that is not an answer is a problem rather than a silence:
+        // silence here reads as "no panel for this", which would hide a client
+        // that had stopped saying anything sensible at all.
+        assert!(the_ways_it_can_start(&stopped, "not json").is_err());
     }
 
     /// Valve's sentences carry positional arguments, and its own localiser

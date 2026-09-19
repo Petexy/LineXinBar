@@ -1,0 +1,41 @@
+<!--
+  The badge that marks a value *not* in force: chosen.svg's bead with nothing
+  cut through it but its own middle.
+
+  A ring and not a square box, because it is read beside the tick and the pair
+  has to be one thing in two states. The tick is a hole in a round bead — see
+  chosen.svg — so the empty state is the same bead with the hole opened out to
+  a circle, and what moves between them is only how much of the bead is left.
+  A square drawn next to that round one would read as a second kind of mark
+  rather than as the same mark turned off.
+
+  Offered at all because this is the one place in the shell where a mark's
+  absence is not enough: a row that says "always start it this way" is a switch
+  somebody is deciding about, and a switch with nothing beside it is a row that
+  gives no sign it can be switched. Every other list here answers "which one of
+  these" — where the tick is the only mark and a blank row is the rest of the
+  answer — and those keep no box at all.
+
+  The ring is 3.2 wide against the tick's 3.4 stroke, so the two carry the same
+  weight where a menu draws them at a third of an icon.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <circle id="disc" cx="16" cy="16" r="12.2"/>
+    <circle id="hollow" cx="16" cy="16" r="9"/>
+    <g id="bead"><use href="#disc"/></g>
+    <g id="holes"><use href="#hollow" fill="#000000"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+  </g>
+</svg>

@@ -15062,6 +15062,7 @@ mod tests {
     /// The same, saying whether it is on this disk.
     fn owned(app_id: u32, name: &str, installed: bool) -> Entry {
         Entry::Game(crate::apps::Game {
+            ways: 1,
             progress: None,
             app_id,
             name: name.to_string(),

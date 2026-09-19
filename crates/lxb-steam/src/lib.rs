@@ -216,6 +216,20 @@ pub enum Ask {
     /// why it is asked rather than read: the list is Valve's knowledge of what
     /// this account may use, not a list of what is on the disk.
     Compatibility(webui::Which),
+    /// Ask Valve's client every way one game can be started here.
+    ///
+    /// Answered by [`Event::TheWays`], or by [`Event::TheWaysUnavailable`]
+    /// where the client could not be reached. Needs the client's own
+    /// interface for the same reason [`Ask::Compatibility`] does: the list is
+    /// Valve's decision about what this machine and this account may be
+    /// offered, and the game's own `appinfo` describes a different list.
+    ///
+    /// For *setting* which way a game starts, from its own menu. A launch that
+    /// has already stopped to ask carries its question with it — see
+    /// [`webui::CHOOSING_HOW_TO_START`] — and does not come through here.
+    TheWays {
+        app_id: u32,
+    },
     /// Have it run under this tool from now on, or under whatever Steam
     /// chooses. `None` is the second of those.
     ///
@@ -1096,6 +1110,20 @@ pub enum Event {
         which: webui::Which,
         why: String,
     },
+    /// Every way one game can be started here, in the client's own words.
+    ///
+    /// An empty list is the ordinary answer and not a failure: most games have
+    /// one way of starting, and one way is not a choice.
+    TheWays {
+        app_id: u32,
+        ways: Vec<webui::Way>,
+    },
+    /// And the list could not be had. Never silent, for the reason
+    /// [`Event::CompatibilityUnavailable`] is not: a menu is waiting on it.
+    TheWaysUnavailable {
+        app_id: u32,
+        why: String,
+    },
     /// The library, whole. Always the whole of it rather than a change to it,
     /// for the reason the file shelves are delivered whole: the shell swaps
     /// one list for another in a few microseconds however long it is, and a
@@ -1515,6 +1543,14 @@ impl Steam {
     /// Answered by a fresh [`Event::Compatibility`] — what Steam ended up with
     /// once it had been told — and by [`Event::CompatibilityUnavailable`]
     /// where the telling failed.
+    /// Ask what ways one game can be started, for the menu that sets it.
+    ///
+    /// Answered by [`Event::TheWays`] or by [`Event::TheWaysUnavailable`], and
+    /// never by silence, on the terms [`Self::ask_about_compatibility`] keeps.
+    pub fn ask_about_the_ways(&self, app_id: u32) {
+        self.ask(Ask::TheWays { app_id });
+    }
+
     pub fn force_compatibility(&self, which: webui::Which, tool: Option<String>) {
         self.ask(Ask::ForceCompatibility { which, tool });
     }
@@ -1704,6 +1740,11 @@ pub(crate) enum Finished {
         generation: u64,
         how: Result<webui::Compatibility, String>,
     },
+    TheWays {
+        app_id: u32,
+        generation: u64,
+        how: Result<Vec<webui::Way>, String>,
+    },
     /// A wake has finished, whichever way it finished.
     ///
     /// Routed through the worker rather than straight to the shell for the
@@ -1725,7 +1766,8 @@ impl Finished {
             Finished::Installing { generation, .. }
             | Finished::StoppedInstalling { generation, .. }
             | Finished::Uninstalling { generation, .. }
-            | Finished::Compatibility { generation, .. } => *generation,
+            | Finished::Compatibility { generation, .. }
+            | Finished::TheWays { generation, .. } => *generation,
             Finished::Waking { ticket, .. } => ticket.ground,
         }
     }
@@ -2695,6 +2737,33 @@ fn answer(
             });
             state
         }
+        Ask::TheWays { app_id } => {
+            // The same test every press that names a title makes — see
+            // [`Ask::Compatibility`], which this is the twin of.
+            let Some((stored, _)) = holding(&state) else {
+                let _ = events.send(Event::TheWaysUnavailable {
+                    app_id,
+                    why: format!(
+                        "{}, so it cannot say how this starts.",
+                        out_of_reach(&state)
+                    ),
+                });
+                return state;
+            };
+            let generation = watching.generation;
+            let ticket = a_job_about(&state, watching);
+            in_the_background(stored, ticket, ground, worker, move |ready| {
+                Finished::TheWays {
+                    app_id,
+                    generation,
+                    how: ready.and_then(|standing| {
+                        standing.about_to_act()?;
+                        webui::the_ways_to_start(app_id).map_err(|problem| problem.to_string())
+                    }),
+                }
+            });
+            state
+        }
         Ask::ForceCompatibility { which, tool } => {
             let Some((stored, _)) = holding(&state) else {
                 let _ = events.send(Event::CompatibilityUnavailable {
@@ -3357,6 +3426,23 @@ fn came_back(
         } => {
             audit::went(format_args!("uninstall {app_id}"), audit::How::Done);
             at_once(state)
+        }
+        Finished::TheWays { app_id, how, .. } => {
+            match how {
+                Ok(ways) => {
+                    tracing::info!(
+                        app_id,
+                        ways = ways.len(),
+                        "Valve's client said how this game can be started"
+                    );
+                    let _ = events.send(Event::TheWays { app_id, ways });
+                }
+                Err(why) => {
+                    tracing::warn!(app_id, %why, "Steam would not say how this game starts");
+                    let _ = events.send(Event::TheWaysUnavailable { app_id, why });
+                }
+            }
+            state
         }
         Finished::Compatibility { which, how, .. } => {
             match how {
