@@ -376,6 +376,34 @@ pub enum Command {
     /// nothing behind it but a list of one, and making the user step into that
     /// to get back out of it would be a panel wasting their time.
     ShowNotification(u32),
+    /// Go to the conversation the announcement this row is about arrived in,
+    /// and put the announcement away on the way.
+    ///
+    /// The third thing a row in that list can do, and the one a message from a
+    /// friend carries. An announcement that says somebody wrote something is
+    /// not a thing to be read and cleared — it is a thing to be *answered* —
+    /// so the press that would merely dismiss it takes the user to the place
+    /// the answer is written instead, which is what pressing a program's own
+    /// announcement does everywhere else.
+    ///
+    /// The announcement's number rather than the friend's, because the friend
+    /// is looked up beside the list and the announcement may have gone while
+    /// the panel stood open. See [`crate::notify::Center::announce_message`].
+    OpenConversation(u32),
+    /// Take up the invitation to a game the announcement this row is about
+    /// carried: start the game, join what they are in, and put the
+    /// announcement away.
+    ///
+    /// The fourth thing a row in that list can do, and the strongest — it is
+    /// the one row in the shell whose press starts a game. It is what the user
+    /// asked for on 2026-09-21: pressing an invitation should accept it and go,
+    /// rather than take somebody to a chat to press it again.
+    ///
+    /// The announcement's number, for the reason [`Command::OpenConversation`]
+    /// carries one: the friend and the invitation are looked up beside the list
+    /// — an invitation has an identity this shell gave it, and a command is
+    /// `Copy`.
+    AcceptInvitation(u32),
     /// Press one of those buttons: the announcement, and which of its actions
     /// by position.
     ///

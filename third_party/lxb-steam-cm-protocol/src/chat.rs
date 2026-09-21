@@ -15,7 +15,7 @@ use crate::{
     protobuf::{
         CFriendMessagesGetRecentMessagesRequest, CFriendMessagesGetRecentMessagesResponse,
         CFriendMessagesIncomingMessageNotification, CFriendMessagesSendMessageRequest,
-        CFriendMessagesSendMessageResponse,
+        CFriendMessagesSendMessageResponse, CMsgClientInviteToGame,
     },
     service_method::{ServiceMethod, call_authed},
 };
@@ -24,9 +24,43 @@ use crate::{
 /// ints are hardcoded (values per SteamKit `enums.steamd`).
 pub const CHAT_ENTRY_TEXT: i32 = 1;
 pub const CHAT_ENTRY_TYPING: i32 = 2;
+/// `k_EChatEntryTypeInviteGame`. A friend asking you to join them in a game:
+/// the `message` is the game's own **connect string** rather than anything
+/// anybody typed, and no app id is carried — which game it is for is the
+/// inviter's persona state. See [`GameInvite`].
+pub const CHAT_ENTRY_INVITE_GAME: i32 = 3;
 
 /// Job name carried by the incoming-message server push (EMsg 146 `ServiceMethod`).
 const INCOMING_MESSAGE_JOB: &str = "FriendMessagesClient.IncomingMessage#1";
+
+/// Somebody asking this account to join them in a game.
+///
+/// Steam has two ways of saying it and this is both of them normalised — see
+/// [`decode_incoming`] for the chat entry and [`decode_invite_to_game`] for the
+/// older client push. What they have in common is all there is: who it came
+/// from and the connect string. **Neither carries an app id**; which game it is
+/// for is whatever the inviter's persona state says they are playing, which is
+/// a fact this module does not hold.
+///
+/// `timestamp`/`ordinal` are Steam's own stamp where it sent one and zero where
+/// it did not, which is the whole difference between the two routes: an invite
+/// that came through the chat service is a message in the conversation with a
+/// place in it, and one that came through the client push is simply *now*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameInvite {
+    /// The friend, whichever direction it went.
+    pub steamid: u64,
+    /// What the game is to be started with — `+connect_lobby <id>` for a
+    /// Steamworks lobby, or whatever else the game defined. Handed on
+    /// verbatim: this crate does not know what any of it means.
+    pub connect_string: String,
+    pub timestamp: u32,
+    pub ordinal: u32,
+    /// True when *this* account sent the invitation from another of its
+    /// sessions. Steam echoes those like any other message, and an invitation
+    /// somebody sent is not one they can accept.
+    pub from_local: bool,
+}
 
 /// A single 1-on-1 chat message, normalised for the UI/cache layers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -143,8 +177,55 @@ pub fn decode_incoming(packet: &Packet) -> Option<FriendsEvent> {
             from_local: notification.local_echo.unwrap_or(false),
         })),
         CHAT_ENTRY_TYPING => Some(FriendsEvent::TypingNotification { steamid: partner }),
-        _ => None,
+        // An invitation to a game, which the chat service carries as a message
+        // of its own kind. The body is the connect string; nothing was typed.
+        CHAT_ENTRY_INVITE_GAME => Some(FriendsEvent::GameInvite(GameInvite {
+            steamid: partner,
+            connect_string: notification.message.unwrap_or_default(),
+            timestamp: notification.rtime32_server_timestamp.unwrap_or(0),
+            ordinal: notification.ordinal.unwrap_or(0),
+            from_local: notification.local_echo.unwrap_or(false),
+        })),
+        other => {
+            // Everything else is a kind of entry this shell has no use for —
+            // somebody leaving a conversation, a link Steam blocked. Logged at
+            // the lowest level and never with the body: an entry type nobody
+            // decodes is the first thing to look at when an invitation does not
+            // arrive, and the number is the whole of what is worth knowing.
+            tracing::trace!(entry = other, "a chat entry of a kind nothing reads");
+            None
+        }
     }
+}
+
+/// Decode the older client-to-client game invitation, `ClientInviteToGame`.
+///
+/// The other of Steam's two ways of saying it. This one is not a chat message
+/// at all: it is a push with a destination, a source and a connect string, and
+/// no stamp of any kind — so an invitation that arrives this way has no place
+/// in the conversation's history and is simply the newest thing to have
+/// happened.
+///
+/// Both are decoded because **which of them Steam uses cannot be settled from
+/// here**: the number is listed as obsolete in one place and served in another,
+/// and a client that reads only one would silently receive no invitations at
+/// all. They are deduplicated upstream, where an invitation has an identity.
+///
+/// `steam_id_src` is who sent it. A push whose source is missing is dropped —
+/// an invitation from nobody cannot be shown, let alone accepted.
+pub fn decode_invite_to_game(packet: &Packet) -> Option<FriendsEvent> {
+    if packet.emsg != EMsg::ClientInviteToGame.raw() {
+        return None;
+    }
+    let invite = packet.decode_body::<CMsgClientInviteToGame>().ok()?;
+    let from = invite.steam_id_src?;
+    Some(FriendsEvent::GameInvite(GameInvite {
+        steamid: from,
+        connect_string: invite.connect_string.unwrap_or_default(),
+        timestamp: 0,
+        ordinal: 0,
+        from_local: false,
+    }))
 }
 
 /// Build the confirmed `ChatMessage` for one of our own sends from the SendMessage response.
@@ -202,7 +283,8 @@ mod tests {
     use super::*;
     use crate::message::{decode_frame, encode_message};
     use crate::protobuf::{
-        CMsgProtoBufHeader, c_friend_messages_get_recent_messages_response::FriendMessage,
+        CMsgClientInviteToGame, CMsgProtoBufHeader,
+        c_friend_messages_get_recent_messages_response::FriendMessage,
     };
     use prost::Message;
 
@@ -333,6 +415,74 @@ mod tests {
             }
             other => panic!("expected TypingNotification, got {other:?}"),
         }
+    }
+
+    /// An invitation carried by the chat service: the body is the connect
+    /// string, and it keeps Steam's stamp so it has a place in the
+    /// conversation.
+    #[test]
+    fn decodes_an_invitation_sent_through_the_chat() {
+        let notification = CFriendMessagesIncomingMessageNotification {
+            steamid_friend: Some(PARTNER_STEAMID),
+            chat_entry_type: Some(CHAT_ENTRY_INVITE_GAME),
+            message: Some("+connect_lobby 109775241234567890".to_owned()),
+            rtime32_server_timestamp: Some(1788451746),
+            ordinal: Some(1),
+            ..Default::default()
+        };
+        let packet = incoming_packet(EMsg::ServiceMethod, INCOMING_MESSAGE_JOB, &notification);
+        match decode_incoming(&packet) {
+            Some(FriendsEvent::GameInvite(invite)) => {
+                assert_eq!(invite.steamid, PARTNER_STEAMID);
+                assert_eq!(invite.connect_string, "+connect_lobby 109775241234567890");
+                assert_eq!(invite.timestamp, 1788451746);
+                assert_eq!(invite.ordinal, 1);
+                assert!(!invite.from_local);
+            }
+            other => panic!("expected GameInvite, got {other:?}"),
+        }
+    }
+
+    /// And the older client push, which carries no stamp at all — the whole
+    /// reason an invitation cannot be keyed like a message.
+    #[test]
+    fn decodes_the_client_invitation_push() {
+        let invite = CMsgClientInviteToGame {
+            steam_id_dest: Some(SELF_STEAMID),
+            steam_id_src: Some(PARTNER_STEAMID),
+            connect_string: Some("+connect 127.0.0.1:27015".to_owned()),
+            ..Default::default()
+        };
+        let encoded = encode_message(
+            EMsg::ClientInviteToGame,
+            &CMsgProtoBufHeader::default(),
+            &invite,
+        )
+        .unwrap();
+        let packet = decode_frame(&encoded)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("one packet");
+        match decode_invite_to_game(&packet) {
+            Some(FriendsEvent::GameInvite(invite)) => {
+                assert_eq!(invite.steamid, PARTNER_STEAMID);
+                assert_eq!(invite.connect_string, "+connect 127.0.0.1:27015");
+                assert_eq!((invite.timestamp, invite.ordinal), (0, 0));
+            }
+            other => panic!("expected GameInvite, got {other:?}"),
+        }
+        // And nothing else is taken for one. The two decoders sit side by side
+        // in the packet loop, and one that answered about somebody else's
+        // message would swallow it.
+        let notification = CFriendMessagesIncomingMessageNotification {
+            steamid_friend: Some(PARTNER_STEAMID),
+            chat_entry_type: Some(CHAT_ENTRY_TEXT),
+            message: Some("hello".to_owned()),
+            ..Default::default()
+        };
+        let other = incoming_packet(EMsg::ServiceMethod, INCOMING_MESSAGE_JOB, &notification);
+        assert!(decode_invite_to_game(&other).is_none());
     }
 
     #[test]

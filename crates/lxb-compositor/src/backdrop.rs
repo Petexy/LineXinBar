@@ -793,9 +793,27 @@ mod tests {
         let (accent, style, scene) = opening_look(None);
         assert_eq!(wallpaper::palette(&accent).name, accent);
         // And a material, which without a record is whatever this account's own
-        // settings say — the shell's own look on a machine that has not asked
-        // for anything else.
-        assert!(wallpaper::STYLES.contains(&style.name()));
+        // settings say.
+        //
+        // **Every material the wallpaper can be set to**, and the reason is a
+        // failure this assertion produced on the machine it was written on the
+        // day somebody put a film behind their start screen: it was written
+        // against [`wallpaper::STYLES`], which is the two materials the marks
+        // share, and a wallpaper may also be the user's own picture. The test
+        // then read a real settings file, found `Custom wallpaper` in it, and
+        // failed — a green suite that goes red because of something the
+        // developer chose in Settings, with nothing wrong in the code. See
+        // [`look_in`], which is where the keys are exercised against a fixture
+        // rather than against whatever this account happens to be set to.
+        assert!(wallpaper::WALLPAPER_STYLES.contains(&style.name()));
+        // And the property that actually matters here, which no setting can
+        // move: whatever comes back is something this compositor can *draw*.
+        // It has no picture of anybody's to read — it runs before the session
+        // and, in front of a login screen, as another account entirely — so a
+        // custom wallpaper has to arrive here as the shell's own scene. That
+        // is [`wallpaper::Style::analytic`], and [`wallpaper::sample`] applies
+        // it for every reader rather than leaving each one to remember.
+        assert!(wallpaper::STYLES.contains(&style.analytic().name()));
         assert_eq!(scene, Duration::ZERO);
     }
 

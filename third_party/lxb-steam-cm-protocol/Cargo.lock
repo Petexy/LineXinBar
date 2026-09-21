@@ -754,6 +754,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lxb-steam-cm-protocol"
+version = "0.4.1"
+dependencies = [
+ "base64",
+ "bytes",
+ "flate2",
+ "futures-util",
+ "prost",
+ "prost-build",
+ "protox",
+ "rand 0.8.8",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1562,28 +1584,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "steam-cm-protocol"
-version = "0.4.1"
-dependencies = [
- "base64",
- "bytes",
- "flate2",
- "futures-util",
- "prost",
- "prost-build",
- "protox",
- "rand 0.8.8",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
-]
 
 [[package]]
 name = "subtle"

@@ -175,6 +175,17 @@ pub enum Action {
     /// body — through the one function that raises a real one, and reaches
     /// Steam not at all.
     PretendAMessage,
+    /// The same for an invitation to a game, from whoever the panel is standing
+    /// on.
+    ///
+    /// **`--debug-actions invite` only, and nothing is sent or joined.** An
+    /// invitation needs another person even more than a message does — somebody
+    /// has to be *in a game* and press Invite — and what it puts on the screen
+    /// is the announcement and the card in the conversation. The lobby is
+    /// invented, so accepting it reaches Valve's client with a lobby that does
+    /// not exist; what can be seen is the card, the legend, the press and the
+    /// loading screen.
+    PretendAnInvite,
     /// Ask Valve's own overlay to come up over the game in front.
     ///
     /// Honoured from outside for the plainest reason of the four: there is
@@ -399,6 +410,46 @@ struct SubColumn {
     /// was left while the user is a level away from it.
     position: f32,
     speed: f32,
+}
+
+/// Where a cursor was standing before the bar was rebuilt underneath it.
+///
+/// A column's name is the one thing about it that a rebuild cannot change: the
+/// bar is read off the disk again, the columns come back in whatever order the
+/// disk put them, and the Steam library and the RetroArch column are hung on
+/// afterwards — so every number a cursor holds is about a bar that no longer
+/// exists. This is the same account of where somebody is standing, written in
+/// names. See [`Cursor::remember`], which takes one, and [`Cursor::recall`],
+/// which is the only thing that reads one.
+#[derive(Debug, Clone)]
+pub struct Footing {
+    /// The column the cursor was in, by name. `None` only for a cursor that was
+    /// standing outside the bar altogether, which is a bar with nothing on it.
+    standing: Option<&'static str>,
+    /// And where that column was, for the one case a name cannot answer: the
+    /// column itself has gone, and what is wanted is whichever column closed
+    /// the gap.
+    was: usize,
+    /// What each column had been left on, under the name it goes by.
+    remembered: Vec<(&'static str, Option<usize>)>,
+    /// How far the bar was from the column it was travelling to, and how fast.
+    /// Kept so that a bar rebuilt mid-stride goes on walking rather than
+    /// arriving early.
+    drift: f32,
+    speed: f32,
+    /// The path the user had opened, and how much of it they were standing in.
+    stack: Vec<SubColumn>,
+    open: usize,
+    /// And what that path was *of*, for the one column whose columns are read
+    /// off the disk rather than assembled: the explorer's. Every other column
+    /// on the bar comes back from the scan with its subcategories under it, so
+    /// putting the stack back is enough. A folder does not — a scan finds the
+    /// Files row with nothing but the disks under it — so the rows a rebuilt
+    /// bar has for an open folder are none at all, and the cursor is clamped
+    /// straight back out to the top of the column. These are the places to open
+    /// again to put somebody back where they were standing. Empty for every
+    /// column but that one. See [`Cursor::walk_back_in`].
+    walked: Vec<crate::files::Place>,
 }
 
 /// One column of the item list as the bar is currently showing it.
@@ -1934,14 +1985,67 @@ impl Cursor {
         }
     }
 
-    /// The whole bar has been read off the disk again. Keep this cursor where
-    /// it was standing, by the name of the column rather than by its number.
+    /// Where this cursor is standing, said in terms nothing can renumber: the
+    /// names of the columns rather than their places on the bar.
     ///
-    /// `before` is what the columns were called, in the order they were in,
-    /// taken before the rebuild. Everything a cursor holds about the bar is an
-    /// index into that list — which column it is in, and which row it left
-    /// behind in each of the others — so a rebuild that moved a column would
-    /// otherwise leave every one of those numbers pointing at somebody else's.
+    /// Taken before the bar is rebuilt and handed back to [`Self::recall`]
+    /// afterwards. Everything a cursor holds about the bar is an index — which
+    /// column it is in, which row it left behind in each of the others — and a
+    /// rebuild is a new list of columns those numbers were never about.
+    ///
+    /// Why a record rather than the list of names the rebuild started with: a
+    /// bar is not rebuilt in one move. The scan finds what is on the disk, and
+    /// then the Steam library, the trophies and the RetroArch column are hung
+    /// on it one at a time — each of them a column *added* under cursors that
+    /// are still holding the old bar's numbers, and each of them therefore
+    /// pushing those numbers one further along. By the time the cursors were
+    /// put back they were indexing the list of old names with a number that had
+    /// been walked two or three columns past its own: somebody standing in
+    /// Settings when something was installed came back in whatever column
+    /// happened to be two along, or — where the number had run off the end —
+    /// at the top of the last column on the bar. This is taken before any of
+    /// that can touch it.
+    pub fn remember(&self, lattice: &Lattice) -> Footing {
+        Footing {
+            standing: lattice
+                .categories
+                .get(self.selected_category)
+                .map(|column| column.id),
+            was: self.selected_category,
+            remembered: lattice
+                .categories
+                .iter()
+                .map(|column| column.id)
+                .zip(self.selected_items.iter().copied())
+                .collect(),
+            // How far the bar still had to travel, kept as a distance from the
+            // column it was travelling to rather than as a place on a list that
+            // is about to be a different length.
+            drift: self.category_position - self.selected_category as f32,
+            speed: self.category_speed,
+            stack: self.stack.clone(),
+            open: self.open,
+            walked: (0..self.open)
+                .map_while(|level| {
+                    match self.level_entries(lattice, level)?.get(self.row_at(level)) {
+                        Some(Entry::Folder(folder)) => folder.place.clone(),
+                        _ => None,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// The whole bar has been read off the disk again. Put this cursor back
+    /// where it was standing, by the name of the column rather than by its
+    /// number.
+    ///
+    /// The footing is what [`Self::remember`] took before the rebuild started.
+    /// Everything the cursor has done since is discarded rather than corrected:
+    /// a rebuild moves columns under it several times over — see
+    /// [`Self::category_added`], which the shell calls for each column hung
+    /// back on the bar — and the only account of where the user was standing
+    /// that survives all of it is the one taken before any of it happened.
     ///
     /// Its own method rather than a call to [`Self::category_removed`] and
     /// [`Self::category_added`], because those answer *one* column coming or
@@ -1949,15 +2053,19 @@ impl Cursor {
     /// once: turning the Steam integration off takes a column away and puts a
     /// row back in another one, which can bring a third column back from empty.
     ///
-    /// The path *inside* the current column is left exactly as it is. A user
-    /// who presses a row three levels down Settings is standing on that row
-    /// when the bar is rebuilt under them, and a cursor thrown back to the top
-    /// of the column would look like the press had gone wrong. What keeps that
-    /// honest is [`Self::keep_in_bounds`], which the caller runs after this.
+    /// The path *inside* the column is put back with it. A user who presses a
+    /// row three levels down Settings is standing on that row when the bar is
+    /// rebuilt under them, and a cursor thrown back to the top of the column
+    /// would look like the press had gone wrong. What keeps that honest is
+    /// [`Self::keep_in_bounds`], which the caller runs after this: the path is
+    /// the one the user opened, and the rows on it are clamped to the columns
+    /// as they are now.
     ///
-    /// Placed rather than travelled, like [`Self::category_removed`]: the bar
-    /// was rebuilt, the user did not go anywhere.
-    pub fn recolumned(&mut self, before: &[&str], lattice: &Lattice) {
+    /// A bar that was gliding when it was rebuilt goes on gliding. The rebuild
+    /// is not a move the user made, and a cursor that arrived at its column
+    /// early because something was installed mid-stride would be the bar
+    /// snapping out from under a press that had not finished.
+    pub fn recall(&mut self, footing: &Footing, lattice: &Lattice) {
         // A bar with nothing on it is not something this shell can be built
         // from — every scan puts the Settings column up — and it is still what
         // every index below would be reaching into. Said as an early return
@@ -1966,21 +2074,16 @@ impl Cursor {
         if lattice.categories.is_empty() {
             return;
         }
-        let standing = before.get(self.selected_category).copied();
         // What each column had been left on, under the name it goes by. A
         // column that was not there before this rebuild has been stood in by
         // nobody, which is what `None` means here and is not row zero of it —
         // see [`Self::selected_items`].
-        let remembered: Vec<(&str, Option<usize>)> = before
-            .iter()
-            .copied()
-            .zip(self.selected_items.iter().copied())
-            .collect();
         self.selected_items = lattice
             .categories
             .iter()
             .map(|column| {
-                remembered
+                footing
+                    .remembered
                     .iter()
                     .find(|(name, _)| *name == column.id)
                     .and_then(|(_, row)| *row)
@@ -1988,24 +2091,103 @@ impl Cursor {
             .collect();
 
         let last = lattice.categories.len().saturating_sub(1);
-        self.selected_category = standing
-            .and_then(|id| lattice.categories.iter().position(|column| column.id == id))
-            // The column it was in has gone with the rebuild, which is what
-            // happens to whoever is standing in the Steam library when the
-            // integration is turned off. The column that closed the gap is
-            // where a struck-out line leaves a finger, and it is the same
-            // answer [`Self::category_removed`] gives.
-            .unwrap_or_else(|| self.selected_category.min(last));
-        self.selected_category = self.selected_category.min(last);
+        let standing = footing
+            .standing
+            .and_then(|id| lattice.categories.iter().position(|column| column.id == id));
+        // The column it was in has gone with the rebuild, which is what happens
+        // to whoever is standing in the Steam library when the integration is
+        // turned off. The column that closed the gap is where a struck-out line
+        // leaves a finger, and it is the same answer [`Self::category_removed`]
+        // gives.
+        self.selected_category = standing.unwrap_or(footing.was).min(last);
         self.category_position = self.selected_category as f32;
         self.category_speed = 0.0;
-        // And if the column really did go, the path into it went with it: a
-        // stack of rows belonging to a library that is no longer on the bar is
-        // a path to nowhere.
-        if standing.is_none_or(|id| id != lattice.categories[self.selected_category].id) {
-            self.leave_subcolumns();
-            self.rest_on_first_row(lattice);
+        match standing {
+            // The same column, whatever number it wears now: the path into it
+            // is still the user's, and so is whatever stride the bar was in the
+            // middle of.
+            Some(_) => {
+                self.category_position += footing.drift;
+                self.category_speed = footing.speed;
+                self.stack.clone_from(&footing.stack);
+                self.open = footing.open;
+            }
+            // And if the column really did go, the path into it went with it: a
+            // stack of rows belonging to a library that is no longer on the bar
+            // is a path to nowhere.
+            None => {
+                self.leave_subcolumns();
+                self.rest_on_first_row(lattice);
+            }
         }
+    }
+
+    /// Open the folders somebody had open again, after a rebuild closed them.
+    ///
+    /// The second half of putting a cursor back, and the half that has to touch
+    /// the disk. [`Self::recall`] puts the path back as a list of rows, and for
+    /// every column on the bar but one that is the whole of it — the scan finds
+    /// a category with its subcategories already under it. The explorer is the
+    /// exception: what is under a folder is read when somebody opens it, so a
+    /// bar rebuilt under a user standing three folders deep has nothing under
+    /// any of them, and [`Self::keep_in_bounds`] does the only thing it can
+    /// with a column that is not there and steps them out of all three.
+    ///
+    /// So the folders are opened again, in the order they were opened in the
+    /// first place, and the rows the user had left in each are put back on top.
+    /// One `readdir` per level on the thread that draws, which is
+    /// [`Self::walk_to_file`]'s cost and is paid here only by somebody who was
+    /// actually browsing when a package landed.
+    ///
+    /// A walk that does not arrive — a folder removed by the very thing that
+    /// caused the rebuild — stops where it got to, which is a column the user
+    /// can see and step out of rather than one that is not there.
+    ///
+    /// Answers what the column it ended in can be ordered by, like every other
+    /// read of a folder, or `None` where there was nothing to walk.
+    pub fn walk_back_in(
+        &mut self,
+        lattice: &mut Lattice,
+        footing: &Footing,
+        how: crate::files::How,
+    ) -> Option<crate::media::Orders> {
+        // Nothing was open, or the rebuild left it open. Asked of the depth
+        // rather than of the rows, because this is about columns that are not
+        // there at all.
+        if footing.walked.is_empty() || self.open >= footing.open {
+            return None;
+        }
+        // Out to the column's own rows first, whatever the clamp left standing:
+        // the trail is walked from the top of it, and a cursor holding half a
+        // path would be walking that trail from the middle.
+        self.leave_subcolumns();
+        let mut orders = None;
+        for place in &footing.walked {
+            let found = self
+                .current_entries(lattice)
+                .iter()
+                .position(|entry| match entry {
+                    Entry::Folder(folder) => folder.place.as_ref() == Some(place),
+                    _ => false,
+                });
+            let Some(row) = found else {
+                break;
+            };
+            self.point_at_row(row, lattice);
+            let Some(read) = self.open_and_enter(lattice, how) else {
+                break;
+            };
+            orders = Some(read);
+        }
+        // And the rows themselves, now that there are columns to hold them. The
+        // listing is the same folder read the same way, so the numbers mean
+        // what they meant — and where they do not, because the walk stopped
+        // short or the folder lost a file, the clamp is what answers for it.
+        if self.open == footing.open {
+            self.stack.clone_from(&footing.stack);
+        }
+        self.keep_in_bounds(lattice);
+        orders
     }
 
     /// Go to one column by name, from wherever the cursor is.
@@ -3109,6 +3291,71 @@ mod tests {
             Some("one")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bar can be read off the disk again while somebody is browsing, and
+    /// it closes every folder on it: what is under a folder is read when it is
+    /// opened, so a scan finds the Files row with nothing but the disks under
+    /// it. They are put back where they were standing rather than at the top of
+    /// the column — a package landing is not a Back press.
+    #[test]
+    fn a_rebuild_puts_somebody_back_in_the_folder_they_were_browsing() {
+        let Some(dir) = scratch("rebuilt-while-browsing") else {
+            return;
+        };
+        let deep = dir.join("one").join("two");
+        std::fs::create_dir_all(&deep).unwrap();
+        for name in ["another.txt", "thing.zip"] {
+            std::fs::write(deep.join(name), b"x").unwrap();
+        }
+        let thing = deep.join("thing.zip");
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor
+            .walk_to_file(&mut lattice, &deep, Some(&thing), by_name())
+            .is_some());
+        let depth = cursor.depth();
+        let footing = cursor.remember(&lattice);
+
+        // The rebuild: the same bar, read again, with every folder shut.
+        let mut now = with_a_files_row();
+        cursor.recall(&footing, &now);
+        cursor.keep_in_bounds(&now);
+        assert_eq!(cursor.depth(), 0, "the rebuild closed the path");
+
+        assert!(
+            cursor.walk_back_in(&mut now, &footing, by_name()).is_some(),
+            "and the folders are opened again"
+        );
+        assert_eq!(cursor.depth(), depth, "as deep as they were");
+        assert_eq!(
+            cursor.current_entry(&now).map(Entry::title),
+            Some("thing.zip"),
+            "on the row they were on"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And nobody who was not browsing pays for it: a cursor standing anywhere
+    /// but the explorer has no folders open, so there is nothing to read and
+    /// the disk is not touched.
+    #[test]
+    fn a_rebuild_reads_no_folders_for_a_cursor_that_had_none_open() {
+        let lattice = nested();
+        let mut cursor = cursor(&lattice);
+        cursor.navigate(Action::Down, &lattice);
+        assert!(cursor.enter(&lattice), "into a subcategory of its own");
+        let footing = cursor.remember(&lattice);
+
+        let mut now = nested();
+        cursor.recall(&footing, &now);
+        cursor.keep_in_bounds(&now);
+        assert_eq!(cursor.depth(), 1, "a subcategory comes back with the scan");
+        assert!(
+            cursor.walk_back_in(&mut now, &footing, by_name()).is_none(),
+            "so there is nothing to walk"
+        );
     }
 
     /// A folder asked for by itself is stood *in* rather than pointed at, and
@@ -4350,37 +4597,39 @@ mod tests {
         assert_eq!(cursor.category_position, settled + 1.0);
     }
 
+    /// A bar of named columns, each with three rows in it.
+    fn bar(ids: &[&'static str]) -> Lattice {
+        Lattice::with_wayland_display(
+            ids.iter()
+                .map(|id| Category {
+                    id,
+                    title: "column",
+                    icon: "column",
+                    entries: vec![entry("one"), entry("two"), entry("three")],
+                })
+                .collect(),
+            OsString::from("lxb-test"),
+        )
+    }
+
     /// The whole bar can be read off the disk again under a user who is
     /// standing in it — turning the Steam integration off takes one column away
     /// and puts a row back in another — and the cursor keeps its place by name.
     #[test]
     fn a_bar_rebuilt_underneath_a_cursor_keeps_its_place_by_name() {
-        let before: Vec<&str> = vec!["settings", "steam", "games"];
-        let bar = |ids: &[&'static str]| {
-            Lattice::with_wayland_display(
-                ids.iter()
-                    .map(|id| Category {
-                        id,
-                        title: "column",
-                        icon: "column",
-                        entries: vec![entry("one"), entry("two"), entry("three")],
-                    })
-                    .collect(),
-                OsString::from("lxb-test"),
-            )
-        };
-
         // Standing on the third row of Games, with a row remembered in Steam.
-        let held = bar(&before);
+        let held = bar(&["settings", "steam", "games"]);
         let mut cursor = cursor(&held);
         cursor.selected_category = 1;
         assert!(cursor.point_at_row(2, &held));
         cursor.selected_category = 2;
+        cursor.category_position = 2.0;
         assert!(cursor.point_at_row(1, &held));
+        let footing = cursor.remember(&held);
 
         // Steam goes. Games is where it was, under a smaller number.
         let now = bar(&["settings", "games"]);
-        cursor.recolumned(&before, &now);
+        cursor.recall(&footing, &now);
         assert_eq!(cursor.selected_category, 1, "the same column by name");
         assert_eq!(cursor.category_position, 1.0, "placed, not travelled");
         assert_eq!(cursor.selected_item(), 1, "and the same row of it");
@@ -4397,30 +4646,97 @@ mod tests {
     /// list does when a line is struck out.
     #[test]
     fn a_cursor_in_the_column_that_went_lands_on_the_one_that_replaced_it() {
-        let before: Vec<&str> = vec!["settings", "steam", "games"];
-        let bar = |ids: &[&'static str]| {
-            Lattice::with_wayland_display(
-                ids.iter()
-                    .map(|id| Category {
-                        id,
-                        title: "column",
-                        icon: "column",
-                        entries: vec![entry("one"), entry("two"), entry("three")],
-                    })
-                    .collect(),
-                OsString::from("lxb-test"),
-            )
-        };
-        let held = bar(&before);
+        let held = bar(&["settings", "steam", "games"]);
         let mut cursor = cursor(&held);
         cursor.selected_category = 1;
+        cursor.category_position = 1.0;
         assert!(cursor.point_at_row(2, &held));
+        let footing = cursor.remember(&held);
 
         let now = bar(&["settings", "games"]);
-        cursor.recolumned(&before, &now);
+        cursor.recall(&footing, &now);
         assert_eq!(cursor.selected_category, 1, "Games closed the gap");
         assert_eq!(cursor.selected_item(), 0, "at the top of it");
         assert_eq!(cursor.depth(), 0, "and out of any path into the old one");
+    }
+
+    /// The bug this pair was written for, and the reason a rebuild used to look
+    /// like the shell restarting: the columns the shell hangs back on the bar
+    /// itself — the Steam library, the trophies, RetroArch — are added *after*
+    /// the scan, under a cursor that is still holding the old bar's numbers.
+    /// Every one of them walks that number a column further along, and what
+    /// used to be put back was whatever the walked-past number happened to
+    /// name.
+    #[test]
+    fn a_column_hung_back_on_during_a_rebuild_does_not_move_the_cursor() {
+        // Each column anybody could be standing in when something is installed,
+        // and the row of it they were on.
+        for standing in 0..4 {
+            let held = bar(&["games", "steam", "video", "settings"]);
+            let mut cursor = cursor(&held);
+            cursor.selected_category = standing;
+            cursor.category_position = standing as f32;
+            assert!(cursor.point_at_row(2, &held));
+            let footing = cursor.remember(&held);
+
+            // The scan finds what is on the disk, which is every column but the
+            // library — that one is the shell's own and is hung back on
+            // afterwards, under a cursor still holding the old bar's numbers.
+            let scanned = bar(&["games", "video", "settings"]);
+            cursor.keep_in_bounds(&scanned);
+            let now = bar(&["games", "steam", "video", "settings"]);
+            cursor.category_added(1);
+
+            cursor.recall(&footing, &now);
+            assert_eq!(
+                cursor.selected_category, standing,
+                "still in the column they were standing in"
+            );
+            assert_eq!(cursor.selected_item(), 2, "on the row they were on");
+        }
+    }
+
+    /// And the path they had opened is still open. A rebuild is not a Back
+    /// press: somebody three levels down the Settings tree when a package lands
+    /// is still three levels down it afterwards.
+    #[test]
+    fn a_rebuild_does_not_close_the_path_a_cursor_had_opened() {
+        let held = nested();
+        let mut cursor = cursor(&held);
+        cursor.navigate(Action::Down, &held);
+        assert!(cursor.enter(&held), "there is a subcategory to step into");
+        let depth = cursor.depth();
+        assert_eq!(depth, 1);
+        let footing = cursor.remember(&held);
+
+        // The rebuild throws the path away, the way `shelve_games` does on its
+        // way past — and recalling the footing is what puts it back.
+        cursor.leave_subcolumns();
+        let now = nested();
+        cursor.recall(&footing, &now);
+        assert_eq!(cursor.depth(), depth, "the same path, still open");
+    }
+
+    /// A bar rebuilt mid-stride goes on walking. Something installing is not a
+    /// press, and a bar that arrived early because a package landed would be
+    /// the shell snatching the move out of somebody's thumb.
+    #[test]
+    fn a_rebuild_does_not_cut_a_move_short() {
+        let held = bar(&["games", "video", "settings"]);
+        let mut cursor = cursor(&held);
+        cursor.selected_category = 1;
+        cursor.category_position = 0.4;
+        cursor.category_speed = 3.0;
+        let footing = cursor.remember(&held);
+
+        let now = bar(&["games", "steam", "video", "settings"]);
+        cursor.recall(&footing, &now);
+        assert_eq!(cursor.selected_category, 2, "Video, one column along");
+        assert_eq!(
+            cursor.category_position, 1.4,
+            "as far from it as it was, so the glide carries on"
+        );
+        assert_eq!(cursor.category_speed, 3.0, "and at the speed it was going");
     }
 
     /// The trap this avoids: the shell's own Settings column is subcategories

@@ -422,6 +422,14 @@ impl RetroAchievements {
             return false;
         }
         let mut changed = false;
+        // Whether a shelf has to be measured again, which is not the same
+        // question as whether the column changed. A shelf is measured off the
+        // pictures its rows carry, so only the five answers that can bring a
+        // game a picture set it: an opened page's forty badges arriving one at
+        // a time changes forty rows and not one box, and re-reading every
+        // console's covers for each of them would be a thousand file headers
+        // read to learn nothing.
+        let mut reshelve = false;
         if (self.active_library || self.active_collection)
             && opened.iter().any(|id| !self.requested.contains_key(id))
             && self.stage.is_none()
@@ -474,6 +482,7 @@ impl RetroAchievements {
                             .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                         self.next = Instant::now();
                         changed = true;
+                        reshelve = true;
                     }
                     if matches!(self.stage, Some(Stage::Waiting)) {
                         self.stage = Some(if self.user.is_some() {
@@ -492,6 +501,7 @@ impl RetroAchievements {
                         .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                     self.games = event["games"].as_array().cloned().unwrap_or_default();
                     changed = true;
+                    reshelve = true;
                 }
                 "game" => {
                     let game = event["game"].clone();
@@ -501,6 +511,7 @@ impl RetroAchievements {
                         self.games.push(game);
                     }
                     changed = true;
+                    reshelve = true;
                 }
                 "collection" => {
                     self.error = None;
@@ -510,6 +521,7 @@ impl RetroAchievements {
                         .map(|u| crate::message!("signed-in-as", "name" => u.as_str()));
                     self.collection = event["games"].as_array().cloned().unwrap_or_default();
                     changed = true;
+                    reshelve = true;
                 }
                 // One game, as the sweep reaches it. The whole list follows at
                 // the end of the sweep and is what settles the column; these
@@ -527,6 +539,7 @@ impl RetroAchievements {
                             None => self.collection.push(game),
                         }
                         changed = true;
+                        reshelve = true;
                     }
                 }
                 "page" => {
@@ -625,13 +638,62 @@ impl RetroAchievements {
             }
         }
         self.watching = opened;
-        if changed {
+        if reshelve {
             self.measure();
         }
         changed
     }
 
+    /// Take the covers that have just landed, asking the site nothing.
+    ///
+    /// The only thing a picture arriving changes about this column is the path
+    /// on one row. That used to be answered by [`RetroAchievements::refresh`] —
+    /// through `rebuild_retroarch`, which every cover that lands calls — and a
+    /// refresh is a whole `library` request: the folder walked again, every ROM
+    /// fingerprinted again and an `allprogress` for every console in it, all to
+    /// learn a string the poll was already holding. Measured on this machine at
+    /// 2.3 s a request, one starting the instant the last one ended for as long
+    /// as pictures kept coming; on a collection whose art takes minutes to come
+    /// down that is hundreds of requests to a site that answers forty-three in
+    /// three seconds with a 429.
+    ///
+    /// Answers whether anything moved — which a cover for a file this folder
+    /// has not got, or one a row is already wearing, has not. The poll that
+    /// carries these sets `rows` as well, so the bar is written again either
+    /// way; what reads this is the regression that holds the second of those
+    /// two cases to being free.
+    pub fn pictured(&mut self, landed: &[(String, String)]) -> bool {
+        let mut touched: BTreeSet<String> = BTreeSet::new();
+        for (path, at) in landed {
+            for game in self
+                .games
+                .iter_mut()
+                .filter(|game| game["path"].as_str() == Some(path.as_str()))
+            {
+                if game["picture"].as_str() == Some(at.as_str()) {
+                    continue;
+                }
+                game["picture"] = json!(at);
+                if let Some(console) = game["console"].as_str().filter(|name| !name.is_empty()) {
+                    touched.insert(console.to_string());
+                }
+            }
+        }
+        if touched.is_empty() {
+            return false;
+        }
+        // Only the shelves a cover actually landed on. Measuring all of them
+        // once per picture would be every console's boxes read for every cover
+        // of one, which is the same reason `measure_shelves` in
+        // [`crate::retroarch`] is handed a single console.
+        self.measure_shelves(Some(&touched));
+        true
+    }
     /// What shape each console's cards are, off the pictures they will carry.
+    fn measure(&mut self) {
+        self.measure_shelves(None);
+    }
+    /// That, for the consoles in `only` — or for all of them where it is `None`.
     ///
     /// Covers first and the site's own square marks only where a console has
     /// no cover at all, so that one game libretro has never drawn does not
@@ -639,12 +701,13 @@ impl RetroAchievements {
     /// of them has a cover is a shelf of squares that fill their cards rather
     /// than a shelf of squares adrift in portrait ones, which is what this
     /// replaced.
-    fn measure(&mut self) {
+    fn measure_shelves(&mut self, only: Option<&BTreeSet<String>>) {
+        let wanted = |console: &str| only.is_none_or(|only| only.contains(console));
         let mut covers: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let mut marks: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for game in self.games.iter().chain(self.collection.iter()) {
             let console = game["console"].as_str().unwrap_or_default();
-            if console.is_empty() {
+            if console.is_empty() || !wanted(console) {
                 continue;
             }
             // The ROM half calls its cover `picture` because that is the only
@@ -657,13 +720,20 @@ impl RetroAchievements {
             }
         }
         marks.retain(|console, _| !covers.contains_key(console));
-        self.shapes = covers
-            .into_iter()
-            .chain(marks)
-            .filter_map(|(console, pictures)| {
-                crate::retroarch::shelf_shape(pictures.iter()).map(|shape| (console, shape))
-            })
-            .collect();
+        let measured = covers.into_iter().chain(marks).filter_map(|(console, at)| {
+            crate::retroarch::shelf_shape(at.iter()).map(|shape| (console, shape))
+        });
+        match only {
+            // A console named here and measured to nothing has *lost* its
+            // shape — its last cover was deleted from the cache — and leaving
+            // the old one behind would be this column asserting the size of
+            // artwork it no longer has.
+            Some(only) => {
+                self.shapes.retain(|console, _| !only.contains(console));
+                self.shapes.extend(measured);
+            }
+            None => self.shapes = measured.collect(),
+        }
     }
     pub fn refresh(&mut self) {
         self.next = Instant::now();
@@ -793,6 +863,23 @@ impl RetroAchievements {
         }
         let mut rows = Vec::new();
         let mut listed = BTreeSet::new();
+        // What the account's own half found for these same games. A game in
+        // both halves is listed once, as the ROM — so where libretro drew
+        // nothing under the *file's* name, the picture the collection found
+        // under the *site's* name is one this row would otherwise throw away.
+        // `Adventure Island 3 (USA).nes` and `Adventure Island III` are one
+        // game to RetroAchievements and two names to a thumbnail server, and
+        // the dedupe hands the ROM the row precisely because it is the half
+        // that wears a picture.
+        let mut theirs: BTreeMap<u32, &str> = BTreeMap::new();
+        for game in &self.collection {
+            let Some(id) = game["id"].as_u64().filter(|id| *id > 0) else {
+                continue;
+            };
+            if let Some(at) = game["cover"].as_str().or_else(|| game["icon"].as_str()) {
+                theirs.insert(id as u32, at);
+            }
+        }
         for game in &self.games {
             let id = game["id"].as_u64().unwrap_or(0) as u32;
             let path = game["path"].as_str().unwrap_or_default();
@@ -820,7 +907,10 @@ impl RetroAchievements {
                     icon: crate::icons::CATEGORY_TROPHIES.into(),
                     about: About::Listed(Vec::new()),
                 },
-                picture: game["picture"].as_str().map(PathBuf::from),
+                picture: game["picture"]
+                    .as_str()
+                    .or_else(|| theirs.get(&id).copied())
+                    .map(PathBuf::from),
                 entries: Some(self.achievements(
                     id,
                     game["total"].as_u64(),
@@ -1240,6 +1330,151 @@ mod tests {
         assert_eq!(rows[0].portrait(), Some(std::path::Path::new("/art/a.png")));
         assert_eq!(rows[1].title(), "Tekken 6");
     }
+    #[test]
+    fn the_rom_that_keeps_the_row_keeps_the_account_s_picture_too() {
+        let (mut client, _) = client();
+        client.user = Some("Alice".into());
+        // A file libretro drew nothing for under the name it has here: the
+        // thumbnail server has `Adventure Island III (Europe) (Proto)` and the
+        // folder has `Adventure Island 3 (USA).nes`.
+        let mut rom = game();
+        rom["picture"] = Value::Null;
+        client.games = vec![rom];
+        let mut played = owned();
+        played["id"] = json!(12);
+        played["title"] = json!("Example, as the site names it");
+        client.collection = vec![played];
+        let rows = client.rows();
+        assert_eq!(rows.len(), 1, "one game, one row, and it is the ROM");
+        assert_eq!(rows[0].title(), "Example");
+        assert_eq!(
+            rows[0].portrait(),
+            Some(std::path::Path::new("/art/tekken6.png")),
+            "the cover the account's half found, rather than nothing at all"
+        );
+        // And a ROM libretro *has* drawn keeps its own, which is the picture of
+        // this dump rather than of the game in general.
+        client.games = vec![game()];
+        assert_eq!(
+            client.rows()[0].portrait(),
+            Some(std::path::Path::new("/art/a.png"))
+        );
+        // The site's own square mark stands in where there is no cover either,
+        // on the same terms the account's own rows take it.
+        client.games = vec![{
+            let mut rom = game();
+            rom["picture"] = Value::Null;
+            rom
+        }];
+        client.collection[0]["cover"] = Value::Null;
+        assert_eq!(
+            client.rows()[0].portrait(),
+            Some(std::path::Path::new("/icons/131219.png"))
+        );
+    }
+    #[test]
+    fn a_cover_that_lands_reaches_the_row_without_asking_the_site() {
+        let (mut client, _) = client();
+        client.user = Some("Alice".into());
+        let mut rom = game();
+        rom["picture"] = Value::Null;
+        client.games = vec![rom];
+        assert_eq!(client.rows()[0].portrait(), None);
+
+        // The picture the RetroArch half has just fetched, handed straight
+        // over. Nothing may be sent to the helper for it: a `library` request
+        // walks the folder and asks the site about every console in it, to
+        // learn the string already in this call.
+        assert!(client.pictured(&[("/roms/a.nes".into(), "/art/a.png".into())]));
+        assert_eq!(client.busy, 0, "a cover is not a reason to ask anybody");
+        assert_eq!(
+            client.rows()[0].portrait(),
+            Some(std::path::Path::new("/art/a.png"))
+        );
+        // The same one again has changed nothing, and a rebuild of the whole
+        // bar is not free.
+        assert!(!client.pictured(&[("/roms/a.nes".into(), "/art/a.png".into())]));
+        // Nor is a cover for a file this folder has not got.
+        assert!(!client.pictured(&[("/roms/elsewhere.nes".into(), "/art/b.png".into())]));
+    }
+
+    #[test]
+    fn a_cover_landing_measures_its_own_shelf_and_leaves_the_others() {
+        let at = std::env::temp_dir().join(format!("lxb-ra-landed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        let umd = at.join("tekken6.png");
+        let jewel = at.join("tekken2.png");
+        picture(&umd, 512, 882);
+        picture(&jewel, 560, 545);
+
+        let (mut client, _) = client();
+        client.user = Some("Alice".into());
+        client.collection = vec![{
+            let mut played = owned();
+            played["cover"] = json!(umd.display().to_string());
+            played
+        }];
+        let mut rom = game();
+        rom["picture"] = Value::Null;
+        rom["console"] = json!("PlayStation");
+        rom["path"] = json!("/roms/tekken2.bin");
+        client.games = vec![rom];
+        client.measure();
+        let umd_shape = client.shapes.get("PlayStation Portable").copied();
+        assert!(umd_shape.is_some(), "the console with a cover was measured");
+        assert_eq!(client.shapes.get("PlayStation"), None);
+
+        assert!(client.pictured(&[("/roms/tekken2.bin".into(), jewel.display().to_string())]));
+        let jewel_shape = client.shapes.get("PlayStation").copied();
+        assert!(
+            jewel_shape.is_some_and(|shape| (shape - 1.03).abs() < 0.03),
+            "the shelf the cover landed on is a jewel case now: {jewel_shape:?}"
+        );
+        assert_eq!(
+            client.shapes.get("PlayStation Portable").copied(),
+            umd_shape,
+            "and the shelves it did not land on were left exactly as they were"
+        );
+        std::fs::remove_dir_all(&at).ok();
+    }
+
+    #[test]
+    fn badges_arriving_do_not_measure_a_single_shelf() {
+        let at = std::env::temp_dir().join(format!("lxb-ra-badges-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        let umd = at.join("tekken6.png");
+        picture(&umd, 512, 882);
+
+        let (mut client, events) = client();
+        client.user = Some("Alice".into());
+        let mut played = owned();
+        played["cover"] = json!(umd.display().to_string());
+        events
+            .send((0, json!({"event":"collection","games":[played]})))
+            .unwrap();
+        assert!(client.poll(true, None, BTreeSet::new()));
+        let shape = client.shapes.get("PlayStation Portable").copied();
+        assert!(shape.is_some());
+
+        // A page and its badges change rows and no boxes at all. Taking the
+        // cover away underneath proves the shelves were not read again: a
+        // measure here would drop the shape with the file.
+        events.send((0,json!({"event":"page","id":3186,"page":{"achievements":[{"id":1,"title":"First"}],"unlocked":0,"hardcore":0}}))).unwrap();
+        events
+            .send((
+                0,
+                json!({"event":"icon","id":3186,"achievement":1,"picture":"/badges/1.png"}),
+            ))
+            .unwrap();
+        std::fs::remove_dir_all(&at).ok();
+        assert!(client.poll(true, None, BTreeSet::new()));
+        assert_eq!(
+            client.shapes.get("PlayStation Portable").copied(),
+            shape,
+            "an achievement's badge is not a reason to read every console's boxes"
+        );
+    }
+
     /// One PNG of the given size, for the shape it is measured at.
     fn picture(at: &std::path::Path, w: u32, h: u32) {
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();

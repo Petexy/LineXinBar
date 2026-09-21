@@ -5230,6 +5230,9 @@ mod tests {
                 "shell-friends",
                 "shell-guide",
                 "shell-back",
+                // The invitation's own word, which is drawn in two legends —
+                // the panel's and the one on the card itself.
+                "shell-accept",
                 "shell-cancel",
                 "shell-choose",
                 "shell-keyboard",

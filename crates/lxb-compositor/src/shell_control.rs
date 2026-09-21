@@ -458,10 +458,13 @@ const PRESSED_SINCE: u32 = 23;
 /// keyboard they are already sitting at.
 const TYPED_SINCE: u32 = 24;
 
-/// First version that can be asked to draw applications larger than life.
-/// Below it every window is the size of the display it is on, and a shell's
-/// Application scaling page still remembers what it was set to — the file is
-/// read by whichever compositor comes next — but nothing is sent.
+/// First version that can be asked to draw applications larger than life, for
+/// every display at once. Below it every window is the size of the display it is
+/// on, and a shell's Application scaling page still remembers what it was set to
+/// — the file is read by whichever compositor comes next — but nothing is sent.
+///
+/// See [`PER_DISPLAY_APP_SCALE_SINCE`], which is the same setting said about one
+/// screen; this one is what the screens nobody has named draw at.
 const APP_SCALE_SINCE: u32 = 25;
 
 /// First version that can be asked to fade every display to black, and that
@@ -581,6 +584,30 @@ const UNSEEN_WINDOWS_SINCE: u32 = 40;
 /// of the old policy, unchanged.
 const LAUNCH_RECORDS_SINCE: u32 = 41;
 
+/// The version that tells a shell whether the gamut conversion it is offering
+/// is the exact one: the `gamut_exact` bit on `output_hdr_controls`.
+///
+/// Gated because the bit's absence has to mean "this compositor does not say"
+/// rather than "the conversion is approximate". A shell below this version is
+/// told only `gamut`, and reads it the way it always did — as the exact
+/// conversion, which before this version was the only kind a display carrying
+/// that bit could do.
+const EXACT_GAMUT_SINCE: u32 = 42;
+
+/// First version that can be asked how large applications draw themselves on
+/// *one named display*: `set_output_application_scale`.
+///
+/// Gated by nothing, because there is nothing to gate — a request a shell
+/// cannot send is one this compositor never hears. What the version number does
+/// is let a shell tell whether asking per display will work: below it,
+/// `set_application_scale` is the only way to say this, and it says it for
+/// every screen at once.
+///
+/// Both are still served. The session-wide one is the floor under the
+/// per-display one — see [`crate::outputs::OutputManager::app_scale_on`] — so a
+/// shell that only knows the old request gets exactly what it always got.
+const PER_DISPLAY_APP_SCALE_SINCE: u32 = 43;
+
 /// How long a launch record is kept without anything matching it.
 ///
 /// The shell drops its own with `forget_launch` on every path out of a press,
@@ -627,7 +654,7 @@ const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = LAUNCH_RECORDS_SINCE;
+const CURRENT_VERSION: u32 = PER_DISPLAY_APP_SCALE_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -653,6 +680,8 @@ const _: () = assert!(SWITCH_SINCE == PICK_SINCE + 1);
 const _: () = assert!(WINDOW_PID_SINCE == LAYOUT_SINCE + 1);
 const _: () = assert!(UNSEEN_WINDOWS_SINCE == WINDOW_PID_SINCE + 1);
 const _: () = assert!(LAUNCH_RECORDS_SINCE == UNSEEN_WINDOWS_SINCE + 1);
+const _: () = assert!(EXACT_GAMUT_SINCE == LAUNCH_RECORDS_SINCE + 1);
+const _: () = assert!(PER_DISPLAY_APP_SCALE_SINCE == EXACT_GAMUT_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -767,9 +796,22 @@ pub fn the_session_portal_has_gone() {
 /// ever what somebody developing the session typed. Said out loud in the log,
 /// once, so a machine running with it cannot do so quietly.
 pub fn trust_these_programs(names: &[String]) {
+    // A name no process can have is not a name. `program_of` is the basename of
+    // `/proc/<pid>/exe`, which is never empty, so an empty entry could only sit
+    // in the trusted list looking as though it had been taken — on the one flag
+    // in this compositor where what is and is not trusted has to be legible.
+    if names.iter().any(|name| name.trim().is_empty()) {
+        tracing::warn!("ignoring an empty --insecure-trust-program name: no process has one");
+    }
+    let names: Vec<String> = names
+        .iter()
+        .filter(|name| !name.trim().is_empty())
+        .cloned()
+        .collect();
     if names.is_empty() {
         return;
     }
+    let names = &names[..];
     tracing::warn!(
         ?names,
         "trusting these program names on lxb_shell_v1: any process of this user \
@@ -1740,6 +1782,12 @@ fn send_output_hdr(shell: &LxbShellV1, output: &Output, status: &crate::hdr::Sta
         if shell.version() >= HDR_CONTROLS_SINCE {
             let mut controls = lxb_shell_v1::HdrControl::empty();
             controls.set(lxb_shell_v1::HdrControl::Gamut, status.gamut);
+            // And, for a shell new enough to draw the difference, whether the
+            // conversion that control makes is the exact one. Sent only where
+            // it can be told apart from silence — see `EXACT_GAMUT_SINCE`.
+            if shell.version() >= EXACT_GAMUT_SINCE {
+                controls.set(lxb_shell_v1::HdrControl::GamutExact, status.gamut_exact);
+            }
             shell.output_hdr_controls(&wl_output, controls);
         }
         sent = true;
@@ -2506,7 +2554,14 @@ impl LxbState {
         self.queue_redraw();
     }
 
-    /// Draw every application this much larger than life from now on.
+    /// Draw applications this much larger than life on every display that has
+    /// not been given a size of its own.
+    ///
+    /// The request that came before the per-display one, and still what an
+    /// older shell says this with — see [`LxbState::set_output_application_scale`],
+    /// which is the same setting with a display named. This one is the floor
+    /// under it: what a screen nobody has named draws at, including a screen
+    /// plugged in an hour from now.
     ///
     /// One relayout does all three parts of it: every window is configured at
     /// the size the new factor leaves it, told over `wp_fractional_scale_v1`
@@ -2535,6 +2590,38 @@ impl LxbState {
             percent = scale.percent(),
             "the shell changed how large applications draw"
         );
+        self.relayout_for_the_new_scale();
+    }
+
+    /// The same, for one display: every application tiled onto it draws this
+    /// much larger than life and the screens beside it are left alone.
+    ///
+    /// The whole relayout rather than this display's windows, and that is not
+    /// laziness. A window belongs to a display, but which windows belong to
+    /// which is the space's answer and not this request's — a window mid-move
+    /// between two screens is on both of them for a frame — and re-tiling a
+    /// window at the size it already has costs a configure the client
+    /// recognises and nothing else. One pass over every window is the honest
+    /// way to ask each of them the question this changes the answer to.
+    pub fn set_output_application_scale(&mut self, output: &Output, scale: crate::scale::AppScale) {
+        if !self.lxb.outputs.set_output_app_scale(output, scale) {
+            return;
+        }
+        tracing::info!(
+            display = %output.name(),
+            percent = scale.percent(),
+            "the shell changed how large applications draw on one display"
+        );
+        self.relayout_for_the_new_scale();
+    }
+
+    /// Put every window back through the tiling, at whatever size its own
+    /// display now asks for, and get the result onto a screen.
+    ///
+    /// Shared by the two requests above so they cannot come to differ: what
+    /// they change is one number each, and what has to happen afterwards is the
+    /// same thing.
+    fn relayout_for_the_new_scale(&mut self) {
         self.lxb.outputs.relayout_windows(&mut self.lxb.space);
         // Nothing here reaches a screen by itself: every window has been given
         // a new size and nothing has been scanned out since.
@@ -2818,10 +2905,15 @@ impl LxbState {
                 let windows = crate::render::overview_windows(&self.lxb, &output)
                     .into_iter()
                     .map(|window| {
-                        let size = self
-                            .lxb
-                            .space
-                            .element_geometry(&window)
+                        // What the window occupies on the display, not what its
+                        // client was configured at. The two differ by the whole
+                        // of the application scale, and the shell decides
+                        // whether to go on drawing by comparing this against the
+                        // size of the display — see [`crate::render::on_screen`],
+                        // which is the same rectangle the frame throttle here
+                        // reads, so that the two sides cannot answer "does this
+                        // cover the screen" differently.
+                        let size = crate::render::on_screen(&self.lxb, &window)
                             .map(|geometry| geometry.size)
                             .unwrap_or_default();
                         OverviewEntry {
@@ -3178,13 +3270,13 @@ impl LxbState {
         // exactly the same reason — a window scaled to 150% put a buffer half
         // again as wide on the screen, and a photograph of it that ignored
         // that would be the one picture of this window nobody ever saw.
-        let scale = self
-            .lxb
-            .outputs
-            .window_display(&self.lxb.space, &window)
-            .map(|output| output.current_scale().fractional_scale())
-            .unwrap_or(1.0)
-            * self.lxb.outputs.window_scale(&window);
+        let scale = match self.lxb.outputs.window_display(&self.lxb.space, &window) {
+            Some(output) => {
+                output.current_scale().fractional_scale()
+                    * self.lxb.outputs.window_scale_on(&window, &output)
+            }
+            None => 1.0,
+        };
 
         let shot = match self.backend.capture_window(&window, scale) {
             Ok(shot) => shot,
@@ -4115,6 +4207,17 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             }
             lxb_shell_v1::Request::SetApplicationScale { scale } => {
                 state.set_application_scale(crate::scale::AppScale::from_percent(scale))
+            }
+            lxb_shell_v1::Request::SetOutputApplicationScale { output, scale } => {
+                match Output::from_resource(&output) {
+                    Some(output) => state.set_output_application_scale(
+                        &output,
+                        crate::scale::AppScale::from_percent(scale),
+                    ),
+                    None => tracing::debug!(
+                        "an application scale was asked for on a display that is gone"
+                    ),
+                }
             }
             lxb_shell_v1::Request::SetPointer {
                 speed,

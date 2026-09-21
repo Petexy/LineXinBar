@@ -279,17 +279,40 @@ pub struct Laid {
     /// Whether it did not go, which is a line of its own under the bubble and
     /// so is room the column has to leave for it.
     pub failed: bool,
+    /// Whether this line is an invitation to a game, which is drawn as a card
+    /// rather than as a bubble — see [`lxb_steam::chat::Invite`].
+    ///
+    /// A card is a different shape from a bubble in every way that the column's
+    /// arithmetic cares about: it is as wide as the column rather than as wide
+    /// as its words, and it is three runs of type tall rather than one, because
+    /// under the game's name it says who asked and what to press. So it is a
+    /// fact the layout has to have, and `lines` means the same thing on both —
+    /// how many lines the writing at the top of it takes.
+    pub card: bool,
 }
+
+/// One line of a conversation as a *measurement* sees it: which line it is, and
+/// whether it did not go.
+///
+/// The failure is half of the key rather than a fact hanging off the line,
+/// because a send that fails **keeps its mark** — nothing is asked of Steam
+/// again under a fresh number until somebody presses Send again — so a column
+/// keyed by marks alone is not measured again when one of them fails. What that
+/// costs is the line under the bubble that says why: [`crate::ui`] reserves the
+/// room for it out of the measurement, and a measurement taken before the
+/// failure reserved none.
+pub type Row = (Mark, bool);
 
 /// What a measurement of the column was made against.
 #[derive(Debug, Clone, PartialEq)]
 struct Measured {
     with: u64,
-    /// Every mark in the column, in order. The one comparison that catches all
-    /// four things that change a message column: one arriving, one leaving, a
-    /// pending send being confirmed under Steam's own key, and a whole
-    /// conversation being replaced.
-    marks: Vec<Mark>,
+    /// Every line in the column, in order. The one comparison that catches all
+    /// five things that change a message column: one arriving, one leaving, a
+    /// pending send being confirmed under Steam's own key, a send failing, and
+    /// a whole conversation being replaced. See [`Row`], which is why the
+    /// failure is in here and not merely drawn.
+    rows: Vec<Row>,
     /// And the display it was measured for, because the type scales with it.
     height: f32,
 }
@@ -796,6 +819,13 @@ impl Friends {
         self.composing = composing;
         if composing {
             self.talking = Talking::Compose;
+            // And the view with it. The field is drawn at the foot of the
+            // column whatever the column is scrolled to, so somebody who
+            // walked twenty messages up and then pressed Write would have been
+            // typing into a field with somebody else's Tuesday above it. What
+            // they are about to send goes at the end, which is where the
+            // conversation now is.
+            self.keep_the_message_in_view();
         }
         true
     }
@@ -1016,17 +1046,13 @@ impl Friends {
     pub fn measured(
         &mut self,
         with: u64,
-        marks: Vec<Mark>,
+        rows: Vec<Row>,
         laid_out: Vec<Laid>,
         line_height: f32,
         padding: f32,
         height: f32,
     ) {
-        self.measured = Some(Measured {
-            with,
-            marks,
-            height,
-        });
+        self.measured = Some(Measured { with, rows, height });
         self.laid_out = laid_out;
         self.line_height = line_height;
         self.message_padding = padding;
@@ -1044,22 +1070,27 @@ impl Friends {
 
     /// Whether the column has to be measured again for this conversation.
     ///
-    /// True whenever a mark in it moved, one arrived or left, or the display
-    /// changed size — and false on every other frame, which is nearly all of
-    /// them. See [`Measured`].
-    pub fn wants_measuring(&self, with: u64, marks: &[Mark], height: f32) -> bool {
+    /// True whenever a line in it moved, one arrived or left, one stopped
+    /// going out, or the display changed size — and false on every other frame,
+    /// which is nearly all of them. See [`Measured`].
+    pub fn wants_measuring(&self, with: u64, rows: &[Row], height: f32) -> bool {
         !matches!(
             &self.measured,
             Some(measured)
-                if measured.with == with && measured.height == height && measured.marks == marks
+                if measured.with == with && measured.height == height && measured.rows == rows
         )
     }
 
-    /// The marks of an open conversation, in order — what a measurement is
-    /// made of and checked against.
-    pub fn marks_of(conversation: Option<&Conversation>) -> Vec<Mark> {
+    /// The lines of an open conversation, in order — what a measurement is made
+    /// of and checked against. See [`Row`].
+    pub fn rows_of(conversation: Option<&Conversation>) -> Vec<Row> {
         conversation
-            .map(|it| it.lines().iter().map(|line| line.mark()).collect())
+            .map(|it| {
+                it.lines()
+                    .iter()
+                    .map(|line| (line.mark(), line.failure().is_some()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -1170,6 +1201,7 @@ mod tests {
                 width: 40.0,
                 from_me: *from_me,
                 failed: false,
+                card: false,
             })
             .collect()
     }
@@ -1267,7 +1299,7 @@ mod tests {
         friends.talk_to(22);
         friends.measured(
             22,
-            vec![said(100), said(200)],
+            vec![(said(100), false), (said(200), false)],
             laid(&[(said(100), false), (said(200), true)]),
             10.0,
             4.0,
@@ -1281,7 +1313,7 @@ mod tests {
         // An older message arrives at the head of the column.
         friends.measured(
             22,
-            vec![said(50), said(100), said(200)],
+            vec![(said(50), false), (said(100), false), (said(200), false)],
             laid(&[(said(50), false), (said(100), false), (said(200), true)]),
             10.0,
             4.0,
@@ -1305,7 +1337,7 @@ mod tests {
         friends.talk_to(22);
         friends.measured(
             22,
-            vec![Mark::Pending(4)],
+            vec![(Mark::Pending(4), true)],
             laid(&[(Mark::Pending(4), true)]),
             10.0,
             4.0,
@@ -1347,24 +1379,28 @@ mod tests {
         friends.talk_to(22);
         friends.measured(
             22,
-            vec![said(100)],
+            vec![(said(100), false)],
             laid(&[(said(100), false)]),
             10.0,
             4.0,
             1080.0,
         );
         // Nothing has moved.
-        assert!(!friends.wants_measuring(22, &[said(100)], 1080.0));
+        assert!(!friends.wants_measuring(22, &[(said(100), false)], 1080.0));
         // A message arrives.
-        assert!(friends.wants_measuring(22, &[said(100), said(200)], 1080.0));
+        assert!(friends.wants_measuring(22, &[(said(100), false), (said(200), false)], 1080.0));
         // A pending send is confirmed under Steam's own key, which changes a
         // mark without changing how many there are — the case a length check
         // would miss.
-        assert!(friends.wants_measuring(22, &[Mark::Pending(1)], 1080.0));
+        assert!(friends.wants_measuring(22, &[(Mark::Pending(1), false)], 1080.0));
+        // And a send that failed, which changes *neither*: a message keeps its
+        // mark when Steam refuses it, and the line under the bubble saying why
+        // is room the column has to be told to leave. See [`Row`].
+        assert!(friends.wants_measuring(22, &[(said(100), true)], 1080.0));
         // The display changed size, so the type did too.
-        assert!(friends.wants_measuring(22, &[said(100)], 720.0));
+        assert!(friends.wants_measuring(22, &[(said(100), false)], 720.0));
         // A different conversation entirely.
-        assert!(friends.wants_measuring(33, &[said(100)], 1080.0));
+        assert!(friends.wants_measuring(33, &[(said(100), false)], 1080.0));
     }
 
     /// Leaving a conversation gives up the draft and the field; leaving the
@@ -1430,6 +1466,43 @@ mod tests {
         assert_eq!(friends.chat_scroll(), 100.0);
     }
 
+    /// Writing happens at the end of a conversation, wherever in it the reader
+    /// had walked to.
+    ///
+    /// The field is drawn at the foot of the panel whatever the column is
+    /// scrolled to, so somebody who walked twenty messages up and then pressed
+    /// Write would have been typing into a field with somebody else's Tuesday
+    /// above it — and watching their own message land somewhere they could not
+    /// see.
+    #[test]
+    fn starting_to_write_brings_the_column_back_to_the_end() {
+        let mut friends = Friends::default();
+        friends.talk_to(22);
+        friends.measured(
+            22,
+            vec![(said(100), false), (said(200), false)],
+            laid(&[(said(100), false), (said(200), true)]),
+            10.0,
+            4.0,
+            1080.0,
+        );
+        friends.the_column_is(1200.0, 400.0);
+        assert_eq!(friends.chat_scroll(), 800.0);
+
+        // Up the column, which takes the view with it.
+        assert!(friends.drag_the_conversation(0.0));
+        assert!(friends.move_in_conversation(-1, None));
+        assert!(!friends.at_the_latest());
+
+        // And Write, from up there.
+        assert!(friends.compose(true));
+        assert_eq!(friends.talking(), Talking::Compose);
+        assert!(
+            friends.at_the_latest(),
+            "the field was opened over a conversation scrolled somewhere else"
+        );
+    }
+
     /// A different account takes every conversation with it.
     #[test]
     fn a_new_account_leaves_nothing_to_say() {
@@ -1456,7 +1529,7 @@ mod tests {
         friends.talk_to(22);
         friends.measured(
             22,
-            vec![said(100)],
+            vec![(said(100), false)],
             laid(&[(said(100), false)]),
             10.0,
             4.0,

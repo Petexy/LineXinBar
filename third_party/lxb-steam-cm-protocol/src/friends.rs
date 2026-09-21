@@ -158,6 +158,9 @@ pub enum FriendsEvent {
     TypingNotification {
         steamid: u64,
     },
+    /// A friend asked this account to join them in a game, by either of the two
+    /// routes Steam sends that on. See [`crate::chat::GameInvite`].
+    GameInvite(crate::chat::GameInvite),
     /// Result of a `GetRecentMessages` history fetch for one conversation (oldest first).
     RecentMessages {
         steamid: u64,

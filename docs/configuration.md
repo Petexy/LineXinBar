@@ -1,5 +1,7 @@
 # Configuration
 
+[Documentation](index.md) · [Project home](../README.md)
+
 LineXinBar reads `$XDG_CONFIG_HOME/lxb/config.toml`, falling back to
 `~/.config/lxb/config.toml`. A missing file is not an error: the defaults
 are a usable single-display setup.
@@ -71,7 +73,7 @@ resort, so a missing theme can never leave the pointer invisible.
 Whether the pointer is on screen at all is a separate question, and not one
 this setting answers: the session starts without a cursor and shows one only
 once something moves it, hiding it again whenever a key or a controller button
-is pressed. See [The cursor](../README.md#the-cursor).
+is pressed. See [The cursor](controls.md#the-cursor).
 
 `shell` differs from `autostart` in that LineXinBar supervises it: the session
 ends when it exits, and failing to start it is fatal rather than leaving a
@@ -1255,16 +1257,34 @@ HDR is refused, and logged, unless the driver is on the atomic interface and
 the display's EDID advertises ST 2084 *and* the driver publishes
 `HDR_OUTPUT_METADATA` and at least a `GAMMA_LUT`.
 
-`hdr_srgb_intensity` needs a `DEGAMMA_LUT` as well, because it is implemented
-as the `CTM` and a matrix is only a gamut conversion when it acts on linear
-light. Without one the sRGB decode is folded into the gamma curve instead —
-brightness stays correct — but the matrix is set to identity, which pins the
-gamut at the vivid end whatever this key says: sRGB's primaries go out as
-BT.2020's. Not all hardware exposes a degamma stage; amdgpu on RDNA 4, for
-instance, does not on its display pipes. `lxb` logs which of these
+`hdr_srgb_intensity` is implemented as the `CTM`, and a matrix is a gamut
+rotation only when it acts on linear light — so it wants a `DEGAMMA_LUT` in
+front of it. Where the driver publishes one, this key is the exact conversion.
+
+Where the driver publishes a matrix but no degamma stage, the matrix is set
+anyway and acts on the sRGB-coded values instead; the sRGB decode is folded
+into the gamma curve, so brightness stays correct. Every row of this matrix
+sums to 1, so white, black and the whole grey axis come out exactly right
+whatever the values are coded in, and what the missing stage costs falls
+entirely on saturated colour — measured against the exact conversion over a
+17³ sRGB grid, mean ΔE\*ab 9.0 against 26.8 for not applying the matrix at
+all. Not applying it was what this used to do, and it is not the neutral
+choice it sounds like: no matrix means the *identity* matrix, and the identity
+is `100`, so a display engine with no degamma stage was pinned at the vivid end
+and `0` — the default — could not be reached at all. Settings > Display > HDR
+says which of the two a display is getting, in a line above the choices.
+
+Not all hardware exposes a degamma stage, and this is not a rare corner:
+amdgpu withholds `DEGAMMA_LUT` on RDNA 4 (DCN 4.01), because a pre-blending
+degamma LUT would not apply to the cursor there. `lxb` logs which of these
 happened when it drives a display into HDR — look for `pipeline=` on the
 `driving this display in HDR` line — and tells the shell, which stops offering
-the setting on displays that cannot honour it.
+the setting only where there is no matrix to put the conversion in.
+
+To see what every display on a machine can do before starting a session at all,
+run `cargo run -p lxb-compositor --example probe-colour`. It opens each card
+read-only, takes no master and commits nothing, and prints these properties per
+CRTC and per connected display.
 
 To see what a connector publishes before turning anything on, run with
 `RUST_LOG=debug` and look for the `colour pipeline` line logged when each
@@ -1324,12 +1344,13 @@ warmed to until one connects.
 ### How large applications draw themselves
 
 **There is no key here for it, deliberately**, although it is the compositor
-that carries it out. Settings → System → Application scaling gives every
-application a logical window some fraction smaller than the display and tells it
-— over `wp_fractional_scale_v1` — to fill that window with the display's own
-pixels, so an interface comes out larger without losing a pixel of sharpness.
-The shell keeps the number, in its own file (`~/.config/lxb/shell.toml`), and
-sends it over `lxb_shell_v1` as soon as it connects.
+that carries it out. Settings → Display → Application scaling gives every
+application on one screen a logical window some fraction smaller than that
+display and tells it — over `wp_fractional_scale_v1` — to fill that window with
+the display's own pixels, so an interface comes out larger without losing a pixel
+of sharpness. The shell keeps the number — one per screen — in its own file
+(`~/.config/lxb/shell.toml`), and sends it over `lxb_shell_v1` as soon as it
+connects.
 
 That is the whole difference from the two settings above. Those are here because
 the compositor lights the displays a second before the shell can speak, and

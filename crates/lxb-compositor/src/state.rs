@@ -1519,6 +1519,47 @@ pub(crate) fn take_background_handoff() -> Option<std::ffi::OsString> {
 }
 
 /// Minimal POSIX-ish word splitter: whitespace separated, with `'` and `"` quoting.
+/// Write an argument vector back into one command string that [`shell_split`]
+/// splits into exactly those arguments again.
+///
+/// Every command this compositor starts is carried as a single string, because
+/// the two that matter — `general.autostart` and `general.shell` — are written
+/// by hand in the config file, quotes and all. A command that arrives already
+/// split into `argv`, as the trailing `lxb -- …` one does, has to be written
+/// back into that shape, and joining on spaces is not it: the shell that
+/// invoked `lxb` removed the quoting on the way in, so `lxb -- touch 'a b.txt'`
+/// arrives as two arguments, rejoins as three words and makes a file called
+/// `a` — in the compositor's working directory, not the one meant.
+///
+/// Escaping every character that is not plainly safe, rather than wrapping each
+/// argument in quotes, is what makes the round trip exact. [`shell_split`]
+/// gives `\<c>` back as `<c>` outside quotes for every `<c>`, so there is no
+/// character to special-case and no quote style to get wrong — including the
+/// quote characters themselves, which is where a quoting scheme would have to
+/// start being careful. An empty argument is the one case with nothing to
+/// escape, and so the one case that needs a pair of quotes.
+pub fn shell_quote(argv: &[String]) -> String {
+    fn one(arg: &str) -> String {
+        if arg.is_empty() {
+            return "''".to_string();
+        }
+        arg.chars()
+            .map(|c| {
+                if c.is_alphanumeric() || "_-./:=@,+".contains(c) {
+                    c.to_string()
+                } else {
+                    format!("\\{c}")
+                }
+            })
+            .collect()
+    }
+
+    argv.iter()
+        .map(|arg| one(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn shell_split(input: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -1775,7 +1816,7 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        confine_to_session, folded_app_id, inject_background_handoff, shell_split,
+        confine_to_session, folded_app_id, inject_background_handoff, shell_quote, shell_split,
         BACKGROUND_HANDOFF_ENV,
     };
 
@@ -1836,6 +1877,53 @@ mod tests {
     #[test]
     fn rejects_unterminated_quote() {
         assert!(shell_split(r#"prog "oops"#).is_none());
+    }
+
+    /// The property the trailing `lxb -- …` command depends on. Joining that
+    /// argv on spaces used to lose every boundary that held one, so `touch
+    /// 'a b.txt'` became two arguments and made the wrong file in the wrong
+    /// directory.
+    #[test]
+    fn quoting_an_argv_survives_being_split_again() {
+        for argv in [
+            vec!["touch".to_string(), "a b.txt".to_string()],
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo hello > /tmp/x".to_string(),
+            ],
+            // Every character the splitter treats specially, including the
+            // escape itself, and an argument with nothing in it at all.
+            vec![
+                "prog".to_string(),
+                r#"it's"#.to_string(),
+                r#"say "hi""#.to_string(),
+                r"back\slash".to_string(),
+                String::new(),
+                "  leading and trailing  ".to_string(),
+            ],
+            // A path is the common case and should come back untouched.
+            vec![
+                "/usr/bin/lxb-desktop".to_string(),
+                "--debug-actions".to_string(),
+                "8:right,9:right".to_string(),
+            ],
+        ] {
+            let quoted = shell_quote(&argv);
+            assert_eq!(
+                shell_split(&quoted).unwrap(),
+                argv,
+                "round trip of {argv:?}"
+            );
+        }
+    }
+
+    /// An ordinary command must not be made unreadable on the way through:
+    /// this string is what the log prints and what the config file would hold.
+    #[test]
+    fn quoting_leaves_a_plain_command_alone() {
+        let argv = vec!["lxb-desktop".to_string(), "--no-steam".to_string()];
+        assert_eq!(shell_quote(&argv), "lxb-desktop --no-steam");
     }
 
     #[test]

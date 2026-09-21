@@ -425,6 +425,14 @@ pub struct Awaiting {
     /// When the press was, for the log: the interesting number is how long a
     /// cold client keeps somebody waiting.
     pub asked: std::time::Instant,
+    /// The invitation this press is accepting, where it is accepting one.
+    ///
+    /// Carried the whole way through the wake rather than looked up again at
+    /// the end of it, and for the same reason the name is: waking a cold client
+    /// is most of two minutes, and what the conversation holds by then is not
+    /// necessarily what was pressed. It decides the URL — see [`Steam::join`]
+    /// — and nothing else about the launch differs.
+    pub joining: Option<lxb_steam::chat::Invite>,
 }
 
 /// What a word from Valve's client means, given what the shell is waiting for.
@@ -1097,6 +1105,14 @@ pub struct Changed {
     /// it has to be made somewhere that has the text to withhold. See
     /// `Shell::announce_a_message`.
     pub messages: Vec<(u64, String)>,
+    /// And the invitations to a game: who from, and which one of theirs.
+    ///
+    /// A list for the reason the messages are one, and the number rather than
+    /// the invitation for the reason given at
+    /// [`lxb_steam::chat::Moved::invited`] — what the shell says about it comes
+    /// out of the store, and it has to be able to find it again long after the
+    /// pass it arrived on.
+    pub invites: Vec<(u64, u64)>,
     /// A CM session came up. Every conversation's history is stale — nothing
     /// said while the connection was down was pushed at a session that was not
     /// there — so the one that is open has to be asked for again. The rest ask
@@ -1160,6 +1176,7 @@ impl Changed {
             friends,
             chat,
             messages,
+            invites,
             reconnected,
             handed_over,
             steam_is_ready,
@@ -1177,6 +1194,9 @@ impl Changed {
         // None of these may be dropped either: two friends writing in one pass
         // is two announcements.
         self.messages.extend(messages);
+        // Nor these, on the same terms: two people can ask you into two
+        // different games in the same pass.
+        self.invites.extend(invites);
         // None of these may be dropped: several games can finish in one pass.
         self.installed.extend(installed);
         // None of these may be dropped: each answers a different wake, and a
@@ -1191,6 +1211,25 @@ impl Changed {
         self.compat = compat.or(self.compat.take());
         self.compat_refused = compat_refused.or(self.compat_refused.take());
         self.ways = ways.or(self.ways.take());
+    }
+}
+
+/// The `steam:` URL that accepts one invitation — see [`Steam::join`], where
+/// the two forms are argued.
+///
+/// Its own function because it is the whole of what an accepted invitation
+/// *is* and it can be checked without a Steam, a client or a machine: what
+/// travels is a URL, and getting it wrong means a game that starts and joins
+/// nothing, which looks exactly like a game that started.
+fn joining_url(app_id: u32, invite: &lxb_steam::chat::Invite) -> String {
+    match invite.lobby() {
+        Some(lobby) => format!("steam://joinlobby/{app_id}/{lobby}/{}", invite.from),
+        // `+` for the spaces, because a URL cannot carry one. It is Steam's own
+        // convention for this, not an escape invented here.
+        None => format!(
+            "steam://rungameid/{app_id}//{}",
+            invite.connect.trim().replace(' ', "+")
+        ),
     }
 }
 
@@ -1452,6 +1491,26 @@ impl Steam {
                             with: steam_id,
                             request,
                             said: Ok(said),
+                        },
+                    );
+                    // And an invitation to a game at the foot of it, which is
+                    // the one thing in a conversation that cannot be produced
+                    // without another person — somebody has to press Invite in
+                    // a game for one of these to exist. The lobby is invented
+                    // like everything else here and joining it would fail,
+                    // which is the point: the fixture is for the card, the
+                    // legend and the press, and it cannot reach Steam at all.
+                    hear(
+                        &mut self.conversations,
+                        Word::Invited {
+                            with: steam_id,
+                            invite: lxb_steam::chat::Invited {
+                                at: 1_700_000_800,
+                                key: None,
+                                connect: "+connect_lobby 109775240000000000".to_string(),
+                                app_id: Some(220),
+                                game: Some("Half-Life 2".to_string()),
+                            },
                         },
                     );
                 }
@@ -2158,6 +2217,80 @@ impl Steam {
         }
     }
 
+    /// The newest invitation in one conversation, if there is one.
+    ///
+    /// What the accept button acts on and what the legend asks about, which is
+    /// the same question twice — see [`lxb_steam::chat::Conversation::
+    /// newest_invite`], where "newest" is settled.
+    pub fn newest_invite(&self, friend: u64) -> Option<&lxb_steam::chat::Invite> {
+        self.conversations.with(friend)?.newest_invite()
+    }
+
+    /// One invitation by its number, whichever conversation it is in.
+    ///
+    /// For a press that has been carrying that number about for a while: an
+    /// announcement stands until somebody clears it, and the conversation
+    /// behind it may have been opened, read and closed since.
+    pub fn invite(&self, friend: u64, id: u64) -> Option<&lxb_steam::chat::Invite> {
+        self.conversations
+            .with(friend)?
+            .invites()
+            .iter()
+            .find(|invite| invite.id == id)
+    }
+
+    /// Mark one as accepted, and give back what to hand to Valve's client.
+    pub fn take_the_invite(&mut self, friend: u64, id: u64) -> Option<lxb_steam::chat::Invite> {
+        self.conversations.take_the_invite(friend, id)
+    }
+
+    /// Put an invented invitation into a conversation, for
+    /// `--debug-actions invite`.
+    ///
+    /// Through [`lxb_steam::chat::Word::Invited`], which is the door a real one
+    /// comes through, so everything downstream of the store is exercised for
+    /// real. Stamped with the moment it was invented rather than left
+    /// unstamped, so that a second one does not land on the first: the connect
+    /// string is an invitation's identity, and two invented ones a minute apart
+    /// are two different lobbies.
+    /// Answers which invitation it became, for the announcement the shell then
+    /// raises about it — the fixture goes round `Changed` rather than through
+    /// it, because a pass that carried an invented arrival would be a debug
+    /// flag reaching into the path a real one takes.
+    pub fn pretend_an_invitation(
+        &mut self,
+        from: u64,
+        app_id: Option<u32>,
+        game: Option<String>,
+    ) -> Option<(u64, u64)> {
+        let Some(account) = self.steam_id else {
+            tracing::warn!("--debug-actions invite: nobody is signed in to be invited");
+            return None;
+        };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs() as u32)
+            .unwrap_or(0);
+        let moved = self.conversations.heard(
+            lxb_steam::chat::Heard {
+                generation: self.conversations.generation(),
+                account,
+                word: lxb_steam::chat::Word::Invited {
+                    with: from,
+                    invite: lxb_steam::chat::Invited {
+                        at: stamp,
+                        key: None,
+                        connect: format!("+connect_lobby 109775240000{stamp:06}"),
+                        app_id,
+                        game,
+                    },
+                },
+            },
+            Instant::now(),
+        );
+        moved.invited
+    }
+
     /// Ask for a history again, after one that failed.
     pub fn read_the_history_again(&mut self, friend: u64) {
         if let Some(wanted) = self.conversations.read_it_again(friend) {
@@ -2196,11 +2329,6 @@ impl Steam {
         };
         self.client.chat(wanted);
         true
-    }
-
-    /// Give up on a failed message and take it off the screen.
-    pub fn forget_the_message(&mut self, friend: u64, request: u64) -> bool {
-        self.conversations.forget(friend, request)
     }
 
     /// Tell somebody this account is typing, at most as often as
@@ -2592,6 +2720,7 @@ impl Steam {
                 changed.chat |= moved.redraw;
                 changed.reconnected |= moved.reconnected;
                 changed.messages.extend(moved.announce);
+                changed.invites.extend(moved.invited);
             }
             Event::SignedOut => {
                 self.trophies.account(None);
@@ -3422,6 +3551,50 @@ impl Steam {
     /// which is the whole reason this can be done from here: proving whose a
     /// client is needs what the client says out loud, and nothing secret.
     pub fn play(&mut self, app_id: u32) -> Result<(), String> {
+        self.hand_over_a_launch(app_id, &format!("steam://launch/{app_id}/dialog"))
+    }
+
+    /// Ask the running client to start one game **and join what somebody
+    /// invited this account to**.
+    ///
+    /// The same delivery as [`Self::play`] down to the last check — the same
+    /// proof of whose client it is, the same courier, the same answer — and a
+    /// different URL, because what is being asked for is different. A game
+    /// started and then joined is two acts with a menu between them; this is
+    /// the one act Valve's own client performs when somebody presses Join on an
+    /// invitation.
+    ///
+    /// **`steam://joinlobby/<app>/<lobby>/<who>` where there is a lobby.** That
+    /// is what an invitation from Steam's own matchmaking is — the connect
+    /// string is `+connect_lobby <id>` — and it is the form the client knows
+    /// how to finish in either state the machine can be in: it starts the game
+    /// with `+connect_lobby <id>` where the game is not running, and tells the
+    /// running one to join where it is. Nothing else expresses the second half.
+    ///
+    /// **`steam://rungameid/<app>//<arguments>` for anything else.** A game may
+    /// define its own connect string — a server address, a match id — and there
+    /// is no joining a thing Steam does not model. Started with it on the
+    /// command line is exactly what Valve's client does with those, and the
+    /// separator is `+` because a URL cannot carry spaces. `steam://run/…` is
+    /// deliberately not used: it is documented to take arguments and
+    /// [drops them on Linux](https://github.com/ValveSoftware/steam-for-linux/issues/12264).
+    ///
+    /// The dialog that `play` asks for — the one that makes a game with two
+    /// launch options ask which — is **not** asked for here, and cannot be:
+    /// neither URL takes it. A game that stops to ask is a game that will ask
+    /// in its own window, and the invitation's connect string travels either
+    /// way.
+    pub fn join(&mut self, app_id: u32, invite: &lxb_steam::chat::Invite) -> Result<(), String> {
+        self.hand_over_a_launch(app_id, &joining_url(app_id, invite))
+    }
+
+    /// Prove the client and give it one `steam:` URL — the last few inches of
+    /// both [`Self::play`] and [`Self::join`].
+    ///
+    /// One function because every word of the reasoning above is about the
+    /// *delivery* rather than about which URL is delivered, and two copies of
+    /// it would be two places for the proof to be dropped from.
+    fn hand_over_a_launch(&mut self, app_id: u32, url: &str) -> Result<(), String> {
         let Some(steam_id) = self.steam_id else {
             return Err(
                 crate::i18n::text("shell-this-session-is-not-signed-in-to-steam").to_string(),
@@ -3443,7 +3616,7 @@ impl Steam {
             &where_it_is,
             &options,
             steam_id as u32,
-            &format!("steam://launch/{app_id}/dialog"),
+            url,
         )
         .map_err(
             |refusal| crate::message!("steam-refused-launch", "refusal" => refusal.to_string()),
@@ -3451,6 +3624,11 @@ impl Steam {
         tracing::info!(
             app_id,
             client = ?proven.pid,
+            // The URL and not just the app: which of the two this was is the
+            // first thing worth knowing when a game starts without joining
+            // anything. It carries a lobby id, which is not a secret — it is
+            // what was broadcast to be joined — and never an account's.
+            url,
             "the game was handed to the client this session proved"
         );
         Ok(())
@@ -5099,7 +5277,40 @@ mod tests {
             display: crate::Display::for_a_test(0),
             from: [0.0; 4],
             asked: std::time::Instant::now(),
+            joining: None,
         }
+    }
+
+    /// What an accepted invitation is handed to Valve's client as.
+    ///
+    /// The lobby form is the one that matters: it is what the client's own Join
+    /// does, and it is the only form that works in *both* states the machine
+    /// can be in — the game running and the game not. Anything else is a
+    /// command line, and there the spaces become plus signs because a URL
+    /// cannot carry a space.
+    #[test]
+    fn an_accepted_invitation_is_a_join_or_a_command_line() {
+        let invite = |connect: &str| lxb_steam::chat::Invite {
+            id: 1,
+            from: 76_561_198_000_000_002,
+            at: 0,
+            key: None,
+            connect: connect.to_string(),
+            app_id: Some(220),
+            game: None,
+            taken: false,
+        };
+        assert_eq!(
+            joining_url(220, &invite("+connect_lobby 109775240000000000")),
+            "steam://joinlobby/220/109775240000000000/76561198000000002"
+        );
+        assert_eq!(
+            joining_url(220, &invite("+connect 127.0.0.1:27015")),
+            "steam://rungameid/220//+connect+127.0.0.1:27015"
+        );
+        // And an invitation carrying nothing at all still starts the game,
+        // which is what the person who sent it was asking for.
+        assert_eq!(joining_url(220, &invite("")), "steam://rungameid/220//");
     }
 
     /// Two games in flight are two watches, and one of them ending leaves the

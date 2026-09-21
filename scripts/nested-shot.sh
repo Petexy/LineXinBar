@@ -18,7 +18,22 @@
 #
 # The third argument, if given, is a command run inside the nested session a
 # few seconds after it starts — for putting something on the screen that has
-# to come from outside the shell.
+# to come from outside the shell. It runs against the nested session's own
+# Wayland socket and with no X display at all, so a toolkit cannot fall back to
+# X11 and open its window on the desktop this was started from; and it runs in
+# the background, so a client that never exits on its own does not hold the run
+# open past its lifetime.
+#
+# There is no Wayland terminal on every machine — this one has neither `foot`
+# nor `weston-terminal`, and its GTK 3 is built without the Wayland backend — so
+# the client to reach for when any window will do is mpv, which needs no file:
+#
+#   'WAYLAND_DEBUG=1 mpv --no-config --no-audio --vo=gpu --length=30 \
+#        av://lavfi:testsrc=size=640x480'
+#
+# With WAYLAND_DEBUG that also prints every configure and preferred scale the
+# compositor sent it into the log, which is how anything about a window's size
+# is checked rather than guessed at.
 
 set -euo pipefail
 
@@ -91,10 +106,34 @@ env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
             --window-size "${LXB_SHOT_SIZE:-1280x800}" --socket "$socket" --shell &
         lxb=$!
         if [[ -n "$inside" ]]; then
-            sleep 6
-            eval "$inside" || true
+            # Into the nested session, and only into it. The environment here
+            # has no WAYLAND_DISPLAY — the `env -u` above took it, so that
+            # nothing in this session talks to the desktop it was started from
+            # — and it still has DISPLAY, because the compositor itself needs
+            # one to open its window on. A toolkit handed that pair finds X11
+            # and opens on the real screen: a window on the desktop this was
+            # started from instead of a window in the picture being taken, and
+            # one nothing below would ever kill.
+            #
+            # In the background, because the interesting clients are the ones
+            # that do not exit on their own. Run in the foreground this waited
+            # for a video player to end, which is never, and the run sat past
+            # its own lifetime with the compositor still up.
+            (
+                sleep 6
+                exec env -u DISPLAY WAYLAND_DISPLAY="$socket" bash -c "$inside"
+            ) &
+            client=$!
         fi
         sleep "$lifetime"
+        # The client first, so the window goes before the screen it is on. The
+        # `exec` above is what makes this pid the command itself rather than a
+        # shell holding it, for every simple command — which is every command
+        # anybody puts here.
+        if [[ -n "${client:-}" ]]; then
+            kill $client 2>/dev/null || true
+            wait $client 2>/dev/null || true
+        fi
         kill $lxb 2>/dev/null || true
         wait $lxb 2>/dev/null || true
     ' bash "$root" "$socket" "$lifetime" "$inside" > "$out/nested.log" 2>&1

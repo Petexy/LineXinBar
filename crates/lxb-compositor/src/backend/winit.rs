@@ -19,6 +19,7 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, LoopHandle};
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::Display;
+use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
 use smithay::utils::{Rectangle, Transform};
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal};
@@ -91,10 +92,24 @@ pub fn init(
     display: Display<LxbState>,
     config: Config,
     socket_name: Option<String>,
+    size: (i32, i32),
 ) -> anyhow::Result<LxbState> {
+    // The size is asked for rather than taken: `init_from_attributes` with bare
+    // defaults leaves the host toolkit to pick, and winit's own pick is 1000x750
+    // — a 4:3 window for a shell laid out along a 16:9 bar. `--window-size` used
+    // to reach only the X11 backend, so the flag silently did nothing on the one
+    // backend `--backend auto` actually chooses inside a session.
+    //
+    // Physical rather than logical, so the flag means one thing on both nested
+    // backends: the size in pixels of the output the session renders into. The
+    // X11 backend has always used it that way — the number goes to the X server
+    // and straight into the `wl_output` mode — and asking winit in logical
+    // units made the same flag mean the host's scale factor as well. On this
+    // desktop, at 125%, `--window-size 1920x1080` came up as a 2400x1350 mode.
     let (graphics, winit_events) = winit::init_from_attributes::<GlesRenderer>(
         WinitWindow::default_attributes()
             .with_title("LineXinBar")
+            .with_inner_size(PhysicalSize::new(size.0, size.1))
             .with_visible(true),
     )
     .map_err(|e| anyhow::anyhow!("failed to initialise winit backend: {e}"))?;

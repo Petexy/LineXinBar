@@ -235,6 +235,22 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// stopped answering must not take the volume bar down with it.
 const PATIENCE: Duration = Duration::from_secs(4);
 
+/// How long `ddcutil detect` is given, which is not the same thing.
+///
+/// Everything else here asks one device one question. `detect` is a survey: it
+/// opens every i2c bus on the machine and talks to whatever is on it, and what
+/// that costs grows with the number of buses rather than with the number of
+/// monitors. On the machine this was found on — two graphics cards, seventeen
+/// buses — it takes **5.4 s**, every time, and [`PATIENCE`] killed it at four:
+/// the log said `gave up waiting`, [`detect_ddc`] answered with an empty list,
+/// and the shell believed no screen on the machine could be dimmed. The
+/// brightness row simply left the guide.
+///
+/// So it is given its own, longer deadline. It can afford one: it is asked at
+/// most once a session, and only where [`connector_bus`] has already failed —
+/// and where it *is* asked, it is the difference between a bar and no bar.
+const DETECT_PATIENCE: Duration = Duration::from_secs(15);
+
 /// How often the worker looks in on a program it is waiting for.
 const POLL: Duration = Duration::from_millis(8);
 
@@ -246,6 +262,12 @@ const BACKLIGHT_OVERRIDE: &str = "LXB_BACKLIGHT";
 
 /// Where the kernel lists the panels it can dim itself.
 const BACKLIGHT_CLASS: &str = "/sys/class/backlight";
+
+/// Where the kernel lists the displays themselves, one directory per connector.
+const DRM_CLASS: &str = "/sys/class/drm";
+
+/// Where the i2c buses those directories name are opened.
+const I2C_DEV: &str = "/dev";
 
 /// The mixer controls worth trying, in the order a machine with no sound
 /// server is likely to want them. The first that exists wins.
@@ -2017,9 +2039,11 @@ struct Screens {
     /// screen in front of the user rather than to whichever monitor answered
     /// first.
     ///
-    /// `None` until a display turns up that the kernel has no backlight for:
-    /// probing means talking to every i2c bus on the machine, and a laptop
-    /// never needs to.
+    /// `None` until a display turns up that the kernel has no backlight for
+    /// *and* no bus for either: probing means talking to every i2c bus on the
+    /// machine, a laptop never needs to, and on a machine where sysfs answers
+    /// — which is every machine on a driver that is part of the kernel — this
+    /// stays `None` for the length of the session. See [`connector_bus`].
     ddc: Option<Vec<(String, u32)>>,
     /// Whether the backlight has been looked for yet.
     scanned: bool,
@@ -2063,11 +2087,18 @@ impl Screens {
             return Some(Screen::Panel(panel));
         }
 
-        let ddc = self.ddc.get_or_insert_with(detect_ddc);
-        let bus = ddc
-            .iter()
-            .find(|(connector, _)| connector == display)
-            .map(|(_, bus)| *bus)?;
+        // Which bus this monitor is talked to over, asked of the kernel, which
+        // has known all along — and only then of `ddcutil`, which works it out
+        // by talking to the whole machine.
+        let bus = match connector_bus(display) {
+            Some(bus) => bus,
+            None => {
+                let ddc = self.ddc.get_or_insert_with(detect_ddc);
+                ddc.iter()
+                    .find(|(connector, _)| connector == display)
+                    .map(|(_, bus)| *bus)?
+            }
+        };
         Some(Screen::Monitor { bus, max: 100 })
     }
 }
@@ -2127,6 +2158,106 @@ impl Screen {
             }
         }
     }
+}
+
+/// The i2c bus the display Wayland calls `display` is talked to over, as the
+/// kernel itself says.
+///
+/// This is the whole of what `ddcutil detect` spends [`DETECT_PATIENCE`]
+/// working out, and the kernel has had the answer all along: a DRM connector
+/// carries the bus its monitor's DDC runs on, and the connector is named after
+/// the same thing Wayland names an output after — `/sys/class/drm/card1-DP-2`
+/// is the display this shell knows as `DP-2`. Reading it is a `read_dir` and a
+/// `readlink`, against five seconds of talking to every device on the machine.
+///
+/// `None` where sysfs has nothing to say — a driver that keeps its connectors
+/// out of the kernel's DRM class, which is how the proprietary drivers behave —
+/// and the probe is what answers for those.
+fn connector_bus(display: &str) -> Option<u32> {
+    let bus = connector_bus_in(Path::new(DRM_CLASS), display)?;
+    // Offered only if the node can actually be opened, on exactly the terms
+    // [`open_backlight`] offers a panel on: `ddcutil` reads and writes this
+    // device, and a bar the user can move that changes nothing is worse than no
+    // bar. Where it cannot be opened this falls through to the probe, which is
+    // reaching for the same node and will find nothing either — but will say so
+    // in the log.
+    let node = Path::new(I2C_DEV).join(format!("i2c-{bus}"));
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .ok()?;
+    // Bound rather than named straight into the macro: `tracing` brings its own
+    // `display` into scope for the value it is given, so a variable of that name
+    // resolves to the wrong thing there.
+    let name = display;
+    tracing::info!(display = name, bus, "ddc/ci, straight off the connector");
+    Some(bus)
+}
+
+/// The same, against a given `/sys/class/drm`, which is what the tests have.
+fn connector_bus_in(drm: &Path, display: &str) -> Option<u32> {
+    let mut disconnected = None;
+    for entry in std::fs::read_dir(drm).ok()?.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if connector_of(name) != Some(display) {
+            continue;
+        }
+        let dir = entry.path();
+        let Some(bus) = aux_bus(&dir).or_else(|| ddc_bus(&dir)) else {
+            continue;
+        };
+        // Two graphics cards can each have a `DP-1`, and only one of them has
+        // anything plugged into it. The connected one is the display the user
+        // is looking at; the other is kept only against a kernel that has not
+        // filled `status` in.
+        if std::fs::read_to_string(dir.join("status"))
+            .map(|status| status.trim() == "connected")
+            .unwrap_or(false)
+        {
+            return Some(bus);
+        }
+        disconnected = disconnected.or(Some(bus));
+    }
+    disconnected
+}
+
+/// The display a `/sys/class/drm` entry is for: `card1-DP-2` is `DP-2`.
+///
+/// `None` for the entries that are not connectors — the cards themselves, the
+/// render nodes, `version`.
+fn connector_of(entry: &str) -> Option<&str> {
+    let (card, connector) = entry.split_once('-')?;
+    card.strip_prefix("card")?.parse::<u32>().ok()?;
+    Some(connector)
+}
+
+/// The bus a DisplayPort connector's DDC runs over, which is a bus of its own
+/// under the connector rather than one of the card's lines.
+///
+/// DisplayPort carries DDC inside the AUX channel, and the kernel gives that
+/// its own adapter — `card1-DP-2/i2c-9`. The connector's `ddc` link points at
+/// the card's hardware line instead, which on the machine this was written
+/// against answers `No monitor detected`. So the AUX bus is looked for first,
+/// and this is the reason the two are not one function.
+fn aux_bus(dir: &Path) -> Option<u32> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find_map(|entry| bus_number(entry.file_name().to_str()?))
+}
+
+/// The bus a connector's `ddc` link names, which is how everything that is not
+/// DisplayPort says it.
+fn ddc_bus(dir: &Path) -> Option<u32> {
+    let target = std::fs::read_link(dir.join("ddc")).ok()?;
+    bus_number(target.file_name()?.to_str()?)
+}
+
+/// `i2c-9` is bus 9, and anything else is not a bus at all.
+fn bus_number(name: &str) -> Option<u32> {
+    name.strip_prefix("i2c-")?.parse().ok()
 }
 
 /// Whether a display is wired into the machine, going by the name of the
@@ -2200,10 +2331,12 @@ fn read_number(path: &Path) -> Option<u32> {
 
 /// The monitors that answer DDC/CI, paired with the i2c bus each is on.
 fn detect_ddc() -> Vec<(String, u32)> {
-    let Some(out) = run("ddcutil", &["detect", "--terse"]) else {
+    let started = Instant::now();
+    let Some(out) = run_for("ddcutil", &["detect", "--terse"], DETECT_PATIENCE) else {
         tracing::debug!("ddcutil found nothing, or is not installed");
         return Vec::new();
     };
+    tracing::debug!(took = ?started.elapsed(), "probed every i2c bus on the machine");
     let found = parse_ddc_detect(&out);
     tracing::info!(monitors = ?found, "ddc/ci");
     found
@@ -2267,17 +2400,47 @@ fn parse_vcp(out: &str) -> Option<(u32, u32)> {
 
 // --- running things --------------------------------------------------------
 
-/// Run a program and give it a limited time to answer, returning its output
-/// when it succeeds.
+/// Run a program and give it a bar's worth of time to answer, returning its
+/// output when it succeeds.
 ///
 /// Killed rather than waited on: an i2c bus with a confused device on it can
 /// hold a `ddcutil` call open indefinitely, and the volume bar must not be
 /// stuck behind it.
 ///
-/// The output is read after the child has exited, which is only safe because
-/// everything here answers in a line or two — a program that filled the pipe
-/// would block before it could exit, and be killed for it.
+/// ## The pipe is drained while the child runs, and it has to be
+///
+/// The output used to be read *after* the child had exited, "which is only safe
+/// because everything here answers in a line or two". Three of the programs
+/// asked here do not: `pactl list sink-inputs`, `list sinks` and `list sources`
+/// answer in a block of forty-odd lines per stream or device. A pipe nobody is
+/// reading holds one kernel buffer's worth and then blocks the writer, so a
+/// listing longer than that buffer meant `pactl` sitting in `write` for as long
+/// as this was willing to wait, being killed for it, and this returning `None`
+/// — with nothing in the log but one `gave up waiting` line, and an answer that
+/// looks exactly like a machine with no sound server.
+///
+/// What that cost, all at once and only once enough was playing: the mixer
+/// listed no applications at all and showed nothing but **System**; the guide's
+/// media card never appeared, because [`audible_applications`] could no longer
+/// corroborate that anything was audible; and the media exemption stopped
+/// sparing a player asleep behind the start screen for the same reason. It came
+/// and went with how much was playing, which is what made it look like three
+/// separate faults in the shell rather than one in here.
+///
+/// The buffer is **not** the 64 KiB the manual page quotes. Measured on the
+/// machine this was found on: `F_GETPIPE_SZ` says **8192**, and one browser's
+/// worth of streams — five of them — is already past it. So there is no size of
+/// answer this can go on assuming, and the reader runs alongside the wait
+/// instead. A thread rather than a non-blocking read because the wait below has
+/// to stay exactly as it is: the kill is what makes a hung `ddcutil` survivable,
+/// and a reader that blocked in `read` would be the thing it could hang in.
 fn run(program: &str, args: &[&str]) -> Option<String> {
+    run_for(program, args, PATIENCE)
+}
+
+/// The same, for a program that is allowed to take longer than a bar can wait —
+/// there is one, and only one: see [`DETECT_PATIENCE`].
+fn run_for(program: &str, args: &[&str], patience: Duration) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
         // Everything here is a program being read rather than run, and every
@@ -2292,7 +2455,16 @@ fn run(program: &str, args: &[&str]) -> Option<String> {
         .spawn()
         .ok()?;
 
-    let deadline = Instant::now() + PATIENCE;
+    let mut pipe = child.stdout.take()?;
+    let reading = std::thread::Builder::new()
+        .name("lxb-read".to_string())
+        .spawn(move || {
+            let mut out = String::new();
+            pipe.read_to_string(&mut out).ok().map(|_| out)
+        })
+        .ok()?;
+
+    let deadline = Instant::now() + patience;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -2301,6 +2473,10 @@ fn run(program: &str, args: &[&str]) -> Option<String> {
                 tracing::warn!(program, ?args, "gave up waiting and killed it");
                 let _ = child.kill();
                 let _ = child.wait();
+                // Left to end on its own, which it does as soon as the kill
+                // above closes the other end of the pipe. Waiting for it here
+                // would be waiting on the process that has just been given up
+                // on.
                 return None;
             }
             Err(err) => {
@@ -2313,9 +2489,10 @@ fn run(program: &str, args: &[&str]) -> Option<String> {
         return None;
     }
 
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    Some(out)
+    // The child has exited, so its end of the pipe is closed and the read has
+    // either finished or is about to. A thread that panicked answers the way a
+    // program that said nothing does.
+    reading.join().ok().flatten()
 }
 
 #[cfg(test)]
@@ -3142,6 +3319,105 @@ Display 2
         let mixed = "Display 1\n   I2C bus:          /dev/i2c-0\n\
                      Display 2\n   DRM connector:    card0-DP-1\n";
         assert!(parse_ddc_detect(mixed).is_empty());
+    }
+
+    /// A fake `/sys/class/drm` with the shapes a real one has: a DisplayPort
+    /// connector whose DDC is a bus of its own, an HDMI one that only has the
+    /// `ddc` link, and the entries that are not connectors at all.
+    fn fake_drm(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lxb-drm-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // DisplayPort: the AUX bus under the connector, *and* a `ddc` link to
+        // the card's own line, which is the one that answers nothing.
+        let dp = root.join("card1-DP-2");
+        std::fs::create_dir_all(dp.join("i2c-9")).unwrap();
+        std::fs::write(dp.join("status"), "connected\n").unwrap();
+        std::os::unix::fs::symlink("../../../i2c-5", dp.join("ddc")).unwrap();
+
+        // HDMI: no bus of its own, so the link is all there is.
+        let hdmi = root.join("card1-HDMI-A-1");
+        std::fs::create_dir_all(&hdmi).unwrap();
+        std::fs::write(hdmi.join("status"), "connected\n").unwrap();
+        std::os::unix::fs::symlink("../../../i2c-6", hdmi.join("ddc")).unwrap();
+
+        // Nothing plugged in, and on the other card.
+        let dark = root.join("card0-DP-3");
+        std::fs::create_dir_all(dark.join("i2c-14")).unwrap();
+        std::fs::write(dark.join("status"), "disconnected\n").unwrap();
+
+        // And the entries that are not displays.
+        std::fs::create_dir_all(root.join("card1")).unwrap();
+        std::fs::create_dir_all(root.join("renderD128")).unwrap();
+        std::fs::create_dir_all(root.join("card1-Writeback-1")).unwrap();
+        std::fs::write(root.join("version"), "drm 1.1.0 20060810\n").unwrap();
+        root
+    }
+
+    /// The kernel already knows which bus a monitor is on, which is the whole
+    /// of what the five-second probe was for.
+    #[test]
+    fn the_kernel_says_which_bus_a_monitor_is_on() {
+        let root = fake_drm("says");
+
+        // DisplayPort answers on the AUX bus under the connector — *not* on the
+        // `ddc` link beside it, which names the card's hardware line. Getting
+        // this the other way round is a monitor that cannot be dimmed.
+        assert_eq!(connector_bus_in(&root, "DP-2"), Some(9));
+        // Everything else answers on the link.
+        assert_eq!(connector_bus_in(&root, "HDMI-A-1"), Some(6));
+        // A display nobody has plugged anything into still has a bus; a
+        // connector this machine has not got has nothing.
+        assert_eq!(connector_bus_in(&root, "DP-3"), Some(14));
+        assert_eq!(connector_bus_in(&root, "DP-9"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Two cards can each have a `DP-1`, and only one of them is a screen.
+    #[test]
+    fn the_display_with_something_plugged_into_it_wins() {
+        let root = std::env::temp_dir().join(format!("lxb-drm-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dark = root.join("card0-DP-1");
+        std::fs::create_dir_all(dark.join("i2c-3")).unwrap();
+        std::fs::write(dark.join("status"), "disconnected\n").unwrap();
+        let lit = root.join("card1-DP-1");
+        std::fs::create_dir_all(lit.join("i2c-7")).unwrap();
+        std::fs::write(lit.join("status"), "connected\n").unwrap();
+
+        assert_eq!(connector_bus_in(&root, "DP-1"), Some(7));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The names in that directory, told apart.
+    #[test]
+    fn only_a_connector_is_read_as_a_display() {
+        assert_eq!(connector_of("card1-DP-2"), Some("DP-2"));
+        assert_eq!(connector_of("card0-HDMI-A-1"), Some("HDMI-A-1"));
+        assert_eq!(connector_of("card10-eDP-1"), Some("eDP-1"));
+        for not_a_display in ["card1", "renderD128", "version", "controlD64"] {
+            assert_eq!(connector_of(not_a_display), None, "{not_a_display}");
+        }
+    }
+
+    /// The probe is reached only where sysfs has nothing — and is still read
+    /// the same way when it is.
+    #[test]
+    fn a_driver_that_says_nothing_falls_through_to_the_probe() {
+        let root = std::env::temp_dir().join(format!("lxb-drm-bare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // A connector directory with no bus in it at all, which is what a
+        // proprietary driver leaves behind.
+        std::fs::create_dir_all(root.join("card1-DP-2")).unwrap();
+        assert_eq!(connector_bus_in(&root, "DP-2"), None);
+        // And no directory of that name whatsoever.
+        assert_eq!(
+            connector_bus_in(Path::new("/nonexistent-drm-class"), "DP-2"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

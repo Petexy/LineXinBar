@@ -503,7 +503,7 @@ async fn run_session(
                 // typing. Decoded and handed straight on: it is a decode and a
                 // channel send, with nothing that waits on Steam, which is what
                 // lets it live on this loop at all.
-                if read_a_message(&packet, stored.steam_id, generation, worker) {
+                if read_a_message(&packet, stored.steam_id, generation, &roll, worker) {
                     continue;
                 }
                 if packet.emsg == EMsg::ClientLicenseList.raw() {
@@ -768,11 +768,18 @@ fn read_a_message(
     packet: &Packet,
     account: u64,
     generation: u64,
+    roll: &crate::friends::Roll,
     worker: &Sender<WorkerMessage>,
 ) -> bool {
     use steam_cm_protocol::friends::FriendsEvent;
 
-    let Some(event) = steam_cm_protocol::chat::decode_incoming(packet) else {
+    // The two doors an invitation comes through, and the one everything else
+    // does. Tried in this order because only one of them can answer about any
+    // packet: the chat push is a unified notification and the invitation push
+    // is an EMsg of its own.
+    let Some(event) = steam_cm_protocol::chat::decode_incoming(packet)
+        .or_else(|| steam_cm_protocol::chat::decode_invite_to_game(packet))
+    else {
         return false;
     };
     let word = match event {
@@ -781,7 +788,42 @@ fn read_a_message(
             said: said_from(message),
         },
         FriendsEvent::TypingNotification { steamid } => crate::chat::Word::Typing { with: steamid },
-        // `decode_incoming` answers with one of those two or with nothing.
+        FriendsEvent::GameInvite(invite) => {
+            // An invitation this account sent from another of its own sessions.
+            // Steam echoes those exactly as it echoes a message, and an
+            // invitation nobody here can accept is not a line in a
+            // conversation.
+            if invite.from_local {
+                tracing::debug!(
+                    with = crate::chat::short(invite.steamid),
+                    "an invitation this account sent elsewhere was not filed"
+                );
+                return true;
+            }
+            // Which game, which the invitation does not say: whatever they are
+            // playing at the moment they ask. Taken here, where the roster is,
+            // and remembered with the invitation — see
+            // [`crate::chat::Invite`].
+            let (app_id, game) = roll.playing(invite.steamid);
+            tracing::info!(
+                with = crate::chat::short(invite.steamid),
+                app_id,
+                stamped = invite.timestamp != 0,
+                "a friend asked this account to join them in a game"
+            );
+            crate::chat::Word::Invited {
+                with: invite.steamid,
+                invite: crate::chat::Invited {
+                    at: invite.timestamp,
+                    key: (invite.timestamp != 0)
+                        .then(|| crate::chat::Key::new(invite.timestamp, invite.ordinal)),
+                    connect: invite.connect_string,
+                    app_id,
+                    game,
+                },
+            }
+        }
+        // The decoders answer with one of those or with nothing.
         _ => return false,
     };
     let _ = worker.send(WorkerMessage::Cm(Event::Chat(crate::chat::Heard {

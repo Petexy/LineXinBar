@@ -16,7 +16,7 @@ Targets:
   nix      Build the Nix package/flake output
 
 Each binary package must be built on its target distribution. See
-packaging/README.md for prerequisites and target-specific options.
+docs/packaging.md for prerequisites and target-specific options.
 EOF
 }
 

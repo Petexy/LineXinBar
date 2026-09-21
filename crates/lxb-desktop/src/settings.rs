@@ -198,19 +198,6 @@ pub enum Setting {
     /// application is drawn, which is the row above it, and not the same kind
     /// as an accent colour. See [`button_hints`].
     ButtonHints(bool),
-    /// Draw every application this much larger than life, in per cent of its
-    /// own size. 100 is one to one, and the least this can be.
-    ///
-    /// Carries no display, unlike everything under Display, and deliberately:
-    /// how large an interface has to be to be read is a fact about the person
-    /// in front of the screens rather than about one of them.
-    ///
-    /// Set on a bar rather than chosen off a list, like the night light's
-    /// temperature and for the same reason — what arrives here is one step
-    /// along it. See [`Entry::Bar`].
-    ///
-    /// [`Entry::Bar`]: crate::apps::Entry::Bar
-    AppScale(u16),
     /// Send everything the machine plays to this device from now on, or take
     /// everything it records from it.
     ///
@@ -260,28 +247,31 @@ pub enum Setting {
     /// in.
     ///
     /// Carried out by the compositor and recorded here, which is the bargain
-    /// [`Setting::AppScale`] is under and for the same two reasons: where a
-    /// window goes is not the shell's to do, and a module holding a Wayland
-    /// connection could not be tested without one. `main` sends whatever
-    /// [`picture_in_picture`] then returns.
+    /// [`DisplayValue::ApplicationScale`] is under and for the same two
+    /// reasons: where a window goes is not the shell's to do, and a module
+    /// holding a Wayland connection could not be tested without one. `main`
+    /// sends whatever [`picture_in_picture`] then returns.
     ///
-    /// Carries no display. The window floats on the screen its browser is on,
-    /// and the setting is about what such a window *is* rather than about any
-    /// one screen — the same argument the application scale is under.
+    /// Carries no display, unlike the application scale it is otherwise so
+    /// like. The window floats on the screen its browser is on, and what this
+    /// says is what such a window *is* — a corner of a screen and a fraction of
+    /// its width, which is the same corner and the same fraction whichever
+    /// screen it lands on.
     PictureInPicture(PipValue),
     /// Change what a mouse does: how fast the pointer travels, how large it is
     /// drawn, and how far and which way a wheel carries the content under it.
     ///
     /// Recorded here and carried out by the compositor, which is the bargain
-    /// [`Setting::AppScale`] is under and for the same two reasons twice over:
-    /// three of the four are libinput settings on a device only the compositor
-    /// opens — the shell never holds the seat — and the fourth is the size of a
-    /// picture the compositor is the one drawing. `main` sends whatever
-    /// [`pointer`] then returns.
+    /// [`DisplayValue::ApplicationScale`] is under and for the same two reasons
+    /// twice over: three of the four are libinput settings on a device only the
+    /// compositor opens — the shell never holds the seat — and the fourth is
+    /// the size of a picture the compositor is the one drawing. `main` sends
+    /// whatever [`pointer`] then returns.
     ///
-    /// Carries no display, like the application scale: how fast a hand has to
-    /// move to cross the desk is a fact about the desk and the person at it,
-    /// not about either of the screens on it.
+    /// Carries no display, unlike the application scale: there is one pointer
+    /// and it crosses every screen on the desk, so how fast a hand has to move
+    /// is a fact about the desk and the person at it rather than about either
+    /// of the monitors on it.
     Pointer(PointerValue),
     /// Which display the on-screen keyboard comes up on: a connector by name,
     /// or `None` for whichever screen is being driven.
@@ -465,6 +455,23 @@ pub enum DisplayValue {
     /// whether a screen does that is a fact about the screen. A television and
     /// an OLED handheld beside it are not the same question.
     OledProtection(bool),
+    /// Draw every application on this display this much larger than life, in
+    /// per cent of its own size. 100 is one to one, and the least it can be.
+    ///
+    /// Per display, and the newest row here to become so. It was one answer for
+    /// the whole session, under System, on the argument that how large an
+    /// interface has to be to be read is a fact about the person rather than
+    /// about a monitor — which is true, and is not the whole of it: the person
+    /// is a different distance from each of their screens, so the television
+    /// across the room and the panel on the desk want different answers and a
+    /// single one had to be wrong about one of them.
+    ///
+    /// Set on a bar rather than chosen off a list, like the night light's
+    /// temperature and for the same reason — what arrives here is one step
+    /// along it. See [`Entry::Bar`].
+    ///
+    /// [`Entry::Bar`]: crate::apps::Entry::Bar
+    ApplicationScale(u16),
 }
 
 /// One thing that can be changed about the session's pointing devices.
@@ -1226,10 +1233,17 @@ pub struct Support {
     pub active: bool,
     /// Its own peak, in cd/m². 0 when it does not say.
     pub peak: u16,
-    /// Whether [`DisplayValue::SrgbIntensity`] does anything here. It is the
-    /// CRTC's colour matrix, which needs a linear stage in front of it, and
-    /// not every display engine has one.
+    /// Whether [`DisplayValue::SrgbIntensity`] does anything here: there is a
+    /// colour matrix on this display's pipe to put the conversion in.
     pub gamut: bool,
+    /// Whether that conversion is the exact one — the matrix acting on linear
+    /// light, which is what a degamma stage in front of it buys.
+    ///
+    /// Where it is not, the setting still works at every position and the page
+    /// says what is different about it: the grey axis is exact and saturated
+    /// colour is close. A display engine with no degamma stage is not a corner
+    /// case — amdgpu withholds the property on every RDNA 4 card.
+    pub gamut_exact: bool,
     /// This display's picture can be warmed: there is a gamma ramp behind it.
     ///
     /// A much shorter question than [`Self::available`], and asked separately
@@ -2242,26 +2256,45 @@ pub fn screen_rest_available() -> bool {
     *SCREEN_REST.lock().unwrap()
 }
 
-/// How large every application draws its own interface, in per cent of the size
-/// it chose. See [`application_scale`].
+/// How large every application draws its own interface on each display, in per
+/// cent of the size it chose, for the displays somebody has set it on. See
+/// [`application_scale`].
 ///
-/// Session-wide, and the one setting here that is neither the shell's own
-/// appearance nor a property of a screen: it is carried out by the compositor,
-/// for every application on the machine, and what it answers is how far away the
-/// user is sitting.
+/// Per display, like everything else under Display and unlike where this row
+/// used to stand: what it answers is how far away the user is sitting, and a
+/// person at a desk with a television behind them is sitting two distances at
+/// once. A screen nobody has answered for takes [`INHERITED_SCALE`].
 ///
-/// Kept here for the reason [`START_MUSIC`] and [`SOUND`] are: the settings file
-/// is built out of the live values at the moment it is written, so a value the
-/// writer cannot see is one the next change to anything else drops.
-static APP_SCALE: Mutex<u16> = Mutex::new(NATURAL_SCALE);
+/// Filed on its own, like [`MODE`], [`TURN`], [`NIGHT`] and [`OLED`] — and with
+/// the flat key of the version that had one answer for the session standing
+/// behind it, which is the one thing here that works like the HDR settings. A
+/// file written before this moved is still a statement of what its user wanted,
+/// and the honest way to read "every application at 150%" is that every screen
+/// is at 150%.
+static SCALE: Mutex<BTreeMap<String, u16>> = Mutex::new(BTreeMap::new());
 
-/// How large applications are being drawn, in per cent. 100 is one to one.
+/// What a display the settings file says nothing about draws applications at.
 ///
-/// One to one until somebody says otherwise, which is the only defensible
+/// The flat `application-scale` key, which is how this was written down while
+/// it was one answer for the whole session — see [`INHERITED`], which is the
+/// same bargain for the HDR settings and is there for the same reason. A file
+/// from before the row moved under Display puts its number here, every screen
+/// inherits it, and a screen plugged in afterwards inherits it too.
+///
+/// One to one until a file says otherwise, which is the only defensible
 /// default: a shell that came up magnifying every window would look like one
 /// that could not read its own display's size.
-pub fn app_scale() -> u16 {
-    *APP_SCALE.lock().unwrap()
+static INHERITED_SCALE: Mutex<u16> = Mutex::new(NATURAL_SCALE);
+
+/// How large applications are drawn on one display, in per cent. 100 is one to
+/// one.
+pub fn app_scale_for(display: &str) -> u16 {
+    SCALE
+        .lock()
+        .unwrap()
+        .get(display)
+        .copied()
+        .unwrap_or_else(|| *INHERITED_SCALE.lock().unwrap())
 }
 
 /// What a browser's picture-in-picture window is given: whether it floats at
@@ -3402,13 +3435,16 @@ fn accent_colour() -> Entry {
 /// The mode comes first, in its two halves, because it is the plainest thing
 /// about a display and the one a user is most likely to have come here for;
 /// the orientation is the other thing about the picture's shape, and stands
-/// with them. The order comes after those three because it is the one page
-/// here that is not about a single screen's picture at all — it is about where
-/// the screens stand relative to one another — and a user with one display
-/// never needs it. The last two describe the picture those carry, and in that
-/// order: the night light is the one every display can do and the one somebody
-/// comes looking for at ten in the evening, HDR is the one only some hardware
-/// has.
+/// with them. Application scaling closes that group: the three above it say how
+/// much room a screen has, and it says how much of that room one application's
+/// interface takes — which is the next question anybody asks about a television
+/// they have just set to 4K and cannot read. The order comes after those four
+/// because it is the one page here that is not about a single screen's picture
+/// at all — it is about where the screens stand relative to one another — and a
+/// user with one display never needs it. The last three describe the picture
+/// those carry, and in that order: the night light is the one every display can
+/// do and the one somebody comes looking for at ten in the evening, HDR is the
+/// one only some hardware has, and the panel's own protection is last.
 fn display() -> Entry {
     folder(
         crate::i18n::text("shell-display"),
@@ -3418,6 +3454,7 @@ fn display() -> Entry {
             resolution(),
             refresh_rate(),
             orientation(),
+            application_scale(),
             display_order(),
             night_light(),
             high_dynamic_range(),
@@ -3725,6 +3762,175 @@ fn nothing_can_be_turned() -> Entry {
         crate::i18n::text("shell-no-display-can-be-turned"),
         crate::i18n::text("orientation-nested-session"),
     )
+}
+
+/// Application scaling: one subcategory per screen — unless there is only one,
+/// in which case its bar stands here directly.
+///
+/// The same three shapes as [`night_light`] and [`oled_protection`], and for the
+/// same reasons. Every screen the compositor reports is on it, and there is no
+/// screen that could drop off: what this changes is the size a window is
+/// configured at, which is arithmetic the compositor does over any display it is
+/// driving. A session that reports no displays at all is the one page that has
+/// nothing to offer, and there the row says so.
+///
+/// **Per screen, and it did not use to be.** This row stood under System, one
+/// answer for the whole session, on the argument that how large an interface has
+/// to be to be read is a fact about the person in front of the screens rather
+/// than about one of them. That argument is true and it is not the whole of it:
+/// a person at a desk with a television behind them is sitting two distances at
+/// once, and one answer for both had to be wrong about one of them. What moves a
+/// window between the two is the shell's own Move to display, and it is
+/// reconfigured for the screen it lands on.
+fn application_scale() -> Entry {
+    let screens = support();
+    match screens.as_slice() {
+        [] => folder(
+            crate::i18n::text("shell-application-scaling"),
+            crate::i18n::text("shell-how-large-applications-draw-themselves"),
+            icons::SETTING_SCALE,
+            vec![nothing_can_be_sized()],
+        ),
+        // One screen, so there is no screen to choose — and the row above the
+        // bar says which screen it is and what it is set to.
+        [(name, _)] => folder(
+            crate::i18n::text("shell-application-scaling"),
+            &format!("{name} — {}", scale_of(name)),
+            icons::SETTING_SCALE,
+            application_scale_controls(name),
+        ),
+        _ => folder(
+            crate::i18n::text("shell-application-scaling"),
+            crate::i18n::text("shell-how-large-applications-draw-themselves"),
+            icons::SETTING_SCALE,
+            screens
+                .iter()
+                .map(|(name, _)| {
+                    folder(
+                        name,
+                        &scale_of(name),
+                        icons::SETTING_DISPLAY,
+                        application_scale_controls(name),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// What one screen's applications are drawn at, in the few words a row's
+/// comment has.
+///
+/// The number alone, and not the band of words under it. On the System page
+/// this row read `150% — half again as large`, because nothing else was
+/// competing for the line; here the screen's own name is on it — or is the row
+/// itself — and the words are one press away on the bar, which is where
+/// somebody moving the setting is looking anyway.
+fn scale_of(display: &str) -> String {
+    format!("{}%", app_scale_for(display))
+}
+
+/// The bar, for one screen — shared by the screen list and by the session that
+/// has only one screen, the way [`night_light_controls`] is.
+///
+/// A bar, for the reason the colour temperature is one: what is being set is a
+/// *scale* and not a set of alternatives. Every five per cent between one to one
+/// and three times is a sensible answer, which as rows is forty-one of them —
+/// a column nobody can scan, standing for a quantity that has no steps in it to
+/// begin with. On a bar the whole range is under the cursor at once, Up and Down
+/// mean what they mean in every other column, and Left still leaves.
+///
+/// No swatch. The night light's bar is drawn in the colour of the light it
+/// stands for, because that bar is a picture of what the screen is about to look
+/// like and nothing else can be; a size has no colour, and tinting this one
+/// would be saying something about the setting that is not true.
+///
+/// The floor is one to one and the bar starts there — see [`NATURAL_SCALE`]. It
+/// is not a range with a neutral point in the middle: below it an application
+/// would be asked to draw its interface *smaller* than it chose, which is a
+/// thing to want at a desk and not on the screen this shell is for.
+fn application_scale_controls(name: &str) -> Vec<Entry> {
+    let display = intern(name);
+    let percent = app_scale_for(display);
+    let step = |to: u16| {
+        (NATURAL_SCALE..=LARGEST_SCALE)
+            .contains(&to)
+            .then(|| setting(display, DisplayValue::ApplicationScale(to)))
+    };
+    let span = (LARGEST_SCALE - NATURAL_SCALE) as f32;
+    vec![Entry::Bar(crate::apps::Bar {
+        title: format!("{percent}%"),
+        comment: Some(scale_note(percent).to_string()),
+        fill: (percent - NATURAL_SCALE) as f32 / span,
+        swatch: None,
+        up: step(percent.saturating_add(SCALE_STEP)),
+        down: step(percent.saturating_sub(SCALE_STEP)),
+        // The same steps a direction walks, all of them, so a click along
+        // the groove reaches the one it landed on directly.
+        steps: (NATURAL_SCALE..=LARGEST_SCALE)
+            .step_by(SCALE_STEP as usize)
+            .map(|percent| setting(display, DisplayValue::ApplicationScale(percent)))
+            .collect(),
+    })]
+}
+
+/// What the page says when the compositor has reported no displays at all.
+///
+/// Which is not a compositor too old to be asked — the request is sent to a
+/// display, and a session with no display to name has nothing to ask about. The
+/// setting itself is still remembered for every screen this file has ever heard
+/// of, so plugging one in brings its own answer back with it.
+fn nothing_can_be_sized() -> Entry {
+    reading(
+        crate::i18n::text("shell-no-display-to-draw-applications-on"),
+        crate::i18n::text("application-scale-needs-a-display"),
+    )
+}
+
+/// One to one: every application at the size it chose, and the foot of the bar.
+///
+/// The whole range is above it. See [`application_scale`], and the compositor's
+/// own `scale` module, which clamps to the same floor — the two agree, and the
+/// one that matters is the compositor's, because it is the one applications are
+/// configured by.
+pub const NATURAL_SCALE: u16 = 100;
+
+/// The head of the bar.
+///
+/// Three times over is already an interface with a third of the room it was
+/// designed for, which is where an application's own dialogs start arriving
+/// larger than the screen that has to hold them. The compositor stops here too.
+pub const LARGEST_SCALE: u16 = 300;
+
+/// How far one press moves the bar.
+///
+/// Five per cent, which is the smallest step that is a visible change to a line
+/// of text — and it puts the whole range forty presses from end to end, which a
+/// held direction crosses in a moment. It also divides the range exactly, so the
+/// head of the bar is a step the user can actually land on.
+const SCALE_STEP: u16 = 5;
+
+/// What a scale means, in the words a number cannot carry.
+///
+/// Bands rather than a phrase per step, because five per cent is not a
+/// difference anybody has a separate name for — and strictly larger down the
+/// list, so a bar walked in one direction never reads as turning back.
+///
+/// The foot of the track is a band of its own. 100% is the one size at which
+/// this setting does nothing whatever, and one step above it is an application
+/// that has been changed, however slightly: a row that said "its own size"
+/// there would be saying the setting had not taken.
+fn scale_note(percent: u16) -> &'static str {
+    match percent {
+        0..=100 => crate::i18n::text("shell-every-application-at-its-own-size"),
+        101..=115 => crate::i18n::text("shell-a-little-larger-than-the-application-chose"),
+        116..=135 => crate::i18n::text("shell-comfortable-from-an-armchair"),
+        136..=165 => crate::i18n::text("shell-half-again-as-large"),
+        166..=199 => crate::i18n::text("shell-large-made-to-be-read-across-a-room"),
+        200..=249 => crate::i18n::text("shell-twice-the-size-and-most-windows-still-fit"),
+        250..=299 => crate::i18n::text("shell-very-large-some-windows-will-run-out-of-room"),
+        _ => crate::i18n::text("shell-as-far-as-this-goes-and-further-than-most-windows-go"),
+    }
 }
 
 /// Display order: which screen the compositor puts first, which second, and so
@@ -4711,12 +4917,26 @@ const SDR_BRIGHTNESS: &[(u16, &str)] = &[
 /// everything comes out enormously more saturated. Neither is wrong. This is
 /// the blend between them.
 ///
-/// It is also the one control here that some hardware cannot honour, so it is
-/// the one that has to be able to say so. It is the CRTC's colour matrix, and
-/// a matrix is only a gamut conversion when it acts on linear light — so it
-/// needs a degamma stage in front of it, which a good deal of hardware does
-/// not have. Where the compositor reports none, the choice is replaced by the
-/// reason there is no choice.
+/// It is also the one control here that some hardware cannot honour exactly,
+/// so it is the one that has to be able to say so. It is the CRTC's colour
+/// matrix, and a matrix is only a gamut *rotation* when it acts on linear
+/// light — so it wants a degamma stage in front of it, which a good deal of
+/// hardware does not have. amdgpu withholds the property on every RDNA 4 card.
+///
+/// There are three answers, and the page gives all three:
+///
+/// * No matrix at all. There is nowhere to put the conversion, so the choice
+///   is replaced by the reason there is no choice.
+/// * A matrix with no degamma stage. Every position works, and a line at the
+///   top of the folder says what is different: the matrix's rows each sum to
+///   1, so white, black and the whole grey axis are exact whatever the values
+///   are coded in, and what the missing stage costs falls on saturated colour.
+/// * Both. The conversion, exactly.
+///
+/// The middle one used to be the first one, and that was worse than it looked:
+/// no matrix means the *identity* matrix, and the identity is the 100 end of
+/// this very setting. The picture was pinned at its most saturated and 0 — the
+/// default — could not be reached.
 fn srgb_intensity(display: &'static str, settings: Hdr, support: Support) -> Entry {
     if !support.gamut {
         return folder(
@@ -4728,27 +4948,35 @@ fn srgb_intensity(display: &'static str, settings: Hdr, support: Support) -> Ent
             // explanation cannot live here — the rest of it is in the manual.
             vec![reading(
                 crate::i18n::text("shell-fixed-at-its-most-saturated"),
-                crate::i18n::text("shell-no-degamma-stage-in-this-driver-brightness-is-unaffected"),
+                crate::i18n::text("shell-no-colour-matrix-in-this-driver-brightness-is-unaffected"),
             )],
         );
     }
 
     let in_force = settings.srgb_intensity;
+    let mut values = Vec::new();
+    // Above the choices rather than below them, because it qualifies every one
+    // of them. It cannot be pressed, and the cursor opening on it is the same
+    // thing the folder above does with its one row.
+    if !support.gamut_exact {
+        values.push(reading(
+            crate::i18n::text("shell-approximate-on-this-display"),
+            crate::i18n::text("shell-greys-are-exact-here-and-strong-colour-is-close"),
+        ));
+    }
+    values.extend(SRGB_INTENSITY.iter().map(|(percent, note)| {
+        value(
+            &format!("{percent}%"),
+            Some(crate::i18n::builtin(note)),
+            *percent == in_force,
+            setting(display, DisplayValue::SrgbIntensity(*percent)),
+        )
+    }));
     folder(
         crate::i18n::text("shell-srgb-color-intensity"),
         crate::i18n::text("shell-how-saturated-srgb-colour-is-made"),
         icons::SETTING_APPEARANCE,
-        SRGB_INTENSITY
-            .iter()
-            .map(|(percent, note)| {
-                value(
-                    &format!("{percent}%"),
-                    Some(crate::i18n::builtin(note)),
-                    *percent == in_force,
-                    setting(display, DisplayValue::SrgbIntensity(*percent)),
-                )
-            })
-            .collect(),
+        values,
     )
 }
 
@@ -7619,14 +7847,17 @@ fn nothing_to_set_about_games() -> Entry {
 /// System: how the machine behaves, as opposed to what its picture and its
 /// speakers are doing.
 ///
-/// The scale is the row the page exists for rather than the page being a place
-/// to put things: how large applications draw themselves is neither a property
-/// of a display — the two screens on a desk want the same answer, because it is
-/// the person in front of them who has to read it — nor anything the shell does
-/// to itself, which is what Appearance holds.
+/// Application scaling used to be the row this page existed for, on the
+/// argument that how large an interface has to be to be read is a fact about
+/// the person rather than about a monitor. That is true and it is not the whole
+/// of it: the person is a different distance from each of their screens, so it
+/// is under Display now, per screen like everything else there. What is left
+/// here is what is genuinely about the session rather than about any picture.
 ///
-/// The clock and the button hints follow, and they are the two rows here about
-/// how the shell *writes* rather than about what it runs — see [`clock_page`].
+/// The floating window comes first for that reason — where a browser's video
+/// goes is a statement about that window and not about a screen. The clock and
+/// the button hints follow, and they are the two rows here about how the shell
+/// *writes* rather than about what it runs — see [`clock_page`].
 ///
 /// System information is under it and not above it, and that order is the one
 /// thing about this page worth arguing over. The page is a page of settings, so
@@ -7643,7 +7874,6 @@ fn system(bar: &[crate::apps::Column]) -> Entry {
         icons::SETTING_SYSTEM,
         vec![
             startup_category_page(bar),
-            application_scale(),
             picture_in_picture_page(),
             clock_page(),
             button_hints_switch(),
@@ -8024,99 +8254,6 @@ fn system_information() -> Entry {
         icon: icons::SETTING_INFO.to_string(),
         about: crate::apps::About::Machine,
     })
-}
-
-/// Application scaling: how large every application draws its own interface.
-///
-/// A bar, for the reason the colour temperature is one: what is being set is a
-/// *scale* and not a set of alternatives. Every five per cent between one to one
-/// and three times is a sensible answer, which as rows is forty-one of them —
-/// a column nobody can scan, standing for a quantity that has no steps in it to
-/// begin with. On a bar the whole range is under the cursor at once, Up and Down
-/// mean what they mean in every other column, and Left still leaves.
-///
-/// No swatch. The night light's bar is drawn in the colour of the light it
-/// stands for, because that bar is a picture of what the screen is about to look
-/// like and nothing else can be; a size has no colour, and tinting this one
-/// would be saying something about the setting that is not true.
-///
-/// The floor is one to one and the bar starts there — see [`NATURAL_SCALE`]. It
-/// is not a range with a neutral point in the middle: below it an application
-/// would be asked to draw its interface *smaller* than it chose, which is a
-/// thing to want at a desk and not on the screen this shell is for.
-fn application_scale() -> Entry {
-    let percent = app_scale();
-    let step = |to: u16| {
-        (NATURAL_SCALE..=LARGEST_SCALE)
-            .contains(&to)
-            .then_some(Setting::AppScale(to))
-    };
-    let span = (LARGEST_SCALE - NATURAL_SCALE) as f32;
-    folder(
-        crate::i18n::text("shell-application-scaling"),
-        &format!("{percent}% — {}", scale_note(percent).to_lowercase()),
-        icons::SETTING_SCALE,
-        vec![Entry::Bar(crate::apps::Bar {
-            title: format!("{percent}%"),
-            comment: Some(scale_note(percent).to_string()),
-            fill: (percent - NATURAL_SCALE) as f32 / span,
-            swatch: None,
-            up: step(percent.saturating_add(SCALE_STEP)),
-            down: step(percent.saturating_sub(SCALE_STEP)),
-            // The same steps a direction walks, all of them, so a click along
-            // the groove reaches the one it landed on directly.
-            steps: (NATURAL_SCALE..=LARGEST_SCALE)
-                .step_by(SCALE_STEP as usize)
-                .map(Setting::AppScale)
-                .collect(),
-        })],
-    )
-}
-
-/// One to one: every application at the size it chose, and the foot of the bar.
-///
-/// The whole range is above it. See [`application_scale`], and the compositor's
-/// own `scale` module, which clamps to the same floor — the two agree, and the
-/// one that matters is the compositor's, because it is the one applications are
-/// configured by.
-pub const NATURAL_SCALE: u16 = 100;
-
-/// The head of the bar.
-///
-/// Three times over is already an interface with a third of the room it was
-/// designed for, which is where an application's own dialogs start arriving
-/// larger than the screen that has to hold them. The compositor stops here too.
-pub const LARGEST_SCALE: u16 = 300;
-
-/// How far one press moves the bar.
-///
-/// Five per cent, which is the smallest step that is a visible change to a line
-/// of text — and it puts the whole range forty presses from end to end, which a
-/// held direction crosses in a moment. It also divides the range exactly, so the
-/// head of the bar is a step the user can actually land on.
-const SCALE_STEP: u16 = 5;
-
-/// What a scale means, in the words a number cannot carry.
-///
-/// Bands rather than a phrase per step, because five per cent is not a
-/// difference anybody has a separate name for — and strictly larger down the
-/// list, so a bar walked in one direction never reads as turning back.
-///
-/// The foot of the track is a band of its own. 100% is the one size at which
-/// this setting does nothing whatever, and one step above it is an application
-/// that has been changed, however slightly: a row that said "its own size"
-/// there would be saying the setting had not taken.
-fn scale_note(percent: u16) -> &'static str {
-    match percent {
-        0..=100 => crate::i18n::text("shell-every-application-at-its-own-size"),
-        101..=115 => crate::i18n::text("shell-a-little-larger-than-the-application-chose"),
-        116..=135 => crate::i18n::text("shell-comfortable-from-an-armchair"),
-        136..=165 => crate::i18n::text("shell-half-again-as-large"),
-        166..=199 => crate::i18n::text("shell-large-made-to-be-read-across-a-room"),
-        200..=249 => crate::i18n::text("shell-twice-the-size-and-most-windows-still-fit"),
-        250..=299 => crate::i18n::text("shell-very-large-some-windows-will-run-out-of-room"),
-        _ => crate::i18n::text("shell-as-far-as-this-goes-and-further-than-most-windows-go"),
-    }
 }
 
 // --- Settings > Users -------------------------------------------------------
@@ -8899,7 +9036,6 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::CoreOption { .. }
             | Setting::Emulator { .. }
             | Setting::EmulatorArt
-            | Setting::AppScale(_)
             // The floating window is the compositor's too, and there is a
             // second reason not to preview it: what a highlighted row there
             // would move is somebody's video, and a cursor walking down the
@@ -9200,24 +9336,9 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 "the screen the on-screen keyboard comes up on"
             );
         }
-        // Recorded here and carried out by the compositor, which the caller
-        // tells — the same division the Display settings are under, and for the
-        // same reason: what an application is configured at is not the shell's
-        // to do, and a module that held a Wayland connection could not be
-        // tested without one.
-        //
-        // Clamped rather than refused, as the compositor clamps it: a bar built
-        // from [`NATURAL_SCALE`] and [`LARGEST_SCALE`] cannot ask for anything
-        // outside them, and a hand-edited file that does is answered with the
-        // nearest size that means something.
-        Setting::AppScale(percent) => {
-            let percent = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
-            *APP_SCALE.lock().unwrap() = percent;
-            tracing::info!(percent, "application scale");
-        }
         // Recorded here and carried out by the compositor, on the same terms as
-        // the scale above: what a window's rectangle is belongs to the half of
-        // the session that draws windows. One field of the three at a time,
+        // the application scale under Display: what a window's rectangle is
+        // belongs to the half of the session that draws windows. One field of the three at a time,
         // because the page asks three questions and the request carries all
         // three — see [`picture_in_picture`], which is what the caller sends.
         Setting::PictureInPicture(value) => {
@@ -9418,6 +9539,20 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 DisplayValue::OledProtection(on) => {
                     OLED.lock().unwrap().insert(screen.to_string(), on);
                 }
+                // And the application scale, for the fifth time: a screen
+                // somebody has set the size of applications on has not thereby
+                // been rested, warmed, turned or given a mode.
+                //
+                // Clamped rather than refused, as the compositor clamps it: a
+                // bar built from [`NATURAL_SCALE`] and [`LARGEST_SCALE`] cannot
+                // ask for anything outside them, and a hand-edited file that
+                // does is answered with the nearest size that means something.
+                DisplayValue::ApplicationScale(percent) => {
+                    SCALE.lock().unwrap().insert(
+                        screen.to_string(),
+                        percent.clamp(NATURAL_SCALE, LARGEST_SCALE),
+                    );
+                }
                 _ => {
                     let mut held = HDR.lock().unwrap();
                     let inherited = *INHERITED.lock().unwrap();
@@ -9442,7 +9577,8 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         | DisplayValue::NightLightSchedule(_)
                         | DisplayValue::NightLightFrom(_)
                         | DisplayValue::NightLightUntil(_)
-                        | DisplayValue::OledProtection(_) => {}
+                        | DisplayValue::OledProtection(_)
+                        | DisplayValue::ApplicationScale(_) => {}
                     }
                 }
             }
@@ -9730,14 +9866,21 @@ fn adopt(stored: Stored) {
     if let Some(in_hand) = stored.controller_in_hand {
         *CONTROLLER_IN_HAND.lock().unwrap() = in_hand;
     }
-    // How large applications are drawn. Clamped rather than refused, as a
-    // hand-edited sound level is: this is a file the user is entitled to open,
-    // and a smaller number than one to one has to come back as one to one —
-    // which is also what the compositor would do with it, so the file and the
-    // screen agree.
-    if let Some(percent) = stored.application_scale {
-        *APP_SCALE.lock().unwrap() = percent.clamp(NATURAL_SCALE, LARGEST_SCALE);
-    }
+    // How large applications are drawn on a display the file says nothing
+    // about — the flat key a version of this page that had one answer for the
+    // whole session wrote, read the way the flat HDR keys below are read. A
+    // file that says every application is at 150% is a file whose user wanted
+    // every *screen* at 150%, and throwing it away because the row has moved
+    // would be a session that came up one to one for no reason it could give.
+    //
+    // Clamped rather than refused, as a hand-edited sound level is: this is a
+    // file the user is entitled to open, and a smaller number than one to one
+    // has to come back as one to one — which is also what the compositor would
+    // do with it, so the file and the screen agree.
+    *INHERITED_SCALE.lock().unwrap() = stored
+        .application_scale
+        .unwrap_or(NATURAL_SCALE)
+        .clamp(NATURAL_SCALE, LARGEST_SCALE);
     // And what the floating window is given. Each half is taken on its own, so
     // a file that names a size nobody has heard of still keeps the corner
     // beside it — and says so, rather than refusing the file: this is a text
@@ -9791,12 +9934,14 @@ fn adopt(stored: Stored) {
     let mut places = PLACE.lock().unwrap();
     let mut nights = NIGHT.lock().unwrap();
     let mut rests = OLED.lock().unwrap();
+    let mut scales = SCALE.lock().unwrap();
     held.clear();
     modes.clear();
     turns.clear();
     places.clear();
     nights.clear();
     rests.clear();
+    scales.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
         // than refusing the file: this is a text file the user is entitled to
@@ -9931,6 +10076,14 @@ fn adopt(stored: Stored) {
         // is what the setting does when nobody has answered it.
         if let Some(rest) = display.oled_protection {
             rests.insert(name.clone(), rest);
+        }
+        // And how large applications are drawn on it, which needs the same
+        // care as nothing above it and the same clamp as the flat key it
+        // stands in front of. A section that says nothing about it leaves that
+        // screen on whatever the flat key said, which for a file this page has
+        // never written is one to one.
+        if let Some(percent) = display.application_scale {
+            scales.insert(name.clone(), percent.clamp(NATURAL_SCALE, LARGEST_SCALE));
         }
         // A section that says nothing about HDR leaves that display on the
         // inherited settings rather than being pinned to a copy of them —
@@ -10091,13 +10244,17 @@ struct Stored {
     /// desktop has no row for it and no mark to apply it to, and neither is a
     /// reason to forget what the laptop this file came from was set to.
     battery_percent: Option<bool>,
-    /// How large every application draws its own interface, in per cent of the
-    /// size it chose. 100 is one to one and is the least it can be.
+    /// How large every application draws its own interface on a display this
+    /// file says nothing about, in per cent of the size it chose. 100 is one to
+    /// one and is the least it can be.
     ///
-    /// Session-wide, and not in a display's section although it is about what
-    /// is on the screens: the two screens on a desk are looked at by the same
-    /// pair of eyes from the same chair, and a scale set per display would be a
-    /// window that changed size on being moved between them.
+    /// The key a version of this page that had one answer for the whole session
+    /// wrote, and it goes on meaning what it meant: a file saying every
+    /// application is at 150% is a file whose user wanted every screen at 150%.
+    /// So it is read as the value every display inherits — the same bargain the
+    /// four flat HDR keys above are under — and it is written back unchanged.
+    /// What a press writes is [`StoredDisplay::application_scale`], under the
+    /// screen it was pressed on.
     ///
     /// Written by this shell and read by the next one — the compositor
     /// remembers nothing about it, because every application is started after
@@ -10298,6 +10455,16 @@ struct StoredDisplay {
     /// which is the setting's own default and is what a screen plugged in for
     /// the first time should do.
     oled_protection: Option<bool>,
+    /// How large every application on this display draws its own interface, in
+    /// per cent of the size it chose. 100 is one to one and is the least it can
+    /// be.
+    ///
+    /// The one key in a display's section with a top-level default behind it
+    /// besides the HDR four, and for the same reason: this setting was written
+    /// flat while it was one answer for the whole session, and a file from then
+    /// is still a statement of what its user wanted. See
+    /// [`Stored::application_scale`], which is that key.
+    application_scale: Option<u16>,
 }
 
 impl Mode {
@@ -10355,6 +10522,7 @@ fn stored() -> Stored {
     let places = PLACE.lock().unwrap();
     let nights = NIGHT.lock().unwrap();
     let rests = OLED.lock().unwrap();
+    let scales = SCALE.lock().unwrap();
 
     // A screen may have been given one of these and not the others, so the
     // sections are the union rather than any one list: writing only the screens
@@ -10380,6 +10548,9 @@ fn stored() -> Stored {
     }
     for (name, rest) in rests.iter() {
         display.entry(name.clone()).or_default().oled_protection = Some(*rest);
+    }
+    for (name, percent) in scales.iter() {
+        display.entry(name.clone()).or_default().application_scale = Some(*percent);
     }
 
     let sound = *SOUND.lock().unwrap();
@@ -10433,7 +10604,11 @@ fn stored() -> Stored {
         // the compositor's file would stop working.
         keyboard_layout: keyboard_layout(),
         controller_in_hand: Some(controller_in_hand()),
-        application_scale: Some(app_scale()),
+        // The flat key, written back as it was read and never as anything a
+        // press did — the same bargain the four flat HDR keys are under. It is
+        // what a display this file says nothing about draws at, which includes
+        // every display of a session whose user has never opened this page.
+        application_scale: Some(*INHERITED_SCALE.lock().unwrap()),
         picture_in_picture: Some(picture_in_picture().floating),
         picture_in_picture_size: Some(picture_in_picture().size.key().to_string()),
         picture_in_picture_place: Some(picture_in_picture().place.key().to_string()),
@@ -10521,6 +10696,22 @@ fn save(stored: &Stored) {
 /// — how loud the shell's own sounds are, what order a shelf is listed in — and
 /// [`set_sound`] deliberately writes the file on every step of a held volume
 /// direction, which is a second or two of writes for one press.
+///
+/// **Every key a login screen reads has to be in here**, or that screen goes on
+/// showing the answer it was given when this session started — which is the one
+/// staleness [`published`] exists to prevent, arrived at from the other side. It
+/// is the whole list, in the order below: the accent, the two halves of the
+/// material, the four flat HDR keys and the displays, and then the four that
+/// are about what the screen *says* rather than what it is made of — the clock,
+/// the keyboard the board is a picture of, whether the buttons are written at
+/// all, and which control they are drawn from.
+///
+/// The last of those is the only one that changes without anybody choosing it:
+/// the shell watches for which control is in hand rather than asking. It is
+/// here all the same, because it is what the login screen's own legend opens
+/// on, and it costs at most one publish each time somebody genuinely puts one
+/// down and picks the other up — [`set_controller_in_hand`] writes nothing when
+/// the answer has not changed.
 type Shown = (
     Option<String>,
     Option<String>,
@@ -10530,6 +10721,10 @@ type Shown = (
     Option<u8>,
     Option<u16>,
     BTreeMap<String, StoredDisplay>,
+    Option<String>,
+    Option<String>,
+    Option<bool>,
+    Option<bool>,
 );
 
 static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
@@ -10700,6 +10895,10 @@ fn news_for_the_login_screen(stored: &Stored) -> bool {
         stored.hdr_srgb_intensity,
         stored.hdr_peak_brightness,
         stored.display.clone(),
+        stored.clock.clone(),
+        stored.keyboard_layout.clone(),
+        stored.button_hints,
+        stored.controller_in_hand,
     );
     let mut last = SHOWN.lock().unwrap();
     if last.as_ref() == Some(&shown) {
@@ -10936,15 +11135,21 @@ const PREAMBLE: &str = "\
 # there is one: the shell says what these are as soon as it connects.
 #
 # application-scale: how large every application draws its own interface, in
-# per cent of the size it chose, which is Settings > System > Application
-# scaling. 100 is one to one and is the least it can be; a smaller number is
-# read as 100, and anything past 300 as 300. It is one number for the whole
-# session rather than one per display, because what it answers is how far from
-# the screens the user is sitting.
+# per cent of the size it chose, on a display this file says nothing about.
+# 100 is one to one and is the least it can be; a smaller number is read as
+# 100, and anything past 300 as 300.
+#
+# It is set per screen — Settings > Display > Application scaling — and what a
+# press writes is the key of the same name in that screen's own section below.
+# This one is what the screens with no such key draw at, which is every screen
+# of a session whose user has never opened the page. It is written flat here
+# because it used to be the whole setting, one answer for the session, and a
+# file from then is still a statement of what its user wanted: every screen at
+# that size.
 #
 # It is carried out by the compositor, which gives each window a logical size
-# this much smaller than the display and tells it to fill that with the
-# display's own pixels — so an interface is drawn larger without losing any
+# this much smaller than the display it is on and tells it to fill that with
+# the display's own pixels — so an interface is drawn larger without losing any
 # sharpness, exactly as it is on a high-density laptop panel. The shell's own
 # picture is not affected, and neither are windows running under Xwayland:
 # X11 has no per-surface scale to be told about, so the only thing that could
@@ -11063,6 +11268,20 @@ const PREAMBLE: &str = "\
 # somewhere, whatever it is: a game, a film, a browser or an emulator all count
 # equally. A film somebody paused is deliberately not spared: a paused film is
 # a still picture, which is the thing this exists for.
+#
+# application-scale, in a display's own section, is Settings > Display >
+# Application scaling for that screen: how large every application on it draws
+# its own interface, in per cent of the size it chose. It is the one key here
+# besides the four HDR ones with a top-level default behind it — the flat
+# application-scale above — because it was that flat key before it was per
+# screen, and a screen this file says nothing about draws at whatever that
+# says.
+#
+# Per screen because a screen is looked at from where it stands: a television
+# across the room and the panel on the desk in front of it are not the same
+# distance from the same pair of eyes. A window carries the answer of the
+# display it is on, so moving one between two screens configures it again for
+# the screen it lands on.
 #
 # night-light-latitude and night-light-longitude, at the top level, are where
 # this machine is, in degrees — north and east positive. They are what
@@ -11251,6 +11470,7 @@ mod tests {
             active: false,
             peak,
             gamut: true,
+            gamut_exact: true,
             night_light: true,
             warming: false,
         }
@@ -11309,9 +11529,10 @@ mod tests {
         place: BTreeMap<String, u32>,
         night: BTreeMap<String, NightLight>,
         oled: BTreeMap<String, bool>,
+        scale: BTreeMap<String, u16>,
         screen_rest: bool,
         sound: Level,
-        app_scale: u16,
+        inherited_scale: u16,
         pip: Pip,
         start_music: bool,
         do_not_disturb: bool,
@@ -11349,9 +11570,10 @@ mod tests {
             place: PLACE.lock().unwrap().clone(),
             night: NIGHT.lock().unwrap().clone(),
             oled: OLED.lock().unwrap().clone(),
+            scale: SCALE.lock().unwrap().clone(),
             screen_rest: screen_rest_available(),
             sound: *SOUND.lock().unwrap(),
-            app_scale: app_scale(),
+            inherited_scale: *INHERITED_SCALE.lock().unwrap(),
             pip: picture_in_picture(),
             start_music: start_music(),
             do_not_disturb: do_not_disturb(),
@@ -11383,11 +11605,12 @@ mod tests {
         PLACE.lock().unwrap().clear();
         NIGHT.lock().unwrap().clear();
         OLED.lock().unwrap().clear();
+        SCALE.lock().unwrap().clear();
         // A compositor that can rest a screen, which is what the session ships
         // with. The page that says otherwise is tested by asking for it — see
         // [`a_session_that_cannot_rest_a_screen_says_so`].
         note_screen_rest(true);
-        *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
+        *INHERITED_SCALE.lock().unwrap() = NATURAL_SCALE;
         *PICTURE_IN_PICTURE.lock().unwrap() = Pip::DEFAULT;
         note_turned(Vec::new());
         note_places(Vec::new());
@@ -11417,9 +11640,10 @@ mod tests {
         *PLACE.lock().unwrap() = saved.place;
         *NIGHT.lock().unwrap() = saved.night;
         *OLED.lock().unwrap() = saved.oled;
+        *SCALE.lock().unwrap() = saved.scale;
         note_screen_rest(saved.screen_rest);
         *SOUND.lock().unwrap() = saved.sound;
-        *APP_SCALE.lock().unwrap() = saved.app_scale;
+        *INHERITED_SCALE.lock().unwrap() = saved.inherited_scale;
         *PICTURE_IN_PICTURE.lock().unwrap() = saved.pip;
         *START_MUSIC.lock().unwrap() = saved.start_music;
         *DO_NOT_DISTURB.lock().unwrap() = saved.do_not_disturb;
@@ -11945,6 +12169,7 @@ mod tests {
     fn a_control_with_nothing_behind_it_is_not_offered() {
         let no_gamut = Support {
             gamut: false,
+            gamut_exact: false,
             ..capable(PEAK)
         };
         with_displays(&[(FIRST, no_gamut), (SECOND, capable(PEAK))], || {
@@ -11955,13 +12180,49 @@ mod tests {
             let inside = intensity.entries().expect("it still opens");
             assert_eq!(inside.len(), 1);
             assert_eq!(inside[0].setting(), None, "there is nothing to choose");
-            assert!(inside[0].comment().unwrap().contains("degamma"));
+            assert!(inside[0].comment().unwrap().contains("colour matrix"));
 
             // The screen beside it, on the same page, still offers it.
             let offered = &controls_for(SECOND)[2];
             let values = offered.entries().unwrap();
             assert_eq!(values.len(), SRGB_INTENSITY.len());
             assert!(values.iter().all(|entry| entry.setting().is_some()));
+        });
+    }
+
+    /// A conversion that works but is not the exact one is offered in full,
+    /// and the folder says what is different about it before the choices it
+    /// qualifies. The row itself still describes the setting: every position
+    /// of it does something here.
+    #[test]
+    fn an_approximate_conversion_is_offered_and_says_so() {
+        let approximate = Support {
+            gamut: true,
+            gamut_exact: false,
+            ..capable(PEAK)
+        };
+        with_displays(&[(FIRST, approximate), (SECOND, capable(PEAK))], || {
+            let intensity = &controls_for(FIRST)[2];
+            assert_eq!(intensity.title(), "sRGB colour intensity");
+            assert_eq!(
+                intensity.comment(),
+                Some("How saturated sRGB colour is made")
+            );
+
+            let inside = intensity.entries().expect("it opens");
+            assert_eq!(inside.len(), SRGB_INTENSITY.len() + 1);
+            assert_eq!(inside[0].title(), "Approximate on this display");
+            assert_eq!(inside[0].setting(), None, "the line is not a choice");
+            assert!(
+                inside[1..].iter().all(|entry| entry.setting().is_some()),
+                "and every value below it still is"
+            );
+
+            // The exact one beside it, on the same page, says nothing extra.
+            let beside = controls_for(SECOND);
+            let exact = beside[2].entries().unwrap();
+            assert_eq!(exact.len(), SRGB_INTENSITY.len());
+            assert!(exact.iter().all(|entry| entry.setting().is_some()));
         });
     }
 
@@ -12008,7 +12269,8 @@ mod tests {
                             | DisplayValue::NightLightSchedule(_)
                             | DisplayValue::NightLightFrom(_)
                             | DisplayValue::NightLightUntil(_)
-                            | DisplayValue::OledProtection(_) => {
+                            | DisplayValue::OledProtection(_)
+                            | DisplayValue::ApplicationScale(_) => {
                                 unreachable!()
                             }
                         }
@@ -12553,6 +12815,7 @@ mod tests {
                     night_light_from: Some(21),
                     night_light_until: Some(7),
                     oled_protection: Some(true),
+                    application_scale: Some(150),
                 },
             )]),
             media_sort: BTreeMap::from([
@@ -12585,6 +12848,7 @@ mod tests {
             "hdr-srgb-intensity",
             "hdr-peak-brightness",
             "oled-protection",
+            "application-scale",
         ] {
             assert!(body.contains(key), "{key} is not written under that name");
         }
@@ -12608,6 +12872,14 @@ mod tests {
             assert!(
                 !oled_protection_for(SECOND),
                 "a screen the file says nothing about is never rested"
+            );
+            // And how large its applications are drawn, which is read out of
+            // the screen's own section like everything beside it.
+            assert_eq!(app_scale_for(FIRST), 150);
+            assert_eq!(
+                app_scale_for(SECOND),
+                NATURAL_SCALE,
+                "a screen the file says nothing about draws at the flat key,                  which this file does not carry either"
             );
             // The order each shelf is listed in comes back with the rest of
             // it, and a shelf the file says nothing about is left alphabetical
@@ -13628,6 +13900,7 @@ hdr-peak-brightness = 600
                         "Resolution",
                         "Refresh rate",
                         "Orientation",
+                        "Application scaling",
                         "Display order",
                         "Night light",
                         "HDR",
@@ -15960,13 +16233,21 @@ hdr = true
             .to_vec()
     }
 
-    /// The bar the Application scaling row opens onto.
-    fn scaling_bar() -> crate::apps::Bar {
-        let row = system_page()
-            .into_iter()
-            .find(|entry| entry.title() == "Application scaling")
-            .expect("the System page offers the scale");
-        let inside = row.entries().expect("the row opens onto its bar");
+    /// The bar one screen's Application scaling row opens onto, however the
+    /// page reaches it — which is one step shorter when there is only one
+    /// screen, exactly as it is on the night light and OLED protection pages.
+    fn scaling_bar_for(name: &str) -> crate::apps::Bar {
+        let page = page("Application scaling");
+        let inside = match page.iter().any(|entry| entry.title() == name) {
+            true => page
+                .iter()
+                .find(|entry| entry.title() == name)
+                .unwrap_or_else(|| panic!("{name} is not in the scaling screen list"))
+                .entries()
+                .expect("a screen opens onto its bar")
+                .to_vec(),
+            false => page,
+        };
         assert_eq!(inside.len(), 1, "a bar is the whole of its column");
         inside[0]
             .bar()
@@ -15974,9 +16255,24 @@ hdr = true
             .clone()
     }
 
-    /// Set the scale, the way a press on the bar sets it.
+    /// The same, on a session with one screen, which is what most of these
+    /// tests are about.
+    fn scaling_bar() -> crate::apps::Bar {
+        scaling_bar_for(FIRST)
+    }
+
+    /// Set the scale on the one screen, the way a press on its bar sets it.
     fn set_scale(percent: u16) {
-        assert!(apply_with(Setting::AppScale(percent), |_| {}));
+        assert!(apply_with(
+            setting(intern(FIRST), DisplayValue::ApplicationScale(percent)),
+            |_| {}
+        ));
+    }
+
+    /// And what it comes back as, which is the reader every one of these is
+    /// really about.
+    fn app_scale() -> u16 {
+        app_scale_for(FIRST)
     }
 
     /// How large applications draw themselves is set by sliding rather than by
@@ -15984,7 +16280,7 @@ hdr = true
     /// what is being chosen is a scale and not a set of alternatives.
     #[test]
     fn the_scale_is_set_on_a_bar_rather_than_picked_off_a_list() {
-        with_displays(&[], || {
+        with_displays(&[(FIRST, warmable())], || {
             let bar = scaling_bar();
             let started = app_scale();
             assert_eq!(started, NATURAL_SCALE, "a session starts at one to one");
@@ -16009,17 +16305,14 @@ hdr = true
             );
 
             // The row above it carries the same answer, so a user who has
-            // walked back out of the bar can still read what it is set to.
-            let row = system_page()
-                .into_iter()
-                .find(|entry| entry.title() == "Application scaling")
-                .expect("the row is still there");
-            assert!(
-                row.comment().is_some_and(
-                    |comment| comment.starts_with(&format!("{}%", started + SCALE_STEP))
-                ),
-                "the row says the scale: {:?}",
-                row.comment()
+            // walked back out of the bar can still read what it is set to —
+            // and on a session with one screen it says which screen that is,
+            // exactly as the night light's row does.
+            let row = display_row("Application scaling");
+            assert_eq!(
+                row.comment(),
+                Some(&format!("{FIRST} — {}%", started + SCALE_STEP)[..]),
+                "the row names the screen and says the scale"
             );
 
             let Some(down) = scaling_bar().down else {
@@ -16174,13 +16467,16 @@ hdr = true
                 titles,
                 [
                     "Startup category",
-                    "Application scaling",
                     "Picture-in-Picture",
                     "Clock",
                     "Button hints",
                     "System information"
                 ],
                 "the settings come first and the page to read comes last"
+            );
+            assert!(
+                !titles.contains(&"Application scaling"),
+                "the scale is a display's, and is under Display"
             );
 
             let row = page.last().expect("the page has a last row");
@@ -16211,14 +16507,18 @@ hdr = true
     /// the track is one to one and there is no step below it — by any route.
     #[test]
     fn nothing_is_drawn_smaller_than_the_application_chose() {
-        with_displays(&[], || {
+        with_displays(&[(FIRST, warmable())], || {
             let bar = scaling_bar();
             assert_eq!(bar.down, None, "nothing below one to one");
             assert!(bar.up.is_some());
             assert!(
-                bar.steps.iter().all(
-                    |step| matches!(step, Setting::AppScale(percent) if *percent >= NATURAL_SCALE)
-                ),
+                bar.steps.iter().all(|step| matches!(
+                    step,
+                    Setting::Display {
+                        value: DisplayValue::ApplicationScale(percent),
+                        ..
+                    } if *percent >= NATURAL_SCALE
+                )),
                 "a press along the groove can never ask for less"
             );
 
@@ -16239,7 +16539,7 @@ hdr = true
     /// nothing above it.
     #[test]
     fn the_scaling_bar_stops_at_the_top_of_its_range() {
-        with_displays(&[], || {
+        with_displays(&[(FIRST, warmable())], || {
             set_scale(LARGEST_SCALE);
             let top = scaling_bar();
             assert_eq!(top.up, None, "nothing past the largest");
@@ -16247,7 +16547,10 @@ hdr = true
             assert!((top.fill - 1.0).abs() < 1e-6, "a full track");
             assert_eq!(
                 top.steps.last(),
-                Some(&Setting::AppScale(LARGEST_SCALE)),
+                Some(&setting(
+                    intern(FIRST),
+                    DisplayValue::ApplicationScale(LARGEST_SCALE)
+                )),
                 "the head of the track is the end of the range"
             );
             // Which needs the step to divide the range: a bar whose last step
@@ -16260,10 +16563,16 @@ hdr = true
     /// a press along the temperature bar asks for the temperature there.
     #[test]
     fn a_press_along_the_scaling_bar_asks_for_the_size_drawn_there() {
-        with_displays(&[], || {
+        with_displays(&[(FIRST, warmable())], || {
             let bar = scaling_bar();
             let percent_at = |level: f32| match bar.at(level) {
-                Some(Setting::AppScale(percent)) => percent,
+                Some(Setting::Display {
+                    display,
+                    value: DisplayValue::ApplicationScale(percent),
+                }) => {
+                    assert_eq!(display, FIRST, "the press names the screen it was on");
+                    percent
+                }
                 other => panic!("a press at {level} along the track asked for {other:?}"),
             };
 
@@ -16335,27 +16644,36 @@ hdr = true
         );
     }
 
-    /// It survives the file, and a file that says nothing about it leaves every
-    /// application at its own size.
+    /// It survives the file, under the screen it was set on — and a file that
+    /// says nothing about a screen leaves every application on it at its own
+    /// size.
     #[test]
     fn the_scale_survives_the_file() {
-        with_displays(&[], || {
+        with_displays(&[(FIRST, warmable()), (SECOND, warmable())], || {
             set_scale(150);
 
             let written = stored();
-            assert_eq!(written.application_scale, Some(150));
             let body = toml::to_string_pretty(&written).unwrap();
             assert!(body.contains("application-scale"), "{body}");
 
-            *APP_SCALE.lock().unwrap() = NATURAL_SCALE;
-            adopt(toml::from_str(&body).unwrap());
-            assert_eq!(app_scale(), 150, "and it comes back where it was left");
+            // Per screen: it is written into the section of the display it was
+            // pressed on, and into no other.
+            assert_eq!(
+                written
+                    .display
+                    .get(FIRST)
+                    .and_then(|display| display.application_scale),
+                Some(150)
+            );
+            assert_eq!(written.display.get(SECOND), None);
 
-            // Session-wide: it is not written into any display's section, and
-            // it is not read out of one either.
-            assert!(
-                !body.contains("[display."),
-                "the scale put a screen in the file:\n{body}"
+            SCALE.lock().unwrap().clear();
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(app_scale_for(FIRST), 150, "it comes back where it was left");
+            assert_eq!(
+                app_scale_for(SECOND),
+                NATURAL_SCALE,
+                "and the screen the file says nothing about is left alone"
             );
 
             // A silent file answers nothing for the user, as it does for the
@@ -16363,21 +16681,134 @@ hdr = true
             // one, which is where the value starts rather than something the
             // reader has to put back.
             adopt(Stored::default());
-            assert_eq!(app_scale(), 150);
+            assert_eq!(app_scale_for(FIRST), NATURAL_SCALE);
 
             // A hand-edited size outside the range is clamped rather than
             // refused, and the same way the compositor would clamp it, so the
             // file and the screen agree about what is in force.
+            let filed = |percent| Stored {
+                display: BTreeMap::from([(
+                    FIRST.to_string(),
+                    StoredDisplay {
+                        application_scale: Some(percent),
+                        ..StoredDisplay::default()
+                    },
+                )]),
+                ..Stored::default()
+            };
+            adopt(filed(10));
+            assert_eq!(app_scale_for(FIRST), NATURAL_SCALE);
+            adopt(filed(9000));
+            assert_eq!(app_scale_for(FIRST), LARGEST_SCALE);
+        });
+    }
+
+    /// The flat key a version of this page that had one answer for the whole
+    /// session wrote is still read, and it is read as what it meant: every
+    /// screen at that size.
+    ///
+    /// The one thing here that is not the night light's or the OLED switch's
+    /// story. Those were per display from the first line they were written; this
+    /// row moved, and a file from before it moved is still a statement of what
+    /// its user wanted. Throwing it away would be a session that came up one to
+    /// one for no reason it could give.
+    #[test]
+    fn a_file_from_before_the_row_moved_sets_every_screen() {
+        with_displays(&[(FIRST, warmable()), (SECOND, warmable())], || {
             adopt(Stored {
-                application_scale: Some(10),
+                application_scale: Some(150),
                 ..Stored::default()
             });
-            assert_eq!(app_scale(), NATURAL_SCALE);
+            assert_eq!(app_scale_for(FIRST), 150);
+            assert_eq!(app_scale_for(SECOND), 150, "every screen, not the first");
+            // Including a screen nobody has ever plugged in, which is the whole
+            // of what "inherited" means.
+            assert_eq!(app_scale_for(AWKWARD), 150);
+
+            // And it is written back as it was read, rather than as anything a
+            // press did: what a press writes is the screen's own key.
+            set_scale(200);
+            let written = stored();
+            assert_eq!(written.application_scale, Some(150));
+            assert_eq!(
+                written
+                    .display
+                    .get(FIRST)
+                    .and_then(|display| display.application_scale),
+                Some(200)
+            );
+            assert_eq!(app_scale_for(SECOND), 150, "the other screen is left alone");
+
+            // A number outside the range is clamped on the way in, exactly as
+            // one in a display's own section is.
             adopt(Stored {
                 application_scale: Some(9000),
                 ..Stored::default()
             });
-            assert_eq!(app_scale(), LARGEST_SCALE);
+            assert_eq!(app_scale_for(SECOND), LARGEST_SCALE);
+        });
+    }
+
+    /// Every screen the compositor reports is on the page, and the one that was
+    /// pressed is the only one that moves.
+    ///
+    /// The page every screen can be on, like OLED protection and unlike the
+    /// night light: what this changes is the size a window is configured at,
+    /// which is arithmetic the compositor does over any display it is driving.
+    #[test]
+    fn scaling_one_screen_leaves_the_other_alone() {
+        with_displays(&[(FIRST, warmable()), (SECOND, capable(PEAK))], || {
+            let listed: Vec<String> = page("Application scaling")
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert_eq!(listed, [FIRST, SECOND]);
+
+            let up = scaling_bar_for(SECOND)
+                .up
+                .expect("there is room above one to one");
+            assert_eq!(
+                up,
+                setting(
+                    intern(SECOND),
+                    DisplayValue::ApplicationScale(NATURAL_SCALE + SCALE_STEP)
+                ),
+                "the bar names the screen it was reached through"
+            );
+            assert!(apply_with(up, |_| {}));
+
+            assert_eq!(app_scale_for(SECOND), NATURAL_SCALE + SCALE_STEP);
+            assert_eq!(app_scale_for(FIRST), NATURAL_SCALE, "one screen, not both");
+
+            // And the screen list says which is which without opening either.
+            let comments: Vec<String> = page("Application scaling")
+                .iter()
+                .map(|entry| entry.comment().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(
+                comments,
+                [
+                    "100%".to_string(),
+                    format!("{}%", NATURAL_SCALE + SCALE_STEP)
+                ]
+            );
+        });
+    }
+
+    /// A session the compositor has reported no display for has nothing to set
+    /// this on, and the page says so rather than offering a bar that would be
+    /// asking about no screen.
+    #[test]
+    fn a_session_with_no_display_has_nothing_to_size() {
+        with_displays(&[], || {
+            let rows = page("Application scaling");
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].setting().is_none(), "it sets nothing");
+            assert!(
+                rows[0].title().contains("No display"),
+                "{:?}",
+                rows[0].title()
+            );
         });
     }
 
@@ -17098,6 +17529,28 @@ hdr = true
         stored.hdr = Some(true);
         assert!(news_for_the_login_screen(&stored));
         assert!(!news_for_the_login_screen(&stored));
+
+        // The four that are about what that screen *says* rather than what it
+        // is made of: which clock it writes the hour on, which keyboard the
+        // board it draws is a picture of, whether it says what its buttons do,
+        // and which control it draws those buttons from. Each of them is read
+        // out of this file by the login screen, so each of them left out here
+        // is a setting that only arrives at the *next* sign-in — a user who
+        // turns the button hints off and signs straight out would meet them
+        // still on.
+        for change in [
+            |stored: &mut Stored| stored.clock = Some("12-hour".into()),
+            |stored: &mut Stored| stored.keyboard_layout = Some("pl (qwertz)".into()),
+            |stored: &mut Stored| stored.button_hints = Some(false),
+            |stored: &mut Stored| stored.controller_in_hand = Some(false),
+        ] {
+            change(&mut stored);
+            assert!(
+                news_for_the_login_screen(&stored),
+                "a setting the login screen reads was not news to it",
+            );
+            assert!(!news_for_the_login_screen(&stored));
+        }
 
         *SHOWN.lock().unwrap() = None;
     }

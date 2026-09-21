@@ -995,6 +995,10 @@ fn connector_connected(
         enabled: false,
         max_luminance: hdr_display.max_luminance.unwrap_or(0),
         gamut: hdr.converts_gamut(),
+        // And whether it is the exact conversion or the approximation of it,
+        // which is a different question about the same matrix — see
+        // `Pipeline::converts_gamut_exactly`.
+        gamut_exact: hdr.converts_gamut_exactly(),
         // A much shorter question than the one above it: a gamma ramp and an
         // atomic commit, with nothing asked of the display or the link. See
         // `Pipeline::warms`.

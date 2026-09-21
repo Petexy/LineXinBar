@@ -1108,6 +1108,35 @@ fn keymap(alphabet: &[Stroke], spare: bool) -> String {
     text
 }
 
+/// The keycode to send for each stroke of an alphabet.
+///
+/// [`keymap`] read in the other direction, off the same list — which is why
+/// the two are never called apart. See [`handover`].
+fn codes_for(alphabet: &[Stroke]) -> HashMap<Stroke, u32> {
+    alphabet
+        .iter()
+        .enumerate()
+        // The protocol's keycodes are the kernel's, which are the keymap's
+        // less the eight every xkb keymap is offset by.
+        .map(|(index, stroke)| (*stroke, FIRST_KEYCODE + index as u32 - 8))
+        .collect()
+}
+
+/// Everything one handover to the compositor consists of: the keymap to give
+/// it, and the codes to send against that keymap.
+///
+/// The two come from one call to [`alphabet`] and there is deliberately no way
+/// to come by either alone. The alphabet is not a constant — it is the board's
+/// keys in the board's order, and the board is built from whatever the
+/// session's layout puts on it, so a layout that reaches more characters has
+/// more strokes in it and puts them in different places. Read at two different
+/// moments the two halves disagree, and a keycode that stands for one letter
+/// in the shell stands for another in the keymap the application was handed.
+fn handover(spare: bool) -> (String, HashMap<Stroke, u32>) {
+    let alphabet = alphabet();
+    (keymap(&alphabet, spare), codes_for(&alphabet))
+}
+
 /// Put the keymap somewhere the compositor can map it.
 ///
 /// A sealed-off anonymous file rather than one under `/tmp`: it exists for the
@@ -1334,16 +1363,11 @@ struct Typist {
 
 impl Typist {
     fn new(keyboard: ZwpVirtualKeyboardV1) -> std::io::Result<Self> {
-        let codes = alphabet()
-            .into_iter()
-            .enumerate()
-            // The protocol's keycodes are the kernel's, which are the keymap's
-            // less the eight every xkb keymap is offset by.
-            .map(|(index, stroke)| (stroke, FIRST_KEYCODE + index as u32 - 8))
-            .collect();
         let mut typist = Self {
             keyboard,
-            codes,
+            // Filled by the handover below, and by every one after it. There
+            // is deliberately no other way to come by them.
+            codes: HashMap::new(),
             spare: false,
         };
         typist.rearm()?;
@@ -1369,14 +1393,29 @@ impl Typist {
     /// the only map that can be in force is the session's own or the other
     /// half of this pair.
     ///
-    /// Called when the board appears and when the cursor moves to a new text
-    /// field — both the moments where the client on the other end may have
-    /// changed, and both slow enough for the keymap compile it costs.
+    /// Called when the board appears, when the cursor moves to a new text
+    /// field, and when the session changes layout — the moments where the
+    /// client on the other end or the board itself may have changed, and all
+    /// of them slow enough for the keymap compile it costs.
+    ///
+    /// **The codes are taken here and nowhere else**, with the keymap they
+    /// belong to — see [`handover`]. Worked out once at startup instead, they
+    /// are the codes of the US fallback, which is the only arrangement there is
+    /// before a compositor has said what the layout is; by the time a board is
+    /// built on a Polish layout every stroke after the first `AltGr` face has
+    /// moved along, and `e` goes out under the fallback's code and arrives as
+    /// `8`. Nothing in the shell could show that, because the shell's own
+    /// fields read the stroke and never the keycode.
     fn rearm(&mut self) -> std::io::Result<()> {
         self.spare = !self.spare;
-        let (fd, size) = keymap_file(&keymap(&alphabet(), self.spare))?;
+        let (text, codes) = handover(self.spare);
+        let (fd, size) = keymap_file(&text)?;
         self.keyboard
             .keymap(KeymapFormat::XkbV1 as u32, fd.as_fd(), size);
+        // After the handover rather than before it: a keymap that could not be
+        // written leaves the compositor holding the last one, and these have to
+        // be the codes of the keymap it is holding.
+        self.codes = codes;
         Ok(())
     }
 
@@ -1689,6 +1728,23 @@ impl Osk {
             if let Err(err) = typist.rearm() {
                 tracing::warn!(%err, "could not hand the compositor the keymap again");
             }
+        }
+    }
+
+    /// The session changed keyboard layout under a board that is already up.
+    ///
+    /// The caps redraw by themselves — every row is read from the session's
+    /// arrangement each time it is asked for — but what those caps *send* is
+    /// the keymap the compositor was handed, and that is a different list of
+    /// keys now. A board left with the old one would type the letters of the
+    /// layout it was built from, which after a change is nobody's layout.
+    ///
+    /// Only while the board is up: a keymap handed over while it is away
+    /// reaches no application — the compositor passes one on with the next
+    /// keystroke — and the board rearms as it opens anyway.
+    pub fn note_layout_changed(&mut self) {
+        if self.open {
+            self.rearm();
         }
     }
 
@@ -2722,6 +2778,66 @@ mod tests {
         let spare = FIRST_KEYCODE as usize + alphabet.len();
         assert!(spared.contains(&format!("<K{}> = {spare};", alphabet.len())));
         assert!(spared.contains(&format!("maximum = {};", spare + 1)));
+    }
+
+    /// The bug this guards typed a different letter than the one pressed, in
+    /// every application and in no part of the shell.
+    ///
+    /// The board's alphabet is the board's keys, and the board is built from
+    /// the session's layout: Polish reaches `ę` through AltGr, which is a
+    /// stroke the US fallback has not got, and every stroke after it moves
+    /// along by one. The keymap was written from the alphabet as it stood when
+    /// the board came up and the codes from the alphabet as it stood at
+    /// startup, when no layout had been announced yet and the fallback was all
+    /// there was — so `e` went out under the code the fallback gave it, and a
+    /// Polish keymap reads that code as `8`. The shell's own fields read the
+    /// stroke and never the keycode, so only an application could show it.
+    #[test]
+    fn a_stroke_types_itself_under_the_keymap_that_went_with_it() {
+        let _held = alone();
+        *CAPS.lock().unwrap() = None;
+        let (_, fallback) = handover(false);
+
+        assert!(note_layout("pl", ""));
+        let (text, codes) = handover(true);
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let handed = xkb::Keymap::new_from_string(
+            &context,
+            text,
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .expect("the board handed the compositor a keymap that will not compile");
+
+        // What the compositor would read for the code the board sends, for
+        // every key on it, against the keymap it was handed alongside.
+        let typed = |code: u32| {
+            handed
+                // Back into the keymap's numbering, which is the kernel's plus
+                // the eight every xkb keymap is offset by.
+                .key_get_syms_by_level(xkb::Keycode::new(code + 8), 0, 0)
+                .first()
+                .copied()
+        };
+        for (stroke, code) in &codes {
+            let wanted = xkb::keysym_from_name(&stroke.keysym(), xkb::KEYSYM_NO_FLAGS);
+            assert_eq!(
+                typed(*code),
+                Some(wanted),
+                "{stroke:?} types something else through code {code}"
+            );
+        }
+
+        // And the codes the board had before the layout was announced would
+        // have typed something else, which is the whole of the bug: they are
+        // not wrong keycodes, they are the right ones for another keyboard.
+        let e = Stroke::Char('e');
+        let stale = fallback[&e];
+        assert_ne!(codes[&e], stale);
+        assert_ne!(
+            typed(stale),
+            Some(xkb::keysym_from_name("U0065", xkb::KEYSYM_NO_FLAGS))
+        );
     }
 
     #[test]

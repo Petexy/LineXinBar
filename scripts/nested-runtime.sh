@@ -28,15 +28,43 @@
 # activated service still finds Wayland and PipeWire, with `doc` left out
 # because that is the one name being fought over. Prints nothing and fails if
 # one cannot be made, which a caller should treat as "carry on without it".
+#
+# `pulse` is the one name that has to be a real directory rather than a link to
+# one. libpulse will not use a socket until it has opened the directory holding
+# it with `O_NOFOLLOW` — `pa_make_secure_dir`, which is there so that nobody
+# else can leave a socket in your runtime directory — and a symlink answers that
+# open with `ELOOP`:
+#
+#     Failed to create secure directory (…/pulse): Too many levels of symbolic
+#     links
+#
+# Everything started inside a nested session gets this directory, so everything
+# in one that plays through libpulse got that sentence instead of sound, and
+# `pactl` run in there exited 1 with nothing at all on stdout. It is easy to
+# miss because the two programs that do *not* go through libpulse still work:
+# `wpctl` and anything speaking PipeWire's own protocol reach the server through
+# the `pipewire-0` socket, which no such check is made on — so the session has
+# sound, has a volume bar, and cannot list a single stream.
+#
+# So the directory is made for real, 0700 as libpulse insists, and the socket,
+# the cookie and the pid file inside it are linked one at a time.
 nested_runtime_make() {
     local host="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-    local made entry name
+    local made entry inner name
 
     made="$(mktemp -d "$host/lxb-nested-XXXXXX" 2>/dev/null)" || return 1
     chmod 700 "$made"
     for entry in "$host"/*; do
         name="${entry##*/}"
         case "$name" in doc | lxb-nested-*) continue ;; esac
+        if [[ "$name" == pulse && -d "$entry" ]]; then
+            mkdir -m 700 "$made/pulse" 2>/dev/null || true
+            for inner in "$entry"/*; do
+                [[ -e "$inner" ]] || continue
+                ln -s "$inner" "$made/pulse/${inner##*/}" 2>/dev/null || true
+            done
+            continue
+        fi
         [[ -e "$made/$name" ]] || ln -s "$entry" "$made/$name" 2>/dev/null || true
     done
     printf '%s\n' "$made"

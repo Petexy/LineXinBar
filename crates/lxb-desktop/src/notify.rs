@@ -988,11 +988,23 @@ impl Center {
     /// Returns whether a bubble went up, which is what the caller asks before
     /// making a noise.
     pub fn announce(&mut self, summary: &str, body: &str, icon: &str) -> bool {
+        self.announce_message(summary, body, icon).1
+    }
+
+    /// The same, and which announcement it became.
+    ///
+    /// For the one thing the shell says that has somewhere to go back to: a
+    /// message from a friend, whose row opens the conversation it arrived in.
+    /// The number is how it is found again — the sender is filed under it
+    /// beside this list, because who somebody is on Steam is no business of a
+    /// notification centre — and in every other way this is an announcement
+    /// like any other.
+    pub fn announce_message(&mut self, summary: &str, body: &str, icon: &str) -> (u32, bool) {
         // Down, and never through zero: zero is what a program passes to mean
         // "a new one", so it is not a number an announcement may have.
         let id = self.ours;
         self.ours = self.ours.saturating_sub(1).max(1);
-        self.arrived(Notification {
+        let raised = self.arrived(Notification {
             id,
             app: "LineXinBar".to_string(),
             app_icon: icon.to_string(),
@@ -1011,7 +1023,8 @@ impl Center {
             // to be found behind the bell.
             transient: false,
             arrived: Instant::now(),
-        })
+        });
+        (id, raised)
     }
 
     pub fn announce_update(

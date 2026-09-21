@@ -157,6 +157,98 @@ impl Pending {
     }
 }
 
+/// Somebody asking this account to join them in a game.
+///
+/// **Not a message, and deliberately not stored as one.** A message is
+/// identified by the stamp Steam puts on it, and an invitation may arrive with
+/// no stamp at all — Steam sends these two ways (see
+/// `steam_cm_protocol::chat::GameInvite`) and only one of them is a chat
+/// entry. So an invitation has an id of this session's own, and its place in
+/// the column is a time rather than a key.
+///
+/// **What it does not carry is the game.** Neither route says which app the
+/// connect string is for; that is whatever the person doing the inviting is
+/// playing, which is a fact about the roster. It is resolved where the
+/// invitation is read — see `crate::cm` — and remembered here, so a card does
+/// not go blank the moment they stop playing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invite {
+    /// This session's own number for it. What a press names — see
+    /// [`Mark::Invite`] — because nothing Steam sends can be relied on to
+    /// identify one.
+    pub id: u64,
+    /// Who asked. The conversation it is filed under says the same thing, and
+    /// it is here as well so that an invitation handed to the rest of the shell
+    /// — to a launch, to an announcement pressed an hour later — is a whole
+    /// record rather than half of a pair.
+    pub from: u64,
+    /// Steam's `rtime32` stamp, or **zero for an invitation that came with
+    /// none**, which is the client push. Zero sorts last rather than first: an
+    /// unstamped invitation is not from 1970, it is the thing that has just
+    /// happened.
+    pub at: u32,
+    /// The stamp of the message this invitation *is*, where it came through the
+    /// chat service. What it is for is the history: Steam sends the same
+    /// invitation back as an ordinary row with that key, and a column that drew
+    /// both would show the connect string under its own card. See
+    /// [`Conversation::lines`].
+    pub key: Option<Key>,
+    /// What the game is to be started with, verbatim: `+connect_lobby <id>`
+    /// for a Steamworks lobby, or whatever else the game defined. Never shown
+    /// to anybody — it is an argument, not a sentence.
+    pub connect: String,
+    /// The game it is for, where the roster could say, and what it is called.
+    pub app_id: Option<u32>,
+    pub game: Option<String>,
+    /// Whether this session has already handed it to Valve's client.
+    ///
+    /// What the card says, and nothing more: accepting again is allowed, and
+    /// has to be — somebody who joined, played and came back is entitled to
+    /// press it a second time.
+    pub taken: bool,
+}
+
+impl Invite {
+    /// The lobby this invitation is to, where it is one.
+    ///
+    /// `+connect_lobby <id>` is what Steam's own matchmaking sends, and it is
+    /// the one form worth taking apart: a lobby has a canonical way of being
+    /// joined, and everything else is a command line the game gave itself.
+    pub fn lobby(&self) -> Option<u64> {
+        let rest = self.connect.trim().strip_prefix(CONNECT_LOBBY)?;
+        rest.trim().parse().ok()
+    }
+}
+
+/// The prefix Steam's own lobby invitations are spelled with.
+const CONNECT_LOBBY: &str = "+connect_lobby ";
+
+/// Whether a message body is in fact a connect string, and so an invitation
+/// that has lost its kind.
+///
+/// **The history is why this exists.** `GetRecentMessages` answers with rows
+/// that carry no entry type at all, so an invitation fetched with a
+/// conversation is indistinguishable from somebody having typed its connect
+/// string — and drawn as a message it is a line of machinery in a column of
+/// sentences. Recognised, it is the same card as the live one, and the two
+/// meet under the same connect string.
+///
+/// Deliberately narrow: one of Steam's two spellings, one argument, nothing
+/// else on the line. A body that merely *contains* one of these words is
+/// somebody talking about it.
+pub fn connect_string(body: &str) -> Option<&str> {
+    let body = body.trim();
+    let (word, rest) = body.split_once(' ')?;
+    if rest.trim().is_empty() || rest.trim().contains(' ') {
+        return None;
+    }
+    match word {
+        "+connect_lobby" if rest.trim().chars().all(|c| c.is_ascii_digit()) => Some(body),
+        "+connect" => Some(body),
+        _ => None,
+    }
+}
+
 /// How a conversation's history stands.
 ///
 /// Four states rather than "some messages or none", because **an empty
@@ -196,6 +288,11 @@ pub struct Conversation {
     said: BTreeMap<Key, Said>,
     /// And what has been written here and not yet stamped, oldest first.
     pending: Vec<Pending>,
+    /// Invitations to a game, oldest first, at most [`INVITES_KEPT`] of them.
+    ///
+    /// Their own list rather than entries in `said`, because an invitation is
+    /// not keyed like a message — see [`Invite`].
+    invites: Vec<Invite>,
     history: HistoryState,
     /// When the friend was last seen to be typing, and until when that stands.
     typing_until: Option<Instant>,
@@ -222,28 +319,51 @@ impl Default for HistoryState {
 pub enum Line<'a> {
     Said(&'a Said),
     Pending(&'a Pending),
+    /// Somebody asking this account to join them in a game, which is drawn as a
+    /// card rather than as a bubble. See [`Invite`].
+    Invite(&'a Invite),
 }
 
 impl Line<'_> {
+    /// What was written on this line, which for an invitation is **nothing**.
+    ///
+    /// An invitation's words are the shell's own — a name and a sentence about
+    /// it — and the only text it carries is a connect string that must never
+    /// reach a screen. Answering with the empty string is what makes every
+    /// path that measures or draws a body safe without knowing invitations
+    /// exist.
     pub fn body(&self) -> &str {
         match self {
             Line::Said(said) => &said.body,
             Line::Pending(pending) => &pending.body,
+            Line::Invite(_) => "",
         }
     }
 
-    /// Whether this account wrote it. A pending message is always ours.
+    /// The invitation on this line, where it is one.
+    pub fn invite(&self) -> Option<&Invite> {
+        match self {
+            Line::Invite(invite) => Some(invite),
+            _ => None,
+        }
+    }
+
+    /// Whether this account wrote it. A pending message is always ours, and an
+    /// invitation is only ever somebody else's — one this account sent is
+    /// dropped where it is read, because an invitation nobody can accept is not
+    /// a line in a conversation.
     pub fn from_me(&self) -> bool {
         match self {
             Line::Said(said) => said.from_me,
             Line::Pending(_) => true,
+            Line::Invite(_) => false,
         }
     }
 
     /// Why it did not go, for the one line that has a reason.
     pub fn failure(&self) -> Option<&str> {
         match self {
-            Line::Said(_) => None,
+            Line::Said(_) | Line::Invite(_) => None,
             Line::Pending(pending) => pending.failed.as_deref(),
         }
     }
@@ -261,6 +381,7 @@ impl Line<'_> {
         match self {
             Line::Said(said) => Mark::Said(said.key),
             Line::Pending(pending) => Mark::Pending(pending.request),
+            Line::Invite(invite) => Mark::Invite(invite.id),
         }
     }
 }
@@ -270,6 +391,10 @@ impl Line<'_> {
 pub enum Mark {
     Said(Key),
     Pending(u64),
+    /// An invitation, by the number this session gave it. It cannot collide
+    /// with a pending message's request although both are `u64`: the two are
+    /// different arms, and a mark is compared whole.
+    Invite(u64),
 }
 
 impl Conversation {
@@ -280,16 +405,72 @@ impl Conversation {
     /// have no time: they are what this person has just written, and the bottom
     /// of the column is where they wrote it.
     pub fn lines(&self) -> Vec<Line<'_>> {
-        self.said
+        // Every message an invitation *is*. Steam sends a chat-carried
+        // invitation back in the history as an ordinary row, so without this
+        // the column would draw the card and the connect string under it.
+        let spoken_for = |key: &Key| self.invites.iter().any(|invite| invite.key == Some(*key));
+        let mut lines: Vec<Line<'_>> = self
+            .said
             .values()
+            .filter(|said| !spoken_for(&said.key))
             .map(Line::Said)
-            .chain(self.pending.iter().map(Line::Pending))
-            .collect()
+            .collect();
+        // The invitations, each put where its time says. An unstamped one —
+        // the client push carries no time at all — goes to the end, because
+        // what it is is the thing that has just happened. Inserted rather than
+        // appended-and-sorted so that messages keep the order the store has
+        // them in, which is Steam's own.
+        for invite in &self.invites {
+            let at = match invite.at {
+                0 => usize::MAX,
+                at => lines
+                    .iter()
+                    .position(|line| match line {
+                        Line::Said(said) => said.key.at > at,
+                        _ => false,
+                    })
+                    .unwrap_or(usize::MAX),
+            };
+            match at {
+                usize::MAX => lines.push(Line::Invite(invite)),
+                at => lines.insert(at, Line::Invite(invite)),
+            }
+        }
+        // And what is still going out, which has no time either and is always
+        // last: it is what this person has just written.
+        lines.extend(self.pending.iter().map(Line::Pending));
+        lines
     }
 
     /// How many lines there are, without building them.
     pub fn len(&self) -> usize {
-        self.said.len() + self.pending.len()
+        let hidden = self
+            .said
+            .keys()
+            .filter(|key| {
+                self.invites
+                    .iter()
+                    .any(|invite| invite.key.as_ref() == Some(key))
+            })
+            .count();
+        self.said.len() - hidden + self.pending.len() + self.invites.len()
+    }
+
+    /// The invitations in this conversation, oldest first.
+    pub fn invites(&self) -> &[Invite] {
+        &self.invites
+    }
+
+    /// The one a press acts on: the newest invitation there is.
+    ///
+    /// Newest by *arrival* rather than by stamp, which is the same thing —
+    /// they are held in the order they arrived, and an unstamped one is by
+    /// definition the latest thing to have happened. An invitation that has
+    /// already been accepted is still the answer: somebody who joined, played
+    /// and came back is entitled to press it again, and nothing else in the
+    /// column would be a better answer to *accept the invitation*.
+    pub fn newest_invite(&self) -> Option<&Invite> {
+        self.invites.last()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -411,6 +592,23 @@ pub enum Word {
     Arrived { with: u64, said: Said },
     /// Somebody is typing.
     Typing { with: u64 },
+    /// Somebody asked this account to join them in a game.
+    Invited { with: u64, invite: Invited },
+}
+
+/// An invitation as it arrived, before the store has given it a number.
+///
+/// The three fields Steam sends and the two the roster answers for. See
+/// [`Invite`], which is what this becomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invited {
+    /// Steam's stamp, or zero where it sent none.
+    pub at: u32,
+    /// The message it is, where it came through the chat service.
+    pub key: Option<Key>,
+    pub connect: String,
+    pub app_id: Option<u32>,
+    pub game: Option<String>,
 }
 
 /// A [`Word`], stamped with what it is about.
@@ -440,6 +638,13 @@ pub struct Moved {
     /// The body travels with it because the shell decides whether to show it —
     /// see the notification rule — and the decision needs the text to withhold.
     pub announce: Option<(u64, String)>,
+    /// And an invitation to a game arrived: who from, and which one.
+    ///
+    /// The number rather than the invitation itself, because what the shell
+    /// does with it needs the store anyway — it has to say what game it is for,
+    /// and it has to be able to find it again when somebody presses the
+    /// announcement an hour later. See [`Conversation::newest_invite`].
+    pub invited: Option<(u64, u64)>,
 }
 
 impl Moved {
@@ -454,6 +659,7 @@ impl Moved {
         self.redraw |= other.redraw;
         self.reconnected |= other.reconnected;
         self.announce = self.announce.take().or(other.announce);
+        self.invited = self.invited.take().or(other.invited);
     }
 }
 
@@ -574,6 +780,7 @@ impl Conversations {
             } => self.send_answered(with, request, said),
             Word::Arrived { with, said } => self.arrived(with, said),
             Word::Typing { with } => self.they_are_typing(with, now),
+            Word::Invited { with, invite } => self.invited(with, invite),
         });
         moved
     }
@@ -731,18 +938,6 @@ impl Conversations {
         })
     }
 
-    /// Give up on a failed send and take it off the screen.
-    pub fn forget(&mut self, friend: u64, request: u64) -> bool {
-        let Some(conversation) = self.with.get_mut(&friend) else {
-            return false;
-        };
-        let before = conversation.pending.len();
-        conversation
-            .pending
-            .retain(|pending| pending.request != request || pending.in_flight());
-        before != conversation.pending.len()
-    }
-
     /// Say that this account is typing to `friend`, if it is time to say it
     /// again.
     ///
@@ -797,12 +992,40 @@ impl Conversations {
         match said {
             Ok(said) => {
                 conversation.history = HistoryState(History::Read);
+                // An invitation comes back from the history as an ordinary row
+                // — `GetRecentMessages` carries no entry type — so the ones in
+                // it are recognised by their bodies and filed as invitations
+                // like any other. See [`connect_string`]. Gathered rather than
+                // filed here, because filing one needs a number and the store
+                // is borrowed.
+                let mut invitations = Vec::new();
                 for one in said {
+                    if !one.from_me
+                        && connect_string(&one.body).is_some()
+                        && !conversation
+                            .invites
+                            .iter()
+                            .any(|invite| invite.connect == one.body.trim())
+                    {
+                        invitations.push(Invited {
+                            at: one.key.at,
+                            key: Some(one.key),
+                            connect: one.body.trim().to_string(),
+                            app_id: None,
+                            game: None,
+                        });
+                    }
                     // Merged rather than replacing: messages that arrived live
                     // while the fetch was out are already here under the same
                     // keys, and anything newer than the history must survive
                     // it.
                     conversation.said.insert(one.key, one);
+                }
+                for invitation in invitations {
+                    // Not announced, and deliberately: these are not arrivals.
+                    // The conversation is being read *now*, and the newest of
+                    // them may be older than the session.
+                    self.invited(friend, invitation);
                 }
             }
             Err(why) => {
@@ -870,6 +1093,91 @@ impl Conversations {
         }
     }
 
+    /// File an invitation that has just arrived.
+    ///
+    /// **The connect string is its identity.** Steam has two ways of sending
+    /// one and this session reads both, so the same invitation may arrive
+    /// twice within a millisecond; and the history brings the chat entry of one
+    /// that is already in hand. Two cards to the same lobby would be the shell
+    /// telling somebody they had been asked twice.
+    ///
+    /// What a repeat is allowed to do is fill gaps: a stamp where there was
+    /// none, a newer time, the game where the roster had not answered yet.
+    /// What it must never do is un-take one — an invitation this session has
+    /// already handed to Valve's client is not new work, and a card that went
+    /// back to saying *Accept* would be the second push of a pair undoing the
+    /// press that landed between them.
+    fn invited(&mut self, friend: u64, invited: Invited) -> Moved {
+        let id = self.mint();
+        let conversation = self.with.entry(friend).or_default();
+        if let Some(held) = conversation
+            .invites
+            .iter_mut()
+            .find(|held| held.connect == invited.connect)
+        {
+            let mut redraw = false;
+            if held.key.is_none() && invited.key.is_some() {
+                held.key = invited.key;
+                // The card does not change, but the column does: the message
+                // this invitation *is* stops being drawn under it.
+                redraw = true;
+            }
+            if invited.at > held.at {
+                held.at = invited.at;
+            }
+            if held.app_id.is_none() && invited.app_id.is_some() {
+                held.app_id = invited.app_id;
+                held.game = invited.game;
+                redraw = true;
+            }
+            return Moved {
+                redraw,
+                ..Moved::default()
+            };
+        }
+        conversation.invites.push(Invite {
+            id,
+            from: friend,
+            at: invited.at,
+            key: invited.key,
+            connect: invited.connect,
+            app_id: invited.app_id,
+            game: invited.game,
+            taken: false,
+        });
+        // A column of invitations is not a conversation. The oldest go, which
+        // are the ones whose lobbies have long since closed.
+        while conversation.invites.len() > INVITES_KEPT {
+            conversation.invites.remove(0);
+        }
+        // Counted with the messages, because the bead on somebody's row
+        // answers *is there anything here for me* and an invitation is the
+        // most of anything there is.
+        conversation.unread = conversation.unread.saturating_add(1);
+        conversation.typing_until = None;
+        Moved {
+            redraw: true,
+            invited: Some((friend, id)),
+            ..Moved::default()
+        }
+    }
+
+    /// Say that an invitation has been handed to Valve's client, and give back
+    /// what to hand over.
+    ///
+    /// The whole of what *accepting* means in this crate: nothing here talks to
+    /// Steam, starts anything, or knows what a game is. The shell takes the
+    /// connect string from here and everything else is its business.
+    pub fn take_the_invite(&mut self, friend: u64, id: u64) -> Option<Invite> {
+        let conversation = self.with.get_mut(&friend)?;
+        let invite = conversation
+            .invites
+            .iter_mut()
+            .find(|invite| invite.id == id)?;
+        invite.taken = true;
+        Some(invite.clone())
+    }
+
     fn they_are_typing(&mut self, friend: u64, now: Instant) -> Moved {
         let conversation = self.with.entry(friend).or_default();
         conversation.typing_until = Some(now + TYPING_LASTS);
@@ -879,6 +1187,13 @@ impl Conversations {
 
 /// What a send that a reconnect abandoned is told.
 const WHILE_RECONNECTING: &str = "Steam reconnected before this was sent.";
+
+/// How many invitations one conversation keeps.
+///
+/// Small on purpose. An invitation is a thing to act on now — the lobby behind
+/// an old one is not there any more — and a column that filled up with them
+/// would be a conversation nobody could read.
+const INVITES_KEPT: usize = 8;
 
 /// Trim a message and cut it to Steam's limit, on a character boundary.
 ///
@@ -1613,25 +1928,245 @@ mod tests {
         );
     }
 
-    /// A failed send can be given up on rather than retried.
+    // -- invitations -------------------------------------------------------
+
+    fn invited(at: u32, connect: &str) -> Word {
+        Word::Invited {
+            with: THEM,
+            invite: Invited {
+                at,
+                key: (at != 0).then(|| Key::new(at, 0)),
+                connect: connect.to_string(),
+                app_id: Some(220),
+                game: Some("Half-Life 2".to_string()),
+            },
+        }
+    }
+
+    /// An invitation is a line in the conversation, a count against the bead,
+    /// and something to announce — and it is **not** a message: it has an id of
+    /// this session's own, because the two routes Steam sends one by do not
+    /// agree on whether it is stamped at all.
     #[test]
-    fn a_failed_send_can_be_forgotten() {
+    fn an_invitation_is_a_line_of_its_own() {
         let mut conversations = signed_in();
-        let Wanted::Send { request, .. } = conversations.send(THEM, "hello".to_string()) else {
-            panic!("a send");
-        };
-        // Not while it is still going: the answer is still coming.
-        assert!(!conversations.forget(THEM, request));
+        let moved = hear(
+            &mut conversations,
+            invited(1_700_000_100, "+connect_lobby 7"),
+        );
+        let (from, id) = moved.invited.expect("an invitation to announce");
+        assert_eq!(from, THEM);
+        let conversation = conversations.with(THEM).expect("a conversation");
+        assert_eq!(conversation.unread(), 1);
+        let invite = conversation.newest_invite().expect("the invitation");
+        assert_eq!(invite.id, id);
+        assert_eq!(invite.from, THEM);
+        assert_eq!(invite.app_id, Some(220));
+        assert_eq!(invite.lobby(), Some(7));
+        assert!(!invite.taken);
+        // One line, and its body is empty: the connect string is an argument
+        // and never anything anybody reads.
+        let lines = conversation.lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].mark(), Mark::Invite(id));
+        assert_eq!(lines[0].body(), "");
+        assert!(!lines[0].from_me());
+    }
+
+    /// Steam has two ways of sending one and this session reads both, so the
+    /// same invitation can arrive twice inside a millisecond. The connect
+    /// string is what says they are the same, and the second fills in what the
+    /// first did not carry rather than making a second card.
+    #[test]
+    fn the_same_invitation_twice_is_one_invitation() {
+        let mut conversations = signed_in();
+        // The client push first: no stamp at all.
+        hear(&mut conversations, invited(0, "+connect_lobby 7"));
+        // Then the chat service's copy of it, which is stamped.
+        let again = hear(
+            &mut conversations,
+            invited(1_700_000_100, "+connect_lobby 7"),
+        );
+        assert_eq!(again.invited, None, "the second is not a second arrival");
+        let conversation = conversations.with(THEM).expect("a conversation");
+        assert_eq!(conversation.invites().len(), 1);
+        let invite = conversation.newest_invite().expect("the invitation");
+        assert_eq!(
+            invite.at, 1_700_000_100,
+            "the stamp is taken from the later"
+        );
+        assert_eq!(invite.key, Some(Key::new(1_700_000_100, 0)));
+        // And the unread count moved once, not twice.
+        assert_eq!(conversation.unread(), 1);
+
+        // A different lobby is a different invitation.
         hear(
             &mut conversations,
-            Word::Sent {
+            invited(1_700_000_200, "+connect_lobby 9"),
+        );
+        let conversation = conversations.with(THEM).expect("a conversation");
+        assert_eq!(conversation.invites().len(), 2);
+        assert_eq!(
+            conversation.newest_invite().expect("the newest").lobby(),
+            Some(9)
+        );
+    }
+
+    /// An invitation that has been accepted stays accepted when the other half
+    /// of the pair arrives. A card that went back to offering would be the
+    /// second push undoing the press that landed between them.
+    #[test]
+    fn a_repeat_does_not_un_accept_one() {
+        let mut conversations = signed_in();
+        let moved = hear(&mut conversations, invited(0, "+connect_lobby 7"));
+        let (_, id) = moved.invited.expect("an invitation");
+        assert!(
+            conversations
+                .take_the_invite(THEM, id)
+                .expect("taken")
+                .taken
+        );
+        hear(
+            &mut conversations,
+            invited(1_700_000_100, "+connect_lobby 7"),
+        );
+        assert!(
+            conversations
+                .with(THEM)
+                .and_then(Conversation::newest_invite)
+                .expect("the invitation")
+                .taken
+        );
+    }
+
+    /// The history carries no entry type, so an invitation fetched with a
+    /// conversation arrives as an ordinary message whose body is a connect
+    /// string. Recognised, it is the same card; and the message it *is* stops
+    /// being drawn, or the column would show the machinery under its own card.
+    #[test]
+    fn an_invitation_in_the_history_is_recognised_and_not_drawn_twice() {
+        let mut conversations = signed_in();
+        let Some(Wanted::History { request, .. }) = conversations.open(THEM) else {
+            panic!("a history");
+        };
+        hear(
+            &mut conversations,
+            Word::History {
                 with: THEM,
                 request,
-                said: Err("no".to_string()),
+                said: Ok(vec![
+                    said(1_700_000_000, 0, "are you about?", false),
+                    said(1_700_000_100, 0, "+connect_lobby 109775240000000000", false),
+                ]),
             },
         );
-        assert!(conversations.forget(THEM, request));
-        assert!(conversations.with(THEM).expect("a conversation").is_empty());
+        let conversation = conversations.with(THEM).expect("a conversation");
+        assert_eq!(conversation.invites().len(), 1);
+        let lines = conversation.lines();
+        assert_eq!(lines.len(), 2, "the message and the card, not three lines");
+        assert_eq!(lines[0].body(), "are you about?");
+        assert!(lines[1].invite().is_some());
+        assert_eq!(
+            lines[1].invite().expect("the invitation").lobby(),
+            Some(109_775_240_000_000_000)
+        );
+
+        // And this account's own connect string is not an invitation *to* it.
+        let mut conversations = signed_in();
+        let Some(Wanted::History { request, .. }) = conversations.open(THEM) else {
+            panic!("a history");
+        };
+        hear(
+            &mut conversations,
+            Word::History {
+                with: THEM,
+                request,
+                said: Ok(vec![said(1_700_000_100, 0, "+connect_lobby 7", true)]),
+            },
+        );
+        assert!(conversations
+            .with(THEM)
+            .expect("a conversation")
+            .invites()
+            .is_empty());
+    }
+
+    /// What counts as a connect string, and what is somebody talking about one.
+    #[test]
+    fn a_connect_string_is_recognised_narrowly() {
+        assert_eq!(
+            connect_string("+connect_lobby 109775240000000000"),
+            Some("+connect_lobby 109775240000000000")
+        );
+        assert_eq!(
+            connect_string("  +connect 127.0.0.1:27015 "),
+            Some("+connect 127.0.0.1:27015")
+        );
+        // A lobby is a number and nothing else.
+        assert_eq!(connect_string("+connect_lobby somewhere"), None);
+        // And these are people talking.
+        assert_eq!(connect_string("use +connect_lobby 7 to get in"), None);
+        assert_eq!(connect_string("+connect_lobby"), None);
+        assert_eq!(connect_string("hello"), None);
+        assert_eq!(connect_string(""), None);
+    }
+
+    /// An unstamped invitation is the newest thing in the column, not the
+    /// oldest: no stamp means *now*, and 1970 is where a zero would put it.
+    #[test]
+    fn an_unstamped_invitation_goes_last() {
+        let mut conversations = signed_in();
+        hear(
+            &mut conversations,
+            Word::Arrived {
+                with: THEM,
+                said: said(1_700_000_000, 0, "are you about?", false),
+            },
+        );
+        hear(&mut conversations, invited(0, "+connect_lobby 7"));
+        hear(
+            &mut conversations,
+            Word::Arrived {
+                with: THEM,
+                said: said(1_700_000_500, 0, "well?", false),
+            },
+        );
+        let conversation = conversations.with(THEM).expect("a conversation");
+        let lines = conversation.lines();
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[2].invite().is_some(),
+            "an invitation with no stamp is the latest thing that happened"
+        );
+
+        // A stamped one stands where its stamp puts it.
+        let mut conversations = signed_in();
+        hear(
+            &mut conversations,
+            Word::Arrived {
+                with: THEM,
+                said: said(1_700_000_000, 0, "are you about?", false),
+            },
+        );
+        hear(
+            &mut conversations,
+            invited(1_700_000_100, "+connect_lobby 7"),
+        );
+        hear(
+            &mut conversations,
+            Word::Arrived {
+                with: THEM,
+                said: said(1_700_000_500, 0, "well?", false),
+            },
+        );
+        let lines = conversations
+            .with(THEM)
+            .expect("a conversation")
+            .lines()
+            .iter()
+            .map(|line| line.invite().is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(lines, [false, true, false]);
     }
 
     /// Only the last four digits of an id are ever written down.

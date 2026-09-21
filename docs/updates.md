@@ -1,5 +1,7 @@
 # Settings > Updates
 
+[Documentation](index.md) · [Project home](../README.md)
+
 Updates are grouped by their owner. The desktop offers **Update the system**,
 **Update Flatpaks**, **Update Snaps**, independent Nix/Guix profiles, and
 **Update firmware** according to what it detects. “Update everything” checks all

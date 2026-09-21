@@ -5295,6 +5295,19 @@ const FRIENDS_BUBBLE_GAP: f32 = 8.0;
 /// enough to be read as a margin rather than as a bubble that happens not to
 /// have filled its line.
 const FRIENDS_BUBBLE_WIDEST: f32 = 0.80;
+
+/// And how wide an invitation's card is, as a share of the same column.
+///
+/// Wider than the widest bubble, and it has to be: a card is not a thing
+/// somebody said, it is a control with a name, a sentence and a button on it,
+/// and one cut to its longest word would put the three on top of each other.
+/// Not the *whole* column either — the step in from the edge is what keeps it
+/// on their side of the conversation, which is the one thing about this column
+/// that is never labelled.
+const FRIENDS_CARD_WIDEST: f32 = 0.92;
+
+/// The picture at the head of a card, square, in reference pixels.
+const FRIENDS_CARD_MARK: f32 = 34.0;
 /// How round a bubble is.
 const FRIENDS_BUBBLE_CORNER: f32 = 16.0;
 /// The line under a message that did not go, and the one over a conversation
@@ -5367,6 +5380,19 @@ pub fn friends_message_text_width(width: f32, height: f32) -> f32 {
     (w * FRIENDS_BUBBLE_WIDEST - FRIENDS_BUBBLE_SIDE * 2.0 * scale).max(1.0)
 }
 
+/// And the width the writing on an invitation's card is given, which is not
+/// the same number: a card is wider than a bubble and gives up a square of it
+/// to the mark at its head, so the column left for the game's name comes out
+/// slightly narrower. Measured against the wrong one, a long name wraps in the
+/// drawing after being counted as one line — which is a name cut to an
+/// ellipsis inside a card with room under it.
+pub fn friends_card_text_width(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    let [_, _, w, _] = friends_body_rect(width, height);
+    (w * FRIENDS_CARD_WIDEST - FRIENDS_BUBBLE_SIDE * 3.0 * scale - FRIENDS_CARD_MARK * scale)
+        .max(1.0)
+}
+
 /// The size a message is drawn at on this display, for whoever measures it.
 pub fn friends_message_size(height: f32) -> f32 {
     FRIENDS_MESSAGE * guide_scale(height)
@@ -5383,8 +5409,18 @@ pub fn friends_message_metrics(height: f32) -> (f32, f32) {
 }
 
 /// How tall one message is drawn, given how many lines its words take.
-fn friends_bubble_height(lines: u8, scale: f32) -> f32 {
-    FRIENDS_MESSAGE_LINE * lines.max(1) as f32 * scale + FRIENDS_BUBBLE_PADDING * 2.0 * scale
+fn friends_bubble_height(laid: &crate::friends::Laid, scale: f32) -> f32 {
+    if laid.card {
+        // The game's name, then the line saying who asked, then the line
+        // saying what to press. The last two are notes rather than message
+        // type, which is what keeps a card from towering over the conversation
+        // it stands in.
+        return (FRIENDS_MESSAGE_LINE * laid.lines.max(1) as f32
+            + FRIENDS_NOTE_LINE * 2.0
+            + FRIENDS_BUBBLE_PADDING * 2.0)
+            * scale;
+    }
+    FRIENDS_MESSAGE_LINE * laid.lines.max(1) as f32 * scale + FRIENDS_BUBBLE_PADDING * 2.0 * scale
 }
 
 /// And how much of the column one takes altogether: the bubble, the gap under
@@ -5394,7 +5430,7 @@ fn friends_bubble_height(lines: u8, scale: f32) -> f32 {
 /// the defect this replaced: eight points of air is not a line of type, and the
 /// reason a send failed printed straight through the message under it.
 fn friends_message_height(laid: &crate::friends::Laid, scale: f32) -> f32 {
-    friends_bubble_height(laid.lines, scale)
+    friends_bubble_height(laid, scale)
         + FRIENDS_BUBBLE_GAP * scale
         + if laid.failed {
             FRIENDS_NOTE_LINE * scale
@@ -5428,17 +5464,22 @@ pub fn friends_message_rects(
         // side of the conversation the message came from — see
         // [`crate::friends::Laid::width`], which is the measurement this needs
         // and the one a line count cannot give.
-        let w = (laid.width + FRIENDS_BUBBLE_SIDE * 2.0 * scale)
-            // Never so narrow that its own corners meet: a two-letter reply is
-            // still a bubble.
-            .clamp(FRIENDS_BUBBLE_CORNER * 2.5 * scale, widest);
+        let w = match laid.card {
+            // A card is its own width whatever is written on it — see
+            // [`FRIENDS_CARD_WIDEST`].
+            true => body_w * FRIENDS_CARD_WIDEST,
+            false => (laid.width + FRIENDS_BUBBLE_SIDE * 2.0 * scale)
+                // Never so narrow that its own corners meet: a two-letter reply
+                // is still a bubble.
+                .clamp(FRIENDS_BUBBLE_CORNER * 2.5 * scale, widest),
+        };
         // Ours to the right, theirs to the left, which is the one thing about a
         // conversation that needs no label at all.
         let x = match laid.from_me {
             true => body_x + body_w - w,
             false => body_x,
         };
-        rects.push((*laid, [x, y, w, friends_bubble_height(laid.lines, scale)]));
+        rects.push((*laid, [x, y, w, friends_bubble_height(laid, scale)]));
         y += step;
     }
     rects
@@ -6113,6 +6154,14 @@ pub struct FriendsView<'a> {
     /// without one — and so this pass cannot reach anything about a
     /// conversation except the one number a row draws.
     pub unread: &'a dyn UnreadCount,
+    /// What the game one invitation is for is called.
+    ///
+    /// A lookup for the reason [`UnreadCount`] is one, and a stronger one: the
+    /// answer is three deep — what the roster said when the invitation
+    /// arrived, what this account's own library calls the app, and a word for
+    /// *a game* where neither can say — and none of those is a rectangle. See
+    /// `Shell::what_the_game_is_called`.
+    pub games: &'a dyn InviteGames,
     /// The conversation the panel has turned to, where it has turned to one.
     ///
     /// `None` while the panel is showing the list — and also for the length of
@@ -6138,6 +6187,22 @@ pub struct FriendsView<'a> {
     pub slots: &'a dyn SlotLookup,
 }
 
+/// What the game an invitation is for is called.
+pub trait InviteGames {
+    fn name_of(&self, invite: &lxb_steam::chat::Invite) -> String;
+}
+
+/// Nothing can name a game, for a panel drawn without a Steam behind it.
+#[cfg(test)]
+pub struct NoGameNames;
+
+#[cfg(test)]
+impl InviteGames for NoGameNames {
+    fn name_of(&self, _invite: &lxb_steam::chat::Invite) -> String {
+        "A game".to_string()
+    }
+}
+
 /// How many of somebody's messages have not been read.
 ///
 /// A trait for the reason [`SlotLookup`] is one: `ui` is arithmetic on
@@ -6156,6 +6221,26 @@ impl UnreadCount for NothingUnread {
     fn unread(&self, _steam_id: u64) -> usize {
         0
     }
+}
+
+/// Whether the message the light is on is one that did not go.
+///
+/// Asked of the measured column rather than of the mark alone, because a
+/// message that is still *going* is a [`lxb_steam::chat::Mark::Pending`] too:
+/// it has no stamp yet either. A legend that read the mark offered Send again
+/// and Delete over a message in flight, and both would have done nothing —
+/// `Conversations::retry` and `Conversations::forget` each refuse one that has
+/// not come back yet, which is correct and left the row naming two acts that
+/// could not happen.
+///
+/// [`crate::friends::Laid::failed`] is the same answer the height and the
+/// colour of the bubble are drawn from, so the three cannot disagree. See
+/// [`crate::friends::Row`], which is what keeps it from going stale.
+fn friends_message_stuck(view: &FriendsView, mark: lxb_steam::chat::Mark) -> bool {
+    view.friends
+        .laid_out()
+        .iter()
+        .any(|laid| laid.mark == mark && laid.failed)
 }
 
 /// What the buttons do here, read left to right.
@@ -6232,42 +6317,83 @@ fn friends_hints(view: &FriendsView) -> Vec<Hint> {
                 icons::KEY_ESCAPE,
             ),
         ],
-        (false, crate::friends::Talking::Message(mark)) => {
-            // Only a message that did not go can be acted on. Everything else
-            // in the column has already happened, and a legend offering to
-            // send it again would be offering something that does nothing.
-            let failed = matches!(mark, lxb_steam::chat::Mark::Pending(_));
-            match failed {
-                true => vec![
-                    one(
-                        crate::i18n::text("shell-send-again"),
-                        icons::PAD_SOUTH,
-                        icons::KEY_ENTER,
-                    ),
-                    one(
-                        crate::i18n::text("shell-back"),
-                        icons::PAD_EAST,
-                        icons::KEY_ESCAPE,
-                    ),
-                ],
-                false => vec![one(
+        // The light is standing on an invitation, which is the one thing in the
+        // column that has not happened yet: the ordinary press takes it, so the
+        // ordinary press is what the legend names. The button named below is
+        // left out here rather than drawn beside this one — they do the same
+        // thing from here, and a row that said Accept twice would read as two
+        // different offers.
+        (false, crate::friends::Talking::Message(lxb_steam::chat::Mark::Invite(_))) => {
+            return vec![
+                one(
+                    crate::i18n::text("shell-accept"),
+                    icons::PAD_SOUTH,
+                    icons::KEY_ENTER,
+                ),
+                one(
                     crate::i18n::text("shell-back"),
                     icons::PAD_EAST,
                     icons::KEY_ESCAPE,
-                )],
-            }
+                ),
+            ];
         }
+        (false, crate::friends::Talking::Message(mark)) => vec![
+            match friends_message_stuck(view, mark) {
+                // A message that did not go is the one line in the column with
+                // an act of its own: try it again.
+                true => one(
+                    crate::i18n::text("shell-send-again"),
+                    icons::PAD_SOUTH,
+                    icons::KEY_ENTER,
+                ),
+                // Everything else here has already happened, and what the press
+                // means is what it means on the field below: write. It is the
+                // way back to that field as well, which is the whole answer to
+                // walking twenty messages up a conversation — the row of Downs
+                // it used to take was the user's own report of this column on
+                // 2026-09-21. The row had said *Back* and nothing else, which
+                // named the one button that does not go there.
+                false => one(
+                    crate::i18n::text("shell-write"),
+                    icons::PAD_SOUTH,
+                    icons::KEY_ENTER,
+                ),
+            },
+            one(
+                crate::i18n::text("shell-back"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
+        ],
     };
-    if matches!(
-        view.friends.talking(),
-        crate::friends::Talking::Message(lxb_steam::chat::Mark::Pending(_))
-    ) && !composing
+    // And the invitation, on the top face button: named **first**, because
+    // while somebody is waiting it is the most important thing on the screen,
+    // and named wherever the light is standing rather than only on the card —
+    // the button works from anywhere in the conversation, and a legend that
+    // appeared only on the card would be teaching the user to walk to it.
+    //
+    // That button has nothing else to be here. It is Options everywhere else
+    // in the shell, and the one act Options had in this column — giving up on
+    // a message that would not go — was taken out rather than left to share
+    // it, so there is no light this row has to ask about and no press that
+    // means two things. See `Shell::on_conversation_action`.
+    //
+    // Not while the field is being typed into: the board has the keys there,
+    // and the legend is about sending.
+    if !composing
+        && view
+            .conversation
+            .and_then(lxb_steam::chat::Conversation::newest_invite)
+            .is_some()
     {
-        hints.push(one(
-            crate::i18n::text("shell-delete"),
-            icons::PAD_NORTH,
-            icons::MOUSE_RIGHT,
-        ));
+        hints.insert(
+            0,
+            one(
+                crate::i18n::text("shell-accept"),
+                icons::PAD_NORTH,
+                icons::MOUSE_RIGHT,
+            ),
+        );
     }
     hints
 }
@@ -6682,6 +6808,310 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
 /// thing this is not.
 const FRIENDS_TURN_TRAVEL: f32 = 0.28;
 
+/// The smallest a message's time may be set to make it fit beside the bubble.
+///
+/// Seven tenths of the note it is set in, which at 1280×800 is nine points. A
+/// bubble that leaves less room than that beside it has words as wide as the
+/// column allows and a time under them would be a figure nobody can read; the
+/// light is on it either way, and the light is the answer to where the reader
+/// is. See [`LEGEND_SMALLEST`], which is the same rule at the foot of the
+/// panel.
+const FRIENDS_STAMP_SMALLEST: f32 = 0.7;
+
+/// When the message under the light was said, in the room beside its bubble.
+///
+/// **Only under the light.** A time against every line would be a second column
+/// of figures down a panel that is 280 points wide, and the thing somebody
+/// reading back wants to know is when *this* one was said. So it is what the
+/// walk up the column is worth doing for, and it costs the column no height at
+/// all — a note that reserved a line would move every message under it each
+/// time the light stepped.
+///
+/// **The room decides which form it takes.** A bubble is at most four fifths of
+/// the column ([`FRIENDS_BUBBLE_WIDEST`]), so what is left beside a wide one is
+/// a fifth of 220 points — enough for `14:23` and not for a date beside it. The
+/// day is therefore measured before it is drawn, the same way the legend at the
+/// foot of this panel is, and where it will not fit the time stands alone. A
+/// message said today has no day to add in the first place, which is nearly
+/// every message anybody reads.
+fn friends_said_at(
+    column: &mut Scene,
+    laid: &crate::friends::Laid,
+    rect: [f32; 4],
+    body: [f32; 4],
+    scale: f32,
+    edge: f32,
+) {
+    // Steam's stamp, and only Steam's. A message still going out has no time
+    // because nothing has given it one yet — the shell must not write down the
+    // moment it was typed and pass that off as when it was sent — and a card
+    // is too wide to have room beside it anyway.
+    let lxb_steam::chat::Mark::Said(key) = laid.mark else {
+        return;
+    };
+    let Some(moment) = crate::i18n::moment(key.at as libc::time_t) else {
+        return;
+    };
+    let theme = theme();
+    let [x, y, w, h] = rect;
+    let [body_x, _, body_w, _] = body;
+    let size = FRIENDS_NOTE * scale;
+    let gap = FRIENDS_BUBBLE_SIDE * 0.5 * scale;
+    // Which side the room is on is which side the bubble is not: ours are
+    // drawn against the right edge of the column and theirs against the left.
+    let from_me = laid.from_me;
+    let room = match from_me {
+        true => (x - gap) - body_x,
+        false => (body_x + body_w) - (x + w + gap),
+    };
+    let said = match moment.with_the_day {
+        Some(day) if estimated_width(&day, size) <= room => day,
+        _ => moment.time,
+    };
+    // And shrunk where even that is tight, on the argument the legend at the
+    // foot of this panel is shrunk by: a time set a point smaller is a time
+    // somebody reads, and `23:2…` is worse than nothing at all. It is the
+    // ordinary case rather than a corner of one — the widest bubble the column
+    // allows leaves a fifth of it, which is 44 points at 1280×800, and five
+    // figures want 42 of them.
+    let ink = estimated_width(&said, size);
+    let size = match ink > room {
+        true => size * (room / ink),
+        false => size,
+    };
+    if size < FRIENDS_NOTE * scale * FRIENDS_STAMP_SMALLEST {
+        return;
+    }
+    column.texts.push(Text {
+        content: said,
+        x: match from_me {
+            true => body_x,
+            false => x + w + gap,
+        },
+        // On the bubble's last line rather than beside its first, which is
+        // where a conversation has always put a time.
+        y: y + h - FRIENDS_BUBBLE_PADDING * scale - FRIENDS_NOTE_LINE * scale,
+        size,
+        color: theme.text_soft.a(0.8 * edge),
+        bold: false,
+        max_width: room,
+        // Against the bubble on both sides, so the two are one thing under the
+        // light rather than a note that has drifted to the panel's edge.
+        align: match from_me {
+            true => TextAlign::Right,
+            false => TextAlign::Left,
+        },
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+        mono: false,
+    });
+}
+
+/// One invitation to a game, drawn where the column put it.
+///
+/// Three runs and a mark: what the game is called, that they asked you into
+/// it, and what to press. The last is a picture of a button rather than a
+/// letter, for the reason every legend in this shell draws one — "press X" is
+/// wrong on a PlayStation pad and worse than wrong on a Nintendo one — and it
+/// is *inside* the card as well as in the legend at the foot of the panel
+/// because the card is what the eye is on.
+///
+/// The mark is Steam's own rather than the game's picture. The game may be one
+/// nobody here owns, whose art this machine has never fetched and has no
+/// business fetching because somebody mentioned it; and the honest thing to
+/// draw for a game this session knows nothing about but its number is the
+/// service it belongs to.
+#[allow(clippy::too_many_arguments)]
+fn friends_invite_card(
+    column: &mut Scene,
+    view: &FriendsView,
+    invite: &lxb_steam::chat::Invite,
+    rect: [f32; 4],
+    laid: &crate::friends::Laid,
+    scale: f32,
+    edge: f32,
+    lit: bool,
+    pulse: f32,
+) {
+    let theme = theme();
+    let [x, y, w, h] = rect;
+    let pad = FRIENDS_BUBBLE_PADDING * scale;
+    let side = FRIENDS_BUBBLE_SIDE * scale;
+    // The light, on the same two quads every other lit thing in this shell
+    // wears — see the message bubbles above, which had been going unlit.
+    if lit {
+        let halo = FRIENDS_BUBBLE_PADDING * 3.0 * scale;
+        column.quads.push(Quad {
+            x: x - halo,
+            y: y - halo,
+            w: w + halo * 2.0,
+            h: h + halo * 2.0,
+            slot: GLOW_SLOT,
+            color: theme.accent.a(0.26 + 0.06 * pulse),
+            fade: edge,
+            ..Quad::default()
+        });
+    }
+    // In the accent, alone among the things in this column that are not this
+    // account's own. A card is not something they said — it is a control, and
+    // the one thing in a conversation that can be pressed for anything but a
+    // second attempt.
+    column.quads.push(Quad {
+        x,
+        y,
+        w,
+        h,
+        slot: SOLID_SLOT,
+        color: theme.accent.a(match (invite.taken, lit) {
+            (true, false) => 0.16,
+            (true, true) => 0.26,
+            (false, false) => 0.30,
+            (false, true) => 0.44,
+        }),
+        radius: FRIENDS_BUBBLE_CORNER * scale,
+        corner: SQUIRCLE_CORNER,
+        thickness: DEPTH_CONTROL * scale,
+        behind: view.behind,
+        frost: FROST_CONTROL,
+        gloss: GLOSS_QUIET,
+        fade: edge,
+        ..Quad::default()
+    });
+    if lit {
+        column.quads.push(Quad {
+            x,
+            y,
+            w,
+            h,
+            slot: SOLID_SLOT,
+            // The pale accent rather than the accent itself, which is this
+            // shell's colour for a ring around something: the wallpaper, the
+            // panel and half the bubbles in this column are all already the
+            // accent, and a ring drawn in it is a ring nobody sees.
+            color: theme.accent_soft.a(0.78 + 0.10 * pulse),
+            radius: FRIENDS_BUBBLE_CORNER * scale,
+            corner: SQUIRCLE_CORNER,
+            border: (2.0 * scale).max(1.5),
+            fade: edge,
+            ..Quad::default()
+        });
+    }
+    let mark = FRIENDS_CARD_MARK * scale;
+    if let Some(slot) = view.slots.glyph(crate::icons::STEAM) {
+        column.quads.push(shaded(
+            Quad {
+                x: x + side,
+                y: y + pad,
+                w: mark,
+                h: mark,
+                slot,
+                color: theme.text.a(0.92 * edge),
+                ..Quad::default()
+            },
+            Some(crate::icons::STEAM),
+        ));
+    }
+    let text_x = x + side + mark + side;
+    let text_w = (x + w - side) - text_x;
+    // What it is called, in the weight a heading is set in: it is the one thing
+    // on this card somebody reads before deciding.
+    column.texts.push(Text {
+        content: view.games.name_of(invite),
+        x: text_x,
+        y: y + pad,
+        size: FRIENDS_MESSAGE * scale,
+        color: theme.text.a(0.97 * edge),
+        bold: true,
+        max_width: text_w,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: laid.lines.max(1),
+        cut: Cut::Tail,
+        mono: false,
+    });
+    let under = y + pad + FRIENDS_MESSAGE_LINE * laid.lines.max(1) as f32 * scale;
+    column.texts.push(Text {
+        content: crate::i18n::text("shell-invited-you-to-play").to_string(),
+        x: text_x,
+        y: under,
+        size: FRIENDS_NOTE * scale,
+        color: theme.text_soft.a(0.86 * edge),
+        bold: false,
+        max_width: text_w,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+        mono: false,
+    });
+    // And what to press, on the last line: the button drawn, with its word
+    // beside it. An invitation this session has already handed over says so
+    // instead — it can still be pressed, and what it has to say by then is
+    // what happened rather than what to do.
+    let hint_middle = under + FRIENDS_NOTE_LINE * scale * 1.5;
+    if invite.taken {
+        column.texts.push(Text {
+            content: crate::i18n::text("shell-accepted").to_string(),
+            x: text_x,
+            y: hint_middle - FRIENDS_NOTE * scale * 0.62,
+            size: FRIENDS_NOTE * scale,
+            color: theme.text_soft.a(0.7 * edge),
+            bold: false,
+            max_width: text_w,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+            mono: false,
+        });
+        return;
+    }
+    // Only where the session draws legends at all: Settings > System > Button
+    // hints is one answer for the whole shell, and a card that named a button
+    // where nothing else did would be the one place the setting did not reach.
+    if !view.hints {
+        return;
+    }
+    let hint = Hint {
+        label: crate::i18n::text("shell-accept"),
+        // The button the legend at the foot of the panel names, which is the
+        // top face button — on a keyboard the Menu key, drawn as the right
+        // mouse button on this shell's standing rule that no key printed on a
+        // keyboard says that button to as many people. See `icons::MOUSE_RIGHT`
+        // and `action_for_keysym`, where Menu, F10 and `y` are all this one.
+        glyph: match view.pad {
+            true => crate::icons::PAD_NORTH,
+            false => crate::icons::MOUSE_RIGHT,
+        },
+    };
+    let size = LegendSize {
+        glyph: FRIENDS_NOTE * 1.15 * scale,
+        label: FRIENDS_NOTE * scale,
+        gap: 6.0 * scale,
+        step: 14.0 * scale,
+    };
+    // And cut to the card, on the same terms as the row at the foot of the
+    // panel: a word for *accept* is two characters in one language and
+    // fourteen in another, and neither may print out through the card's edge.
+    let (hint, size) = legend_that_fits(vec![hint], &size, text_w);
+    legend_row(
+        &mut column.quads,
+        &mut column.texts,
+        &hint,
+        view.slots,
+        x + w - side,
+        hint_middle,
+        &size,
+        theme.text.a(0.95 * edge),
+        theme.text.a(0.95 * edge),
+    );
+}
+
 /// The conversation half of the panel: what has been said, and the field to say
 /// something in.
 ///
@@ -6730,20 +7160,67 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
             continue;
         };
         let lit = talking == crate::friends::Talking::Message(laid.mark);
+        // An invitation is a card and not a bubble: its own shape, its own
+        // three runs of type, and a picture at the head of it. Drawn here
+        // rather than in a pass of its own so that it takes its turn in the
+        // column — it is a thing that happened, in the order it happened.
+        if let Some(invite) = said.invite() {
+            friends_invite_card(
+                &mut column,
+                view,
+                invite,
+                [mx, my, mw, mh],
+                &laid,
+                scale,
+                edge,
+                lit,
+                pulse,
+            );
+            continue;
+        }
         let failed = said.failure().is_some();
         let sending = said.sending();
         // Ours in the accent, theirs in the shell's own raised glass. Colour is
         // the second thing that says which side a message is on and the side of
         // the column is the first, so neither has to be read to be understood.
+        // Brighter under the light than beside it, which is the rule every
+        // column in this shell is drawn by.
         let tint = match (laid.from_me, failed) {
             // A message that did not go wears the shell's own warning, which is
             // the same one a failed download does. It is not decoration: a
             // failed send is the one line in a conversation that has to be told
             // from an ordinary one at a glance.
-            (_, true) => theme.danger.a(0.30),
-            (true, false) => theme.accent.a(if sending { 0.26 } else { 0.44 }),
-            (false, false) => theme.glass_raised.a(0.11),
+            (_, true) => theme.danger.a(if lit { 0.42 } else { 0.30 }),
+            (true, false) => theme.accent.a(match (sending, lit) {
+                (true, _) => 0.26,
+                (false, true) => 0.58,
+                (false, false) => 0.44,
+            }),
+            (false, false) => theme.glass_raised.a(if lit { 0.24 } else { 0.11 }),
         };
+        // The light itself, behind the bubble it has stopped on.
+        //
+        // **This column had none.** What stood for one was an accent outline at
+        // sixteen hundredths over a bubble already drawn in the accent, which
+        // on a screen is nothing at all: the user walked up a conversation on
+        // 2026-09-21 and reported that the messages do not light. It is the
+        // same pair of quads a person in the list is lit with — see
+        // [`friends_list_leaf`] — a glow that hugs the shape and a ring around
+        // it, because a light somebody has to look for is a light that is not
+        // there.
+        if lit {
+            let halo = FRIENDS_BUBBLE_PADDING * 3.0 * scale;
+            column.quads.push(Quad {
+                x: mx - halo,
+                y: my - halo,
+                w: mw + halo * 2.0,
+                h: mh + halo * 2.0,
+                slot: GLOW_SLOT,
+                color: theme.accent.a(0.26 + 0.06 * pulse),
+                fade: edge,
+                ..Quad::default()
+            });
+        }
         column.quads.push(Quad {
             x: mx,
             y: my,
@@ -6771,10 +7248,14 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
                 w: mw,
                 h: mh,
                 slot: SOLID_SLOT,
-                color: theme.accent.a(0.16 + 0.05 * pulse),
+                // The pale accent rather than the accent itself, which is this
+                // shell's colour for a ring around something: the wallpaper, the
+                // panel and half the bubbles in this column are all already the
+                // accent, and a ring drawn in it is a ring nobody sees.
+                color: theme.accent_soft.a(0.78 + 0.10 * pulse),
                 radius: FRIENDS_BUBBLE_CORNER * scale,
                 corner: SQUIRCLE_CORNER,
-                border: (1.5 * scale).max(1.0),
+                border: (2.0 * scale).max(1.5),
                 fade: edge,
                 ..Quad::default()
             });
@@ -6821,6 +7302,12 @@ fn friends_conversation_leaf(view: &FriendsView, width: f32, height: f32, slide:
                 cut: Cut::Tail,
                 mono: false,
             });
+        }
+        // And when it was said, which is what the light standing here is
+        // *for*: a column of bubbles carries no time anywhere on it, and one
+        // under the light is the one the reader is asking about.
+        if lit {
+            friends_said_at(&mut column, &laid, [mx, my, mw, mh], body_rect, scale, edge);
         }
     }
     column.clip_to([body_x, body_y, body_w, body_h]);
@@ -7464,6 +7951,15 @@ fn push_friends_legend(scene: &mut Scene, view: &FriendsView, width: f32, height
     let [panel_x, panel_y, panel_w, panel_h] = friends_panel_rect(width, height);
     let margin = GUIDE_MARGIN * scale;
     let hints = friends_hints(view);
+    // Cut to the room this panel has between its margins, which is the whole
+    // of what this row is allowed — see [`legend_fit`].
+    let size = LegendSize {
+        glyph: START_HINT_GLYPH * scale,
+        label: START_HINT_LABEL * scale,
+        gap: START_HINT_GAP * scale,
+        step: START_HINT_STEP * scale,
+    };
+    let (hints, size) = legend_that_fits(hints, &size, panel_w - margin * 2.0);
     legend_row(
         &mut scene.quads,
         &mut scene.texts,
@@ -7471,12 +7967,7 @@ fn push_friends_legend(scene: &mut Scene, view: &FriendsView, width: f32, height
         view.slots,
         panel_x + slide + panel_w - margin,
         panel_y + panel_h - margin - FRIENDS_LEGEND * scale * 0.5,
-        &LegendSize {
-            glyph: START_HINT_GLYPH * scale,
-            label: START_HINT_LABEL * scale,
-            gap: START_HINT_GAP * scale,
-            step: START_HINT_STEP * scale,
-        },
+        &size,
         theme.text.a(0.82),
         theme.text_soft.a(0.82),
     );
@@ -11141,6 +11632,79 @@ struct LegendSize {
 /// is what the estimate knowing a full-width character from a Latin one is for.
 pub(crate) fn legend_word_width(label: &str, size: f32) -> f32 {
     estimated_width(label, size)
+}
+
+/// The smallest a legend may be shrunk to make it fit — see [`legend_that_fits`].
+///
+/// Eleven twentieths. Below that the word beside a button is smaller than the
+/// second line of a message and the button itself is a bead, which is a row
+/// nobody reads from a couch. A row that would need less than this has one pair
+/// too many for the panel rather than one size too large, and what happens then
+/// is that it loses a pair.
+const LEGEND_SMALLEST: f32 = 0.55;
+
+/// How wide a legend row comes out: each button, the air beside it, the word
+/// the shell has estimated, and the air between one pair and the next.
+///
+/// The estimate rather than the true shaped width, because that is what the row
+/// is *laid out* from — see [`legend_word_width`]. What this measures is
+/// therefore exactly the room the row will take, not a guess at it.
+fn legend_ink(hints: &[Hint], size: &LegendSize) -> f32 {
+    hints
+        .iter()
+        .map(|hint| size.glyph + size.gap + legend_word_width(hint.label, size.label))
+        .sum::<f32>()
+        + size.step * hints.len().saturating_sub(1) as f32
+}
+
+/// The row as it can actually be drawn in `room`: how much of it, and at what
+/// size.
+///
+/// **A legend is laid out from its right-hand end leftwards and nothing in it
+/// was measured against the panel it stands in.** Harmless on the start screen,
+/// where the row is a fifth of the width; not harmless in a sidebar 280 points
+/// wide. Three pairs of a word and a button do not fit that panel in any
+/// language at the size the start screen draws them — English needs 362 points
+/// of the 346 there are at 1080p — and what happened instead was the leftmost
+/// word printing out through the panel's edge and over the bar behind it. The
+/// user reported it from a photograph on 2026-09-21, the day the invitation's
+/// Accept became a third pair; a Spanish *Enviar de nuevo · Atrás · Eliminar*
+/// had been doing it for longer than that.
+///
+/// **Smaller first, shorter second.** All four numbers move together — a button
+/// drawn beside a word half its height would read as a different row — and each
+/// is linear in the factor, so the size is one division rather than a search.
+/// Only when even [`LEGEND_SMALLEST`] will not hold the row does it give up a
+/// pair, and the pair it gives up is the **last**: a row is built with the act
+/// it is about at the front and whatever else can be done to it at the back,
+/// so the back is where the least is lost. It never gives up the last one
+/// standing, because a legend of nothing is a foot of panel that has stopped
+/// explaining itself.
+fn legend_that_fits(mut hints: Vec<Hint>, size: &LegendSize, room: f32) -> (Vec<Hint>, LegendSize) {
+    loop {
+        let ink = legend_ink(&hints, size);
+        let fit = match ink <= room || ink <= 0.0 {
+            true => 1.0,
+            false => (room / ink).max(LEGEND_SMALLEST),
+        };
+        let cut = size.shrunk(fit);
+        if hints.len() <= 1 || legend_ink(&hints, &cut) <= room + 0.5 {
+            return (hints, cut);
+        }
+        hints.pop();
+    }
+}
+
+impl LegendSize {
+    /// The same row drawn `fit` of its size — see [`legend_that_fits`].
+    fn shrunk(&self, fit: f32) -> LegendSize {
+        LegendSize {
+            glyph: self.glyph * fit,
+            label: self.label * fit,
+            gap: self.gap * fit,
+            step: self.step * fit,
+        }
+    }
 }
 
 /// Lay a legend out from `right` leftwards, centred on `middle`, and say where
@@ -15960,6 +16524,7 @@ mod tests {
                 typing: false,
                 cannot_send: None,
                 unread: &NothingUnread,
+                games: &NoGameNames,
                 friends: panel,
                 roster,
                 instead: None,
@@ -16255,7 +16820,7 @@ mod tests {
         let laid: Vec<crate::friends::Laid> = marks.iter().map(|(laid, _)| *laid).collect();
         panel.measured(
             with,
-            laid.iter().map(|laid| laid.mark).collect(),
+            laid.iter().map(|laid| (laid.mark, laid.failed)).collect(),
             laid,
             10.0,
             4.0,
@@ -16279,6 +16844,7 @@ mod tests {
                 width: 40.0,
                 from_me,
                 failed: false,
+                card: false,
             },
             (),
         )
@@ -16301,6 +16867,7 @@ mod tests {
                 width: 40.0,
                 from_me: false,
                 failed: false,
+                card: false,
             },
             crate::friends::Laid {
                 mark: said_at(200),
@@ -16310,6 +16877,7 @@ mod tests {
                 width: friends_message_text_width(1280.0, 800.0),
                 from_me: true,
                 failed: false,
+                card: false,
             },
         ];
         let rects = friends_message_rects(&laid, width, height, 0.0);
@@ -16386,6 +16954,7 @@ mod tests {
                 width: 40.0,
                 from_me: false,
                 failed: false,
+                card: false,
             })
             .collect();
         let one = friends_chat_column_height(&laid[..1], height);
@@ -16542,6 +17111,466 @@ mod tests {
         );
     }
 
+    /// The legend at the foot of the friends panel stays inside the panel, in
+    /// every language and with every row it can carry.
+    ///
+    /// **The defect this holds shut was on screen.** The row is laid out from
+    /// its right-hand end leftwards and nothing in it was measured against the
+    /// panel, so the invitation's Accept — a third pair where there had always
+    /// been two — pushed the leftmost word out through the panel's edge and
+    /// over the bar behind it. The user saw it in a photograph and asked
+    /// whether the glyphs were really inside the panel; they were not.
+    ///
+    /// Measured the way it is drawn: `legend_row` answers where the row's
+    /// left-hand end came out, one step further left than the ink, so the ink
+    /// is that plus a step. Both displays a nested session and a television
+    /// are, because the panel is a share of the *width* and the type a share of
+    /// the *height* — the two do not move together, and the narrower fit is not
+    /// always the smaller screen.
+    #[test]
+    fn the_panel_s_legend_stays_inside_the_panel() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = guide_scale(height);
+            let [panel_x, _, panel_w, _] = friends_panel_rect(width, height);
+            let margin = GUIDE_MARGIN * scale;
+            let room = panel_w - margin * 2.0;
+            for language in crate::i18n::Language::CHOICES {
+                crate::i18n::set(language);
+                // The three rows this legend can carry, longest first: a
+                // conversation with an invitation waiting in it is the one that
+                // broke, the second is that row over a message that would not
+                // go — *Aceptar · Enviar de nuevo · Atrás* is the widest thing
+                // this panel can be asked to draw in any of the ten languages —
+                // and the last is what neither may break instead.
+                for hints in [
+                    vec![
+                        Hint {
+                            label: crate::i18n::text("shell-accept"),
+                            glyph: icons::PAD_NORTH,
+                        },
+                        Hint {
+                            label: crate::i18n::text("shell-write"),
+                            glyph: icons::PAD_SOUTH,
+                        },
+                        Hint {
+                            label: crate::i18n::text("shell-back"),
+                            glyph: icons::PAD_EAST,
+                        },
+                    ],
+                    vec![
+                        Hint {
+                            label: crate::i18n::text("shell-accept"),
+                            glyph: icons::PAD_NORTH,
+                        },
+                        Hint {
+                            label: crate::i18n::text("shell-send-again"),
+                            glyph: icons::PAD_SOUTH,
+                        },
+                        Hint {
+                            label: crate::i18n::text("shell-back"),
+                            glyph: icons::PAD_EAST,
+                        },
+                    ],
+                    vec![
+                        Hint {
+                            label: crate::i18n::text("shell-select"),
+                            glyph: icons::PAD_SOUTH,
+                        },
+                        Hint {
+                            label: crate::i18n::text("shell-back"),
+                            glyph: icons::PAD_EAST,
+                        },
+                    ],
+                ] {
+                    let size = LegendSize {
+                        glyph: START_HINT_GLYPH * scale,
+                        label: START_HINT_LABEL * scale,
+                        gap: START_HINT_GAP * scale,
+                        step: START_HINT_STEP * scale,
+                    };
+                    let wanted: Vec<&str> = hints.iter().map(|hint| hint.label).collect();
+                    let (hints, size) = legend_that_fits(hints, &size, room);
+                    let (mut quads, mut texts) = (Vec::new(), Vec::new());
+                    let left = legend_row(
+                        &mut quads,
+                        &mut texts,
+                        &hints,
+                        &NoSlots,
+                        panel_x + panel_w - margin,
+                        0.0,
+                        &size,
+                        [1.0; 4],
+                        [1.0; 4],
+                    ) + size.step;
+                    assert!(
+                        left >= panel_x + margin - 0.5,
+                        "{language:?} at {width}x{height}: {wanted:?} reached {left}, which is past the panel's own edge at {}",
+                        panel_x + margin
+                    );
+                    // The first pair is the act the row is about, and it is the
+                    // one thing that may never be given up to make room.
+                    assert_eq!(
+                        hints.first().map(|hint| hint.label),
+                        wanted.first().copied(),
+                        "{language:?} at {width}x{height}: the row lost the act it is about"
+                    );
+                    // And the words themselves are still inside it — the row is
+                    // laid out from boxes, and a box that started inside the
+                    // panel is no comfort if the word in it is drawn to the
+                    // left of where the box begins.
+                    for text in &texts {
+                        assert!(
+                            text.x >= panel_x - 0.5,
+                            "{language:?} at {width}x{height}: {:?} was drawn at {},                              outside the panel at {panel_x}",
+                            text.content,
+                            text.x
+                        );
+                    }
+                }
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// The message the light is standing on is lit, and it says when it was
+    /// said.
+    ///
+    /// **Neither was true.** What stood for a light was an accent outline at
+    /// sixteen hundredths over bubbles already drawn in the accent — invisible
+    /// on a screen — so walking up a conversation moved nothing anybody could
+    /// see, and the column carried no time anywhere on it. The user walked up
+    /// one on 2026-09-21 and reported both.
+    ///
+    /// The scene is built twice, with the light on the field and with it on a
+    /// message, because what the light is worth is exactly the difference
+    /// between them.
+    #[test]
+    fn the_message_under_the_light_is_lit_and_says_when() {
+        let (width, height) = (1280.0, 800.0);
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        // Long ago, so the day is a thing there is to say: a message said today
+        // has nothing to add to its own time.
+        const AT: u32 = 1_700_000_000;
+        let mut conversations = lxb_steam::chat::Conversations::default();
+        conversations.signed_in_as(7);
+        let hear = |conversations: &mut lxb_steam::chat::Conversations, word| {
+            conversations.heard(
+                lxb_steam::chat::Heard {
+                    generation: 1,
+                    account: 7,
+                    word,
+                },
+                std::time::Instant::now(),
+            );
+        };
+        hear(&mut conversations, lxb_steam::chat::Word::Listening);
+        let Some(lxb_steam::chat::Wanted::History { request, .. }) = conversations.open(11) else {
+            panic!("a history request");
+        };
+        hear(
+            &mut conversations,
+            lxb_steam::chat::Word::History {
+                with: 11,
+                request,
+                said: Ok(vec![
+                    lxb_steam::chat::Said {
+                        key: lxb_steam::chat::Key::new(AT, 0),
+                        body: "hello".to_string(),
+                        from_me: false,
+                    },
+                    lxb_steam::chat::Said {
+                        key: lxb_steam::chat::Key::new(AT + 60, 0),
+                        body: "hello yourself".to_string(),
+                        from_me: true,
+                    },
+                ]),
+            },
+        );
+        let mut panel = crate::friends::Friends::default();
+        panel.open();
+        panel.talk_to(11);
+        // A short bubble of theirs, and one of ours filling the column: the
+        // room beside each is what decides how much of the moment fits.
+        panel.measured(
+            11,
+            vec![(said_at(AT), false), (said_at(AT + 60), false)],
+            vec![
+                crate::friends::Laid {
+                    mark: said_at(AT),
+                    lines: 1,
+                    width: 40.0,
+                    from_me: false,
+                    failed: false,
+                    card: false,
+                },
+                crate::friends::Laid {
+                    mark: said_at(AT + 60),
+                    lines: 1,
+                    width: friends_message_text_width(width, height),
+                    from_me: true,
+                    failed: false,
+                    card: false,
+                },
+            ],
+            FRIENDS_MESSAGE_LINE * guide_scale(height),
+            (FRIENDS_BUBBLE_PADDING * 2.0 + FRIENDS_BUBBLE_GAP) * guide_scale(height),
+            height,
+        );
+        // What the shell tells the panel once a frame before anything is
+        // drawn. Without it the view is still parked past the end of a column
+        // of no height and every message is skipped as being out of the body.
+        let [_, _, _, body_h] = friends_chat_body_rect(width, height, 1);
+        panel.the_column_is(friends_chat_column_height(panel.laid_out(), height), body_h);
+        let leaf = |panel: &crate::friends::Friends| {
+            friends_conversation_leaf(
+                &FriendsView {
+                    friends: panel,
+                    roster: &roster,
+                    instead: None,
+                    head: true,
+                    open: 1.0,
+                    highlight: None,
+                    behind: 0.0,
+                    time: 0.0,
+                    pad: true,
+                    dragging: false,
+                    conversation: conversations.with(11),
+                    talking_to: roster.friends.first(),
+                    talking_to_name: "Ann",
+                    typing: false,
+                    cannot_send: None,
+                    unread: &NothingUnread,
+                    games: &NoGameNames,
+                    hints: true,
+                    slots: &NoSlots,
+                },
+                width,
+                height,
+                0.0,
+            )
+        };
+
+        let quiet = leaf(&panel);
+        assert_eq!(
+            quiet
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == GLOW_SLOT)
+                .count(),
+            0,
+            "something in the column was lit with the light on the field"
+        );
+
+        // Up on to the last message, which is ours and fills the column.
+        assert!(panel.move_in_conversation(-1, conversations.with(11)));
+        let mine = leaf(&panel);
+        assert_eq!(
+            mine.quads
+                .iter()
+                .filter(|quad| quad.slot == GLOW_SLOT)
+                .count(),
+            1,
+            "the message under the light had no glow behind it"
+        );
+        assert_eq!(
+            mine.quads.iter().filter(|quad| quad.border > 0.0).count(),
+            1,
+            "the message under the light had no ring around it"
+        );
+        // Two quads and one run of type more than the same column unlit, which
+        // is the whole of what the light costs.
+        assert_eq!(mine.quads.len(), quiet.quads.len() + 2);
+        assert_eq!(mine.texts.len(), quiet.texts.len() + 1);
+
+        let moment = crate::i18n::moment(AT as libc::time_t + 60).expect("a moment");
+        let stamp = |scene: &Scene, quiet: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| !quiet.texts.iter().any(|was| was.content == text.content))
+                .map(|text| (text.content.clone(), text.x, text.size))
+                .expect("the time of the message under the light")
+        };
+        let (said, x, size) = stamp(&mine, &quiet);
+        assert_eq!(
+            said, moment.time,
+            "a bubble that fills the column has no room for a day beside it"
+        );
+        let [body_x, _, body_w, _] = friends_body_rect(width, height);
+        let [_, _, _, bubble] = friends_message_rects(panel.laid_out(), width, height, 0.0)[1].1;
+        let _ = bubble;
+        assert!(x >= body_x, "the time was drawn off the panel");
+        assert!(
+            size <= FRIENDS_NOTE * guide_scale(height),
+            "the time was set larger than the note it is"
+        );
+        assert!(
+            size >= FRIENDS_NOTE * guide_scale(height) * FRIENDS_STAMP_SMALLEST,
+            "the time was shrunk past what anybody reads"
+        );
+
+        // And on to theirs, which is forty points wide: the room beside it
+        // holds the day as well.
+        assert!(panel.move_in_conversation(-1, conversations.with(11)));
+        let theirs = leaf(&panel);
+        let (said, x, _) = stamp(&theirs, &quiet);
+        let moment = crate::i18n::moment(AT as libc::time_t).expect("a moment");
+        assert_eq!(
+            said,
+            moment.with_the_day.expect("a day, for a message from 2023")
+        );
+        assert!(
+            x > body_x,
+            "the time beside their message was drawn on the wrong side of it"
+        );
+        assert!(x < body_x + body_w);
+    }
+
+    /// An invitation waiting in the conversation puts its button at the head
+    /// of the legend, wherever the light happens to be standing.
+    ///
+    /// The press works from anywhere in the conversation, so a legend that
+    /// named it only while the light was on the card would be teaching
+    /// somebody to walk to the card first. It goes first because while
+    /// somebody is waiting it is the most important thing on the screen.
+    #[test]
+    fn the_legend_names_an_invitation_first() {
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let mut conversations = lxb_steam::chat::Conversations::default();
+        conversations.signed_in_as(7);
+        conversations.heard(
+            lxb_steam::chat::Heard {
+                generation: 1,
+                account: 7,
+                word: lxb_steam::chat::Word::Listening,
+            },
+            std::time::Instant::now(),
+        );
+        let mut panel = crate::friends::Friends::default();
+        panel.open();
+        panel.talk_to(11);
+        let words = |conversations: &lxb_steam::chat::Conversations,
+                     panel: &crate::friends::Friends| {
+            friends_hints(&FriendsView {
+                friends: panel,
+                roster: &roster,
+                instead: None,
+                head: true,
+                open: 1.0,
+                highlight: None,
+                behind: 0.0,
+                time: 0.0,
+                pad: true,
+                dragging: false,
+                conversation: conversations.with(11),
+                talking_to: None,
+                talking_to_name: "",
+                typing: false,
+                cannot_send: None,
+                unread: &NothingUnread,
+                games: &NoGameNames,
+                hints: true,
+                slots: &NoSlots,
+            })
+            .into_iter()
+            .map(|hint| hint.label)
+            .collect::<Vec<_>>()
+        };
+        // Nothing waiting: the conversation's ordinary pair.
+        assert_eq!(words(&conversations, &panel), ["Write", "Back"]);
+
+        conversations.heard(
+            lxb_steam::chat::Heard {
+                generation: 1,
+                account: 7,
+                word: lxb_steam::chat::Word::Invited {
+                    with: 11,
+                    invite: lxb_steam::chat::Invited {
+                        at: 0,
+                        key: None,
+                        connect: "+connect_lobby 7".to_string(),
+                        app_id: Some(220),
+                        game: Some("Half-Life 2".to_string()),
+                    },
+                },
+            },
+            std::time::Instant::now(),
+        );
+        assert_eq!(words(&conversations, &panel), ["Accept", "Write", "Back"]);
+
+        // And with the light standing on the card itself, the ordinary press
+        // is what takes it — so that is what the legend names, once.
+        panel.measured(
+            11,
+            vec![(lxb_steam::chat::Mark::Invite(1), false)],
+            vec![crate::friends::Laid {
+                mark: lxb_steam::chat::Mark::Invite(1),
+                lines: 1,
+                width: 100.0,
+                from_me: false,
+                failed: false,
+                card: true,
+            }],
+            24.0,
+            8.0,
+            800.0,
+        );
+        assert!(panel.move_in_conversation(-1, conversations.with(11)));
+        assert_eq!(words(&conversations, &panel), ["Accept", "Back"]);
+
+        // The top face button means one thing in a conversation, so the row
+        // names it on every line — including the one line that used to take it
+        // for something else. Options gave up on a message that would not go
+        // until the user had it taken out; what is left of that line is Send
+        // again, and Accept still stands in front of it.
+        let column = [
+            (lxb_steam::chat::Mark::Invite(1), false),
+            (lxb_steam::chat::Mark::Pending(1), true),
+        ];
+        panel.measured(
+            11,
+            column.to_vec(),
+            vec![
+                crate::friends::Laid {
+                    mark: lxb_steam::chat::Mark::Invite(1),
+                    lines: 1,
+                    width: 100.0,
+                    from_me: false,
+                    failed: false,
+                    card: true,
+                },
+                crate::friends::Laid {
+                    mark: lxb_steam::chat::Mark::Pending(1),
+                    lines: 1,
+                    width: 40.0,
+                    from_me: true,
+                    failed: true,
+                    card: false,
+                },
+            ],
+            24.0,
+            8.0,
+            800.0,
+        );
+        // The light is on the card still; the failed message is the line under
+        // it.
+        assert!(panel.move_in_conversation(1, conversations.with(11)));
+        assert_eq!(
+            words(&conversations, &panel),
+            ["Accept", "Send again", "Back"],
+            "the invitation gave way on a line that no longer takes that button"
+        );
+        // And back on to the card, where the ordinary press takes it.
+        assert!(panel.move_in_conversation(-1, conversations.with(11)));
+        assert_eq!(words(&conversations, &panel), ["Accept", "Back"]);
+
+        // Not while the field is being typed into: the button is a letter
+        // there, and the legend is about sending.
+        panel.move_in_conversation(1, conversations.with(11));
+        panel.compose(true);
+        assert_eq!(words(&conversations, &panel), ["Send", "Done"]);
+    }
+
     /// The legend names what the light is standing on, because in a
     /// conversation there are four things it can be standing on.
     #[test]
@@ -16565,6 +17594,7 @@ mod tests {
                 typing: false,
                 cannot_send: None,
                 unread: &NothingUnread,
+                games: &NoGameNames,
                 hints: true,
                 slots: &NoSlots,
             })
@@ -16583,41 +17613,70 @@ mod tests {
         assert_eq!(words(&panel), ["Send", "Done"]);
         panel.compose(false);
 
-        // A message that did not go can be sent again, or given up on.
+        // A message that did not go can be sent again, and that is the whole of
+        // what it offers: giving up on one was taken out at the user's word,
+        // and nothing in this shell throws away something somebody wrote.
         panel.measured(
             11,
-            vec![lxb_steam::chat::Mark::Pending(1)],
+            vec![(lxb_steam::chat::Mark::Pending(1), true)],
             vec![crate::friends::Laid {
                 mark: lxb_steam::chat::Mark::Pending(1),
                 lines: 1,
                 width: 40.0,
                 from_me: true,
                 failed: true,
+                card: false,
             }],
             10.0,
             4.0,
             800.0,
         );
         panel.move_in_conversation(-1, None);
-        assert_eq!(words(&panel), ["Send again", "Back", "Delete"]);
+        assert_eq!(words(&panel), ["Send again", "Back"]);
 
-        // One that did is only something to read.
+        // One that has already arrived has nothing of its own to be done to
+        // it, so the press means what it means on the field below — and the
+        // row says so. It had said *Back* alone, which named the one button
+        // that does not go to the field, and left somebody twenty messages up
+        // a conversation with a column of Downs to get back to it.
         panel.measured(
             11,
-            vec![said_at(100)],
+            vec![(said_at(100), false)],
             vec![crate::friends::Laid {
                 mark: said_at(100),
                 lines: 1,
                 width: 40.0,
                 from_me: false,
                 failed: false,
+                card: false,
             }],
             10.0,
             4.0,
             800.0,
         );
         panel.move_in_conversation(-1, None);
-        assert_eq!(words(&panel), ["Back"]);
+        assert_eq!(words(&panel), ["Write", "Back"]);
+
+        // And one still on its way is not a message that failed, although it
+        // is a `Pending` like one: Send again and Delete would both refuse it,
+        // so the row names neither.
+        panel.measured(
+            11,
+            vec![(lxb_steam::chat::Mark::Pending(9), false)],
+            vec![crate::friends::Laid {
+                mark: lxb_steam::chat::Mark::Pending(9),
+                lines: 1,
+                width: 40.0,
+                from_me: true,
+                failed: false,
+                card: false,
+            }],
+            10.0,
+            4.0,
+            800.0,
+        );
+        panel.move_in_conversation(-1, None);
+        assert_eq!(words(&panel), ["Write", "Back"]);
     }
 
     #[test]
@@ -16994,6 +18053,7 @@ mod tests {
                 typing: false,
                 cannot_send: None,
                 unread: &NothingUnread,
+                games: &NoGameNames,
                 friends: &crate::friends::Friends::default(),
                 roster: &lxb_steam::Roster::default(),
                 instead: Some("Sign in to Steam to see who is online."),

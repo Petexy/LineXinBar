@@ -525,7 +525,7 @@ impl XdgShellHandler for LxbState {
             // window to ask about — so the undivided size is the honest answer
             // for it, and the tiling it gets when it maps carries both halves.
             let room = match window.as_ref() {
-                Some(window) => self.lxb.outputs.room_for(window, geometry.size),
+                Some(window) => self.lxb.outputs.room_for(window, geometry.size, &output),
                 None => geometry.size,
             };
             surface.with_pending_state(|state| {
@@ -1034,20 +1034,26 @@ impl FractionalScaleHandler for LxbState {
         let output = window
             .as_ref()
             .and_then(|w| self.lxb.space.outputs_for_element(w).first().cloned())
-            .or_else(|| self.lxb.space.outputs().next().cloned())
-            .map(|o| o.current_scale().fractional_scale())
-            .unwrap_or(1.0);
-        // Times how much larger than life its application is drawing, which is
-        // the second of the three parts of that: the window was configured
-        // smaller than the display, and this is what tells the client to fill
-        // that smaller window with the display's own pixels. See
+            .or_else(|| self.lxb.space.outputs().next().cloned());
+        // Times how much larger than life its application is drawing on that
+        // display, which is the second of the three parts of that: the window
+        // was configured smaller than the display, and this is what tells the
+        // client to fill that smaller window with the display's own pixels. See
         // [`crate::scale`].
+        //
+        // Both halves come off the same display, and they have to: a surface
+        // whose window is on the second screen would otherwise be told that
+        // screen's density and the first one's application scale, which is a
+        // buffer neither display ever asked for.
         let scale = crate::scale::preferred_scale(
-            output,
-            window
+            output
                 .as_ref()
-                .map(|window| self.lxb.outputs.window_scale(window))
+                .map(|output| output.current_scale().fractional_scale())
                 .unwrap_or(1.0),
+            match (window.as_ref(), output.as_ref()) {
+                (Some(window), Some(output)) => self.lxb.outputs.window_scale_on(window, output),
+                _ => 1.0,
+            },
         );
 
         with_states(&surface, |states| {

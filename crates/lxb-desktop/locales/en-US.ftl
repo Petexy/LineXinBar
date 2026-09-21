@@ -26,6 +26,8 @@ clock-corner = { $month }/{ $day } { $time }
 # Colour.
 shell-accent-color = Accent color
 shell-color-temperature = Color temperature
+shell-greys-are-exact-here-and-strong-colour-is-close = Grays are exact here; strong color is close
+shell-no-colour-matrix-in-this-driver-brightness-is-unaffected = No color matrix in this driver; brightness is unaffected
 shell-srgb-color-intensity = sRGB color intensity
 shell-how-saturated-srgb-colour-is-made = How saturated sRGB color is made
 shell-the-colour-of-being-chosen = The color of being chosen

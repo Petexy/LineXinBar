@@ -922,6 +922,20 @@ pub struct Change {
     /// [`Inner::picturing_about`], which is where the reason a whole
     /// collection finding nothing says nothing is written down.
     pub unpictured: Option<String>,
+    /// The covers that landed in this poll: the ROM's path, and where its box
+    /// art now is.
+    ///
+    /// Carried out of the poll rather than left for somebody to read back off
+    /// this module, because the Trophies column keeps a copy of this folder of
+    /// its own and a cover is the one thing in it the column cannot work out
+    /// for itself. Asking the achievement helper for it again is a network
+    /// round trip per console; this is the string, already in hand. See
+    /// [`crate::retroachievements::RetroAchievements::pictured`].
+    ///
+    /// Only box art, and only where one was found: a run that turned up a
+    /// screenshot and no cover has changed nothing a row wears, and `None`
+    /// pushed here would read as *the cover is gone* to anybody holding one.
+    pub pictured: Vec<(String, String)>,
 }
 
 /// What pressing the RetroArch row means, asked at the moment it is pressed.
@@ -1530,6 +1544,9 @@ impl RetroArch {
                         // Something was found, so there is nothing to say at
                         // the end of the run.
                         inner.picturing_about = None;
+                        if let Some(boxart) = &line.boxart {
+                            change.pictured.push((line.rom.clone(), boxart.clone()));
+                        }
                         for console in &mut inner.consoles {
                             let mut landed = false;
                             for rom in &mut console.roms {

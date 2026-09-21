@@ -38,6 +38,11 @@ use smithay::reexports::wayland_server::Display;
 use crate::config::Config;
 use crate::state::LxbState;
 
+/// What a nested window is sized at when nobody says. Matches the size
+/// smithay's own winit helper picks, which is what this flag's default has
+/// always claimed to be.
+const DEFAULT_WINDOW_SIZE: &str = "1280x800";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BackendChoice {
     /// Pick automatically: nested when a session is detected, DRM otherwise.
@@ -73,13 +78,21 @@ struct Cli {
     #[arg(short, long)]
     socket: Option<String>,
 
-    /// Number of virtual outputs for the `x11` backend.
+    /// Number of virtual outputs. Only meaningful with `--backend x11`.
+    ///
+    /// That is the one backend that can open more than one window: `winit` is
+    /// a single window by construction, and `udev` drives whatever connectors
+    /// the machine actually has.
     #[arg(long, default_value_t = 1)]
     outputs: usize,
 
-    /// Size of each virtual output window, as `WIDTHxHEIGHT`.
-    #[arg(long, default_value = "1280x800")]
-    window_size: String,
+    /// Size of each nested window, as `WIDTHxHEIGHT`. Defaults to `1280x800`.
+    ///
+    /// Only meaningful with `--backend winit` or `--backend x11`, which are
+    /// windows inside somebody else's session. `udev` takes its size from the
+    /// connector and has nothing to resize.
+    #[arg(long, value_name = "WIDTHxHEIGHT")]
+    window_size: Option<String>,
 
     /// Also let a program of this name drive the session, by name alone.
     ///
@@ -117,11 +130,40 @@ fn main() -> anyhow::Result<()> {
     // Before a socket exists for anything to connect to.
     shell_control::trust_these_programs(&cli.insecure_trust_program);
 
-    let config_path = cli
-        .config
-        .clone()
-        .or_else(Config::default_path)
-        .ok_or_else(|| anyhow::anyhow!("could not determine a config path"))?;
+    // Parsed here, before any backend exists, and so on every backend. It used
+    // to be parsed inside the X11 arm alone, which made one flag behave three
+    // ways: refused on `x11`, and on `winit` and `udev` accepted, unread and
+    // dropped — `--window-size nonsense` started a session without a word.
+    let window_size = parse_size(cli.window_size.as_deref().unwrap_or(DEFAULT_WINDOW_SIZE))?;
+
+    // And for the same reason, before a backend is built rather than after. A
+    // socket name is a single file in `XDG_RUNTIME_DIR`, so one with a `/` in
+    // it cannot be created — but the failure arrived from inside smithay, as
+    // "Could not write to XDG_RUNTIME_DIR", after a window had already been
+    // opened and a GPU context made. The name is the thing that was wrong.
+    if let Some(socket) = &cli.socket {
+        if socket.is_empty() || socket.contains('/') {
+            anyhow::bail!("socket name must be a plain file name like `wayland-9`, got {socket:?}");
+        }
+    }
+
+    // A `--config` the user typed and a config path nobody asked for are not
+    // the same thing. The default path is allowed to be absent — most sessions
+    // have no config file at all, and `Config::load` answers that with the
+    // defaults — but a path given on the command line is one somebody expects
+    // to be read, and `general.shell` lives in it: a mistyped path under
+    // `--shell` would otherwise start the stock shell and read as the
+    // configured one having failed.
+    let config_path = match cli.config.clone() {
+        Some(path) => {
+            if !path.exists() {
+                anyhow::bail!("no config file at {}", path.display());
+            }
+            path
+        }
+        None => Config::default_path()
+            .ok_or_else(|| anyhow::anyhow!("could not determine a config path"))?,
+    };
     let mut config = Config::load(&config_path)?;
     // Before anything opens a device: what the displays were last set to has to
     // be in hand by the time the first connector is lit, or the session pays a
@@ -129,7 +171,14 @@ fn main() -> anyhow::Result<()> {
     config.remember_displays(remembered::load());
 
     if !cli.command.is_empty() {
-        config.general.autostart = vec![cli.command.join(" ")];
+        // Quoted back into one string rather than joined with spaces. Every
+        // command this compositor starts is carried as a single string, because
+        // `general.autostart` and `general.shell` are written that way by hand;
+        // but the shell that invoked `lxb` has already stripped the quoting off
+        // `--`'s arguments, so joining on spaces loses every boundary that held
+        // a space. `lxb -- touch 'a b.txt'` made a file called `a`. See
+        // [`state::shell_quote`].
+        config.general.autostart = vec![state::shell_quote(&cli.command)];
     }
 
     // Before any backend or child exists, so the compositor, its clients and
@@ -151,6 +200,23 @@ fn main() -> anyhow::Result<()> {
 
     let backend = resolve_backend(cli.backend);
     tracing::info!(?backend, "starting lxb");
+
+    // A flag that cannot be honoured here says so. Both of these are real
+    // settings on `x11` and meaningless elsewhere, and saying nothing is what
+    // made them look broken rather than inapplicable — the session came up,
+    // one window, no complaint, and nothing to read afterwards.
+    if cli.outputs > 1 && backend != BackendChoice::X11 {
+        tracing::warn!(
+            outputs = cli.outputs,
+            ?backend,
+            "only the x11 backend opens more than one window; this session has one output"
+        );
+    }
+    if cli.window_size.is_some() && backend == BackendChoice::Udev {
+        tracing::warn!(
+            "--window-size is for the nested backends; this session is sized by its connectors"
+        );
+    }
 
     // Settled before the backend, because the DRM backend needs it before it
     // lights a connector: the commit that establishes a display's mode is a
@@ -175,9 +241,15 @@ fn main() -> anyhow::Result<()> {
             config,
             cli.socket.clone(),
             cli.outputs.max(1),
-            parse_size(&cli.window_size)?,
+            window_size,
         )?,
-        _ => backend::winit::init(&mut event_loop, display, config, cli.socket.clone())?,
+        _ => backend::winit::init(
+            &mut event_loop,
+            display,
+            config,
+            cli.socket.clone(),
+            window_size,
+        )?,
     };
 
     std::env::set_var("WAYLAND_DISPLAY", &state.lxb.socket_name);
@@ -311,11 +383,30 @@ fn resolve_backend(choice: BackendChoice) -> BackendChoice {
     }
 }
 
+/// Parse a `WIDTHxHEIGHT` nested window size.
+///
+/// Bounded at both ends, because the X11 backend hands these to the X server as
+/// `u16` and used to do it with an `as` cast. A number that does not fit one was
+/// silently truncated while the *output mode* kept the number as written, so
+/// `--window-size 70000x70000` opened a 4464px window and then told every client
+/// it was 70000px — a disagreement that surfaces much later, as a client drawing
+/// at a size nothing asked for. Zero is refused for the same reason: a window
+/// that cannot be mapped, advertised as a mode nothing can render into.
 fn parse_size(raw: &str) -> anyhow::Result<(i32, i32)> {
     let (w, h) = raw
         .split_once('x')
         .ok_or_else(|| anyhow::anyhow!("window size must look like 1280x800, got {raw:?}"))?;
-    Ok((w.trim().parse()?, h.trim().parse()?))
+    let side = |which: &str, value: &str| -> anyhow::Result<i32> {
+        let value = value.trim();
+        let n: i32 = value
+            .parse()
+            .map_err(|_| anyhow::anyhow!("window {which} must be a whole number, got {value:?}"))?;
+        if !(1..=i32::from(u16::MAX)).contains(&n) {
+            anyhow::bail!("window {which} must be between 1 and {}, got {n}", u16::MAX);
+        }
+        Ok(n)
+    };
+    Ok((side("width", w)?, side("height", h)?))
 }
 
 #[cfg(test)]
@@ -326,5 +417,34 @@ mod tests {
     fn parses_window_size() {
         assert_eq!(parse_size("1920x1080").unwrap(), (1920, 1080));
         assert!(parse_size("1920").is_err());
+    }
+
+    /// The default has to be a value this same parser accepts, or every
+    /// session that says nothing about its size fails to start.
+    #[test]
+    fn the_default_window_size_parses() {
+        assert_eq!(parse_size(DEFAULT_WINDOW_SIZE).unwrap(), (1280, 800));
+    }
+
+    /// Both ends are refused rather than cast. The X11 backend narrows these
+    /// to `u16` for the X server while advertising the number as written as an
+    /// output mode, so anything outside that range used to make the window and
+    /// the mode disagree instead of failing.
+    #[test]
+    fn refuses_a_size_no_window_could_have() {
+        for raw in ["0x600", "800x0", "70000x600", "800x70000", "-5x-5"] {
+            assert!(parse_size(raw).is_err(), "{raw} should be refused");
+        }
+        assert_eq!(parse_size("1x1").unwrap(), (1, 1));
+        assert_eq!(parse_size("65535x65535").unwrap(), (65535, 65535));
+    }
+
+    /// Nonsense is refused whatever the backend, which is the whole point of
+    /// parsing it before one is chosen.
+    #[test]
+    fn refuses_a_size_that_is_not_one() {
+        for raw in ["utter nonsense", "1280x", "x800", "1280x800x600", ""] {
+            assert!(parse_size(raw).is_err(), "{raw:?} should be refused");
+        }
     }
 }

@@ -1,5 +1,9 @@
 # LineXinBar packaging
 
+[Documentation](index.md) · [Project home](../README.md)
+
+Run the commands in this guide from the repository root.
+
 These definitions build three early-development packages from one source tree:
 
 * **`lxb-compositor`** — the compositor and the cursor theme it draws the
@@ -65,7 +69,7 @@ synthesise presses the compositor cannot distinguish from the real one's — and
 shell only reads it. This is a wider trust boundary than the rest of the
 session's, which refuses `lxb_shell_v1` to exactly those programs, and closing
 it needs a root-owned helper that hands out descriptors rather than a rule that
-hands out nodes. There is none yet. The Permissions section of the root README
+hands out nodes. There is none yet. The [input permissions guide](getting-started.md#what-the-input-rule-actually-opens)
 sets out the whole of it; packagers shipping this rule are shipping that.
 
 `lxb-session` clears display variables inherited from a greeter, creates a
@@ -91,13 +95,13 @@ mutation when an inhibitor cannot be acquired. It uses a transient systemd user
 service where available, with a detached
 fallback. Ports with other service managers should validate session teardown and
 provide supervision before promising updates survive logout. See
-[the update guide](../docs/updates.md) for policy examples and the validation matrix.
+[the update guide](updates.md) for policy examples and the validation matrix.
 
 Immutable distributions can package a custom System updater without enabling a
 native system upgrade. Ship the provider selection in
 `/usr/share/linexinbar/updates.json`, its manifest under
 `/usr/share/linexinbar/update-providers.d/`, and the declared executable with its
-dependencies. See [Custom system update providers](../docs/updates.md#custom-system-update-providers)
+dependencies. See [Custom system update providers](updates.md#custom-system-update-providers)
 for file modes, administrator overrides, the check/apply JSON contract and a
 Bash adapter example. These are distribution-owned additions, not user-editable
 Settings commands.
@@ -193,7 +197,7 @@ though the workspace's older `rust-version` declaration has not been changed.
 ## Debian
 
 Build on Debian, Ubuntu, or another Debian-derived system with the development
-packages listed in the main README plus `dpkg-dev`:
+packages listed in [Getting started](getting-started.md#building) plus `dpkg-dev`:
 
 ```sh
 ./packaging/build.sh debian

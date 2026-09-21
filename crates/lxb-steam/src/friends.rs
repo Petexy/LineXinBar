@@ -721,6 +721,28 @@ impl Roll {
     /// drawn from what was last known would be a column of names going stale
     /// on the screen. What is *kept* is the same list — see [`Self::offline`]
     /// — so coming back is a push away rather than a reconnect.
+    /// What one person is playing, as the id and whatever it is called.
+    ///
+    /// For the one thing that needs a single person rather than the list: an
+    /// invitation to a game names no game — see [`crate::chat::Invite`] — so
+    /// the app is whatever the person doing the inviting is in at the moment
+    /// they ask. Answered even for somebody standing offline on Steam, because
+    /// an invitation from them is still an invitation; what `offline` hides is
+    /// the *list*, and this is not it.
+    pub fn playing(&self, steam_id: u64) -> (Option<u32>, Option<String>) {
+        match self.people.get(&steam_id) {
+            Some(person) => (
+                person.app_id,
+                person.game.clone().or_else(|| {
+                    person
+                        .app_id
+                        .and_then(|app_id| self.games.get(&app_id).cloned())
+                }),
+            ),
+            None => (None, None),
+        }
+    }
+
     pub fn roster(&self) -> Roster {
         if self.offline {
             return Roster {

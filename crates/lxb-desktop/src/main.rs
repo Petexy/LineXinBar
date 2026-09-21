@@ -297,13 +297,6 @@ const PRESSED_SHELL_VERSION: u32 = 23;
 /// counts on such a compositor; there is simply less of it.
 const TYPED_SHELL_VERSION: u32 = 24;
 
-/// First version that can be asked to draw applications larger than life.
-///
-/// Below it the Application scaling page still remembers what it was set to —
-/// the file is read by whichever compositor comes next — but nothing is sent and
-/// every window is the size of the display it is on.
-const APP_SCALE_SHELL_VERSION: u32 = 25;
-
 /// First version that can fade every display to black and say when the black is
 /// on screen.
 ///
@@ -462,6 +455,31 @@ const UNSEEN_WINDOWS_SHELL_VERSION: u32 = 40;
 /// display and on a session where only one thing is starting, which is nearly
 /// every session — and wrong in exactly the case these exist for.
 const PER_LAUNCH_SHELL_VERSION: u32 = 41;
+
+/// The version that says whether the gamut conversion a display offers is the
+/// exact one — the `gamut_exact` bit on `output_hdr_controls`.
+///
+/// Gated because the bit's absence means "this compositor does not say", not
+/// "the conversion is approximate". Bound below this, the shell reads `gamut`
+/// the way it always did: as the exact conversion, which is the only kind a
+/// compositor that old could report.
+const EXACT_GAMUT_SHELL_VERSION: u32 = 42;
+
+/// First version that can be asked to draw applications larger than life on one
+/// named display. Being the newest this shell knows of, it is also the version
+/// it asks to bind.
+///
+/// The session-wide `set_application_scale` came in at 25 and is still there for
+/// a shell older than this one; this shell no longer sends it. Below this
+/// version the Application scaling page still remembers what each screen was
+/// set to — the file is read by whichever compositor comes next — but nothing is
+/// sent and every window is the size of the display it is on.
+///
+/// Sending the old request instead was the other option and is the worse one: it
+/// would have to carry one of the screens' answers, and a page whose two screens
+/// moved together would be saying something untrue about the one it was not
+/// pressed on.
+const APP_SCALE_PER_DISPLAY_SHELL_VERSION: u32 = 43;
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -680,10 +698,12 @@ struct Cli {
     debug_actions: Vec<(f32, Action)>,
 
     /// Pretend these displays reported HDR support, as a comma-separated list
-    /// of `name:peak:gamut` (`--debug-hdr-displays SCREEN-A:600:1,SCREEN-B:400:0`).
+    /// of `name:peak:gamut:exact`
+    /// (`--debug-hdr-displays SCREEN-A:600:1:1,SCREEN-B:400:1:0`).
     /// `name` is any connector name; `peak` is cd/m², 0 for a display that
     /// does not say; `gamut` is 1 when sRGB colour intensity should be
-    /// offered.
+    /// offered; `exact` is 1 when the conversion behind it is the exact one
+    /// rather than the approximation a pipe with no degamma stage makes.
     ///
     /// Development aid, and the counterpart of `--debug-actions`: the screen
     /// list under Settings > Display > HDR is built from what the compositor
@@ -851,7 +871,7 @@ fn parse_debug_game(raw: &str) -> Result<(String, bool, Option<u8>), String> {
     Ok((name.to_string(), installed, share))
 }
 
-/// `name:peak:gamut`, for `--debug-hdr-displays`.
+/// `name:peak:gamut:exact`, for `--debug-hdr-displays`.
 fn parse_debug_display(raw: &str) -> Result<(String, settings::Support), String> {
     let mut fields = raw.split(':');
     let name = fields.next().unwrap_or_default().trim();
@@ -868,6 +888,11 @@ fn parse_debug_display(raw: &str) -> Result<(String, settings::Support), String>
     };
     let peak = number(fields.next(), 0)?;
     let gamut = number(fields.next(), 1)?;
+    // Exact unless asked otherwise, and only meaningful where there is a
+    // conversion to be exact about: a display with no matrix at all converts
+    // nothing, and saying the nothing is approximate would be a third state
+    // this page does not have.
+    let exact = number(fields.next(), 1)? != 0 && gamut != 0;
     Ok((
         name.to_string(),
         settings::Support {
@@ -875,6 +900,7 @@ fn parse_debug_display(raw: &str) -> Result<(String, settings::Support), String>
             active: false,
             peak: peak.min(u16::MAX as u32) as u16,
             gamut: gamut != 0,
+            gamut_exact: exact,
             // Always, and not a field of its own: an invented display is here
             // so that a page which needs a connector this session has not got
             // can be looked at, and the Night light page needs one exactly as
@@ -1166,7 +1192,7 @@ fn main() -> anyhow::Result<()> {
     // shell simply falls back to what it can do as an ordinary client.
     let shell_control = match globals.bind::<LxbShellV1, _, _>(
         &qh,
-        1..=PER_LAUNCH_SHELL_VERSION,
+        1..=APP_SCALE_PER_DISPLAY_SHELL_VERSION,
         (),
     ) {
         Ok(control) => Some(control),
@@ -1200,7 +1226,6 @@ fn main() -> anyhow::Result<()> {
         applied_launch_output: None,
         applied_driven_output: None,
         placed_launches: HashSet::new(),
-        applied_app_scale: None,
         applied_pip: None,
         applied_pointer: None,
         applied_keyboard_layout: None,
@@ -1225,6 +1250,8 @@ fn main() -> anyhow::Result<()> {
         file_manager: reveal::Service::start(),
         notifications: notify::Center::new(settings::do_not_disturb()),
         toast_lines: std::collections::BTreeMap::new(),
+        announced_messages: std::collections::BTreeMap::new(),
+        announced_invites: std::collections::BTreeMap::new(),
         icon_theme: IconLoader::new(),
         authenticating: None,
         sharing: None,
@@ -1653,13 +1680,13 @@ fn main() -> anyhow::Result<()> {
         shell.sync_mode();
         shell.sync_turn();
         shell.sync_place();
-        // And the one that is about the applications rather than about a
-        // display, which is why it is not diffed per screen. On the first pass
-        // it is how a compositor that has just come up at one to one is told
-        // what the last session was left set to.
+        // And how large the applications on each screen draw themselves, which
+        // is diffed per display like the three above it. On the first pass it is
+        // how a compositor that has just come up at one to one is told what the
+        // last session was left set to.
         shell.sync_app_scale();
-        // And its neighbour under System, which is about one window rather than
-        // every window and is diffed for the whole session in the same way.
+        // And the floating window, which is about one window rather than every
+        // window and is diffed for the whole session instead.
         shell.sync_picture_in_picture();
         // And what the pointing devices do, on the same terms again: one answer
         // for the session, and on the first pass it is how a compositor that
@@ -2513,6 +2540,12 @@ struct Panel {
     /// evening arriving a change this diff notices, without anything having
     /// been pressed.
     applied_night_light: Option<(bool, u16)>,
+    /// How large this display was last told to draw applications, in per cent,
+    /// so an unchanged setting is not resent every pass of the loop.
+    ///
+    /// Per display like the two above it, and the newest of the three to become
+    /// so — see [`Shell::sync_app_scale`].
+    applied_app_scale: Option<u16>,
     /// What this display can be driven at, as the compositor lists it. Empty
     /// where there is nothing to choose: a nested session, or a compositor too
     /// old to be asked.
@@ -2608,6 +2641,18 @@ struct Panel {
     /// committed is what the display should be showing now rather than
     /// whatever it happened to be showing when it was covered up.
     was_visible: bool,
+    /// Whether the last frame drawn for this display had the wallpaper in it,
+    /// which is not the same as having been drawn at all.
+    ///
+    /// A display drawing only what was raised over an application — an
+    /// on-screen keyboard, a bubble in the corner, the volume control — renders
+    /// no backdrop, and one drawing its last quiet frame renders none either.
+    /// The film behind a custom wallpaper is paced by somebody saying they want
+    /// a frame, so this is what has to say it: asked of `panel_is_visible`
+    /// instead, a board raised over a game kept a video wallpaper decoding at
+    /// full rate behind it, which is the one part of that feature that costs
+    /// something and shows nothing. See [`Shell::sync_wallpaper`].
+    drew_the_wallpaper: bool,
     /// Likewise for the backdrop's blur, which ramps with the menu rather
     /// than with the start screen — over an application the start screen
     /// never flies, but the background still has to soften.
@@ -3058,25 +3103,6 @@ struct LaunchQuestion {
     /// The rectangle everything about this press has grown out of.
     from: [f32; 4],
     question: lxb_steam::webui::Question,
-}
-
-/// What a rebuild of the whole bar does to the cursors standing in it.
-///
-/// The bar is read off the disk again for two quite different reasons, and they
-/// want opposite answers. One is something having been taken off the machine,
-/// where nobody asked for anything and the columns have changed shape under
-/// every display at once. The other is a row of the Settings column being
-/// pressed, where somebody's thumb is on that row and expects to still be on it
-/// afterwards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Cursors {
-    /// Put every display back at the top of the column a session opens on. A
-    /// cursor left pointing at the fourth row of a column that now has three is
-    /// worse than one that has plainly started again.
-    Restart,
-    /// Leave every display where it is, by the name of the column rather than
-    /// by its number. See [`Cursor::recolumned`].
-    Kept,
 }
 
 /// Whether Valve's client may be seen, and why.
@@ -3602,12 +3628,6 @@ struct Shell {
     /// [`begin_launch`] is the rule — so this is one entry per screen that is
     /// loading something, and never more.
     placed_launches: HashSet<Display>,
-    /// How large the compositor was last asked to draw applications, in per
-    /// cent, so an unchanged setting is not resent every pass of the loop.
-    ///
-    /// One for the session rather than one per display, unlike the HDR and
-    /// night-light settings beside it: see [`Shell::sync_app_scale`].
-    applied_app_scale: Option<u16>,
     /// And what the compositor was last told about the floating window, diffed
     /// the same way and against one value for the whole session — see
     /// [`Shell::sync_picture_in_picture`].
@@ -3744,6 +3764,31 @@ struct Shell {
     /// business knowing there is one. See
     /// [`Shell::measure_notification_bodies`].
     toast_lines: std::collections::BTreeMap<u32, u8>,
+    /// Who wrote the message each announcement is about, by the
+    /// announcement's own id.
+    ///
+    /// Beside the centre rather than in it, for the reason
+    /// [`Shell::toast_lines`] is: a SteamID is a fact about this session's
+    /// Steam account and `notify` has no business knowing there is one. What
+    /// it is for is the press — a row in that list opens the conversation the
+    /// message arrived in rather than merely clearing it, and the row knows
+    /// only which announcement it is — see
+    /// [`menu::Command::OpenConversation`].
+    ///
+    /// Pruned to what is still announced, in [`Shell::sync_notifications`],
+    /// so a session somebody has talked through all evening holds one entry
+    /// per announcement still on the list and not one per message ever sent.
+    announced_messages: std::collections::BTreeMap<u32, u64>,
+    /// And the same for an invitation to a game: which conversation it is in
+    /// and which invitation of theirs, by the announcement's own id.
+    ///
+    /// Its own map rather than a second kind of value in the one above,
+    /// because what the two rows *do* is different — one goes to a
+    /// conversation and the other starts a game — and a press that told them
+    /// apart by which half of a pair was filled in would be one mis-read field
+    /// away from launching something nobody asked for. See
+    /// [`menu::Command::AcceptInvitation`].
+    announced_invites: std::collections::BTreeMap<u32, (u64, u64)>,
     /// The icon theme, kept open for the pictures announcements bring with
     /// them.
     ///
@@ -4714,6 +4759,7 @@ impl Shell {
             hdr: settings::Support::default(),
             applied_hdr: None,
             applied_night_light: None,
+            applied_app_scale: None,
             in_use: false,
             drawing: false,
             // A display arriving has just been looked at, whether or not
@@ -4741,6 +4787,10 @@ impl Shell {
             home_linear: 0.0,
             home_fades_in: false,
             was_visible: true,
+            // A display that has drawn nothing yet has not drawn a wallpaper.
+            // The first pass settles it either way, and a film that waited one
+            // pass to start is a film nobody was looking at yet.
+            drew_the_wallpaper: false,
             blur_linear: 0.0,
             depth_linear: 0.0,
             arrival_linear: 0.0,
@@ -5623,6 +5673,7 @@ impl Shell {
             let visible = visible[index];
             let Some(target) = panel.target.as_mut() else {
                 panel.was_visible = visible;
+                panel.drew_the_wallpaper = false;
                 continue;
             };
 
@@ -5785,6 +5836,11 @@ impl Shell {
             // where it should be when it comes back rather than resuming an
             // animation nobody saw the start of. Only the drawing is skipped.
             if !draw_now {
+                // And a display that is drawing nothing is drawing no
+                // wallpaper, which is what parks the film behind a custom one.
+                // Left standing it would say this display still wanted frames
+                // for a picture it stopped putting on the screen passes ago.
+                panel.drew_the_wallpaper = false;
                 continue;
             }
             drew = true;
@@ -5818,6 +5874,9 @@ impl Shell {
                 board_types_here,
                 app_in_front && picker_on_screen,
             );
+            // And the quiet frame, which reaches the same answer from the other
+            // side — see [`nothing_of_the_bar_is_drawn`].
+            let board_only = nothing_of_the_bar_is_drawn(board_only, visible);
 
             // **The invariant the two halves above have to keep**, said out
             // loud because it has been broken three times and each time it
@@ -5875,6 +5934,13 @@ impl Shell {
                     "the bar is being drawn on a surface lifted over an application"
                 );
             }
+
+            // What this frame will have the wallpaper in, which is what paces
+            // the film behind a custom one. Recorded rather than worked out
+            // again in [`Shell::sync_wallpaper`]: the answer is this whole
+            // block of conditions, and a second copy of it drifting from this
+            // one is a decoder running behind a screen nobody is looking at.
+            panel.drew_the_wallpaper = !board_only && panel.backdrop_target.is_some();
 
             if let Some(backdrop_target) = panel.backdrop_target.as_mut() {
                 // Nothing of the backdrop shows past an application either, so
@@ -6122,6 +6188,7 @@ impl Shell {
                         }),
                         cannot_send: cannot_send.as_deref(),
                         unread: &Unread(self.steam.conversations()),
+                        games: &InviteGames(&self.steam),
                         slots: &Slots {
                             gpu,
                             art,
@@ -8007,8 +8074,8 @@ impl Shell {
         settings::apply(step);
         self.rebuild_settings();
         // Whichever bar this was: the two of them are the night light's warmth
-        // and how large applications draw themselves, and each of these sends
-        // only what has actually changed.
+        // and how large applications draw themselves — both per display now —
+        // and each of these sends only what has actually changed.
         self.sync_night_light();
         self.sync_app_scale();
         // The same click a row moving under the cursor makes, because that is
@@ -8179,6 +8246,7 @@ impl Shell {
             // though one had arrived. `--debug-actions message` only — see
             // [`Action::PretendAMessage`] — and it reaches Steam not at all.
             Action::PretendAMessage => self.pretend_a_message_arrived(),
+            Action::PretendAnInvite => self.pretend_an_invitation_arrived(),
             Action::VolumeUp => self.change_volume(1),
             Action::VolumeDown => self.change_volume(-1),
             Action::VolumeMute => self.mute_volume(),
@@ -9566,13 +9634,83 @@ impl Shell {
         }
     }
 
+    /// Go to the conversation an announcement arrived in, and put the
+    /// announcement away on the way.
+    ///
+    /// What pressing a message in the notification list does. It is the one
+    /// row in that list with somewhere to go: every other announcement is a
+    /// thing to read and clear, and a message is a thing to *answer*, so the
+    /// press that would merely clear it opens the conversation instead — which
+    /// is what pressing a program's own announcement does everywhere else.
+    ///
+    /// Clearing it is not a second step. Opening a conversation is reading it,
+    /// and reading it is what takes every announcement about it off the list —
+    /// see [`Shell::the_announcements_are_read`], which is why three messages
+    /// from one person do not leave two stale rows behind the first press.
+    fn go_to_the_conversation(&mut self, id: u32) {
+        // Looked up now rather than carried in the command, for the reason the
+        // key of an action is: the list stands for as long as the panel does,
+        // and this announcement may have been cleared out from under it — by
+        // Clear All, by the X on the end of its own row, or by the
+        // conversation having been opened from the friends panel meanwhile.
+        let Some(from) = self.announced_messages.get(&id).copied() else {
+            // Then the row has to answer for itself, and the honest answer is
+            // the one it would have given with nothing behind it.
+            self.notifications.dismiss(id);
+            self.sync_notification_panel();
+            self.needs_redraw = true;
+            return;
+        };
+        // The conversation first and the panel over it, so the panel arrives
+        // already turned to the right person — and so that one press makes one
+        // sound. The screen coming in is that sound; a conversation opening
+        // underneath it would be the same press answered twice.
+        let turned = self.open_the_conversation(from);
+        if !self.open_friends() && turned {
+            // Unless the panel was already standing, in which case nothing
+            // announced its arrival and the conversation is what arrived.
+            self.sounds.guide_open();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Take up the invitation an announcement carried, from the announcement
+    /// itself.
+    ///
+    /// The whole point of the row: somebody who is playing something else, or
+    /// standing on the start screen, sees the bubble in the corner and presses
+    /// it, and what happens is the game. No panel is opened on the way — the
+    /// conversation would be a screen shown for a quarter of a second and then
+    /// covered by a loading screen — and nothing is asked. Accepting is the
+    /// press; what cannot be accepted says why, in the same panels the button
+    /// in the chat raises. See [`Shell::accept_the_invite`].
+    fn take_up_the_invitation(&mut self, at: u32) {
+        // Looked up now rather than carried in the command, for the reason
+        // every other press on that list looks its subject up now: the panel
+        // stands for as long as somebody reads it, and an account signing out
+        // underneath takes every invitation with it.
+        let Some((from, id)) = self.announced_invites.get(&at).copied() else {
+            // Then there is nothing behind the row, and the honest answer is
+            // the one it would have given with nothing behind it.
+            self.notifications.dismiss(at);
+            self.sync_notification_panel();
+            self.needs_redraw = true;
+            return;
+        };
+        self.accept_the_invite(from, id);
+    }
+
     /// Bring it in from the right, and give it the directions.
     ///
     /// The panel is told how many rows this display holds before anything else,
     /// because the scroll is measured in them: a panel that took a direction
     /// before it had been told would keep the row it moved to on screen by a
     /// rule that says every row fits.
-    fn open_friends(&mut self) {
+    ///
+    /// Answers whether it was not already up, which is the same thing as
+    /// whether it made the sound of a screen arriving — see
+    /// [`Shell::go_to_the_conversation`], the one press that has to know.
+    fn open_friends(&mut self) -> bool {
         if let Some((_, height)) = self.focused_size() {
             self.friends.fits(ui::friends_rows_that_fit(height));
         }
@@ -9586,6 +9724,10 @@ impl Shell {
         // user is looking at would be a count of what is on their screen.
         if let Some(with) = self.friends.talking_to() {
             self.steam.read_the_conversation(with);
+            // And whatever it announced while the panel was away goes with the
+            // count, for the same reason: those rows are about words that are
+            // on the screen now. See [`Shell::the_announcements_are_read`].
+            self.the_announcements_are_read(with);
         }
         if self.friends.open() {
             // The same voice the guide's own screens answer a press in. It is a
@@ -9593,11 +9735,25 @@ impl Shell {
             // separates this from `select`.
             self.sounds.guide_open();
             self.needs_redraw = true;
+            return true;
         }
+        false
     }
 
     /// And send it back out. The panel keeps drawing itself the whole way.
     fn close_friends(&mut self) {
+        if self.close_friends_quietly() {
+            self.sounds.back();
+        }
+    }
+
+    /// The same, without the sound of a step back — for the one press that
+    /// puts the panel away and is not a step back: accepting an invitation,
+    /// where what answers the press is a game starting and the loading screen
+    /// this panel would otherwise be standing in front of.
+    ///
+    /// Answers whether there was a panel up.
+    fn close_friends_quietly(&mut self) -> bool {
         // The list of statuses goes with it. It is a menu about a control on
         // this panel, and a menu left standing over a column that has gone
         // would be hanging off nothing — anchored where the head used to be,
@@ -9614,9 +9770,10 @@ impl Shell {
         // column in this shell does. See [`friends::Friends::open`].
         self.stop_composing();
         if self.friends.close() {
-            self.sounds.back();
             self.needs_redraw = true;
+            return true;
         }
+        false
     }
 
     /// Whether the head of the friends panel carries a status button.
@@ -9721,8 +9878,28 @@ impl Shell {
                 }
             }
             Action::Launch => self.take_what_is_lit_in_the_conversation(),
-            // Options on a message that would not go: the way to stop trying.
-            Action::Menu => self.give_up_on_the_message(),
+            // The invitation, wherever the light is standing.
+            //
+            // **The top face button, and not X.** X raises this panel and puts
+            // it away, and a button that closed the panel everywhere but here,
+            // where it started a game instead, is the near-miss the user asked
+            // to be rid of: somebody pressing it to be gone would be in a game
+            // instead. On a keyboard that is the Menu key, which is the key the
+            // user named; `y`, F10 and the right mouse button are the same
+            // action and reach it too.
+            //
+            // Nothing else in a conversation answers this button. It is
+            // Options everywhere in the shell, and the one thing Options ever
+            // did in this column — give up on a message that would not go —
+            // was taken out at the user's word rather than left to share a
+            // button: a message somebody wrote is not something this shell
+            // throws away. What a failed send offers is Send again, and that
+            // is all it offers.
+            Action::Menu => {
+                self.accept_the_invitation_on_screen();
+            }
+            // And the button that raised the panel, which puts it away from
+            // anywhere in it — with no exception any more.
             Action::Friends => self.close_friends(),
             _ => {}
         }
@@ -9850,15 +10027,312 @@ impl Shell {
     /// conversation opened by position would be a conversation with whoever
     /// happened to be standing there when the press landed.
     fn talk_to(&mut self, steam_id: u64) {
+        if self.open_the_conversation(steam_id) {
+            self.sounds.guide_open();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The conversation itself, without the sound of a screen arriving.
+    ///
+    /// Answers whether the panel turned to somebody it was not already
+    /// showing, which is the only thing worth making a noise about.
+    ///
+    /// Split off for the one press that opens a conversation *and* the panel
+    /// it is drawn on — a message pressed in the notification list, where the
+    /// panel coming in from the right is the sound of the press and a second
+    /// one under it would be the same press answered twice. See
+    /// [`Shell::go_to_the_conversation`].
+    fn open_the_conversation(&mut self, steam_id: u64) -> bool {
+        // Whatever was announced about this conversation, whichever way it was
+        // opened. Reading it is what makes those rows stale, and the route in
+        // has nothing to do with it.
+        self.the_announcements_are_read(steam_id);
         if self.friends.talk_to(steam_id) {
             // Marks it read and fetches the history if it has not been fetched.
             self.steam.open_conversation(steam_id);
-            self.sounds.guide_open();
+            true
         } else {
             // Already open: the press still marks it read, which is what makes
             // a second press on a row with an unread count clear it.
             self.steam.read_the_conversation(steam_id);
+            false
         }
+    }
+
+    /// Take every announcement about one person's messages off the list,
+    /// because the user is now looking at what they said.
+    ///
+    /// The list and the conversation are two ways of being told the same
+    /// thing, and the conversation is the one with the words in it. A row left
+    /// behind on the bell would be the shell asking somebody to go and read a
+    /// message they have just read — and the bubble in the corner of the
+    /// screen goes with it, which is the same rule that keeps an announcement
+    /// from being raised for a conversation that is already open.
+    ///
+    /// Every announcement from that person and not merely the one that was
+    /// pressed: three messages are three rows, and opening the conversation
+    /// reads all three.
+    fn the_announcements_are_read(&mut self, with: u64) {
+        let read: Vec<u32> = self
+            .announced_messages
+            .iter()
+            .filter(|(_, from)| **from == with)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in read {
+            self.notifications.dismiss(id);
+            self.announced_messages.remove(&id);
+        }
+        // Invitations from them too. The card is on the screen the moment the
+        // conversation opens, with the button under it named in the legend, so
+        // a row behind the bell offering the same thing is the shell saying it
+        // twice — and the one on the screen is the one with the game's name on
+        // it.
+        let seen: Vec<u32> = self
+            .announced_invites
+            .iter()
+            .filter(|(_, (from, _))| *from == with)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in seen {
+            self.notifications.dismiss(id);
+            self.announced_invites.remove(&id);
+        }
+    }
+
+    /// Take the announcements about one invitation off the list, because it has
+    /// just been acted on.
+    ///
+    /// Narrower than [`Shell::the_announcements_are_read`] and used where that
+    /// would be wrong: accepting from the bell does not open the conversation,
+    /// so anything else waiting in it is still waiting.
+    fn the_invitation_announcements_are_done(&mut self, with: u64, id: u64) {
+        let done: Vec<u32> = self
+            .announced_invites
+            .iter()
+            .filter(|(_, (from, invite))| *from == with && *invite == id)
+            .map(|(at, _)| *at)
+            .collect();
+        for at in done {
+            self.notifications.dismiss(at);
+            self.announced_invites.remove(&at);
+        }
+    }
+
+    // --- an invitation to a game -------------------------------------------
+
+    /// What an invitation's game is called, wherever one is named on screen.
+    ///
+    /// Three answers in the order they are worth having. The name the roster
+    /// gave when the invitation arrived is the best of them — it is what the
+    /// person doing the inviting was playing at that moment, and it is
+    /// remembered with the invitation so that it survives them stopping. This
+    /// account's own library is asked next, which answers for every invitation
+    /// to a game somebody here owns. And a sentence about *a game* is what is
+    /// left, because every place this is drawn is a sentence with a hole in it
+    /// otherwise — an invitation whose game cannot be named is still an
+    /// invitation, and saying nothing about it would be a card that looks
+    /// broken.
+    fn what_the_game_is_called(&self, invite: &lxb_steam::chat::Invite) -> String {
+        what_the_game_is_called(&self.steam, invite)
+    }
+
+    /// The invitation the accept button acts on: the newest one in the
+    /// conversation that is open.
+    ///
+    /// `None` where the panel is showing the list, where the conversation has
+    /// no invitations in it, and — deliberately — where an invitation exists
+    /// in somebody *else's* conversation. The button is about what is on the
+    /// screen; every other invitation is reached by opening the conversation
+    /// it is in, or by pressing the announcement it raised.
+    fn the_invitation_on_screen(&self) -> Option<(u64, u64)> {
+        let with = self.friends.talking_to()?;
+        let invite = self.steam.newest_invite(with)?;
+        Some((with, invite.id))
+    }
+
+    /// Accept the invitation on screen, if there is one. Answers whether there
+    /// was.
+    ///
+    /// Half of what the top face button does here — see
+    /// [`Shell::on_conversation_action`], where the press arrives, and which
+    /// asks the message under the light first.
+    fn accept_the_invitation_on_screen(&mut self) -> bool {
+        let Some((with, id)) = self.the_invitation_on_screen() else {
+            return false;
+        };
+        self.accept_the_invite(with, id);
+        true
+    }
+
+    /// Take somebody up on an invitation: start their game, and join what they
+    /// are in.
+    ///
+    /// **Refused before it is begun, and said out loud when it is.** Three
+    /// things can be wrong with an invitation and none of them is the user's
+    /// mistake: Steam may never have said which game it is for, this account
+    /// may not own that game, and the game may not be on the disk. Each is a
+    /// panel of its own with the game's name on it, because "nothing happened"
+    /// is what a press that quietly did nothing looks like — and the third
+    /// carries the one thing that can be done about it, which is to install it.
+    ///
+    /// **Installing does not join.** Downloading a game is minutes and a lobby
+    /// is not held open for them, so a press that queued a download and then
+    /// joined an hour later would be joining something that has gone. The panel
+    /// says as much: install it, and accept again when it is ready.
+    ///
+    /// What a ready game gets is the ordinary Steam launch — the loading
+    /// screen, the wake, the client proved and the URL delivered — with the
+    /// invitation carried along to the end of it. See
+    /// [`Shell::begin_steam_launch_joining`].
+    fn accept_the_invite(&mut self, with: u64, id: u64) {
+        let Some(invite) = self.steam.invite(with, id).cloned() else {
+            tracing::debug!(
+                with = lxb_steam::chat::short(with),
+                id,
+                "the invitation pressed is no longer in the conversation"
+            );
+            return;
+        };
+        let name = self.what_the_game_is_called(&invite);
+        tracing::info!(
+            with = lxb_steam::chat::short(with),
+            app_id = invite.app_id,
+            lobby = invite.lobby().is_some(),
+            %name,
+            "accepting an invitation to a game"
+        );
+        // Which game, which an invitation does not carry — see
+        // [`lxb_steam::chat::Invite`]. What the roster said when it arrived,
+        // and failing that what they are playing now, because somebody who
+        // asked a minute ago is usually still in it.
+        let app_id = invite.app_id.or_else(|| {
+            self.steam
+                .roster()
+                .friends
+                .iter()
+                .find(|friend| friend.steam_id == with)
+                .and_then(|friend| friend.app_id)
+        });
+        let Some(app_id) = app_id else {
+            return self.say_which_game_is_not_known(&name);
+        };
+        if !self.steam.has_client() {
+            return self.say_no_steam_client(&name);
+        }
+        if !self.steam.signed_in() {
+            return self.say_steam_needs_an_account(&name);
+        }
+        let Some(game) = self.steam.game(app_id) else {
+            return self.say_the_account_does_not_own_it(&name);
+        };
+        let standing = game.standing;
+        let name = game.name.clone();
+        if !standing.playable() {
+            return self.offer_to_install_it_first(app_id, &name);
+        }
+        if cannot_be_played_offline(self.steam.reach().online(), standing) {
+            return self.say_it_is_not_up_to_date(&name);
+        }
+        // Marked as taken *now* rather than when the client answers: what the
+        // card is saying is that this session has handed it over, which is true
+        // from here whatever Valve's client makes of it. Accepting again is
+        // allowed and unchanged by it.
+        self.steam.take_the_invite(with, id);
+        // And the panel gets out of the way, because what answers this press is
+        // a loading screen and a game. Quietly: the sound of this press is the
+        // launch, and a step-back under it would be two answers to one press.
+        // Everything about the conversation is kept, so the panel comes back to
+        // it — see [`friends::Friends::open`].
+        self.close_friends_quietly();
+        // And the guide with it, which is the other thing this press can have
+        // been made from: the bell's list is a tile in that column, and an
+        // overlay left standing over a loading screen would be the shell
+        // covering the answer to the press that opened it.
+        self.guide.close();
+        self.sync_surface_state();
+        // And the announcement it raised goes, exactly as a message's does when
+        // its conversation is read: it has been acted on, and a row still
+        // offering to join is a row pointing at something that has happened.
+        self.the_invitation_announcements_are_done(with, id);
+        let from = self.dialog_origin();
+        self.begin_steam_launch_joining(app_id, name, from, false, Some(invite));
+    }
+
+    /// Steam never said which game the invitation is for.
+    ///
+    /// Which happens: the connect string carries no app id, the game is
+    /// whatever the inviter was playing, and a private profile — or an invite
+    /// from somebody who has since stopped — leaves nothing to look it up by.
+    fn say_which_game_is_not_known(&mut self, name: &str) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(name.to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-steam-did-not-say-which-game-this-invitation-is-for")
+                        .to_string(),
+                ),
+                dialog::Line::Rule,
+            ],
+            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The invitation is to a game this account does not have a licence for.
+    fn say_the_account_does_not_own_it(&mut self, name: &str) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(name.to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-this-account-does-not-own-this-game").to_string(),
+                ),
+                dialog::Line::Rule,
+            ],
+            vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The game is owned and not on the disk, which is the one refusal with
+    /// something to press.
+    fn offer_to_install_it_first(&mut self, app_id: u32, name: &str) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(name.to_string()),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-it-is-not-installed-on-this-machine").to_string(),
+                ),
+                dialog::Line::Note(
+                    crate::i18n::text("shell-install-it-and-accept-again-when-it-is-ready")
+                        .to_string(),
+                ),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(
+                    menu::Command::SteamInstall(app_id),
+                    crate::i18n::text("shell-install"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+            ],
+            // On Install, because it is the reason the panel is up — and
+            // because the other row is what every other way out of a panel
+            // already does.
+            0,
+        );
         self.needs_redraw = true;
     }
 
@@ -9987,36 +10461,40 @@ impl Shell {
                 self.needs_redraw = true;
             }
             crate::friends::Talking::Message(mark) => {
-                // Only a message that did not go answers a press, and the
-                // answer is to send it again. Everything else in the column is
-                // something that has already happened.
-                let lxb_steam::chat::Mark::Pending(request) = mark else {
+                // An invitation is the one thing in the column that is not
+                // something that has already happened, so Accept is what the
+                // ordinary press means while the light is standing on one. The
+                // button the legend names does the same thing from anywhere in
+                // the conversation; this is for the card itself, which is where
+                // a pointer lands and where the light stops.
+                if let lxb_steam::chat::Mark::Invite(id) = mark {
+                    self.accept_the_invite(with, id);
                     return;
-                };
-                if self.steam.send_it_again(with, request) {
-                    self.sounds.select();
-                    self.needs_redraw = true;
                 }
+                // A message that did not go is sent again, which is the one
+                // act a line of a conversation has of its own. `send_it_again`
+                // answers false for a message that is still on its way — there
+                // is nothing to retry about one nobody has refused yet — and
+                // that message then means what every other line means.
+                if let lxb_steam::chat::Mark::Pending(request) = mark {
+                    if self.steam.send_it_again(with, request) {
+                        self.sounds.select();
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // And what every other line means is **write**: the light goes
+                // back to the field and the board comes up.
+                //
+                // Nothing in this column can be done to a message that has
+                // already arrived — Steam offers no act on one, and a press
+                // that did nothing at all is what the user found when they
+                // walked up a conversation on 2026-09-21. What somebody in a
+                // conversation always wants is the field, and this is the way
+                // back to it from twenty messages up: one press, named in the
+                // legend wherever the light is standing.
+                self.begin_composing();
             }
-        }
-    }
-
-    /// Give up on a message that would not go, and take it off the column.
-    ///
-    /// The Options button, because it is the destructive half of the pair and
-    /// this shell's rule is that Options is where a row's other acts live.
-    fn give_up_on_the_message(&mut self) {
-        let Some(with) = self.friends.talking_to() else {
-            return;
-        };
-        let crate::friends::Talking::Message(lxb_steam::chat::Mark::Pending(request)) =
-            self.friends.talking()
-        else {
-            return;
-        };
-        if self.steam.forget_the_message(with, request) {
-            self.sounds.back();
-            self.needs_redraw = true;
         }
     }
 
@@ -10033,28 +10511,44 @@ impl Shell {
             return;
         };
         let conversation = self.steam.conversations().with(with);
-        let marks = friends::Friends::marks_of(conversation);
+        let rows = friends::Friends::rows_of(conversation);
         let draft_wanted = self.friends.wants_the_draft_measured(height);
-        let column_wanted = self.friends.wants_measuring(with, &marks, height);
+        let column_wanted = self.friends.wants_measuring(with, &rows, height);
         if !draft_wanted && !column_wanted {
             return;
         }
         let message_width = ui::friends_message_text_width(width, height);
+        // A card's writing is given a different width — see
+        // [`ui::friends_card_text_width`] — so the two are measured against
+        // the box each is drawn in.
+        let card_width = ui::friends_card_text_width(width, height);
         let message_size = ui::friends_message_size(height);
         let compose_width = ui::friends_compose_text_width(width, height);
         let compose_size = ui::friends_compose_size(height);
         let draft = self.friends.draft().to_string();
-        let bodies: Vec<(lxb_steam::chat::Mark, String, bool, bool)> = conversation
+        // What is measured on each line, and on an invitation that is **the
+        // game's name** rather than the body: a card is drawn around the name,
+        // and an invitation's body is a connect string nobody ever sees. See
+        // [`crate::friends::Laid::card`].
+        let bodies: Vec<(lxb_steam::chat::Mark, String, bool, bool, bool)> = conversation
             .map(|it| {
                 it.lines()
                     .iter()
-                    .map(|line| {
-                        (
+                    .map(|line| match line.invite() {
+                        Some(invite) => (
+                            line.mark(),
+                            self.what_the_game_is_called(invite),
+                            false,
+                            false,
+                            true,
+                        ),
+                        None => (
                             line.mark(),
                             line.body().to_string(),
                             line.from_me(),
                             line.failure().is_some(),
-                        )
+                            false,
+                        ),
                     })
                     .collect()
             })
@@ -10077,7 +10571,7 @@ impl Shell {
         }
         let laid_out: Vec<crate::friends::Laid> = bodies
             .iter()
-            .map(|(mark, body, from_me, failed)| crate::friends::Laid {
+            .map(|(mark, body, from_me, failed, card)| crate::friends::Laid {
                 mark: *mark,
                 // No cap worth the name: a message is the thing the panel was
                 // opened to read, and the only thing entitled to cut it short
@@ -10085,20 +10579,28 @@ impl Shell {
                 lines: gpu.lines_needed(
                     body,
                     message_size,
-                    false,
-                    message_width,
+                    // A card's name is set bold, and bold is wider: measured
+                    // light it would be measured at a width it never has.
+                    *card,
+                    match card {
+                        true => card_width,
+                        false => message_width,
+                    },
                     ui::FRIENDS_MESSAGE_LINES,
                 ) as u8,
                 // And how wide those lines really come out, which is what the
                 // bubble is drawn around. See [`crate::friends::Laid::width`].
-                width: gpu.width_needed(body, message_size, false, message_width),
+                // A card is its own width whatever is written on it, so this is
+                // measured for the bubbles and harmless on the rest.
+                width: gpu.width_needed(body, message_size, *card, message_width),
                 from_me: *from_me,
                 failed: *failed,
+                card: *card,
             })
             .collect();
         let (line_height, padding) = ui::friends_message_metrics(height);
         self.friends
-            .measured(with, marks, laid_out, line_height, padding, height);
+            .measured(with, rows, laid_out, line_height, padding, height);
     }
 
     /// Tell the panel how tall its message column is and how much of it shows,
@@ -10147,6 +10649,50 @@ impl Shell {
         );
     }
 
+    /// Invent an invitation from whoever the panel is standing on, as though
+    /// one had arrived.
+    ///
+    /// The companion to [`Self::pretend_a_message_arrived`] and needed for the
+    /// same reason, twice over: an invitation cannot be produced without
+    /// another person who is *in a game*. It goes in through
+    /// [`lxb_steam::chat::Word::Invited`] — the same door a real one comes
+    /// through — so what follows is the real thing: the card in the
+    /// conversation, the announcement, the legend and the press.
+    ///
+    /// The lobby is invented. Accepting it hands Valve's client a lobby that
+    /// does not exist, which is a launch that starts the game and joins
+    /// nothing; nothing here reaches Steam by itself.
+    fn pretend_an_invitation_arrived(&mut self) {
+        let selected = self.friends.selected(self.steam.roster().friends.len());
+        let Some(from) = self.friends.talking_to().or_else(|| {
+            self.steam
+                .roster()
+                .friends
+                .get(selected)
+                .map(|friend| friend.steam_id)
+        }) else {
+            tracing::warn!("--debug-actions invite: there is nobody to pretend asked");
+            return;
+        };
+        let (app_id, game) = self
+            .steam
+            .roster()
+            .friends
+            .iter()
+            .find(|friend| friend.steam_id == from)
+            .map(|friend| (friend.app_id, friend.game.clone()))
+            .unwrap_or((None, None));
+        tracing::warn!(
+            with = lxb_steam::chat::short(from),
+            app_id,
+            "--debug-actions invite: this invitation is invented and nobody sent it"
+        );
+        if let Some((from, id)) = self.steam.pretend_an_invitation(from, app_id, game) {
+            self.announce_an_invitation(from, id);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Say that a message arrived for a conversation nobody is looking at.
     ///
     /// **The body is shown, unless every screen is resting.** That is the
@@ -10179,6 +10725,40 @@ impl Shell {
         if self.friends.is_open() && self.friends.talking_to() == Some(from) {
             return;
         }
+        let (name, picture) = self.who_it_is_from(from);
+        let asleep =
+            !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
+        let body = what_a_message_may_say(body, asleep);
+        let (id, raised) = self.notifications.announce_message(&name, &body, &picture);
+        // And who it was from, kept beside the list so the row can be pressed
+        // to go there. Filed whether or not a bubble went up: do-not-disturb
+        // silences the corner, it does not make the announcement behind the
+        // bell a dead end.
+        self.announced_messages.insert(id, from);
+        if raised {
+            // Once per announcement, exactly as a pairing and an arrival off
+            // the bus are — and through the same chime, which do-not-disturb
+            // switches off like every other.
+            self.sounds.notified();
+        }
+    }
+
+    /// Whose announcement this is: what they are called, and the picture to
+    /// put on it.
+    ///
+    /// One function because two things are announced about a friend — what
+    /// they said and what they asked — and a row that wore the right face for
+    /// one and the bell for the other would look like two different kinds of
+    /// event. The name falls back to a word for *a friend* rather than to an
+    /// id: an announcement is read across a room.
+    ///
+    /// The picture is the sender's own face where this machine has it, named by
+    /// the path it is cached at and read off the disk rather than out of the
+    /// atlas — an announcement is built once and carries whatever existed at
+    /// that moment. See [`avatars::Avatars::on_disk`]. A face this machine has
+    /// never fetched falls back to the figure that stands for somebody with no
+    /// picture, and is asked for so the next one has it; nothing waits on that.
+    fn who_it_is_from(&mut self, from: u64) -> (String, String) {
         let them = self
             .steam
             .roster()
@@ -10189,9 +10769,6 @@ impl Shell {
             .map(|friend| friend.name.clone())
             .unwrap_or_else(|| crate::i18n::text("shell-a-friend").to_string());
         let face = them.and_then(|friend| friend.avatar.clone());
-        let asleep =
-            !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
-        let body = what_a_message_may_say(body, asleep);
         let picture = face
             .as_deref()
             .and_then(|hash| {
@@ -10200,17 +10777,44 @@ impl Shell {
                     .map(|path| path.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| icons::SETTING_PERSON.to_string());
-        // And fetched if it was not there, for the next one. Nothing waits on
-        // it: this announcement has already been given the figure.
         if let Some(hash) = face.as_deref() {
             self.avatars.want(hash, lxb_steam::AvatarSize::Medium);
         }
-        if self.notifications.announce(&name, &body, &picture) {
-            // Once per announcement, exactly as a pairing and an arrival off
-            // the bus are — and through the same chime, which do-not-disturb
-            // switches off like every other.
+        (name, picture)
+    }
+
+    /// Say that somebody has asked this account to join them in a game.
+    ///
+    /// The same announcement a message raises, wearing the same face — because
+    /// it is the same event to whoever is not looking at the panel: this person
+    /// wants you. What it says is the shell's own sentence rather than
+    /// anybody's words, which is the whole reason it is **not** withheld while
+    /// the screens are resting: what [`what_a_message_may_say`] holds back is
+    /// somebody's private message printed across a dark room, and the name of a
+    /// game is neither private nor theirs.
+    ///
+    /// Filed under the announcement's number so that pressing the row accepts
+    /// it — see [`menu::Command::AcceptInvitation`] — which is the one thing
+    /// this row does that a message's does not.
+    ///
+    /// Nothing is announced for a conversation that is open on screen: the card
+    /// is already in front of the user, with the button under it named.
+    fn announce_an_invitation(&mut self, from: u64, id: u64) {
+        if self.friends.is_open() && self.friends.talking_to() == Some(from) {
+            return;
+        }
+        let Some(invite) = self.steam.invite(from, id).cloned() else {
+            return;
+        };
+        let game = self.what_the_game_is_called(&invite);
+        let (name, picture) = self.who_it_is_from(from);
+        let body = crate::message!("steam-invited-you-to-play", "game" => game);
+        let (at, raised) = self.notifications.announce_message(&name, &body, &picture);
+        self.announced_invites.insert(at, (from, id));
+        if raised {
             self.sounds.notified();
         }
+        self.needs_redraw = true;
     }
 
     // --- the context menu --------------------------------------------------
@@ -14351,6 +14955,22 @@ impl Shell {
         // already seen.
         self.load_notification_icons();
         self.measure_notification_bodies();
+        // And the senders of the messages among them, on the same terms and
+        // for the same reason — see [`Shell::announced_messages`]. An id that
+        // has left the list is an announcement nobody can press any more, and
+        // a length that matches is not enough to skip the sweep: one going as
+        // another arrives leaves the count where it was.
+        if !self.announced_messages.is_empty() || !self.announced_invites.is_empty() {
+            let standing: Vec<u32> = self
+                .notifications
+                .list()
+                .iter()
+                .map(|held| held.id)
+                .collect();
+            self.announced_messages
+                .retain(|id, _| standing.contains(id));
+            self.announced_invites.retain(|id, _| standing.contains(id));
+        }
         if arrived.changed {
             // The open panel is a list of the very things that have just
             // changed, so it is brought up to date rather than left showing
@@ -14588,7 +15208,13 @@ impl Shell {
     /// The list's rows — see [`notification_rows`], which is where they are
     /// built — with each told how many lines its writing needs.
     fn notification_entries(&mut self) -> Vec<menu::Entry> {
-        let mut entries = notification_rows(self.notifications.list());
+        let invitations: std::collections::BTreeSet<u32> =
+            self.announced_invites.keys().copied().collect();
+        let mut entries = notification_rows(
+            self.notifications.list(),
+            &self.announced_messages,
+            &invitations,
+        );
         let height = self.focused_size().map_or(1080.0, |(_, height)| height);
         self.measure_rows(&mut entries, height);
         entries
@@ -16125,6 +16751,8 @@ impl Shell {
                 let title = self.announcement_title(id);
                 self.context_menu.descend(title, entries);
             }
+            menu::Command::OpenConversation(id) => self.go_to_the_conversation(id),
+            menu::Command::AcceptInvitation(id) => self.take_up_the_invitation(id),
             menu::Command::InvokeNotification(id, action) => {
                 if let Some(event) = self.updates.notifications.remove(&id) {
                     self.notifications.dismiss(id);
@@ -16691,7 +17319,7 @@ impl Shell {
                 // from the desktop entries on disk, and one of those has just
                 // been deleted, so the honest way to take the application off
                 // the bar is to look again.
-                self.rescan_applications();
+                self.scan_the_bar_again();
                 self.say_and_acknowledge(
                     &app,
                     vec![
@@ -17341,7 +17969,7 @@ impl Shell {
         {
             return;
         }
-        self.scan_the_bar_again(Cursors::Kept);
+        self.scan_the_bar_again();
         self.decode_marks_that_arrived();
     }
 
@@ -17440,32 +18068,29 @@ impl Shell {
         self.icon_theme.load(name, ICON_SIZE)
     }
 
-    /// Look at what is installed again, after something has been removed.
-    ///
-    /// Every display's cursor is put back to the top with it. The columns have
-    /// changed shape underneath them — one row shorter, and possibly one column
-    /// shorter — and a cursor left pointing at the fourth row of a column that
-    /// now has three is worse than one that has plainly started again.
-    fn rescan_applications(&mut self) {
-        self.scan_the_bar_again(Cursors::Restart);
-    }
-
     /// Build the whole bar from the disk again, and put back everything on it
     /// that did not come off one.
     ///
-    /// Split from [`Self::rescan_applications`] for the one caller that must
-    /// *not* move anybody: the Steam integration being turned on or off is a
-    /// row of the Settings column being pressed, and the press has to leave the
-    /// user's thumb on the row they pressed. See [`Cursors`].
-    fn scan_the_bar_again(&mut self, cursors: Cursors) {
+    /// Nobody is moved by it. Something being installed or removed is not a
+    /// press the user made, and a bar that took them back to the column a
+    /// session opens on every time a package landed would be a shell that
+    /// restarted itself under them — which is what this used to do on the one
+    /// path that asked for it, the tile menu's Uninstall. What keeps a cursor
+    /// honest instead is the pair below: [`model::Cursor::remember`] before the
+    /// bar is touched and [`model::Cursor::recall`] once the whole of it is
+    /// back, with [`model::Cursor::keep_in_bounds`] for the rows that really
+    /// did go.
+    fn scan_the_bar_again(&mut self) {
         // Before anything is replaced: what a cursor holds about the bar is a
-        // list of numbers, and this is the list of names those numbers meant.
-        // See [`Cursor::recolumned`].
-        let before: Vec<&str> = self
-            .lattice
-            .categories
+        // list of numbers, and this is where each of those numbers was pointing
+        // while the bar they are about is still up. Taken here rather than at
+        // the end because the rebuild moves the cursors itself — every column
+        // hung back on the bar below is a column *added* under them — and by
+        // the end there is nothing left that says where anybody was standing.
+        let footings: Vec<model::Footing> = self
+            .panels
             .iter()
-            .map(|column| column.id)
+            .map(|panel| panel.cursor.remember(&self.lattice))
             .collect();
         let mut categories = apps::scan();
         // A scan finds what is on the disk and nothing else, so everything
@@ -17558,13 +18183,38 @@ impl Shell {
         // library hung the way every other one is. A session without the
         // integration puts up nothing — see [`Self::rebuild_retroarch`].
         self.rebuild_retroarch();
-        for panel in &mut self.panels {
-            match cursors {
-                Cursors::Restart => panel.cursor = Cursor::for_model(&self.lattice),
-                Cursors::Kept => {
-                    panel.cursor.recolumned(&before, &self.lattice);
-                    panel.cursor.keep_in_bounds(&self.lattice);
-                }
+        // And every cursor put back where it was standing, now that the bar is
+        // the whole of what it is going to be. Nothing between here and the
+        // footings above may be trusted to have left one where it was:
+        // `shelve_games` alone moves them twice over, once for the library
+        // column it hangs and once for the rows it keeps a display on.
+        for (panel, footing) in self.panels.iter_mut().zip(&footings) {
+            panel.cursor.recall(footing, &self.lattice);
+            panel.cursor.keep_in_bounds(&self.lattice);
+        }
+        // And, for the display being driven, the folders it had open — which a
+        // scan cannot find, because what is under a folder is read when
+        // somebody opens it. See [`model::Cursor::walk_back_in`]: it costs one
+        // `readdir` per level, and only for somebody who was browsing when the
+        // package landed.
+        //
+        // The driven display alone, because the folders live on the bar rather
+        // than on a cursor: two displays cannot be standing in two different
+        // folders to begin with, and a second walk would only take the first
+        // one's rows away again.
+        let how = self.reading_folders();
+        let focused = self.focused_panel;
+        if let (Some(panel), Some(footing)) = (self.panels.get_mut(focused), footings.get(focused))
+        {
+            // Disjoint fields: this display's cursor is walked through the
+            // shared catalogue while the catalogue itself is written.
+            if let Some(orders) = panel.cursor.walk_back_in(&mut self.lattice, footing, how) {
+                self.file_orders = orders;
+                // The read has just put the column's own head row back, which
+                // while a marking is on is not the row that belongs at the top
+                // of it. The same line every other re-read of a folder ends
+                // with; see [`Self::dress_the_marked_column`].
+                self.dress_the_marked_column();
             }
         }
         // And the watch, whichever route brought the shell here. A removal the
@@ -19671,6 +20321,25 @@ impl Shell {
     /// Everything that is true of both ways in — a press on the tile and a
     /// second attempt out of a panel — and nothing that is true of only one.
     fn begin_steam_launch(&mut self, app_id: u32, name: String, from: [f32; 4], take_over: bool) {
+        self.begin_steam_launch_joining(app_id, name, from, take_over, None)
+    }
+
+    /// The same, for a press that is accepting somebody's invitation.
+    ///
+    /// One function with the invitation as its last argument rather than two,
+    /// because everything either of them does is the same: the loading screen,
+    /// the sound, the note that this press is why the client is running, the
+    /// wake and what is waiting on it. What the invitation changes is one line
+    /// at the far end of the wake — which URL the client is given — and it is
+    /// carried there in [`steam::Awaiting`].
+    fn begin_steam_launch_joining(
+        &mut self,
+        app_id: u32,
+        name: String,
+        from: [f32; 4],
+        take_over: bool,
+        joining: Option<lxb_steam::chat::Invite>,
+    ) {
         // The press is answered on the screen straight away, exactly as any
         // other launch is. There is no process to watch and there will not be
         // one — the game is the client's child, not ours — so the splash waits
@@ -19708,6 +20377,7 @@ impl Shell {
             display: here,
             from,
             asked: Instant::now(),
+            joining,
         });
         self.needs_redraw = true;
     }
@@ -19890,7 +20560,14 @@ impl Shell {
             waited = ?waiting.asked.elapsed(),
             "Valve's client is ready; asking it to start the game"
         );
-        if let Err(why) = self.steam.play(waiting.app_id) {
+        // Started, or started *and joined*: an accepted invitation is the same
+        // press with one thing more to say, and the difference is a URL. See
+        // [`steam::Steam::join`].
+        let handed = match waiting.joining.as_ref() {
+            Some(invite) => self.steam.join(waiting.app_id, invite),
+            None => self.steam.play(waiting.app_id),
+        };
+        if let Err(why) = handed {
             self.end_launch(waiting.display);
             return self.say_steam_could_not_start_it(&waiting, &why);
         }
@@ -21027,12 +21704,35 @@ impl Shell {
         for (from, body) in std::mem::take(&mut changed.messages) {
             self.announce_a_message(from, body, Instant::now());
         }
+        // And the invitations, on the same terms and for the same reason. They
+        // are announced *after* the messages of the same pass deliberately: an
+        // invitation is the more urgent of the two and the corner stacks
+        // oldest-first, so the last thing announced is the one nearest the eye.
+        for (from, id) in std::mem::take(&mut changed.invites) {
+            self.announce_an_invitation(from, id);
+        }
         // A different account is a different list of people, so the highlight
         // goes back to the top rather than staying on whichever row number it
         // was on — and every conversation goes with it. The store has already
         // thrown its half away; this is the panel's.
         if changed.account {
             self.friends.start_again();
+            // And what was announced about those conversations. A row that
+            // says somebody wrote is a row that goes to what they wrote, and
+            // the store has just thrown every word of it away — so it would be
+            // a press into an empty conversation belonging to an account that
+            // is no longer signed in. See [`Shell::announced_messages`].
+            for id in std::mem::take(&mut self.announced_messages).into_keys() {
+                self.notifications.dismiss(id);
+                self.needs_redraw = true;
+            }
+            // And the invitations, which are worse than stale: a press on one
+            // would ask Valve's client to join a lobby on behalf of an account
+            // that is no longer signed in here.
+            for id in std::mem::take(&mut self.announced_invites).into_keys() {
+                self.notifications.dismiss(id);
+                self.needs_redraw = true;
+            }
             if self.friends.nothing_to_say() {
                 self.close_the_board();
                 self.needs_redraw = true;
@@ -21071,6 +21771,15 @@ impl Shell {
             }
         }
         let change = self.retroarch.poll();
+        // Before the rebuild, which is what puts the rows on the bar: the
+        // Trophies column holds a copy of this folder of its own, and a cover
+        // that has just landed is the one thing in it that column cannot work
+        // out for itself. Handed over rather than asked for — see
+        // [`retroachievements::RetroAchievements::pictured`], which is what
+        // this replaced a `library` request per picture with.
+        if !change.pictured.is_empty() {
+            self.retroachievements.pictured(&change.pictured);
+        }
         if change.rows {
             self.rebuild_retroarch();
             self.needs_redraw = true;
@@ -21151,6 +21860,15 @@ impl Shell {
         // whether anything has to be fetched at all, and a fetch that has just
         // ended is a folder about to be read again.
         if change.scanned {
+            // The folder has been read again, which is the whole of what the
+            // Trophies column's ROM half is built from — so this is where that
+            // column is told to ask again. It used to be in
+            // [`Self::rebuild_retroarch`], which is also called by every core
+            // fetched, every picture that lands, every press in the picture
+            // picker and every panel that opens over the row: none of those
+            // changes a game or an achievement, and all of them cost a
+            // `library` request apiece.
+            self.retroachievements.refresh();
             self.retroarch_scanned();
         }
     }
@@ -21336,9 +22054,14 @@ impl Shell {
     /// Both together, always, because both are built from the same state: the
     /// row says what is in the folder and the column *is* what is in the
     /// folder, and rebuilding one without the other is two answers to one
-    /// question on screen at once.
+    /// question on screen at once. The Trophies column is written again with
+    /// them, since half of it is this same folder.
+    ///
+    /// **Rebuilding is not refreshing.** This is a pass over what is already
+    /// known and it asks nobody anything; whether the achievement helper is
+    /// sent to the site again is decided at the one place the folder is read —
+    /// see `change.scanned` in [`Self::sync_retroarch`].
     fn rebuild_retroarch(&mut self) {
-        self.retroachievements.refresh();
         self.rebuild_trophies();
         let note = self.retroarch.note();
         let arriving = self.retroarch.arriving();
@@ -25216,6 +25939,20 @@ impl Shell {
             .is_some_and(|splash| splash.drawing(Instant::now()))
     }
 
+    /// Whether a loading screen on `index` has something behind it to show.
+    ///
+    /// The half of a launch where this surface stops standing for the whole
+    /// display — see [`paints_over_everything`], which is the only caller and
+    /// carries the reason. Until something has arrived, a splash is the start
+    /// screen with a loading screen grown over it and hides everything the
+    /// start screen hid; afterwards it is a fade over the application it is
+    /// revealing, and a surface that called itself opaque through that fade
+    /// would throw the application away.
+    fn splash_is_revealing(&self, index: usize) -> bool {
+        self.launch_on(index)
+            .is_some_and(|splash| splash.drawing(Instant::now()) && !splash.waiting())
+    }
+
     /// The splash on `index`, if that display is loading something.
     fn launch_on(&self, index: usize) -> Option<&launch::Launch> {
         let display = self.display_at(index)?;
@@ -28241,12 +28978,22 @@ impl Shell {
         }
     }
 
-    /// Tell the compositor how large applications are to draw themselves.
+    /// Tell each display how large the applications on it are to draw
+    /// themselves.
     ///
-    /// One value for the whole session rather than one per display, unlike
-    /// everything beside it here: what it answers is how far from the screens
-    /// the user is sitting. So it is diffed against a single remembered number
-    /// instead of against each panel's, and there is no display to name.
+    /// One value per display, diffed against each panel's own like the night
+    /// light and the HDR settings beside it. It used to be one for the session,
+    /// on the argument that what it answers is how far from the screens the
+    /// user is sitting — which is true, and is not the whole of it: the user is
+    /// a different distance from each of their screens.
+    ///
+    /// **Nothing at all below [`APP_SCALE_PER_DISPLAY_SHELL_VERSION`]**, rather
+    /// than the session-wide request this replaces. The page is per screen now,
+    /// and a compositor that can only be told one number would have to be told
+    /// one of them — which would be a page whose two screens moved together,
+    /// saying something that is not true about the one it was not pressed on.
+    /// The setting is still remembered, for whichever compositor comes next;
+    /// this is what the shell did below version 25 as well.
     ///
     /// Safe to call every loop iteration, and called there for the reason
     /// [`Shell::sync_hdr`] is: this is also how the setting arrives after a
@@ -28262,19 +29009,29 @@ impl Shell {
         let Some(control) = self.shell_control.clone() else {
             return;
         };
-        if control.version() < APP_SCALE_SHELL_VERSION {
+        if control.version() < APP_SCALE_PER_DISPLAY_SHELL_VERSION {
             return;
         }
-        let wanted = settings::app_scale();
-        if self.applied_app_scale == Some(wanted) {
-            return;
+        let mut sent = false;
+        for panel in &mut self.panels {
+            let wanted = settings::app_scale_for(&panel.name);
+            if panel.applied_app_scale == Some(wanted) {
+                continue;
+            }
+            control.set_output_application_scale(&panel.output, wanted as u32);
+            panel.applied_app_scale = Some(wanted);
+            sent = true;
+            tracing::debug!(
+                display = %panel.name,
+                percent = wanted,
+                "asked for this application scale"
+            );
         }
-        control.set_application_scale(wanted as u32);
-        self.applied_app_scale = Some(wanted);
-        if let Err(err) = self.conn.flush() {
-            tracing::warn!(?err, "could not send the application scale");
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not send the application scale");
+            }
         }
-        tracing::debug!(percent = wanted, "asked for this application scale");
     }
 
     /// Tell the compositor what to do with a browser's picture-in-picture
@@ -28654,9 +29411,19 @@ impl Shell {
         // Wanted only where somebody could see it: a display resting or covered
         // by an application draws nothing, and a film going on decoding behind
         // one would be the one part of this that costs something and shows
-        // nothing. The same rule the start screen's own animation follows — see
-        // [`Shell::panel_is_visible`].
-        if (0..self.panels.len()).any(|index| self.panel_is_visible(index)) {
+        // nothing.
+        //
+        // **Asked of what was drawn, not of what is visible.** Those are two
+        // different questions and this used to ask the wrong one. A display is
+        // visible whenever the shell has anything on it — an on-screen keyboard
+        // over a game, a bubble in the corner, the control a volume key raised —
+        // and in every one of those the bar gives the screen up and the backdrop
+        // is not rendered at all. So the film went on decoding at full rate
+        // behind a game for as long as a keyboard was up over it, drawing into
+        // a picture nothing was putting on the screen. See
+        // [`Panel::drew_the_wallpaper`], which is that condition itself rather
+        // than a second guess at it.
+        if self.panels.iter().any(|panel| panel.drew_the_wallpaper) {
             self.paper.wanted();
         }
         let Some(frame) = self.paper.take(self.paper_spare.take()) else {
@@ -29503,8 +30270,9 @@ impl Shell {
     /// declares `Categories=Network;FileTransfer;Game`, so on an ordinary
     /// machine that is Internet and not Games — and no amount of taking rows
     /// off the bar the shell is holding would produce one it never kept. The
-    /// cursors are kept where they are, because this is a press: see
-    /// [`Cursors::Kept`].
+    /// cursors are kept where they are, as they are for every other rebuild:
+    /// this is a press, and the thumb that made it is on a row of the page
+    /// being rebuilt.
     ///
     /// Nothing here checks what the setting was a moment ago. The press is
     /// idempotent by construction — a worker started twice is the second handle
@@ -29572,7 +30340,7 @@ impl Shell {
         // Settings column is built inside the scan — see [`apps::assemble`] —
         // from the value this press has already written down, so there is
         // nothing left for [`Self::rebuild_settings`] to do here.
-        self.scan_the_bar_again(Cursors::Kept);
+        self.scan_the_bar_again();
     }
 
     /// Let go of everything the Steam half of the shell was in the middle of.
@@ -30521,7 +31289,12 @@ impl Shell {
                 // is derived from, read once for both.
                 let opaque = paints_over_everything(
                     index == self.focused_panel && self.guide.is_over_app(),
-                    self.splash_on_screen(index),
+                    // **Not** `splash_on_screen`, which is what lifts the
+                    // surface just below: a splash that is still waiting is
+                    // this display's whole picture, and saying otherwise starts
+                    // up every application asleep behind it for the length of
+                    // the launch. See [`paints_over_everything`].
+                    self.splash_is_revealing(index),
                     index == self.focused_panel && self.guide.is_menu(),
                     board_here && keyboard,
                     toasting,
@@ -35002,7 +35775,11 @@ fn pairing_words(outcome: &bluetooth::Outcome) -> (String, String) {
     }
 }
 
-fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
+fn notification_rows(
+    list: &[notify::Notification],
+    messages: &std::collections::BTreeMap<u32, u64>,
+    invitations: &std::collections::BTreeSet<u32>,
+) -> Vec<menu::Entry> {
     if list.is_empty() {
         // A panel refuses to open with nothing choosable on it, and this one
         // has to open: the tile's whole question is *did I miss anything*, and
@@ -35034,7 +35811,23 @@ fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
         // get back out again would be the panel wasting their time; one with
         // buttons must not be dismissed by the press that was reaching for
         // them.
-        let command = if held.actions.is_empty() {
+        //
+        // And a message from a friend is neither. It has no buttons, because
+        // the shell sent it and there is no program on the other end of one —
+        // but it is the one announcement in this list that is *about
+        // somewhere*, and a press that cleared it would throw away the only
+        // thing on screen pointing at the conversation. So it goes there, and
+        // clears itself on the way, which is what pressing a program's own
+        // announcement does everywhere else.
+        //
+        // An invitation to a game goes one further and is *taken*: what that
+        // row is about is not a place to go but a thing to say yes to, and the
+        // yes starts the game. See [`menu::Command::AcceptInvitation`].
+        let command = if invitations.contains(&held.id) {
+            menu::Command::AcceptInvitation(held.id)
+        } else if messages.contains_key(&held.id) {
+            menu::Command::OpenConversation(held.id)
+        } else if held.actions.is_empty() {
             menu::Command::DismissNotification(held.id)
         } else {
             menu::Command::ShowNotification(held.id)
@@ -35081,8 +35874,11 @@ fn notification_rows(list: &[notify::Notification]) -> Vec<menu::Entry> {
         // one is the row going, and a panel that folded away would take the
         // answer with it before it could be seen — the same reason a mixer's
         // tracks hold it. A row that *opens* does not need telling: stepping
-        // into a list keeps the panel by definition.
-        if held.actions.is_empty() {
+        // into a list keeps the panel by definition. And a row that leaves for
+        // a conversation must not hold it — the answer to that press is on the
+        // other side of the screen, and a list left standing over it would be
+        // the panel arguing with the place it just sent somebody.
+        if matches!(command, menu::Command::DismissNotification(_)) {
             entry.holds()
         } else {
             entry
@@ -35177,21 +35973,45 @@ fn clickable_region(state: (Layer, KeyboardInteractivity), board: Option<[i32; 4
 /// The rest are the ways the shell can be over an application without hiding
 /// it. The guide is see-through on purpose — the cards in its overview *are*
 /// the live windows, and a game stopped behind it would be a still photograph
-/// of itself. A loading screen grows out of a tile, and the window it is
-/// waiting for maps underneath it and is revealed rather than switched to: an
-/// application put to sleep there is a game that never finishes opening. The
-/// board, a bubble in the corner and the volume control are each drawn over an
-/// application that goes on being used underneath them, and the bar is not
-/// drawn at all while they are up.
+/// of itself. The board, a bubble in the corner and the volume control are each
+/// drawn over an application that goes on being used underneath them, and the
+/// bar is not drawn at all while they are up.
+///
+/// ## A loading screen is two halves, and only the second is a hole
+///
+/// `revealing` used to be *a loading screen is on this display*, which was one
+/// question too few and cost the user the whole saving. A splash that is still
+/// **waiting** is the picture: the start screen with a loading screen grown
+/// over it, every pixel of it drawn here, and whatever was behind it a moment
+/// before the press is exactly as hidden as it was then. Saying otherwise
+/// handed the display back to the topmost thing on it — which is the game the
+/// user had just walked away from — and the compositor started it up again and
+/// began drawing it. Measured in a nested session: an application asleep behind
+/// the start screen was continued 17 ms after the press that started something
+/// else, and stayed running for the 12 s the second application took to show a
+/// window. For a browser from cold, or a game Valve's client has to fetch
+/// first, that is the whole of a launch spent running a game nobody can see —
+/// with its music in the room, which is the complaint the sleeper exists for.
+///
+/// Once something has **arrived** the splash is a fade over it, and there the
+/// answer really is no: a surface calling itself opaque through that fade would
+/// throw away the application it is dissolving to show and leave the user
+/// watching black.
+///
+/// What must not be stopped underneath a waiting splash is the one window the
+/// splash is waiting for, and that is not a question about this display — it is
+/// a question about that window, answered where the answer is:
+/// [`crate::render::windows_on_screen`] in the compositor spares a window that
+/// has never been on screen at all.
 fn paints_over_everything(
     over_app: bool,
-    launching: bool,
+    revealing: bool,
     menu: bool,
     keyboard: bool,
     toasting: bool,
     volume: bool,
 ) -> bool {
-    over_app && !(launching || menu || keyboard || toasting || volume)
+    over_app && !(revealing || menu || keyboard || toasting || volume)
 }
 
 /// Whether one display is to be rested behind black now.
@@ -35323,6 +36143,41 @@ fn picture_behind(entry: &Entry) -> Option<&Path> {
 /// layer or keyboard change with it.
 fn should_draw(visible: bool, settling: bool, was_visible: bool) -> bool {
     visible || settling || was_visible
+}
+
+/// Whether a frame carries nothing of the bar — only whatever the shell has
+/// raised over the application, if anything at all.
+///
+/// Two ways to reach the same answer, and the second was missing.
+///
+/// `raised_over_it` is [`draws_only_what_was_raised`]: something of the shell's
+/// is on this screen and the bar belongs behind the application rather than
+/// beside it. That one has been right for a while.
+///
+/// `visible` is [`Shell::panel_is_visible`], and a frame drawn while it is false
+/// is a frame [`should_draw`] allowed for its own reasons — the display was
+/// drawing a moment ago, or an animation of its own has not settled. Nothing of
+/// that display can be seen; that is what `visible` being false *means*. So the
+/// bar has no business on that frame either, and it was getting on to it.
+///
+/// How it got there is worth keeping, because it is not the obvious path. What
+/// makes a covered display visible can stop in the very pass that draws it. The
+/// on-screen keyboard's hint is the one the user found: it stands over an
+/// application only while there is a pad in the hand, and the first press of a
+/// key puts the hand on the keys instead — so the hint, `keyboard_visible`,
+/// `raised_over_it` and `visible` all go false together, while `was_visible` is
+/// still true. The frame that followed carried the whole start screen, and
+/// committed it on the surface behind the application. Nothing redraws that
+/// surface until the application goes away, so it stayed: through a translucent
+/// window, the shell's icons over somebody's game for as long as the game was
+/// up. The same frame is drawn on every hand-over to an application, which is
+/// where a translucent terminal showed a whole start screen behind itself.
+///
+/// The commit still happens. It is the commit that applies a pending layer or
+/// keyboard change, which is the other half of what the extra frame is for —
+/// what it carries is nothing.
+fn nothing_of_the_bar_is_drawn(raised_over_it: bool, visible: bool) -> bool {
+    raised_over_it || !visible
 }
 
 /// Whether the windows a display has just lost amount to an application
@@ -36141,6 +36996,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "next-screen" => Action::NextScreen,
         "screenshot" => Action::Screenshot,
         "message" => Action::PretendAMessage,
+        "invite" => Action::PretendAnInvite,
         "steam-overlay" => Action::SteamOverlay,
         "volume-up" => Action::VolumeUp,
         "volume-down" => Action::VolumeDown,
@@ -36332,6 +37188,31 @@ fn set_shell_sound(value: f32) -> bool {
     })
 }
 
+/// What an invitation's game is called — see `Shell::what_the_game_is_called`,
+/// which is this from the shell's side.
+///
+/// A free function over the library rather than a method, because the drawing
+/// asks it too and does so through a lookup that holds nothing but the library
+/// — see [`InviteGames`].
+fn what_the_game_is_called(steam: &steam::Steam, invite: &lxb_steam::chat::Invite) -> String {
+    if let Some(game) = invite
+        .game
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return game.to_string();
+    }
+    if let Some(name) = invite
+        .app_id
+        .and_then(|app_id| steam.game(app_id))
+        .map(|game| game.name.clone())
+    {
+        return name;
+    }
+    crate::i18n::text("shell-a-game").to_string()
+}
+
 /// Adapts the conversation store to the one number a friend's row draws.
 ///
 /// A wrapper for the reason [`Slots`] is one: the layout is arithmetic on
@@ -36345,6 +37226,18 @@ impl ui::UnreadCount for Unread<'_> {
             .with(steam_id)
             .map(lxb_steam::chat::Conversation::unread)
             .unwrap_or(0)
+    }
+}
+
+/// Adapts the library to the one sentence an invitation's card draws.
+///
+/// A wrapper on the same terms as [`Unread`]: the layout has no business
+/// reaching into a library, and what it needs is a name.
+struct InviteGames<'a>(&'a steam::Steam);
+
+impl ui::InviteGames for InviteGames<'_> {
+    fn name_of(&self, invite: &lxb_steam::chat::Invite) -> String {
+        what_the_game_is_called(self.0, invite)
     }
 }
 
@@ -37010,7 +37903,7 @@ smithay_client_toolkit::delegate_dispatch2!(Shell);
 impl Dispatch<LxbShellV1, ()> for Shell {
     fn event(
         state: &mut Self,
-        _proxy: &LxbShellV1,
+        control: &LxbShellV1,
         event: lxb_shell_v1::Event,
         _data: &(),
         _conn: &Connection,
@@ -37328,6 +38221,7 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                         // which is what a shell talking to a compositor too
                         // old to say otherwise has to assume anyway.
                         gamut: panel.hdr.gamut,
+                        gamut_exact: panel.hdr.gamut_exact,
                         // Not carried by this event either, and not implied by
                         // it in either direction: an SDR laptop panel can be
                         // warmed and a nested session cannot be, whatever
@@ -37351,17 +38245,30 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                 }
             }
             lxb_shell_v1::Event::OutputHdrControls { output, controls } => {
+                let controls = controls.into_result().ok();
                 let gamut = controls
-                    .into_result()
-                    .is_ok_and(|controls| controls.contains(lxb_shell_v1::HdrControl::Gamut));
+                    .is_some_and(|controls| controls.contains(lxb_shell_v1::HdrControl::Gamut));
+                // Whether that conversion is the exact one. A compositor too
+                // old to say sets neither bit, and then the answer is the one
+                // this shell has always assumed: a display that can convert
+                // converts properly. See `EXACT_GAMUT_SHELL_VERSION`.
+                let gamut_exact = if control.version() >= EXACT_GAMUT_SHELL_VERSION {
+                    controls.is_some_and(|controls| {
+                        controls.contains(lxb_shell_v1::HdrControl::GamutExact)
+                    })
+                } else {
+                    gamut
+                };
                 if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
-                    if panel.hdr.gamut != gamut {
+                    if panel.hdr.gamut != gamut || panel.hdr.gamut_exact != gamut_exact {
                         tracing::info!(
                             display = %panel.name,
                             gamut,
+                            gamut_exact,
                             "which HDR settings this display can honour"
                         );
                         panel.hdr.gamut = gamut;
+                        panel.hdr.gamut_exact = gamut_exact;
                         state.refresh_hdr_support();
                     }
                 }
@@ -37629,7 +38536,13 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                 //
                 // This is also how a layout the shell never chose — the one in
                 // the compositor's own config file — reaches the board.
-                state.needs_redraw |= keyboard::note_layout(&layout, &variant);
+                if keyboard::note_layout(&layout, &variant) {
+                    state.needs_redraw = true;
+                    // The board is now made of different keys, so the keymap
+                    // the compositor is holding for it is the wrong one. See
+                    // `Osk::note_layout_changed`.
+                    state.osk.note_layout_changed();
+                }
                 // A layout this shell asked for and did not get is one xkb
                 // would not compile. Written down it would be re-sent and
                 // refused at the start of every session, and the page would go
@@ -38553,6 +39466,34 @@ mod flight_tests {
         assert!(should_draw(true, false, false));
     }
 
+    /// And what that last frame is allowed to carry, which is the other half of
+    /// the same rule. Drawing one more frame is right; drawing the *bar* on it
+    /// is what put the start screen behind every application in the session.
+    #[test]
+    fn the_frame_a_covered_display_leaves_behind_carries_no_bar() {
+        const RAISED: bool = true;
+        const VISIBLE: bool = true;
+
+        // The ordinary frame: the display is on screen and the shell has
+        // nothing raised over an application, so the bar is drawn.
+        assert!(!nothing_of_the_bar_is_drawn(!RAISED, VISIBLE));
+
+        // Something raised over an application — a board, a bubble, the volume
+        // control. Already right before this rule existed.
+        assert!(nothing_of_the_bar_is_drawn(RAISED, VISIBLE));
+
+        // And the quiet frame, which is the one that was wrong. An application
+        // covers the display, so nothing of the shell can be seen, and what the
+        // frame is *for* is applying a pending layer or keyboard change rather
+        // than showing anybody anything. It carries no bar whether or not
+        // something was raised a moment ago.
+        assert!(nothing_of_the_bar_is_drawn(RAISED, !VISIBLE));
+        assert!(
+            nothing_of_the_bar_is_drawn(!RAISED, !VISIBLE),
+            "a hint that has just gone leaves a covered display, not a bar"
+        );
+    }
+
     /// OLED protection, from the one side of it that is arithmetic. Every
     /// clause is a way of blacking out a screen somebody is looking at, which
     /// is the failure this feature has to be trusted not to produce.
@@ -39227,9 +40168,21 @@ mod flight_tests {
         // windows, so a game stopped behind it would be a photograph of itself.
         assert!(!paints_over_everything(OVER_APP, NO, YES, NO, NO, NO));
 
-        // A loading screen is a hole in the display until it has grown, and the
-        // window it is waiting for maps *underneath* it.
+        // A loading screen that is *revealing* something is a fade over the
+        // application it has just handed the display to, and claiming that fade
+        // is opaque would throw that application away.
         assert!(!paints_over_everything(OVER_APP, YES, NO, NO, NO, NO));
+
+        // But a loading screen that is still **waiting** is not passed in here
+        // at all — see `Shell::splash_is_revealing` — because it is this
+        // display's whole picture and hides exactly what the bar behind it hid.
+        // Saying otherwise handed the screen back to the topmost window on it,
+        // which is the application the user had just left, and started it up
+        // again for the length of the launch.
+        assert!(
+            paints_over_everything(OVER_APP, NO, NO, NO, NO, NO),
+            "a splash still waiting for its window leaves the display covered"
+        );
 
         // And the three things drawn over an application that is still being
         // used underneath them: the board, a bubble in the corner, and the
@@ -41038,6 +41991,17 @@ mod pairing_announcement_tests {
 mod notification_age_tests {
     use super::*;
 
+    /// A list with no message in it, which is every list in these tests but
+    /// the one that is about a message.
+    fn nothing() -> std::collections::BTreeMap<u32, u64> {
+        std::collections::BTreeMap::new()
+    }
+
+    /// And no invitation in it either.
+    fn none() -> std::collections::BTreeSet<u32> {
+        std::collections::BTreeSet::new()
+    }
+
     fn ago(seconds: u64) -> String {
         age_of(
             Instant::now()
@@ -41074,7 +42038,7 @@ mod notification_age_tests {
     fn a_row_says_when_above_what_rather_than_beside_it() {
         let mut held = notify::Notification::heard(1, "System Update Available");
         held.body = "Version 3.1 is waiting to be installed".to_string();
-        let rows = notification_rows(std::slice::from_ref(&held));
+        let rows = notification_rows(std::slice::from_ref(&held), &nothing(), &none());
         let row = &rows[1];
 
         assert_eq!(row.stamp.as_deref(), Some("now"));
@@ -41097,7 +42061,11 @@ mod notification_age_tests {
         // An announcement with nothing more to say is two runs and not a third
         // empty one — the time and the summary, which is the whole of what
         // arrived.
-        let bare = notification_rows(&[notify::Notification::heard(2, "Disk ejected")]);
+        let bare = notification_rows(
+            &[notify::Notification::heard(2, "Disk ejected")],
+            &nothing(),
+            &none(),
+        );
         assert_eq!(bare[1].stamp.as_deref(), Some("now"));
         assert_eq!(bare[1].detail, None);
     }
@@ -41113,7 +42081,7 @@ mod notification_age_tests {
             notify::Notification::heard(2, "Older"),
             notify::Notification::heard(1, "Oldest"),
         ];
-        let rows = notification_rows(&held);
+        let rows = notification_rows(&held, &nothing(), &none());
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(labels, ["Clear All", "Newest", "Older", "Oldest"]);
         assert_eq!(rows[0].command, menu::Command::DismissNotifications);
@@ -41132,9 +42100,88 @@ mod notification_age_tests {
     /// one thing it has to say.
     #[test]
     fn an_empty_list_offers_no_way_to_empty_it() {
-        let rows = notification_rows(&[]);
+        let rows = notification_rows(&[], &nothing(), &none());
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(labels, ["Nothing to read"]);
+    }
+
+    /// A message from a friend is the one row in the list that goes somewhere.
+    ///
+    /// It has no buttons — the shell announced it and there is no program on
+    /// the other end of one — so under the rule that decides the other two
+    /// commands it would merely be cleared, throwing away the only thing on
+    /// screen pointing at the conversation. The user asked for this on
+    /// 2026-09-20: pressing it should go to the chat and take the
+    /// announcement with it.
+    #[test]
+    fn a_message_is_pressed_to_go_to_the_conversation() {
+        let held = [
+            notify::Notification::heard(4294967295, "Ann"),
+            notify::Notification::heard(2, "Disk ejected"),
+        ];
+        let mut messages = std::collections::BTreeMap::new();
+        messages.insert(4294967295u32, 7656119u64);
+        let rows = notification_rows(&held, &messages, &none());
+
+        assert_eq!(
+            rows[1].command,
+            menu::Command::OpenConversation(4294967295),
+            "a message should open the conversation it arrived in"
+        );
+        // And it must not hold the panel up. The answer to that press is on
+        // the other side of the screen.
+        assert!(!rows[1].holds);
+        // The X on the end of the row is still the way to be rid of it
+        // without going anywhere.
+        assert_eq!(
+            rows[1].aside.map(|aside| aside.command),
+            Some(menu::Command::DismissNotification(4294967295))
+        );
+
+        // Everything else in the list is unchanged: an announcement with
+        // nothing behind it is still cleared by the press, and still holds the
+        // panel up to show that it went.
+        assert_eq!(rows[2].command, menu::Command::DismissNotification(2));
+        assert!(rows[2].holds);
+    }
+
+    /// And an invitation to a game is taken rather than merely opened: the
+    /// press starts the game and joins what they are in.
+    ///
+    /// The user asked for this on 2026-09-21 — "when user presses the
+    /// notification of the game invite it should automatically accept the
+    /// invite and proceed with launching the game and joining the invited
+    /// session" — which is the strongest thing any row in this list does, and
+    /// the reason it is a command of its own rather than a message row that
+    /// happens to be about an invitation.
+    #[test]
+    fn an_invitation_is_pressed_to_take_it() {
+        let held = [
+            notify::Notification::heard(4294967295, "Ann"),
+            notify::Notification::heard(4294967294, "Bea"),
+        ];
+        // The two kinds of announcement a friend raises, side by side: Ann has
+        // asked you into a game and Bea has written.
+        let mut messages = std::collections::BTreeMap::new();
+        messages.insert(4294967294u32, 7656119u64);
+        let mut invitations = std::collections::BTreeSet::new();
+        invitations.insert(4294967295u32);
+        let rows = notification_rows(&held, &messages, &invitations);
+
+        assert_eq!(
+            rows[1].command,
+            menu::Command::AcceptInvitation(4294967295),
+            "an invitation should be accepted by the press"
+        );
+        assert!(!rows[1].holds, "the answer to it is a game, not a list");
+        // The X is still the way to be rid of it without joining anything,
+        // which on this row matters more than on any other.
+        assert_eq!(
+            rows[1].aside.map(|aside| aside.command),
+            Some(menu::Command::DismissNotification(4294967295))
+        );
+        // And a message beside it is still a message.
+        assert_eq!(rows[2].command, menu::Command::OpenConversation(4294967294));
     }
 }
 

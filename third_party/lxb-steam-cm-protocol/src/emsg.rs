@@ -34,6 +34,19 @@ pub enum EMsg {
     ClientGetDepotDecryptionKey = 5438,
     ClientGetDepotDecryptionKeyResponse = 5439,
     ClientLogon = 5514,
+    /// A friend's invitation to join them in a game, pushed at every session
+    /// the invited account has open.
+    ///
+    /// It carries a *connect string* and no app id — what game it is for is the
+    /// inviter's own persona state, which arrives separately. See
+    /// `chat::decode_invite_to_game`.
+    ///
+    /// 7005 in SteamKit's `emsg.steamd` and in node-steam-user's `EMsg.js`,
+    /// checked against both because a wrong number does not fail: Steam logs
+    /// the session off with `InvalidProtocolVer` and closes the socket, which
+    /// reads exactly like a retired message. See the note on
+    /// `ClientGetDepotDecryptionKey`.
+    ClientInviteToGame = 7005,
     ClientPICSProductInfoRequest = 8903,
     ClientPICSProductInfoResponse = 8904,
     ClientPICSAccessTokenRequest = 8905,

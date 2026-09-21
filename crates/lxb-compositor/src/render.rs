@@ -911,7 +911,7 @@ fn push_windows<R>(
         // its buffer already has as many pixels as the rectangle this puts
         // it in. One that did not is enlarged, softly, which is the same
         // answer it gets from every compositor.
-        let factor = lxb.outputs.window_scale(window);
+        let factor = lxb.outputs.window_scale_on(window, output);
         if factor == 1.0 {
             elements.extend(surfaces.into_iter().map(LxbRenderElement::Surface));
             continue;
@@ -1136,7 +1136,7 @@ where
         // larger than life is not the rectangle it was configured at: the
         // flight has to start from what the user can see, or a window scaled
         // to 150% would jump to two thirds of its size before setting off.
-        let factor = lxb.outputs.window_scale(window);
+        let factor = lxb.outputs.window_scale_on(window, output);
         let current = Rectangle::<f64, smithay::utils::Logical>::new(
             (geometry.loc - output_geo.loc).to_f64(),
             crate::scale::visual_geometry(geometry, factor)
@@ -1223,7 +1223,7 @@ fn push_overview_windows<R>(
         // however much larger than life its application is drawing — see the
         // flight home in [`push_restoring_windows`], which starts from the same
         // rectangle this one ends at.
-        let factor = lxb.outputs.window_scale(window);
+        let factor = lxb.outputs.window_scale_on(window, output);
         let current = Rectangle::<f64, smithay::utils::Logical>::new(
             (geometry.loc - output_geo.loc).to_f64(),
             crate::scale::visual_geometry(geometry, factor)
@@ -1424,6 +1424,11 @@ pub fn post_repaint(
 /// is no application in front for them to belong to. While the overview is up
 /// everything is, because those cards are the live windows themselves.
 ///
+/// Except a window that has never been on screen *at all*, which is on every
+/// list until it has been on one. See [`has_been_seen`]: that is the window a
+/// loading screen is waiting for, and it is the one thing under a covered
+/// display that must go on running.
+///
 /// A window the shell is driving out of sight is on no list. It is not on the
 /// screen, which is the question this answers; that it must still be sent
 /// frames is [`post_repaint`]'s own business, and that it must never be put to
@@ -1440,7 +1445,22 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
         // is also what [`crate::sleep`] reads to decide what may be put to
         // sleep — which is the one thing a window that floats over everything
         // must never do.
-        return floating_windows(lxb, output);
+        let mut shown = floating_windows(lxb, output);
+        // And the newcomers, which are the other thing a covered display can
+        // have on it that nobody is hiding from anybody — see [`has_been_seen`].
+        // Nothing is marked here: a display the shell is standing over is
+        // precisely where a window does not get its chance.
+        let arriving: Vec<Window> = lxb
+            .space
+            .elements_for_output(output)
+            .rev()
+            .filter(|window| !lxb.out_of_sight(window))
+            .filter(|window| !has_been_seen(window))
+            .filter(|window| !shown.contains(window))
+            .cloned()
+            .collect();
+        shown.extend(arriving);
+        return shown;
     }
     let front = (!overview_up)
         .then(|| front_application(lxb, output))
@@ -1450,6 +1470,12 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
     let mut shown = Vec::new();
     let mut behind_front = false;
     for window in lxb.space.elements_for_output(output).rev() {
+        // Marked before anything is decided about it, and for every window
+        // rather than for the ones this answers yes about: the shell is not
+        // over this display, so a window behind the application in front has
+        // had its chance to be seen and lost it, which is an ordinary covered
+        // window and not one still arriving. See [`has_been_seen`].
+        mark_as_seen(window);
         if lxb.out_of_sight(window) {
             continue;
         }
@@ -1782,9 +1808,18 @@ fn floating_windows(lxb: &Lxb, output: &Output) -> Vec<Window> {
 /// and differ by the whole of this setting on a scaled one, and a frame throttle
 /// reading the wrong one would decide that no application ever fills a screen
 /// the moment somebody asked for larger windows.
-fn on_screen(lxb: &Lxb, window: &Window) -> Option<Rectangle<i32, Logical>> {
+///
+/// **The shell asks the same question and must get the same answer**, which is
+/// why this is not private to the render pass. It has its own reason to know
+/// whether an application covers its bar — it stops drawing when one does — and
+/// it can only be told, so `lxb_shell_v1.output_window` carries this rectangle's
+/// size. Sending the configured size instead meant the shell's answer and this
+/// one disagreed by exactly the scale factor, and a session with larger
+/// applications had its start screen drawn behind every Wayland one of them for
+/// as long as it was in front. See [`crate::shell_control`].
+pub(crate) fn on_screen(lxb: &Lxb, window: &Window) -> Option<Rectangle<i32, Logical>> {
     let geometry = lxb.space.element_geometry(window)?;
-    let factor = lxb.outputs.window_scale(window);
+    let factor = lxb.outputs.window_scale(&lxb.space, window);
     Some(crate::scale::visual_geometry(geometry, factor))
 }
 
@@ -1926,6 +1961,45 @@ pub fn painted_within(window: &Window, recently: std::time::Duration) -> bool {
         .user_data()
         .get::<LastDrawn>()
         .is_some_and(|drawn| drawn.at.get().elapsed() < recently)
+}
+
+/// Whether this window has ever been on a display the shell was not standing
+/// over.
+///
+/// The one thing under a covered display that is not hidden from anybody. A
+/// window that has never been anywhere has not been *covered*: nobody has had
+/// the chance to see it and fail to, and something is still deciding what to do
+/// with it. That something is usually a loading screen — the window it is
+/// waiting for maps underneath it and is revealed rather than switched to — and
+/// a window starved of its frames and stopped in that gap is an application
+/// that never finishes opening. It is not only the shell's own launches: a game
+/// Valve's client is starting arrives the same way, under the same splash, and
+/// the shell has no pid for it to name.
+///
+/// The mark goes on in [`windows_on_screen`] for every window on a display the
+/// shell is not over, whether or not that window is one of the ones on screen —
+/// a window behind the application in front has had its chance and lost it,
+/// which is an ordinary covered window. So this means exactly *this window
+/// arrived while the shell was standing over the display and the shell has not
+/// lifted since*, and it stops meaning it by itself the moment the shell does.
+///
+/// Kept on the window rather than in a table beside it, as [`LastDrawn`] is, so
+/// that it goes when the window does.
+#[derive(Debug, Default)]
+struct BeenSeen(std::cell::Cell<bool>);
+
+fn has_been_seen(window: &Window) -> bool {
+    window
+        .user_data()
+        .get::<BeenSeen>()
+        .is_some_and(|seen| seen.0.get())
+}
+
+fn mark_as_seen(window: &Window) {
+    window.user_data().insert_if_missing(BeenSeen::default);
+    if let Some(seen) = window.user_data().get::<BeenSeen>() {
+        seen.0.set(true);
+    }
 }
 
 /// When a window last had a frame of its own to show, and whether its silence

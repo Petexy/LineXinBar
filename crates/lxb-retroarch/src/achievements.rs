@@ -504,10 +504,20 @@ fn fingerprint(path: &Path, console: u32) -> Option<String> {
 fn library(folder: &Path) -> Result<(), String> {
     let a = account()?;
     let cache = account_cache(text(&a, "user")?)?;
-    let collection = crate::scan::library(folder);
+    let mut collection = crate::scan::library(folder);
     if collection.unreadable.is_some() {
         return Err("The ROM folder could not be read".into());
     }
+    // And the covers already on this disk, which a scan does not come with:
+    // `scan::library` leaves every `boxart` at `None` and it is [`crate::pictures`]
+    // that fills them, once per library, off one listing per console and two
+    // `stat`s a game. The RetroArch column's own scan calls it and this one did
+    // not, so every row this half sent carried no picture at all and the
+    // Trophies column drew the trophy glyph over a collection whose box art was
+    // sitting in the cache the whole time. Nothing is fetched here — the
+    // reading half of `art` takes no agent — so this is still a folder read and
+    // not a request.
+    crate::pictures(&mut collection);
     let mappings_path = cache_root()?.join("mappings.json");
     let mut mappings = read(&mappings_path).unwrap_or(json!({}));
     let old: Vec<Game> = read(&cache.join("library.json"))
@@ -634,6 +644,28 @@ fn library(folder: &Path) -> Result<(), String> {
     emit(json!({"event":"library","games":games}));
     Ok(())
 }
+/// Forget a ROM cover this cache wrote down but the disk no longer has.
+///
+/// The rule [`Owned::forget_missing_pictures`] applies to the account's half,
+/// applied to the ROM half now that it has pictures to forget. It used not to
+/// need it: a ROM's cover came off a fresh scan every time and was never saved,
+/// so there was nothing on the disk that could outlive the file it named. It is
+/// saved now — a scan is a folder read and a shell that has just started draws
+/// the column before one has run — and a path is not a picture. An emptied
+/// cache, a moved HOME or a hand-deleted folder leaves a row pointing at
+/// nothing, and a row pointing at nothing draws the trophy glyph for ever
+/// because a path is not nothing and is therefore never asked for again.
+fn forget_missing_rom_pictures(games: &mut Value) {
+    for game in games.as_array_mut().into_iter().flatten() {
+        if !game["picture"]
+            .as_str()
+            .is_some_and(|at| Path::new(at).is_file())
+        {
+            game["picture"] = Value::Null;
+        }
+    }
+}
+
 /// One picture off RetroAchievements' media host, kept in `kept`.
 ///
 /// `shelf` is the folder the site holds it in and `kept` the one this cache
@@ -704,6 +736,30 @@ struct Owned {
     unlocked: Option<u32>,
     #[serde(default)]
     hardcore: Option<u32>,
+}
+
+impl Owned {
+    /// Forget a picture this record remembers but the disk no longer has.
+    ///
+    /// Both of them are absolute paths into `$XDG_CACHE_HOME`, and a cache is
+    /// by definition a directory somebody may empty: the row under Settings
+    /// that fetches the artwork again, a `rm -rf ~/.cache`, a `HOME` that
+    /// moved, a machine the pictures were never on. Neither picture is ever
+    /// asked for a second time while one is recorded — the mark costs a
+    /// request and the cover a listing, and both were written down as facts
+    /// that do not change — so a path that outlives its file is recorded for
+    /// **ever**: the row falls back to the trophy glyph and no later sweep
+    /// repairs it, because a sweep reads the record rather than the disk.
+    ///
+    /// So the record is believed no further than a `stat`. What is not on the
+    /// disk was never fetched, which is what makes [`collection`] fetch it
+    /// again — and it is checked on the way *out* of the cache as much as on
+    /// the way in, so a shell answered off the disk before the site has been
+    /// asked anything is never handed a path to nothing.
+    fn forget_missing_pictures(&mut self) {
+        self.icon = self.icon.take().filter(|at| Path::new(at).is_file());
+        self.cover = self.cover.take().filter(|at| Path::new(at).is_file());
+    }
 }
 
 /// How long to leave between the requests one sweep is made of.
@@ -787,7 +843,19 @@ fn collection() -> Result<(), String> {
     let cache = account_cache(text(&a, "user")?)?;
     let path = cache.join("collection.json");
     let stored = read(&path).unwrap_or(json!({}));
-    let known: Vec<Owned> = serde_json::from_value(stored["games"].clone()).unwrap_or_default();
+    // Every picture the last sweep wrote down is checked against the disk
+    // before any of it is believed — see [`Owned::forget_missing_pictures`].
+    // Here rather than beside the fetch, so that the games on the consoles
+    // this sweep will not reach are cleaned on their way through [`gathered`]
+    // as well as the ones it asks about.
+    let known: Vec<Owned> = serde_json::from_value::<Vec<Owned>>(stored["games"].clone())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut game| {
+            game.forget_missing_pictures();
+            game
+        })
+        .collect();
     let swept = stored["at"].as_u64().unwrap_or(0);
     let whole = now().saturating_sub(swept) >= SWEEP_FOR;
     let asking: Vec<u32> = if whole {
@@ -1130,20 +1198,20 @@ pub fn run() {
                 emit(json!({"event":"account","user":user}));
                 if let Some(user) = user {
                     let cache = account_cache(user)?;
-                    let games = read(&cache.join("library.json")).unwrap_or(json!([]));
+                    let mut games = read(&cache.join("library.json")).unwrap_or(json!([]));
+                    forget_missing_rom_pictures(&mut games);
                     emit(json!({"event":"library","games":games}));
                     // The account's own collection is answered off the disk
                     // too, so a shell that has just started draws the column
                     // before the sweep has asked the site anything.
                     if let Some(collection) = read(&cache.join("collection.json")) {
-                        emit(json!({"event":"collection","games":collection["games"]
-                            .as_array()
-                            .map(|games| games
-                                .iter()
-                                .filter(|game| game["title"].as_str().is_some_and(|t| !t.is_empty()))
-                                .cloned()
-                                .collect::<Vec<_>>())
-                            .unwrap_or_default()}));
+                        let mut games: Vec<Owned> =
+                            serde_json::from_value(collection["games"].clone()).unwrap_or_default();
+                        games.retain(|game| !game.title.is_empty());
+                        for game in &mut games {
+                            game.forget_missing_pictures();
+                        }
+                        emit(json!({"event":"collection","games":games}));
                     }
                     for file in std::fs::read_dir(cache)
                         .ok()
@@ -1259,6 +1327,56 @@ mod tests {
         // Asked about and answered with nothing is the game being gone.
         let games = gathered(&[], &known, &BTreeSet::from([7, 12]));
         assert!(games.is_empty());
+    }
+    #[test]
+    fn a_picture_that_is_gone_is_a_picture_to_fetch_again() {
+        let at = std::env::temp_dir().join(format!("lxb-ra-art-{}", std::process::id()));
+        std::fs::create_dir_all(&at).unwrap();
+        let here = at.join("cover.png");
+        std::fs::write(&here, b"\x89PNG\r\n\x1a\n").unwrap();
+        let gone = at.join("emptied-cache.png");
+        let mut game = Owned {
+            id: 7514,
+            title: "Tekken 4".into(),
+            cover: Some(gone.display().to_string()),
+            icon: Some(here.display().to_string()),
+            ..Owned::default()
+        };
+        game.forget_missing_pictures();
+        // The cover is asked for only where none is recorded, so a record kept
+        // after the file went is a row that never gets one again.
+        assert_eq!(
+            game.cover, None,
+            "a cover the disk has not got must not be remembered as one it has"
+        );
+        assert_eq!(
+            game.icon.as_deref(),
+            Some(here.display().to_string().as_str()),
+            "and a picture that is still there is left exactly as it was"
+        );
+        std::fs::remove_dir_all(&at).ok();
+    }
+    #[test]
+    fn a_rom_cover_that_is_gone_is_a_cover_the_cache_stops_claiming() {
+        let at = std::env::temp_dir().join(format!("lxb-ra-rom-art-{}", std::process::id()));
+        std::fs::create_dir_all(&at).unwrap();
+        let here = at.join("Tekken 2 (USA).png");
+        std::fs::write(&here, b"\x89PNG\r\n\x1a\n").unwrap();
+        let gone = at.join("Tekken 3 (USA).png");
+        let mut games = json!([
+            {"id":11258,"title":"Tekken 2 (USA) (v1.1)","picture":here.display().to_string()},
+            {"id":11259,"title":"Tekken 3 (USA)","picture":gone.display().to_string()},
+            {"id":0,"title":"Pokemon X (USA)","picture":Value::Null},
+        ]);
+        forget_missing_rom_pictures(&mut games);
+        assert_eq!(games[0]["picture"], json!(here.display().to_string()));
+        assert_eq!(
+            games[1]["picture"],
+            Value::Null,
+            "a saved path that outlived its file must not be replayed as a picture"
+        );
+        assert_eq!(games[2]["picture"], Value::Null);
+        std::fs::remove_dir_all(&at).ok();
     }
     #[test]
     fn missing_progress_is_not_an_empty_set() {

@@ -25,10 +25,20 @@
 //! **writes several messages** and should only ever be pointed at an account of
 //! your own.
 //!
+//! **It is also how to find out which way an invitation to a game arrives.**
+//! Steam has two, this session reads both, and which one it really uses cannot
+//! be settled from this side — see `steam_cm_protocol::chat`. Point this at a
+//! friend, have them invite this account into a game from their own client, and
+//! the `INVITED` line says which route carried it: a stamp means the chat
+//! service, no stamp means the older `ClientInviteToGame` push. Nothing has to
+//! be sent from here for that; the probe only has to be listening.
+//!
 //! Nothing is invented. Message bodies are printed by *length* rather than by
 //! content, which is the same rule the rest of this crate is under: see
 //! [`lxb_steam::chat`], where the reason no body is ever logged is written
-//! down.
+//! down. An invitation's connect string *is* printed: it is a lobby number
+//! somebody broadcast to be joined rather than anything private, and it is the
+//! whole question this probe is asked.
 
 use std::time::{Duration, Instant};
 
@@ -189,6 +199,30 @@ fn main() {
                         Word::Typing { with: about } => {
                             println!("…{} is typing", chat::short(about))
                         }
+                        // The one word this probe exists to catch on a second
+                        // run: an invitation to a game. Which of Steam's two
+                        // routes carried it is the thing worth knowing, and the
+                        // stamp is what says — a chat entry is stamped and the
+                        // client push is not. The connect string is printed:
+                        // it is a lobby number that was broadcast to be joined,
+                        // not a secret, and it is the whole question.
+                        Word::Invited {
+                            with: about,
+                            invite,
+                        } => println!(
+                            "INVITED by …{} to app {:?} ({:?}) — {} — {}",
+                            chat::short(about),
+                            invite.app_id,
+                            invite.game,
+                            invite.connect,
+                            match invite.at {
+                                0 => "no stamp, so the ClientInviteToGame push".to_string(),
+                                at => format!(
+                                    "stamped {at}.{}, so the chat service",
+                                    invite.key.map(|key| key.ordinal).unwrap_or(0)
+                                ),
+                            }
+                        ),
                     }
                 }
                 _ => {}

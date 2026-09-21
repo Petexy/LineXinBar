@@ -1,10 +1,18 @@
 //! How much larger than life an application draws itself.
 //!
-//! One number for the whole session — see `lxb_shell_v1.set_application_scale`
-//! — and it is not a magnification. A screen looked at from a sofa wants an
-//! application's *interface* larger, not its pixels larger, and those are two
-//! different things: the first is what a high-density laptop panel does to
-//! every toolkit on it, and the second is what a projector out of focus does.
+//! One number per display — see `lxb_shell_v1.set_output_application_scale`,
+//! and `set_application_scale` beside it, which is what a screen nobody has
+//! named draws at — and it is not a magnification. A screen looked at from a
+//! sofa wants an application's *interface* larger, not its pixels larger, and
+//! those are two different things: the first is what a high-density laptop
+//! panel does to every toolkit on it, and the second is what a projector out of
+//! focus does.
+//!
+//! Per display because a screen is looked at from where it stands. The number
+//! answers how far away the user is sitting, and a person at a desk with a
+//! television behind them is sitting two distances at once — so a window
+//! carries the answer of the display it is on, and a window moved between two
+//! screens is configured again for the one it lands on.
 //!
 //! So this is carried out the way a dense panel carries it out, in three parts
 //! that have to agree:
@@ -100,7 +108,7 @@ impl AppScale {
     }
 }
 
-/// The factor `window`'s own drawing is enlarged by: the session's, for a
+/// The factor `window`'s own drawing is enlarged by: its display's, for a
 /// Wayland application, and one to one for anything else.
 ///
 /// Anything else is an Xwayland window, for the reason this module's own
@@ -235,8 +243,8 @@ impl Mapping {
     }
 }
 
-/// The scale to tell a surface of `window` about: its display's, multiplied by
-/// how much larger than life its application is drawing.
+/// The scale to tell a surface of `window` about: its display's density,
+/// multiplied by how much larger than life that display draws applications.
 ///
 /// Both halves matter and neither is optional. The display's is what a client
 /// on a dense panel needs to know; the application's is the whole of this

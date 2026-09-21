@@ -145,13 +145,31 @@ pub(crate) fn set_maximized_states(states: &mut ToplevelStateSet) {
 pub struct OutputManager {
     /// Outputs in the order they were added; drives auto-placement.
     order: Vec<Output>,
-    /// How much larger than life applications draw themselves.
+    /// How much larger than life applications draw themselves on each display,
+    /// for the displays a shell has named one for.
     ///
     /// Here because it is part of the layout: what it changes is how much room
     /// a window is given on the display it is tiled onto. See [`crate::scale`],
     /// which is where the rest of that bargain — what the client is told, and
     /// how its pixels are drawn back out — is written down.
-    scale: crate::scale::AppScale,
+    ///
+    /// Per display, because a screen is looked at from where it stands: the
+    /// television across the room and the panel on the desk in front of it are
+    /// not the same distance from the same pair of eyes. Keyed by connector
+    /// name rather than by [`Output`], so a screen unplugged and plugged back
+    /// in comes back to the size it was left at — which is the same key the
+    /// shell files it under, and the same one everything else about a display
+    /// is remembered by.
+    scales: std::collections::HashMap<String, crate::scale::AppScale>,
+    /// What a display nobody has named draws at.
+    ///
+    /// `lxb_shell_v1.set_application_scale` — the request that came before the
+    /// per-display one and is still how a shell older than version 43 says
+    /// this. It is the floor under [`Self::scales`] rather than a competitor to
+    /// it: a shell that sends only the session-wide request gets that answer on
+    /// every screen it has and on every screen plugged in afterwards, and one
+    /// that names a display overrules it there and nowhere else.
+    session_scale: crate::scale::AppScale,
     /// What a browser's picture-in-picture window is given, and the mat drawn
     /// round it.
     ///
@@ -168,12 +186,38 @@ impl OutputManager {
         Self::default()
     }
 
-    /// Draw applications this much larger than life from now on. `true` when
-    /// that is a change, which is what the caller re-tiles and redraws on.
+    /// Draw applications this much larger than life on every display that has
+    /// not been given a size of its own. `true` when that is a change, which is
+    /// what the caller re-tiles and redraws on.
+    ///
+    /// A change to the *default*, which is not the same as a change to what any
+    /// particular screen draws at: a session where every display has been named
+    /// sees nothing move. Answered as a change anyway, because the displays this
+    /// reaches are the ones not connected yet, and the relayout it costs is one
+    /// pass over the windows that are.
     pub fn set_app_scale(&mut self, scale: crate::scale::AppScale) -> bool {
-        let changed = self.scale != scale;
-        self.scale = scale;
+        let changed = self.session_scale != scale;
+        self.session_scale = scale;
         changed
+    }
+
+    /// Draw applications on one display this much larger than life. `true` when
+    /// that is a change, on the same terms as the session's own.
+    pub fn set_output_app_scale(&mut self, output: &Output, scale: crate::scale::AppScale) -> bool {
+        let name = output.name();
+        let changed = self.app_scale_on(output) != scale;
+        self.scales.insert(name, scale);
+        changed
+    }
+
+    /// How much larger than life applications on `output` draw themselves: what
+    /// this display was given, or the session's own answer where it has been
+    /// given nothing.
+    pub fn app_scale_on(&self, output: &Output) -> crate::scale::AppScale {
+        self.scales
+            .get(&output.name())
+            .copied()
+            .unwrap_or(self.session_scale)
     }
 
     /// What the shell has asked a picture-in-picture window to look like.
@@ -391,7 +435,7 @@ impl OutputManager {
             // [`crate::scale`]. A Wayland window only — the X11 branch below
             // takes the whole area, because there is no scale to tell an X11
             // client about and a magnified window is not a larger one.
-            let room = self.room_for(window, area.size);
+            let room = self.room_for(window, area.size, output);
             toplevel.with_pending_state(|state| {
                 state.size = Some(room);
                 // A size alone is only advisory. xdg-shell lets a client pick
@@ -410,7 +454,7 @@ impl OutputManager {
             crate::scale::tell(
                 window,
                 output.current_scale().fractional_scale(),
-                self.scale.factor(),
+                self.app_scale_on(output).factor(),
             );
             toplevel.send_pending_configure();
         } else if let Some(surface) = window.x11_surface() {
@@ -441,15 +485,26 @@ impl OutputManager {
     /// video, on a browser window scaled above natural size, until the
     /// fullscreen path came through here too.
     ///
-    /// [`Self::window_scale`] rather than this manager's own factor, so the
+    /// [`Self::window_scale_on`] rather than the display's own factor, so the
     /// window the setting does not apply to — the floating one — is answered
     /// here the same way the render and the input mapping answer it.
-    pub fn room_for(&self, window: &Window, area: Size<i32, Logical>) -> Size<i32, Logical> {
-        crate::scale::configured_size(area, self.window_scale(window))
+    ///
+    /// The display is passed rather than looked up, because both callers have
+    /// already chosen one and a newly mapped window has no output association
+    /// in the space yet: a window being tiled onto its second screen would
+    /// otherwise be configured for the one it is leaving.
+    pub fn room_for(
+        &self,
+        window: &Window,
+        area: Size<i32, Logical>,
+        output: &Output,
+    ) -> Size<i32, Logical> {
+        crate::scale::configured_size(area, self.window_scale_on(window, output))
     }
 
-    /// How much larger than life `window` draws itself: the session's factor
-    /// for an application, and one to one for the floating window.
+    /// How much larger than life `window` draws itself on `output`: that
+    /// display's factor for an application, and one to one for the floating
+    /// window.
     ///
     /// The exception is the whole reason this is asked here rather than of
     /// [`crate::scale::window_scale`] directly. The application scale answers
@@ -459,10 +514,26 @@ impl OutputManager {
     /// window's size on screen — what the client is told over
     /// `wp_fractional_scale_v1`, where its pixels are drawn, and where a press
     /// on them lands — asks this one question.
-    pub fn window_scale(&self, window: &Window) -> f64 {
+    pub fn window_scale_on(&self, window: &Window, output: &Output) -> f64 {
         match self.floats(window) {
             true => 1.0,
-            false => crate::scale::window_scale(self.scale, window),
+            false => crate::scale::window_scale(self.app_scale_on(output), window),
+        }
+    }
+
+    /// The same question where the display is not already in hand: whichever
+    /// screen the window belongs to answers it.
+    ///
+    /// [`Self::window_display`] rather than [`Self::window_output`], so a window
+    /// on no display at all is answered one to one instead of being given the
+    /// first screen's size. What reaches here is the render, the hit test and
+    /// the screenshot — all of them about a window that is already somewhere —
+    /// while the two callers that are *placing* a window pass the display they
+    /// chose to [`Self::room_for`].
+    pub fn window_scale(&self, space: &Space<Window>, window: &Window) -> f64 {
+        match self.window_display(space, window) {
+            Some(output) => self.window_scale_on(window, &output),
+            None => 1.0,
         }
     }
 
@@ -977,6 +1048,73 @@ mod tests {
     #[test]
     fn with_no_displays_there_is_nowhere_to_put_a_window() {
         assert_eq!(pick_output(None, None, &[]), None);
+    }
+
+    /// The setting the shell moved out from under System: each display draws
+    /// applications at its own size, and naming one leaves the others alone.
+    #[test]
+    fn each_display_draws_applications_at_its_own_size() {
+        let outputs = connected();
+        let mut manager = OutputManager::new();
+
+        // Nothing said: every screen at natural size.
+        for output in &outputs {
+            assert_eq!(
+                manager.app_scale_on(output),
+                crate::scale::AppScale::default()
+            );
+        }
+
+        let half_again = crate::scale::AppScale::from_percent(150);
+        assert!(manager.set_output_app_scale(&outputs[1], half_again));
+        assert_eq!(manager.app_scale_on(&outputs[1]), half_again);
+        assert_eq!(
+            manager.app_scale_on(&outputs[0]),
+            crate::scale::AppScale::default(),
+            "the screen beside it is not what was named"
+        );
+
+        // And the same answer again is not a change, which is what keeps a
+        // shell resending its settings from re-tiling every window on the
+        // session.
+        assert!(!manager.set_output_app_scale(&outputs[1], half_again));
+    }
+
+    /// The session-wide request is the floor under the per-display one: it is
+    /// what a screen nobody has named draws at, including one plugged in
+    /// afterwards, and it never overrules a screen that has been named.
+    #[test]
+    fn a_display_nobody_has_named_draws_at_the_session_s_own_size() {
+        let outputs = connected();
+        let mut manager = OutputManager::new();
+
+        let twice = crate::scale::AppScale::from_percent(200);
+        let half_again = crate::scale::AppScale::from_percent(150);
+        assert!(manager.set_output_app_scale(&outputs[0], half_again));
+        assert!(manager.set_app_scale(twice));
+
+        assert_eq!(
+            manager.app_scale_on(&outputs[0]),
+            half_again,
+            "a screen that has been named keeps its own answer"
+        );
+        assert_eq!(manager.app_scale_on(&outputs[1]), twice);
+        // Including a screen this manager has never seen, which is the whole
+        // of what the session-wide answer is for.
+        assert_eq!(manager.app_scale_on(&output("elsewhere")), twice);
+    }
+
+    /// A display keeps its size by name, so unplugging it and plugging it back
+    /// in brings the size back with it — the same key the shell files it under.
+    #[test]
+    fn a_display_comes_back_to_the_size_it_was_left_at() {
+        let mut manager = OutputManager::new();
+        let twice = crate::scale::AppScale::from_percent(200);
+        assert!(manager.set_output_app_scale(&output("first"), twice));
+        // A different `Output` object for the same connector: what a hotplug
+        // hands over is a new one, and it has to be answered as the same
+        // screen.
+        assert_eq!(manager.app_scale_on(&output("first")), twice);
     }
 
     /// "Nowhere known" and "the first display" are different answers, and the

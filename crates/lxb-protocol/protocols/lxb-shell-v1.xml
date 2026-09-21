@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="41">
+  <interface name="lxb_shell_v1" version="43">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -908,10 +908,11 @@
         magnify pixels that are already drawn, and a blurred window is not what
         somebody asking for a larger one asked for.
 
-        Session-wide rather than per display, unlike everything about a
-        display's picture: this is a statement about how far away the user is
-        sitting and how well they see, which is true of the person and not of
-        one screen.
+        Session-wide, and since version 43 the *default* rather than the whole
+        answer: set_output_application_scale says it for one display, and this
+        is what every display a shell has not named draws at. A shell that
+        sends only this one gets what it always got, on every screen it has and
+        on every screen plugged in afterwards.
 
         Not remembered by the compositor. An application is started by the
         shell, always after the shell has connected and said what this is, so
@@ -919,6 +920,49 @@
         agree — and the shell has the Settings page it was set on, which is
         where a preference belongs.
       </description>
+      <arg name="scale" type="uint"
+           summary="per cent of natural size; 100 is one to one, and the floor"/>
+    </request>
+
+    <request name="set_output_application_scale" since="43">
+      <description summary="how large applications draw themselves on one display">
+        The same setting as set_application_scale, for one display: every
+        application tiled onto this screen draws its own interface this much
+        larger than life, and the displays beside it are left as they are.
+
+        Per display because a screen is looked at from where it stands. A
+        television across a room and the panel on the desk in front of it want
+        different answers, and a session with one answer for both had to be
+        wrong about one of them — which is what this splits. The setting is
+        still about a person and a distance; what changes is that a person has
+        a different distance to each of their screens.
+
+        Which means a window carries its display's answer, and a window moved
+        between two displays is configured again for the one it lands on. That
+        is the same relayout as a window moved between screens of different
+        sizes: it is the display it is on that decides how much room it is
+        given.
+
+        scale is in per cent of natural size, clamped into the same range
+        set_application_scale is clamped into and for the same reason: 100 is
+        one to one and the floor, the ceiling is as far as this goes, and a
+        number outside them is brought to the nearer end rather than refused.
+
+        What it does to a window, what it deliberately leaves alone — the
+        shell's own surfaces, and anything under Xwayland — and why the
+        compositor writes none of it down are all as set_application_scale
+        describes. This is that setting with a display named.
+
+        A display nobody has named here draws at whatever set_application_scale
+        last said, which is natural size until a shell says otherwise. Sent for
+        a display and then for the same display again with a different number,
+        the last one stands; there is no request to go back to the session's
+        default, because a shell that wants that sends it as this display's.
+
+        Silently ignored when the output is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output"
+           summary="the display whose applications are being sized"/>
       <arg name="scale" type="uint"
            summary="per cent of natural size; 100 is one to one, and the floor"/>
     </request>
@@ -1591,9 +1635,16 @@
         known about that display; windows are listed topmost first, so the
         first one is the application the user was just looking at.
 
-        The size is the window's logical geometry, which is what the shell
-        needs to aspect-fit its selection frame to the card the compositor
-        will draw there.
+        The size is what the window occupies on the display, which is not
+        always the logical size its client was configured at: an application
+        drawing larger than life is configured smaller than the screen by that
+        factor and then drawn back out across the whole of it. The shell is
+        given the size on the screen because that is what both of its questions
+        are about — aspect-fitting a selection frame to the card the compositor
+        will draw, and deciding whether an application covers the bar, which is
+        what stops the shell drawing a start screen nobody can see. Told the
+        configured size instead, a session with larger applications never
+        believed any of them covered anything.
 
         Sent once per display when a version 4 object is bound, and again
         whenever the display's windows or their titles change.
@@ -1765,6 +1816,8 @@
       </description>
       <entry name="gamut" value="1"
              summary="sRGB colour intensity does something on this display"/>
+      <entry name="gamut_exact" value="2" since="42"
+             summary="and the conversion it does is the exact one"/>
     </enum>
 
     <event name="output_hdr_controls" since="10">
@@ -1773,17 +1826,32 @@
         hdr_control.
 
         A shell has to be able to tell a control that is off from a control
-        that does nothing. sRGB colour intensity is the case this exists for:
-        it is implemented as the CRTC's colour matrix, and a matrix is only a
-        gamut conversion when it acts on linear light — so it needs a degamma
-        stage in front of it, which not every display engine has. Where there
-        is none the compositor keeps the brightness correct and leaves the
-        matrix at identity, which pins the gamut at its most saturated
-        whatever the setting says. A page that went on offering the choice
-        would be describing a display that does not exist.
+        that does nothing, and a control that does the thing exactly from one
+        that does it approximately. sRGB colour intensity is the case this
+        exists for, and it has all three answers.
+
+        It is implemented as the CRTC's colour matrix. Where the CRTC has no
+        matrix at all, gamut is unset: there is nowhere to put the conversion,
+        the picture's primaries are sent as BT.2020's, and a page that went on
+        offering the choice would be describing a display that does not exist.
+
+        Where there is a matrix but no degamma stage in front of it, gamut is
+        set and gamut_exact is not. A matrix is a gamut rotation when it acts
+        on linear light; acting on sRGB-coded values it leaves white, black
+        and the whole grey axis untouched — every row of it sums to 1 — and
+        brings saturated colour close rather than exactly right. The setting
+        works at every position; it is simply not the same picture a display
+        engine with a degamma stage would show, and a shell is expected to say
+        so rather than imply an accuracy that is not there.
+
+        Where both are set, the conversion is the exact one.
 
         This is a separate event from output_hdr rather than another argument
         on it because an event's arguments cannot change once it has shipped.
+
+        A shell bound below version 42 is told only gamut, and should read it
+        the way it always did: as the exact conversion, which is what every
+        display it was told about could do.
 
         Sent alongside output_hdr: once per display when a version 10 object
         is bound, and again whenever it changes.

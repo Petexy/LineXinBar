@@ -2423,8 +2423,10 @@ impl LxbState {
         // frame the user thinks of as the window inside a larger surface, so the
         // surface starts before the mapped location does.
         let render_location = mapped - window.geometry().loc;
-        let mapping =
-            crate::scale::Mapping::of(mapped.to_f64(), self.lxb.outputs.window_scale(window));
+        let mapping = crate::scale::Mapping::of(
+            mapped.to_f64(),
+            self.lxb.outputs.window_scale(&self.lxb.space, window),
+        );
         let point = mapping.into_window(location);
         let (surface, at) =
             window.surface_under(point - render_location.to_f64(), WindowSurfaceType::ALL)?;
@@ -2549,7 +2551,7 @@ impl LxbState {
                 // presses have to come apart nowhere.
                 let mapping = crate::scale::Mapping::of(
                     mapped.to_f64(),
-                    self.lxb.outputs.window_scale(window),
+                    self.lxb.outputs.window_scale(&self.lxb.space, window),
                 );
                 let point = mapping.into_window(location);
                 let mut bbox = window.bbox();

@@ -652,7 +652,8 @@ pub fn date_in_figures(day: u32, month: u32, year: i32) -> String {
 ///
 /// Every clock the user reads comes through here — the start screen's corner,
 /// the guide's header, the night light's schedule, the trash, the updates
-/// history, an achievement's unlock. A time written into a *file name* or a
+/// history, an achievement's unlock, the message a conversation's light is
+/// standing on. A time written into a *file name* or a
 /// file *format* does not: the trash's `DeletionDate` is RFC 3339 and a
 /// screenshot is called what sorts, and neither is somebody's setting to
 /// change. See [`crate::trash`] and [`crate::screenshot`].
@@ -682,6 +683,85 @@ pub fn time_of_day_on(clock: Clock, hour: u32, minute: u32) -> String {
         "minute" => minute.to_string(),
         "half" => half,
     )
+}
+
+/// When something happened, said the two ways a note beside it might have the
+/// room for.
+///
+/// Both are built at once rather than at the place that draws them, because
+/// *which* of the two is used is a question about the room there is — see
+/// `ui::friends_said_at`, which measures the longer one against the
+/// space beside a message and falls back to the shorter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moment {
+    /// The time of day alone, on the clock the session is set to: `14:23`.
+    pub time: String,
+    /// The same moment with the day it fell on: `21/9 14:23`. `None` for
+    /// today, whose date is the one thing everybody reading a screen already
+    /// knows — and the case a note beside a message is nearly always in.
+    pub with_the_day: Option<String>,
+}
+
+/// Break one moment down for a note beside something, against the wall clock
+/// as it is now.
+///
+/// `seconds` is an ordinary Unix time, in the machine's own `time_t` so that
+/// nothing here has to decide what to do about a stamp that will not fit in
+/// one. `None` where the C library would not break it down at all.
+pub fn moment(seconds: libc::time_t) -> Option<Moment> {
+    moment_on(seconds, now())
+}
+
+/// The same, against a `now` that is stated rather than read — which is what
+/// lets a test say what "today" is without waiting for tomorrow to break it.
+pub fn moment_on(seconds: libc::time_t, now: Option<libc::time_t>) -> Option<Moment> {
+    let tm = broken_down(seconds)?;
+    let time = time_of_day(
+        tm.tm_hour.clamp(0, 23) as u32,
+        tm.tm_min.clamp(0, 59) as u32,
+    );
+    // The same day in the same zone, which is a year and a day *of* that year
+    // rather than arithmetic on seconds: a local day is twenty-three hours
+    // long once a year and twenty-five once, and in some zones it is neither.
+    let today = now
+        .and_then(broken_down)
+        .is_some_and(|now| (now.tm_year, now.tm_yday) == (tm.tm_year, tm.tm_yday));
+    let with_the_day = (!today).then(|| {
+        // `clock-corner` is this shell's compact day and time: the two numbers
+        // in the order the language writes them — 21/9 here, 9/21 in America,
+        // 21.09. in Germany — around a time on whichever clock the session is
+        // set to. Named for the start screen's corner, which is where it was
+        // first needed, and read here rather than copied into a second message
+        // so that a language settles that order once. See `wall_clock`.
+        crate::message!("clock-corner",
+            "day" => tm.tm_mday.clamp(1, 31).to_string(),
+            "month" => (tm.tm_mon.clamp(0, 11) + 1).to_string(),
+            "time" => time.clone(),
+        )
+    });
+    Some(Moment { time, with_the_day })
+}
+
+/// The wall clock now, in seconds since the epoch.
+fn now() -> Option<libc::time_t> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs() as libc::time_t)
+}
+
+/// One moment in the machine's own zone, through the C library rather than any
+/// arithmetic of this shell's: which year is a leap year, which zone this
+/// machine is in and the hour a country moves its clocks are all its answers
+/// to give.
+fn broken_down(seconds: libc::time_t) -> Option<libc::tm> {
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid, and `tm` is read only where
+    // `localtime_r` said it filled it in.
+    if unsafe { libc::localtime_r(&seconds, tm.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    Some(unsafe { tm.assume_init() })
 }
 
 /// Named arguments keep sentence order and plural selection in the catalog.
@@ -1182,6 +1262,47 @@ mod tests {
             }
         }
         set(Language::British);
+    }
+
+    /// A moment carries the day it fell on only when that day is not today.
+    ///
+    /// What it is for is the note beside the message the light is on in a
+    /// conversation: a time on its own is what everybody wants of something
+    /// said an hour ago, and a lie about something said last week.
+    ///
+    /// `now` is stated rather than read, so this says the same thing tomorrow
+    /// — and the two moments it compares are three days apart, which is a
+    /// different local day in every zone there is however the clocks moved in
+    /// between.
+    #[test]
+    fn a_moment_carries_its_day_only_when_it_is_not_today() {
+        set(Language::British);
+        const AT: libc::time_t = 1_700_000_000;
+        let today = moment_on(AT, Some(AT)).expect("a moment");
+        assert!(
+            today.with_the_day.is_none(),
+            "something said today was given today's date"
+        );
+        assert!(today.time.contains(':'));
+
+        let older = moment_on(AT, Some(AT + 3 * 86_400)).expect("a moment");
+        assert_eq!(older.time, today.time, "the same moment told two times");
+        let day = older.with_the_day.expect("the day it was said on");
+        assert!(
+            day.contains(&older.time),
+            "{day:?} was a date with no time in it"
+        );
+        assert!(day.len() > older.time.len());
+
+        // And it is the session's own clock, not a second one of its own.
+        set_clock(Clock::TwelveHour);
+        let twelve = moment_on(AT, Some(AT)).expect("a moment");
+        assert!(
+            twelve.time.ends_with("AM") || twelve.time.ends_with("PM"),
+            "{:?} is not on the clock the session is set to",
+            twelve.time
+        );
+        set_clock(Clock::FromLanguage);
     }
 
     /// The two clocks, and the one the language answers for.

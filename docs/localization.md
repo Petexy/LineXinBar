@@ -1,5 +1,7 @@
 # Shell languages
 
+[Documentation](index.md) · [Project home](../README.md)
+
 Settings → Language offers ten languages — **Deutsch**, **English (UK)**,
 **English (US)**, **Español**, **Français**, **Polski**, **Português (Brasil)**,
 **Русский**, **हिन्दी** and **简体中文** — every language the shell has a catalog
